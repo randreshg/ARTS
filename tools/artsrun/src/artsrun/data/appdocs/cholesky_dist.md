@@ -182,8 +182,9 @@ trailing update on place `g` reads panel tile `(i,k)` whose owner is
 classes, so a place's name references span the whole place grid rather than its
 own row and column.  Any construction that lets a place start earlier has to
 make the names addressable without a publication edge at all -- a labeled GUID
-range would, and does not hold on this runtime, where creating a labeled GUID
-replaces whatever stands at it.
+range would, and does not hold here: a label needs exactly one creator that
+precedes every use of it, and the places that use a name would each have to
+create it with no task ordering those creations.
 
 Tiles are produced and satisfied by their owners.  Each step's POTRF fires on the
 diagonal tile's current version, the TRSMs on that and their own, and the

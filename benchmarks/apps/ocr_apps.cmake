@@ -428,13 +428,6 @@ add_benchmark_app(NAME globalsum_pcg
 # Tier 5: CoMD variants
 # ==========================================================================
 
-add_benchmark_app(NAME CoMD_intel_chandra
-    DIR CoMD/refactored/ocr/intel-chandra
-    SOURCES CoMD.c wtime.c command.c lj.c eam.c timers.c
-    LIBS reduction
-    EXTRA_LINK_LIBS m
-)
-
 add_benchmark_app(NAME CoMD_intel_chandra_tiled
     DIR CoMD/refactored/ocr/intel-chandra-tiled
     SOURCES CoMD.c mycommand.c cmdLineParser.c eam.c ljForce.c decomposition.c
@@ -479,13 +472,6 @@ add_benchmark_app(NAME CoMD_sdsc_dist
     timestep.c
     LIBS ocrAppUtils
     EXTRA_DEFINES OCR_APP_COUNTED_OEVT
-    EXTRA_LINK_LIBS m
-)
-
-add_benchmark_app(NAME CoMD_sdsc2
-    DIR CoMD/refactored/ocr/sdsc2
-    SOURCES comd.c command.c eam.c lj.c reductions.c simulation.c timers.c
-    timestep.c
     EXTRA_LINK_LIBS m
 )
 

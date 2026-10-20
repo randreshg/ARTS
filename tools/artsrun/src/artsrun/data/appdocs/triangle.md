@@ -31,11 +31,11 @@ decomposition):
 1. The published solution counter was a single shared block incremented
    under `DB_MODE_EW` from a per-solution `incrementTask` inside a FINISH
    EDT (upstream `d8f48ba6`), later made a local `atomic_fetch_add`
-   (`ef66fa7b`). ARTS maps OCR `EW` to `RW` (per-node exclusive, OCR RW
-   semantics), so concurrent increments lose updates — the contract cannot
-   be honoured. `d89eafa5` replaced it with the per-node 8-byte count block
-   and the `sumCountsTask` reduction tree that the return path already
-   implied. Side effect worth stating plainly: this also deletes a
+   (`ef66fa7b`). The shim refuses OCR `EW`, and under `RW` (per-node
+   exclusive, OCR RW semantics) concurrent increments lose updates — the
+   contract cannot be honoured. `d89eafa5` replaced it with the per-node
+   8-byte count block and the `sumCountsTask` reduction tree that the
+   return path already implied. Side effect worth stating plainly: this also deletes a
    node-serializing hot DB and drops the EDT count from ~41.3 M to 22.7 M at
    the calibrated arguments. The FINISH EDT itself is supported and was not
    the reason.

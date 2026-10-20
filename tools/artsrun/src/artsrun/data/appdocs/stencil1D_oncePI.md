@@ -3,7 +3,7 @@
 *1-D three-point stencil, cloning style, halo exchange over plain ONCE
 events, with parallelized initialization.*
 Source: `third_party/ocr-apps/apps/Stencil1D/refactored/ocr/intel-david/stencil1DoncePI.c`
-(~635 lines; author Bryan Pawlowski, Intel 2015).
+(~630 lines; author Bryan Pawlowski, Intel 2015).
 
 ## Overview
 
@@ -14,7 +14,7 @@ member of the family: like `stencil1D_stickyLG`, initialization is spread
 across `N` independent `init`/`stencilInitEdt` pairs rather than one serial
 `mainEdt` loop, and termination is an `N`-dependency `wrapupEdt` join
 instead of a serialized shutdown wave. Unlike `stickyLG`, the steady-state
-halo handoff does **not** use labeled/double-buffered addressing — it uses
+halo handoff does **not** use labeled addressing — it uses
 plain (non-labeled) ONCE events, self-destructing, created fresh every
 iteration and explicitly propagated forward through the buffer DB's
 `.control` field (the receiving neighbor's *grandchild* is wired to depend
@@ -22,6 +22,11 @@ on the event before it is ever satisfied — the same grandchild-ahead
 pipelining `stencil1D_once`/`stencil1D_guid` use, now combined with
 parallel init). Labeled GUIDs are used only once, at bootstrap, to kick off
 the very first generation's handoff without any runtime coordination.
+
+The timestep-0 initialisation sets `a[m-1] = 0.0` on every node but the last,
+as the lineage-A variants do; the published file left that point
+uninitialised there, and the catalog's scalar (`9 49`, node 9's last point)
+depends on it.
 
 ## Parameters
 
@@ -34,7 +39,7 @@ the very first generation's handoff without any runtime coordination.
 Like `stencil1D_stickyLG`, this file `#include`s `stencil1D.h` and its
 defaults are that header's `N=10, M=50, T=10000` `#define`s, used when
 `argc != 4`. No other runtime knobs; no validation guard against
-zero/negative arguments (see Uncertain).
+zero/negative arguments.
 
 ## Structure
 
@@ -43,9 +48,9 @@ Let `N`, `M`, `T` as above.
 | object | count | size |
 |--------|-------|------|
 | EDTs total | `N·T + 4N + 3` — `mainEdt`, `realmainEdt`, `wrapupEdt`, `N` `init`, `N` `stencilInitEdt` (each of which creates *two* `stencilEdt` instances — the head and its pre-created grandchild), and `N·T` further `stencilEdt`-created grandchildren over the run | — |
-| EDT templates | `2N+2` — `initTemplate`/`wrapupTemplate` created once centrally; `stencilInitTemplate` and `private->template` (for `stencilEdt`) are each (re-)created once *per chain* rather than shared (same pattern as `stickyLG`; see Findings) | — |
+| EDT templates | `2N+2` — `initTemplate`/`wrapupTemplate` created once centrally; `stencilInitTemplate` and `private->template` (for `stencilEdt`) are each (re-)created once *per chain* rather than shared (same pattern as `stickyLG`) | — |
 | DBs | `4N-1` — 1 shared + `N` private + `N` data (double-buffered, `2M` doubles) + `2(N-1)` buffer | shared ≈ 48 B (`ocrGuid_t wrapup` + `ranges[2]` + 3×`u64`); private ≈ 80 B (`private_t`: `wrapup`/`template`/`mychild` `ocrGuid_t` + `toDestroy[2]`, no double-buffer arrays); data = `2M×8` B; buffer = 16 B |
-| Events | `2(N-1)·(T+3)` — `2(N-1)·T` steady-state ONCE events (1 per direction per interior rank per iteration, self-destructing) plus `6(N-1)` one-time bootstrap events `stencilInitEdt` creates per interior boundary | — |
+| Events | `2(N-1)·(T+2)` — `2(N-1)·T` steady-state ONCE events (1 per direction per interior rank per iteration, self-destructing) plus `4(N-1)` one-time bootstrap events | — |
 
 Each chain's `stencilEdt` grandchild-ahead pipeline creates one new EDT
 per generation `0..T-1` (`T` creates) on top of the *two* instances
@@ -55,21 +60,20 @@ chain, not `T+1`: generation `T-1`'s invocation still creates a
 generation-`T+1` grandchild before generation `T` (which runs the
 `timestep==t` finalize branch and creates nothing) is known to be the
 last one needed, so that final grandchild is created but never invoked —
-one genuinely orphaned EDT per chain. `stencilInitEdt` also creates, once
-per interior boundary and independent of `T`: 2 ONCE events (the initial
-grandchild's left/right dependences), 2 STICKY events (`leftrcv`/
-`rightrcv`, the receive side of the very first cross-rank handoff), and 2
-STICKY events (`leftsend`/`rightsend`, its send side) — 6 events per
-interior boundary, `stencil1DoncePI.c:288-394`. A boundary's receive-side
-labels are its neighbour's send-side labels, so the second create of each
-parks at the label's home behind the first and, once the program destroys the
-label, installs as an unused generation.
+one genuinely orphaned EDT per chain. The bootstrap adds, once per interior
+boundary and independent of `T`, 4 events: `stencilInitEdt` creates 2 ONCE
+events (the initial grandchild's left/right dependences,
+`stencil1DoncePI.c:293`, `:309`), and `realmainEdt` creates the boundary's 2
+labeled STICKY events, one per direction, before it launches any `init`
+(`stencil1DoncePI.c:533-539`). A boundary's receive-side labels are its
+neighbour's send-side labels: `stencilInitEdt` only names them, the sender
+satisfies each, and the receiver's first `stencilEdt` destroys it.
 
 Worked numbers at the calibrated args (`48 50 340000`): EDTs ≈
 `48×340000 + 4×48 + 3 = 16,320,195`; DBs = `191`, ≈43 KB payload
 (marginally less than `stickyLG`'s, whose private struct carries the
-double-buffer address arrays this one doesn't need); Events ≈
-`2×47×(340000+3) = 31,960,282` — within 0.001% of the naive `2(N-1)T`
+toggled event-GUID arrays and range copies this one doesn't need); Events ≈
+`2×47×(340000+2) = 31,960,188` — within 0.001% of the naive `2(N-1)T`
 estimate, matching the same per-iteration magnitude as
 `stencil1D_once`'s plus a fixed one-time bootstrap term.
 
@@ -79,27 +83,30 @@ Counter cross-check: verified (1 node, `4 4 5` vs `6 4 8`): NUM_EDT_CREATE
 plus the runtime's constant +1 EDT/+1 DB/+0 EVT baseline. The original
 `N·T+3N+3` EDT formula was short by exactly `N` (the orphaned
 grandchild-per-chain above); the original `2(N-1)T` event formula was
-short by `6(N-1)` (the bootstrap events above) — both corrected.
+short by the bootstrap events — both corrected. Those events were measured
+while both sides of a boundary created each label (`6(N-1)` bootstrap
+events); with one create per label `2(N-1)(T+2)` predicts 42 → 100, not
+re-measured.
 
 ## Wiring
 
 - `realmainEdt` creates 2 label ranges of size `N` (`ranges[0..1]`), the
-  `wrapupEdt` (depc = `N`), and `N` `init` EDTs.
+  `2(N-1)` labeled bootstrap STICKY events in them, the `wrapupEdt`
+  (depc = `N`), and `N` `init` EDTs.
 - `init` creates a private DB plus left/right buffer DBs (absent at the
   respective boundary) and launches `stencilInitEdt`.
 - `stencilInitEdt` bootstraps the first-generation ONCE events for its own
-  grandchild (`leftEVT`/`rightEVT`) and, via `ocrGuidFromIndex` over the
-  shared ranges, the labeled STICKY events used *only* for the very first
-  cross-rank handoff (`leftinGUID`/`rightinGUID`, `leftoutGUID`/
-  `rightoutGUID`) — creating and immediately satisfying the outbound ones
-  with the (still-empty, first-iteration) buffer DBs.
+  grandchild and, via `ocrGuidFromIndex` over the shared ranges, names the
+  labeled STICKY events used *only* for the very first cross-rank handoff
+  (`leftrcv`/`rightrcv`, `leftsend`/`rightsend`) — satisfying the outbound
+  ones with the (still-empty, first-iteration) buffer DBs.
 - Each `stencilEdt` generation creates its grandchild, creates fresh ONCE
   events for the grandchild's two dependences, then — for each direction —
   reads the previous generation's control GUID out of the buffer
   (`leftin->control`/`rightin->control`), overwrites it with the new ONCE
   event's GUID, releases the buffer, and satisfies the *old* control GUID
   with it. This is the explicit control-field propagation `stickyLG` avoids
-  via labeled double-buffering.
+  via per-timestep labels.
 - Final timestep: RW-dependence from the chain's data DB directly onto
   `wrapupEdt`'s slot `mynode`, same join mechanism as `stickyLG`.
 - Same DB-concurrency shape throughout: no DB has more than one
@@ -128,7 +135,8 @@ just as often — no locality is expressed by the base program.
 Same dials and guidance as `stencil1D_stickyLG`: `N` caps parallel width,
 `T` drives churn/wall-time, `M` only moves data-DB payload. `N` ≳ target
 worker count, `T` sized for desired wall time at that width. At the shared
-calibrated `48 50 340000`, this variant's event churn is half of
-`stickyLG`'s at equal `N,T` — the two make a natural within-family A/B pair
-for isolating the cost of labeled double-buffering vs. explicit
+calibrated `48 50 340000`, this variant's steady-state event churn equals
+`stickyLG`'s at equal `N,T` (`2(N-1)` events per iteration in both) — the
+two make a natural within-family A/B pair
+for isolating the cost of per-timestep labeled events vs. explicit
 control-field propagation at otherwise-identical parallelism and depth.

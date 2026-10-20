@@ -2,7 +2,7 @@
 
 *A 2D-decomposed, level-synchronized BFS over a randomly generated graph —
 Graph500-style Kernel 1 (graph construction) + Kernel 2 (single-root search).*
-Source: `third_party/ocr-apps/apps/graph500/graph500.c` (~2090 lines).
+Source: `third_party/ocr-apps/apps/graph500/graph500.c` (~2130 lines).
 
 ## Overview
 
@@ -32,9 +32,9 @@ compute is light (array scans, a handful of comparisons).
 | `argv[2]` = `EDGEFACTOR` | `EDGE_SIZE = SIZE·EDGEFACTOR`; avg vertex degree ≈ `2·EDGEFACTOR` | required | ✓ same path as `SCALE` |
 | `argv[3]` = `R` | worker-grid rows; `SIZE` must be divisible by `R` | required | ✓ same path; also fixes `W = R·C` |
 | `argv[4]` = `C` | worker-grid columns; `SIZE` must be divisible by `C` and by `R·C` | required | ✓ same path |
-| `ROOT` (BFS root vertex) | fixed | `4` | ✗ compile-time constant (`graph500.c:1907`), never read from argv |
-| `NUMBER_OF_SEARCH` | # of BFS searches (Kernel‑2 repeats) | `1` | ✗ hardcoded (`graph500.c:1830`); the `NO_MAP` build additionally `assert(0)`s if a second search is ever chained — the multi-search wiring (`startMap`, per-search finish slots) is unreachable dead code in this build |
-| `SEED` (graph PRNG seed) | fixed | `123456789` | ✗ hardcoded (`graph500.c:1978`); a pure function of (seed, edge index), so the graph is identical at every node count and in every runtime |
+| `ROOT` (BFS root vertex) | fixed | `4` | ✗ compile-time constant (`graph500.c:1912`), never read from argv |
+| `NUMBER_OF_SEARCH` | # of BFS searches (Kernel‑2 repeats) | `1` | ✗ hardcoded (`graph500.c:1835`); the `NO_MAP` build additionally `assert(0)`s if a second search is ever chained — the multi-search wiring (`startMap`, per-search finish slots) is unreachable dead code in this build |
+| `SEED` (graph PRNG seed) | fixed | `123456789` | ✗ hardcoded (`graph500.c:1983`); a pure function of (seed, edge index), so the graph is identical at every node count and in every runtime |
 | `MAX_LEVEL` (BFS depth capacity) | fixed | `10` | ✗ compile-time (`graph500.c:118`); a **capacity, not a tuning knob** — it sizes the pre-created lattice (`3·MAX_LEVEL·W` EDTs, and the `constguidDBK` that indexes them), and a graph whose BFS reaches it aborts with a message naming the cap (`checkLevel`, `graph500.c:510-516`) |
 | `NO_MAP`, `NO_FILES` | addressing scheme / graph-source switches | both defined | build-fixed by `benchmarks/apps/ocr_apps.cmake`'s `graph500` target, not app CLI |
 | `NO_AFFINITIES` | disables the app's own EDT affinity hints | not defined (hints ON) | compile-time only |
@@ -47,12 +47,12 @@ implemented) are further compile-time knobs with no CLI surface.
 **Argument validation is loud and survives a Release build.** The four
 arguments are converted with `strtol` and rejected unless the whole string is a
 positive decimal integer that the conversion could represent
-(`parseCountArg`, `graph500.c:1786-1802`); `mainEdt` then rejects `SCALE > 62`
-(`graph500.c:1815-1828`), a grid that does not divide the vertex count
-(`SIZE%R`, `SIZE%C`, `SIZE%(R·C)`, `graph500.c:1836-1844`), arguments whose
+(`parseCountArg`, `graph500.c:1791-1807`); `mainEdt` then rejects `SCALE > 62`
+(`graph500.c:1820-1833`), a grid that does not divide the vertex count
+(`SIZE%R`, `SIZE%C`, `SIZE%(R·C)`, `graph500.c:1841-1849`), arguments whose
 derived extents `SIZE·EDGEFACTOR` or `(SIZE/C)·(SIZE/R)` would wrap 64 bits
-(`graph500.c:1845-1854`), and a root outside the graph
-(`graph500.c:1907-1912`) — each with a message naming the offending value and
+(`graph500.c:1850-1859`), and a root outside the graph
+(`graph500.c:1912-1917`) — each with a message naming the offending value and
 `ocrAbort`. The divisibility and root checks were plain `assert`s, which
 `-DNDEBUG` removes from the measurement build: an illegal `(R, C)` then made
 the vertex-to-worker map many-to-one and silently lost vertices instead of
@@ -63,7 +63,7 @@ stopping.
 Let `W = R·C` (logical worker count) and `K` = the number of BFS levels for
 which `distribute`/`search`/`apply` actually run — equivalently, the number
 of `<level>: <SUM_COUNT>` lines `applyEdt` prints on worker 0
-(`graph500.c:1411`), counted from level 0 through the first level whose
+(`graph500.c:1416`), counted from level 0 through the first level whose
 `SUM_COUNT` prints `0` (the level-synchronized grid still runs a full
 distribute→search→apply pass for that terminal, all-empty level before the
 grid stops; `1 ≤ K ≤ MAX_LEVEL=10`, data-dependent — see below).
@@ -84,11 +84,11 @@ which it unconditionally is (`graph500.c:59`) — so every "local array" the
 source declares through it is actually a datablock, invisible to a reading
 that only greps for literal `ocrDbCreate` call sites. Eight of its ten use
 sites are live in this build: `mainEdt`'s and `startEdt`'s
-`affinities`/`hints` (`graph500.c:1961,1963` and `964,966` — one-time each,
+`affinities`/`hints` (`graph500.c:1966,1968` and `965,967` — one-time each,
 sized to the rank/PD count, not scaled by `W`/`K`), and, on the per-level
 hot path, `searchEdt`'s `destVertices`/`counts`/`positions`
-(`graph500.c:1156,1158,1159`, unconditional — one triple per `searchEdt`
-call) and `applyEdt`'s `toRunBool` (`graph500.c:1301`, inside the
+(`graph500.c:1158,1160,1161`, unconditional — one triple per `searchEdt`
+call) and `applyEdt`'s `toRunBool` (`graph500.c:1306`, inside the
 `TORUN_DESTROY_MODE` branch — one per `applyEdt` call). `TORUN_DESTROY_MODE`
 is `#define`d unconditionally in the source (`graph500.c:206`) — not gated
 by the harness's `EXTRA_DEFINES NO_FILES NO_MAP` — so that branch, and its
@@ -97,7 +97,7 @@ per-invocation `toRunDBK` create, is the one that actually runs;
 1-`vertexType`) `TORUN_DESTROY_MODE`-sized placeholders, not the
 `vSIZE`-sized buffers the other branch would size them as. The remaining two
 sites (`applyEdt`'s non-`TORUN_DESTROY_MODE` `toRunBool` at
-`graph500.c:1368`; `finishEdt`'s `visited` at `graph500.c:1562`, gated on
+`graph500.c:1373`; `finishEdt`'s `visited` at `graph500.c:1568`, gated on
 `VALIDATION_MODE>=2`) are dead in this build.
 
 **EDT and Event totals are exact, closed-form and data-independent** — the
@@ -141,13 +141,15 @@ points, constants and `K`/`R` coefficients included, not just the deltas
 
 Setup (`mainEdt`, rank 0) creates 3 globally-shared DBs — `paramDBK` (56 B,
 the 4 CLI args + derived sizes + `SEED`), `constguidDBK` (template/GUID
-lookup table), `timeDBK` (kernel-1 timer) — all `DB_MODE_CONST`
-(RO), read by essentially every EDT the run creates; this is a real
+lookup table), `timeDBK` (kernel-1 timer). `paramDBK` and `constguidDBK`
+are acquired `DB_MODE_CONST` (RO) by essentially every EDT the run creates
+(`startEdt` alone takes `constguidDBK` `DB_MODE_RW`, to record the stop task,
+and `timeDBK` goes `RW` from `startEdt` to the stop task only); this is a real
 **contention point**, not by write conflict (RO has no exclusive lock) but
 by request volume against a single rank-0 home. Each worker `w`'s `loadEdt`
 builds its own edge-list `arrayDBK` (RO, `DB_MODE_CONST`) and feeds it
 through a per-worker STICKY `dataEVT`; `createEdt` builds a per-worker
-`visitedDBK` (`vSIZE` `vInfo`s) that stays `DB_MODE_EW` (ARTS RW) for the
+`visitedDBK` (`vSIZE` `vInfo`s) that stays `DB_MODE_RW` for the
 worker's *entire* run, threaded serially level-to-level through that
 worker's own `applyEdt` chain — never touched by any other worker, so this
 RW traffic never crosses ranks. The actual cross-worker channel is the BFS

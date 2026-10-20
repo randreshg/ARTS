@@ -271,9 +271,11 @@ And **no datablock has a reader and a writer in the same step**: the
 generation a step reads was written by the previous step and is next written
 by the step after, and a halo run is written by the step's first phase and
 read only by its second, so every access to a block is event-ordered against
-every write of it — DB-WRF-valid at DB granularity, not merely OCR-legal
-(the row is outside DB-WRF overall on the hand-off pattern the catalog
-records, not on this steady-state cell traffic).  A halo block is likewise
+every write of it — DB-WRF-valid at DB granularity, not merely OCR-legal.
+The control chain's hand-offs are ordered too: every task that creates or
+holds a block releases it before anything it wires that block into can
+acquire it, so no pair of write acquisitions anywhere in the row is
+unordered.  A halo block is likewise
 written only by its owner, so it adds no
 ownership movement of its own: it moves as a reader copy and nothing else.
 

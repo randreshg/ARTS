@@ -5,7 +5,7 @@ edge stream partitioned instead of replayed per worker, the adjacency owned
 by the vertex it belongs to, a level's exchange reduced to one block per
 ordered node pair carrying only the frontier, and the pre-created task
 lattice replaced by a per-node persistent chain.*
-Source: `third_party/ocr-apps/apps/graph500/dist/graph500_dist.c` (~1.1k
+Source: `third_party/ocr-apps/apps/graph500/dist/graph500_dist.c` (~1.45k
 lines, one file).
 
 ## Overview
@@ -86,11 +86,11 @@ per producer.
 |--------|-------|-------|
 | EDT templates | 11, each created and destroyed once, plus one per (node, level) for the packing task, whose dependence count is the level's own | |
 | generator EDTs | **`W`** | one contiguous slice of the stream each |
-| routing EDTs | **`P²·nroute`** | one per (source node, group, destination node) |
+| routing EDTs | **`P²·nroute`** | one per (source node, group, destination node); each one's completion is a dependence of its own node's construction hub |
 | adjacency EDTs | **`P·nbuild`** | each builds the adjacency and visit state of a contiguous worker run |
 | setup EDTs | `4P + 4` | per node: init, channel init, construction hub, construction join; plus main, start, finish and the shutdown task |
 | search EDTs | **`Σ_L active(L) + (K+1)·P + K·P`** | per level: one task per worker *addressed by the level* (never more, usually far fewer), one hub and one packing task per node.  `active(L) ≤ min(W, candidates)` |
-| events | **`P²` channels + `P(P−1)` labeled sticky** | one channel per ordered node pair carries every generation of the run — the `nroute` of construction, then one per level; the sticky events are the publication of the channels' GUIDs |
+| events | **`P²` channels + `P(P−1)` labeled sticky + `P²·nroute` routing completions** | one channel per ordered node pair carries every generation of the run — the `nroute` of construction, then one per level; the sticky events are the publication of the channels' GUIDs, one per ordered pair of distinct nodes, each created once by `mainEdt`; a routing task's output event is a dependence of its node's construction hub |
 | DBs | `W` slices + `P²·nroute` routed blocks + `P·nbuild` reports + `2W` (adjacency, visit state) + `3P` per-node setup + `Σ_L (active(L) + P)` + `P` results | |
 
 At the local trend instance (`18 16 32 32` → `SIZE = 262,144`,
@@ -101,7 +101,7 @@ At the local trend instance (`18 16 32 32` → `SIZE = 262,144`,
 |---|---|---|
 | stream steps in construction | `W·2·EDGE_SIZE` = **8.59 × 10⁹** | `2·EDGE_SIZE` = **8.39 × 10⁶** (1,024×) |
 | EDTs | 32,774 | **7,991** |
-| events | 1,038 | **120** (`P²` channels + `P(P−1)` labeled) |
+| events | 1,038 | **120** (`P²` channels + `P(P−1)` labeled), plus the 1,024 routing completions |
 | DBs created | 271,368 | **10,431** (peak live 4,106) |
 | datablock-carrying transfers, whole search | `K·W·(R+C)` = **458,752** | `K·P²` = **448** (1,024×) |
 | construction transfers | 0 (every worker draws everything) | `P²·nroute` = 1,024 blocks, 134 MB in all |
@@ -110,7 +110,8 @@ At the local trend instance (`18 16 32 32` → `SIZE = 262,144`,
 (EDT, event and DB counts are exact object counts of this source driven
 through a single-threaded emulation of the OCR surface it uses; they are
 independent of the schedule.  At one node the same instance is 6,066 EDTs and
-8,107 DBs.)
+8,107 DBs.  The routing tasks' output events were added after that
+emulation; their `P²·nroute` count is derived, not emulated.)
 
 The five thin levels of this instance (frontier 1, 31, 984, 6,257, 0 — 2.8 %
 of the work) cost the base row 71 % of its exchange and cost this row 2.8 %
@@ -191,12 +192,14 @@ there is no such block at all.
 ## Flow
 
 `mainEdt` (node 0) validates argv, takes the construction clock, creates the
-reporting chain (`start`, `finish`, shutdown) pinned to node 0, and forks one
-`rank init` per node.  A node's init builds its chain state, its jump table,
+reporting chain (`start`, `finish`, shutdown) pinned to node 0, creates the
+`P(P−1)` labeled sticky events the nodes will publish their channels through,
+once each, and forks one `rank init` per node.  A node's init builds its chain state, its jump table,
 its channels, its construction hub, its `P·nroute` routing tasks and its `nw`
 generators, then hands the chain state to the channel-init task, which
 records the incoming channels and registers the construction hub on them.
-The construction hub reclaims the slices, issues the adjacency builders and
+The construction hub, which also waits for every routing task of its node to
+complete, reclaims the slices, issues the adjacency builders and
 the construction join; the join records the built blocks in the chain state
 and reports the node ready.  `start` prints `[kernel1 time]`, restarts the
 clock, prints `START Kernel 2 (id=0)` and creates each node's first hub.

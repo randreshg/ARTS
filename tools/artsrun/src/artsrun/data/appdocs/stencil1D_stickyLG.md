@@ -1,9 +1,9 @@
 # stencil1D_stickyLG
 
 *1-D three-point stencil, cloning style, halo exchange over labeled
-double-buffered STICKY events, with parallelized initialization.*
+per-timestep STICKY events, with parallelized initialization.*
 Source: `third_party/ocr-apps/apps/Stencil1D/refactored/ocr/intel-david/stencil1DstickyLG.c`
-(~565 lines; author Bryan Pawlowski, Intel 2015).
+(~595 lines; author Bryan Pawlowski, Intel 2015).
 
 ## Overview
 
@@ -14,21 +14,27 @@ decomposition, but a from-scratch reimplementation (different author, README
 calls it "sticky with labeled GUIDs") with two structural differences from
 `stencil1D_sticky`: **initialization is parallel** (`N` independent `init`
 EDTs instead of one serial `mainEdt` loop creating all DBs up front), and
-the halo handoff uses **labeled GUIDs with double buffering**. Every rank
-independently computes, via `ocrGuidFromIndex` over shared GUID ranges, the
-*same* two fixed addresses per neighbor direction (one per `toggle`
-generation, 0 and 1) — so a sender and its receiver agree on an event's
-identity without ever exchanging it, and only the alternating toggle needs
-distinguishing across iterations. Events are still created fresh every
-iteration (the address, not the object, is what's reused), and the prior
-generation's receive event is explicitly `ocrEventDestroy`'d two iterations
-later once superseded — mechanically closer to `stencil1D_sticky`'s
-create/destroy churn than to a genuinely reused object. Termination differs
+the halo handoff uses **labeled GUIDs**. Every rank computes, via
+`ocrGuidFromIndex` over four shared GUID ranges, the label of an exchange
+from its timestep, direction and boundary — so a sender and its receiver
+agree on an event's identity without ever exchanging it. Every timestep
+exchanges over labels of its own: the alternating `toggle` (0 or 1) picks
+the pair of ranges and each pair of timesteps takes the next block of `N-1`
+labels in them, so no label is ever reused. Each label is created once, by
+the receiving chain's `stencilEdt` one timestep before the send (by
+`realmainEdt` for the first timestep's sends), satisfied once by the sender,
+and destroyed by the receiving `stencilEdt` when it runs — mechanically the
+same create/destroy churn as `stencil1D_sticky`. Termination differs
 from the lineage-A trio too: a `wrapupEdt` with `N` direct DB dependencies
 (one per chain's final data block) does the printing, rather than the last
 chain shutting down inline — the README notes this `N`-not-`N+1` dependency
 count is what distinguishes every parallel-init variant from the ones with
 a `realMain`-as-finish-EDT join.
+
+The timestep-0 initialisation sets `a[m-1] = 0.0` on every node but the last,
+as the lineage-A variants do; the published file left that point
+uninitialised there, and the catalog's scalar (`9 49`, node 9's last point)
+depends on it.
 
 ## Parameters
 
@@ -41,8 +47,7 @@ a `realMain`-as-finish-EDT join.
 Unlike the lineage-A trio, this file `#include`s `stencil1D.h` and its
 defaults **are** that header's `N`/`M`/`T` `#define`s (10/50/10000), used
 when `argc != 4`. No other runtime knobs; no `nrank==0` style guard exists
-in this file (unvalidated zero/negative inputs are not rejected — see
-Uncertain).
+in this file (unvalidated zero/negative inputs are not rejected).
 
 ## Structure
 
@@ -51,59 +56,63 @@ Let `N=numNodes`, `M=chunkSize`, `T=timesteps`.
 | object | count | size |
 |--------|-------|------|
 | EDTs total | `N·T + 3N + 3` — `mainEdt`, `realmainEdt`, `N` `init` EDTs, `N` `stencilInitEdt` EDTs, `N·(T+1)` `stencilEdt` chain generations, 1 `wrapupEdt` | — |
-| EDT templates | `2N+2` — `initTemplate`/`wrapupTemplate` created once centrally, but `stencilInitTemplate` (in `initEdt`) and `stencilTML` (in `stencilInitEdt`) are each (re-)created once *per chain* (`N` times) for what is the same function every time, rather than created once and shared (see Findings in notes) | — |
-| DBs | `4N+1` — 1 shared block + `N` private blocks + `N` data blocks (double-buffered, `2M` doubles) + `2N` halo buffer blocks | shared ≈ 64 B (`ocrGuid_t wrapup` + 3×`u64` + `ranges[4]`); private ≈ 128 B (double-buffered event-GUID arrays: `left/right/leftrcv/rightrcv[2]` = 8×`ocrGuid_t`, plus scalars); data = `2M×8` B; buffer = 16 B |
-| Events | `4(N-1)·T` labeled STICKY event creates — 2 receive + 2 send per internal boundary per iteration, at one of 2 fixed double-buffered addresses per role | — |
+| EDT templates | `2N+2` — `initTemplate`/`wrapupTemplate` created once centrally, but `stencilInitTemplate` (in `initEdt`) and `stencilTML` (in `stencilInitEdt`) are each (re-)created once *per chain* (`N` times) for what is the same function every time, rather than created once and shared | — |
+| DBs | `4N+1` — 1 shared block + `N` private blocks + `N` data blocks (double-buffered, `2M` doubles) + `2N` halo buffer blocks | shared ≈ 64 B (`ocrGuid_t wrapup` + 3×`u64` + `ranges[4]`); private ≈ 160 B (the toggled event-GUID slots `left/right/leftrcv/rightrcv[2]` = 8×`ocrGuid_t`, a copy of `ranges[4]`, plus scalars); data = `2M×8` B; buffer = 8 B (`sizeof(double)`) |
+| Events | `2(N-1)·T` labeled STICKY event creates — one per direction per internal boundary per timestep, each a label of its own: `2(N-1)` by `realmainEdt` for the first timestep, the rest one timestep ahead by the receiving `stencilEdt`; the four ranges hold `(N-1)·⌈T/2⌉` labels each | — |
 
-`stencilInitEdt` (`stencil1DstickyLG.c:264-274`) creates `sendleftDb` and
+`stencilInitEdt` (`stencil1DstickyLG.c:286-295`) creates `sendleftDb` and
 `sendrightDb` **unconditionally** on every one of its `N` invocations —
 unlike the paired `ocrGuidFromIndex` calls just below, which *are*
 boundary-guarded (`private->left[...]`/`private->rightrcv[...]` set to
 `NULL_GUID` at rank 0/`N-1`). So rank 0's `sendleftDb` and rank `N-1`'s
-`sendrightDb` are created but never wired to anything (their matching
-event GUID stays `NULL_GUID`) — 2 orphaned DBs beyond the `2(N-1)` a
+`sendrightDb` are created and handed to the chain head, which never sends
+them on (their matching event GUID stays `NULL_GUID`) — 2 orphaned DBs beyond the `2(N-1)` a
 naive "one buffer pair per internal boundary" count would predict; hence
 `2N`, not `2(N-1)`, halo buffers, and `4N+1` DBs total, not `4N-1`.
 
 Worked numbers at the calibrated args (`48 50 340000`): EDTs ≈
-`48×340000 + 3×48 + 3 = 16,320,147`; DBs = `4×48+1 = 193`, ≈45 KB payload;
-Events ≈ `4×47×340000 = 63,920,000` — roughly **double** `stencil1D_sticky`'s
-event churn, because this variant creates 4 distinct event objects per
-boundary per iteration (its own receive *and* send pair, per direction)
-where sticky's single shared per-direction event object suffices. The old
-generation's receive event is destroyed two iterations later (double
-buffering means a create at address A must wait for the *previous*
-occupant of A to be freed), so the live event count stays `O(N)` despite
-the larger churn.
+`48×340000 + 3×48 + 3 = 16,320,147`; DBs = `4×48+1 = 193`, ≈47 KB payload;
+Events = `2×47×340000 = 31,960,000` — the same churn as `stencil1D_sticky`'s,
+one event per direction per boundary per iteration. A label is created one
+timestep ahead and destroyed by the task it feeds, so the live event count
+stays `O(N)`.
 
 Counter cross-check: verified (1 node, `4 4 5` vs `6 4 8`): NUM_EDT_CREATE
 36 → 70, NUM_DB_CREATE 18 → 26, NUM_EVENT_CREATE 60 → 160 — exactly
 `N·T+3N+3` / `4N+1` / `4(N-1)T` (app values 35/69, 17/25, 60/160) plus the
 runtime's constant +1 EDT/+1 DB/+0 EVT baseline. The original `4N-1` DB
 formula was short by exactly 2 (predicted 16/24 instead of measured
-18/26) — the two orphaned boundary buffer DBs above account for it.
+18/26) — the two orphaned boundary buffer DBs above account for it. The
+events were measured while both ends created each label every timestep
+(`4(N-1)T`); with one create per label `2(N-1)T` predicts 30 → 80, not
+re-measured.
 
 ## Wiring
 
-- `realmainEdt` creates 2 label-index ranges of size `N` each
-  (`ranges[0]`, `ranges[1]`), the shared `wrapupEdt` (depc = `N`), and `N`
-  `init` EDTs, each RW-dependent on the shared block.
-- `init` creates a private DB, then launches `stencilInitEdt` with 4 slots:
-  shared (RO), private (RW), left buffer (RW, absent at rank 0), right
-  buffer (RW, absent at rank `N-1`).
-- `stencilInitEdt` computes, via `ocrGuidFromIndex`, all 8 double-buffered
-  labeled addresses this rank will ever use (`left[0..1]`, `right[0..1]`,
-  `leftrcv[0..1]`, `rightrcv[0..1]`) and creates the first chain-head
-  `stencilEdt` wired to `leftrcv[0]`/`rightrcv[0]`.
-- Each `stencilEdt` generation creates its immediate successor (1-ahead,
-  not the 2-ahead grandchild trick of `guid`/`once`), creates the
-  receive-event pair for the *next* generation at the toggle-flipped
-  address, wires them as the successor's dependences, then creates the
-  send-event pair at the same fixed addresses and satisfies them with the
-  outgoing halo buffer — dependence-add always precedes satisfy because
-  they target different event objects (receive vs. send), so no
+- `realmainEdt` reserves 4 label ranges of `(N-1)·⌈T/2⌉` each
+  (`ranges[0..3]`), creates the first timestep's `2(N-1)` labels, then the
+  shared `wrapupEdt` (depc = `N`) and `N` `init` EDTs, each RW-dependent on
+  the shared block.
+- `init` creates a private DB, then launches `stencilInitEdt` with 2 slots:
+  shared (RW) and private (RW).
+- `stencilInitEdt` creates the data block and the two halo buffers, copies
+  the four ranges into the private block, fills the 8 toggled event-GUID
+  slots (`left[0..1]`, `right[0..1]`, `leftrcv[0..1]`, `rightrcv[0..1]`)
+  from the first label block — every `stencilEdt` overwrites the interior
+  ones with its own timestep's labels before using them, so only the
+  `NULL_GUID`s of the absent neighbours at rank 0 and rank `N-1` are read as
+  set — and creates the first chain-head `stencilEdt` wired to the data
+  block, the private block and the two buffers.
+- Each `stencilEdt` generation after the chain head first destroys the
+  receive labels it was wired to. A generation before the last then creates
+  its immediate successor (1-ahead, not the 2-ahead grandchild trick of
+  `guid`/`once`), wires it to this timestep's receive labels, creates the
+  next timestep's receive labels (the ones that successor will name), and
+  satisfies this timestep's send labels — its neighbours' receive labels —
+  with the outgoing halo buffers (one label of each kind per neighbour).
+  Every label exists before the sender that satisfies it is enabled, so no
   grandchild-ahead pipelining is needed despite the 1-ahead cloning.
-- At the final timestep, the chain instead wires its data DB (RO) directly
+- At the final timestep, the chain instead wires its data DB (RW) directly
   onto `wrapupEdt`'s slot `mynode` — the only join mechanism in this
   variant, no output event involved.
 - Same DB-concurrency shape as lineage A: no DB has more than one
@@ -138,8 +147,9 @@ scattered across all ranks instead of pinned to rank 0.
 ## Sizing
 
 `N`, `M`, `T` play the same roles as in lineage A: `N` caps parallel width,
-`T` drives total churn/wall-time (now roughly double the event churn of
-lineage A for the same `N,T`), `M` only moves data-DB payload. Use `N` ≳
+`T` drives total churn/wall-time (the same event churn as
+`stencil1D_sticky`/`stencil1D_once` for the same `N,T`), `M` only moves
+data-DB payload. Use `N` ≳
 target worker count and size `T` for desired wall time at that width. The
 calibrated `48 50 340000` differs from this file's own built-in default
 (`10 50 10000`) by both `N` and `T` — a deliberate strong-scaling

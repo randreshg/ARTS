@@ -68,7 +68,8 @@ Identical to `hpcg_intel` — same parser, same validation, same defaults, same
 
 The base row's disclosed conformance adaptations are inherited verbatim
 (loud argument validation, `bomb()` exiting, the reduction library's accumulator
-free, the per-iteration convergence lines behind `debug > 0`). The
+free and releases, one creator per halo and reduction label, the per-iteration
+convergence lines behind `debug > 0`). The
 `OCR_APP_OPTIMIZED_PLACEMENT` halo-home layer is **removed**, not disabled: it
 targeted a per-exchange block that no longer exists.
 
@@ -125,8 +126,9 @@ requirement is 21.2 µs — inside the round trip rather than 5× beyond it.
 The tile spine is the base row's and unchanged: `hpcgEdt` → `mgEdt` →
 `haloExchangeEdt` → `unpackEdt` → `smoothEdt`/`spmvEdt`, each hop a fresh
 `OCR_EVENT_ONCE_T` carrying the private block RW, exactly one holder at a time.
-The neighbour rendezvous is unchanged too: `initEdt` reserves `26N` labeled
-STICKY GUIDs, ships a CHANNEL event GUID through the sticky at
+The neighbour rendezvous is unchanged too: `mainEdt` reserves `26N` labeled
+STICKY GUIDs and creates, once, the `L` that have a neighbour; `initEdt` ships
+a CHANNEL event GUID through the sticky at
 `26·myrank+ind`, collects the mirror at `26·neighbour + (25−ind)`, and
 `channelInitEdt` installs the arrivals as `haloRecvEVT[]`.
 

@@ -137,35 +137,6 @@ def test_an_unknown_name_from_a_stale_label_is_ignored():
     assert drive(check) is False
 
 
-def test_an_unsupported_row_shows_its_boxes_but_takes_no_selection():
-    """The row stays visible — the document and the reason are the point —
-    but no experiment, click, or all/none sweep can turn it on."""
-    async def check(app, pilot):
-        bench = app.query_one("#exp")
-        from artsrun.tui.widgets import Toggle
-
-        dead = [t for t in bench.query(".app-toggle").results(Toggle)
-                if t.disabled]
-        names = {t.ident.partition(":")[0] for t in dead}
-        selected_before = set(bench.selected())
-        await pilot.press("a")
-        await pilot.press("a")
-        selected_after = set(bench.selected())
-        return names, selected_before | selected_after
-
-    names, ever_selected = drive(check)
-    assert "CoMD_intel_chandra" in names and "CoMD_sdsc2" in names
-    assert not ever_selected & names
-
-    catalog = load_catalog()
-    for name in ("CoMD_intel_chandra", "CoMD_sdsc2"):
-        assert catalog.apps[name].unsupported
-        # No experiment can override an unsupported row.
-        from artsrun import store
-
-        assert not store.default_experiment().is_enabled(catalog.apps[name])
-
-
 def test_clicking_a_roster_name_opens_that_row_s_document():
     async def check(app, pilot):
         await pilot.press("1")

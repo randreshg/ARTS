@@ -31,12 +31,12 @@ refine-then-coarsen sweep. `--num_objects 0` restores a static mesh, and an
 explicit `--num_objects N` with no `--object` gives `N` inert objects — the
 caller's stated intent, and the way to get closed-form counts.
 
-**That path is unvalidated.** No recorded campaign has ever exercised refine,
-coarsen or the parent machinery on this port, because the arguments made them
-unreachable. A single-node smoke at the small argument set must pass before this
-row is committed. If it aborts in `chksum.c` — the multi-level halo exchange not
-conservative to `10^-error_tol` — the fallback is `--num_objects 0` and the
-finding reopens. Raising `--error_tol` is never the answer.
+**That path is exercised.** The catalog's and the paper gate's arguments
+(`--num_refine 1` with the default object) run the refine path and the parent
+machinery, and the catalog pins the weighted scalar at its arguments. An abort
+in `chksum.c` — the multi-level halo exchange not conservative to
+`10^-error_tol` — is a finding to chase; raising `--error_tol` is never the
+answer.
 
 Three stdout scalars, none of them per round:
 
@@ -63,7 +63,8 @@ Three stdout scalars, none of them per round:
   the same tree and is never compared against the golden. Reduction order is the
   block tree — cell loop order, parent slot order, root dependence order — which
   is identical at every node count and every runtime, so the value is bitwise
-  reproducible across the twelve entries.
+  reproducible across the ARTS entries; xsocr's build rounds the last digit
+  differently, inside the row's 1e-08 tolerance.
 
 A configuration that aggregates no checksum round at all (`--checksum_freq 0`,
 or too few timesteps to reach one) prints **no** result line, so it fails the
@@ -80,7 +81,7 @@ arithmetic: a single interior block issues six EDT clones per stage.
 
 Parsed twice — once in `rootLaunch_Func` (`root.c:100`, only `--num_objects` and
 the `--np*` product, to size two datablocks) and once in full in `rootInit_Func`
-(`root.c:216`). Everything lands in the `Control_t` datablock, which is copied
+(`root.c:219`). Everything lands in the `Control_t` datablock, which is copied
 per block and reaches every rank as a dependence — so all of it is
 multinode-safe. Every value-taking flag goes through one bounds-checked
 accessor (`argValue`, `root.c:70`): a flag in the last argv position is reported
@@ -95,7 +96,7 @@ assertion idiom is a deliberate SIGSEGV, not a clean exit.
 | `--num_refine` | max refinement levels (0–15); bounded further by the halo range (see Sizing) | 5 | ✓ |
 | `--refine_freq` | timesteps between refinement rounds | 5 | ✓ |
 | `--block_change` | levels a block may change per round; 0 → set to `num_refine` | 0 | ✓ |
-| `--uniform_refine` | refine everything once, then never again | 0 (upstream README says 1) | ⚠ **inert in this port**: parsed and validated, but every read (`refine.c:1884/2005/2090`) is inside the dead `#if 0` at `refine.c:1847-2672`; the live path decides from `check_objects` alone (`refine.c:170`). Not a route to more width |
+| `--uniform_refine` | refine everything once, then never again | 0 (upstream README says 1) | ⚠ **inert in this port**: parsed and validated, but every read (`refine.c:1933/2054/2139`) is inside the dead `#if 0` at `refine.c:1896-2721`; the live path decides from `check_objects` alone (`refine.c:308`). Not a route to more width |
 | `--num_vars` | variables per cell | 40 | ✓ |
 | `--comm_vars` | variables exchanged per comm batch; 0 or > `num_vars` → `num_vars` | 0 | ✓ |
 | `--num_tsteps` | timesteps | 20 | ✓ |
@@ -142,13 +143,13 @@ population is data-dependent and time-varying (see Sizing).
 | `block` DB | one per live block, any level | `8 + C·V·8` B |
 | `meta` (`BlockMeta_t`) DB | one per live block | ~1.8 kB (1088 B continuation stack + event tables) |
 | `control` / `allObjects` DB | one each per live block, private copies | ~208 B / `40 + 176·num_objects` B |
-| `whoAmI` DB | **one per EDT created** (`gasket__ocrEdtCreate`, `util.c:205`) | 8 B |
-| `depv` copy DB | one per `rootInit`/`blockLaunch`/`blockInit`, and one per `rootClone` **firing** (`root.c:615`) | `depc·16` B |
+| `whoAmI` DB | **one per EDT created** (`gasket__ocrEdtCreate`, `util.c:288`) | 8 B |
+| `depv` copy DB | one per `rootInit`/`blockLaunch`/`blockInit`, and one per `rootClone` **firing** (`root.c:633`) | `depc·16` B |
 | face DB | `f` per block per stage | `40 + comm_vars·(two block dims)·8` B |
 | `Checksum_t` DB | `B·(2 + KT)` — two per block before the loop, then one per block per round | `48 + V·8` B (the header, the weighted reduction, and `V` sums) |
 | `scratchChecksum` DB | `1 + KT` — one per checksum round after the run's first | `48 + V·8` B |
-| sticky events | 1 per block per service request; 36 labeled slots per block per level for halos | — |
-| labeled GUID range | `B·(8^(num_refine+1)-1)/7 · 36` reserved once (`root.c`) | key space only, and **bounded**: see Sizing |
+| sticky events | 1 per block per service request; 48 labeled slots per block (at every level) per refinement round for halos | — |
+| labeled GUID range | `B·(8^(num_refine+1)-1)/7 · 48 · (num_tsteps/refine_freq + 1)` reserved once (`root.c`; one round when `num_refine` is 0 or `--uniform_refine` is set) | key space only, and **bounded**: see Sizing |
 
 Two habits set the recurring cost. `gasket__ocrEdtCreate` gives every EDT an
 8-byte `whoAmI` block, so `NUM_DB_CREATE` carries the whole EDT count; and
@@ -164,36 +165,44 @@ Events come from three sources. Explicit `ocrEventCreate`: one
 `conveyServiceRequestToParent` per base block at startup, one fresh one per
 checksum/plot/unrefine service a block requests, one fresh outgoing halo event
 per face sent, 16 per refine fork (8 `conveyEighthBlockToJoin` + 8 new
-service-request events), and the labeled halo events materialized on first use
-through `ocrGuidFromIndex` + `GUID_PROP_IS_LABELED|GUID_PROP_CHECK` — each
-directed channel is created by both endpoints; the second create parks at the
-label's home behind the first until the receiver destroys the label, then
-installs as an unused generation, and counts as a create either way. A label
-re-armed after a refine or unrefine is created again by both ends, so each
-re-arm leaves one more parked create behind it; results are unchanged (both
-creators pass the same arguments). Output events: **none** — every
-`gasket__ocrEdtCreate` passes `NULL` for `outputEvent`. Finish EDTs: **none** —
-every create uses `EDT_PROP_NONE`.
+service-request events), and the labeled halo events. A halo channel's first
+exchange goes through a label, later ones through on-deck events. The root
+creates the initial mesh's labels (two per adjacent base pair); a block that
+refines or joins creates its new blocks' labels in the task that sends its
+disposition, each label once. The receiver destroys a used label; when both
+sides of a face change at once the upper side destroys its own unused labels;
+a label whose channel closes first is destroyed by its sender. A lifecycle
+trace (instrumented build) found every label created once and none live at the
+end: 1,238 created, 1,040 used, 198 destroyed unused by their creators at
+`--npx 8 --npy 4 --npz 4 --num_refine 1 --num_tsteps 10`; 2,010 created, 1,210
+used, 752 destroyed by their creators and 48 by their senders at `--nx 4 --ny 4
+--nz 4 --npx 4 --npy 2 --npz 2 --num_refine 2 --num_tsteps 20 --refine_freq 2`.
+Output events: **none** — every `gasket__ocrEdtCreate` passes `NULL` for
+`outputEvent`. Finish EDTs: **none** — every create uses `EDT_PROP_NONE`.
 
 With `--num_objects 0` (static mesh) every counter is a closed form:
 
     NUM_EDT_CREATE   = 5 + 6B + T·(B·(6S + K) + 2K)
     NUM_DB_CREATE    = NUM_EDT_CREATE + 10 + 9B + T·(B·K + 2E·S + 3K)
-    NUM_EVENT_CREATE = 3B + 4E + T·(B·K + 2E·S)
+    NUM_EVENT_CREATE = 3B + 2E + T·(B·K + 2E·S)
 
 Counter cross-check: measured at 1 node with `--nx 4 --ny 4 --nz 4 --npx 2
 --npy 2 --npz 2 --num_vars 4 --stages_per_ts 2 --checksum_freq 1 --num_refine 0
---num_objects 0` (`B = 8`, `S = 2`, `K = 2`, `E = 12`, `f = 3`), the three
-formulas above give 169/321/136 at `T = 1` and 285/507/200 at `T = 2`; the
-runtime reports 171/322/136 and 287/508/200, which is exact once the shim's own
-bootstrap (1 `main_edt` + 1 trampoline EDT and 1 argv datablock) is subtracted.
-The per-timestep deltas 116 EDT / 186 DB / 64 event match term for term. (That
-cross-check predates the refinement default and was taken with objects off,
-which is the configuration the closed form describes.)
+--num_objects 0` (`B = 8`, `S = 2`, `K = 2`, `E = 12`, `f = 3`), the
+formulas of that program gave 169/321/136 at `T = 1` and 285/507/200 at
+`T = 2`; the runtime reported 171/322/136 and 287/508/200, which was exact once
+the shim's own bootstrap (1 `main_edt` + 1 trampoline EDT and 1 argv datablock)
+is subtracted. The per-timestep deltas 116 EDT / 186 DB / 64 event match term
+for term. (That cross-check predates the refinement default and was taken with
+objects off, which is the configuration the closed form describes.) It also
+predates the single creation of the halo labels: both ends then created each
+directed channel's label, `4E` events where the root now creates `2E`, so the
+event formula above gives 112 at `T = 1` and 176 at `T = 2`; not re-measured.
 
 With refinement live the same terms hold per *live* block, plus one
-`parentInit`/`parentClone` family and 16 events per refine fork; the population
-itself is the thing that is not closed-form.
+`parentInit`/`parentClone` family and 16 events per refine fork, and the labels
+of the channels each refine or join opens; the population itself is the thing
+that is not closed-form.
 
 ## Wiring
 
@@ -213,11 +222,13 @@ that the root plays for base blocks. Unrefinement joins through the eight
 merged block.
 
 Halo exchange never goes through a parent. Each face is a fresh `Face_t`
-datablock satisfied into a **labeled sticky event** whose index encodes
-(refinement level, linearized block position, one of 36 direction/quarter slots),
-so a sender computes its neighbour's inbox GUID arithmetically without ever
-learning the neighbour's identity. A face DB has exactly one producer and one
-consumer and is destroyed after unpacking — no sharing.
+datablock satisfied into a sticky event: a channel's first face into a
+**labeled sticky event** whose index encodes (refinement round, refinement
+level, linearized block position, one of 24 direction/quarter slots, inbound or
+outbound), every later one into the on-deck event the previous face carried, so
+a block computes its channel's labels arithmetically from the peer's position
+without ever learning the peer's identity. A face DB has exactly one producer
+and one consumer and is destroyed after unpacking — no sharing.
 
 Access modes: `block`, `meta`, `allObjects`, `control`(root's copy),
 `scratchChecksum` are RW and single-owner; a *predecessor* block/control/meta
@@ -262,8 +273,8 @@ starts) because each is a suspension point, so per-block latency is
 every checksum round, an all-blocks → root join walked on one EDT and a fresh
 root clone; (b) every refine round, a parent-mediated neighbour-consensus
 protocol (`refine.c` alone has 11 suspension points) that must converge before
-any block proceeds; (c) `rootInit`'s single-EDT loop creating all `B` block
-launchers.
+any block proceeds; (c) `rootInit`'s single-EDT loops creating the initial
+mesh's `2E` halo labels and all `B` block launchers.
 
 ## Placement (base)
 
@@ -371,27 +382,32 @@ Scaling numbers: see the anchor at the end of Sizing; the catalog runs a
   `int` per dependence slot. Do not rely on refinement to reach a width floor:
   the multiplier is data-dependent. `24 × 12 × 12 = 3456` divides exactly by
   every policy-domain grid the hinted map produces over 1..32 ranks.
-- **`--num_refine` is bounded at both ends: `1 ≤ R ≤ 4` at 3456 blocks.**
-  At the bottom, `R = 0` makes refinement inert again — `check_objects`
-  downgrades a `REFINE_BLK` decision to `LEAVE_BLK_AT_LVL` as soon as a block is
-  at `num_refine` (`move.c:120`) — so `R = 0` is a static mesh and silently
-  undoes the default object. At the top, the halo GUID reservation is
-  `npx·npy·npz · 36 · (8^(num_refine+1)-1)/7`, and the count is carried in 32
-  bits, where an over-large request truncates instead of failing — two faces
-  would then share an inbox. The program refuses it loudly (`root.c`).
-  Reachable pairs (`floor((2^32-1) / (36·(8^(R+1)-1)/7))`):
+- **`--num_refine` is bounded at both ends: `1 ≤ R ≤ 4` at 3456 blocks and
+  the default 20 timesteps at `refine_freq` 5.** At the bottom, `R = 0` makes
+  refinement inert again — `check_objects` downgrades a `REFINE_BLK` decision to
+  `LEAVE_BLK_AT_LVL` as soon as a block is at `num_refine` (`move.c:120`) — so
+  `R = 0` is a static mesh and silently undoes the default object. At the top,
+  the halo GUID reservation is
+  `npx·npy·npz · 48 · (8^(num_refine+1)-1)/7 · (num_tsteps/refine_freq + 1)`
+  (an inbound and an outbound label per direction and quarter, one set per
+  refinement round; one round when `num_refine` is 0 or `--uniform_refine` is
+  set), and the count is carried in 32 bits, where an over-large request
+  truncates instead of failing — two faces would then share an inbox. The
+  program refuses it loudly (`root.c`). Reachable pairs
+  (`floor((2^32-1) / (48·(8^(R+1)-1)/7 · rounds))`):
 
-  | num_refine | slots per block | max `npx·npy·npz` |
-  |---|---|---|
-  | 0 | 36 | 119,304,647 |
-  | 1 | 324 | 13,256,071 |
-  | 2 | 2,628 | 1,634,310 |
-  | 3 | 21,060 | 203,939 |
-  | 4 | 168,516 | 25,487 |
-  | 5 | 1,348,164 | 3,185 |
+  | num_refine | slots per base block per round | max `npx·npy·npz`, 1 round | 5 rounds |
+  |---|---|---|---|
+  | 0 | 48 | 89,478,485 | — (always 1 round) |
+  | 1 | 432 | 9,942,053 | 1,988,410 |
+  | 2 | 3,504 | 1,225,732 | 245,146 |
+  | 3 | 28,080 | 152,954 | 30,590 |
+  | 4 | 224,688 | 19,115 | 3,823 |
+  | 5 | 1,797,552 | 2,389 | 477 |
 
-  So at 3456 blocks the published default `--num_refine 5` is not reachable
-  (4,659,254,784 slots) and the argument list must name `1 ≤ R ≤ 4`.
+  So at 3456 blocks and the default 20 timesteps at `refine_freq` 5 (5 rounds)
+  the published default `--num_refine 5` is not reachable (31,061,698,560
+  slots) and the argument list must name `1 ≤ R ≤ 4`.
 - **`nx·ny·nz` and `num_vars` set grain**: block payload is
   `8 + (nx+2)(ny+2)(nz+2)·num_vars·8` B and face payload
   `40 + comm_vars·(dim1)(dim2)·8` B. Raising them makes each clone move more

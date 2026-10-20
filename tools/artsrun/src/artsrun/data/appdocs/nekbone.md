@@ -86,7 +86,7 @@ reduction tree). Per-rank DOF count is `P³·E`; `NBN_REAL` is `double`.
 | — derivative matrices `dxm1`, `dxTm1` | 2 per rank | `(P² + 1)·8` B |
 | halo envelopes | `D·(N+3)` | `(ddof+1)·16` B |
 | reduction scalars | `(3R-2)·(1+3N)` | 8 B |
-| events | `5·D + 6R + I - 4` — 3 CHANNEL creates plus 2 labeled-STICKY `ocrEventCreate` *attempts* per directed halo edge (both endpoints create the same rendezvous GUID; the second create parks at the label's home behind the first for the rest of the run and still increments the counter), plus the reduction's per-rank `returnEVT` channel, per-non-root-rank up/down channels, 2 labeled-STICKY attempts per tree edge, and output events on the channel-install EDTs and on `finalEDT` | — |
+| events | `4·D + 5R + I - 3` — 3 CHANNEL creates plus one labeled-STICKY create per directed halo edge (made once by `mainEdt`, in `init_NEKOstatics`), plus the reduction's per-rank `returnEVT` channel, per-non-root-rank up/down channels, one labeled-STICKY create per tree edge (`mainEdt`, through `reductionRangeCreate`), and output events on the channel-install EDTs and on `finalEDT` | — |
 
 A rank's neighbour count is `n(rx,Rx)·n(ry,Ry)·n(rz,Rz) - 1`, with `n = 3`
 interior, `2` on a boundary, `1` on a degenerate axis: 26 for an interior
@@ -98,7 +98,7 @@ Worked, at the catalog's `18 16 12 4 4 4 8 100` (`R=3456, E=64, P=8, N=100`,
 `D=77,872`, `I=346`): 4,209,410 app + 2,191,614 reduction = **6,401,024 EDTs**
 (+1 runtime baseline, which is the catalog's 6,401,025); 9,182,585 app +
 3,120,166 reduction scalars + 8,020,816 halo envelopes ≈ **20.3M DBs**;
-389,360 halo + 21,078 reduction = **410,438 events**. Each solution vector is
+311,488 halo + 17,623 reduction = **329,111 events**. Each solution vector is
 `(512·64+1)·8` = 262,152 B, so the live set is ~1.75 MiB per rank — **6.3 GB of
 vectors across the 3456 ranks**, and 35 GB resident at one node once runtime
 metadata for 6.4M EDTs and 20.3M DBs is counted. A face envelope is 841 DOF
@@ -114,10 +114,11 @@ the task population is the rank lattice's.
 Counter cross-check: verified (1 node, three points — `2 2 2 2 2 2 4 2`,
 `2 2 2 2 2 2 4 4`, `2 2 1 2 2 2 4 2`): NUM_EDT_CREATE (467/755/235) and
 NUM_DB_CREATE (1,307/1,967/563) match the formulas above exactly (+1
-runtime-baseline EDT/DB per run). NUM_EVENT_CREATE needed the labeled-GUID
-correction above — the losing `ocrEventCreate` attempt counts, in both the
-halo handshake and the reduction tree's channel install — to match 325/325/81
-exactly; the old `4D+5R+I-3` predicted only 262/262/66.
+runtime-baseline EDT/DB per run). NUM_EVENT_CREATE was measured while both
+endpoints of every halo edge and of every tree edge still created its label,
+and matched 325/325/81 only once the losing create attempt was counted
+(`5D+6R+I-4`). Each label now has one creator, so the current formula is
+`4D+5R+I-3` and predicts 262/262/66 — not re-measured.
 
 ## Wiring
 
@@ -138,17 +139,19 @@ the halo and the reduction.
   `tailRecursionIFThen` → `tailRecurTransitBEGIN` → `nekCG_solveMi` →
   `beta_start/stop` → `axi_start/stop` → `alpha_start/stop` →
   `rtr_start/stop` → `tailRecurTransitEND` → next `tailRecursionIFThen`.
-- **Halo**: `start_channelExchange` creates, once per directed neighbour edge,
-  one labeled `STICKY` event from a `Rtotal`-wide range (27 ranges, one per
-  lattice direction) and three `CHANNEL` events (`maxGen=2, nbSat=1,
-  nbDeps=1` — single producer and consumer per generation), one each for the
+- **Halo**: each directed neighbour edge has one labeled `STICKY` event from
+  a `Rtotal`-wide range (27 ranges, one per lattice direction), which
+  `mainEdt` creates in `init_NEKOstatics` before the fork and
+  `start_channelExchange` only names; `start_channelExchange` creates three
+  `CHANNEL` events per edge (`maxGen=2, nbSat=1, nbDeps=1` — single producer and consumer per generation), one each for the
   multiplicity, set-f and ax rounds. A round satisfies the neighbour's channel
   with a freshly created payload DB and hooks its own channel onto the `_stop`
   EDT at one of 27 slots (unused directions take a `NULL_GUID` dependence), so
   `nekCG_axi_stop` has 45 slots — 18 fixed, 27 halo.
 - **Reduction**: `reductionLaunch` builds an `ARITY=10` tree with per-rank
-  up/down `CHANNEL` events, installed once through labeled `STICKY` events and
-  reused for every later all-reduce; each rank threads one `reducPrivate` DB,
+  up/down `CHANNEL` events, installed once through labeled `STICKY` events
+  (created by `mainEdt` through `reductionRangeCreate`) and reused for every
+  later all-reduce; each rank threads one `reducPrivate` DB,
   taken `RW`, through the whole chain.
 
 DB concurrency is low by construction: every solution vector is created, read
@@ -161,7 +164,8 @@ matvec result into it.
 ## Flow
 
 `mainEdt` does no heavy work — it parses argv, reserves the labeled-GUID
-ranges and seeds the fork tree, which is `log₂R` deep, doubles in width per
+ranges, creates their `D + R − 1` labeled events and seeds the fork tree,
+which is `log₂R` deep, doubles in width per
 level, costs `~5R` EDTs and is over quickly.
 
 Steady-state parallel width is exactly **`Rtotal`**: a virtual rank is a

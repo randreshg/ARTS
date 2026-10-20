@@ -73,7 +73,7 @@ shared generator state, and identical at every node count and in every run.
 
 Every rejection names the option and the reason, an unrecognised token is
 echoed, and `mainEdt` calls `ocrShutdown()` and returns **before**
-`ocrGuidRangeCreate` and `forkSpmdEdts_Cart1D` — nothing is built from a
+`reductionRangeCreate` and `forkSpmdEdts_Cart1D` — nothing is built from a
 rejected argument set. There is no `VERIFICATION` build knob any more: the
 checksum is unconditional and costs 5 `fabs` and 5 adds per lookup.
 
@@ -96,7 +96,7 @@ Let `N_i`, `N_g`, `N_m=12`, `L` as before, `P` = nprocs, `T` = nthreads,
 | Per-generation ephemeral pointer DBs (created and destroyed within each `iterationsPerThreadEdt`) | `3·P·T·G` | tiny |
 | Top-level (`argv`, `globalParamH`) | 2 | small |
 | **DBs total** | `2 + P·(15 + 2·A + 2·T + 3·T·G)` | — |
-| Events (`mainEdt`'s `finalOnceEVT`, per-rank `rpPerfTimerEVT`/`loopCompletionLatchEVT`, 2 per alignment producer — its output event and the `COUNTED` relay the join registers on — and 3 per thread-chain generation) | `1 + P·(2 + 2·A) + 3·P·T·G` | — |
+| Events (`mainEdt`'s `finalOnceEVT`, per-rank `rpPerfTimerEVT`/`loopCompletionLatchEVT`, 2 per alignment producer — its output event and the `COUNTED` relay the join registers on — and 3 per thread-chain generation) | `1 + P·(2 + 2·A) + 3·P·T·G` at `P=1`; the reduction tree adds its events once `P > 1`, among them the `P − 1` labeled sticky events `mainEdt` creates once through `reductionRangeCreate` | — |
 
 `generate_energy_grid` (`GridInit.c`) calls `gpmatrix` a *second* time
 internally to build a temporary sorted copy of the nuclide grid before
@@ -174,8 +174,8 @@ structure, and it is init: `A` `alignGridEdt` producers each hold RO on
 into place. No two tasks ever write the same datablock, so this phase is
 DB-WRF-valid as well as OCR-legal, and the RO fan-in on
 the two grid DBs during init is the same shape as the kernel's.  (The row is
-outside DB-WRF overall on the creator-held hand-offs the catalog records, not
-on this alignment fan-out.)
+outside DB-WRF overall on the unreleased hand-off of the rank data block that
+the catalog records, not on this alignment fan-out.)
 
 `summaryEdt` additionally holds one RO dependence per chain scratch DB and per
 chain seed DB (`3 + 2·T` deps in total): that is how the per-chain digests

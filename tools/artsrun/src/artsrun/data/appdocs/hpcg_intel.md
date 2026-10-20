@@ -47,7 +47,7 @@ Every numeric argument is validated loudly: a non-positive `npx`, `npy`, `npz`,
 `m` or `maxIter`, a `maxIter` above the cap, and a negative `debug` each reach
 `bomb()`. The knobs are `u64`, so the checks parse into signed temporaries
 first — before that a negative value wrapped and passed. `maxIter == 0`
-specifically used to run: it skipped the loop at `hpcg.c:1520-1522` whose body
+specifically used to run: it skipped the loop at `hpcg.c:1551-1555` whose body
 assigns the `x` pointer the terminating sweep then dereferences.
 
 `expect_args` is kept **identical to `args`**, so the consensus pin rides the
@@ -59,8 +59,12 @@ never edited — whenever the arguments change.
 the decomposition): `bomb()` exits instead of returning into the arguments it
 just rejected; the `#define T` comment corrected (it is the default iteration
 count, not a timestep count — the program has no timestep loop); the linked
-reduction library frees its per-call accumulator and releases the `nrank == 1`
-return block before satisfying it; the argument validation above; a debug-print
+reduction library frees its per-call accumulator, releases the `nrank == 1`
+return block and its private block before satisfying it, and releases the
+accumulator before handing it to the next tree task; every halo label with a
+neighbour and every reduction label is created once, by `mainEdt` (the
+published program created each from both ends under `GUID_PROP_CHECK`); the
+argument validation above; a debug-print
 loop inside `haloExchangeEdt`'s pack loop that reused the pack counter — at
 `debug ≥ 2` it left the counter past the array, so one direction was packed
 instead of 26 and the run wedged — now prints the current direction; and the two
@@ -83,12 +87,13 @@ child in the reduction tree.
 | EDT creates | `55N + 3(2N+I−1)` per iteration | 55 per tile: 5 `hpcg` + 17 `mg` + 11 `haloExchange` + 11 `unpack` + 7 `smooth` + 4 `spmv` |
 | Event creates | `37N` per iteration | all `OCR_EVENT_ONCE_T`: 1 (`hpcg` p1) + 3 (`hpcg` p3) + 10 per MG level 0–2 + 3 at level 3 |
 | DB creates | `11L + 9N − 6` per iteration | halo blocks + `3N−2` per ALLREDUCE × 3 |
-| one-time | `9N + 3I` EDTs, `9N + L − 3` DBs, `6N + 3L + I − 4` events | `mainEdt` and `wrapUpEdt`, then four EDTs per tile: `initEdt`, `channelInitEdt`, the phase-0 `hpcgEdt` and the phase-1 clone that one creates. Blocks: the shared block, a private, a reduction-private and an 8-byte scalar block per tile, and a GUID carrier per link. Events: a `returnEVT` channel per tile, and per link a CHANNEL event plus a labeled sticky created from *both* ends (the shim counts both attempts). No finish EDTs |
+| one-time | `9N + 3I` EDTs, `9N + L − 3` DBs, `5N + 2L + I − 3` events | `mainEdt` and `wrapUpEdt`, then four EDTs per tile: `initEdt`, `channelInitEdt`, the phase-0 `hpcgEdt` and the phase-1 clone that one creates. Blocks: the shared block, a private, a reduction-private and an 8-byte scalar block per tile, and a GUID carrier per link. Events: a `returnEVT` channel per tile, and per link a CHANNEL event plus its labeled sticky, which `mainEdt` creates once. No finish EDTs |
 
 On top of that the reduction contributes `2N+I−1` EDTs, `N−1` DBs and
-`5(N−1)+I` events of one-off tree setup — per tree link a channel pair and a
-labeled sticky attempted from both ends, plus the output events of its two
-setup EDTs, the only `ocrEdtCreate`s in the program that pass one — and then
+`4(N−1)+I` events of one-off tree setup — per tree link a channel pair and a
+labeled sticky that `mainEdt` creates once through `reductionRangeCreate`,
+plus the output events of its two setup EDTs, the only `ocrEdtCreate`s in the
+program that pass one — and then
 runs `3·maxIter + 2` times. Two of those calls
 are outside the iteration loop: the phase-0 `rtr` ALLREDUCE (`2N+I−1` EDTs,
 `3N−2` DBs, like any other) and the closing REDUCE, which skips the down pass
@@ -99,7 +104,7 @@ Instantiated at the catalog's `24 12 12 32 50` — `N = 3456`,
 `m = 32`, `L = 77,464`, `I = 346`: private blocks **13.40 MiB each → 48.6 GB of
 payload**, halo traffic ≈0.25 MiB per tile per iteration (4 exchanges at level 0,
 3 at level 1, 3 at level 2, 1 at level 3). Setup is 32,142 EDTs / 108,565 DBs /
-253,470 events; per iteration cluster-wide **211,851 EDT creates, 883,202 DB
+172,551 events; per iteration cluster-wide **211,851 EDT creates, 883,202 DB
 creates, 127,872 event creates**; over the 50 iterations ≈10.6 M / ≈44.2 M /
 ≈6.4 M. The 2× candidate `24 24 12` doubles `N` and takes `L` to 159,688, so
 every per-iteration figure roughly doubles; it was not the catalog's choice
@@ -115,6 +120,10 @@ sizes and flops but no object count. Getting there corrected all three setup
 terms: the EDT count had omitted `wrapUpEdt`, both `hpcgEdt` creates per tile
 and every reduction EDT; the DB count had omitted the per-tile scalar block and
 the reduction's blocks; the event count had omitted each tile's `returnEVT`.
+Those event figures were measured while every halo and tree label was still
+created from both ends; the current source creates `L + N − 1` = 63 fewer
+events at this point, so the event column predicts 742/1,630, a one-time 150
+and 1,038 for the `m` pair — not re-measured.
 
 ## Wiring
 
@@ -131,30 +140,31 @@ pack and the remote unpack. A halo block therefore has exactly one writer (the
 packing tile, at create time) and exactly one RO reader (the neighbour's
 `unpackEdt`, which destroys it) — one-shot migration, never shared.
 
-Neighbour channels are established once: `initEdt` reserves `26N` labeled
-STICKY GUIDs, creates a CHANNEL event per outgoing direction, ships its GUID in
-an 8-byte DB through the sticky at index `26·myrank+ind`, and collects the
-mirror at `26·neighbour + (25−ind)`; `channelInitEdt` installs the arrivals as
-`haloRecvEVT[]`. Both ends create the same labeled slot, with `GUID_PROP_CHECK`,
-and the rendezvous depends on the second create leaving the first's event
-standing: the shim ignores `CHECK`, and the runtime parks the second create at
-the label's home behind the installed event (for the rest of the run, since
-the label is never destroyed), so a satisfied event is never replaced
-(`docs/programming_model/guids.rst`). Reductions use the same idiom: `reduction.c` builds a 10-ary
-tree over labeled stickies and moves 8-byte blocks up (**RO** into the parent's
+Neighbour channels are established once: `mainEdt` reserves `26N` labeled
+STICKY GUIDs and creates the `L` of them that have a neighbour, before it
+spawns any tile. Each `initEdt` creates a CHANNEL event per outgoing
+direction, ships its GUID in an 8-byte DB through the sticky at index
+`26·myrank+ind`, and collects the mirror at `26·neighbour + (25−ind)`;
+`channelInitEdt` installs the arrivals as `haloRecvEVT[]`. So every label has
+one creator, which precedes both the tile that satisfies it and the neighbour
+that depends on it; no label is destroyed, so each lives for the rest of the
+run. Reductions use the same idiom: `reduction.c` builds a 10-ary tree over
+labeled stickies, which `mainEdt` creates through `reductionRangeCreate`, and
+moves 8-byte blocks up (**RO** into the parent's
 `yourdata` slots, destroyed there) and back down. The only DB with many
 concurrent readers anywhere is the 56-byte shared block (`N` RO readers at
 startup); the only many-to-one fan-in is the reduction tree's `ARITY`-way join.
 
 ## Flow
 
-`mainEdt` (rank 0 only) reserves two GUID ranges and spawns `N` `initEdt`s;
+`mainEdt` (rank 0 only) reserves two GUID ranges, creates their `L + N − 1`
+labeled stickies (80,919 at the catalog grid) and spawns `N` `initEdt`s;
 each runs its own preamble — four `matrixfill` passes building `27·Σmt`
 column indices, ≈1.0 M entries per tile at `m=32`, the dominant startup cost —
 then the channel rendezvous. The preamble is parallel across tiles and index-pure
 (a pure function of the tile index, the grid and `m`), so the only serial setup
-in the measured window is the spawn loop itself, which is the published
-task-graph construction. Each tile then runs its own chain: `hpcg` p0 seed
+in the measured window is `mainEdt`'s label creates and spawn loop, which are
+the task-graph construction. Each tile then runs its own chain: `hpcg` p0 seed
 (`rtr`) → **p1** convergence test → `mg` V-cycle → **p2** `rtz` → **p3** halo +
 SpMV → **p4** `pAp` → **p5** update `x`,`r`,`rtr` → p1. The V-cycle is `mgStep`
 0..6 with `level = 3−|mgStep−3|`: levels 0–2 each smooth → SpMV → restrict →
@@ -167,8 +177,8 @@ coarse levels do **not** narrow the width — every tile stays active at every
 level — they narrow the *work* by 8× per level while the exchange keeps its
 full 26-message shape, so level 3 is essentially pure message latency. Each
 reduction is a global barrier `2⌈log₁₀N⌉` hops deep; an iteration is 11
-exchange barriers plus 3 reduction barriers. Serial points: `mainEdt`'s spawn
-loop and the single `wrapUpEdt`, which prints the two result lines and shuts
+exchange barriers plus 3 reduction barriers. Serial points: `mainEdt`'s label
+creates and spawn loop and the single `wrapUpEdt`, which prints the two result lines and shuts
 down. Nothing else prints inside the window at `debug == 0`.
 
 ## Placement (base)
@@ -200,8 +210,9 @@ so its links ignore the placement entirely. Global objects created in `mainEdt`
 (shared block, GUID ranges, `finalOnceEVT`, `wrapUpEdt`) are NULL-hinted, on
 rank 0. The one-time channel and reduction stickies are outside the placement
 altogether: `ocrGuidRangeCreate` takes no hint and the shim homes labeled index
-`i` round-robin at `i % nranks`, so the `27N` rendezvous events are scattered
-uniformly regardless of who owns the tile.
+`i` round-robin at `i % nranks`, so the `L` halo and `N − 1` reduction
+rendezvous events (out of `26N + N` reserved labels) are scattered uniformly
+regardless of who owns the tile.
 
 ## Sizing
 
@@ -303,7 +314,7 @@ Every create on the step path, with its placement and its cross-node reader:
 | reduction partials / results | `3(3N-2)` per iteration | `NULL_HINT` inside `reduction.c` | the participant's parent in the 10-ary tree, RO, destroyed there | not from this application: `reduction.c` is compiled once as the `ocr_lib_reduction` OBJECT library and the `_hinted` flavour define is applied to the executable target only, so a guard in that file is never enabled |
 | private / reduction-private / scalar block per tile | `3N`, one-time | creating rank = the tile's node | the tile's own chain | nothing to move |
 | shared block (56 B) | 1, one-time | rank 0 | `N` `initEdt`s, RO | one home cannot be local to `N` readers |
-| channel carrier (8 B) + labeled stickies | `26N` + `27N`, one-time | carrier: creating rank; sticky: `index % nranks` | the neighbour's `channelInitEdt` | one-time; outside the measured steady state |
+| channel carrier (8 B) + labeled stickies | `L` + `L + N − 1`, one-time | carrier: creating rank; sticky: created by `mainEdt`, homed `index % nranks` | the neighbour's `channelInitEdt` (a reduction label: the parent's receive task) | one-time; outside the measured steady state |
 
 So **one** recurring object is both placed by a hint and created more than once
 per run, and the layer is that one: the halo block, homed on its consumer.

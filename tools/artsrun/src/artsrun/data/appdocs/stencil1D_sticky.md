@@ -27,7 +27,7 @@ an event whose GUID it did not choose and whose satisfaction it cannot
 order against the dependence-add — a STICKY event tolerates satisfy-before-
 add (or after), unlike a one-shot event that must be consumed exactly once
 in a fixed order. This is the only one of the seven with a catalog-pinned
-correctness `expect` (`1`, at default args — see Verify in the notes file);
+correctness `expect` (`1`, at default args);
 the app prints the whole final field itself and terminates by direct
 `ocrShutdown()` from the last chain, with no separate join/wrapup EDT.
 
@@ -42,7 +42,7 @@ the app prints the whole final field itself and terminates by direct
 All three defaults are local literals in `mainEdt` (`nrank=4; npoints=10;
 maxt=100;`) — this file does **not** include `stencil1D.h`, so the header's
 `N`/`M`/`T` `#define`s (10/50/10000) play no role here (unlike the
-labeled/parallel-init variants, see Uncertain). `mainEdt` requires exactly 4
+labeled/parallel-init variants). `mainEdt` requires exactly 4
 `argc` (program name + 3 args); any other count silently falls back to the
 defaults and prints a notice. `nrank==0 || npoints==0 || maxt==0` is rejected
 with a message and immediate `ocrShutdown()`. No other runtime knobs exist.

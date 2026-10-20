@@ -118,7 +118,8 @@ stages_per_ts`, `T = num_tsteps`. Octree nodes materialized at startup:
 | refinement-intent buffers | `N × (6 × {curr, coar, 4×refn} × 2 + 8 siblings × 2)` — **allocated only when `num_refine > 0`** | 4 B each |
 | reduction scratch DBs | `N × (1 + 3·MAX_REDUCTION_HANDLES)` — `octTreeRedH`, then `in`/`out`/`redRootH` per handle (`MAX_REDUCTION_HANDLES` = 26) | small |
 | handshake copies | `N × 6` — a `sharedOcrObj_t` published into each outgoing setup event | ~33 kB |
-| labeled sticky events | `6·(P·Q·8^l)` reserved per level `l` | key space only |
+| labeled sticky events | `6·(P·Q·8^l)` per level `l`, created by `mainEdt` (`initGlobalOcrParamH`) right after each level's reservation | — |
+| reduction-tree labeled sticky events | `26·(P·Q − 1)` (one range per reduction handle) + `N − 1` (the init reduction), created by `mainEdt` through `reductionRangeCreate`; plus `14` per node above the finest level (its two children ranges, created by its own `blockSetupEdt`) | — |
 | per-timestep EDTs per active block | `1 + S·(16 + 2V)` at `comm_vars ≥ num_vars` | — |
 | per-timestep events per active block | `4 + S·(30 + 4V)` | — |
 | checksum EDTs | `2V` per active block on a checksum timestep (`checkSum` + `print` per variable) + a reduction tree per variable | — |
@@ -149,10 +150,12 @@ waits on, so the loop drivers cost **three** events per link. Per stage:
 of the `V` `calcLoop`s 4 (its `calc` link plus a continuation event), each of the
 3 `FNC_comm` instances 3 for its `commHaloNbrsEdt`, and each `commHaloNbrsEdt` 2
 for `packHalosEdt` (output event only — that one is `EDT_PROP_NONE`). Setup adds
-the rendezvous: per octree node, 4 channel events per reduction handle, 53
-double-buffered halo channels, 7 per neighbour direction and 17 for
-parent/children/siblings — 216, level-independent, since a slot that has no
-peer at this level gets a pre-satisfied counted event instead of a labeled one.
+the rendezvous: per octree node, 4 channel events per reduction handle (104)
+and 53 double-buffered halo channels, plus one pre-satisfied counted placeholder
+per rendezvous slot that has no peer at this level (47 at `num_refine 0`: the
+coarser, finer, parent, children and sibling slots). Every slot that has a peer
+names one of the 6 halo labels per node, which `mainEdt` creates, as it creates
+the level-0 reduction-tree events.
 Datablocks are allocated only at setup: nothing on the timestep path.
 
 **A checksum timestep is a global barrier.** `checkSumEDT` is
@@ -170,12 +173,11 @@ Setup is a rendezvous, not a tree. Each octree node computes the labeled GUIDs o
 its 6 face neighbours (at its own level, at the coarser level, and the 4 finer
 sub-faces), its parent, its 8 children and its 8 siblings — indices into
 `haloRangeGUID[level]`, derived arithmetically from the block's global (i,j,k) —
-creates each event with `GUID_PROP_CHECK` — whichever create reaches the
-label's home first installs it and the others park behind it for the rest of
-the run — satisfies its own `sharedOcrObj_t` handle into it, and makes its
-`channelSetupEdt` depend on all `6·nNbrs + 17` of them. Because the meeting point
-is the labeled GUID and not the order in which blocks were built, the blocks of
-one rank are independent of one another: `initEdt` spawns one `blockSetupEdt` per
+names each event (all created once by `mainEdt` before the fork), satisfies a
+copy of its own `sharedOcrObj_t` handle into each of its six send events, and
+makes its `channelSetupEdt` depend on all `6·nNbrs + 17` of them. Because the
+meeting point is the labeled GUID and not the order in which blocks were built,
+the blocks of one rank are independent of one another: `initEdt` spawns one `blockSetupEdt` per
 block on its own policy domain and they run concurrently. When a
 `channelSetupEdt` fires, its node holds its peers' event GUIDs and datablock keys;
 `init()` then allocates and fills the cell array and the level-0 nodes start the
@@ -205,11 +207,13 @@ stencil with a 6-face halo exchange and an arity-10 all-reduce.
 ## Flow
 
 `mainEdt` (rank 0, serial: parse + `initGlobalOcrParamH`'s
-`MAX_REDUCTION_HANDLES + num_refine + 2` GUID-range reservations) → `P` `initEdt`s
-in one loop → each spawns its `N/P` `blockSetupEdt`s, which run concurrently on
-that rank's workers → a global rendezvous as all `N` `channelSetupEdt`s complete
-→ an init-checksum reduction → `FNC_miniamrMain` → `FNC_driver` →
-`FNC_timestepLoop`.
+`MAX_REDUCTION_HANDLES + num_refine + 2` GUID-range reservations and the creation
+of every event of those ranges — 114,021 at the catalog arguments, of which the
+79,465 of the 23 reduction ranges a `num_refine 0` run never launches are
+created up front by design) → `P` `initEdt`s in one loop → each spawns its
+`N/P` `blockSetupEdt`s, which run concurrently on that rank's workers → a
+global rendezvous as all `N` `channelSetupEdt`s complete → an init-checksum
+reduction → `FNC_miniamrMain` → `FNC_driver` → `FNC_timestepLoop`.
 
 Parallel width is the number of **active** blocks: `P·Q` at level 0, ×8 per
 level actually refined. Within a block everything is serial — the stage loop, the
@@ -218,8 +222,9 @@ block's timestep is a chain of ~1900 tasks with no internal parallelism. The
 machine is therefore kept busy by block count, never by per-block width, and
 never by the rank count.
 
-Serial or global terms: `mainEdt` itself; each `initEdt`'s `N/P` spawn loop (now
-one EDT create per block rather than the block's ~590 object creations); every
+Serial or global terms: `mainEdt` itself, which creates the halo and
+reduction-tree labels; each `initEdt`'s `N/P` spawn loop (now one EDT create
+per block rather than the block's ~590 object creations); every
 checksum timestep, which is `V` global rendezvouses; and every refinement round,
 which is an intent reduction plus a parent-and-eight-children RW join.
 

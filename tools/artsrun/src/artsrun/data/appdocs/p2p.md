@@ -2,7 +2,7 @@
 
 *PRK synch_p2p — a P-wide column-partitioned wavefront pipeline built for one
 purpose: measuring per-hop synchronization latency, not bandwidth.*
-Source: `third_party/ocr-apps/apps/p2p/refactored/ocr/intel/p2p.c` (730 lines).
+Source: `third_party/ocr-apps/apps/p2p/refactored/ocr/intel/p2p.c` (736 lines).
 
 ## Overview
 
@@ -66,14 +66,14 @@ per rank, including the untimed timestep 0).
 | `privateDBK` (per-rank state) | `p`, same persistence pattern | `sizeof(private_t)` (~150-250 B) each |
 | `sharedDBK` / `timerDBK` / `channelDBK` (×p) | 1 / 1 / `p` | small, ≤ a few hundred bytes |
 | `bufferOutDBK` (boundary handoff) | `(p-1)·G + t` (every non-last-rank generation, plus one wrap-around send per completed timestep from rank `p-1` — `t`, not `t+1`: the final timestep's wrap-around is skipped because the termination check in `p2pEdt` returns before the wrap-around create is ever reached) | `(gf+1)·8` bytes — 16 B at `gf=1` |
-| labeled STICKY rendezvous (`sendRightEVT`/`recvLeftEVT`) | `p` distinct objects, `2p` `ocrEventCreate` calls — both ends create each label; the first create to reach the label's home installs and the other parks there behind it for the rest of the run (the label is never destroyed), and `arts_event_create` counts every call (`INCREMENT_NUM_EVENT_CREATE_BY(1)` runs whether the create installs or parks), so all `2p` count | — |
+| labeled STICKY rendezvous (`sendRightEVT`/`recvLeftEVT`) | `p`, one per rank, each created once by `realMainEdt` before it spawns any `initEdt`; rank `i`'s `initp2pEdt` satisfies label `i` and rank `i+1`'s `initChannelEdt` depends on it (rank 0's on label `p-1`); never destroyed | — |
 | CHANNEL events (per-rank boundary transport) | `p`, one per rank, satisfied once per generation except the last | — |
 | shim-materialized output event | `1`, constant — the one `p2pEdt` create that spawns rank `p-1`'s terminal instance passes a non-NULL `outputEvent` (`termOETp` in `p2pEdt`'s clone branch) so the shim materializes an event feeding `p2pShutdownEdt`; every other `p2pEdt`/`initEdt`/`initp2pEdt`/`initChannelEdt` create passes `NULL` for it | — |
 
-Events total: `3p + 1`. Worked numbers at the small consensus arguments
+Events total: `2p + 1`. Worked numbers at the small consensus arguments
 `8 256 100 10` (`p=8, m=256, n=100, t=10, gf=1`): `w=99`, `G=1089`, `p2pEdt`
 total = 8,712, EDTs total = 8,739, `bufferOutDBK` = 7,633, all other DBs =
-`3p+2` = 26 (total DBs = 7,659), events = `3·8+1` = 25, and the result line is
+`3p+2` = 26 (total DBs = 7,659), events = `2·8+1` = 17, and the result line is
 `PASS checksum = 3894.000000`. The campaign runs `p=3456 m=34560 n=3457
 t=100 gf=1 chunk=108` (`p` at the width floor, `n` chosen so `w` balances at
 `p`, `m` the size knob); the same closed forms give its counts. The one-node
@@ -84,7 +84,9 @@ Counter cross-check: verified (1 node, `args=[2,4,5,2]` vs `args=[2,4,5,3]`,
 i.e. `p=2, m=4, n=5, gf=1, t=2` vs `t=3`, so `w=4`, `G=12` vs `G=16`): measured
 absolutes EDT 34/42, DB 23/28, EVT 7/7; subtracting the runtime's constant
 baseline (+1 EDT, +1 DB, +0 EVT per run) gives app-side EDT 33/41 (exactly
-`3+3p+p·G`) and EVT 7/7 (exactly `3p+1` at `p=2`, unaffected by `t`). The
+`3+3p+p·G`) and EVT 7/7, unaffected by `t`. The events were measured while
+both ends created each label (`3p+1`); with one create per label `2p+1`
+predicts 5/5, not re-measured. The
 corrected DB formula — `bufferOutDBK = (p-1)·G+t` (not the earlier `+(t+1)`)
 — gives `bufferOutDBK` = `1·12+2=14` and `1·16+3=19`; adding the constant
 `3p+2=8` gives app-side DB 22/27, exactly reproducing the measured totals
@@ -106,7 +108,8 @@ block whichever mode it arrived in. It is 1 of `G` generations per rank, so it
 cannot move a measurement, but the arms treat an RO and an RW acquire
 differently and the asymmetry is real. `sharedDBK` fans out RO to all `p`
 `initEdt` instances once at startup only. The one-time labeled-STICKY
-rendezvous (`ocrGuidFromIndex` into a pre-reserved GUID range) exists purely so
+rendezvous (`ocrGuidFromIndex` into a pre-reserved GUID range, whose `p`
+labels `realMainEdt` creates once before it spawns the inits) exists purely so
 each rank can learn its left neighbor's CHANNEL guid without a central
 directory — it fires once per rank, not per generation. `timerDBK`'s guid is
 broadcast to every rank's private state but is only actually acquired twice in

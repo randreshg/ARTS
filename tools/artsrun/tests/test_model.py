@@ -880,7 +880,7 @@ def test_every_attack_row_is_one_program_with_one_argument_vector():
 
 def test_the_suite_core_is_made_of_applications():
     catalog = load_catalog()
-    for name in ("graph500", "hpcg_intel", "CoMD_sdsc2", "quicksort",
+    for name in ("graph500", "hpcg_intel", "CoMD_sdsc", "quicksort",
                  "nekbone", "hpgmg", "npb_cg", "cholesky_blas"):
         assert catalog.apps[name].kind is Kind.APP, name
 
@@ -920,7 +920,7 @@ def test_operations_named_after_themselves_are_toys():
 
 def test_cited_benchmarks_are_applications():
     catalog = load_catalog()
-    for name in ("graph500", "hpcg_intel", "CoMD_sdsc2", "XSBench_intel",
+    for name in ("graph500", "hpcg_intel", "CoMD_sdsc", "XSBench_intel",
                  "stream", "nekbone", "smithwaterman", "npb_cg"):
         assert catalog.apps[name].kind is Kind.APP, name
 

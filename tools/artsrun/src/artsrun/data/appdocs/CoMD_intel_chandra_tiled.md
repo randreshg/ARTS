@@ -9,7 +9,7 @@ Source: `third_party/ocr-apps/apps/CoMD/refactored/ocr/intel-chandra-tiled/`
 ## Overview
 
 Intel's second OCR port of the ExMatEx CoMD proxy, and structurally the
-opposite of `CoMD_intel_chandra`: instead of promoting every link cell to a
+opposite of the upstream untiled intel-chandra port: instead of promoting every link cell to a
 rank, it keeps upstream CoMD's `xproc × yproc × zproc` domain decomposition and
 runs one SPMD EDT chain per rank.  Each rank owns a brick of link cells plus one
 shell of halo cells, holds its atoms in six flat arrays, and exchanges ghost
@@ -33,7 +33,7 @@ is a *command-line choice* rather than a consequence of the box size.
 |------|---------|---------|------------------|
 | `-x/--nx`, `-y/--ny`, `-z/--nz` | unit cells per dimension (global) | 20 | ✓ parsed in `mainEdt`, copied into the global-parameter DB and then into every rank's `rankH_t` — multinode-safe |
 | `-i/--xproc`, `-j/--yproc`, `-k/--zproc` | **rank grid** — this is the parallel width | 1, 1, 1 | ✓ same path.  Product = number of SPMD EDT chains; defaults give **one** rank, i.e. a fully serial run.  `mainEdt` validates the grid before the fork: a non-positive extent is fatal (an extent of 0 forks no rank at all, so nothing would be left to reach `sanityChecks`), while a grid whose split across the policy domains is uneven — or so narrow on an axis that a policy domain owns no rank at all, which is what the defaults do on more than one domain — runs correctly and prints a warning naming the load spread |
-| `-N/--nSteps` | time steps | 100 | ✓ exact; the last step always prints and validates regardless of `-n`.  `0` is legal — the initial state is printed and validated and the run joins and shuts down without integrating |
+| `-N/--nSteps` | time steps | 100 | ✓ exact; the last step always prints and validates regardless of `-n`.  `0` is legal — the initial state is printed and validated and the run joins and shuts down without integrating (the timing report's `loop` row is then meaningless: the step-0 print stops a loop timer no step started) |
 | `-n/--printRate` | steps between the kinetic-energy allreduce and a status row | 10 | ✓ pure diagnostic/sync interval; it does not change the trajectory and does not gate termination |
 | `-D/--dt` | time step (fs) | 1.0 | ✓ applied to both half kicks and the drift |
 | `-T/--temp` | initial temperature (K) | 600.0 | ✓ |
@@ -68,8 +68,8 @@ are linear in it (see Memory), so at the campaign's ~19 atoms per box roughly
 70% of the footprint is reserved-and-empty.  That is a property of the
 published decomposition the base tier exists to exhibit, which is why it stays
 a `#define` and the box is the only lever.  `USE_STATIC_SCHEDULER` is in the
-upstream Makefile but *not* in this target, so the plain `forkSpmdEdts_Cart3D`
-fork is used (see Placement).
+upstream Makefile but *not* in this target, so the plain affinity-hinted
+fork (`forkSpmdEdts_onPdGrid_Cart3D`) is used (see Placement).
 
 ## Structure
 
@@ -86,17 +86,20 @@ With `R = i·j·k` ranks, `lat = 3.615`, `cutoff = 5.7875`,
 | tag buffers / cell lists / exchange parms | `12R` / `6R` / `R` | 8 B / `4·nCells` / ~456 B |
 | `rankH_t` / `SimFlat` / potential / 5 reduction privates | `R` each | 7232 B / 1432 B / ~112 B / 368 B |
 | DBs | `52R + 4` app blocks + the reduction library's transients | **none created per timestep** |
-| events | `R·(89 + 41S + 5·boundaries) + 3` + reduction setup | 24 halo channels + 12 labeled sticky per rank at init; 41 per rank per step |
+| events | `R·(81 + 39S + 5·boundaries) + 3` + reduction setup | 24 halo channels per rank at init, plus the `6R` labeled sticky halo events `mainEdt` creates once each; 39 per rank per step |
 | EDTs | `R·(30 + 23S + 2·boundaries) + 3` + reduction | 23 per rank per step |
 
 The reduction library costs, per collective, one launch EDT and one launch block
 per rank plus a tree pass (`2R+Q−1` EDTs and `3R−2` blocks for the three
 ALLREDUCE objects; `R+Q` and `2R−1` for the two REDUCE ones), and the same tree
-pass once more per object the first time it is used — `5(5(R−1)+Q)` events
-across the five objects (see below).  Four collectives run at init
+pass once more per object the first time it is used, which also wires the
+tree: two channel events and one output event per non-root rank and one output
+event per parent, `3(R−1)+Q`, on top of the object's `R−1` labeled sticky
+events, which `reductionRangeCreate` creates once each in `mainEdt` —
+`5(4(R−1)+Q)` events across the five objects.  Four collectives run at init
 (centre-of-mass velocity, kinetic energy twice, max occupancy), one per print
 boundary, and two in the epilogue (performance timers, SPMD join).  Total
-reduction cost: `22R + 12Q − 10` EDTs, `24R − 17` blocks, `5(5(R−1)+Q)` events.
+reduction cost: `22R + 12Q − 10` EDTs, `24R − 17` blocks, `5(4(R−1)+Q)` events.
 
 The 23 steady-state EDTs per rank per step are: `timestepLoop` + `timestep`
 (2), the five body tasks (`advanceVelocity`, `advancePosition`,
@@ -106,41 +109,36 @@ the y and z axes, three `exchangeData` EDTs, six `loadAtomsBuffer`/
 `unloadAtomsBuffer` EDTs, and the two-step force dispatch
 (`ljForce_edt → ljForce1_edt`).
 
-Two constants needed a fix past the first pass, both invisible in a same-`S`
-delta (which is why Pair A's deltas already checked out) and both explained by
-the same mechanism as the sibling port: the runtime counts *every*
-`ocrEventCreate` call, the one that parks behind the installed event included
-(`arts_event_create` counts before it installs or parks, `event.c`).
+Two source changes since the formula was first verified moved its event
+terms, and both are measured (see the cross-check below); the EDT and DB
+formulas did not move:
 
-- **The event constant is `89`, not `80`** (and the EDT constant needs a flat
-  `+3`, not `+2`).  `initEdt`'s halo rendezvous (`CoMD.c`'s `ocrGuidFromIndex`
-  sticky-GUID derivation) creates each of the `6R` labeled sticky GUIDs from
-  *both* endpoints — a rank's own "send" create and the matching neighbour's
-  "receive-mapping" create land on the same index — so it's 12 sticky creates
-  per rank, not 6 (+6 events per rank).  The reduction library's own send/recv
-  channel pairing
-  (`reductionEdt`'s parent-side `recvEVT` and the child's
-  `reductionSendChannelEdt`'s `sendEVT`, same file as the sibling port) has the
-  identical shape, so the setup term is `5(5(R−1)+Q)` across the five
-  reduction objects (Vcm, Ke, max-occupancy, perf-timer, SPMD-join), not
-  `5(4(R−1)+Q)` (+5(R−1) events).
-- **The epilogue was missing entirely from the compact per-step formula**,
-  because it fires exactly once per run (at whichever boundary has
-  `itimestep == nSteps`), not once per boundary: `finalizeEdt` (`timestep.c`,
-  in that boundary's branch) runs on every rank (+1 EDT, +3 events: output +
-  finish + `createEventHelper`), and `printPerformanceResultsEdt`
-  (`timestep.c`, same branch) runs on rank 0 only (+1 EDT, +2 events) plus one
-  `createEventHelper` shared by both branches (+1 event, every rank).  Summed
-  over `R` ranks that is `+(R+1)` EDTs and `+(4R+2)` events.  A separate,
-  opposite-sign effect offsets part of it: the *last* `timestepLoopEdt`
-  iteration never creates a successor (it's the terminal step), so it's
-  missing that create's own output event — `−R` EDTs and `−R` events.  For EDTs
-  the two exactly cancel to a rank-independent `+1`, which is why only the
-  flat constant moves (`+2` → `+3`, `30` stays `30`).  For events the
-  coefficients don't match (`−1` vs `+4`), so the net `+3R` folds into the
-  per-rank coefficient instead (`80` → `89`, with the halo-doubling fix above
-  supplying the other `+6`) and the epilogue's own flat remainder (rank 0's
-  extra `printPerformanceResultsEdt`, `+2`) lands in the constant (`1` → `3`).
+- **Each label is created once.**  `mainEdt` creates the `6R` labeled sticky
+  halo events before it forks the ranks, and `initEdt` only derives the GUIDs
+  it satisfies and depends on (`ocrGuidFromIndex`), so a rank's share is 6
+  creates where the first pass counted 12 (every label created from both
+  endpoints): `−6` per rank.  The reduction library's labels likewise come
+  from `reductionRangeCreate`, one create per label, hence the setup term
+  `5(4(R−1)+Q)` above instead of `5(5(R−1)+Q)`.
+- **Output events nothing consumed are not minted** (`OCR_APP_COUNTED_OEVT`,
+  see Parameters): per rank per step the sort step's and the timestep-loop
+  spawn's, so `39` per step instead of `41`; once per rank the init sort
+  step's, `printSimulationData1`'s and `adjustVcmAndComputeKe`'s (`−3`), offset
+  by `+1` because the loop spawns that lost theirs number `S−1`, not `S` (the
+  terminal iteration creates no successor): `−2` per rank.
+
+That takes the per-rank event constant from `89` to `81`.  The epilogue fires
+exactly once per run (at whichever boundary has `itimestep == nSteps`), not once
+per boundary: `finalizeEdt` (`timestep.c`, in that boundary's branch) runs on
+every rank (+1 EDT, +3 events: output + finish + `createEventHelper`), and
+`printPerformanceResultsEdt` (`timestep.c`, same branch) runs on rank 0 only
+(+1 EDT, +2 events) plus one `createEventHelper` shared by both branches (+1
+event, every rank) — `+(R+1)` EDTs and `+(4R+2)` events, whose per-rank part
+sits in the coefficients.  The terminal `timestepLoopEdt` creates no
+successor (`−R` EDTs), so for EDTs the epilogue nets a rank-independent `+1`,
+inside the flat `+3`; for events rank 0's extra `printPerformanceResultsEdt`
+(`+2`) is inside the flat `+3`.  Both formulas assume `S ≥ 1`: with `-N 0`
+`FNC_initSimulation` builds the epilogue instead (see Flow).
 
 Worked numbers, `-i 24 -j 12 -k 12` → `R = 3456`, at the shapes the sizing
 section discusses (`gs_a` uses the *truncating* division above, which is why a
@@ -160,18 +158,17 @@ Per-step EDT cost is ~22 per rank (the chains loop atoms inside EDTs), so a
 100-step run is **~7.6M EDTs** whatever the box.  The footprint — atom arrays
 plus worst-face halo buffers, set by the rank grid and the box, not by the
 machine — is **node-count-independent**, so the whole of it lands on the single
-node of the 1-node cell; the formula and the budget are under Memory.  ⚠ The
-event formula verified below predates the output-event conversion: two
-per-step events that nothing consumed (the timestep-loop spawn's and the sort
-step's) are no longer created at all (−2 per rank per step), so the event term
-now overcounts by exactly that much until the counter verification is re-run.
+node of the 1-node cell; the formula and the budget are under Memory.
 
 Counter cross-check: verified (1 node, `-x 16 -y 16 -z 16 -N 2 -i 2 -j 2 -k 1`
 vs `-x 16 -y 16 -z 16 -N 4 -i 2 -j 2 -k 1`): measured absolutes EDT 406/590, DB
-292/292, EVT 787/1115; subtracting the runtime's constant baseline (+1 EDT, +1
-DB, +0 EVT per run) against the formulas gives an exact match in both absolute
-value and delta — this app has no data-dependent tail (redistribution always
-runs the same fixed EDT/event chain, unlike the sibling port's `move_edt`).
+292/292, EVT 724/1036; and at `-N 2` with `-i 2 -j 1 -k 1` and `-i 2 -j 2
+-k 2` (`R = 2` and `8`, which separate the per-rank constant from the flat
+one): EDT 206/806, DB 140/596, EVT 356/1460.  Subtracting the runtime's
+constant baseline (+1 EDT, +1 DB, +0 EVT per run) against the formulas gives an
+exact match in both absolute value and delta — this app has no data-dependent
+tail (redistribution always runs the same fixed EDT/event chain, unlike the
+sibling port's `move_edt`).
 
 ## Wiring
 
@@ -179,7 +176,8 @@ runs the same fixed EDT/event chain, unlike the sibling port's `move_edt`).
 face and per phase, a *pair* of channel events: one carrying the packed
 `AtomMsg` buffer and one carrying an 8-byte count — 6 faces × 2 phases × 2 =
 **24 channel events per rank**, all with `nbSat = nbDeps = 1`.  They are matched
-at startup through a rendezvous on labeled sticky GUIDs: `initEdt` publishes its
+at startup through a rendezvous on labeled sticky events, which `mainEdt`
+creates once each before it forks the ranks: `initEdt` publishes its
 four channel GUIDs for face `f` into event `6·rank + f` of a `6R`-wide range and
 registers on the neighbour's event `6·nbr + opposite(f)`; `channelSetupEdt`
 unpacks the six replies into `haloSendEVTs`.  From then on the halo is pure
@@ -244,11 +242,14 @@ sits inside the step's finish scope.  Initialisation adds three more collectives
 (centre-of-mass velocity, kinetic energy, max occupancy) and the epilogue two
 (performance timers, and an SPMD-join reduction whose root satisfies the
 shutdown event) — so termination is a proper barrier, not a race.  The epilogue
-hangs off the last step's `printThingsEdt`; with `-N 0` there is no such step,
-so `FNC_initSimulation` builds the same epilogue behind the step-0 print
-instead, and that print is then created the way the last step's is (finish
-scope, timer-reduction block RW) because it is the one launching the timer
-reduction the epilogue consumes and destroys.
+(`printPerformanceResultsEdt` on rank 0, `finalizeEdt` on every rank) hangs off
+the last step's `printThingsEdt`; with `-N 0` there is no such step, so
+`FNC_initSimulation` builds the same epilogue behind the step-0 print instead,
+and that print is then created the way the last step's is (finish scope,
+timer-reduction block RW), because it is the print that launches the timer
+reduction: it writes that reduction's private block, and its finish scope keeps
+the reduction ahead of the epilogue, which consumes the result on rank 0 and
+destroys the block in `finalizeEdt`.
 
 ## Placement (base)
 
@@ -256,9 +257,9 @@ Everything below is the program's own, compiled in unconditionally.  Every
 object placement it makes is right; the one decision it gets wrong on a
 non-cubic rank grid is which policy-domain grid the rank grid is blocked over,
 and that is what the hinted tier re-chooses (see Placement (hinted)).
-`mainEdt` calls `forkSpmdEdts_Cart3D`, which queries
-`ocrAffinityCount(AFFINITY_PD)`, factors the policy-domain count into a 3-D
-grid (`splitDimension_Cart3D`) and gives each `initEdt` the
+`mainEdt` queries `ocrAffinityCount(AFFINITY_PD)`, factors the policy-domain
+count into a 3-D grid (`splitDimension_Cart3D`) and hands both grids to the
+library's `forkSpmdEdts_onPdGrid_Cart3D`, which gives each `initEdt` the
 `OCR_HINT_EDT_AFFINITY` of the policy domain that owns its block of the rank
 grid (`getPolicyDomainID_Cart3D`, a block partition per axis, so a 3-D
 sub-brick of ranks per node).  Every subsequent EDT takes its hint from
@@ -394,8 +395,8 @@ upstream's own run scripts use: **make the box proportional to the rank grid**
 - **Height knobs stay at the published defaults**: `-N 100` and `-n 10` are
   the parser's defaults *and* what every upstream run script uses.  `-n` need
   not divide `-N` in this port (the epilogue fires on
-  `itimestep%printRate==0 || itimestep==nSteps`), unlike the sibling
-  `CoMD_intel_chandra`.  `-D/-l/-T/-r` are not passed.
+  `itimestep%printRate==0 || itimestep==nSteps`), unlike the upstream
+  untiled intel-chandra port.  `-D/-l/-T/-r` are not passed.
 - Do **not** leave `-i/-j/-k` at their defaults for a measurement: the run is
   correct but single-chain, and its numbers describe one core.
 
@@ -466,10 +467,11 @@ initial state is identical at every node count and no RNG state is shared.
 What *is* in the window besides physics, all of it published structure, and all
 of it `O(R)` rather than `O(R × steps)`:
 
-- the serial fork of `R` `initEdt`s on rank 0 (`forkSpmdEdts_Cart3D`);
-- the halo rendezvous — `6R` labeled sticky events, each created from **both**
-  endpoints, plus `5R` reduction-range events, homed round-robin by index, so
-  roughly `12R` of those creates are remote messages;
+- the serial fork of `R` `initEdt`s on rank 0 (`forkSpmdEdts_onPdGrid_Cart3D`);
+- the labeled events — the `6R` halo rendezvous events plus the `5(R−1)`
+  reduction-range events, created once each and serially by `mainEdt` on rank
+  0 and homed round-robin by index (`idx % nranks`), so on `N` nodes about
+  `(N−1)/N` of those `11R−5` creates are remote messages;
 - the per-rank lattice build and link-cell zeroing (`MAXATOMS · T` slots);
 - `finalizeEdt`'s teardown of 18 templates and 14 datablocks per rank, plus the
   SPMD-join reduction that satisfies the shutdown event.
@@ -479,14 +481,12 @@ step loop grows with box × steps; record the split alongside the anchor seconds
 (`calibration pending`).  A per-arm difference at small `-N` is fan-out and
 teardown, not step-loop behaviour.
 
-The rendezvous is also the row's one undisclosed runtime dependency: both
-endpoints create the *same* labeled sticky GUID with `GUID_PROP_CHECK`, and the
-program is correct only if the second create leaves the first's (possibly
-already satisfied) event standing.  ARTS does: the second create parks at the
-label's home behind the first and, since the label is never destroyed, stays
-parked for the rest of the run.  Two creates of one live label are outside
-ARTS's labeled-GUID contract (`docs/programming_model/guids.rst`); this shape
-costs one parked create per label and changes no result.
+The rendezvous stays inside ARTS's labeled-GUID contract
+(`docs/programming_model/guids.rst`): every label has one creator, `mainEdt`,
+which creates it once before forking the ranks that satisfy it and depend on
+it, and nothing creates it again, so the row relies on no runtime behaviour
+beyond that contract (a satisfy or dependence that reaches a label's home
+before its create waits there, as the contract specifies).
 
 **Per-step wire law.**  Each face DB is sized for the worst case and travels
 whole: `6 × bufCapacity` bytes per rank per step regardless of how many atoms

@@ -140,7 +140,13 @@ formulas above with the pre-cycle constants (`t=2, p=1`:
 This cycle adds, per instance, one datablock (`rpXsReductionDBK`), one EDT
 (`finalSummaryEdt`, the printing/teardown half of the old `summaryEdt`) and
 one event (`rpXsReductionEVT`), plus one more reduction-tree launch set; and
-`reductionVars` grew from 2 words to 4 in the same datablock. **The
+`reductionVars` grew from 2 words to 4 in the same datablock. Since then
+each tree's labeled sticky events are created once, through
+`reductionRangeCreate` (`initOcrObjects` for an instance's loop-completion
+tree, `mainEdt` for the two cross-instance trees), where the library used to
+create each tree edge's label from both ends: one event per tree edge fewer
+(`t − 1` per loop-completion tree, `p − 1` per cross-instance tree), so the
+measured `+6` event fringe at `t=2, p=1` would now be `+5`. **The
 cross-check must be re-measured** — `calibration pending`.
 
 ## Wiring

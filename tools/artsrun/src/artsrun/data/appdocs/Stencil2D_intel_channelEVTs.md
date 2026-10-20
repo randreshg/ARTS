@@ -5,7 +5,7 @@ onto persistent CHANNEL events for halo exchange instead of a per-round
 sticky-event handshake — this variant exists specifically to exercise that
 event idiom.*
 Source: `third_party/ocr-apps/apps/Stencil2D/refactored/ocr/intel-channelEVTs/stencil_2d.c`
-(~1540 lines, built with `EXTRA_DEFINES STENCIL_WITH_DBUF_CHRECV
+(~1680 lines, built with `EXTRA_DEFINES STENCIL_WITH_DBUF_CHRECV
 CHANNEL_EVENTS_AT_RECEIVER`) + `timers.c`.
 
 ## Overview
@@ -70,16 +70,17 @@ EDTs and `4·NR - 3` DBs (the extra EDT per non-root tile over `REDUCE` is
 `reductionSendDown`'s one-per-child payload, sent by every tile that has
 children, root included); a `REDUCE` tree costs `3·NR + 2·C(NR) - 1` EDTs
 and `3·NR - 2` DBs (same as the chandra ports' two trees). Both tree types
-cost the same `5·NR + C(NR) - 5` events. Two `ALLREDUCE` + one `REDUCE`
-together: `11·NR + 6·C(NR) - 5` EDTs, `11·NR - 8` DBs, `15·NR + 3·C(NR) - 15`
-events.
+cost the same `4·NR + C(NR) - 4` events, counting the tree's `NR - 1` labeled
+sticky events, which `mainEdt` creates once through `reductionRangeCreate`.
+Two `ALLREDUCE` + one `REDUCE` together: `11·NR + 6·C(NR) - 5` EDTs,
+`11·NR - 8` DBs, `12·NR + 3·C(NR) - 12` events.
 
 | object | count | notes |
 |--------|-------|-------|
 | EDTs | `-3 + 16·NR + 11·NR·(NT+1) + 6·C(NR)` | folds the three reduction trees into the fixed 2-EDT chain (incl. `mainEdt`) + `5·NR` one-time per-tile setup (4 setup EDTs + 1 `FNC_summary`) |
 | DBs | `32·NR - 7` | `1+21·NR` (global + per-tile control-block/payload/transient DBs, NT-independent) plus the three reduction trees' `11·NR-8` |
 | DB payload | same as `Stencil2D_intel_chandra`: `xIn` `8·(np_x+4)·(np_y+4)` B, `xOut` `8·np_x·np_y` B | `rankH_t` itself is a few hundred bytes (control-block only, no bulk payload) |
-| Events | `10 + 31·NR + 11·NR·(NT+1) + 3·C(NR)` | `11` fresh events per tile per round (not 9 — see below) plus `16·NR` one-time per-tile handshake events at setup, plus the three reduction trees' `15·NR+3·C(NR)-15` |
+| Events | `13 + 24·NR + 11·NR·(NT+1) + 3·C(NR)` | `11` fresh events per tile per round (not 9 — see below) plus `12·NR` one-time per-tile handshake events at setup, plus the three reduction trees' `12·NR+3·C(NR)-12` |
 
 Each round's 11 events are the `OCR_EVENT_COUNTED_T` helper that
 `createEventHelper` attaches to each of the 8 halo EDTs (`Lsend`/`Rsend`/
@@ -90,14 +91,12 @@ made) plus `timestepLoopEdt`'s own loop-continuation `COUNTED` join, plus
 (non-`OEVT_VALID`) output event, so it costs 2 more (output + finish) on top
 of the explicit `COUNTED` already counted — 8+1+2 = 11, not the 9 the
 original count found by only tallying `createEventHelper` calls and missing
-`timestepEdt`'s own FINISH/output pair. The `16·NR` one-time setup figure
-(8 labeled sticky "own publish" + 8 more labeled sticky "reverse
-pre-declare", one pair per tile per of 4 directions — the same
-double-creation pattern as the reduction tree's labeled events, see
-Uncertain in the notes file — plus 8 `OCR_EVENT_CHANNEL_T` from
-`STENCIL_WITH_DBUF_CHRECV`) matches the original doc's "8 labeled + 8
-channel = 16" claim; only the *count of labeled creates* needed
-correcting, not their sum.
+`timestepEdt`'s own FINISH/output pair. The `12·NR` one-time setup figure is
+4 labeled sticky events per tile, one per direction, which `mainEdt` creates
+before the fork, plus 8 `OCR_EVENT_CHANNEL_T` from `STENCIL_WITH_DBUF_CHRECV`
+that the tile creates itself. The published program created each handshake
+label twice, once by the tile that publishes on it and once by the neighbour
+that reads it, so its figure was `16·NR` (8 labeled + 8 channel).
 
 At `NR=13824` (108×128) the NT-independent terms are fixed: DBs =
 `32·13824-7` = **442,361**, `C(13824)=1383`, and the NT-independent EDT term
@@ -106,22 +105,26 @@ At `NR=13824` (108×128) the NT-independent terms are fixed: DBs =
 application itself creates (`initEdt`, `channelSetupEdt`, `FNC_stencil`,
 `FNC_initialize`, and the final-round `FNC_summary`), and the three reduction
 trees' `11·NR + 6·C(NR) − 5` = 160,357 EDTs from `reduction.c`. The
-NT-independent event term is `10 + 31·NR + 3·C(NR)` = 432,703. The NT-dependent
+NT-independent event term is `13 + 24·NR + 3·C(NR)` = 335,938. The NT-dependent
 terms are `11·NR·(NT+1)` EDTs and the same count of events, so the totals follow
 the height the campaign picks — **calibration pending**. At the historical
-`NT=400` the round term is 60,977,664, giving **61.21 M** EDTs and **61.41 M**
+`NT=400` the round term is 60,977,664, giving **61.21 M** EDTs and **61.31 M**
 events; at `NT=100` it falls 4× to 15,358,464, giving **15.59 M** EDTs and
-**15.79 M** events.
+**15.69 M** events.
 
-Counter cross-check: verified (1 node, `NP=64 NR=4 NT=2` vs `NP=64 NR=4
-NT=4`): predicted absolutes 200/122/269 and 288/122/357 (`NUM_EDT_CREATE` /
-`NUM_DB_CREATE` / `NUM_EVENT_CREATE`) match the measured counters exactly,
-against a runtime baseline of `+1 EDT, +1 DB, +0 EVT`. As in both chandra
+Counter cross-check: verified on the program as it was before each label got
+one creator (1 node, `NP=64 NR=4 NT=2` vs `NP=64 NR=4 NT=4`): predicted
+absolutes 200/122/269 and 288/122/357 (`NUM_EDT_CREATE` / `NUM_DB_CREATE` /
+`NUM_EVENT_CREATE`) matched the measured counters exactly, against a runtime
+baseline of `+1 EDT, +1 DB, +0 EVT`. The current source creates
+`4·NR + 3·(NR−1)` = 25 fewer events at `NR=4`, so its prediction is
+200/122/244 and 288/122/332 — not re-measured. As in both chandra
 ports, the fixed control-chain/payload-DB formulas
 (`2+5·NR+11·NR·(NT+1)` / `1+21·NR`) were already exactly right — the gap
 was the un-derived three reduction trees (`+45` EDT / `+36` DB at `NR=4`)
 plus an event slope of 11 instead of the previously-claimed 9 per
-tile-round. A later `NR=16` re-check (`NP=2048 NT=100/400`) confirms the
+tile-round. A later `NR=16` re-check (`NP=2048 NT=100/400`, also on the
+earlier program) confirms the
 EDT/DB formulas and the per-tile-round slopes exactly (11 events created,
 10 destroyed — the surviving one is the `timestepEdt` FINISH/output pair's
 runtime-minted half), but finds the event TOTAL under-predicted by a flat,
@@ -135,6 +138,15 @@ adaptation list; none of them touches the compute-phase decomposition):
 
 - the `DB_MODE_RW` on the handshake's reverse sticky leg corrected to
   `DB_MODE_CONST`, honouring the authors' own `//TODO should be RO`;
+- **every labeled event has one creator**: `mainEdt` creates the `4·NR`
+  handshake labels and, through `reductionRangeCreate`, each reduction tree's
+  `NR − 1` labels before the fork. The published program created each label
+  from both of the tasks that use it;
+- **blocks are released before the work that ends in their destroy**:
+  `channelSetupEdt` and `FNC_stencil` release the tile's payload, timer and
+  reduction blocks (`channelSetupEdt` also the send buffers) before creating
+  the tasks that lead to `FNC_summary`, and `timestepEdt` releases the timer
+  block on every round, not only on the round that starts the timer;
 - the `Computed L1 norm` result line (the row's marker);
 - an `#ifndef` guard around `ENABLE_EXTENSION_LABELING`;
 - **loud argument validation** (`rejectSettings`): a wrong argument count, a
@@ -179,7 +191,9 @@ own channel/sticky machinery outside the app's own graph.
 ## Flow
 
 `mainEdt`'s only work is command-line parsing and validation, allocating the
-four `ocrGuidRangeCreate` label spaces plus the join event and the hinted
+four label spaces and creating every label in them (`4·NR` handshake labels
+plus `NR − 1` per reduction tree through `reductionRangeCreate`: `7·NR − 3`
+labeled creates before the fork), plus the join event and the hinted
 shutdown EDT, and one call to
 `forkSpmdEdts_Cart2D`, which itself issues `NR` hinted `ocrEdtCreate` calls
 for `initEdt` in a single loop (no separate spawner EDT, unlike chandra) —
@@ -211,8 +225,9 @@ of the stencil anywhere. There is no input parsing beyond the three
 arguments and no output file. The only stdout on the critical path is the
 published one-time banner from `init_settings` and the four result lines
 from rank 0's `FNC_summary`; the per-round `DEBUG_PRINTF`s compile out
-unless `DEBUG_APP` is defined. The serial part that remains — rank 0's
-`NR`-iteration fork loop, and the one-time per-tile handshake — is the
+unless `DEBUG_APP` is defined. The serial part that remains — `mainEdt`'s
+`7·NR − 3` label creates, rank 0's `NR`-iteration fork loop, and the one-time
+per-tile handshake — is the
 program's own task-graph construction, i.e. the SPMD decomposition this row
 exists to exhibit, and is deliberately left alone.
 
@@ -243,7 +258,7 @@ Four qualifications the "hinted through the tile" summary does not cover:
   control block, the per-direction handshake block, and `mainEdt`'s
   `globalParamH` — and land correctly only because a no-hint DB is homed at
   its creating rank. The linked `reduction.c` adds more no-hint DBs of its own,
-  one per reduction phase per tile (`reduction.c:323`, `:376`, `:466`, `:631`),
+  one per reduction phase per tile (`reduction.c:322`, `:376`, `:469`, `:648`),
   inside the measured window. A campaign that runs with
   `ARTS_NOHINT_DB_HOME=ROUNDROBIN` would scatter both sets — the per-tile
   control block, which is passed `DB_MODE_CONST` into nearly every EDT of every
@@ -251,21 +266,17 @@ Four qualifications the "hinted through the tile" summary does not cover:
 - Every EDT now carries a hint; the shutdown EDT was the last one that did
   not (it round-robined onto an arbitrary rank) and is now pinned to
   `mainEdt`'s rank, which is where the join reduction returns.
-- The one-time handshake performs a **cross-rank racing labeled event create**:
-  a tile creates the labeled sticky at range index `nbrUb·id + nbr`
-  (`stencil_2d.c:1384`) and *also* at `nbrUb·nbrRank + nbrImage`
-  (`stencil_2d.c:1416`), which is exactly the label its neighbour creates as
-  that neighbour's own send event — so at a block edge two ranks race one label,
-  and one of them races its create against the other's `ocrEventSatisfy`
-  (`stencil_2d.c:1409`). That rendezvous is correct because no create of a live
-  label touches the installed event: the first create to reach the label's home
-  installs, a satisfy that arrives before it waits for it, and the other create
-  parks behind it. The receiver's one destroy (`stencil_2d.c:1164`) then admits
-  the parked create as an unused generation — one leftover sticky event per such
-  label for the rest of the run (`docs/programming_model/guids.rst`).
+- Each of the one-time handshake's `4·NR` labeled sticky events is created
+  once, by `mainEdt` before the fork (`stencil_2d.c:1619-1624`). The tile that
+  publishes its channel events at range index `nbrUb·id + nbr` only satisfies
+  that label (`stencil_2d.c:1499`); the neighbour, which names it as
+  `nbrUb·nbrRank + nbrImage`, only depends on it (`stencil_2d.c:1507`) and
+  destroys it in `channelSetupEdt` (`stencil_2d.c:1173`). One lifetime per
+  label, and nothing parks.
 - The one-time handshake's labeled sticky events live in a reserved GUID
   range, and a range's homes are spread by GUID index (`idx % nrank`), not by
-  the tile map — so most of the `4·NR` handshake creates/satisfies are
+  the tile map — so the `4·NR` creates, all issued from `mainEdt`'s rank, go to
+  the labels' homes, and most of the handshake's satisfies and dependences are
   cross-rank even between co-resident neighbours. That is a property of the
   range policy, not of the placement, and no map can move it. It happens once
   per run rather than once per round, so it shows as a setup-phase traffic
@@ -366,8 +377,9 @@ two blocks and should not be read as noise.
 The scaling verdict is measured to 8 ranks only; the 16- and 32-node cells
 are what test it. The term to watch there is the node-count-invariant setup
 floor: rank 0 issues `NR` `ocrEdtCreate` plus `2·NR` `ocrAddDependence` in
-one loop, and the four `ocrGuidRangeCreate` and the `4·NR` handshake pairs do
-not shrink with node count either.
+one loop, after `mainEdt`'s `7·NR − 3` label creates, and the four
+`ocrGuidRangeCreate` and the `4·NR` handshake satisfy/dependence pairs do not
+shrink with node count either.
 
 ## Sizing
 
@@ -396,7 +408,7 @@ the rungs are 3,456 apart.
 with `np_x = NP/NR_X`, `np_y = NP/NR_Y`, `R = 2`. The halo term is `32·R`, not
 `16·R`, per axis pair: the program creates **four** strip DBs per pair —
 `LsendBufs[0..1]` and `RsendBufs[0..1]` at `8·R·np_y` each, `TsendBufs[0..1]`
-and `BsendBufs[0..1]` at `8·R·np_x` each (`stencil_2d.c:1205-1222`). Those
+and `BsendBufs[0..1]` at `8·R·np_x` each (`stencil_2d.c:1279-1296`). Those
 strips are still small next to the two grids, so the whole thing is ≈`16·NP²`
 bytes, independent of `NR` and of `NT`.
 

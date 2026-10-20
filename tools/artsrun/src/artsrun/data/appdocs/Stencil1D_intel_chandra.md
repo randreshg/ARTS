@@ -17,7 +17,7 @@ apply the radius-2 discrete-divergence stencil to its local strip, exchange a
 2-point halo with its left/right neighbor via a pair of sticky events per
 direction, then move on. At the final timestep every tile feeds its local L1
 norm and elapsed time into two independent 10-ary reduction trees (`ADD` for
-the norm, `MAX` for wall time); rank 0 compares the reduced norm against the
+the norm, `MAX` for wall time); `summary` compares the reduced norm against the
 kernel's known-analytic answer `(NT+1)·1` and prints `Solution validates`
 (the scalar the catalog checks) only on a match. With no compute payload
 disabled (`FULL_APP=1` always in this build), the program stresses per-tile
@@ -62,16 +62,21 @@ independent of `ARITY`'s exact branching once `C(NR)` is known — derived
 call-by-call from `reduction.c`'s `reductionLaunch`/`reductionEdt`/
 `reductionSendChannelEdt`/`reductionRecvChannelEdt` (root: `Recv`-only +
 its `reductionRecvUp`-spawned phase-1 instance; interior/leaf tiles: `Send`
-+, if they themselves have children, `Recv` too). Two trees together:
-`6·NR + 4·C(NR) - 2` EDTs, `6·NR - 4` DBs — this is the "extra" the bounded
-`O(NR)` estimate below used to gesture at without deriving.
++, if they themselves have children, `Recv` too). Its events are
+`4·(NR-1) + C(NR)`: the `NR-1` labeled sticky events of the tree's range,
+which `reductionRangeCreate` creates once each in `init_globalH_part1` (the
+tiles only derive their GUIDs), plus two channel events and one output event
+per non-root tile and one output event per tile with children. Two trees
+together: `6·NR + 4·C(NR) - 2` EDTs, `6·NR - 4` DBs, `8·NR + 2·C(NR) - 8`
+events — this is the "extra" the bounded `O(NR)` estimate below used to
+gesture at without deriving.
 
 | object | count | notes |
 |--------|-------|-------|
 | EDTs | `8 + 9·NR + 7·NR·(NT+1) + 4·C(NR)` | `8+9·NR` folds in the two reduction trees' `6·NR+4·C(NR)-2` against the fixed 10-EDT chain (incl. `mainEdt`) and `3·NR` one-time per-tile setup |
 | DBs | `24·NR - 1` | `3+18·NR` (global + per-tile handle/payload DBs, NT-independent) plus the two reduction trees' `6·NR-4` |
 | DB payload | `xIn`: `8·(np_x+4)` B; `xOut`: `8·np_x` B; halo bufs: `8·HALO_RADIUS`=16 B each | dominant memory is `xIn`+`xOut` per tile |
-| Events | `5 + 22·NR + 15·NR·(NT+1) + 2·C(NR)` | `15` fresh events per tile per round (not 12 — see below) plus `12·NR` one-time per-tile phase-buffer events at init, plus the two reduction trees' `10·NR+2·C(NR)-10` |
+| Events | `7 + 20·NR + 15·NR·(NT+1) + 2·C(NR)` | `15` fresh events per tile per round (not 12 — see below) plus `12·NR` one-time per-tile phase-buffer events at init, plus the two reduction trees' `8·NR+2·C(NR)-8` |
 
 Each round's 15 events are 9 from EDT creation (`timestep`'s explicit STICKY
 plus its FINISH output+finish pair = 3; `Lsend`/`Rsend`/`Lrecv`/`Rrecv` each
@@ -83,14 +88,15 @@ round — `ocrEventDestroy` doesn't count, the 6 `ocrEventCreate`s that follow
 it do. The initial 6-events-×-2-phase-buffers (`init_rankH`, once per tile)
 is the `12·NR` term.
 
-Calibrated args `['700000000', '128', '30']` (NP=700M, NR=128, NT=30): tile
-width `np_x ≈ 5.47M` points, `xIn`+`xOut` ≈ 87.5 MB/tile → **≈11.2 GB**
-payload across 128 tiles; `C(128)=13`; EDTs ≈ `8+1,152+27,776+52` =
-**28,988**; DBs ≈ `24·128-1` = **3,071**; Events ≈ `5+2,816+59,520+26` =
-**62,367**.
+Calibrated args `['700000000', '13824', '2200']` (NP=700M, NR=13,824,
+NT=2,200): tile width `np_x ≈ 50.6k` points, `xIn`+`xOut` ≈ 0.81 MB/tile →
+**≈11.2 GB** payload across 13,824 tiles; `C(13824)=1,383`; EDTs ≈
+`8+124,416+212,986,368+5,532` = **≈213.1M**; DBs ≈ `24·13824-1` =
+**331,775**; Events ≈ `7+276,480+456,399,360+2,766` = **≈456.7M**.
 
 Counter cross-check: verified (1 node, `NP=64 NR=4 NT=2` vs `NP=64 NR=4
-NT=4`): predicted absolutes 133/96/275 and 189/96/395 (`NUM_EDT_CREATE` /
+NT=4`, plus `NP=64 NR=16 NT=2` for a second `C(NR)`): predicted absolutes
+133/96/269, 189/96/389 and 497/384/1051 (`NUM_EDT_CREATE` /
 `NUM_DB_CREATE` / `NUM_EVENT_CREATE`) match the measured counters exactly,
 against a runtime baseline of `+1 EDT, +1 DB, +0 EVT`. The original doc's
 fixed control-chain/payload-DB formulas (`10+3·NR+7·NR·(NT+1)` / `3+18·NR`)
@@ -117,7 +123,8 @@ whole `rankH`-family DB tree (passed `DB_MODE_CONST` into
 boundary besides the halo buffer itself. The two reduction trees (`ADD`
 norm, `MAX` time) are the only place where an object's provenance fans in
 from many tiles — mediated by the `reduction.c` library's own channel/sticky
-events, not the app's own DB graph.
+events (the sticky ones created once by `reductionRangeCreate` in
+`init_globalH_part1`), not the app's own DB graph.
 
 ## Flow
 
@@ -130,10 +137,11 @@ chains of `NT+1` serial rounds each — parallel width is `NR` throughout
 EDTs) is itself fully parallel within the round. `update` gates the next
 round via its own output event, so a slow round on one tile does not stall
 its neighbors beyond their own halo dependence. The last round on every tile
-independently launches its reduction; both trees converge on rank 0's
-`summary`, which is gated by a dedicated output event so `summary`'s own
-dependence releases are not truncated by shutdown, then a final `shutdown`
-EDT calls `ocrShutdown()`.
+independently launches its reduction; both trees' roots (tile 0) satisfy the
+two result events `summary` waits on. `summary` prints and returns, and a
+final `shutdown` EDT, which depends on `summary`'s output event, calls
+`ocrShutdown()`: that event fires only once `summary` has released its
+dependences, so shutdown never cuts those releases off.
 
 ## Placement (base)
 
@@ -151,15 +159,19 @@ touches the payload — onto the owning ARTS rank via
 `rankInit` onward re-derives its own current affinity
 (`ocrAffinityGetCurrent`) and stays there, so a tile's whole private state and
 compute chain live on one ARTS rank for the run's duration. Net effect: at 1
-ARTS rank all 128 (calibrated) tiles collapse onto that rank (parallelism
+ARTS rank all 13,824 (calibrated) tiles collapse onto that rank (parallelism
 comes from worker-thread stealing only); at N ARTS ranks the tile-id range
 splits into N contiguous blocks, so **neighbor tiles that halo-exchange are
 usually co-resident**, and cross-rank halo traffic is limited to the ~`N-1`
 tile-boundary pairs that straddle a block edge — genuine algorithmic
 locality the port expresses, unlike a NULL-hint program. Global bookkeeping
-objects created from `mainEdt`/`globalInit`/`globalCompute` (the `globalH`,
-`globalParamH`, event ranges) use `NULL_HINT` and so follow the ordinary
-creator-home policy (all live on rank 0, where `mainEdt` runs).
+blocks created from `mainEdt`/`globalInit`/`globalCompute` (the `globalH`,
+`globalParamH`) use `NULL_HINT` and so follow the ordinary creator-home
+policy: each lives on the rank of the task that created it, and those setup
+tasks themselves carry `NULL_HINT`, which ARTS places round-robin, so only
+`globalH` (created by `mainEdt`) is pinned to rank 0. The reductions' labeled
+events, created by `reductionRangeCreate` in `init_globalH_part1`, are homed
+by index (`idx % nranks`).
 
 ## Sizing
 
@@ -172,10 +184,11 @@ of cross-node parallelism — parallel width never exceeds `NR`), then size
 `NP` for the target memory/compute-per-round footprint (`8·2·np_x` bytes of
 resident payload per tile), and `NT` for wall-clock length (`update`'s own
 timer only counts rounds 1..`NT`, so `NT` past a few dozen barely changes
-setup-vs-steady-state ratio). The calibrated args `700000000 128 30` give
-`np_x≈5.47M` (87.5 MB/tile, ≈11.2 GB total across 128 tiles) — sized so 1
-node's 15 workers stay busy across 128 tiles for minutes rather than
-seconds, while 8 nodes still get 16 tiles apiece. Memory is the binding
+setup-vs-steady-state ratio). The calibrated args `700000000 13824 2200`
+give `np_x≈50.6k` (≈0.81 MB/tile, ≈11.2 GB total across 13,824 tiles) —
+four tiles per worker at the widest campaign geometry (32 nodes × 108
+workers = 3,456), and proportionally more per worker at every smaller node
+count. Memory is the binding
 resource before task count is: doubling `NP` doubles memory and per-round
 compute together, while `NR` is free to raise for more cross-node
 parallelism without touching memory per tile.

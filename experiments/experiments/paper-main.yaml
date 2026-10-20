@@ -33,8 +33,6 @@ apps:
   cholesky_blas:
     enabled: true
     versions: [base, hinted]
-  CoMD_intel_chandra:
-    enabled: false   # unsupported: needs EW semantics the runtime does not implement
   CoMD_intel_chandra_tiled:
     enabled: true
     versions: [base, hinted]
@@ -42,8 +40,6 @@ apps:
     enabled: true
     # the block map is 9-22 % faster than the base at 2-8 ranks (kept: a hinted tier is dropped only when it is the base placement)
     versions: [base, hinted]
-  CoMD_sdsc2:
-    enabled: false   # unsupported: needs EW semantics the runtime does not implement
   curvefit:
     enabled: false
     versions: [base]

@@ -66,7 +66,7 @@ App EDT, DB, halo-envelope and reduction-scalar counts are `nekbone`'s —
 neither change adds or removes a participant or a round. The two counts that
 carry the `I` term (participants with children) do differ, and unlike the flat
 tree's they move with the place count: `nekbone.md` gives reduction EDTs as
-`(1+3N)(2R+I-1) + (2R-1+I)` and events as `5D + 6R + I - 4`, with
+`(1+3N)(2R+I-1) + (2R-1+I)` and events as `4D + 5R + I - 3`, with
 `I = ⌈(R-1)/ARITY⌉ = 346` at `R = 3456` for every place count. Under the
 two-level tree `I` is the number of participants `red_children` returns a
 non-empty set for: with `L = R/P` consecutive participants per place, the
@@ -94,7 +94,8 @@ accumulator frees, which used to run for it (see Correctness).
 `reductionPrivate.myrank` with `calcReductionIndex(...)` instead of the rank id
 and sets `nrankPerPlace = calcReductionGroup(...)`, the two values the library's
 grouping reads. Everything else — the channel install through labeled `STICKY`
-events, the per-rank `returnEVT` channel, the `RW` `reducPrivate` DB threaded
+events that `mainEdt` creates through `reductionRangeCreate`, the per-rank
+`returnEVT` channel, the `RW` `reducPrivate` DB threaded
 through the chain, the halo — is unchanged.
 
 ## Flow

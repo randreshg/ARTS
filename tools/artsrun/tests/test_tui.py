@@ -113,27 +113,6 @@ def test_a_version_the_application_lacks_is_absent_not_unchecked():
     assert blanks > 0
 
 
-def test_an_unsupported_only_row_still_explains_why_in_its_tooltip():
-    # CoMD_sdsc2 needs EW semantics the runtime does not implement but
-    # carries no unordered_writes annotation of its own — the row is grey
-    # for a reason unrelated to DB-WRF, and the tooltip must still say why
-    # rather than fall back to the unordered_writes field's None.
-    from artsrun.model.catalog import load_catalog
-    app_entry = load_catalog().apps["CoMD_sdsc2"]
-    assert app_entry.unsupported and app_entry.unordered_writes is None
-
-    async def check(app, pilot):
-        from textual.widgets import Label
-
-        bench = app.query_one("#exp", ExperimentPanel)
-        name = next(label for label in bench.query(Label)
-                    if "CoMD_sdsc2" in str(label.content))
-        return name.tooltip
-
-    tooltip = drive(check)
-    assert tooltip == f"application is unsupported: {app_entry.unsupported}"
-
-
 def test_a_rewrite_line_carries_the_rewrite_s_own_verdict():
     # base and hinted share the row's verdict; the restructured rewrite is a
     # different program and is judged on its own.  A row whose two verdicts

@@ -107,7 +107,8 @@ Each rank's chain hands four datablocks RW from link to link — the private
 state, the packed vector block, the timer (reporting rank only) and the
 reduction-library private block — so they live on their creating rank
 forever.  Channel GUIDs are exchanged once at setup through a labeled
-sticky range (`nrank²` events, racing creators legal); fragments ride the
+sticky range (`R·(R−1)` labeled sticky events, each created once by
+`mainEdt` before the rank-init tasks); fragments ride the
 channels as fresh datablocks with `maxGen 8` headroom, and the per-
 iteration allreduce bounds chain skew, so a generation can never be
 overrun.  The final pass's residual matvec reuses the same bcast/spmv
@@ -137,7 +138,8 @@ scratch datablock and a builder two (its pair/pointer/capacity/cursor
 workspace and its per-row column/value workspace) plus its slice and a
 reference to it, i.e. four per builder.  Events:
 persistent channels (`2·R·(R−1)` total) plus the one-time labeled
-stickies; nothing grows with the iteration count.
+stickies (`R·(R−1)` channel labels and the reduction's `R−1`, all created by
+`mainEdt`); nothing grows with the iteration count.
 
 ## Flow
 

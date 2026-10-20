@@ -3,8 +3,8 @@
 *The four McCalpin STREAM kernels (copy/scale/add/triad) run over `numThreads`
 independent per-chain arrays, `nTimes` times each, with every kernel's output
 array freshly created and the previous one destroyed.*
-Source: `third_party/ocr-apps/apps/stream/ocr/stream.c` (701 lines; from line
-579 to the end — the last ~18% — is a `#if 0`-disabled serial reference
+Source: `third_party/ocr-apps/apps/stream/ocr/stream.c` (705 lines; from line
+583 to the end — the last ~17% — is a `#if 0`-disabled serial reference
 checker, dead code).
 
 ## Overview
@@ -93,12 +93,13 @@ DB, `+1` event per chain) and the `finalize` template's paramc change.
   paramv `[numThreads, perThreadSize]`), then per chain: one ONCE event
   `evt_finalize_i` (wired RO into `finalize`'s slot `i`) and one `mainLet` EDT
   carrying that event's GUID plus the template GUIDs and sizes through paramv.
-- `mainLet` creates the chain's initial `a` (initialized to 2.0, RW-held by the
-  creating EDT, no separate release), then one `EDT_PROP_FINISH` `loop` EDT
+- `mainLet` creates the chain's initial `a` (initialized to 2.0, then released
+  by the creating EDT before it is wired on), then one `EDT_PROP_FINISH` `loop` EDT
   (`iter=0`) with `a` wired RW. `mainLet`'s own output event is discarded — the
   finish wrapper's only job is to fence the whole `K`-deep per-chain subtree
   into its own OCR scope.
-- `loop(iter)` creates `copy`/`scale`/`add`/`triad`, wires
+- `loop(iter)` creates `copy`/`scale`/`add`/`triad`, releases its own RW hold
+  on `a` (this sweep's `triad` destroys it), wires
   `a`(RO)→`copy`,`scale`; `scale_output`(RO)+`copy_output`(RW, destroy-only)→
   `add`; `add_output`(RO)+`scale_output`(RO)+`a`(RW, destroyed)→`triad`; then
   either creates `loop(iter+1)` with `triad_output` RW, or (last sweep) creates

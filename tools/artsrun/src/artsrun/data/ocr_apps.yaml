@@ -39,7 +39,6 @@ apps:
     args: ['0', '10', '{repo}/datasets/basicIO/basicIO_test.dat']
     fixtures: ['{repo}/datasets/basicIO/basicIO_test.dat']
     default_enabled: false
-    unordered_writes: 'the creating task hands the block on in RW without releasing it (basicIO.c:67, :86)'
 
   cache_offset:
     binary: cache_offset
@@ -241,25 +240,6 @@ apps:
     expect_args: ['--ds', '85000', '--ts', '500', '--places', '32']
     restructured_from: cholesky_blas
 
-  CoMD_intel_chandra:
-    binary: CoMD_intel_chandra
-    class: task
-    provenance: 'CoMD (ExMatEx); Intel OCR port'
-    # Atom migration mutates two cells through EW dependences, whose
-    # exclusive-write guarantee this runtime maps onto per-node RW; the
-    # sibling ports cover the same physics (CoMD_sdsc serial-redistribute,
-    # CoMD_intel_chandra_tiled message-passing) without needing EW.
-    unsupported: 'needs exclusive-write (EW) semantics the runtime does not implement'
-    default_enabled: false
-    marker: 'Initial energy'
-    scalar_re: 'Initial energy\s*:\s*([\-+0-9.eE]+)'
-    tolerance: 0.0001
-    # The port reaches its wrap-up only through the kinetic-energy reduction,
-    # which runs on print-period boundaries — a step count the period does
-    # not divide never terminates.  The args keep -n dividing -N for that
-    # reason (the row is disabled regardless; see unsupported above).
-    args: ['-x', '60', '-y', '60', '-z', '60', '-N', '6', '-n', '6']
-
   CoMD_intel_chandra_tiled:
     binary: CoMD_intel_chandra_tiled
     hinted: true    # kept: the same rank grid blocked over the halo-face-minimal policy-domain grid instead of the near-cubic one -- identical where the near-cube is already minimal (1/2/16/32 nodes, the trend grid), -33 % / -20 % crossings at 4 / 8 nodes on the campaign grid; 11 % / 16 % faster at 2 / 4 ranks on the local grid whose asymmetry reproduces it
@@ -297,7 +277,7 @@ apps:
     expect: '-1.166049801465'
     expect_args: ['-x', '360', '-y', '180', '-z', '180', '-N', '100', '-n', '10', '-i', '24', '-j', '12', '-k', '12']
     args: ['-x', '360', '-y', '180', '-z', '180', '-N', '100', '-n', '10', '-i', '24', '-j', '12', '-k', '12']
-    unordered_writes: 'FNC_comdMain hands DBK_rankH on in RW without releasing it (CoMD.c:767); haloExchangeEdt/exchangeDataEdt re-wire DBK_sim RW while holding it (haloExchange.c:358, :478, :500, :673, :693); 24 send buffers are creator-held to EDT end (haloExchange.c:210-218, :303-311)'
+    unordered_writes: 'haloExchangeEdt/exchangeDataEdt re-wire DBK_sim RW while holding it (haloExchange.c:358, :478, :500, :673, :693); 24 send buffers are creator-held to EDT end (haloExchange.c:210-218, :303-311)'
 
   CoMD_sdsc:
     binary: CoMD_sdsc
@@ -411,7 +391,9 @@ apps:
     args: ['-x', '52', '-y', '52', '-z', '52', '-N', '10', '-n', '10']
     hinted: true    # kept: the block map beats the round-robin base by 9-22 % at 2-8 ranks
     restructured_as: CoMD_sdsc_dist
-    unordered_writes: 'the port never calls ocrDbRelease: every spine hand-off of the timer and simulation blocks overlaps the holder''s and the successor''s RW acquisitions (comd.c:75, :112, :130, :148, :173, :191, :212; timestep.c:20, :36, :53, :71, :95; lj.c:307)'
+    # DB-WRF-valid on the Lennard-Jones path these arguments run: every pair
+    # of write acquisitions is ordered.  The EAM path (-e) is not: every
+    # per-box task takes the simulation block RW at once (eam.c:809, :824).
 
   CoMD_sdsc_dist:
     binary: CoMD_sdsc_dist
@@ -451,22 +433,6 @@ apps:
     expect: '-1.166049786183'
     expect_args: ['-x', '193', '-y', '193', '-z', '193', '-N', '100', '-n', '10', '-w', '8']
     restructured_from: CoMD_sdsc
-    unordered_writes: 'mainEdt hands timer_i/sim_i/cfg_i on in RW unreleased (comd.c:181-182), and init_leaf publishes with every creator hold open (atoms.c:273)'
-
-  CoMD_sdsc2:
-    binary: CoMD_sdsc2
-    class: task
-    provenance: 'CoMD (ExMatEx); OCR port by SDSC (P. Cicotti)'
-    # Same EW dependence as CoMD_intel_chandra: per-cell atom migration
-    # needs one-EDT-at-a-time exclusivity the runtime does not provide.
-    unsupported: 'needs exclusive-write (EW) semantics the runtime does not implement'
-    default_enabled: false
-    marker: 'Final energy'
-    scalar_re: 'Final energy\s*:\s*([\-+0-9.eE]+)'
-    tolerance: 0.0001
-    expect: '-1.166063027842'
-    expect_args: ['-x', '4', '-y', '4', '-z', '4', '-N', '2']
-    args: ['-x', '44', '-y', '44', '-z', '44', '-N', '8']
 
   curvefit:
     binary: curvefit
@@ -865,7 +831,6 @@ apps:
       mteps: 'mean MTEPS ([0-9.eE+-]+)'
       visited_vertices: 'nodes (\d+)'
     restructured_from: graph500
-    unordered_writes: 'chanInitEdt registers buildHubEDT on the channels before releasing priv (graph500_dist.c:1287-1288 vs :1290)'
 
   highbw:
     binary: highbw
@@ -1045,7 +1010,7 @@ apps:
     expect: '14248044.343658'
     expect_args: ['24', '12', '12', '32', '50']
     restructured_from: hpcg_intel
-    unordered_writes: 'rpDBK and myDataDBK are handed RW to the clone unreleased across five phases (hpcg.c:1650, :1660), and the creator''s dataBlock the same way (hpcg.c:2001; reductionTwoLevel.c:497)'
+    unordered_writes: 'myDataDBK is handed RW to the clone unreleased at every phase (hpcg.c:1660, :1719, :1775, :1824, :1874, :1930), and the creator''s dataBlock the same way (hpcg.c:2001)'
   hpgmg:
     binary: hpgmg
     class: task
@@ -1352,20 +1317,18 @@ apps:
     # reached.  It is never compared against the golden.  Reduction order is the
     # block tree (block loop order, parent slot order, root dependence order),
     # which is identical at every node count and every runtime, so the value is
-    # bitwise reproducible across the twelve entries.
+    # bitwise reproducible across the ARTS entries; xsocr's build rounds the last
+    # digit differently, inside this row's 1e-08 tolerance.
     # The run-sensitive oracles on this row are therefore: this scalar, the
     # program's own per-round divergence abort, and the completion marker.
     #
-    # REFINEMENT IS LIVE -- AND UNVALIDATED.  The program supplies the published
-    # one-object specification when the argument vector names none, so the object
-    # sweeps the mesh, blocks refine 8-way and coarsen back, and the
-    # parent/consensus machinery this proxy exists to exercise actually runs.
-    # That code path has never been exercised by a recorded campaign (the old
-    # arguments made it unreachable).  A single-node smoke at the small-argument
-    # set below MUST pass before this row is committed.  If it aborts in
-    # chksum.c (the multi-level halo exchange not conservative to 10^-8), the
-    # fallback is `--num_objects 0` -- a static mesh with closed-form counts --
-    # and the finding reopens.  NEVER raise `--error_tol` to make it pass.
+    # REFINEMENT IS LIVE.  The program supplies the published one-object
+    # specification when the argument vector names none, so the object sweeps
+    # the mesh, blocks refine 8-way and coarsen back, and the parent/consensus
+    # machinery this proxy exists to exercise actually runs: the pin below is
+    # taken on that path, and paper-gate's arguments keep it too.  An abort in
+    # chksum.c (the multi-level halo exchange not conservative to 10^-8) is a
+    # finding to chase; NEVER raise `--error_tol` to make it pass.
     #
     # WIDTH is the block grid.  Each block is a single continuation chain -- one
     # runnable EDT at a time -- so the instantaneous frontier is the live block
@@ -1380,10 +1343,11 @@ apps:
     # makes refinement inert again -- a REFINE decision is downgraded to
     # LEAVE_BLK_AT_LVL once a block is at num_refine, so R=0 is a static mesh and
     # silently undoes the default object.  Upper bound from the halo GUID range,
-    # which the program now checks and refuses loudly:
-    # npx*npy*npz * 36 * (8^(num_refine+1)-1)/7 <= 2^32-1.  At 3456 blocks that
-    # permits 4; the published default 5 needs 4.7e9 slots and used to truncate
-    # silently into a range too small for the indices the mesh computes.
+    # which the program checks and refuses loudly:
+    # npx*npy*npz * 48 * (8^(num_refine+1)-1)/7 * (num_tsteps/refine_freq + 1)
+    # <= 2^32-1 (an inbound and an outbound label per direction and quarter,
+    # one set per refinement round).  At 3456 blocks and the default 20/5 (5
+    # rounds) that permits 4 (3.88e9); the published default 5 needs 3.1e10.
     #
     # CELLS PER BLOCK are grain, not width: halo goes as the block face and
     # compute as its volume, so shrinking the block raises the communication
@@ -1459,7 +1423,7 @@ apps:
     expect: '92490067348329968'
     expect_args: ['--nx', '10', '--ny', '10', '--nz', '10', '--npx', '48', '--npy', '24', '--npz', '18', '--num_refine', '1', '--num_tsteps', '20']
     restructured_from: miniAMR_intel
-    unordered_writes: 'no ocrDbRelease anywhere: build_edt publishes with every creator hold open (amr_dist.c:167), and the spine wires stg/st->obj RW while holding them (amr_dist.c:512, :514)'
+    unordered_writes: 'the spine wires stg/st->obj RW while holding them (amr_dist.c:549, :551)'
 
   # Reclassified 2026-08-23: same philosophy as miniAMR_intel (block-per-EDT
   # dataflow with halo exchange) and dominated by it -- 9 EDT creation sites
@@ -1478,7 +1442,7 @@ apps:
     marker: 'miniAMR complete'
     scalar_kind: bool
     args: ['--npx', '4', '--npy', '2', '--npz', '2', '--max_time', '800']
-    unordered_writes: 'DBKArgs/DBKObjects are handed RW to every rank''s myConnect (mainOCR.c:495-496)'
+    unordered_writes: 'the one DBKArgs and DBKObjects blocks are wired RW into every rank''s myConnect (mainOCR.c:487-488), and nothing orders those tasks among themselves'
 
   miniAMR_intel_chandra:
     binary: miniAMR_intel_chandra
@@ -1671,7 +1635,6 @@ apps:
     # 32-node ones are lattice-independent.
     hinted: true    # kept: the 3-D box place map makes most of the 26-neighbour halo local and turns the verdict at the calibrated grain (base anti, hinted scales)
     restructured_as: nekbone_dist
-    unordered_writes: 'the reduction library hands the accumulator to its clone in RW without releasing it (reduction.c:344, :454)'
 
   nekbone_dist:
     binary: nekbone_dist
@@ -1700,7 +1663,6 @@ apps:
     expect_args: ['18', '16', '12', '5', '5', '5', '8', '100']
     args: ['18', '16', '12', '5', '5', '5', '8', '100']
     restructured_from: nekbone
-    unordered_writes: 'reductionTwoLevel.c hands the accumulator to its clone in RW without releasing it (reductionTwoLevel.c:387, :497)'
 
   npb_cg:
     binary: npb_cg
@@ -1760,7 +1722,7 @@ apps:
     expect_args: ['-t', 'D', '-c', '216']
     args: ['-t', 'D', '-c', '216']
     restructured_from: npb_cg
-    unordered_writes: 'nchunk chunk tasks RW one vector and nscan scanners RW one index block (cg_dist_edt.c:605, makea_ocr.c:314)'
+    unordered_writes: 'nchunk chunk tasks RW one vector and nscan scanners RW one index block (cg_dist_edt.c:613, makea_ocr.c:314)'
 
   nqueens:
     binary: nqueens
@@ -1956,7 +1918,7 @@ apps:
     # published t = 100, gf = 1) costs this much; nothing smaller keeps the
     # floor.
     args: ['3456', '34560', '3457', '100', '1', '108']
-    unordered_writes: 'realMainEdt holds timerDBK RW past its satisfy, and mainEdt''s/initEdt''s creator holds are handed on unreleased (p2p.c:726, :724, :528, :532, :537)'
+    unordered_writes: 'realMainEdt holds timerDBK RW past its satisfy, and mainEdt''s/initEdt''s creator holds are handed on unreleased (p2p.c:732, :730, :526, :530)'
 
   printf:
     binary: printf
@@ -1977,8 +1939,6 @@ apps:
     scalar_kind: bool
     args: ['48', '8000000', '6000']
     default_enabled: false
-    unsupported: 're-creates a wrapping label index (prodcon.c:174-181) whose previous generation another thread''s consumer destroys (:116-119) with nothing ordering that destroy before the new generation''s dependences (:199-200), and creates each mapCons label from two loops per round (:177-181) — outside the labeled-GUID contract (docs/programming_model/guids.rst)'
-    unordered_writes: 'the creating task hands the block on in RW without releasing it (prodcon.c:155, :206)'
 
   quicksort:
     binary: quicksort
@@ -1994,8 +1954,8 @@ apps:
     scalar_re: 'QSORT_VALID sum=(\d+) sorted=1'
     scalar_kind: int
     # Size is the array.  This tier anti-scales: every task in the recursion
-    # acquires the SAME block RW, so adding nodes adds whole-array hand-offs
-    # rather than concurrency, and the size targets 20 s (hinted kept, flat)
+    # acquires the SAME block RW, so adding nodes adds whole-array write-backs
+    # (on the write-through cells) rather than concurrency, and the size targets 20 s (hinted kept, flat)
     # rather than the longer window a strong scaler gets.
     # The window is now the sort.  The input used to be generated by one task
     # on one rank with a generator that walked a thousand-entry table per
@@ -2096,7 +2056,7 @@ apps:
     # (the local trend argv; 240 = 2 x 120 workers at the 8-rank geometry,
     # places 8 = one per rank, waves 8).
     restructured_from: quicksort
-    unordered_writes: 'narr scatter tasks and bpg bucket tasks RW the one place array (quicksort_dist.c:690, :666)'
+    unordered_writes: 'narr scatter tasks and bpg bucket tasks RW the one place array (quicksort_dist.c:700, :676)'
 
   reduction_intel:
     binary: reduction_intel
@@ -2123,7 +2083,7 @@ apps:
     expect_args: ['10']
     args: ['650000']
     default_enabled: false
-    unordered_writes: 'the creating task hands the block on in RW without releasing it (driver.c:74, :170)'
+    unordered_writes: 'FNC_globalCompute hands each DBK_reduction_in on in RW without releasing it (driver.c:163, :171)'
 
   RSBench_intel:
     binary: RSBench_intel
@@ -2426,7 +2386,7 @@ apps:
       # than lookups, and the row's scaling claim should be readable against it
       # now that generation no longer serialises on a shared generator.
       init_s: 'Initialization Complete\. \(([0-9.]+) seconds\)'
-    unordered_writes: 'launchReductionEdt hands DBK_rankDataH on in RW unreleased (main.c:856 vs :886), and the reduction library''s accumulator does the same (reduction.c:344, :454)'
+    unordered_writes: 'launchReductionEdt hands DBK_rankDataH on in RW unreleased (main.c:866 vs :896)'
 
   mapreduce_wordcount:
     binary: mapreduce_wordcount
@@ -3360,7 +3320,7 @@ apps:
     scalar_re: 'S3 i9 valu\s+([0-9.]+)'
     args: ['48', '50', '340000']
     default_enabled: false
-    unordered_writes: 'the shared block is RW to all N init tasks (stencil1Dchannel.c:478)'
+    unordered_writes: 'the shared block is RW to all N init tasks (stencil1Dchannel.c:482)'
 
   stencil1D_guid:
     binary: stencil1D_guid
@@ -3382,7 +3342,7 @@ apps:
     scalar_re: '9 49\s+([0-9.]+)'
     args: ['48', '50', '340000']
     default_enabled: false
-    unordered_writes: 'the creating task hands the block on in RW without releasing it (stencil1DguidPI.c:329, :335)'
+    unordered_writes: 'the creating task hands the block on in RW without releasing it (stencil1DguidPI.c:330, :336)'
 
   Stencil1D_intel_chandra:
     binary: Stencil1D_intel_chandra
@@ -3392,7 +3352,7 @@ apps:
     scalar_re: 'Solution validates'
     scalar_kind: bool
     args: ['700000000', '13824', '2200']
-    unordered_writes: 'unordered Lrecv/Rrecv both RW DBK_xIn (stencil_1d.c:1214, :1229)'
+    unordered_writes: 'unordered Lrecv/Rrecv both RW DBK_xIn (stencil_1d.c:1229, :1244)'
 
   stencil1D_once:
     binary: stencil1D_once
@@ -3414,7 +3374,7 @@ apps:
     scalar_re: '9 49\s+([0-9.]+)'
     args: ['48', '50', '340000']
     default_enabled: false
-    unordered_writes: 'the shared block is RW to all N init tasks (stencil1DoncePI.c:572)'
+    unordered_writes: 'the shared block is RW to all N init tasks (stencil1DoncePI.c:567)'
 
   stencil1D_sticky:
     binary: stencil1D_sticky
@@ -3436,10 +3396,10 @@ apps:
     kind: toy
     marker: '9 49\s'
     scalar_re: '9 49\s+([0-9.]+)'
+    # The timestep count and the array size make a cell long-running, so the row stays off by default.
     args: ['48', '50', '340000']
     default_enabled: false
-    unsupported: 'creates each labeled event from both ends every timestep and destroys it once (stencil1DstickyLG.c:144-183 with the destroy at :80-82) — a concurrent create of one label, which the runtime leaves undefined; the parked creates would grow by one per cycle per label'
-    unordered_writes: 'the shared block is RW to all N init tasks, and again while held (stencil1DstickyLG.c:409, :492)'
+    unordered_writes: 'the shared block is RW to all N init tasks, and again while held (stencil1DstickyLG.c:522, :428)'
 
   Stencil2D_intel_chandra:
     binary: Stencil2D_intel_chandra
@@ -3451,7 +3411,7 @@ apps:
     expect: '2202.000000'
     expect_args: ['25600', '13824', '1100']
     args: ['25600', '13824', '1100']
-    unordered_writes: 'four unordered halo receives RW DBK_xIn (stencil_2d.c:1214, :1229, :1279, :1294)'
+    unordered_writes: 'four unordered halo receives RW DBK_xIn (stencil_2d.c:1229, :1244, :1294, :1309)'
 
   Stencil2D_intel_channelEVTs:
     binary: Stencil2D_intel_channelEVTs
@@ -3578,7 +3538,6 @@ apps:
     # the whole result.
     hinted: true    # kept: pinning the array block's chain to its creating rank, 46-124x faster than the base at 2-8 ranks
     restructured_as: stream_dist
-    unordered_writes: 'mainLet''s creator hold on db_a outlives the satisfy, and the loop holds db_a RW while wiring its own triad (stream.c:414, :335)'
 
   stream_dist:
     binary: stream_dist
@@ -3770,10 +3729,11 @@ apps:
     # Disclosed adaptations to the published program (all conformance or
     # contract fixes, none touching the compute-phase decomposition):
     # the shared EW solution counter became a per-node count block summed by
-    # the return path (ARTS maps EW to RW, so the published increment loses
-    # updates); the initializer acquires the jump table RW so remote readers
-    # see it; depth/rounds/rows are added knobs with loud validation
-    # (out-of-range aborts instead of silently running another instance);
+    # the return path (the shim refuses EW, and under RW the published
+    # increment loses updates); the initializer acquires the jump table RW so
+    # remote readers see it; depth/rounds/rows are added knobs with loud
+    # validation (out-of-range aborts instead of silently running another
+    # instance);
     # every per-node datablock is destroyed at its last reader (the round's
     # own starting board and jump table are knowingly retained — 3.3 KB per
     # round — because no event in the program orders the last reader's
@@ -3795,7 +3755,7 @@ apps:
     expect_args: ['8', '1', '8']
     args: ['8', '1', '8']
     hinted: true    # kept: scatter-then-pin over the board key, ~200x faster than the base at 2-8 ranks
-    unordered_writes: 'launch_round wires three freshly created blocks RW into realmain without releasing them (triangle.c:474-479, :484-487)'
+    unordered_writes: 'launch_round wires the starting board (triangle.c:477-478, :489) and the jump table (:483-484, :492) RW into realmain without releasing them'
 
   xeonNumaSize:
     binary: xeonNumaSize
@@ -4167,4 +4127,4 @@ apps:
     # n_isotopes*g), so raising it widens the alignment phase too and adds
     # A+1 EDTs / 2A DBs / 2A events per instance
     # (init objects only, all destroyed before the kernel starts).
-    unordered_writes: 'DBK_xs_grid is creator-held into alignJoinEdt (GridInit.c:84, Main.c:770), and launchReductionEdt hands DBK_rankDataH on unreleased (Main.c:820; reduction.c:344, :454)'
+    unordered_writes: 'launchReductionEdt hands DBK_rankDataH on unreleased (Main.c:826)'

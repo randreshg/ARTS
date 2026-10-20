@@ -4,7 +4,7 @@
 patches trade an 8-byte "who am I" block with up to 8 neighbours, `duration`
 timesteps (published default 100), over persistent CHANNEL events.*
 Source: `third_party/ocr-apps/apps/tempest/refactored/ocr/intel-bryan/tempestCommunication.c`
-(~1050 lines).
+(~1070 lines).
 
 ## Overview
 
@@ -40,10 +40,14 @@ disclosed with the measurement:
    sticky create/destroy.** The published idiom re-creates a shared labeled
    GUID every timestep, and nothing orders the next generation's satisfy
    behind the previous generation's destroy through the label's home, which
-   label reuse requires (`docs/programming_model/guids.rst`, Known
-   weaknesses). The substitution also removes ~16
+   label reuse requires (`docs/programming_model/guids.rst`, Reuse and
+   generations). The substitution also removes ~16
    event operations per patch per timestep from the steady state of a program
-   that is nothing but event traffic.
+   that is nothing but event traffic. A patch learns each neighbour's channel
+   once, through a labeled sticky handshake slot that is created once, by a
+   task that precedes both of its endpoints: `panelInit` for the slots inside
+   its panel, `realmain` for those between two panels. `patchInit` only names
+   the slots.
 2. **`duration` became `argv[2]`** (the compile-time `#define DURATION 100`
    remains its default), so the run length is a campaign knob rather than a
    build.
@@ -83,13 +87,15 @@ Every patch has 8 neighbours except the 4 corner patches of each panel, which
 lack one diagonal, so the directed halo edges number `E(k) = 48k² − 24`. (The
 topology was checked exhaustively up to `k=96`: every edge has a matching
 reverse edge, no patch names the same neighbour twice, and every handshake slot
-has exactly one publisher and one learner.)
+has exactly one publisher and one learner.) The handshake slots are the
+directed edges too, `E(k)` of them: slot `(r, q)` belongs to patch `q`'s
+direction `r`, and a direction with no neighbour has no slot.
 
 | object | count | size / note |
 |--------|-------|-------------|
 | EDTs | `6k²·duration + 12k² + 9` | `6k²·duration` `patchEdt` (`6k²` chains × `duration` generations) + `6k²` `patchInit` + `6k²` `channelSetup` + 6 `panelInit` + `realmain` + `wrapup` + 1 `mainEdt` itself (the OCR shim creates it as an EDT — `arts_edt_create(mainEdtTrampoline, ...)` — before its body runs; not one of `mainEdt`'s own explicit `ocrEdtCreate` calls) |
 | DBs | `102k² − 18` | 6 panel (88 B) + `6k²` patch (232 B: `sizeof(patch_t)`) + `E(k)` channel-handoff (8 B) + `48k²` halo seeds (8 B) — all duration-independent |
-| Events created | `144k² − 70` | see accounting below |
+| Events created | `96k² − 46` | see accounting below |
 | Live event objects | `96k² − 46` | `E(k)` CHANNEL + `E(k)` labeled sticky + 2; nothing is ever destroyed |
 | EDT templates | `12k² + 9` | pure GUID encodings under ARTS, not runtime objects |
 
@@ -97,29 +103,32 @@ Only the EDT count carries `duration`; every other count is a function of `k`
 alone, because nothing is destroyed and the halo blocks are reused rather than
 re-minted.
 
-Event accounting: one `OCR_EVENT_CHANNEL_T` per directed edge, plus **two**
-`ocrEventCreate` calls per labeled sticky slot — publisher and learner both
-create the same `GUID_PROP_IS_LABELED | GUID_PROP_CHECK` GUID; the second
-create parks at the label's home behind the first for the rest of the run
-(nothing is destroyed), so `2·E(k)` creates yield `E(k)` objects and `E(k)`
-parked creates. Exactly one
+Event accounting: one `OCR_EVENT_CHANNEL_T` per directed edge, plus one
+`ocrEventCreate` per labeled sticky slot, so every create is a live object.
+Each slot is created once, before either endpoint's `patchInit` exists: the
+`4(k−1)(2k−1)` slots between two patches of one panel by that panel's
+`panelInit`, before its patch loop, and the `72k − 48` slots between two
+panels by `realmain`, before it forks the panels (`6·4(k−1)(2k−1) + 72k − 48
+= E(k)`). Exactly one
 `ocrEdtCreate` passes a non-NULL `outputEvent` (`realmain`, feeding `wrapup`)
 and that same EDT is the only `EDT_PROP_FINISH`, whose finish event the shim
 pre-creates: `+2`. Every other `ocrEdtCreate` passes NULL and creates nothing.
 
 Worked numbers at the local-trend geometry `96 100` — 55,296 patches, 442,344
 halo edges: **5,640,201** EDTs (5,529,600 of them `patchEdt`), **940,014** DBs,
-**1,327,034** event creates for **884,690** live events, ≈19.0 MiB of payload
+**884,690** event creates, each a live event, ≈19.0 MiB of payload
 (`2160k² + 288` bytes), ≈49.8 M RW acquires over the run
 (`9 · 6k² · duration`). Default `k=2`,
-`duration=100` → 24 patches, 2,457 EDTs, 390 DBs, 506 event creates. The
+`duration=100` → 24 patches, 2,457 EDTs, 390 DBs, 338 event creates. The
 campaign runs `k=216`; substitute it in the formulas above.
 
 Counter cross-check: verified (1 node, `k=4` vs `k=8` at `duration=100`,
 measured totals 9,802/39,178 EDTs, 1,615/6,511 DBs, 2,234/9,146 events).
-NUM_EVENT_CREATE matches `144k² − 70` exactly with no offset; NUM_DB_CREATE
-matches `102k² − 18` plus the runtime's constant +1 DB per run; NUM_EDT_CREATE
-matches `6k²·duration + 12k² + 9` plus that same constant +1 EDT per run.
+NUM_DB_CREATE matches `102k² − 18` plus the runtime's constant +1 DB per run;
+NUM_EDT_CREATE matches `6k²·duration + 12k² + 9` plus that same constant +1
+EDT per run. The event totals were measured while both endpoints created each
+handshake slot (`144k² − 70` exactly, no offset); with one create per slot
+`96k² − 46` predicts 1,490/6,098, not re-measured.
 
 ## Wiring
 
@@ -127,9 +136,11 @@ matches `6k²·duration + 12k² + 9` plus that same constant +1 EDT per run.
 run's single FINISH EDT, whose output event fires `wrapupEdt` (`DONE.` +
 `ocrShutdown()`). `realmain` reserves eight labeled sticky GUID ranges of
 `6k²` each — one per direction, used only for the one-time channel handshake —
-stamps them into every panel DB and forks 6 `panelInit`s.
+creates the `72k − 48` slots between patches of two panels, stamps the ranges
+into every panel DB and forks 6 `panelInit`s.
 
-`panelInit` loops `k²` times: one 232 B patch DB and one `patchInit` per patch,
+`panelInit` first creates the `4(k−1)(2k−1)` slots between two patches of its
+panel, then loops `k²` times: one 232 B patch DB and one `patchInit` per patch,
 wired `panel DB → slot 0 (CONST)`, `patch DB → slot 1 (RW)`. No `patchInit`
 writes the panel block — it only reads `patchRange`, `duration` and the GUID
 ranges — and the dependence says so, so the `k²` readers of a panel share it
@@ -138,7 +149,8 @@ instead of taking exclusive turns.
 `patchInit` computes the 8 neighbours, then per existing direction `i` creates
 a CHANNEL event (its *receive* queue for that direction) and publishes it: an
 8 B DB holding the channel GUID, satisfied into the labeled sticky at
-`(range[rel], neighbour)`, where `rel` is the neighbour's direction back at me;
+`(range[rel], neighbour)`, where `rel` is the neighbour's direction back at me
+(the slot exists already: `patchInit` names slots and creates none);
 symmetrically it wires its `channelSetup`'s slot `i` (RO) to `(range[i], me)`,
 where that neighbour publishes. `channelSetup` records the learned GUIDs as
 `sendChannels[]`, mints 8 fresh 8 B `nbData` seed blocks (unconditionally,
@@ -159,9 +171,11 @@ every completion DECRs: `2·(6k²·duration + 12k² + 8)` satisfies on one event
 
 ## Flow
 
-`mainEdt` is rank-0-only but O(1); `realmain` is one EDT. Width is then **6**
-for the creation phase: each `panelInit` runs a `k²`-iteration serial
-create+wire loop. The `patchInit`s it spawns are `6k²` ready tasks gated only
+`mainEdt` is rank-0-only but O(1); `realmain` is one EDT, whose serial part
+is the `72k − 48` cross-panel slot creates (15,504 at `k=216`). Width is then
+**6** for the creation phase: each `panelInit` issues its `4(k−1)(2k−1)`
+intra-panel slot creates (≈8k², 370,660 at `k=216`) and then runs a
+`k²`-iteration serial create+wire loop. The `patchInit`s it spawns are `6k²` ready tasks gated only
 on a shared (CONST) panel block, so they no longer serialise behind it;
 `channelSetup` is `6k²` wide as well, each gated on its 8 published slots.
 Steady state is `duration` generations of `6k²` independent tasks with no
@@ -198,7 +212,8 @@ Hence:
 - Channel events live on their patch's `patchInit` rank, so every satisfy and
   every dependence registration is a message to a third, unrelated rank; the
   labeled sticky slots are spread by index, making each handshake a three-party
-  rendezvous.
+  rendezvous, and each slot's create is a message from `realmain`'s or its
+  `panelInit`'s rank to that slot's home.
 
 The algorithm has textbook nearest-neighbour locality on the sphere and the
 base program expresses none of it: no two objects of a patch are placed
@@ -270,7 +285,7 @@ layer from changing that.
 
 Two objects stay out of the layer's reach in both tiers: the eight labeled
 sticky GUID ranges are reserved round-robin by the shim, so the one-time
-handshake's `2·E(k)` event creates and `E(k)` satisfies are three-party
+handshake's `E(k)` event creates and `E(k)` satisfies are three-party
 rendezvous at unrelated ranks, and OCR offers no hint surface on a labeled
 range. That term is `O(k²)` against a steady state of `O(k²·duration)`.
 

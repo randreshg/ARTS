@@ -41,13 +41,13 @@ and the refinement rounds that tear the wiring down and rebuild it.
 `wrapupEdt` prints `miniAMR complete!` after the `EDT_PROP_FINISH`
 `realMainEdt`'s finish event fires, i.e. once every descendant has ended; that is
 the catalog's marker. The catalog records `scalar_kind: bool` — correctly, because
-the initial value is `srand(time(0)); rand()/RAND_MAX` (`mainOCR.c:322`) and the
-refinement dice are `srand(time(NULL) * id)` (`refineOCR.h:1535`), so no printed
+the initial value is `srand(time(0)); rand()/RAND_MAX` (`mainOCR.c:329`) and the
+refinement dice are `srand(time(NULL) * id)` (`refineOCR.h:1539`), so no printed
 number is reproducible across runs.
 
 ## Parameters
 
-Parsed by `realMainEdt` (`mainOCR.c:527`) into file-scope globals, then packed
+Parsed by `realMainEdt` (`mainOCR.c:519`) into file-scope globals, then packed
 into a 36-`int` datablock (`params[0..35]`) that every SPMD `blockInit` receives
 as a dependence — the values that matter downstream are therefore
 multinode-safe. The globals themselves are set on rank 0 only and never read
@@ -59,12 +59,12 @@ again after packing.
 | `--max_time` | timestep cap; the block chain runs while `timestep < maxTime` | 1000 | ✓ `params[35]` → `block_t.maxTime` |
 | `--num_tsteps` | timestep count in the reference program | 20 | ⚠ parsed into `params[20]` and **never read** — `--max_time` is this port's timestep dial |
 | `--refine_freq` | timesteps between refinement rounds | 5 | ✓ `params[17]` → `block_t.refineFreq` |
-| `--nx` | doubles as the *physical* block edge length used for the object-intersection geometry (`blockSize`, `mainOCR.c:299`) | 10 | ⚠ reachable, but it sizes geometry only — there is no cell array to size |
+| `--nx` | doubles as the *physical* block edge length used for the object-intersection geometry (`blockSize`, `mainOCR.c:310`) | 10 | ⚠ reachable, but it sizes geometry only — there is no cell array to size |
 | `--ny --nz` | — | 10 | ⚠ parsed into `params[5]`/`params[6]`, never read |
 | `--num_objects` | allocates the object array and enables `--object` | 0 | ⚠ reachable and copied into every block, but the refinement decision that would read it is compiled out (see below) |
 | `--object t b cx cy cz mx my mz sx sy sz ix iy iz` | one object; must follow `--num_objects` | — | ⚠ same |
 | `--num_refine --uniform_refine --block_change --num_vars --comm_vars --init_x/y/z --reorder --max_blocks --target_* --inbalance --lb_hinted --report_diffusion --error_tol --stages_per_ts --checksum_freq --stencil --permute --report_perf --plot_freq --code --blocking_send --refine_ghost` | reference miniAMR knobs | see `param.h` | ⚠ all parsed and packed into `params[]`, none read by any EDT |
-| `MAX_REF` | maximum refinement level (`block_t.maxRefLvl`) | 1 | ✗ `#ifndef` in `mainOCR.c:26`; the ARTS build passes no `-DMAX_REF`, so blocks refine at most one level |
+| `MAX_REF` | maximum refinement level (`block_t.maxRefLvl`) | 1 | ✗ `#ifndef` in `mainOCR.c:29`; the ARTS build passes no `-DMAX_REF`, so blocks refine at most one level |
 | `OBJECT_DRIVEN` | selects the real, object-geometry refinement test in `willRefineEdt` | **not defined** | ✗ compile-time. Undefined, the `#else` branch runs: *block id 10 always refines*, and blocks descended from id 10 refine again at timesteps 100/200/300/400. Refinement is a fixed test hook, not a moving object |
 
 Because `OBJECT_DRIVEN` is off and `MAX_REF` is 1, a run refines exactly once, in
@@ -91,32 +91,23 @@ level above `realMainEdt`.
 | `dataBundle_t` DB | `6` created per block per timestep (`haloRcv` output) | 72 B |
 | scratch DB in `stencilEdt` | 1 per stencil (`sizeof(double)·depc`) | 56 B |
 | args / range DBs | `1` `int[36]` + `1` `range_t` + `1` `numRanks`-GUID scratch array (`realMainEdt`'s `redChannels` — allocated, never referenced again) + `1` objects DB (only if `--num_objects`) | — |
-| labeled GUID ranges | `6 × R` sticky events reserved (`mainOCR.c:685`) | key space only |
+| labeled GUID ranges | `6 × R` sticky events reserved (`mainOCR.c:681`) | key space only |
 | channel events | `12` per block, unconditional (`rcv[6]`, `rRcv[6]`, `maxGen 2`, `nbSat 1`, `nbDeps 1`) | — |
-| labeled sticky events | `6R` unconditional "send" announcements + one "receive" pickup per real neighbour direction (boundary directions alias send↔receive instead) | — |
+| labeled sticky events | `6R` "send" announcements, one per direction per block, all created once by `realMainEdt` right after the reservation (`mainOCR.c:685-691`); a block's "receive" names its neighbour's send, and a boundary direction aliases receive to send | — |
 
 Event accounting: explicit `ocrEventCreate` gives `12R` channel events (always)
-plus `6R` unconditional labeled-sticky "send" announcements (one per
-direction per block) plus one "receive" pickup per real neighbour direction —
-`2(E_x+E_y+E_z)` where `E_x=(npx−1)·npy·npz`, `E_y=npx·(npy−1)·npz`,
-`E_z=npx·npy·(npz−1)` are the grid's adjacent-block-pair counts per axis (a
-"receive" pickup targets the SAME labeled GUID the neighbouring block's own
-"send" installs, so `2(E_x+E_y+E_z)` is both sides' creates on
-`E_x+E_y+E_z` links, the second of each parked behind the first, not new
-objects) — **plus one harmless duplicate**:
-`blockInit`'s `case 2` (the y⁻ direction) re-issues the "send"
-`ocrEventCreate` a second time whenever `yPos>0`, a second create of a GUID
-the same EDT already created, which parks at the label's home for the rest of
-the run (source quirk) — `E_y` more per grid.
+plus `6R` labeled-sticky "send" announcements (one per direction per block),
+each created once by `realMainEdt` before the fork; `blockInit` only names
+them, its own send at its own id and a neighbour's send as its receive.
 Output events add one per `stencilEdt` (`&stencilOutEVT`) and one per
 `haloRcv` (`&rcvOUT`) — i.e. `7` per block per timestep, `7RT` in total, the
 dominant term. `realMainEdt` is the only `EDT_PROP_FINISH` EDT and also takes
 an output event, so it contributes one finish event plus one output event;
 every other create passes `NULL`.
 
-Setup totals `3+3R` EDTs, `3+8R` DBs, `2+18R+2E_x+3E_y+2E_z` events — at
-`R=2` (the verify args below) that is `9`/`19`/`40`; at the calibrated `R=16`
-(`4×2×2`) it is `51`/`131`/`354`, negligible next to the steady-state totals
+Setup totals `3+3R` EDTs, `3+8R` DBs, `2+18R` events — at
+`R=2` (the verify args below) that is `9`/`19`/`38`; at the calibrated `R=16`
+(`4×2×2`) it is `51`/`131`/`290`, negligible next to the steady-state totals
 below.
 
 Worked numbers for the calibrated args (`--npx 4 --npy 2 --npz 2 --max_time
@@ -130,24 +121,29 @@ vs `--max_time 20`, no refinement in range — measured totals 170/280/180 EDT
 /DB/EVT and 330/540/320). Deltas match `R·ΔT·8 = 160`, `R·ΔT·13 = 260`,
 `R·ΔT·7 = 140` exactly. Absolutes match the setup formulas above once the
 runtime's constant +1 EDT / +1 DB baseline is added (`R=2`: `9+1=10` EDT-,
-`19+1=20` DB-worth of setup, `40` EVT; `170 = 10+16·10`, `280 = 20+26·10`,
-`180 = 40+14·10`, and identically at `T=20`) — the original doc's setup count
+`19+1=20` DB-worth of setup; `170 = 10+16·10`, `280 = 20+26·10`, and
+identically at `T=20`). That measurement predates the single creation of the
+labeled events: it counted `40` setup EVT, which included the two
+receive-side creates the blocks then issued on the one x link, so
+`180 = 40+14·10`. The program now issues `38`, which predicts `178`/`318`
+EVT; not re-measured. The original doc's setup count
 (`2+2R` EDTs, no DB total, `12R` events) undercounted `mainEdt` itself, the
 first `blockEdt` `myConnect` creates, `realMainEdt`'s three scratch DBs,
-`blockInit`'s `comm_t`/`connect_t` DBs, and the sticky-rendezvous half of the
-event count.
+`blockInit`'s `comm_t`/`connect_t` DBs, and the labeled sticky events.
 
 ## Wiring
 
-Setup is a three-EDT chain per block. `blockInit` claims its six outbound
-rendezvous events from labeled GUID ranges (`ocrGuidFromIndex` over
-`rStruct->range[dir]`, indexed by the *neighbour's* id so both sides compute the
-same GUID), creates twelve channel events, and satisfies each outbound rendezvous
-with a `connect_t` naming its own receive channels. `myConnect` fires when all six
-neighbour `connect_t`s have arrived and folds them into a `block_t` holding
-`snd[30]`/`rcv[30]` — stride 5, so each direction has one same-level slot and
-four finer-neighbour slots. A boundary direction aliases its receive event to its
-own send event, so an edge block satisfies and consumes its own channel.
+Setup is a three-EDT chain per block. `blockInit` names its six outbound
+rendezvous events in the labeled GUID ranges `realMainEdt` reserved and
+populated (`ocrGuidFromIndex` over `rStruct->range[dir]` at its own id; a
+receive names the neighbour's send at the *neighbour's* id, so both sides
+compute the same GUID), creates twelve channel events, and satisfies each
+outbound rendezvous with a `connect_t` naming its own receive channels.
+`myConnect` fires when all six neighbour `connect_t`s have arrived and folds
+them into a `block_t` holding `snd[30]`/`rcv[30]` — stride 5, so each direction
+has one same-level slot and four finer-neighbour slots. A boundary direction
+aliases its receive event to its own send event, so an edge block satisfies and
+consumes its own channel.
 
 Steady state per timestep: `blockEdt` creates `stencilEdt` (7 slots), six
 `haloRcv` EDTs (1 or 4 slots depending on `neighborRefineLvls[i]`) wired
@@ -176,10 +172,11 @@ unbounded `blockEdt` chain. Parallel width is `R` in the base phase and grows to
 timestep is fully serial (`blockEdt → 6 haloRcv → stencilEdt → blockEdt`), so
 per-block latency, not width, sets the wall clock once `R` ≤ worker count.
 
-Serial points: `realMainEdt`'s single-threaded argv parse and `R`-iteration fork
-loop; each refinement round, which is a global-ish barrier only among a block and
-its six neighbours (not across the mesh); and termination, which waits for the
-finish event of every descendant before `wrapupEdt` runs. Blocks are otherwise
+Serial points: `realMainEdt`'s single-threaded argv parse, its `6R` labeled
+creates and its `R`-iteration fork loop; each refinement round, which is a
+global-ish barrier only among a block and its six neighbours (not across the
+mesh); and termination, which waits for the finish event of every descendant
+before `wrapupEdt` runs. Blocks are otherwise
 free-running — there is no timestep barrier across the mesh, only the pairwise
 channel dependences, so blocks drift apart by up to `maxGen = 2` generations.
 
@@ -196,14 +193,14 @@ There is no `OCR_APP_OPTIMIZED_PLACEMENT` layer in this port; the placement belo
 - **Everything after that is pinned to the creating rank.**
   `ocrAffinityGetCurrent()` + `OCR_HINT_EDT_AFFINITY` is applied to `myConnect`,
   every `blockEdt`, `stencilEdt`, `haloRcv`, and the refinement control/intent
-  tasks (`mainOCR.c:158/340/462`, `refineOCR.h` ×4). A block's entire future —
+  tasks (`mainOCR.c:162/347/461`, `refineOCR.h` ×4). A block's entire future —
   including its eight children — stays on the node its `blockInit` landed on.
   There is no migration and no rebalancing after refinement.
 - Datablocks are all created with `NULL_HINT` → home = creating rank, which given
   the pin above means every block's data is homed with its block. Cross-node
   traffic is exactly the halo channel satisfies on partition boundaries.
 - A minority of creates in the coarsening path (`coarsenOCR.h`, and
-  `refineOCR.h:196/940/951/1032`) pass `NULL_HINT` and therefore round-robin away
+  `refineOCR.h:196/940/951/1033`) pass `NULL_HINT` and therefore round-robin away
   from their block's node — a placement inconsistency inside the same port.
 
 Net effect: distribution granularity is `npx·npy·npz`, decided once at fork. With

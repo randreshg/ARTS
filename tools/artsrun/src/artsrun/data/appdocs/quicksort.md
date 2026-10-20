@@ -77,11 +77,9 @@ above the balanced estimate.
 | Events | 2 per created child (its ONCE data event and the runtime finish event every child opens), plus `fillTasks` generator output events, plus the root's finish and output events and the STICKY `coordEvt` | — |
 | Templates | `qsortTemplate` (reused across the whole tree), a second one-off template for the root (which carries the generation's completion on its extra slots), `fillTemplate`, `finishTemplate` | — |
 
-Counter cross-check: **pending** — the previous NUM_EDT_CREATE / NUM_EVENT_CREATE
-figures were taken against the old table-walking generator and the old
-unconditional two-child rule, so both the values and the `4·I(N)+3` event
-formula they confirmed are stale. Re-measure on the current binary before
-quoting counts.
+Counter cross-check (counter build, 2 ranks): `Q(N)`, the number of qsort tasks
+(NUM_EDT_FINISH − 130), is 77,700 at N = 200k, 155,418 at 400k, 311,279 at 800k,
+466,982 at 1.2M and 777,607 at 2M, about 0.39·N.
 
 ## Wiring
 
@@ -90,10 +88,12 @@ array DB — every `fillTask`, the root `qsortEdt`, every recursive child
 (create-time depv, `DB_DEFAULT_MODE` = RW), and `finishEdt` — is `DB_MODE_RW`,
 and there is only one DB. ARTS's RW is **per-node exclusive with OCR RW
 semantics**: the workers of one rank share the node's grant and can partition
-disjoint ranges concurrently, but only one rank at a time holds it, and each
-hand-off between ranks moves the whole `8·arraySize` payload. So a one-node
-cell uses all of its workers, and adding nodes adds whole-array migrations
-rather than concurrency. That is the anti-scaling exhibit, and it is
+disjoint ranges concurrently, but only one rank at a time holds it, and the payload moves with it: on the write-back cells only the grant moves carry
+it (25-35 per run at every size), while on the write-through cells every RW
+release off the home writes the whole `8·arraySize` payload back to the home,
+coalesced to one flight per rank at a time, so their traffic grows as N² (about
+0.93·N² bytes at two ranks). So a one-node cell uses all of its workers, and
+adding nodes adds whole-array write-backs rather than concurrency. That is the anti-scaling exhibit, and it is
 structural, not a defect: there is no RO access anywhere in the recursion.
 
 A node releases mid-body, right after partitioning and before creating its
@@ -115,9 +115,11 @@ and release it, create the `fillTasks` generators, create the root and the
 finisher, wire the coordination chain (`coordEvt`), then release the generators
 by giving each of them the array. The generators fill their own ranges; the
 root partitions once all of them are done; execution then walks the recursion
-tree, and — because of the single-DB RW exclusivity above — wall time tracks
-`Q(N)` ownership hand-offs, each publishing the **entire** array (not just the
-touched sub-range), rather than the number of available workers. The root's
+tree, and — because of the single-DB RW exclusivity above — the work tracks
+the `Q(N)` write turns rather than the number of available workers; on the
+write-through cells each turn off the home publishes the **entire** array (not
+just the touched sub-range), in about R1/c flights (R1 ≈ Q/2 turns off the
+home, c ≈ 1.6-1.9 releases per flight). The root's
 `EDT_PROP_FINISH` scope drains only once every descendant — including the
 nested finish scopes each recursive call also opens — has completed; that drain
 fires `outEvt` → `coordEvt` → `finishEdt`, which RW-acquires the sorted array
@@ -147,10 +149,10 @@ whole array in order to write a slice of it. Its consequence is that
 generation parallelism is bounded by one node's workers.
 
 Combined with Wiring's single-writer serialization: since the recursion
-scatters round-robin while the DB's home stays pinned to rank 0, most RW
-hand-offs cross ranks, and every hand-off moves the whole array — by
-construction close to the worst achievable coherence traffic pattern for an
-in-place sort.
+scatters round-robin while the DB's home stays pinned to rank 0, about half
+the RW turns run off the home, and on the write-through cells each of them
+writes the whole array back — by construction close to the worst achievable
+coherence traffic pattern for an in-place sort.
 
 ## Placement (hinted)
 
@@ -158,8 +160,9 @@ in-place sort.
 `benchmarks/apps/ocr_apps.cmake`; catalog `hinted: true`).
 
 The base program combines the two worst placements this program can have: execution
-scatters round-robin while the single array block homes on rank 0, so most RW
-hand-offs cross ranks and each one moves the whole array. The layer is
+scatters round-robin while the single array block homes on rank 0, so about
+half the RW turns run off the home, each writing the whole array back on the
+write-through cells. The layer is
 CONTAINMENT of a single-RW-block structure, never distribution — hints cannot
 decompose the array; that is the restructured version's job.
 

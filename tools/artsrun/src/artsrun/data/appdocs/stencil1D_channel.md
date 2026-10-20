@@ -3,7 +3,7 @@
 *1-D three-point stencil, cloning style, halo exchange over persistent
 CHANNEL events, with explicit block-affinity chain placement.*
 Source: `third_party/ocr-apps/apps/Stencil1D/refactored/ocr/intel-david/stencil1Dchannel.c`
-(~550 lines; requires the `ENABLE_EXTENSION_CHANNEL_EVT` OCR extension, which
+(~555 lines; requires the `ENABLE_EXTENSION_CHANNEL_EVT` OCR extension, which
 this build always enables — see Parameters).
 
 ## Overview
@@ -60,13 +60,13 @@ Let `N=nrank`, `M=npoints`, `T=maxt`.
 | EDTs total | `N·T + 4N + 3` — `mainEdt`, `realMainEdt` (FINISH), `N` `stencilInitDBsEdt`, `N` `stencilInitEdt`, `N·(T+1)` `stencilEdt` chain generations (single clone per iteration, no grandchild lookahead), `N` `stencilReportEdt` (one per chain, at the final timestep), 1 `wrapupEdt` | — |
 | EDT templates | `3N+3` — `realMainTML`/`wrapupTML`/`stencilInitDBsTML` created once centrally; `stencilInitTML`, `stencilTML`, and `reportTML` are each (re-)created once per chain rather than shared | — |
 | DBs | `3N-1` — 1 shared + `N` private (data embedded via `dataOffset`, same single-DB layout as lineage A) + `2(N-1)` halo buffer | shared ≈ 40 B (`nrank`/`npoints`/`maxt` + `startDirs[2]`); private ≈ 72 B (`private_t`: 5×`u32` + `dataOffset` + 5×`ocrGuid_t`) + `M×8` B data; buffer = 16 B |
-| Events | `6(N-1)+2` `ocrEventCreate`/`ocrEventCreateParams` calls, **all made once at bootstrap, none during the `T`-iteration steady state**: `4(N-1)` labeled STICKY calls (2 endpoints × 2 roles per boundary — each boundary's address is independently "created" by both neighbors, and the second create parks at the label's home behind the first for the rest of the run, so only `2(N-1)` distinct objects actually result) used solely to exchange channel-event GUIDs, plus `2(N-1)` CHANNEL events (one per rank-side that has a neighbor), each satisfied/consumed `T` times over the run without being recreated, plus a constant **+2** from `mainEdt`'s single `ocrEdtCreate` of `realMainEdt` as a FINISH EDT with a non-NULL `outputEvent` (`&finishEVT`) — per the runtime's event-accounting rule this materializes *two* separate event objects, the output event itself and the internal FINISH-latch event `EDT_PROP_FINISH` always creates (chained together by the shim), independent of `N`/`T` | — |
+| Events | `4(N-1)+2` `ocrEventCreate`/`ocrEventCreateParams` calls, **all made once at bootstrap, none during the `T`-iteration steady state**: `2(N-1)` labeled STICKY events (one per boundary direction, each created once by `realMainEdt` before it launches any chain, never destroyed) used solely to exchange channel-event GUIDs, plus `2(N-1)` CHANNEL events (one per rank-side that has a neighbor), each satisfied/consumed `T` times over the run without being recreated, plus a constant **+2** from `mainEdt`'s single `ocrEdtCreate` of `realMainEdt` as a FINISH EDT with a non-NULL `outputEvent` (`&finishEVT`) — per the runtime's event-accounting rule this materializes *two* separate event objects, the output event itself and the internal FINISH-latch event `EDT_PROP_FINISH` always creates (chained together by the shim), independent of `N`/`T` | — |
 
 Worked numbers at the calibrated args (`48 50 340000`): EDTs ≈
 `48×340000 + 4×48 + 3 = 16,320,195`; DBs = `3×48-1 = 143`, ≈24 KB payload;
-Events = `6×47+2 = 284` API calls total, for the entire 340,000-iteration
+Events = `4×47+2 = 190` API calls total, for the entire 340,000-iteration
 run — the flattest event-churn profile of any variant that uses events at
-all (only `stencil1D_guidPI`'s `188` is smaller, and that variant uses no
+all (only `stencil1D_guidPI`'s `94` is smaller, and that variant uses no
 events past bootstrap either).
 
 Counter cross-check: verified (1 node, `4 4 5` vs `6 4 8`): NUM_EDT_CREATE
@@ -74,21 +74,23 @@ Counter cross-check: verified (1 node, `4 4 5` vs `6 4 8`): NUM_EDT_CREATE
 `N·T+4N+3` / `3N-1` / `6(N-1)+2` (app values 39/75, 11/17, 20/32) plus the
 runtime's constant +1 EDT/+1 DB/+0 EVT baseline. `EDTs`/`DBs` were
 already exact; the `6(N-1)` event formula was short by a constant +2 —
-the FINISH-EDT output/latch pair above accounts for it.
+the FINISH-EDT output/latch pair above accounts for it. Those events were
+measured while both neighbours created each label; with one create per label
+`4(N-1)+2` predicts 14 → 22, not re-measured.
 
 ## Wiring
 
 - `mainEdt` creates a shared DB and `realMainEdt` **as a finish EDT**
   (`EDT_PROP_FINISH`, output event `finishEVT`), then `wrapupEdt` depending
   on `finishEVT`.
-- `realMainEdt` creates `N` `stencilInitDBsEdt` EDTs, each explicitly
-  placed at a computed rank (see Placement) and RW-dependent on the shared
-  block.
+- `realMainEdt` creates the `2(N-1)` labeled STICKY events (two per internal
+  boundary, one per direction), then `N` `stencilInitDBsEdt` EDTs, each
+  explicitly placed at a computed rank (see Placement) and RW-dependent on
+  the shared block.
 - `stencilInitDBsEdt` creates the private DB (data embedded via
   `dataOffset`) and 0–2 buffer DBs, then launches `stencilInitEdt`.
-- `stencilInitEdt` computes, via `ocrGuidFromIndex`, the labeled STICKY
-  addresses both neighbors of a boundary will independently create (the
-  second create of each parks behind the first); creates its own CHANNEL event(s) for each
+- `stencilInitEdt` names, via `ocrGuidFromIndex`, the labeled STICKY
+  events `realMainEdt` created for its boundaries; creates its own CHANNEL event(s) for each
   side it has, writes each channel's GUID into the corresponding buffer
   DB's `.EVT` field, and satisfies the matching labeled STICKY event with
   that buffer — this is how a rank's channel GUID reaches its neighbor,
@@ -111,8 +113,8 @@ the FINISH-EDT output/latch pair above accounts for it.
 
 ## Flow
 
-`O(N)` rank-0 setup (the `stencilInitDBsEdt` creation loop, each iteration
-doing `O(1)` work), then `N` parallel chains each a `T`-deep serial
+`O(N)` setup in `realMainEdt` (the `2(N-1)` label creates and the
+`stencilInitDBsEdt` creation loop, each iteration doing `O(1)` work), then `N` parallel chains each a `T`-deep serial
 dependency chain. Finalization has two layers: the `stencilReportEdt`s form
 a left-to-right serialized relay (rank 0 first, cascading via the shared
 channel infrastructure — mirroring lineage A's shutdown wave), and the
