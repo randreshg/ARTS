@@ -140,16 +140,14 @@ enum arts_ooo_kind {
    * and replays on the install's drain like any other home-side body. */
   OOO_DB_GRANT_RETURN, /* → arts_handler_db_grant_return @ home */
 #endif
-#ifdef ARTS_WRITE_POLICY_WB
-  OOO_DB_INV_REDIRECT, /* → arts_handler_db_inv_redirect @ the grant holder */
-#endif
 /* GRANT_INVALIDATE / RESPONSE / CONFIRM, and DELIVER / INVALIDATE /
- * INV_ACK / CTS, are Cat-C: their targets are either provably installed (a
- * revoking home names a holder only after that rank installed; a requester
- * pinned its cache when it sent the request; home for the acks) or the MISS
- * action is part of the protocol (INVALIDATE MISS → ACK; DELIVER MISS →
- * landing discard).  A home whose grants come back unasked sends no
- * GRANT_INVALIDATE and receives no CONFIRM. */
+ * INV_ACK / CTS / REDIRECT, are Cat-C: their targets are either provably
+ * installed (a revoking home names a holder only after that rank installed; a
+ * requester pinned its cache when it sent the request; home for the acks) or
+ * the MISS action is part of the protocol (INVALIDATE MISS → ACK; DELIVER MISS
+ * → landing discard; REDIRECT MISS → the requester is dismissed).  A home
+ * whose grants come back unasked sends no GRANT_INVALIDATE and receives no
+ * CONFIRM. */
 #elif defined(ARTS_PROTOCOL_VAL) && defined(ARTS_WRITE_POLICY_WT)
   OOO_DB_ACQUIRE, /* → arts_db_acquire_replay_dep (re-attempts the one deferred
                      local dep; pushed by arts_db_acquire_all's per-dep 3-way)
@@ -267,6 +265,7 @@ struct arts_ooo_args_db_create_s {
 #endif
   uint16_t flags;
   uint16_t db_type;
+  uint8_t owed;
 };
 
 struct arts_ooo_args_create_local_s {
@@ -314,6 +313,7 @@ struct arts_ooo_args_db_grant_request_s {
   arts_guid_t db_guid;
   struct arts_rdzv_landing_s rdzv; /* requester's transfer landing */
   uint64_t have_version;           /* version the requester already holds */
+  uint32_t cover;                  /* ARTS_COVER_* */
 };
 
 /* The voluntary return carries nothing but who is giving the right back. */
@@ -326,8 +326,7 @@ struct arts_ooo_args_db_grant_return_s {
 struct arts_ooo_args_db_snapshot_request_s {
   unsigned int requester;
   arts_guid_t db_guid;
-  arts_guid_t edt_guid;
-  uint32_t slot;
+  uint32_t cover;                  /* ARTS_COVER_PAR | ARTS_COVER_PRECLAIM */
   struct arts_rdzv_landing_s rdzv; /* requester's snapshot landing */
 };
 
@@ -393,6 +392,9 @@ struct arts_ooo_args_db_inv_request_s {
                              behalf */
   arts_guid_t db_guid;
   arts_db_access_mode_t mode;      /* DB_MODE_RO or DB_MODE_RW */
+  uint32_t cover;                  /* the request's ARTS_COVER_PAR, a holder's
+                                      bounce included */
+  bool bounce;                     /* re-sent by a holder that had no bytes */
   struct arts_rdzv_landing_s rdzv; /* deliver/grant landing; txid==0 = first
                                       touch (home replies INV_CTS) */
 };
@@ -404,6 +406,7 @@ struct arts_ooo_args_db_inv_request_s {
  * moved on. */
 struct arts_ooo_args_db_inv_redirect_s {
   unsigned int requester;
+  uint32_t cover;
   arts_guid_t db_guid;
   struct arts_rdzv_landing_s rdzv;
 };
@@ -423,6 +426,7 @@ struct arts_ooo_args_db_excl_request_s {
   unsigned int requester; /* rank that sent MSG_DB_EXCL_REQUEST */
   arts_guid_t db_guid;
   arts_db_access_mode_t mode; /* DB_MODE_RO or DB_MODE_RW */
+  uint32_t cover;                  /* EXCL_COVER_* */
   struct arts_rdzv_landing_s rdzv; /* requester's grant/deliver landing */
 };
 /* EXCL_RELEASE: data_size is an RW release's byte count (0 for RO releases).

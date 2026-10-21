@@ -225,8 +225,9 @@ static void owner_response_commit(arts_shared_ptr_t db_h, arts_guid_t db_guid) {
   /* No racing INVALIDATE can have reached us yet: home targets this rank as an
    * INVALIDATE recipient only after the rw_holder flip, which needs this
    * CONFIRM. So incoming_new_owner == NONE here — send CONFIRM
-   * unconditionally. grant_req_in_flight stays 1 until CONFIRM_ACK so fresh
-   * RW acquires in the gate window park without issuing a duplicate request. */
+   * unconditionally.  The request word's write axis stays SENT until
+   * CONFIRM_ACK's drain clears it, so a fresh RW acquire in the gate window
+   * loses the axis claim and parks without issuing a duplicate request. */
   unsigned int home_rank = arts_guid_get_rank(db_guid);
   arts_send_db_grant_confirm(home_rank, db_guid);
 

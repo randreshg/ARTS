@@ -120,3 +120,29 @@ arts_tsan_residue(lulesh_example
     SHAPES R1)
 arts_tsan_residue(lulesh_example
     CELLS FLUSH SHAPES R4)
+
+# A create on a rank other than the home claims the first-touch cache its own
+# dependences made: the create's hold and those dependences' write turns share
+# the rank's turn, unordered, so under write-through a release publishes while
+# another writer of that rank writes.  Their readers run on the same rank, so
+# no read is served from a written buffer.
+arts_tsan_residue(db_destroy_claimed_first_touch
+    CELLS VAL/WT/RETAIN VAL/WT/PURGE INV/WT/RETAIN INV/WT/PURGE SHAPES R2)
+arts_tsan_residue(db_destroy_claimed_first_touch_delay
+    CELLS VAL/WT/RETAIN VAL/WT/PURGE INV/WT/RETAIN INV/WT/PURGE SHAPES R2)
+arts_tsan_residue(db_destroy_claimed_first_touch_wave2
+    CELLS VAL/WT/RETAIN VAL/WT/PURGE INV/WT/RETAIN INV/WT/PURGE SHAPES R2)
+arts_tsan_residue(db_destroy_claimed_first_touch_wave2_delay
+    CELLS VAL/WT/RETAIN VAL/WT/PURGE INV/WT/RETAIN INV/WT/PURGE SHAPES R2)
+arts_tsan_residue(db_destroy_cover_settles_t1
+    CELLS VAL/WT/RETAIN VAL/WT/PURGE INV/WT/RETAIN INV/WT/PURGE SHAPES R2)
+arts_tsan_residue(db_destroy_cover_settles_t1_delay
+    CELLS VAL/WT/RETAIN VAL/WT/PURGE INV/WT/RETAIN INV/WT/PURGE SHAPES R2)
+arts_tsan_residue(db_create_races_acquire_writers
+    CELLS VAL/WT/RETAIN VAL/WT/PURGE INV/WT/RETAIN INV/WT/PURGE SHAPES R2)
+arts_tsan_residue(db_create_races_acquire_writers_fuzz
+    CELLS VAL/WT/RETAIN VAL/WT/PURGE INV/WT/RETAIN INV/WT/PURGE SHAPES R2)
+arts_tsan_residue(db_create_races_acquire_mixed
+    CELLS VAL/WT/RETAIN VAL/WT/PURGE INV/WT/RETAIN INV/WT/PURGE SHAPES R2)
+arts_tsan_residue(db_create_races_acquire_mixed_fuzz
+    CELLS VAL/WT/RETAIN VAL/WT/PURGE INV/WT/RETAIN INV/WT/PURGE SHAPES R2)

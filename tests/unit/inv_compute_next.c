@@ -58,6 +58,22 @@ static void expect_cache(const char *what, uint64_t cur, int op, uint32_t idx,
                          uint64_t want_next, uint32_t want_act) {
   uint32_t act = 0xFFFFFFFFu;
   uint64_t next = inv_cache_compute_next(cur, op, idx, &act);
+  /* The read plane's checks ignore the request bits (the parity is the
+   * sender's); expect_req below checks them whole. */
+  if ((next & ~INV_CACHE_REQ_MASK) != want_next || act != want_act) {
+    (void)fprintf(stderr,
+                  "FAIL inv_compute_next: %s — got word %016llx act %u, "
+                  "want word %016llx act %u\n",
+                  what, (unsigned long long)next, act,
+                  (unsigned long long)want_next, want_act);
+    g_fail = 1;
+  }
+}
+
+static void expect_req(const char *what, uint64_t cur, int op, uint32_t idx,
+                       uint64_t want_next, uint32_t want_act) {
+  uint32_t act = 0xFFFFFFFFu;
+  uint64_t next = inv_cache_compute_next(cur, op, idx, &act);
   if (next != want_next || act != want_act) {
     (void)fprintf(stderr,
                   "FAIL inv_compute_next: %s — got word %016llx act %u, "
@@ -124,10 +140,10 @@ int main(void) {
                0u, INV_CACHE_MAKE(INV_RO_VALID, 0u, 0u),
                INV_CACHE_ACT_PUBLISH_KILL);
 
-  /* A reply with no fetch open is an orphan. */
-  expect_cache("orphan reply drops", INV_CACHE_MAKE(INV_RO_IDLE, 0u, 0u),
+  /* A reply with no fetch open answers no request: the caller raises it. */
+  expect_cache("orphan reply is late", INV_CACHE_MAKE(INV_RO_IDLE, 0u, 0u),
                INV_CACHE_OP_DELIVER, 0u, INV_CACHE_MAKE(INV_RO_IDLE, 0u, 0u),
-               INV_CACHE_ACT_DROP);
+               INV_CACHE_ACT_LATE);
 
   /* Invalidate: retire a copy, mark a fetch, or be idempotent. */
   expect_cache("invalidate retires a valid copy",
@@ -163,6 +179,71 @@ int main(void) {
   expect_dir("close drops the claim and nothing else", INV_DIR_MAKE(1u, 0u),
              INV_DIR_OP_ROUND_CLOSE, 0u, INV_DIR_MAKE(0u, 0u),
              INV_DIR_ACT_NONE);
+
+  /* The request axes. */
+  {
+#define W(ro, inf, hro, rw, par, stub)                                         \
+  INV_CACHE_WITH_REQ(INV_CACHE_MAKE(ro, inf, hro), rw, par, stub)
+    expect_req("a fetch flips the parity", W(INV_RO_IDLE, 0u, 0u, 0u, 0u, 1u),
+               INV_CACHE_OP_ACQ_RO, ME, W(INV_RO_REQ, 1u, ME, 0u, 1u, 1u),
+               INV_CACHE_ACT_SEND_RO);
+    expect_req("a reader rides the write request",
+               W(INV_RO_IDLE, 0u, 0u, INV_RW_SENT, 0u, 0u), INV_CACHE_OP_ACQ_RO,
+               ME, W(INV_RO_IDLE, 0u, ME, INV_RW_SENT, 0u, 0u),
+               INV_CACHE_ACT_PARK);
+    expect_req("rw claim", W(INV_RO_REQ, 1u, OTH, 0u, 1u, 1u),
+               INV_CACHE_OP_RW_CLAIM, 0u,
+               W(INV_RO_REQ, 1u, OTH, INV_RW_OPEN, 1u, 1u), INV_CACHE_ACT_WON);
+    expect_req("rw commit under its token",
+               W(INV_RO_REQ, 1u, OTH, INV_RW_OPEN, 1u, 1u),
+               INV_CACHE_OP_RW_COMMIT, 1u,
+               W(INV_RO_REQ, 1u, OTH, INV_RW_SENT, 1u, 1u), INV_CACHE_ACT_WON);
+    expect_req("a stale OPEN's commit loses",
+               W(INV_RO_IDLE, 0u, 0u, INV_RW_OPEN, 0u, 0u),
+               INV_CACHE_OP_RW_COMMIT, 1u,
+               W(INV_RO_IDLE, 0u, 0u, INV_RW_OPEN, 0u, 0u), INV_CACHE_ACT_LOST);
+    expect_req("a stale OPEN's give-back leaves it",
+               W(INV_RO_IDLE, 0u, 0u, INV_RW_OPEN, 0u, 0u), INV_CACHE_OP_RW_GIVE,
+               1u, W(INV_RO_IDLE, 0u, 0u, INV_RW_OPEN, 0u, 0u),
+               INV_CACHE_ACT_NONE);
+    expect_req("the claim takes the chain and closes both axes and the stub",
+               W(INV_RO_REQ, 1u, ME, INV_RW_SENT, 1u, 1u), INV_CACHE_OP_CLAIM,
+               0u, W(INV_RO_IDLE, 0u, 0u, 0u, 1u, 0u), INV_CACHE_ACT_SERVE);
+    expect_req("a covered fetch's size round or dismiss closes it",
+               W(INV_RO_REQ, 1u, 0u, 0u, 1u, 0u), INV_CACHE_OP_CTS, 1u,
+               W(INV_RO_IDLE, 0u, 0u, 0u, 1u, 0u), INV_CACHE_ACT_NONE);
+    expect_req("a dismiss under the write request closes; riders stay",
+               W(INV_RO_REQ, 1u, ME, INV_RW_SENT, 1u, 0u), INV_CACHE_OP_CTS, 1u,
+               W(INV_RO_IDLE, 0u, ME, INV_RW_SENT, 1u, 0u), INV_CACHE_ACT_NONE);
+    expect_req("a dismiss with the wrong parity is late",
+               W(INV_RO_REQ, 1u, ME, 0u, 1u, 0u), INV_CACHE_OP_CTS, 0u,
+               W(INV_RO_REQ, 1u, ME, 0u, 1u, 0u), INV_CACHE_ACT_LATE);
+    expect_req("a kill-marked fetch's size round or dismiss owes the ack",
+               W(INV_RO_REQ_KILL, 1u, 0u, 0u, 1u, 0u), INV_CACHE_OP_CTS, 1u,
+               W(INV_RO_IDLE, 0u, 0u, 0u, 1u, 0u), INV_CACHE_ACT_CLOSE_ACK);
+    expect_req("a kill-marked fetch with riders under a write request closes "
+               "and acks",
+               W(INV_RO_REQ_KILL, 1u, ME, INV_RW_SENT, 1u, 0u), INV_CACHE_OP_CTS,
+               1u, W(INV_RO_IDLE, 0u, ME, INV_RW_SENT, 1u, 0u),
+               INV_CACHE_ACT_CLOSE_ACK);
+    expect_req("a kill-marked fetch re-sent for waiting readers keeps the mark",
+               W(INV_RO_REQ_KILL, 1u, ME, 0u, 1u, 0u), INV_CACHE_OP_CTS, 1u,
+               W(INV_RO_REQ_KILL, 1u, ME, 0u, 0u, 0u), INV_CACHE_ACT_RESEND);
+    expect_req("a waiting reader's size round re-sends and declaims",
+               W(INV_RO_REQ, 1u, ME, 0u, 1u, 1u), INV_CACHE_OP_CTS, 1u,
+               W(INV_RO_REQ, 1u, ME, 0u, 0u, 0u), INV_CACHE_ACT_RESEND);
+    expect_req("an answer under an OPEN keeps the stub (its token)",
+               W(INV_RO_REQ, 1u, ME, INV_RW_OPEN, 1u, 1u), INV_CACHE_OP_CTS,
+               1u, W(INV_RO_IDLE, 0u, ME, INV_RW_OPEN, 1u, 1u),
+               INV_CACHE_ACT_NONE);
+    expect_req("a size round with no fetch out is late",
+               W(INV_RO_IDLE, 0u, 0u, 0u, 1u, 0u), INV_CACHE_OP_CTS, 1u,
+               W(INV_RO_IDLE, 0u, 0u, 0u, 1u, 0u), INV_CACHE_ACT_LATE);
+    expect_req("a grant with no write request out is late",
+               W(INV_RO_IDLE, 0u, ME, 0u, 0u, 0u), INV_CACHE_OP_RW_CLEAR, 0u,
+               W(INV_RO_IDLE, 0u, ME, 0u, 0u, 0u), INV_CACHE_ACT_LATE);
+#undef W
+  }
 
   if (g_fail) {
     return 1;

@@ -270,7 +270,10 @@ typedef struct {
    *  (= entire DB). */
   uint64_t access_size;
   /** Pre-reserved GUID.  NULL_GUID = auto-allocate (default).  When
-   *  non-zero, the GUID's rank field is authoritative for routing and
+   *  non-zero, it must come from @c arts_guid_reserve or
+   *  @c arts_guid_reserve_range: a GUID a create minted (the return of an
+   *  @c arts_db_create given no pre-reserved GUID) is refused, aborting the
+   *  run.  The GUID's rank field is authoritative for routing and
    *  overrides @c rank above.  A create of a GUID whose block is live waits,
    *  parked (at the home, or on a creating rank that still holds an earlier
    *  create's descriptor of the GUID or a cache that kept a right to it: the

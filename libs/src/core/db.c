@@ -605,7 +605,7 @@ bool arts_db_create_install_local(arts_shared_ptr_t cb) {
         home, guid,
         atomic_load_explicit(&db->cache.db_size, memory_order_relaxed),
         ARTS_DB_PROP_NONE, (uint16_t)ARTS_DB,
-        arts_db_cxl_slot_addr(&db->cache));
+        arts_db_cxl_slot_addr(&db->cache), /*owed=*/0u);
   }
   arts_shared_release(&pin);
   return true;
@@ -634,7 +634,7 @@ static void db_create_enter(struct arts_db_s *db, arts_guid_t guid,
  * its hold in it, unless a right an earlier lifetime kept there refuses the
  * hold. */
 static bool db_create_claim_first_touch(struct arts_db_s *found,
-                                        uint64_t len) {
+                                        uint64_t len, uint8_t *owed) {
   struct arts_db_cache_s *cache = &found->cache;
   if (!arts_db_create_claims_stub(cache)) {
     return false;
@@ -662,7 +662,7 @@ static bool db_create_claim_first_touch(struct arts_db_s *found,
    * cache of an earlier lifetime that kept a right to the block (the write
    * right; under EXCL x RETAIN also its resident bytes or a retained read
    * grant) refuses it. */
-  return arts_db_create_take_hold(cache);
+  return arts_db_create_take_hold(cache, owed);
 }
 
 /* The creator's cache-only descriptor for a block homed on another rank,
@@ -725,8 +725,9 @@ static void db_create_remote_creator(arts_guid_t guid, uint64_t len,
     arts_shared_ptr_t found_h = arts_route_table_lookup_db(guid);
     struct arts_db_s *found = (struct arts_db_s *)arts_shared_get(found_h);
     if (found != NULL) {
+      uint8_t owed = 0u;
       if (found->db_type == ARTS_DB &&
-          db_create_claim_first_touch(found, len)) {
+          db_create_claim_first_touch(found, len, &owed)) {
         if (stub != NULL) {
 #ifdef ARTS_USE_CXL
           /* Never published: the slot this create minted for its own
@@ -741,7 +742,8 @@ static void db_create_remote_creator(arts_guid_t guid, uint64_t len,
         }
         arts_send_db_create_coherent(home, guid, len, ARTS_DB_PROP_NONE,
                                      (uint16_t)ARTS_DB,
-                                     arts_db_cxl_slot_addr(&found->cache));
+                                     arts_db_cxl_slot_addr(&found->cache),
+                                     owed);
         *addr = arts_db_user_ptr(found);
         arts_db_auto_acquire(found_h);
         return;
@@ -809,6 +811,16 @@ arts_guid_t arts_db_create(void **addr, uint64_t len, arts_db_types_t db_type,
   /* If the caller supplies a pre-reserved GUID its encoded rank is
    * authoritative and overrides hint->rank. */
   arts_guid_t pre_guid = (hint != NULL) ? hint->guid : NULL_GUID;
+  /* A GUID a create minted carries a size hint; only a reserved or labeled
+   * one (no hint) may be named before its create, and so be claimed from a
+   * dependence's first touch. */
+  if (pre_guid != NULL_GUID &&
+      ARTS_GUID_DB_GET_SZHINT(pre_guid) != ARTS_GUID_DB_SZHINT_NONE) {
+    ARTS_ERROR("arts_db_create: hint->guid %lu was minted by a create (it "
+               "carries a size hint); a pre-reserved GUID must come from "
+               "arts_guid_reserve or arts_guid_reserve_range",
+               (unsigned long)pre_guid);
+  }
   unsigned int rank;
   if (pre_guid != NULL_GUID) {
     rank = arts_guid_get_rank(pre_guid);
@@ -868,7 +880,7 @@ arts_guid_t arts_db_create(void **addr, uint64_t len, arts_db_types_t db_type,
          * the announce. */
         arts_send_db_create_coherent(rank, guid, len, ARTS_DB_PROP_NO_ACQUIRE,
                                      (uint16_t)db_type,
-                                     arts_db_cxl_slot_mint(len));
+                                     arts_db_cxl_slot_mint(len), /*owed=*/0u);
         *addr = NULL;
       } else {
         db_create_remote_creator(guid, len, rank, pre_guid != NULL_GUID,

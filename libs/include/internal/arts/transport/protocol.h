@@ -262,9 +262,14 @@ struct ARTS_PACKED arts_msg_grant_request_packet_s {
   /* The version of the copy this requester ALREADY holds, so a server can
    * tell "needs the bytes" from "needs only the permission" without asking
    * anyone.  ARTS_GRANT_VERSION_NONE = holds nothing worth keeping, which is
-   * also what an unpublished copy reports: both need the bytes. */
+   * also what an unpublished copy reports: both need the bytes.  The top four
+   * bits carry the request's ARTS_COVER_* word (the read request its rank has
+   * out, and PRECLAIM): a version counts releases and never reaches 2^60. */
   uint64_t have_version;
 };
+#define ARTS_GRANT_REQ_VERSION_BITS 60
+#define ARTS_GRANT_REQ_VERSION_MASK                                            \
+  (((uint64_t)1 << ARTS_GRANT_REQ_VERSION_BITS) - 1)
 
 /* No copy, or one whose contents were never published. */
 #define ARTS_GRANT_VERSION_NONE ((uint64_t)0)
@@ -430,9 +435,11 @@ struct ARTS_PACKED arts_msg_grant_confirm_ack_packet_s {
 struct ARTS_PACKED arts_msg_snapshot_request_packet_s {
   struct arts_msg_header_s header;
   arts_guid_t db_guid;
-  arts_guid_t edt_guid; /* parked EDT to resume on the requester rank */
-  uint32_t slot;        /* dep slot index in the parked EDT */
-  uint8_t pad[4];
+  /* ARTS_COVER_PAR | ARTS_COVER_PRECLAIM: the request's parity, and whether a
+   * first-touch cache no create had claimed sent it.  The window's cohort is
+   * the requester's own chain, so the request names no EDT. */
+  uint32_t cover;
+  uint32_t pad;
   /* Requester's landing for the snapshot payload.  txid==0 = requester does
    * not yet know db_size (first touch): the server answers a size-only CTS
    * response (data_present == 2) and the requester re-issues with a landing. */
@@ -456,8 +463,7 @@ struct ARTS_PACKED arts_msg_snapshot_response_packet_s {
   struct arts_msg_header_s header;
   arts_guid_t db_guid;
   uint64_t version;
-  arts_guid_t edt_guid; /* parked EDT to resume (echoed from request) */
-  uint32_t slot;        /* dep slot index (echoed from request) */
+  uint32_t cover;       /* the answered request's cover word, echoed */
   uint32_t data_present;
   uint64_t db_size;     /* payload/allocation byte count (see data_present) */
   uint64_t rdzv_txid;   /* write-completion pairing id (0 = no PUT) */
@@ -479,7 +485,8 @@ struct ARTS_PACKED arts_msg_db_create_coherent_packet_s {
 #endif
   uint16_t flags;
   uint16_t db_type;
-  uint8_t pad[4];
+  uint8_t owed; /* the claimed first touch's requests still out */
+  uint8_t pad[3];
 };
 
 struct ARTS_PACKED arts_msg_destroy_packet_s {
@@ -503,9 +510,8 @@ struct ARTS_PACKED arts_msg_cache_destroy_packet_s {
 struct ARTS_PACKED arts_msg_snapshot_redirect_packet_s {
   struct arts_msg_header_s header;
   arts_guid_t db_guid;
-  arts_guid_t edt_guid; /* parked EDT at requester_rank to resume */
   uint32_t requester_rank;
-  uint32_t slot; /* dep slot index in the parked EDT */
+  uint32_t cover; /* the request's cover word, forwarded for the answer */
   /* Requester's landing, forwarded verbatim from its SNAPSHOT_REQUEST. */
   struct arts_msg_rdzv_landing_s rdzv;
 };
@@ -545,7 +551,7 @@ struct ARTS_PACKED arts_msg_excl_request_packet_s {
   struct arts_msg_header_s header;
   arts_guid_t db_guid;
   uint32_t mode; /* arts_db_access_mode_t: DB_MODE_RO or DB_MODE_RW */
-  uint32_t pad;
+  uint32_t cover; /* EXCL_COVER_*: parity, or a write request's declaration */
   /* requester rank = header.rank; no edt_guid/slot (rank-granular). */
   /* Requester's landing for the grant/deliver payload.  txid==0 = requester
    * does not yet know db_size (first touch): home answers EXCL_CTS and the
@@ -556,12 +562,16 @@ struct ARTS_PACKED arts_msg_excl_request_packet_s {
 /* EXCL_CTS — home → requester: db_size for a first-touch EXCL_REQUEST that
  * carried no landing.  Echoes the mode so the requester re-issues the same
  * request.  The landing-less request was NOT queued/granted. */
+/* An answer without data: a size round (the request carried no landing) or,
+ * for a read request, a dismiss (a write turn of the requester's rank covers
+ * it).  cover echoes the answered request's cover word, whose parity the
+ * requester checks against its open read request. */
 struct ARTS_PACKED arts_msg_excl_cts_packet_s {
   struct arts_msg_header_s header;
   arts_guid_t db_guid;
   uint64_t db_size;
   uint32_t mode;
-  uint32_t pad;
+  uint32_t cover;
 };
 
 struct ARTS_PACKED arts_msg_excl_grant_packet_s {
@@ -714,10 +724,13 @@ struct ARTS_PACKED arts_msg_flush_cts_packet_s {
 /* A read request names its subject explicitly rather than relying on the
  * header's sender: under the WB write policy a holder that cannot serve
  * re-sends the request on the reader's behalf, so the two differ. */
+#define ARTS_INV_REQ_BOUNCE 0x1u
 struct ARTS_PACKED arts_msg_inv_request_packet_s {
   struct arts_msg_header_s header;
   arts_guid_t db_guid;
-  uint32_t mode; /* arts_db_access_mode_t — RO; writes use GRANT_REQUEST */
+  uint16_t mode;  /* arts_db_access_mode_t — RO; writes use GRANT_REQUEST */
+  uint8_t cover;  /* ARTS_COVER_PAR: the request's parity */
+  uint8_t flags;  /* ARTS_INV_REQ_BOUNCE: a holder's re-send for the reader */
   uint32_t requester;
   /* Requester's landing for the deliver payload.  txid==0 = the requester does
    * not yet know db_size (first touch): the home answers INV_CTS and the
@@ -725,13 +738,20 @@ struct ARTS_PACKED arts_msg_inv_request_packet_s {
   struct arts_msg_rdzv_landing_s rdzv;
 };
 
+/* An answer without data to a read request: a size round (the request
+ * carried no landing) or a dismiss (a write turn of the requester's rank
+ * covers it).  The top four bits of db_size carry the answered request's
+ * cover word, whose parity the requester checks; rdzv_cookie returns the
+ * landing the request named (0: none).  Reads are the only INV requests, so
+ * no mode travels. */
 struct ARTS_PACKED arts_msg_inv_cts_packet_s {
   struct arts_msg_header_s header;
   arts_guid_t db_guid;
   uint64_t db_size;
-  uint32_t mode;
-  uint32_t pad;
+  uint64_t rdzv_cookie;
 };
+#define ARTS_INV_CTS_SIZE_BITS 60
+#define ARTS_INV_CTS_SIZE_MASK (((uint64_t)1 << ARTS_INV_CTS_SIZE_BITS) - 1)
 
 /* The version is the install-lane arbitration stamp ONLY (two asynchronous
  * installs can target one buffer slot); nothing compares it to judge validity. */
@@ -759,7 +779,7 @@ struct ARTS_PACKED arts_msg_inv_redirect_packet_s {
   struct arts_msg_header_s header;
   arts_guid_t db_guid;
   uint32_t requester;
-  uint32_t pad;
+  uint32_t cover; /* the request's cover word, forwarded for the answer */
   struct arts_msg_rdzv_landing_s rdzv;
 };
 #endif /* ARTS_PROTOCOL_INV */

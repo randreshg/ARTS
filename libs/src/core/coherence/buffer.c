@@ -505,6 +505,22 @@ void arts_db_buf_bump_inplace(struct arts_db_cache_s *cache,
 
 /* ===== Rendezvous landing lifecycle (see buffer.h) ======================= */
 
+#ifdef ARTS_DEBUG_LANDING_BALANCE
+/* This rank's landings drawn and not yet ended: a count polled for zero and
+ * printed, which orders nothing else.  Relaxed: only its own value. */
+static _Atomic(int64_t) landings_out;
+
+int64_t arts_db_landings_outstanding(void) {
+  return atomic_load_explicit(&landings_out, memory_order_relaxed);
+}
+
+static inline void landing_count(int64_t d) {
+  (void)atomic_fetch_add_explicit(&landings_out, d, memory_order_relaxed);
+}
+#else
+static inline void landing_count(int64_t d) { (void)d; }
+#endif
+
 struct arts_db_buffer_s *
 arts_db_buf_landing_alloc(struct arts_db_cache_s *cache, uint64_t db_size,
                           struct arts_rdzv_landing_s *out) {
@@ -530,6 +546,7 @@ arts_db_buf_landing_alloc(struct arts_db_cache_s *cache, uint64_t db_size,
   }
   out->txid = arts_net_rdzv_txid_next();
   out->cookie = (uint64_t)(uintptr_t)b;
+  landing_count(1);
   return b;
 #endif
 }
@@ -542,6 +559,7 @@ void arts_db_buf_landing_return(struct arts_db_buffer_s *b) {
   ARTS_ERROR("coherence: a landing has no meaning where the payload "
              "is not this rank's");
 #else
+  landing_count(-1);
   buffer_deleter(b);
 #endif
 }
@@ -566,6 +584,7 @@ bool arts_db_buf_adopt_landing(struct arts_db_cache_s *cache, uint64_t version,
     arts_db_buf_landing_return(landing);
     return false;
   }
+  landing_count(-1); /* from here on it is a buffer, not a landing */
   atomic_init(&landing->version, version);
   arts_shared_ptr_t cb = arts_shared_make(landing, buffer_deleter);
   landing->cb = cb;
@@ -597,6 +616,7 @@ arts_db_buf_install_landed(struct arts_db_cache_s *cache, uint64_t new_version,
              "is not this rank's");
   return NULL;
 #else
+  landing_count(-1);
   atomic_init(&landing->version, new_version);
   arts_db_cache_learn_size(cache, db_size);
   return buf_publish(cache, landing, new_version);

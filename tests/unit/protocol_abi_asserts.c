@@ -188,9 +188,9 @@ _Static_assert(sizeof(struct arts_msg_grant_invalidate_packet_s) == 72,
                "ownership_invalidate sizeof drifted");
 _Static_assert(sizeof(struct arts_msg_grant_confirm_ack_packet_s) == 72,
                "ownership_confirm_ack sizeof drifted");
-_Static_assert(sizeof(struct arts_msg_snapshot_request_packet_s) == 72,
+_Static_assert(sizeof(struct arts_msg_snapshot_request_packet_s) == 64,
                "snapshot_request sizeof drifted");
-_Static_assert(sizeof(struct arts_msg_snapshot_response_packet_s) == 72,
+_Static_assert(sizeof(struct arts_msg_snapshot_response_packet_s) == 64,
                "snapshot_response sizeof drifted");
 #ifdef ARTS_USE_CXL
 _Static_assert(sizeof(struct arts_msg_db_create_coherent_packet_s) == 48,
@@ -206,7 +206,7 @@ _Static_assert(sizeof(struct arts_msg_destroy_packet_s) == 24,
                "destroy sizeof drifted");
 _Static_assert(sizeof(struct arts_msg_cache_destroy_packet_s) == 24,
                "cache_destroy sizeof drifted");
-_Static_assert(sizeof(struct arts_msg_snapshot_redirect_packet_s) == 72,
+_Static_assert(sizeof(struct arts_msg_snapshot_redirect_packet_s) == 64,
                "snapshot_redirect sizeof drifted");
 _Static_assert(sizeof(struct arts_msg_rank_version_pair_s) == 16,
                "rank_version_pair sizeof drifted");

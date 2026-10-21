@@ -241,7 +241,11 @@ All options are set with ``-D<NAME>=<VALUE>`` on the cmake line.
        ``ARTS_WRITE_COMPLETION_DELAY_MS=<n>`` (hold each one-sided write's
        local completion for a random 0..n ms),
        ``ARTS_NET_MAX_MSG=<bytes>`` (lower the provider's one-sided ceiling),
-       ``ARTS_REGPOOL_FORCE_FULL_NODES=<n,...>`` (treat NUMA nodes as full).
+       ``ARTS_REGPOOL_FORCE_FULL_NODES=<n,...>`` (treat NUMA nodes as full),
+       ``ARTS_REQUEST_DELAY_MS=<n>[:ro|:hop]`` (hold each coherence request
+       a rank sends another rank for a random 0..n ms; ``:ro`` holds only
+       read requests and ``:hop`` only a home's redirect or forward of a
+       request it took in, each exactly n ms).
        The tests that need a hook register only where this is on.
    * - ``ARTS_DEBUG_DB_QUARANTINE``
      - OFF
@@ -251,6 +255,15 @@ All options are set with ``-D<NAME>=<VALUE>`` on the cmake line.
        descriptor leaves the quarantine and at teardown, and refusing a second
        free; under ``ARTS_DEBUG_SANITIZER=ADDRESS`` the held memory is
        poisoned as well.
+   * - ``ARTS_DEBUG_LANDING_BALANCE``
+     - OFF
+     - Debug builds only: count each rank's rendezvous landings drawn and not
+       yet ended (returned, adopted or installed), one atomic update each.
+       A reply the shutdown cuts legally leaves its landing out, so the
+       count is no shutdown verdict: the tests that destroy blocks and then
+       wait for every home to be torn down also wait for every rank's count
+       to reach zero, and the teardown walk prints a non-zero count as
+       information.
    * - ``ARTS_COUNTER_CONFIG``
      - configs/counters_off.cfg
      - Counter configuration file parsed into introspection macros. The

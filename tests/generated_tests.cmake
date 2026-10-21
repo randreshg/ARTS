@@ -805,9 +805,15 @@ if(ARTS_TEST_REFERENCE_TREE)
 add_pure_unit_src(pending_rw_treiber DEFINES ARTS_UNIT_STANDALONE_SHIMS PASS_REGEX "PASS pending_rw_treiber:" TIMEOUT 60)
 endif()
 
-# excl_compute_next: EXCL+PURGE only.
-if(ARTS_COHERENCE_ARM STREQUAL "EXCL" AND ARTS_RELEASE_POLICY STREQUAL "PURGE")
+# excl_compute_next: EXCL only, each release policy's arbiters.
+if(ARTS_COHERENCE_ARM STREQUAL "EXCL")
 add_pure_unit_src(excl_compute_next DEFINES ARTS_UNIT_STANDALONE_SHIMS PASS_REGEX "PASS excl_compute_next:" TIMEOUT 60)
+endif()
+
+# val_request_word: VAL only (the request word's arbiter, both write policies
+# and release policies alike).
+if(ARTS_COHERENCE_ARM STREQUAL "VAL")
+add_pure_unit_src(val_request_word DEFINES ARTS_UNIT_STANDALONE_SHIMS PASS_REGEX "PASS val_request_word:" TIMEOUT 60)
 endif()
 
 # inv_compute_next: INV only.  One truth table covers both write policies —

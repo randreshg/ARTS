@@ -317,7 +317,8 @@ void arts_db_drain_publication_waiters(struct arts_db_cache_s *cache);
  * in-flight batch against the now-current buffer, then re-arm the window with
  * whatever accumulated meanwhile or release it.  Call at every point the
  * response path resumes the on-wire requester. */
-void arts_db_ro_combine_on_terminal(struct arts_db_cache_s *cache);
+void arts_db_ro_combine_on_terminal(struct arts_db_cache_s *cache,
+                                    uint32_t cover);
 
 /* Ownership-arrival hook of the combining window: resume every read waiter
  * still accumulating (not the in-flight group) against the just-transferred
@@ -427,7 +428,58 @@ bool arts_db_create_claims_stub(struct arts_db_cache_s *cache);
  * is never seeded over a word that already carries a hold (a cache of an
  * earlier lifetime that kept a right to the block refuses it).  Defined once
  * per protocol TU. */
-bool arts_db_create_take_hold(struct arts_db_cache_s *cache);
+bool arts_db_create_take_hold(struct arts_db_cache_s *cache, uint8_t *owed);
+
+#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
+/* The write-request axis of the arm's request word, for the shared grant
+ * plane.  claim: IDLE -> OPEN (true = won), handing back the stub bit it read
+ * as the OPEN's token.  commit: OPEN -> SENT only while the stub bit still
+ * equals the token, returning the request's ARTS_COVER_* word read in that
+ * same atom; false = a create's claim reset this OPEN (the claim clears the
+ * stub bit exactly once, so an OPEN claimed after it carries another token
+ * and a stale holder can never commit it), and the claim serves the waiter.
+ * giveback: OPEN -> IDLE with nothing to ask for, under the same token.
+ * clear: SENT -> IDLE where a grant lands, serving the readers that rode it,
+ * and clearing the stub bit.  declaim: a size round answered the write
+ * request (rw must be SENT): clear the stub bit -- the home is installed and
+ * was created elsewhere, so this cache can never be claimed -- and return the
+ * cover word the re-send carries (never PRECLAIM). */
+bool arts_db_rw_req_claim(struct arts_db_cache_s *cache, uint32_t *tok);
+bool arts_db_rw_req_commit(struct arts_db_cache_s *cache, uint32_t tok,
+                           uint32_t *cover);
+void arts_db_rw_req_giveback(struct arts_db_cache_s *cache, uint32_t tok);
+void arts_db_rw_req_clear(struct arts_db_cache_s *cache);
+uint32_t arts_db_rw_req_declaim(struct arts_db_cache_s *cache);
+/* The grant plane's half of a create's claim (grant.c): claim_writers serves
+ * every parked writer under the create's hold, each with a hold of its own,
+ * BEFORE the arm's CLAIM transition reopens the write axis; rearm, after it,
+ * opens a request for any writer that pushed past the take. */
+void arts_db_grant_claim_writers(struct arts_db_cache_s *cache);
+void arts_db_grant_rearm(struct arts_db_cache_s *cache);
+
+/* The declared-arrival rule at the home (coherence.c).  cover_request says
+ * what becomes of an arriving request (ARTS_COVER_*); cover_destroy marks
+ * the gate and completes the teardown now when nothing is owed; the arm's
+ * destroy_now is the teardown itself (fan-out and slot return), run by
+ * whichever of the destroy and the last owed arrival reaches the edge. */
+#define ARTS_COVER_PROCESS 0
+#define ARTS_COVER_DROP 1    /* discarded unanswered: a pre-claim request */
+#define ARTS_COVER_DISMISS 2 /* declared: answer with a dismiss (no data; the
+                                landing comes back) and process nothing */
+/* *teardown: this arrival completed the gate; the caller runs
+ * arts_db_home_destroy_now after any reply. */
+int arts_db_cover_request(struct arts_db_s *db, unsigned int requester,
+                          bool write, uint32_t cover, bool *teardown);
+void arts_db_cover_destroy(struct arts_db_s *db);
+void arts_db_home_destroy_now(struct arts_db_s *db);
+void arts_db_cover_home_init(struct arts_db_s *db, unsigned int nranks);
+void arts_db_cover_home_teardown(struct arts_db_s *db);
+#endif
+#ifdef ARTS_PROTOCOL_VAL
+void arts_db_ro_combine_on_cts(struct arts_db_cache_s *cache, uint32_t cover);
+uint8_t arts_db_val_claim_cover(struct arts_db_cache_s *cache);
+void arts_db_val_waiters_free(struct arts_db_cache_s *c);
+#endif
 
 /* The counterpart, for a create that gives the block its first image in a
  * cache this rank had already made: on an arm that tracks a durable reader

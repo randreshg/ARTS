@@ -117,8 +117,8 @@ uint32_t inv_waiter_alloc(struct arts_db_cache_s *c) {
       return idx;
     }
   }
-  uint32_t idx =
-      atomic_fetch_add_explicit(&c->waiters.next_fresh, 1u, memory_order_acq_rel);
+  uint32_t idx = atomic_fetch_add_explicit(&c->waiters.next_fresh, 1u,
+                                           memory_order_relaxed);
   if (idx > (uint32_t)INV_WAITER_IDX_MAX) {
     ARTS_ERROR("inv: parked-waiter pool exhausted (index space)");
   }
@@ -173,6 +173,107 @@ void inv_serve_chain(struct arts_db_cache_s *cache, uint32_t head) {
   }
 }
 
+/* ===== the request axes (shared grant plane hooks) ======================= */
+/* Commit `op` on the reader word; returns the pre-image, *post the image. */
+static uint64_t inv_req_step_tok(struct arts_db_cache_s *cache, int op,
+                                 uint32_t tok, uint64_t *post, uint32_t *act) {
+  uint64_t cur = atomic_load_explicit(&cache->cache_state, memory_order_acquire);
+  uint64_t next;
+  for (;;) {
+    next = inv_cache_compute_next(cur, op, tok, act);
+    if (next == cur ||
+        atomic_compare_exchange_weak_explicit(&cache->cache_state, &cur, next,
+                                              memory_order_acq_rel,
+                                              memory_order_acquire)) {
+      break;
+    }
+  }
+  *post = next;
+  return cur;
+}
+
+static uint64_t inv_req_step(struct arts_db_cache_s *cache, int op,
+                             uint64_t *post, uint32_t *act) {
+  return inv_req_step_tok(cache, op, 0u, post, act);
+}
+
+/* A read request's cover word: its parity, and PRECLAIM while the cache is a
+ * claimable first touch (such a request leaves without a landing). */
+uint32_t inv_read_cover(uint64_t s) {
+  return (INV_CACHE_PAR(s) ? ARTS_COVER_PAR : 0u) |
+         (INV_CACHE_STUB(s) ? ARTS_COVER_PRECLAIM : 0u);
+}
+
+static uint32_t inv_rw_cover(uint64_t s) {
+  uint32_t c = 0u;
+  if (INV_CACHE_INFLIGHT(s) != 0u) {
+    c |= ARTS_COVER_RO_OPEN;
+    if (INV_CACHE_PAR(s)) {
+      c |= ARTS_COVER_RO_PAR;
+    }
+  }
+  if (INV_CACHE_STUB(s)) {
+    c |= ARTS_COVER_PRECLAIM;
+  }
+  return c;
+}
+
+bool arts_db_rw_req_claim(struct arts_db_cache_s *cache, uint32_t *tok) {
+  uint64_t post;
+  uint32_t act;
+  (void)inv_req_step(cache, INV_CACHE_OP_RW_CLAIM, &post, &act);
+  *tok = INV_CACHE_STUB(post);
+  return act == INV_CACHE_ACT_WON;
+}
+
+bool arts_db_rw_req_commit(struct arts_db_cache_s *cache, uint32_t tok,
+                           uint32_t *cover) {
+  uint64_t post;
+  uint32_t act;
+  uint64_t pre =
+      inv_req_step_tok(cache, INV_CACHE_OP_RW_COMMIT, tok, &post, &act);
+  *cover = inv_rw_cover(pre);
+  return act == INV_CACHE_ACT_WON;
+}
+
+void arts_db_rw_req_giveback(struct arts_db_cache_s *cache, uint32_t tok) {
+  uint64_t post;
+  uint32_t act;
+  uint64_t pre = inv_req_step_tok(cache, INV_CACHE_OP_RW_GIVE, tok, &post, &act);
+  if (act == INV_CACHE_ACT_SEND_RO) {
+    arts_send_db_inv_request(cache, DB_MODE_RO, inv_read_cover(post));
+  } else if (act == INV_CACHE_ACT_SERVE) {
+    inv_serve_chain(cache, INV_CACHE_HEAD_RO(pre));
+  }
+}
+
+/* The grant lands (WT: its install; WB: its confirmation): every reader
+ * parked on this rank is served under it, a fetch still out included -- that
+ * fetch stays open until its own reply. */
+void arts_db_rw_req_clear(struct arts_db_cache_s *cache) {
+  uint64_t post;
+  uint32_t act;
+  uint64_t pre = inv_req_step(cache, INV_CACHE_OP_RW_CLEAR, &post, &act);
+  if (act == INV_CACHE_ACT_LATE) {
+    ARTS_ERROR("inv: guid %lu got a write grant it has no request out for "
+               "(word=%llx)",
+               (unsigned long)cache->db_guid, (unsigned long long)pre);
+  }
+  inv_serve_chain(cache, INV_CACHE_HEAD_RO(pre));
+}
+
+uint32_t arts_db_rw_req_declaim(struct arts_db_cache_s *cache) {
+  uint64_t post;
+  uint32_t act;
+  uint64_t pre = inv_req_step(cache, INV_CACHE_OP_DECLAIM, &post, &act);
+  if (act == INV_CACHE_ACT_LATE) {
+    ARTS_ERROR("inv: guid %lu got a write size round it has no request out "
+               "for (word=%llx)",
+               (unsigned long)cache->db_guid, (unsigned long long)pre);
+  }
+  return inv_rw_cover(post);
+}
+
 /* ===== cache lifecycle ================================================== */
 
 void arts_db_cache_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
@@ -185,6 +286,8 @@ void arts_db_cache_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
                   kind == ARTS_DB_INIT_CREATOR_REMOTE);
   if (creator) {
     seed = INV_CACHE_MAKE(INV_RO_VALID, 0u, 0u);
+  } else if (kind == ARTS_DB_INIT_STUB && ARTS_DB_STUB_CLAIMABLE(db_guid)) {
+    seed = INV_CACHE_WITH_REQ(0ULL, INV_RW_IDLE, 0u, 1u);
   }
   atomic_store_explicit(&c->cache_state, seed, memory_order_relaxed);
   atomic_store_explicit(&c->waiters.chunks, (uintptr_t)0, memory_order_relaxed);
@@ -199,7 +302,7 @@ void arts_db_cache_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
   atomic_init(&c->grant_generation, 0u);
 #endif
   arts_pending_rw_queue_init(&c->pending_rw);
-  atomic_init(&c->grant_req_in_flight, 0u);
+
 #ifndef ARTS_RELEASE_PURGE
   c->incoming_new_owner = ARTS_NO_PENDING_OWNER;
   c->incoming_new_owner_rdzv = (struct arts_rdzv_landing_s){0, 0, 0, 0};
@@ -233,12 +336,38 @@ void arts_db_cache_destructor(struct arts_db_cache_s *cache) {
  * same word and must survive (this runs on a create that claims a cache
  * readers already reached). */
 /* The hold is possession plus this create's own writer, from a word that
- * holds nothing. */
-bool arts_db_create_take_hold(struct arts_db_cache_s *cache) {
+ * holds nothing.  It is a write permission landing on this rank: every EDT
+ * parked on the first-touch cache is served under it -- readers whose fetch
+ * is still out included (the fetch stays open until its reply) -- and the
+ * requests that cache sent are the home's to absorb. */
+bool arts_db_create_take_hold(struct arts_db_cache_s *cache, uint8_t *owed) {
+  *owed = 0u;
   unsigned int none = 0u;
-  return atomic_compare_exchange_strong_explicit(
-      &cache->writer_count, &none, ARTS_GRANT_SEED_HOLDING,
-      memory_order_acq_rel, memory_order_relaxed);
+  if (!atomic_compare_exchange_strong_explicit(
+          &cache->writer_count, &none, ARTS_GRANT_SEED_HOLDING,
+          memory_order_acq_rel, memory_order_relaxed)) {
+    return false;
+  }
+  /* Writers first, then the axis: a writer that pushed before the take is
+   * served by it, and one whose request commits before CLAIM is absorbed
+   * (PRECLAIM); one that pushed after the take is re-armed below.  The
+   * creator's own hold keeps the right here throughout. */
+  arts_db_grant_claim_writers(cache);
+  uint64_t post;
+  uint32_t act;
+  uint64_t pre = inv_req_step(cache, INV_CACHE_OP_CLAIM, &post, &act);
+  if (INV_CACHE_INFLIGHT(pre) != 0u) {
+    *owed |= ARTS_CREATE_OWED_RO;
+    if (INV_CACHE_PAR(pre)) {
+      *owed |= ARTS_CREATE_OWED_RO_PAR;
+    }
+  }
+  if (INV_CACHE_RW(pre) == INV_RW_SENT) {
+    *owed |= ARTS_CREATE_OWED_RW;
+  }
+  inv_serve_chain(cache, INV_CACHE_HEAD_RO(pre));
+  arts_db_grant_rearm(cache);
+  return true;
 }
 
 void arts_db_create_retract_creator_copy(struct arts_db_s *db) {
@@ -249,8 +378,10 @@ void arts_db_create_retract_creator_copy(struct arts_db_s *db) {
     if (INV_CACHE_RO(cur) != INV_RO_VALID) {
       return;
     }
-    next = INV_CACHE_MAKE(INV_RO_IDLE, INV_CACHE_INFLIGHT(cur),
-                          INV_CACHE_HEAD_RO(cur));
+    next = INV_CACHE_WITH_REQ(
+        INV_CACHE_MAKE(INV_RO_IDLE, INV_CACHE_INFLIGHT(cur),
+                       INV_CACHE_HEAD_RO(cur)),
+        INV_CACHE_RW(cur), INV_CACHE_PAR(cur), INV_CACHE_STUB(cur));
   } while (!atomic_compare_exchange_weak_explicit(&cache->cache_state, &cur,
                                                   next, memory_order_acq_rel,
                                                   memory_order_acquire));
@@ -265,11 +396,21 @@ void arts_db_create_retract_creator_copy(struct arts_db_s *db) {
  * does not claim. */
 void arts_db_create_claim_creator_copy(struct arts_db_s *db) {
   struct arts_db_cache_s *cache = &db->cache;
-  uint64_t idle = INV_CACHE_MAKE(INV_RO_IDLE, 0u, 0u);
-  uint64_t want = INV_CACHE_MAKE(INV_RO_VALID, 0u, 0u);
-  (void)atomic_compare_exchange_strong_explicit(&cache->cache_state, &idle,
-                                                want, memory_order_acq_rel,
-                                                memory_order_acquire);
+  uint64_t cur = atomic_load_explicit(&cache->cache_state, memory_order_acquire);
+  for (;;) {
+    if (INV_CACHE_RO(cur) != INV_RO_IDLE || INV_CACHE_INFLIGHT(cur) != 0u ||
+        INV_CACHE_HEAD_RO(cur) != 0u) {
+      return;
+    }
+    uint64_t want = INV_CACHE_WITH_REQ(INV_CACHE_MAKE(INV_RO_VALID, 0u, 0u),
+                                       INV_CACHE_RW(cur), INV_CACHE_PAR(cur),
+                                       INV_CACHE_STUB(cur));
+    if (atomic_compare_exchange_weak_explicit(&cache->cache_state, &cur, want,
+                                              memory_order_acq_rel,
+                                              memory_order_acquire)) {
+      return;
+    }
+  }
 }
 
 void arts_db_create_install_home_buffer(struct arts_db_cache_s *cache,
@@ -297,40 +438,41 @@ void arts_db_create_install_home_buffer(struct arts_db_cache_s *cache,
 }
 
 void arts_handler_db_destroy(void *item_v, void *args_v) {
-  struct arts_db_cache_s *cache = &((struct arts_db_s *)item_v)->cache;
-  struct arts_ooo_args_db_destroy_s *a =
-      (struct arts_ooo_args_db_destroy_s *)args_v;
-  struct arts_db_s *db = arts_db_of_cache(cache);
+  (void)args_v;
+  struct arts_db_s *db = (struct arts_db_s *)item_v;
   if (db == NULL) {
     return;
   }
+  arts_db_cover_destroy(db);
+}
+
+/* The teardown, run by whichever of the destroy and the last request the home
+ * was told is coming reaches the gate's edge.  The roster is complete: every
+ * rank holding a cache of the block (its creator, every read requester and
+ * every write requester) has a bit, so each is told.  No pending_rw drain:
+ * the grant request queue is single-consumer (the transfer baton's holder),
+ * and a legitimately destroyed DB has no outstanding acquires.  No release is
+ * waited for: every release that sends the home anything (a round, a
+ * hand-back) blocks until the home ACKs it, so under the destroy contract none
+ * arrives after the destroy; a transfer's CONFIRM that does finds no home and
+ * is dropped. */
+void arts_db_home_destroy_now(struct arts_db_s *db) {
+  struct arts_db_cache_s *cache = &db->cache;
+  arts_guid_t guid = cache->db_guid;
   unsigned int self = arts_global_rank_id;
-  {
-    const struct arts_rank_bitset_s *bs = &db->cached_ranks;
-    for (unsigned int w = 0; w < bs->nwords; w++) {
-      uint64_t snap = atomic_load_explicit(&bs->words[w], memory_order_acquire);
-      while (snap) {
-        unsigned int b = (unsigned int)__builtin_ctzll(snap);
-        unsigned int rank = w * 64u + b;
-        if (rank != self) {
-          arts_send_db_cache_destroy(rank, a->db_guid);
-        }
-        snap &= snap - 1;
+  const struct arts_rank_bitset_s *bs = &db->cached_ranks;
+  for (unsigned int w = 0; w < bs->nwords; w++) {
+    uint64_t snap = atomic_load_explicit(&bs->words[w], memory_order_acquire);
+    while (snap) {
+      unsigned int b = (unsigned int)__builtin_ctzll(snap);
+      unsigned int rank = w * 64u + b;
+      if (rank != self) {
+        arts_send_db_cache_destroy(rank, guid);
       }
+      snap &= snap - 1;
     }
   }
-  /* The roster is complete: every rank holding a cache of the block (its
-   * creator, every read requester and every write requester) has a bit, so
-   * each is told. */
-  /* No pending_rw drain: the grant request queue is single-consumer (the
-   * transfer baton's holder), and a legitimately destroyed DB has no
-   * outstanding acquires — draining here would be a second, unsynchronized
-   * consumer. */
-  /* The teardown is immediate: every release that sends the home anything (a
-   * round, a hand-back) blocks until the home ACKs it, so under the destroy
-   * contract none arrives after the destroy; a transfer's CONFIRM that does
-   * finds no home and is dropped. */
-  (void)arts_ooo_retire_item(a->db_guid, item_v);
+  (void)arts_ooo_retire_item(guid, db);
   /* After the slot withdrawal — see arts_db_pub_flight_abandon. */
   arts_db_pub_flight_abandon(cache);
 }
@@ -714,8 +856,28 @@ void arts_handler_db_publish(void *item_v, void *args_v) {
 void arts_handler_db_inv_cts(struct arts_db_s *db,
                              struct arts_msg_inv_cts_packet_s *p) {
   struct arts_db_cache_s *cache = &db->cache;
-  arts_db_cache_learn_size(cache, p->db_size);
-  arts_send_db_inv_request(cache, (arts_db_access_mode_t)p->mode);
+  uint32_t cover = (uint32_t)(p->db_size >> ARTS_INV_CTS_SIZE_BITS);
+  arts_db_cache_learn_size(cache, p->db_size & ARTS_INV_CTS_SIZE_MASK);
+  if (p->rdzv_cookie != 0) {
+    arts_db_buf_landing_return(
+        (struct arts_db_buffer_s *)(uintptr_t)p->rdzv_cookie);
+  }
+  uint64_t post;
+  uint32_t act;
+  uint64_t pre = inv_req_step_tok(cache, INV_CACHE_OP_CTS,
+                                  cover & ARTS_COVER_PAR, &post, &act);
+  if (act == INV_CACHE_ACT_LATE) {
+    ARTS_ERROR("inv: guid %lu got a size round or dismiss (parity %u) it has "
+               "no fetch out for (word=%llx)",
+               (unsigned long)cache->db_guid, cover & ARTS_COVER_PAR,
+               (unsigned long long)pre);
+  }
+  if (act == INV_CACHE_ACT_RESEND) {
+    arts_send_db_inv_request(cache, DB_MODE_RO, inv_read_cover(post));
+  } else if (act == INV_CACHE_ACT_CLOSE_ACK) {
+    arts_send_db_inv_invalidate_ack(arts_guid_get_rank(cache->db_guid),
+                                    cache->db_guid);
+  }
 }
 
 /* Publish + whole-chain grab: install the landed payload (home-issued
@@ -738,8 +900,10 @@ static void inv_deliver_commit(arts_shared_ptr_t db_h, uint64_t version,
   do {
     cur = atomic_load_explicit(&cache->cache_state, memory_order_acquire);
     next = inv_cache_compute_next(cur, INV_CACHE_OP_DELIVER, 0u, &act);
-    if (next == cur) {
-      break; /* DROP: superseded (an ownership install's version won) */
+    if (act == INV_CACHE_ACT_LATE) {
+      ARTS_ERROR("inv: guid %lu got a read reply it has no fetch out for "
+                 "(word=%llx)",
+                 (unsigned long)cache->db_guid, (unsigned long long)cur);
     }
   } while (!atomic_compare_exchange_weak_explicit(&cache->cache_state, &cur,
                                                   next, memory_order_acq_rel,
@@ -904,16 +1068,29 @@ void arts_handler_db_inv_invalidate_ack(struct arts_db_s *db,
 /* Control-only senders are plain packet fills; the payload-carrying trio
  * (deliver/publish) lands with the data-plane implementation. */
 
-void arts_send_db_inv_cts(unsigned int requester_rank, arts_guid_t db_guid,
-                          uint64_t db_size, arts_db_access_mode_t mode) {
-  INCREMENT_NUM_INV_SIZE_CTS_BY(1);
+void arts_send_db_inv_cts(unsigned int requester_rank, struct arts_db_s *db,
+                          arts_guid_t db_guid, uint64_t db_size,
+                          uint32_t cover, uint64_t cookie) {
   struct arts_msg_inv_cts_packet_s p;
   arts_fill_packet_header(&p.header, sizeof(p), MSG_DB_INV_CTS);
   p.header.rank = arts_global_rank_id;
   p.db_guid = db_guid;
-  p.db_size = db_size;
-  p.mode = (uint32_t)mode;
-  p.pad = 0;
+  if (db_size > ARTS_INV_CTS_SIZE_MASK) {
+    ARTS_ERROR("inv: guid %lu has size %llu, past the size round's 60-bit "
+               "size field",
+               (unsigned long)db_guid, (unsigned long long)db_size);
+  }
+  p.db_size = (db_size & ARTS_INV_CTS_SIZE_MASK) |
+              ((uint64_t)cover << ARTS_INV_CTS_SIZE_BITS);
+  p.rdzv_cookie = cookie;
+  if (requester_rank == arts_global_rank_id) {
+    if (db != NULL) {
+      arts_handler_db_inv_cts(db, &p);
+    } else if (cookie != 0) {
+      arts_db_buf_landing_return((struct arts_db_buffer_s *)(uintptr_t)cookie);
+    }
+    return;
+  }
   arts_transport_send_async((int)requester_rank, (char *)&p, sizeof(p));
 }
 
@@ -966,7 +1143,7 @@ void arts_send_db_inv_invalidate_ack(unsigned int home_rank,
 }
 
 void arts_send_db_inv_request(struct arts_db_cache_s *cache,
-                              arts_db_access_mode_t mode) {
+                              arts_db_access_mode_t mode, uint32_t cover) {
   arts_guid_t db_guid = cache->db_guid;
   unsigned int home_rank = arts_guid_get_rank(db_guid);
   struct arts_rdzv_landing_s rdzv = {0, 0, 0, 0};
@@ -984,7 +1161,10 @@ void arts_send_db_inv_request(struct arts_db_cache_s *cache,
    * allocation there silently produced a data-less reply, leaving the reader
    * on whatever stale copy it already had. */
   uint64_t fetch_size = arts_db_first_fetch_size(cache);
-  if (fetch_size != 0 && arts_global_rank_count > 1) {
+  /* A pre-claim request leaves without a landing: the home discards it
+   * unanswered if the create that claims this cache is this rank's. */
+  if (fetch_size != 0 && arts_global_rank_count > 1 &&
+      (cover & ARTS_COVER_PRECLAIM) == 0u) {
     (void)arts_db_buf_landing_alloc(cache, fetch_size, &rdzv);
   }
   if (home_rank == arts_global_rank_id) {
@@ -994,6 +1174,7 @@ void arts_send_db_inv_request(struct arts_db_cache_s *cache,
         .requester = arts_global_rank_id,
         .db_guid = db_guid,
         .mode = mode,
+        .cover = cover,
         .rdzv = rdzv,
     };
     arts_ooo_dispatch_or_defer_guid(db_guid, OOO_DB_INV_REQUEST, &args,
@@ -1004,14 +1185,21 @@ void arts_send_db_inv_request(struct arts_db_cache_s *cache,
   arts_fill_packet_header(&p.header, sizeof(p), MSG_DB_INV_REQUEST);
   p.header.rank = arts_global_rank_id;
   p.db_guid = db_guid;
-  p.mode = (uint32_t)mode;
+  p.mode = (uint16_t)mode;
+  p.cover = (uint8_t)cover;
+  p.flags = 0u;
   p.requester = arts_global_rank_id;
   p.rdzv.addr = rdzv.addr;
   p.rdzv.key = rdzv.key;
   p.rdzv.txid = rdzv.txid;
   p.rdzv.cookie = rdzv.cookie;
-  arts_transport_send_async((int)home_rank, (char *)&p, sizeof(p));
+  if (!arts_net_send_held((int)home_rank, (char *)&p, sizeof(p),
+                          mode == DB_MODE_RO ? ARTS_HELD_READ
+                                             : ARTS_HELD_WRITE)) {
+    arts_transport_send_async((int)home_rank, (char *)&p, sizeof(p));
+  }
 }
+
 
 void arts_send_db_inv_deliver(unsigned int requester_rank,
                               struct arts_db_s *db,

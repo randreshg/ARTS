@@ -226,7 +226,7 @@ void arts_send_db_create_return(unsigned int creator_rank,
 #if defined(ARTS_PROTOCOL_VAL)
 /* One request on the wire per combining window. */
 void arts_send_db_snapshot_request(struct arts_db_cache_s *cache,
-                                   arts_guid_t edt_guid, uint32_t slot) {
+                                   uint32_t cover) {
   INCREMENT_NUM_SNAPSHOT_REQUEST_BY(1);
   arts_guid_t db_guid = cache->db_guid;
   unsigned int home_rank = arts_guid_get_rank(db_guid);
@@ -236,16 +236,18 @@ void arts_send_db_snapshot_request(struct arts_db_cache_s *cache,
    * fallback (whose handler re-enters this sender). */
   struct arts_rdzv_landing_s rdzv = {0, 0, 0, 0};
   uint64_t fetch_size = arts_db_first_fetch_size(cache);
-  if (fetch_size > 0) {
+  /* A request a first-touch cache sent before any create claimed it leaves
+   * without a landing: the home absorbs it unanswered if that create is this
+   * rank's (the size may be learned just before the claim). */
+  if (fetch_size > 0 && (cover & ARTS_COVER_PRECLAIM) == 0u) {
     (void)arts_db_buf_landing_alloc(cache, fetch_size, &rdzv);
   }
   struct arts_msg_snapshot_request_packet_s p;
   arts_fill_packet_header(&p.header, sizeof(p), MSG_DB_SNAPSHOT_REQUEST);
   p.header.rank = arts_global_rank_id;
   p.db_guid = db_guid;
-  p.edt_guid = edt_guid;
-  p.slot = slot;
-  memset(p.pad, 0, sizeof(p.pad));
+  p.cover = cover;
+  p.pad = 0u;
   p.rdzv.addr = rdzv.addr;
   p.rdzv.key = rdzv.key;
   p.rdzv.txid = rdzv.txid;
@@ -259,20 +261,22 @@ void arts_send_db_snapshot_request(struct arts_db_cache_s *cache,
     struct arts_ooo_args_db_snapshot_request_s args = {
         .requester = p.header.rank,
         .db_guid = db_guid,
-        .edt_guid = edt_guid,
-        .slot = slot,
+        .cover = cover,
         .rdzv = rdzv,
     };
     arts_ooo_dispatch_or_defer_guid(db_guid, OOO_DB_SNAPSHOT_REQUEST, &args,
                                     sizeof(args));
     return;
   }
-  arts_transport_send_async((int)home_rank, (char *)&p, sizeof(p));
+  if (!arts_net_send_held((int)home_rank, (char *)&p, sizeof(p),
+                          ARTS_HELD_READ)) {
+    arts_transport_send_async((int)home_rank, (char *)&p, sizeof(p));
+  }
 }
 
 void arts_send_db_snapshot_response(unsigned int requester_rank,
-                                    arts_guid_t db_guid, uint64_t version,
-                                    arts_guid_t edt_guid, uint32_t slot,
+                                    struct arts_db_s *db, arts_guid_t db_guid,
+                                    uint64_t version, uint32_t cover,
                                     uint32_t kind, uint64_t db_size,
                                     const struct arts_rdzv_landing_s *landing,
                                     arts_shared_ptr_t src_h) {
@@ -283,8 +287,7 @@ void arts_send_db_snapshot_response(unsigned int requester_rank,
   p.header.rank = arts_global_rank_id;
   p.db_guid = db_guid;
   p.version = version;
-  p.edt_guid = edt_guid;
-  p.slot = slot;
+  p.cover = cover;
   p.data_present = kind;
   p.db_size = db_size;
   p.rdzv_txid = 0;
@@ -293,19 +296,16 @@ void arts_send_db_snapshot_response(unsigned int requester_rank,
     /* Self-serve (a write-back REDIRECT round-trip can land back on the
      * requester rank): the version served is this rank's own copy's, so no
      * bytes move; the handler returns our own unused landing (cookie), or
-     * adopts it as storage when the reply says nothing is held.  Mirror the
-     * wire RX dispatcher's Cat-C lookup-acquire-or-drop. */
+     * adopts it as storage when the reply says nothing is held.  It runs on
+     * the descriptor the caller pins, which is this rank's cache too. */
     struct arts_db_snapshot_response_args_s args = {
-        .edt_guid = edt_guid,
-        .slot = slot,
+        .cover = cover,
         .data_present = kind,
         .version = version,
         .db_size = db_size,
         .rdzv_txid = 0,
         .rdzv_cookie = (landing != NULL) ? landing->cookie : 0,
     };
-    arts_shared_ptr_t h = arts_route_table_lookup_db(db_guid);
-    struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(h);
     if (db != NULL) {
       arts_handler_db_snapshot_response(db, &args);
     } else if (landing != NULL && landing->cookie != 0) {
@@ -314,20 +314,17 @@ void arts_send_db_snapshot_response(unsigned int requester_rank,
       arts_db_buf_landing_return(
           (struct arts_db_buffer_s *)(uintptr_t)landing->cookie);
     }
-    arts_shared_release(&h);
     if (src != NULL) {
       arts_db_buf_release(&src_h);
     }
     return;
   }
+  /* A kind-2 reply is a size round or a dismiss; its sites count the size
+   * rounds. */
   if (kind == 0) {
     /* The requester already holds this version: the ledger turned what would
      * have been a payload into a header. */
     INCREMENT_NUM_SNAPSHOT_HEADER_ONLY_BY(1);
-  } else if (kind == 2) {
-    /* Size-only CTS — the requester asked without a landing and now has to
-     * ask again.  Not a saving: the second leg of one fetch. */
-    INCREMENT_NUM_SNAPSHOT_SIZE_CTS_BY(1);
   }
   if (kind == 1) {
     /* One-sided serve: PUT straight from the live buffer into the
@@ -352,7 +349,8 @@ void arts_send_db_snapshot_response(unsigned int requester_rank,
 
 void arts_send_db_create_coherent(unsigned int home_rank, arts_guid_t db_guid,
                                   uint64_t db_size, uint16_t flags,
-                                  uint16_t db_type, uint64_t cxl_addr) {
+                                  uint16_t db_type, uint64_t cxl_addr,
+                                  uint8_t owed) {
   struct arts_msg_db_create_coherent_packet_s p;
   arts_fill_packet_header(&p.header, sizeof(p), MSG_DB_CREATE);
   p.header.rank = arts_global_rank_id;
@@ -365,6 +363,7 @@ void arts_send_db_create_coherent(unsigned int home_rank, arts_guid_t db_guid,
 #endif
   p.flags = flags;
   p.db_type = db_type;
+  p.owed = owed;
   memset(p.pad, 0, sizeof(p.pad));
   if (home_rank == arts_global_rank_id) {
     arts_db_create_announce_enter(&p);
@@ -385,6 +384,7 @@ void arts_db_create_announce_enter(
 #endif
       .flags = p->flags,
       .db_type = p->db_type,
+      .owed = p->owed,
   };
   arts_ooo_dispatch_or_defer_guid(p->db_guid, OOO_DB_CREATE, &a, sizeof(a));
 }

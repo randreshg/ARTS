@@ -15,6 +15,7 @@
 #include "arts/coherence/coherence.h"
 #include "arts/coherence/handlers.h"
 #include "arts/coherence/directory.h"
+#include "arts/counter/Preamble.h"
 #include "arts/db.h"
 #include "arts/edt.h"             /* arts_edt_dep_t (acquire body) */
 #include "arts/gas/route_table.h" /* arts_route_table_lookup_db (Cat-C self-send) */
@@ -72,8 +73,9 @@ void arts_handler_db_acquire(void *item, void *args) {
    * install whose rw_holder flip is still unpublished reads back negative and
    * is refused, because writing now would be observable while the directory
    * names the previous owner (the stale-RO window).  Everything else parks;
-   * grant_req_in_flight is held by the in-flight round, so acquire_remote_rw
-   * parks without issuing a duplicate request, and CONFIRM_ACK drains it. */
+   * the in-flight round holds the request word's write axis (SENT until
+   * CONFIRM_ACK's drain clears it), so acquire_remote_rw parks without
+   * issuing a duplicate request, and CONFIRM_ACK drains it. */
   if (arts_db_acquire_rw_local_fast(cache, edt, slot)) {
     arts_db_acquire_resolved(edt, slot); /* data here, writer_count bumped */
     return;
@@ -176,6 +178,7 @@ void arts_db_home_init(struct arts_db_s *db, unsigned int rw_holder,
   arts_home_grantreq_queue_init(&db->pending_rw);
   atomic_store_explicit(&db->invalidate_in_flight, 0, memory_order_relaxed);
   arts_rank_bitset_init(&db->cached_ranks, nranks);
+  arts_db_cover_home_init(db, nranks);
   /* A creator on another rank holds a cache of the block from the moment it
    * made it, so the destroy must reach that rank too: its cache would
    * otherwise outlive the block, keeping its storage and the rank's route
@@ -192,6 +195,7 @@ void arts_db_home_teardown(struct arts_db_s *db) {
   }
   arts_home_grantreq_queue_destroy(&db->pending_rw);
   arts_rank_bitset_destroy(&db->cached_ranks);
+  arts_db_cover_home_teardown(db);
   /* No free: home fields are inlined in the arts_db_s. */
 }
 
@@ -200,8 +204,27 @@ void arts_handler_db_snapshot_request(void *item_v, void *args_v) {
   struct arts_ooo_args_db_snapshot_request_s *a =
       (struct arts_ooo_args_db_snapshot_request_s *)args_v;
   unsigned int requester = a->requester;
-  arts_guid_t edt_guid = a->edt_guid;
-  uint32_t slot = a->slot;
+  uint32_t cover = a->cover;
+  {
+    bool td = false;
+    int r = arts_db_cover_request(arts_db_of_cache(cache), requester, false,
+                                  cover, &td);
+    if (r == ARTS_COVER_DISMISS) {
+      /* Declared: a write turn of the requester's rank covers this request.
+       * Dismiss it -- no data, no read turn -- returning the landing. */
+      arts_send_db_snapshot_response(
+          requester, arts_db_of_cache(cache), cache->db_guid, /*version=*/0,
+          cover, /*kind=*/2,
+          atomic_load_explicit(&cache->db_size, memory_order_relaxed),
+          &a->rdzv, NULL);
+    }
+    if (td) {
+      arts_db_home_destroy_now(arts_db_of_cache(cache));
+    }
+    if (r != ARTS_COVER_PROCESS) {
+      return;
+    }
+  }
 
   /* WB home-side RO routing.
    *
@@ -227,15 +250,16 @@ void arts_handler_db_snapshot_request(void *item_v, void *args_v) {
      * db_size.  Home is the size authority even though the data lives with
      * the owner — answer a size-only CTS directly; the re-request carries a
      * landing and is then redirected for real. */
-    arts_send_db_snapshot_response(requester, cache->db_guid, /*version=*/0,
-                                   edt_guid, slot, /*kind=*/2, db_size,
+    INCREMENT_NUM_SNAPSHOT_SIZE_CTS_BY(1);
+    arts_send_db_snapshot_response(requester, db, cache->db_guid,
+                                   /*version=*/0, cover, /*kind=*/2, db_size,
                                    &a->rdzv, NULL);
     return;
   }
   unsigned int owner =
       atomic_load_explicit(&db->rw_holder, memory_order_acquire);
-  arts_send_db_snapshot_redirect(owner, cache->db_guid, requester, edt_guid,
-                                 slot, &a->rdzv);
+  arts_send_db_snapshot_redirect(owner, cache->db_guid, requester, cover,
+                                 &a->rdzv);
 }
 
 /* Fan-out callback for arts_rank_bitset_for_each during destroy.  ctx carries
@@ -257,30 +281,48 @@ static void owner_destroy_fanout_cb(unsigned int rank, void *ctx) {
  * before the new owner's writers run, so under the destroy contract nothing
  * owed to the home can arrive after the destroy. */
 void arts_handler_db_destroy(void *item_v, void *args_v) {
-  struct arts_db_cache_s *cache = &((struct arts_db_s *)item_v)->cache;
-  struct arts_ooo_args_db_destroy_s *a =
-      (struct arts_ooo_args_db_destroy_s *)args_v;
-  struct arts_db_s *db = arts_db_of_cache(cache);
+  (void)args_v;
+  struct arts_db_s *db = (struct arts_db_s *)item_v;
   if (db == NULL) {
     return;
   }
-  /* The request FIFO is not read: its one consumer is the baton holder, and
-   * every queued requester is already on the bit-set. */
+  arts_db_cover_destroy(db);
+}
+
+/* The teardown, run by whichever of the destroy and the last request the home
+ * was told is coming reaches the gate's edge: roster fan-out, then the slot
+ * return.  The request FIFO is not read: its one consumer is the baton holder,
+ * and every queued requester is already on the bit-set. */
+void arts_db_home_destroy_now(struct arts_db_s *db) {
   arts_rank_bitset_for_each(&db->cached_ranks, owner_destroy_fanout_cb,
-                            (void *)(uintptr_t)a->db_guid);
-  (void)arts_ooo_retire_item(a->db_guid, item_v);
+                            (void *)(uintptr_t)db->cache.db_guid);
+  (void)arts_ooo_retire_item(db->cache.db_guid, db);
 }
 
 /* Retract nothing: this arm's readers hold no durable copy claim — every
  * acquire re-validates against a version, so a creator that was given no
  * storage simply has nothing to assert. */
 /* The hold is possession plus this create's own writer, from a word that
- * holds nothing. */
-bool arts_db_create_take_hold(struct arts_db_cache_s *cache) {
+ * holds nothing.  It is a write permission landing on this rank, so every EDT
+ * parked on the first-touch cache is served under it -- readers whose read
+ * request is still out included -- and the requests that cache sent are the
+ * home's to absorb (the announce names them). */
+bool arts_db_create_take_hold(struct arts_db_cache_s *cache, uint8_t *owed) {
+  *owed = 0u;
   unsigned int none = 0u;
-  return atomic_compare_exchange_strong_explicit(
-      &cache->writer_count, &none, ARTS_GRANT_SEED_HOLDING,
-      memory_order_acq_rel, memory_order_relaxed);
+  if (!atomic_compare_exchange_strong_explicit(
+          &cache->writer_count, &none, ARTS_GRANT_SEED_HOLDING,
+          memory_order_acq_rel, memory_order_relaxed)) {
+    return false;
+  }
+  /* Writers first, then the axis: a writer that pushed before the take is
+   * served by it, and one whose request commits before CLAIM is absorbed
+   * (PRECLAIM); one that pushed after the take is re-armed below.  The
+   * creator's own hold keeps the right here throughout. */
+  arts_db_grant_claim_writers(cache);
+  *owed = arts_db_val_claim_cover(cache);
+  arts_db_grant_rearm(cache);
+  return true;
 }
 
 void arts_db_create_retract_creator_copy(struct arts_db_s *db) { (void)db; }
@@ -295,8 +337,7 @@ void arts_handler_db_snapshot_redirect(void *item_v, void *args_v) {
   struct arts_db_snapshot_redirect_args_s *a =
       (struct arts_db_snapshot_redirect_args_s *)args_v;
   unsigned int requester = a->requester_rank;
-  arts_guid_t edt_guid = a->edt_guid;
-  uint32_t slot = a->slot;
+  uint32_t cover = a->cover;
 
   /* A remote first use of a block whose create took no hold: this rank owes
    * the reply the block's first image, so it materializes one (on a progress
@@ -328,9 +369,9 @@ void arts_handler_db_snapshot_redirect(void *item_v, void *args_v) {
      * ARTS_GRANT_VERSION_NONE, "this rank holds nothing" — and the requester
      * reads that as "nobody has written the block", adopting its own
      * advertised landing as the storage it is owed. */
-    arts_send_db_snapshot_response(requester, a->db_guid, /*version=*/0,
-                                   edt_guid, slot, /*kind=*/0, db_size,
-                                   &a->rdzv, NULL);
+    arts_send_db_snapshot_response(requester, arts_db_of_cache(cache),
+                                   a->db_guid, /*version=*/0, cover,
+                                   /*kind=*/0, db_size, &a->rdzv, NULL);
     return;
   }
   /* Acquire: the version names the bytes served below, so every write of
@@ -344,29 +385,32 @@ void arts_handler_db_snapshot_redirect(void *item_v, void *args_v) {
     /* Requester already holds this version — no payload moves; echo the
      * unused landing for recycling. */
     arts_db_buf_release(&buf_h);
-    arts_send_db_snapshot_response(requester, a->db_guid, cur_v, edt_guid, slot,
-                                   /*kind=*/0, db_size, &a->rdzv, NULL);
+    arts_send_db_snapshot_response(requester, arts_db_of_cache(cache),
+                                   a->db_guid, cur_v, cover, /*kind=*/0,
+                                   db_size, &a->rdzv, NULL);
   } else if (a->rdzv.txid == 0) {
     /* Data must move but no landing was forwarded (a first-touch request that
      * slipped past home's CTS gate can only mean home learned the size after
      * forwarding — defensive).  Size-only CTS; the re-request (via home)
      * carries a landing.  The watermark does NOT advance. */
     arts_db_buf_release(&buf_h);
-    arts_send_db_snapshot_response(requester, a->db_guid, cur_v, edt_guid, slot,
-                                   /*kind=*/2, db_size, &a->rdzv, NULL);
+    INCREMENT_NUM_SNAPSHOT_SIZE_CTS_BY(1);
+    arts_send_db_snapshot_response(requester, arts_db_of_cache(cache),
+                                   a->db_guid, cur_v, cover, /*kind=*/2,
+                                   db_size, &a->rdzv, NULL);
   } else {
     /* Advance dedup watermark (monotonic max), then PUT the payload into the
      * forwarded landing (buf_h transfers into the sender). */
     arts_rank_u64_map_advance(cache->cached_version, requester, cur_v);
-    arts_send_db_snapshot_response(requester, a->db_guid, cur_v, edt_guid, slot,
-                                   /*kind=*/1, db_size, &a->rdzv, buf_h);
+    arts_send_db_snapshot_response(requester, arts_db_of_cache(cache),
+                                   a->db_guid, cur_v, cover, /*kind=*/1,
+                                   db_size, &a->rdzv, buf_h);
   }
 }
 
 void arts_send_db_snapshot_redirect(unsigned int owner_rank,
                                     arts_guid_t db_guid,
-                                    unsigned int requester_rank,
-                                    arts_guid_t edt_guid, uint32_t slot,
+                                    unsigned int requester_rank, uint32_t cover,
                                     const struct arts_rdzv_landing_s *rdzv) {
   struct arts_rdzv_landing_s fwd =
       (rdzv != NULL) ? *rdzv : (struct arts_rdzv_landing_s){0, 0, 0, 0};
@@ -374,24 +418,20 @@ void arts_send_db_snapshot_redirect(unsigned int owner_rank,
   arts_fill_packet_header(&p.header, sizeof(p), MSG_DB_SNAPSHOT_REDIRECT);
   p.header.rank = arts_global_rank_id;
   p.db_guid = db_guid;
-  p.edt_guid = edt_guid;
   p.requester_rank = requester_rank;
-  p.slot = slot;
+  p.cover = cover;
   p.rdzv.addr = fwd.addr;
   p.rdzv.key = fwd.key;
   p.rdzv.txid = fwd.txid;
   p.rdzv.cookie = fwd.cookie;
   if (owner_rank == arts_global_rank_id) {
-    /* Self-send: mirror the wire RX dispatcher's Cat-C lookup-acquire.  HIT
-     * serves SNAPSHOT_RESPONSE from the ref-pinned owner-side db_s; MISS (a
-     * destroy issued while the read was pending, which the destroy contract
-     * excludes) sends CACHE_DESTROY to the requester, retiring its cache: the
-     * parked RO waiter is freed with it, never resumed. */
+    /* Self-send: mirror the wire RX dispatcher's lookup.  HIT serves
+     * SNAPSHOT_RESPONSE from the ref-pinned owner-side db_s; MISS dismisses
+     * the requester, as the wire path does. */
     struct arts_db_snapshot_redirect_args_s args = {
         .db_guid = db_guid,
-        .edt_guid = edt_guid,
         .requester_rank = requester_rank,
-        .slot = slot,
+        .cover = cover,
         .rdzv = fwd,
     };
     arts_shared_ptr_t h = arts_route_table_lookup_db(db_guid);
@@ -399,12 +439,18 @@ void arts_send_db_snapshot_redirect(unsigned int owner_rank,
     if (db != NULL) {
       arts_handler_db_snapshot_redirect(db, &args);
     } else {
-      arts_send_db_cache_destroy(requester_rank, db_guid);
+      /* Torn down after the home took the request in: dismiss it. */
+      arts_send_db_snapshot_response(requester_rank, NULL, db_guid,
+                                     /*version=*/0, cover, /*kind=*/2,
+                                     /*db_size=*/0, &fwd, NULL);
     }
     arts_shared_release(&h);
     return;
   }
-  arts_transport_send_async((int)owner_rank, (char *)&p, sizeof(p));
+  if (!arts_net_send_held((int)owner_rank, (char *)&p, sizeof(p),
+                          ARTS_HELD_HOP)) {
+    arts_transport_send_async((int)owner_rank, (char *)&p, sizeof(p));
+  }
 }
 
 /* Case-D leaf: the WB write policy defers the home-buffer install to the

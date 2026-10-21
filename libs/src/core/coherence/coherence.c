@@ -111,9 +111,13 @@ void arts_db_cache_common_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
   arts_lf_stack_init(&c->publication_waiters);
 #endif
 #ifdef ARTS_PROTOCOL_VAL
-  arts_lf_stack_init(&c->ro_combine);
-  c->ro_combine_group = NULL;
-  atomic_init(&c->snapshot_req_in_flight, 0u);
+  atomic_init(&c->req_state,
+              (kind == ARTS_DB_INIT_STUB && ARTS_DB_STUB_CLAIMABLE(db_guid))
+                  ? VREQ_MAKE(0u, 0u, 0u, 0u, 1u, 0u, 0u)
+                  : (uint64_t)0);
+  atomic_init(&c->waiters.chunks, (uintptr_t)0);
+  atomic_init(&c->waiters.next_fresh, 1u);
+  atomic_init(&c->waiters.free_head, (uint64_t)0);
 #endif
 #ifdef ARTS_DB_BUF_POOL
   arts_lf_pool_init(&c->buf_freelist);
@@ -514,179 +518,355 @@ void *arts_db_acquire_local(struct arts_db_cache_s *cache) {
 }
 
 /* Case 2/6 (RW local fast path) and Case 4/8 (remote-RW path) live in
- * coherence/grant.c — they touch the OCR-model home-directory cache fields
- * (pending_rw, grant_req_in_flight). */
+ * coherence/grant.c, the shared grant plane: a writer parks on pending_rw and
+ * opens the write request through the request word's write axis
+ * (arts_db_rw_req_claim / _commit / _giveback). */
 
 /* ===== Case 7: remote-RO / remote-snapshot path =================== */
 
 #if defined(ARTS_PROTOCOL_VAL)
-/* ===== Remote-read request combining ===============================
+/* ===== The read path and the request word ============================
  *
  * Every remote read-only acquire rides its cache's one window: at most one
- * snapshot request per cache is in flight.  The 0->1 CAS winner on
- * snapshot_req_in_flight owns it: it isolates the accumulated waiter stack in
- * one exchange, sends ONE wire request naming an arbitrary member (the leader
- * — the response resumes it by name), and parks the rest as ro_combine_group.
- * The response terminal resumes the whole group against the buffer the
- * response left current, then re-arms: isolate whatever accumulated meanwhile
- * and send again, or release the window.
+ * read request per cache is out, and a reader that arrives while it is out
+ * waits for the next one -- a reader may only ride a request sent AFTER its
+ * park, because the server serves the version current when the request
+ * arrives, and any release the reader is ordered after was published before
+ * its park.  A reader that arrives while the rank's write request is out
+ * sends nothing: the write turn covers it (RW ⊇ RO).  When a write
+ * permission reaches the rank -- a grant, or the create's own hold on a cache
+ * the rank made before the create -- every parked reader is served at once,
+ * the window's cohort included; the window's request stays out until its own
+ * answer, which then serves nobody it already served.
  *
- * Correctness boundary: a waiter may only ride a request sent AFTER its
- * park.  Any release the waiter is event-ordered after published before its
- * park, hence before the send, hence is contained in the version the server
- * serves at receive time — so one response satisfies the whole batch.
- * Waiters that arrive while a request is in flight must NOT join it (its
- * response may predate their ordering obligations); they form the next
- * window.  Pull semantics stay intact: currency is established per-request
- * at serve time, the server tracks no readers, writers pay nothing.
- *
- * The window is released only by the terminal, which runs after the
- * response's bytes are installed, so no request from this cache can be served
- * while bytes credited to it are still in flight — the reason a reply that
- * moves no bytes never names a version this cache does not hold.
- *
- * The re-arm can inline-recurse only while a request resolves back onto this
- * rank (owner-is-self serve); that recursion is finite and small, because
- * once ownership is local, new read acquires resolve locally and stop
- * feeding the stack. */
+ * The chains live in the request word (val/types.h), so parking IS the
+ * acquire's decision CAS and a serve takes a whole chain in the CAS that
+ * decides it: no reader can miss the request it joined or be served twice. */
 
-/* Isolate the accumulated stack and launch one request.  Caller must own the
- * window.  Returns false when there was nothing to send (caller releases). */
-static bool ro_combine_launch_owned(struct arts_db_cache_s *cache) {
-  arts_lf_link_t *batch = arts_lf_stack_drain(&cache->ro_combine);
-  if (batch == NULL) {
-    return false;
+/* ---- reader pool (index-addressed chain nodes) ------------------------ */
+#define VAL_WAITER_IDX_MAX ((uint32_t)VREQ_HEAD_MASK)
+#define VAL_WAITER_NCHUNKS 22u
+#define VAL_FREE_IDX(h) ((uint32_t)((h) & 0xffffffffULL))
+#define VAL_FREE_TAG(h) ((uint32_t)((h) >> 32))
+#define VAL_FREE_MAKE(tag, idx) ((((uint64_t)(tag)) << 32) | (uint64_t)(idx))
+
+/* Index i >= 1 lives in chunk k at offset o, where i + 255 = 2^(k+8) + o. */
+static inline uint32_t val_waiter_chunk_of(uint32_t idx, uint32_t *off) {
+  uint32_t j = idx + 255u;
+  uint32_t k = (uint32_t)(31 - __builtin_clz(j)) - 8u;
+  *off = j - (1u << (k + 8u));
+  return k;
+}
+
+struct val_waiter_dir_s {
+  _Atomic(struct arts_db_val_waiter_s *) chunk[VAL_WAITER_NCHUNKS];
+};
+
+static struct val_waiter_dir_s *val_waiter_dir(struct arts_db_cache_s *c) {
+  uintptr_t d = atomic_load_explicit(&c->waiters.chunks, memory_order_acquire);
+  if (d == 0) {
+    struct val_waiter_dir_s *fresh =
+        (struct val_waiter_dir_s *)arts_calloc(1, sizeof(*fresh));
+    uintptr_t expect = 0;
+    if (atomic_compare_exchange_strong_explicit(
+            &c->waiters.chunks, &expect, (uintptr_t)fresh,
+            memory_order_acq_rel, memory_order_acquire)) {
+      d = (uintptr_t)fresh;
+    } else {
+      arts_free(fresh);
+      d = expect;
+    }
   }
-  struct arts_db_read_waiter_s *leader = (struct arts_db_read_waiter_s *)batch;
-  cache->ro_combine_group =
-      atomic_load_explicit(&batch->next, memory_order_relaxed);
-  arts_guid_t leader_guid = leader->edt_guid;
-  unsigned int leader_slot = leader->slot;
-  arts_free(leader);
-  arts_send_db_snapshot_request(cache, leader_guid, leader_slot);
-  return true;
+  return (struct val_waiter_dir_s *)d;
 }
 
-/* Give the window up.  Release: the next claimer's request then follows
- * everything this owner did while it held the window — on the terminal's
- * path, the response's install — so no request is served while bytes
- * credited to this cache are still unpublished here. */
-static void ro_combine_release(struct arts_db_cache_s *cache) {
-  atomic_store_explicit(&cache->snapshot_req_in_flight, 0u,
-                        memory_order_release);
+static struct arts_db_val_waiter_s *val_waiter_ptr(struct arts_db_cache_s *c,
+                                                   uint32_t idx) {
+  uint32_t off;
+  uint32_t k = val_waiter_chunk_of(idx, &off);
+  struct val_waiter_dir_s *dir = val_waiter_dir(c);
+  struct arts_db_val_waiter_s *chunk =
+      atomic_load_explicit(&dir->chunk[k], memory_order_acquire);
+  return &chunk[off];
 }
 
-/* Claim the window if free and launch.  Both callers have stored before
- * they get here: a pusher its node, an owner its release of the window.  A
- * pusher that loses the claim relies on the owner's re-probe to see its
- * node, and an owner that finds the stack empty relies on any later pusher's
- * claim to succeed, so each iteration's seq_cst fence orders the caller's
- * store before its load: of two fences in S the later one's side sees the
- * other side's store. */
-static void ro_combine_pump(struct arts_db_cache_s *cache) {
+static uint32_t val_waiter_alloc(struct arts_db_cache_s *c) {
   for (;;) {
-    /* seq_cst fence: store->load pair with the other side's pass through
-     * this same fence (arts_db_acquire_remote_ro's push, a window release). */
-    atomic_thread_fence(memory_order_seq_cst);
-    if (arts_lf_stack_empty(&cache->ro_combine)) {
+    uint64_t h =
+        atomic_load_explicit(&c->waiters.free_head, memory_order_acquire);
+    uint32_t idx = VAL_FREE_IDX(h);
+    if (idx == 0u) {
+      break;
+    }
+    uint32_t next = atomic_load_explicit(&val_waiter_ptr(c, idx)->next,
+                                         memory_order_relaxed);
+    uint64_t nh = VAL_FREE_MAKE(VAL_FREE_TAG(h) + 1u, next);
+    if (atomic_compare_exchange_weak_explicit(&c->waiters.free_head, &h, nh,
+                                              memory_order_acq_rel,
+                                              memory_order_acquire)) {
+      return idx;
+    }
+  }
+  uint32_t idx = atomic_fetch_add_explicit(&c->waiters.next_fresh, 1u,
+                                           memory_order_relaxed);
+  if (idx > VAL_WAITER_IDX_MAX) {
+    ARTS_ERROR("val: parked-reader pool exhausted (index space)");
+  }
+  uint32_t off;
+  uint32_t k = val_waiter_chunk_of(idx, &off);
+  struct val_waiter_dir_s *dir = val_waiter_dir(c);
+  _Atomic(struct arts_db_val_waiter_s *) *slotp = &dir->chunk[k];
+  if (atomic_load_explicit(slotp, memory_order_acquire) == NULL) {
+    struct arts_db_val_waiter_s *fresh = (struct arts_db_val_waiter_s *)
+        arts_calloc((size_t)1 << (k + 8u), sizeof(*fresh));
+    struct arts_db_val_waiter_s *expect = NULL;
+    if (!atomic_compare_exchange_strong_explicit(slotp, &expect, fresh,
+                                                 memory_order_acq_rel,
+                                                 memory_order_acquire)) {
+      arts_free(fresh);
+    }
+  }
+  return idx;
+}
+
+static void val_waiter_free(struct arts_db_cache_s *c, uint32_t idx) {
+  struct arts_db_val_waiter_s *node = val_waiter_ptr(c, idx);
+  for (;;) {
+    uint64_t h =
+        atomic_load_explicit(&c->waiters.free_head, memory_order_acquire);
+    atomic_store_explicit(&node->next, VAL_FREE_IDX(h), memory_order_relaxed);
+    uint64_t nh = VAL_FREE_MAKE(VAL_FREE_TAG(h) + 1u, idx);
+    if (atomic_compare_exchange_weak_explicit(&c->waiters.free_head, &h, nh,
+                                              memory_order_acq_rel,
+                                              memory_order_acquire)) {
       return;
     }
-    unsigned int window_free = 0u;
-    if (!atomic_compare_exchange_strong_explicit(
-            &cache->snapshot_req_in_flight, &window_free, 1u,
-            memory_order_acq_rel, memory_order_relaxed)) {
-      /* A reader that found a window already open: one request combining
-       * kept off the wire. */
-      INCREMENT_NUM_RO_COMBINE_JOINED_BY(1);
-      return; /* someone owns the window; their terminal rechecks */
-    }
-    if (ro_combine_launch_owned(cache)) {
-      INCREMENT_NUM_RO_COMBINE_WINDOW_BY(1);
-      return; /* window stays owned until the response terminal */
-    }
-    ro_combine_release(cache);
   }
 }
 
-void arts_db_ro_combine_on_terminal(struct arts_db_cache_s *cache) {
-  arts_lf_link_t *node = cache->ro_combine_group;
-  cache->ro_combine_group = NULL;
-  while (node != NULL) {
-    struct arts_db_read_waiter_s *w = (struct arts_db_read_waiter_s *)node;
-    arts_lf_link_t *next =
-        atomic_load_explicit(&node->next, memory_order_relaxed);
-    /* The buffer the response left current is at least as new as anything a
-     * batch member is ordered after — resume against it (the resume claims
-     * the slot's acquire record with the installed buffer). */
-    arts_guid_t edt_local = w->edt_guid;
-    unsigned int slot_local = w->slot;
-    arts_free(w);
-    mark_edt_ready_by_guid(edt_local, slot_local);
-    node = next;
-  }
-  /* Re-arm: whatever accumulated during this window rides the next request;
-   * otherwise release the window and recheck (a push may race the release). */
-  if (ro_combine_launch_owned(cache)) {
+void arts_db_val_waiters_free(struct arts_db_cache_s *c) {
+  uintptr_t d = atomic_load_explicit(&c->waiters.chunks, memory_order_relaxed);
+  if (d == 0) {
     return;
   }
-  ro_combine_release(cache);
-  ro_combine_pump(cache);
-}
-void arts_db_ro_combine_grant_drain(struct arts_db_cache_s *cache) {
-  /* Ownership-arrival drain: called from the transfer-commit body before the
-   * commit wakes its writers, so the install's own hold is on the word across
-   * this walk and nothing else can drop it.  That is what stops ownership
-   * leaving under it, and it holds however the word is encoded: no release
-   * reaching this word can be the one that gives ownership up — the count
-   * cannot fall to the edge while the install's hold is there.  It also means
-   * a releasing writer cannot take the whole-right claim, whose precondition
-   * is the word carrying exactly that writer's own hold.
-   *
-   * Every waiter here parked before this drain, and the buffer this rank now
-   * holds contains every release completed before the transfer (the ownership
-   * chain linearizes all writers), so resuming against it is correct for any
-   * park time — unlike a snapshot install, which is only a specific version.
-   * That still reads correctly when the grant arrived carrying NO bytes: a
-   * server sends the permission alone only when the copy already here is at
-   * the canonical version, and everything completed before the transfer is at
-   * or below that version by the same argument.
-   *
-   * The in-flight window group (ro_combine_group) is NOT touched: its
-   * response terminal owns it.  Stragglers that push after this exchange are
-   * picked up by their own pump (a fresh request round trip, correct via the
-   * response path). */
-  arts_lf_link_t *node = arts_lf_stack_drain(&cache->ro_combine);
-  while (node != NULL) {
-    struct arts_db_read_waiter_s *w = (struct arts_db_read_waiter_s *)node;
-    arts_lf_link_t *next =
-        atomic_load_explicit(&node->next, memory_order_relaxed);
-    arts_guid_t edt_local = w->edt_guid;
-    unsigned int slot_local = w->slot;
-    arts_free(w);
-    mark_edt_ready_by_guid(edt_local, slot_local);
-    node = next;
+  struct val_waiter_dir_s *dir = (struct val_waiter_dir_s *)d;
+  for (uint32_t i = 0; i < VAL_WAITER_NCHUNKS; i++) {
+    struct arts_db_val_waiter_s *ch =
+        atomic_load_explicit(&dir->chunk[i], memory_order_relaxed);
+    if (ch != NULL) {
+      arts_free(ch);
+    }
   }
+  arts_free(dir);
+  atomic_store_explicit(&c->waiters.chunks, (uintptr_t)0, memory_order_relaxed);
+}
+
+/* Serve every node of a chain a CAS took (no other actor can reach it). */
+static void val_serve_chain(struct arts_db_cache_s *cache, uint32_t head) {
+  while (head != 0u) {
+    struct arts_db_val_waiter_s *w = val_waiter_ptr(cache, head);
+    uint32_t next = atomic_load_explicit(&w->next, memory_order_relaxed);
+    arts_guid_t edt_guid = w->edt_guid;
+    unsigned int slot = w->slot;
+    val_waiter_free(cache, head);
+    mark_edt_ready_by_guid(edt_guid, slot);
+    head = next;
+  }
+}
+
+/* ---- the arbiter (val/arbiters.c: a pure function of the word) ---------- */
+#include "val/arbiters.c"
+
+/* Commit `op` on the word; returns the pre-image, *post the image. */
+static uint64_t val_req_step(struct arts_db_cache_s *cache, int op,
+                             uint32_t idx, uint64_t *post, uint32_t *act) {
+  uint64_t cur = atomic_load_explicit(&cache->req_state, memory_order_acquire);
+  uint64_t next;
+  for (;;) {
+    next = val_req_compute_next(cur, op, idx, act);
+    if (op == VREQ_OP_ACQ_RO && *act == VREQ_ACT_PARK) {
+      atomic_store_explicit(&val_waiter_ptr(cache, idx)->next, VREQ_NEXT(cur),
+                            memory_order_relaxed);
+    } else if (op == VREQ_OP_ACQ_RO) {
+      atomic_store_explicit(&val_waiter_ptr(cache, idx)->next, 0u,
+                            memory_order_relaxed);
+    }
+    if (next == cur ||
+        atomic_compare_exchange_weak_explicit(&cache->req_state, &cur, next,
+                                              memory_order_acq_rel,
+                                              memory_order_acquire)) {
+      break;
+    }
+  }
+  *post = next;
+  return cur;
+}
+
+static void val_send_window(struct arts_db_cache_s *cache, uint64_t post) {
+  arts_send_db_snapshot_request(
+      cache, (VREQ_PAR(post) ? ARTS_COVER_PAR : 0u) |
+                 (VREQ_STUB(post) ? ARTS_COVER_PRECLAIM : 0u));
 }
 
 arts_db_acquire_result_t
 arts_db_acquire_remote_ro(struct arts_db_cache_s *cache, arts_guid_t edt_guid,
                           unsigned int slot) {
-  /* Park on the cache's combining window; the response that ends the window
-   * this waiter rides resumes it.  No destroy is issued while this acquire is
-   * pending (the destroy contract), so none is checked for. */
   assert(arts_global_rank_count > 1 &&
          "a rank alone homes every block and reads it locally");
   INCREMENT_NUM_DB_ACQUIRE_REMOTE_BY(1);
-  struct arts_db_read_waiter_s *w =
-      (struct arts_db_read_waiter_s *)arts_malloc(sizeof(*w));
+  uint32_t idx = val_waiter_alloc(cache);
+  struct arts_db_val_waiter_s *w = val_waiter_ptr(cache, idx);
   w->edt_guid = edt_guid;
   w->slot = slot;
-  w->serve = NULL;
-  w->requester = 0;
-  w->rdzv = (struct arts_rdzv_landing_s){0, 0, 0, 0};
-  arts_lf_stack_push(&cache->ro_combine, &w->link);
-  ro_combine_pump(cache);
+  uint64_t post;
+  uint32_t act;
+  (void)val_req_step(cache, VREQ_OP_ACQ_RO, idx, &post, &act);
+  if (act == VREQ_ACT_SEND_RO) {
+    val_send_window(cache, post);
+  } else {
+    INCREMENT_NUM_RO_COMBINE_JOINED_BY(1);
+  }
   return ARTS_DB_ACQUIRE_PARK;
+}
+
+void arts_db_ro_combine_on_terminal(struct arts_db_cache_s *cache,
+                                    uint32_t cover) {
+  uint64_t post;
+  uint32_t act;
+  uint64_t pre = val_req_step(cache, VREQ_OP_ANSWER, cover & ARTS_COVER_PAR,
+                              &post, &act);
+  if (act == VREQ_ACT_LATE) {
+    ARTS_ERROR("val: guid %lu got a read answer (parity %u) it has no "
+               "request out for (word=%llx)",
+               (unsigned long)cache->db_guid, cover & ARTS_COVER_PAR,
+               (unsigned long long)pre);
+  }
+  /* The cohort that rode this request, unless a write permission already
+   * served it (then the chain is empty: the answer serves nobody). */
+  val_serve_chain(cache, VREQ_GROUP(pre));
+  if (act == VREQ_ACT_SERVE_SEND) {
+    INCREMENT_NUM_RO_COMBINE_WINDOW_BY(1);
+    val_send_window(cache, post);
+  }
+}
+
+void arts_db_ro_combine_on_cts(struct arts_db_cache_s *cache,
+                               uint32_t cover) {
+  uint64_t post;
+  uint32_t act;
+  uint64_t pre =
+      val_req_step(cache, VREQ_OP_CTS, cover & ARTS_COVER_PAR, &post, &act);
+  if (act == VREQ_ACT_LATE) {
+    ARTS_ERROR("val: guid %lu got a read size round or dismiss (parity %u) it "
+               "has no request out for (word=%llx)",
+               (unsigned long)cache->db_guid, cover & ARTS_COVER_PAR,
+               (unsigned long long)pre);
+  }
+  if (act == VREQ_ACT_RESEND) {
+    val_send_window(cache, post);
+  }
+}
+
+/* A write permission landed (the grant's install): every parked reader is
+ * served under it, the in-flight window's cohort included.  Called with the
+ * install's own hold on the grant word, which keeps the permission here for
+ * the whole walk.  The buffer this rank now holds contains every release
+ * completed before the transfer (the ownership chain linearizes all
+ * writers), so resuming against it is correct whenever a reader parked. */
+void arts_db_ro_combine_grant_drain(struct arts_db_cache_s *cache) {
+  uint64_t post;
+  uint32_t act;
+  uint64_t pre = val_req_step(cache, VREQ_OP_COVER, 0u, &post, &act);
+  val_serve_chain(cache, VREQ_GROUP(pre));
+  val_serve_chain(cache, VREQ_NEXT(pre));
+}
+
+/* ---- the write axis, for the shared grant plane ------------------------- */
+bool arts_db_rw_req_claim(struct arts_db_cache_s *cache, uint32_t *tok) {
+  uint64_t post;
+  uint32_t act;
+  (void)val_req_step(cache, VREQ_OP_RW_CLAIM, 0u, &post, &act);
+  *tok = VREQ_STUB(post);
+  return act == VREQ_ACT_WON;
+}
+
+static uint32_t val_rw_cover(uint64_t s) {
+  uint32_t c = 0u;
+  if (VREQ_RO(s) && !VREQ_RP(s)) {
+    c |= ARTS_COVER_RO_OPEN;
+    if (VREQ_PAR(s)) {
+      c |= ARTS_COVER_RO_PAR;
+    }
+  }
+  if (VREQ_STUB(s)) {
+    c |= ARTS_COVER_PRECLAIM;
+  }
+  return c;
+}
+
+bool arts_db_rw_req_commit(struct arts_db_cache_s *cache, uint32_t tok,
+                           uint32_t *cover) {
+  uint64_t post;
+  uint32_t act;
+  uint64_t pre = val_req_step(cache, VREQ_OP_RW_COMMIT, tok, &post, &act);
+  *cover = val_rw_cover(pre);
+  return act == VREQ_ACT_WON;
+}
+
+void arts_db_rw_req_giveback(struct arts_db_cache_s *cache, uint32_t tok) {
+  uint64_t post;
+  uint32_t act;
+  (void)val_req_step(cache, VREQ_OP_RW_GIVE, tok, &post, &act);
+  if (act == VREQ_ACT_RESEND || act == VREQ_ACT_SEND_RO) {
+    val_send_window(cache, post);
+  }
+}
+
+void arts_db_rw_req_clear(struct arts_db_cache_s *cache) {
+  uint64_t post;
+  uint32_t act;
+  uint64_t pre = val_req_step(cache, VREQ_OP_RW_CLEAR, 0u, &post, &act);
+  if (act == VREQ_ACT_LATE) {
+    ARTS_ERROR("val: guid %lu got a write grant it has no request out for "
+               "(word=%llx)",
+               (unsigned long)cache->db_guid, (unsigned long long)pre);
+  }
+  val_serve_chain(cache, VREQ_GROUP(pre));
+  val_serve_chain(cache, VREQ_NEXT(pre));
+}
+
+uint32_t arts_db_rw_req_declaim(struct arts_db_cache_s *cache) {
+  uint64_t post;
+  uint32_t act;
+  uint64_t pre = val_req_step(cache, VREQ_OP_DECLAIM, 0u, &post, &act);
+  if (act == VREQ_ACT_LATE) {
+    ARTS_ERROR("val: guid %lu got a write size round it has no request out "
+               "for (word=%llx)",
+               (unsigned long)cache->db_guid, (unsigned long long)pre);
+  }
+  return val_rw_cover(post);
+}
+
+/* The create's claim: the hold is taken on the grant word first, then every
+ * parked reader is served under it and the write axis becomes the claim's.
+ * Returns the owed byte the announce carries. */
+uint8_t arts_db_val_claim_cover(struct arts_db_cache_s *cache) {
+  uint64_t post;
+  uint32_t act;
+  uint64_t pre = val_req_step(cache, VREQ_OP_CLAIM, 0u, &post, &act);
+  uint8_t owed = 0u;
+  if (VREQ_RO(pre) && !VREQ_RP(pre)) {
+    owed |= ARTS_CREATE_OWED_RO;
+    if (VREQ_PAR(pre)) {
+      owed |= ARTS_CREATE_OWED_RO_PAR;
+    }
+  }
+  if (VREQ_RW(pre) == VREQ_RW_SENT) {
+    owed |= ARTS_CREATE_OWED_RW;
+  }
+  val_serve_chain(cache, VREQ_GROUP(pre));
+  val_serve_chain(cache, VREQ_NEXT(pre));
+  return owed;
 }
 #endif /* the versioned-snapshot read path */
 
@@ -1200,6 +1380,154 @@ void arts_db_release_ro(struct arts_db_cache_s *cache) {
 }
 #endif /* arms whose RO release drops nothing but the EDT's own ref */
 
+#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
+/* ===== The declared-arrival rule (home side) ==========================
+ *
+ * A request whose waiters a write turn of its own rank serves (a covered
+ * request) may reach the home after the program legally destroyed the block.
+ * The home learns of each one before the turn that covers it can end: a write
+ * request declares the read request its rank has out (by that request's
+ * parity), and a create's announce declares the requests the first-touch
+ * cache it claimed had sent (marked PRECLAIM).  The cover gate counts what is
+ * still coming; the teardown waits for it to reach zero.
+ *
+ *   cover_gate = [ td:1 (31) | rwo:1 (30) | roo:1 (29) | owed:29 ]
+ *
+ * A read request and its declaration each put the request's parity in the
+ * requester's bit of ro_parity with one RMW; whichever comes second finds the
+ * bit already there.  A declaration counts before its parity step, so the
+ * arrival that reads that step finds the count.  A declared read request is
+ * never processed as a read: the home settles the count and answers with a
+ * dismiss (no data, no read turn), and the requester's cohort rides the
+ * write turn its rank holds or has requested.  The claiming creator's
+ * pre-claim requests (rwo, roo) are discarded unanswered: the claim closed
+ * both axes, and the announce seeded the parity bit as if the read request
+ * had arrived. */
+#define COVER_TD 0x80000000u
+#define COVER_RWO 0x40000000u
+#define COVER_ROO 0x20000000u
+#define COVER_OWED_MASK 0x1fffffffu
+
+enum { COVER_OWE, COVER_ARRIVE, COVER_RWO_ARRIVE, COVER_ROO_ARRIVE, COVER_MARK };
+
+/* One RMW of the gate.  True when this step leaves a marked gate with nothing
+ * owed (the caller completes the teardown); *marked reports whether the gate
+ * was marked when it committed. */
+static bool cover_gate_step(struct arts_db_s *db, int op, bool *marked) {
+  uint32_t cur = atomic_load_explicit(&db->cover_gate, memory_order_acquire);
+  uint32_t next;
+  bool edge;
+  do {
+    uint32_t owed = cur & COVER_OWED_MASK;
+    uint32_t flag = (op == COVER_RWO_ARRIVE)   ? COVER_RWO
+                    : (op == COVER_ROO_ARRIVE) ? COVER_ROO
+                                               : 0u;
+    next = cur;
+    edge = false;
+    if (op == COVER_OWE) {
+      if (owed == COVER_OWED_MASK) {
+        ARTS_ERROR("coherence: guid %lu owes more requests than its gate holds "
+                   "(gate=%x)",
+                   (unsigned long)db->cache.db_guid, cur);
+      }
+      next = cur + 1u;
+    } else if (op == COVER_MARK) {
+      if ((cur & COVER_TD) != 0u) {
+        *marked = true;
+        return false; /* a duplicate destroy */
+      }
+      next = cur | COVER_TD;
+      edge = (owed == 0u);
+    } else {
+      if (owed == 0u || (flag != 0u && (cur & flag) == 0u)) {
+        ARTS_ERROR("coherence: guid %lu settles a request it was never owed "
+                   "(gate=%x)",
+                   (unsigned long)db->cache.db_guid, cur);
+      }
+      next = (cur - 1u) & ~flag;
+      edge = (cur & COVER_TD) != 0u && owed == 1u;
+    }
+  } while (!atomic_compare_exchange_weak_explicit(
+      &db->cover_gate, &cur, next, memory_order_acq_rel, memory_order_acquire));
+  *marked = (cur & COVER_TD) != 0u;
+  return edge;
+}
+
+void arts_db_home_seed_owed(struct arts_db_s *db, unsigned int creator,
+                            uint8_t owed) {
+  if (owed == 0u) {
+    return;
+  }
+  db->claim_rank = creator;
+  uint32_t n = 0u, flags = 0u;
+  if (owed & ARTS_CREATE_OWED_RO) {
+    /* As if the pre-claim read request had arrived: the creator's next read
+     * request (the opposite parity) pairs as any. */
+    (void)arts_rank_bitset_put(&db->ro_parity, creator,
+                               (owed & ARTS_CREATE_OWED_RO_PAR) != 0u);
+    flags |= COVER_ROO;
+    n++;
+  }
+  if (owed & ARTS_CREATE_OWED_RW) {
+    flags |= COVER_RWO;
+    n++;
+  }
+  atomic_store_explicit(&db->cover_gate, flags | n, memory_order_relaxed);
+}
+
+int arts_db_cover_request(struct arts_db_s *db, unsigned int requester,
+                          bool write, uint32_t cover, bool *teardown) {
+  bool marked = false;
+  *teardown = false;
+  if ((cover & ARTS_COVER_PRECLAIM) != 0u && requester == db->claim_rank) {
+    /* The claiming creator's pre-claim request: discarded unanswered, its
+     * parity not applied (the announce seeded it). */
+    *teardown =
+        cover_gate_step(db, write ? COVER_RWO_ARRIVE : COVER_ROO_ARRIVE, &marked);
+    return ARTS_COVER_DROP;
+  }
+  if (write && (cover & ARTS_COVER_RO_OPEN) != 0u) {
+    bool par = (cover & ARTS_COVER_RO_PAR) != 0u;
+    (void)cover_gate_step(db, COVER_OWE, &marked);
+    if (arts_rank_bitset_put(&db->ro_parity, requester, par) == par) {
+      /* The undo is a settling step like any: if it is the one that leaves
+       * a marked gate with nothing owed, it owns the teardown, and the
+       * request reached a destroyed block (outside the contract): dropped. */
+      if (cover_gate_step(db, COVER_ARRIVE, &marked)) {
+        *teardown = true;
+        return ARTS_COVER_DROP;
+      }
+    }
+  }
+  if (!write) {
+    bool par = (cover & ARTS_COVER_PAR) != 0u;
+    if (arts_rank_bitset_put(&db->ro_parity, requester, par) == par) {
+      /* Declared first: a write turn of this rank covers the request. */
+      *teardown = cover_gate_step(db, COVER_ARRIVE, &marked);
+      return ARTS_COVER_DISMISS;
+    }
+  }
+  return ARTS_COVER_PROCESS;
+}
+
+void arts_db_cover_destroy(struct arts_db_s *db) {
+  bool marked = false;
+  if (cover_gate_step(db, COVER_MARK, &marked)) {
+    arts_db_home_destroy_now(db);
+  }
+}
+
+void arts_db_cover_home_init(struct arts_db_s *db, unsigned int nranks) {
+  arts_rank_bitset_init(&db->ro_parity, nranks);
+  atomic_store_explicit(&db->cover_gate, 0u, memory_order_relaxed);
+  db->claim_rank = (unsigned int)-1;
+}
+
+void arts_db_cover_home_teardown(struct arts_db_s *db) {
+  arts_rank_bitset_destroy(&db->ro_parity);
+}
+#endif /* the declared-arrival absorb */
+
 /* ================================================================== */
 /* ===== Destroy lifecycle ========================================== */
 /* ================================================================== */
@@ -1274,6 +1602,78 @@ static arts_route_table_t *quiescence_table(unsigned int t) {
 }
 #endif
 
+#if ARTS_LOG_LEVEL >= 3 && defined(ARTS_PROTOCOL_EXCL)
+/* One axis row of the EXCL cache word: report `bad` always, or only after a
+ * quiescent shutdown when `quiet_only`. */
+static unsigned int excl_axis_row(const struct arts_db_cache_s *c, uint64_t cw,
+                                  const char *bad, bool quiet_only,
+                                  bool quiescent) {
+  if (bad == NULL || (quiet_only && !quiescent)) {
+    return 0u;
+  }
+  ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu %s (word=%llx)",
+             (unsigned long)c->db_guid, bad, (unsigned long long)cw);
+  return 1u;
+}
+
+/* The cache word judged per axis, on that axis's own count.  Write axis:
+ * IDLE with writers counted is always lost (nothing covers a writer); at REQ
+ * with none it is a request no writer opened; non-idle with writers is an
+ * unfinished turn (quiescent only).  Read axis: at REQ with no reader is a
+ * covered read request whose answer was in flight (legal); IDLE with readers
+ * counted is legal only under the write axis's cover (quiescent only), else
+ * lost; non-idle with readers is unfinished (quiescent only).  PURGE: a grant
+ * with nothing counted under it is a lost zero edge (the edge returns the
+ * grant in the same CAS).  RETAIN: a resting grant with nothing counted is the
+ * policy's normal state, and a resident owner also covers its readers. */
+static unsigned int excl_cache_word_rows(const struct arts_db_cache_s *c,
+                                         uint64_t cw, bool quiescent) {
+  uint32_t rws = CACHE_RW_ST(cw), ros = CACHE_RO_ST(cw);
+  uint32_t wcn = CACHE_RW_CNT(cw), rcn = CACHE_RO_CNT(cw);
+#ifdef ARTS_RELEASE_RETAIN
+  bool read_cover =
+      rws == CACHE_ST_REQ || rws == CACHE_ST_GRANT || CACHE_OWNER(cw) == 1u;
+  bool purge = false;
+#else
+  bool read_cover = rws == CACHE_ST_REQ || rws == CACHE_ST_GRANT;
+  bool purge = true;
+#endif
+  unsigned int v = 0u;
+  if (rws == CACHE_ST_IDLE && wcn != 0u) {
+    v += excl_axis_row(c, cw, "rw axis rests idle with writers counted", false,
+                       quiescent);
+  } else if (rws == CACHE_ST_REQ && wcn == 0u) {
+    v += excl_axis_row(c, cw,
+                       "rw axis rests at its request with no writer counted",
+                       false, quiescent);
+  } else if (purge && rws == CACHE_ST_GRANT && wcn == 0u && rcn == 0u) {
+    v += excl_axis_row(c, cw, "rw axis rests granted with nothing counted",
+                       false, quiescent);
+  } else if (rws != CACHE_ST_IDLE && wcn != 0u) {
+    v += excl_axis_row(c, cw,
+                       "rw axis rests non-idle with writers still counted",
+                       true, quiescent);
+  }
+  if (ros == CACHE_ST_IDLE && rcn != 0u) {
+    v += excl_axis_row(c, cw,
+                       read_cover ? "ro readers rest under the write axis"
+                                  : "ro axis rests idle with readers counted",
+                       read_cover, quiescent);
+  } else if (purge && ros == CACHE_ST_GRANT && rcn == 0u) {
+    v += excl_axis_row(c, cw, "ro axis rests granted with no reader counted",
+                       false, quiescent);
+  } else if (ros != CACHE_ST_IDLE && ros != CACHE_ST_REQ && rcn != 0u) {
+    v += excl_axis_row(c, cw,
+                       "ro axis rests non-idle with readers still counted",
+                       true, quiescent);
+  } else if (ros == CACHE_ST_REQ && rcn != 0u) {
+    v += excl_axis_row(c, cw, "ro readers rest on an open read request", true,
+                       quiescent);
+  }
+  return v;
+}
+#endif
+
 void arts_db_debug_quiescence_check(void) {
 #if ARTS_LOG_LEVEL >= 3
   /* Every read below assumes the runtime's threads are gone: the joins order
@@ -1287,7 +1687,18 @@ void arts_db_debug_quiescence_check(void) {
                unjoined);
     return;
   }
+#ifdef ARTS_DEBUG_LANDING_BALANCE
+  /* Informational: a reply cut by the shutdown (no delivery barrier) leaves
+   * its landing out; a test waits for the count to reach zero instead. */
+  if (arts_db_landings_outstanding() != 0) {
+    ARTS_DEBUG("LANDING-INFO: %lld landing(s) outstanding at shutdown",
+               (long long)arts_db_landings_outstanding());
+  }
+#endif
   unsigned int viol = 0;
+  /* Homes a destroy marked that still wait for a declared request: legal at
+   * any shutdown, printed so a campaign can watch it. */
+  unsigned int marked_owed = 0;
   const unsigned int nt = (unsigned int)num_tables + ARTS_REMOTE_ROUTE_SHARDS;
   /* Whether this shutdown was quiescent, named by contributor so a log's
    * reader knows why a residue went unreported.  Every one is pending work
@@ -1383,14 +1794,31 @@ void arts_db_debug_quiescence_check(void) {
         }
 #endif
 #ifdef ARTS_PROTOCOL_VAL
-        if (quiescent && (!arts_lf_stack_empty(&c->ro_combine) ||
-                          c->ro_combine_group != NULL ||
-                          atomic_load_explicit(&c->snapshot_req_in_flight,
-                                               memory_order_relaxed) != 0u)) {
-          ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu has a parked read or an open "
-                     "read window after a quiescent shutdown",
-                     (unsigned long)c->db_guid);
-          viol++;
+        {
+          uint64_t rq =
+              atomic_load_explicit(&c->req_state, memory_order_relaxed);
+          /* A window whose request is out with nothing parked on it is a
+           * covered request whose answer was in flight: legal.  A parked
+           * reader is an unfinished acquire: reported after a quiescent
+           * shutdown.  A write axis left OPEN has lost its writer thread; a
+           * rider with no request of either kind to serve it, or a window
+           * parked behind a write request that is not out, will never be
+           * served: always reported. */
+          if (quiescent && (VREQ_GROUP(rq) != 0u || VREQ_NEXT(rq) != 0u)) {
+            ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu has a parked read after a "
+                       "quiescent shutdown (word=%llx)",
+                       (unsigned long)c->db_guid, (unsigned long long)rq);
+            viol++;
+          }
+          if (VREQ_RW(rq) == VREQ_RW_OPEN ||
+              (VREQ_NEXT(rq) != 0u && !VREQ_RO(rq) &&
+               VREQ_RW(rq) == VREQ_RW_IDLE) ||
+              (VREQ_RP(rq) && VREQ_RW(rq) == VREQ_RW_IDLE)) {
+            ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu request word rests where "
+                       "nothing serves it (word=%llx)",
+                       (unsigned long)c->db_guid, (unsigned long long)rq);
+            viol++;
+          }
         }
 #endif
 #if (defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)) &&              \
@@ -1415,12 +1843,143 @@ void arts_db_debug_quiescence_check(void) {
           }
         }
 #endif
+#ifdef ARTS_PROTOCOL_EXCL
+        if (db->home_initialized) {
+          /* The cover gate: marked with nothing owed (and, on PURGE, nothing
+           * counted) means the teardown was skipped; a pre-claim request owed
+           * with nothing owed is a broken count.  Something owed is legal and
+           * only counted. */
+#ifdef ARTS_RELEASE_PURGE
+          uint64_t ls =
+              atomic_load_explicit(&db->lock_state, memory_order_relaxed);
+          bool gtd = EXCL_STATE_TEARDOWN(ls) != 0u;
+          uint32_t gowed = EXCL_STATE_OWED(ls);
+          bool gskip = gtd && gowed == 0u && EXCL_STATE_W(ls) == 0u &&
+                       EXCL_STATE_R(ls) == 0u;
+          bool grwo =
+              (EXCL_STATE_RWO(ls) != 0u || EXCL_STATE_ROO(ls) != 0u) &&
+              gowed == 0u;
+#else
+          uint32_t gw =
+              atomic_load_explicit(&db->cover_gate, memory_order_relaxed);
+          bool gtd = (gw & 0x80000000u) != 0u;
+          uint32_t gowed = gw & 0x1fffffffu;
+          bool gskip = gtd && gowed == 0u;
+          bool grwo = (gw & 0x60000000u) != 0u && gowed == 0u;
+#endif
+          if (gskip || grwo) {
+            ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu cover gate rests where no "
+                       "step leaves it (skipped teardown=%d rwo=%d)",
+                       (unsigned long)c->db_guid, (int)gskip, (int)grwo);
+            viol++;
+          }
+          if (gtd && gowed != 0u) {
+            marked_owed++;
+          }
+          /* ro_queued: a set bit names a read request waiting on ro_waiters
+           * to be served as a read.  The request sets it before queueing its
+           * node, and the drain that pops the node or the same rank's write
+           * request takes it, so once every handler has joined a set bit with
+           * no node of its rank queued is a lost take; reported after a
+           * quiescent shutdown. */
+          if (quiescent) {
+            const struct arts_rank_bitset_s *qb = &db->ro_queued;
+            for (unsigned int qw = 0; qw < qb->nwords; qw++) {
+              uint64_t qs =
+                  atomic_load_explicit(&qb->words[qw], memory_order_relaxed);
+              while (qs != 0u) {
+                unsigned int qr = qw * 64u + (unsigned int)__builtin_ctzll(qs);
+                qs &= qs - 1u;
+                bool node = false;
+                for (arts_lf_link_t *n = atomic_load_explicit(
+                         &db->ro_waiters.head, memory_order_relaxed);
+                     n != NULL && !node;
+                     n = atomic_load_explicit(&n->next, memory_order_relaxed)) {
+                  node = ARTS_CONTAINER_OF(n, struct arts_lock_ro_node_s, link)
+                             ->rank == qr;
+                }
+                if (!node) {
+                  ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu marks rank %u's read "
+                             "request queued with none of its nodes on the "
+                             "read queue",
+                             (unsigned long)c->db_guid, qr);
+                  viol++;
+                }
+              }
+            }
+          }
+        }
+#endif
+#ifdef ARTS_PROTOCOL_INV
+        {
+          uint64_t cs =
+              atomic_load_explicit(&c->cache_state, memory_order_relaxed);
+          /* A covered fetch whose reply is in flight (inflight with nobody
+           * on the chain) is legal.  A writer thread lost between claim and
+           * commit, or readers no fetch, write request or valid copy can
+           * reach, are reported always; a parked reader after a quiescent
+           * shutdown is an unfinished acquire. */
+          if (INV_CACHE_RW(cs) == INV_RW_OPEN ||
+              (INV_CACHE_HEAD_RO(cs) != 0u && INV_CACHE_RW(cs) == INV_RW_IDLE &&
+               INV_CACHE_INFLIGHT(cs) == 0u &&
+               INV_CACHE_RO(cs) != INV_RO_VALID)) {
+            ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu reader word rests where "
+                       "nothing serves it (word=%llx)",
+                       (unsigned long)c->db_guid, (unsigned long long)cs);
+            viol++;
+          }
+          if (quiescent && INV_CACHE_HEAD_RO(cs) != 0u) {
+            ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu has a parked read after a "
+                       "quiescent shutdown (word=%llx)",
+                       (unsigned long)c->db_guid, (unsigned long long)cs);
+            viol++;
+          }
+        }
+#endif
 #if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
         if (quiescent && !arts_lf_stack_empty(&c->pending_rw)) {
           ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu has parked RW waiters after "
                      "a quiescent shutdown",
                      (unsigned long)c->db_guid);
           viol++;
+        }
+        {
+          /* A write request opens only for a parked writer, and only its
+           * grant's take (or a create's claim) empties the stack, which also
+           * closes the axis: a write request out with no writer is lost. */
+#ifdef ARTS_PROTOCOL_VAL
+          bool rw_sent = VREQ_RW(atomic_load_explicit(
+                             &c->req_state, memory_order_relaxed)) ==
+                         VREQ_RW_SENT;
+#else
+          bool rw_sent = INV_CACHE_RW(atomic_load_explicit(
+                             &c->cache_state, memory_order_relaxed)) ==
+                         INV_RW_SENT;
+#endif
+          if (rw_sent && arts_lf_stack_empty(&c->pending_rw)) {
+            ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu has a write request out "
+                       "with no writer waiting on it",
+                       (unsigned long)c->db_guid);
+            viol++;
+          }
+        }
+        if (db->home_initialized) {
+          /* The cover gate: marked with nothing owed means the teardown was
+           * skipped; the creator's write request owed with nothing owed is a
+           * broken count.  Something owed is legal (a declared request may be
+           * undelivered at any shutdown) and only counted. */
+          uint32_t gate =
+              atomic_load_explicit(&db->cover_gate, memory_order_relaxed);
+          if (((gate & 0x80000000u) != 0u && (gate & 0x1fffffffu) == 0u) ||
+              ((gate & 0x60000000u) != 0u && (gate & 0x1fffffffu) == 0u)) {
+            ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu cover gate rests where no "
+                       "step leaves it (gate=%x)",
+                       (unsigned long)c->db_guid, gate);
+            viol++;
+          }
+          if ((gate & 0x80000000u) != 0u && (gate & 0x1fffffffu) != 0u) {
+            marked_owed++;
+          }
         }
         /* The home directory.  A remote holder that has not yet handed the
          * right back, the requests queued behind it and, where the home
@@ -1560,7 +2119,14 @@ void arts_db_debug_quiescence_check(void) {
                        (unsigned long)c->db_guid, (unsigned long long)cw);
             viol++;
           }
+          viol += excl_cache_word_rows(c, cw, quiescent);
         }
+#endif
+#if defined(ARTS_PROTOCOL_EXCL) && defined(ARTS_RELEASE_PURGE) &&             \
+    !defined(ARTS_USE_CXL)
+        viol += excl_cache_word_rows(
+            c, atomic_load_explicit(&c->cache_state, memory_order_relaxed),
+            quiescent);
 #endif
 #ifdef ARTS_USE_CXL
         /* The arm's own quiescence, beside the RETAIN block above: what a
@@ -1589,79 +2155,8 @@ void arts_db_debug_quiescence_check(void) {
             viol++;
           }
           /* 2. Each axis rests only where the single-CAS acquire / grant /
-           * release discipline can leave it.  That discipline makes two
-           * shapes unreachable on its own: an axis IDLE with its own count
-           * still nonzero (going idle happens only at that count's own zero
-           * edge), and an axis in GRANT with nothing counted on EITHER axis --
-           * the zero edge that ends a turn returns its grant in the same
-           * CAS, so this can only be a lost zero edge.  Both are reported
-           * unconditionally.  REQUEST with nothing counted is exempt: it is
-           * a request whose requesters all left before its grant came, a
-           * legal transient that a late or undispatched grant leaves at
-           * teardown.  A non-idle axis WITH a count still on
-           * it is a THIRD shape: after every thread has joined nothing can
-           * wait on it, and a shutdown that left work undone is the one legal
-           * source of it, so it is reported only when the shutdown was
-           * quiescent. */
-          {
-            uint32_t teardown = 0u;
-            if (db->home_initialized) {
-              teardown = EXCL_STATE_TEARDOWN(
-                  atomic_load_explicit(&db->lock_state, memory_order_relaxed));
-            }
-            bool zero_zero =
-                (CACHE_RW_CNT(cw) == 0u && CACHE_RO_CNT(cw) == 0u);
-            if (CACHE_RW_ST(cw) == CACHE_ST_IDLE) {
-              if (CACHE_RW_CNT(cw) != 0u) {
-                ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu rw axis rests idle "
-                           "with a nonzero count (word=%llx teardown=%u)",
-                           (unsigned long)c->db_guid, (unsigned long long)cw,
-                           teardown);
-                viol++;
-              }
-            } else if (zero_zero) {
-              if (CACHE_RW_ST(cw) != CACHE_ST_REQ) {
-                ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu rw axis rests "
-                           "non-idle with nothing counted on it (word=%llx "
-                           "teardown=%u)",
-                           (unsigned long)c->db_guid, (unsigned long long)cw,
-                           teardown);
-                viol++;
-              }
-            } else if (quiescent) {
-              ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu rw axis rests non-idle "
-                         "with a count still on it after a quiescent "
-                         "shutdown (word=%llx teardown=%u)",
-                         (unsigned long)c->db_guid, (unsigned long long)cw,
-                         teardown);
-              viol++;
-            }
-            if (CACHE_RO_ST(cw) == CACHE_ST_IDLE) {
-              if (CACHE_RO_CNT(cw) != 0u) {
-                ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu ro axis rests idle "
-                           "with a nonzero count (word=%llx teardown=%u)",
-                           (unsigned long)c->db_guid, (unsigned long long)cw,
-                           teardown);
-                viol++;
-              }
-            } else if (zero_zero) {
-              if (CACHE_RO_ST(cw) != CACHE_ST_REQ) {
-                ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu ro axis rests "
-                           "non-idle with nothing counted on it (word=%llx "
-                           "teardown=%u)",
-                           (unsigned long)c->db_guid, (unsigned long long)cw,
-                           teardown);
-                viol++;
-              }
-            } else if (quiescent) {
-              ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu ro axis rests non-idle "
-                         "with a count still on it after a quiescent "
-                         "shutdown (word=%llx teardown=%u)",
-                         (unsigned long)c->db_guid, (unsigned long long)cw,
-                         teardown);
-              viol++;
-            }
-          }
+           * release discipline can leave it (excl_cache_word_rows). */
+          viol += excl_cache_word_rows(c, cw, quiescent);
 #ifdef ARTS_CXL_DIRECT
           /* 4. Nothing stands between the store and an EDT: where a holder's
            * working bytes ARE the block's store, a descriptor naming anything
@@ -1733,6 +2228,11 @@ void arts_db_debug_quiescence_check(void) {
   /* Every contributor is printed, so "nothing was left undone" and "work was
    * left undone, and it is why a residue went unreported" read apart -- the
    * two look identical from the violation count alone. */
+  if (marked_owed != 0) {
+    ARTS_DEBUG("COVER-INFO: %u home(s) marked for teardown still wait for a "
+               "declared request (quiescent=%d)",
+               marked_owed, (int)quiescent);
+  }
   if (viol != 0 || !quiescent) {
     ARTS_DEBUG("QUIESCENCE-DEBUG: %u violation(s) (shutdown left undone: "
                "queued_edts=%u waits=%u ooo=%u "
@@ -1769,26 +2269,8 @@ void arts_db_cache_common_destroy_post(struct arts_db_cache_s *cache) {
   }
 #endif
 #ifdef ARTS_PROTOCOL_VAL
-  {
-    /* Combining waiters still parked at destroy are freed, not woken —
-     * destroying a DB with a pending acquire is undefined per the programming
-     * model, same contract as the publication waiters' drain above. */
-    arts_lf_link_t *n = arts_lf_stack_drain(&cache->ro_combine);
-    while (n != NULL) {
-      arts_lf_link_t *next =
-          atomic_load_explicit(&n->next, memory_order_relaxed);
-      arts_free(n);
-      n = next;
-    }
-    n = cache->ro_combine_group;
-    cache->ro_combine_group = NULL;
-    while (n != NULL) {
-      arts_lf_link_t *next =
-          atomic_load_explicit(&n->next, memory_order_relaxed);
-      arts_free(n);
-      n = next;
-    }
-  }
+  /* Readers still parked at destroy are freed with the pool, not woken. */
+  arts_db_val_waiters_free(cache);
 #endif
   {
     struct arts_db_s *db_self = arts_db_of_cache(cache);

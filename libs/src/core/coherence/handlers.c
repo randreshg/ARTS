@@ -9,8 +9,7 @@
  * Lookup discipline.  Two handler categories, both lookup-then-operate but
  * differing on the MISS action:
  *   - Cat-B (deferrable bodies, each an OOO_* kind in ooo.h, run at the home
- *     except INV WB's INV_REDIRECT, which runs at the grant holder — e.g.
- *     GRANT_REQUEST / SNAPSHOT_REQUEST / PUBLISH / DESTROY): the wire
+ *     — e.g. GRANT_REQUEST / SNAPSHOT_REQUEST / PUBLISH / DESTROY): the wire
  *     dispatcher routes through the OoO engine, which acquires this rank's db_s
  *     (ref-pinned) and hands a pure (item, args) body the live cache on a
  *     HIT, or DEFERS the args and replays them once DB_CREATE installs.
@@ -241,6 +240,9 @@ void arts_handler_db_create(void *item_v, void *args_v) {
   } else {
     arts_db_cache_init(&stub->cache, db_guid, db_size, ARTS_DB_INIT_HOME_RECV,
                        creator_rank);
+    /* Still unpublished: the requests the claimed first touch had sent are
+     * owed before anything can reach the descriptor. */
+    arts_db_home_seed_owed(stub, creator_rank, p->owed);
   }
 #ifdef ARTS_USE_CXL
   /* The creator minted the block's store before sending this create; the home
@@ -305,8 +307,9 @@ void arts_handler_db_create(void *item_v, void *args_v) {
  * only ends the landing (this 1:1 response resumes a parked EDT; a missing
  * cache means it was torn down).
  *
- * The response ends the requester's combining window: it resumes the leader
- * it names (a->edt_guid, a->slot), then the rest of the window's batch.  Bytes
+ * The response ends the requester's combining window, whose cohort is the
+ * cache's own chain; it echoes the request's cover word, whose parity must be
+ * the open window's (checked in the CAS that consumes the answer).  Bytes
  * that travel one-sided are installed first (version-conditional); a reply
  * that moves none names a version this cache already holds, and resumes
  * against the live buffer.  Shared verbatim by WT/WB. */
@@ -351,8 +354,7 @@ struct snapshot_landed_ctx_s {
   struct arts_db_buffer_s *landing;
   uint64_t version;
   uint64_t data_size;
-  arts_guid_t edt_guid;
-  uint32_t slot;
+  uint32_t cover;
 };
 
 static void snapshot_landed_cb(void *arg) {
@@ -370,8 +372,7 @@ static void snapshot_landed_cb(void *arg) {
   struct arts_db_cache_s *cache = &db->cache;
   arts_db_buf_install_landed(cache, ctx->version, ctx->landing,
                              ctx->data_size);
-  mark_edt_ready_by_guid(ctx->edt_guid, ctx->slot);
-  arts_db_ro_combine_on_terminal(cache);
+  arts_db_ro_combine_on_terminal(cache, ctx->cover);
   arts_shared_release(&ctx->db_h);
   arts_free(ctx);
 }
@@ -380,18 +381,21 @@ void arts_handler_db_snapshot_response(void *item_v, void *args_v) {
   struct arts_db_cache_s *cache = &((struct arts_db_s *)item_v)->cache;
   struct arts_db_snapshot_response_args_s *a =
       (struct arts_db_snapshot_response_args_s *)args_v;
-  arts_guid_t edt_guid = a->edt_guid;
-  uint32_t slot = a->slot;
 
   /* Every response kind carries the server's descriptor size; a hinted
    * first touch may reach any of them with the size still unlearned. */
   arts_db_cache_learn_size(cache, a->db_size);
 
   if (a->data_present == 2) {
-    /* Size-only CTS: the server holds data but our request carried no landing
-     * (first touch — db_size unknown).  The size was learned above; re-issue
-     * the request, which now advertises a landing and is served for real. */
-    arts_send_db_snapshot_request(cache, edt_guid, slot);
+    /* An answer without data: a size round (our request carried no landing)
+     * or a dismiss (a write turn this rank holds or has requested covers the
+     * request).  Either returns the landing it named; the window then
+     * re-sends for a cohort that rides no write request, or closes. */
+    if (a->rdzv_cookie != 0) {
+      arts_db_buf_landing_return(
+          (struct arts_db_buffer_s *)(uintptr_t)a->rdzv_cookie);
+    }
+    arts_db_ro_combine_on_cts(cache, a->cover);
     return;
   }
 
@@ -406,8 +410,7 @@ void arts_handler_db_snapshot_response(void *item_v, void *args_v) {
     ctx->landing = (struct arts_db_buffer_s *)(uintptr_t)a->rdzv_cookie;
     ctx->version = a->version;
     ctx->data_size = a->db_size;
-    ctx->edt_guid = edt_guid;
-    ctx->slot = slot;
+    ctx->cover = a->cover;
     arts_net_rdzv_expect(a->rdzv_txid, snapshot_landed_cb, ctx);
     return;
   }
@@ -452,8 +455,7 @@ void arts_handler_db_snapshot_response(void *item_v, void *args_v) {
            "a reply that moves no bytes named a version this cache lacks");
   }
 #endif
-  mark_edt_ready_by_guid(edt_guid, slot);
-  arts_db_ro_combine_on_terminal(cache);
+  arts_db_ro_combine_on_terminal(cache, a->cover);
 }
 #endif /* the versioned-snapshot read path */
 

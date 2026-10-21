@@ -155,7 +155,7 @@ void arts_handler_db_acquire(void *item, void *args) {
     break;
   case INV_CACHE_ACT_SEND_RO:
     INCREMENT_NUM_DB_ACQUIRE_REMOTE_BY(1);
-    arts_send_db_inv_request(cache, DB_MODE_RO);
+    arts_send_db_inv_request(cache, DB_MODE_RO, inv_read_cover(next));
     break;
   default: /* PARK: the fetch's committer will serve us */
     /* Parked behind an open fetch: still an acquire this rank could not
@@ -210,15 +210,35 @@ void arts_handler_db_inv_request(void *item_v, void *args_v) {
   struct arts_ooo_args_db_inv_request_s *a =
       (struct arts_ooo_args_db_inv_request_s *)args_v;
   struct arts_db_cache_s *cache = &db->cache;
+  if (!a->bounce) {
+    bool td = false;
+    int r = arts_db_cover_request(db, a->requester, false, a->cover, &td);
+    if (r == ARTS_COVER_DISMISS) {
+      /* Declared: a write turn of the requester's rank covers this request.
+       * Dismiss it -- no data, no read turn -- returning the landing. */
+      arts_send_db_inv_cts(
+          a->requester, db, db->cache.db_guid,
+          atomic_load_explicit(&db->cache.db_size, memory_order_relaxed),
+          a->cover, a->rdzv.cookie);
+    }
+    if (td) {
+      arts_db_home_destroy_now(db);
+    }
+    if (r != ARTS_COVER_PROCESS) {
+      return;
+    }
+  }
   (void)arts_rank_bitset_set(&db->cached_ranks, a->requester);
   if (a->rdzv.txid == 0 &&
       atomic_load_explicit(&cache->db_size, memory_order_relaxed) != 0 &&
       a->requester != arts_global_rank_id) {
     /* First touch: the request carried no landing (db_size unknown at the
      * requester).  Answer the size and let it re-issue with one. */
+    INCREMENT_NUM_INV_SIZE_CTS_BY(1);
     arts_send_db_inv_cts(
-        a->requester, cache->db_guid,
-        atomic_load_explicit(&cache->db_size, memory_order_relaxed), a->mode);
+        a->requester, db, cache->db_guid,
+        atomic_load_explicit(&cache->db_size, memory_order_relaxed), a->cover,
+        a->rdzv.cookie);
     return;
   }
   if (a->mode != DB_MODE_RO) {
@@ -239,7 +259,8 @@ void arts_handler_db_inv_request(void *item_v, void *args_v) {
     arts_send_db_inv_deliver(a->requester, db, &a->rdzv);
     return;
   }
-  arts_send_db_inv_redirect(holder, cache->db_guid, a->requester, &a->rdzv);
+  arts_send_db_inv_redirect(holder, cache->db_guid, a->requester, a->cover,
+                            &a->rdzv);
 }
 
 /* ===== redirect (home -> current holder) ================================
@@ -265,7 +286,8 @@ void arts_handler_db_inv_redirect(void *item_v, void *args_v) {
       /* The bytes moved on between the home's directory read and this
        * arrival.  Bounce rather than queue — a reader must never wait here —
        * and let the next pass resolve against a later generation. */
-      arts_send_db_inv_request_for(cache->db_guid, a->requester, &a->rdzv);
+      arts_send_db_inv_request_for(cache->db_guid, a->requester, a->cover,
+                                   &a->rdzv);
       return;
     }
   }
@@ -279,39 +301,54 @@ void arts_handler_db_inv_redirect(void *item_v, void *args_v) {
  * the packet because the holder answers it directly, so the wire sender and
  * the requester are different ranks. */
 void arts_send_db_inv_redirect(unsigned int holder_rank, arts_guid_t db_guid,
-                               unsigned int requester,
+                               unsigned int requester, uint32_t cover,
                                const struct arts_rdzv_landing_s *rdzv) {
   struct arts_msg_inv_redirect_packet_s p;
   arts_fill_packet_header(&p.header, sizeof(p), MSG_DB_INV_REDIRECT);
   p.header.rank = arts_global_rank_id;
   p.db_guid = db_guid;
   p.requester = requester;
-  p.pad = 0;
+  p.cover = cover;
   p.rdzv.addr = rdzv->addr;
   p.rdzv.key = rdzv->key;
   p.rdzv.txid = rdzv->txid;
   p.rdzv.cookie = rdzv->cookie;
   if (holder_rank == arts_global_rank_id) {
-    struct arts_ooo_args_db_inv_redirect_s args = {
-        .requester = requester, .db_guid = db_guid, .rdzv = *rdzv};
-    arts_ooo_dispatch_or_defer_guid(db_guid, OOO_DB_INV_REDIRECT, &args,
-                                    sizeof(args));
+    struct arts_ooo_args_db_inv_redirect_s args = {.requester = requester,
+                                                   .cover = cover,
+                                                   .db_guid = db_guid,
+                                                   .rdzv = *rdzv};
+    arts_shared_ptr_t h = arts_route_table_lookup_db(db_guid);
+    struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(h);
+    if (db != NULL) {
+      arts_handler_db_inv_redirect(db, &args);
+    } else {
+      /* Torn down after the home took the request in: dismiss it. */
+      arts_send_db_inv_cts(requester, NULL, db_guid, 0u, cover, rdzv->cookie);
+    }
+    arts_shared_release(&h);
     return;
   }
-  arts_transport_send_async((int)holder_rank, (char *)&p, sizeof(p));
+  if (!arts_net_send_held((int)holder_rank, (char *)&p, sizeof(p),
+                          ARTS_HELD_HOP)) {
+    arts_transport_send_async((int)holder_rank, (char *)&p, sizeof(p));
+  }
 }
 
 /* The bounce: a holder that no longer has the bytes re-sends the read request
  * to the home on the reader's behalf.  A retry, not a park — the next pass
  * resolves against a later ownership generation. */
 void arts_send_db_inv_request_for(arts_guid_t db_guid, unsigned int requester,
+                                  uint32_t cover,
                                   const struct arts_rdzv_landing_s *rdzv) {
   unsigned int home_rank = arts_guid_get_rank(db_guid);
   struct arts_msg_inv_request_packet_s p;
   arts_fill_packet_header(&p.header, sizeof(p), MSG_DB_INV_REQUEST);
   p.header.rank = arts_global_rank_id;
   p.db_guid = db_guid;
-  p.mode = (uint32_t)DB_MODE_RO;
+  p.mode = (uint16_t)DB_MODE_RO;
+  p.cover = (uint8_t)cover;
+  p.flags = ARTS_INV_REQ_BOUNCE;
   p.requester = requester;
   p.rdzv.addr = rdzv->addr;
   p.rdzv.key = rdzv->key;
@@ -321,10 +358,22 @@ void arts_send_db_inv_request_for(arts_guid_t db_guid, unsigned int requester,
     struct arts_ooo_args_db_inv_request_s args = {.requester = requester,
                                                   .db_guid = db_guid,
                                                   .mode = DB_MODE_RO,
+                                                  .cover = cover,
+                                                  .bounce = true,
                                                   .rdzv = *rdzv};
-    arts_ooo_dispatch_or_defer_guid(db_guid, OOO_DB_INV_REQUEST, &args,
-                                    sizeof(args));
+    arts_shared_ptr_t h = arts_route_table_lookup_db(db_guid);
+    struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(h);
+    if (db != NULL) {
+      arts_handler_db_inv_request(db, &args);
+    } else {
+      /* Torn down after the home took the request in: dismiss it. */
+      arts_send_db_inv_cts(requester, NULL, db_guid, 0u, cover, rdzv->cookie);
+    }
+    arts_shared_release(&h);
     return;
   }
-  arts_transport_send_async((int)home_rank, (char *)&p, sizeof(p));
+  if (!arts_net_send_held((int)home_rank, (char *)&p, sizeof(p),
+                          ARTS_HELD_HOP)) {
+    arts_transport_send_async((int)home_rank, (char *)&p, sizeof(p));
+  }
 }

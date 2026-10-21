@@ -616,15 +616,16 @@ unsigned int arts_db_grant_commit_drain(struct arts_db_cache_s *cache) {
 
 void arts_db_grant_commit_finish(struct arts_db_cache_s *cache,
                                  unsigned int drained) {
-  (void)cache;
   /* Every grant finds at least one waiter: a request is opened only for a
    * waiter no earlier grant took, and nothing but a grant's take removes one.
    * The commit's hold became those waiters' holds; the last of them to
    * release closes the edge, and its hand-back rides that release's own
    * publish.  Nothing else is owed the home for this grant: the hand-back is
    * the only message it sends there. */
-  assert(drained > 0u && "every grant finds at least one waiter");
-  (void)drained;
+  if (drained == 0u) {
+    ARTS_ERROR("grant: guid %lu got a write grant that found no waiter",
+               (unsigned long)cache->db_guid);
+  }
 }
 
 void arts_db_grant_install(struct arts_db_cache_s *cache) {
@@ -637,9 +638,11 @@ void arts_db_grant_install(struct arts_db_cache_s *cache) {
    * hold.  Grants are baton-serialized and the serve clears possession before
    * it ships, so the precondition is met by construction. */
   unsigned int prev = 0u;
-  bool installed = atomic_compare_exchange_strong_explicit(
-      &cache->writer_count, &prev, ARTS_GRANT_SEED_HOLDING,
-      memory_order_acq_rel, memory_order_relaxed);
-  assert(installed && "a grant installs only on a rank that holds nothing");
-  (void)installed;
+  if (!atomic_compare_exchange_strong_explicit(
+          &cache->writer_count, &prev, ARTS_GRANT_SEED_HOLDING,
+          memory_order_acq_rel, memory_order_relaxed)) {
+    ARTS_ERROR("grant: guid %lu installed a write grant on a rank that holds "
+               "one (word=%x)",
+               (unsigned long)cache->db_guid, prev);
+  }
 }

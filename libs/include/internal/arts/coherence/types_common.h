@@ -84,6 +84,7 @@ extern "C" {
 #include "arts.h"
 
 #include "arts/defs.h"
+#include "arts/gas/guid.h" /* ARTS_GUID_DB_GET_SZHINT (ARTS_DB_STUB_CLAIMABLE) */
 #include "arts/utils/lockfree_lifo.h"  /* arts_lf_stack_t / arts_lf_link_t */
 #include "arts/utils/lockfree_pool.h"  /* arts_lockfree_pool_t (buf_freelist) */
 #include "arts/utils/shared.h"         /* arts_shared_ptr_t (buffer cb) */
@@ -196,6 +197,29 @@ unsigned int arts_grant_purge_release_next(unsigned int cur, bool purgeable,
 #define ARTS_GRANT_NO_RETURNER ((unsigned int)-1)
 #endif /* grant plane */
 
+/* A create announce's owed byte: the requests the first-touch cache a create
+ * claimed had already sent its home -- a read request (with its parity) and a
+ * write request.  The home tears the block down only once each has arrived. */
+#define ARTS_CREATE_OWED_RO 0x1u
+#define ARTS_CREATE_OWED_RO_PAR 0x2u
+#define ARTS_CREATE_OWED_RW 0x4u
+
+/* Whether a cache a dependence's first touch made can still be claimed by a
+ * create: only a GUID the program named before its create can be touched
+ * first, and such a GUID (reserved or labeled) carries no size hint, while a
+ * create that mints its GUID stamps one.  A cache that can never be claimed
+ * keeps the stub bit clear, so its requests are never PRECLAIM. */
+#define ARTS_DB_STUB_CLAIMABLE(guid)                                           \
+  (ARTS_GUID_DB_GET_SZHINT(guid) == ARTS_GUID_DB_SZHINT_NONE)
+
+/* A request's cover word: a read request carries its parity; a write request
+ * declares the read request its rank has out (open + parity) and whether it
+ * was opened by a first-touch cache no create had claimed yet. */
+#define ARTS_COVER_PAR 0x1u
+#define ARTS_COVER_RO_OPEN 0x2u
+#define ARTS_COVER_RO_PAR 0x4u
+#define ARTS_COVER_PRECLAIM 0x8u
+
 /* In-memory rendezvous landing descriptor — the coherence-side mirror of the
  * packed wire struct arts_msg_rdzv_landing_s (protocol.h): where a payload
  * sender may fi_writedata, keyed for pairing.  txid == 0 means "no landing"
@@ -279,14 +303,12 @@ struct arts_db_buffer_s {
 
 struct arts_db_cache_s;
 
-/* A parked read, on one of two stacks:
- *   1. a VAL requester's combining window (cache.ro_combine), resumed by the
- *      response that ends the window it rides;
- *   2. a write-through home's publication waiters
- *      (cache.publication_waiters): a home-local RO acquire, or a remote read
- *      whose serve was deferred — `serve` is non-NULL — because the home's
- *      copy was not yet published; drained whole once it is
- *      (arts_db_drain_publication_waiters). */
+/* A parked read on a write-through home's publication waiters
+ * (cache.publication_waiters): a home-local RO acquire, or a remote read whose
+ * serve was deferred — `serve` is non-NULL — because the home's copy was not
+ * yet published; drained whole once it is (arts_db_drain_publication_waiters).
+ * A VAL requester's parked readers are not these: they are chained in its
+ * request word (val/types.h). */
 struct arts_db_read_waiter_s {
   arts_lf_link_t link; /* FIRST — required by arts_lf_stack_t */
   arts_guid_t edt_guid;
@@ -294,7 +316,8 @@ struct arts_db_read_waiter_s {
   /* Deferred-serve arm: NULL = local waiter (drain resumes the parked EDT;
    * the resume claims the slot's acquire record with the installed buffer).
    * Non-NULL = deferred remote serve; the drain invokes serve(cache, w)
-   * BEFORE freeing w, and requester/rdzv carry the original request. */
+   * BEFORE freeing w, and requester/cover/rdzv carry the original request. */
+  uint32_t cover;
   void (*serve)(struct arts_db_cache_s *cache, struct arts_db_read_waiter_s *w);
   unsigned int requester;
   struct arts_rdzv_landing_s rdzv;

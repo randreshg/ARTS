@@ -51,7 +51,8 @@ extern "C" {
  * Identical under both write policies — what differs between WT and WB is
  * where a fetch is SERVED FROM, never what the requester's word does.
  *
- *   [ ro:2 (63..62) | inflight:1 (61) | spare:43 | head_ro:18 (17..0) ]
+ *   [ ro:2 (63..62) | inflight:1 (61) | rw:2 (60..59) | par:1 (58) |
+ *     stub:1 (57) | spare:39 | head_ro:18 (17..0) ]
  *
  *   ro       ∈ {IDLE, REQ, REQ_KILL, VALID}.  VALID survives reader release:
  *              a reader holding it is a pure load — no message, no CAS, no
@@ -62,6 +63,15 @@ extern "C" {
  *              fetch may open while it is set, so at most one reply is ever in
  *              flight per rank and a landing reply always belongs to the unique
  *              open fetch.
+ *   rw       = the write request's axis: IDLE, OPEN (claimed, not yet
+ *              committed) or SENT.  A reader that finds it out sends no read
+ *              request: it parks on the chain and the write turn serves it.
+ *   par      = the parity of the last read request this rank sent.
+ *   stub     = a dependence's first touch made the cache and nothing has
+ *              shown the home installed yet: the create's claim clears it,
+ *              and so does every reply unless rw is OPEN (the OPEN's holder
+ *              acts only while the bit it read stands).  A request sent
+ *              while it is set carries PRECLAIM.
  *   head_ro  = head of the parked-reader chain, an index into the per-DB waiter
  *              pool (0 = empty; pool indices start at 1).  The head lives IN
  *              the word so parking IS the acquire's own decision CAS (a parked
@@ -110,6 +120,23 @@ extern "C" {
   ((uint32_t)(((s) >> INV_CACHE_INFLIGHT_SHIFT) & INV_CACHE_FLAG_MASK))
 #define INV_CACHE_HEAD_RO(s)                                                   \
   ((uint32_t)(((s) >> INV_CACHE_HEAD_RO_SHIFT) & INV_CACHE_HEAD_MASK))
+#define INV_CACHE_RW_SHIFT 59
+#define INV_CACHE_PAR_SHIFT 58
+#define INV_CACHE_STUB_SHIFT 57
+#define INV_CACHE_RW(s) ((uint32_t)(((s) >> INV_CACHE_RW_SHIFT) & 0x3ULL))
+#define INV_CACHE_PAR(s) ((uint32_t)(((s) >> INV_CACHE_PAR_SHIFT) & 0x1ULL))
+#define INV_CACHE_STUB(s) ((uint32_t)(((s) >> INV_CACHE_STUB_SHIFT) & 0x1ULL))
+#define INV_CACHE_REQ_MASK                                                     \
+  ((0x3ULL << INV_CACHE_RW_SHIFT) | (0x1ULL << INV_CACHE_PAR_SHIFT) |          \
+   (0x1ULL << INV_CACHE_STUB_SHIFT))
+#define INV_CACHE_WITH_REQ(s, rw, par, stub)                                   \
+  (((s) & ~INV_CACHE_REQ_MASK) |                                               \
+   (((uint64_t)(rw) & 0x3ULL) << INV_CACHE_RW_SHIFT) |                         \
+   (((uint64_t)(par) & 0x1ULL) << INV_CACHE_PAR_SHIFT) |                       \
+   (((uint64_t)(stub) & 0x1ULL) << INV_CACHE_STUB_SHIFT))
+#define INV_RW_IDLE 0u
+#define INV_RW_OPEN 1u
+#define INV_RW_SENT 2u
 #define INV_CACHE_MAKE(ro, inflight, hro)                                      \
   ((((uint64_t)(ro) & INV_CACHE_ST_MASK) << INV_CACHE_RO_SHIFT) |              \
    (((uint64_t)(inflight) & INV_CACHE_FLAG_MASK) << INV_CACHE_INFLIGHT_SHIFT) |\
@@ -282,13 +309,8 @@ struct arts_db_cache_s {
    * waiter is woken regardless of order, so a LIFO stack suffices. */
   arts_lf_stack_t pending_rw;
   struct arts_db_inv_waiter_pool_s waiters; /* reader chain-node pool */
-  /* Ownership-request coalescing: only the actor that CASes 0->1 sends
-   * GRANT_REQUEST; same-node RW acquires piggyback and are picked up by
-   * the transfer's drain.  A grant's take clears it with release after
-   * taking the waiters, and a claim (acq_rel) sees that take.  The claim and
-   * the clear each pair with the pending_rw stack through a seq_cst fence
-   * (arts_db_acquire_remote_rw, arts_db_grant_take_waiters). */
-  _Atomic(unsigned int) grant_req_in_flight;
+  /* The write request's axis lives in cache_state (rw), beside the read
+   * plane, so a reader and a writer decide against each other in one CAS. */
 #ifndef ARTS_RELEASE_PURGE
   /* Next transfer target, published by the INVALIDATE handler BEFORE it
    * withdraws the sentinel.  ARTS_NO_PENDING_OWNER = none pending.  Publishing
@@ -433,6 +455,15 @@ struct arts_db_s {
    * ordered after the snapshot and the stamp made before it. */
   struct arts_rank_bitset_s roster;
   struct arts_rank_bitset_s cached_ranks; /* destroy fan-out roster */
+  /* The declared-arrival state: per requester rank the parity of its last
+   * read request this home accounted for (by its arrival or a declaration of
+   * it, whichever came first); the gate [td:1 | rwo:1 | roo:1 | owed:29],
+   * the destroy's mark and what the home was told is still coming, every
+   * write after init an acq_rel RMW; the rank whose create claimed a
+   * first-touch cache, written before the descriptor is published. */
+  struct arts_rank_bitset_s ro_parity;
+  _Atomic(uint32_t) cover_gate;
+  unsigned int claim_rank;
 
 #ifdef ARTS_GPU_LAYOUT
   /* GPU staging state.  The lock exists only for an ARTS_DB_GPU block (NULL
@@ -459,6 +490,15 @@ struct arts_db_s {
 #define INV_CACHE_OP_DELIVER 1    /* a read reply landed (publish attempt) */
 #define INV_CACHE_OP_INVALIDATE 2
 #define INV_CACHE_OP_KILL_PURGE 3 /* reserved invalidate after the kill serve */
+#define INV_CACHE_OP_CTS 4        /* a size round or a dismiss answered the
+                                     read request */
+#define INV_CACHE_OP_DECLAIM 5    /* a size round answered the write request:
+                                     the cache can never be claimed */
+#define INV_CACHE_OP_RW_CLAIM 6
+#define INV_CACHE_OP_RW_COMMIT 7
+#define INV_CACHE_OP_RW_GIVE 8
+#define INV_CACHE_OP_RW_CLEAR 9   /* the grant lands: COVER + SENT -> IDLE */
+#define INV_CACHE_OP_CLAIM 10     /* a create claims the cache */
 
 #define INV_CACHE_ACT_NONE 0
 #define INV_CACHE_ACT_SELF_SERVE 1   /* covering VALID copy: pure load, run */
@@ -466,11 +506,21 @@ struct arts_db_s {
 #define INV_CACHE_ACT_PARK 3         /* chained onto the in-flight fetch */
 #define INV_CACHE_ACT_PUBLISH 4      /* installed: serve the grabbed chain */
 #define INV_CACHE_ACT_PUBLISH_KILL 5 /* + reserved purge + owed ack after */
-#define INV_CACHE_ACT_DROP 6         /* superseded reply: discard */
 #define INV_CACHE_ACT_PURGE_ACK 7    /* INVALIDATE on VALID: purged, ack */
 #define INV_CACHE_ACT_KILL_MARKED 8  /* INVALIDATE on REQ: ack owed */
 #define INV_CACHE_ACT_NOOP_ACK 9     /* INVALIDATE idempotent: ack */
+#define INV_CACHE_ACT_RESEND 10      /* a size round or dismiss re-sends the
+                                        fetch (a kill mark stays on it) */
+#define INV_CACHE_ACT_CLOSE_ACK 11   /* a size round or dismiss closes a
+                                        kill-marked fetch: the owed ack goes
+                                        now */
+#define INV_CACHE_ACT_SERVE 12       /* serve the chain the CAS took */
+#define INV_CACHE_ACT_WON 13
+#define INV_CACHE_ACT_LOST 14
+#define INV_CACHE_ACT_LATE 15        /* no request out: the caller raises */
 
+/* A read request's cover word from the word that opened it (engine.c). */
+uint32_t inv_read_cover(uint64_t s);
 uint64_t inv_cache_compute_next(uint64_t cur, int op, uint32_t self_idx,
                                 uint32_t *out_action);
 

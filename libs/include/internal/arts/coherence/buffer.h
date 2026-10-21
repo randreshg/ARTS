@@ -232,6 +232,10 @@ arts_db_buf_landing_alloc(struct arts_db_cache_s *cache, uint64_t db_size,
  * buffer for a SIZED block loses that guarantee.  Where the reply's silence means "the sender had no bytes
  * either", use arts_db_buf_adopt_landing instead. */
 void arts_db_buf_landing_return(struct arts_db_buffer_s *b);
+#ifdef ARTS_DEBUG_LANDING_BALANCE
+/* This rank's landings drawn and not yet returned, adopted or installed. */
+int64_t arts_db_landings_outstanding(void);
+#endif
 
 /* Release the storage of a descriptor whose destructor has run.  It is freed
  * now, or by the park of the last buffer drawn from it that is still out. */

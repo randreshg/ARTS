@@ -172,7 +172,7 @@ void arts_handler_db_acquire(void *item, void *args) {
     break;
   case INV_CACHE_ACT_SEND_RO:
     INCREMENT_NUM_DB_ACQUIRE_REMOTE_BY(1);
-    arts_send_db_inv_request(cache, DB_MODE_RO);
+    arts_send_db_inv_request(cache, DB_MODE_RO, inv_read_cover(next));
     break;
   default: /* PARK: the fetch's committer will serve us */
     /* Parked behind an open fetch: still an acquire this rank could not
@@ -279,6 +279,24 @@ void arts_handler_db_inv_request(void *item_v, void *args_v) {
   struct arts_ooo_args_db_inv_request_s *a =
       (struct arts_ooo_args_db_inv_request_s *)args_v;
   struct arts_db_cache_s *cache = &db->cache;
+  {
+    bool td = false;
+    int r = arts_db_cover_request(db, a->requester, false, a->cover, &td);
+    if (r == ARTS_COVER_DISMISS) {
+      /* Declared: a write turn of the requester's rank covers this request.
+       * Dismiss it -- no data, no read turn -- returning the landing. */
+      arts_send_db_inv_cts(
+          a->requester, db, db->cache.db_guid,
+          atomic_load_explicit(&db->cache.db_size, memory_order_relaxed),
+          a->cover, a->rdzv.cookie);
+    }
+    if (td) {
+      arts_db_home_destroy_now(db);
+    }
+    if (r != ARTS_COVER_PROCESS) {
+      return;
+    }
+  }
   (void)arts_rank_bitset_set(&db->cached_ranks, a->requester);
   if (a->rdzv.txid == 0 &&
       atomic_load_explicit(&cache->db_size, memory_order_relaxed) != 0 &&
@@ -286,9 +304,11 @@ void arts_handler_db_inv_request(void *item_v, void *args_v) {
     /* First touch: the request carried no landing (db_size unknown at the
      * requester).  It was NOT queued/served — answer the size and let the
      * requester re-issue with a landing. */
+    INCREMENT_NUM_INV_SIZE_CTS_BY(1);
     arts_send_db_inv_cts(
-        a->requester, cache->db_guid,
-        atomic_load_explicit(&cache->db_size, memory_order_relaxed), a->mode);
+        a->requester, db, cache->db_guid,
+        atomic_load_explicit(&cache->db_size, memory_order_relaxed), a->cover,
+        a->rdzv.cookie);
     return;
   }
   if (a->mode == DB_MODE_RO) {
@@ -320,6 +340,7 @@ void arts_handler_db_inv_request(void *item_v, void *args_v) {
         w->slot = 0;
         w->serve = home_serve_deferred_read;
         w->requester = a->requester;
+        w->cover = a->cover;
         w->rdzv = a->rdzv;
         arts_lf_stack_push(&cache->publication_waiters, &w->link);
         buf_h = arts_db_buf_acquire(cache);

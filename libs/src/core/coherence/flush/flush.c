@@ -160,8 +160,12 @@ static void fetch_send(struct arts_db_cache_s *cache, arts_guid_t edt_guid,
     p.rdzv.txid = arts_net_rdzv_txid_next();
     p.rdzv.cookie = (uint64_t)(uintptr_t)copy; /* copy->cb carries the ref */
   }
-  arts_transport_send_async((int)arts_guid_get_rank(cache->db_guid), (char *)&p,
-                            sizeof(p));
+  /* A fetch answers one EDT's acquire, of either mode, before the EDT runs;
+   * the hook holds it as a read (no write request exists on this arm). */
+  unsigned int home = arts_guid_get_rank(cache->db_guid);
+  if (!arts_net_send_held((int)home, (char *)&p, sizeof(p), ARTS_HELD_READ)) {
+    arts_transport_send_async((int)home, (char *)&p, sizeof(p));
+  }
 }
 
 void arts_handler_db_acquire(void *item, void *args) {
@@ -607,9 +611,19 @@ void arts_db_create_install_home_buffer(struct arts_db_cache_s *cache,
 /* This arm keeps no permission word for a create to step: the claim of the
  * cache is the whole of its state, and the bytes under the hold are the line
  * the create installed in this rank's slot. */
-bool arts_db_create_take_hold(struct arts_db_cache_s *cache) {
+bool arts_db_create_take_hold(struct arts_db_cache_s *cache, uint8_t *owed) {
   (void)cache;
+  *owed = 0u;
   return true;
+}
+
+/* A fetch is per acquiring EDT and answered before it runs: nothing a create
+ * claims can still be coming. */
+void arts_db_home_seed_owed(struct arts_db_s *db, unsigned int creator,
+                            uint8_t owed) {
+  (void)db;
+  (void)creator;
+  (void)owed;
 }
 
 void arts_db_create_retract_creator_copy(struct arts_db_s *db) { (void)db; }

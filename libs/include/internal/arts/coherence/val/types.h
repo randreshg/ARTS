@@ -73,6 +73,94 @@ struct arts_home_grantreq_queue_s {
   struct arts_home_grantreq_node_s stub; /* permanent sentinel */
 };
 
+/*--- The request word ---------------------------------------------------
+ * One 64-bit word per cache holds both axes' request state and the chains of
+ * readers parked on them, so every decision that couples the axes is one CAS:
+ *
+ *   [ rw:2 (63..62) | ro:1 (61) | rp:1 (60) | par:1 (59) | stub:1 (58) |
+ *     group:29 (57..29) | next:29 (28..0) ]
+ *
+ *   rw    the write request: IDLE, OPEN (claimed, not yet committed) or SENT.
+ *   ro    a read request (the window) is out.
+ *   rp    the window's request was answered by a size round or a dismiss
+ *         while a write request was out (or OPEN): its cohort rides that write
+ *         request instead.
+ *   par   the parity of the last read request this cache sent.
+ *   stub  a dependence's first touch made the cache and nothing has shown the
+ *         home installed yet: the create's claim clears it, and so does every
+ *         reply unless rw is OPEN (the OPEN's holder acts only while the bit
+ *         it read stands).  A request sent while it is set carries PRECLAIM.
+ *   group the window's cohort, fixed when its request left (pool indices).
+ *   next  readers waiting for the next window, or riding the write request.
+ */
+#define VREQ_HEAD_BITS 29
+#define VREQ_HEAD_MASK ((uint64_t)((1ULL << VREQ_HEAD_BITS) - 1))
+#define VREQ_NEXT(s) ((uint32_t)((s) & VREQ_HEAD_MASK))
+#define VREQ_GROUP(s) ((uint32_t)(((s) >> VREQ_HEAD_BITS) & VREQ_HEAD_MASK))
+#define VREQ_STUB(s) ((uint32_t)(((s) >> 58) & 1ULL))
+#define VREQ_PAR(s) ((uint32_t)(((s) >> 59) & 1ULL))
+#define VREQ_RP(s) ((uint32_t)(((s) >> 60) & 1ULL))
+#define VREQ_RO(s) ((uint32_t)(((s) >> 61) & 1ULL))
+#define VREQ_RW(s) ((uint32_t)(((s) >> 62) & 3ULL))
+#define VREQ_MAKE(rw, ro, rp, par, stub, group, next)                          \
+  ((((uint64_t)(rw) & 3ULL) << 62) | (((uint64_t)(ro) & 1ULL) << 61) |        \
+   (((uint64_t)(rp) & 1ULL) << 60) | (((uint64_t)(par) & 1ULL) << 59) |       \
+   (((uint64_t)(stub) & 1ULL) << 58) |                                        \
+   (((uint64_t)(group) & VREQ_HEAD_MASK) << VREQ_HEAD_BITS) |                 \
+   ((uint64_t)(next) & VREQ_HEAD_MASK))
+#define VREQ_RW_IDLE 0u
+#define VREQ_RW_OPEN 1u
+#define VREQ_RW_SENT 2u
+
+/* The request word's operations and the actions its arbiter returns. */
+enum {
+  VREQ_OP_ACQ_RO,    /* park a reader (idx), or open a request for it */
+  VREQ_OP_ANSWER,    /* the window's request was answered */
+  VREQ_OP_CTS,       /* ... by a size round or a dismiss (no data) */
+  VREQ_OP_COVER,     /* a write permission landed: serve every chain */
+  VREQ_OP_RW_CLAIM,  /* IDLE -> OPEN */
+  VREQ_OP_RW_COMMIT, /* OPEN -> SENT */
+  VREQ_OP_RW_GIVE,   /* OPEN -> IDLE */
+  VREQ_OP_RW_CLEAR,  /* SENT -> IDLE where the grant lands, + COVER */
+  VREQ_OP_CLAIM,     /* a create claims the cache: COVER, the write axis is
+                        the claim's, and the cache is no longer a stub */
+  VREQ_OP_DECLAIM,   /* a size round answered the write request: the home is
+                        installed and was created elsewhere, so the cache can
+                        never be claimed (precondition rw == SENT) */
+};
+enum {
+  VREQ_ACT_NONE,
+  VREQ_ACT_PARK,     /* linked onto next */
+  VREQ_ACT_SEND_RO,  /* opened a window with this reader as its cohort */
+  VREQ_ACT_SERVE,    /* serve the chains the transition took */
+  VREQ_ACT_SERVE_SEND, /* + the window re-armed: send its request */
+  VREQ_ACT_RESEND,   /* a size round, dismiss or give-back re-sends the
+                        window's request */
+  VREQ_ACT_WON,
+  VREQ_ACT_LOST,
+  VREQ_ACT_LATE,     /* an answer for no request out: the caller raises it */
+};
+
+uint64_t val_req_compute_next(uint64_t cur, int op, uint32_t idx,
+                              uint32_t *out_act);
+
+/* A parked reader, a node of the per-DB pool (index-addressed so a chain
+ * head fits the word).  Its fields are written by its owner before the CAS
+ * that links it and read by whoever a later CAS hands the chain to. */
+struct arts_db_val_waiter_s {
+  _Atomic(uint32_t) next;
+  unsigned int slot;
+  arts_guid_t edt_guid;
+};
+/* Chunk k holds 2^(k+8) nodes, so 22 chunks cover the 29-bit index space and
+ * the directory stays small; free_head is [tag:32 | index:32]. */
+struct arts_db_val_waiter_pool_s {
+  _Atomic(uintptr_t) chunks;
+  /* Bump allocator over the index space: only its own value. */
+  _Atomic(uint32_t) next_fresh;
+  _Atomic(uint64_t) free_head;
+};
+
 /*--- Per-rank DB cache ---------------------------------------------------
  * Every rank that has acquired or hosts a given DB has one of these.  The
  * cache is the runtime's coherence-protocol state: ownership, the live
@@ -163,14 +251,13 @@ struct arts_db_cache_s {
    * ships no payload when the canonical bytes are at that very version. */
   uint64_t incoming_new_owner_have;
 #endif
-  /* RW GRANT_REQUEST coalescing flag — only the actor that CASes 0->1 sends
-   * GRANT_REQUEST; same-node RW EDTs piggyback on the in-flight one and are
-   * picked up by GRANT's drain.  A grant's take clears it with release after
-   * taking the waiters, and a claim (acq_rel) sees that take, so it never
-   * requests for waiters a grant already took.  The claim and the clear each
-   * pair with the pending_rw stack through a seq_cst fence
-   * (arts_db_acquire_remote_rw, arts_db_grant_take_waiters). */
-  _Atomic(unsigned int) grant_req_in_flight;
+  /* The request word (VREQ_* above).  Every write after init is an acq_rel
+   * CAS: a reader's park carries its node's fields to the CAS that takes the
+   * chain, and the write axis's claim and clear each pair with the pending_rw
+   * stack through a seq_cst fence (arts_db_acquire_remote_rw,
+   * arts_db_grant_take_waiters). */
+  _Atomic(uint64_t) req_state;
+  struct arts_db_val_waiter_pool_s waiters;
 #ifdef ARTS_WRITE_POLICY_WB
   /* WB: owner-side dedup map.  Allocated with the cache and freed with it; its
    * content migrates with ownership (GRANT_RESPONSE serializes it). */
@@ -232,22 +319,6 @@ struct arts_db_cache_s {
    * claim CAS acquired that possession. */
   _Atomic(uint64_t) grant_generation;
 #endif
-  /* Remote-read request-combining window (see coherence/coherence.c).
-   * snapshot_req_in_flight admits ONE outstanding snapshot request per cache:
-   * the 0->1 CAS (acq_rel) claims the window, and the owner gives it back
-   * with a release store once its response is installed, so the next claimer
-   * sees every write the owner made while it held it.  A pusher's push and
-   * claim, and an owner's release and re-probe, each pass a seq_cst fence
-   * (ro_combine_pump).  ro_combine accumulates waiters that arrive while a
-   * request is in flight; ro_combine_group is the batch the current request
-   * rides for — isolated from ro_combine in one exchange at send time,
-   * resumed wholesale by the response terminal.  ro_combine_group is
-   * single-actor (written by the window owner before the send, consumed by
-   * the one response that ends that window), so the window's release and
-   * claim order it and it needs no atomics. */
-  _Atomic(unsigned int) snapshot_req_in_flight;
-  arts_lf_stack_t ro_combine;
-  arts_lf_link_t *ro_combine_group;
 };
 
 /** Internal DataBlock descriptor.
@@ -288,6 +359,15 @@ struct arts_db_s {
   _Atomic(unsigned int) invalidate_in_flight;
   /* destroy fan-out roster: creator, readers, writers */
   struct arts_rank_bitset_s cached_ranks;
+  /* The declared-arrival state: per requester rank the parity of its last
+   * read request this home accounted for (by its arrival or a declaration of
+   * it, whichever came first); the gate [td:1 | rwo:1 | roo:1 | owed:29],
+   * the destroy's mark and what the home was told is still coming, every
+   * write after init an acq_rel RMW; the rank whose create claimed a
+   * first-touch cache, written before the descriptor is published. */
+  struct arts_rank_bitset_s ro_parity;
+  _Atomic(uint32_t) cover_gate;
+  unsigned int claim_rank;
   /* The requester the round in flight transfers the grant to: relaxed,
    * ordered by the baton (directory.h). */
   _Atomic(unsigned int) pending_install_owner;
@@ -307,6 +387,15 @@ struct arts_db_s {
    * reply, a holder with no buffer). */
   struct arts_rank_to_u64_map_s *cached_version;
   struct arts_rank_bitset_s cached_ranks; /* destroy fan-out roster */
+  /* The declared-arrival state: per requester rank the parity of its last
+   * read request this home accounted for (by its arrival or a declaration of
+   * it, whichever came first); the gate [td:1 | rwo:1 | roo:1 | owed:29],
+   * the destroy's mark and what the home was told is still coming, every
+   * write after init an acq_rel RMW; the rank whose create claimed a
+   * first-touch cache, written before the descriptor is published. */
+  struct arts_rank_bitset_s ro_parity;
+  _Atomic(uint32_t) cover_gate;
+  unsigned int claim_rank;
 #ifndef ARTS_RELEASE_PURGE
   /* The requester the round in flight transfers the grant to: relaxed,
    * ordered by the baton (directory.h). */

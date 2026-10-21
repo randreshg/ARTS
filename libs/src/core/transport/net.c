@@ -1181,6 +1181,174 @@ static void net_quiesce_held_writes(void) {
 #define net_quiesce_held_writes() ((void)0)
 #endif
 
+#ifdef ARTS_DEBUG_INJECTION
+/* ARTS_REQUEST_DELAY_MS=<n> holds each coherence request a rank sends to
+ * another rank for a random 0..n ms, so two requests of one rank reach their
+ * home in either order and a request can trail everything its rank sends
+ * after it.  ARTS_REQUEST_DELAY_MS=<n>:ro holds only read requests, each for
+ * exactly n ms, so a write turn always answers first; <n>:hop holds only
+ * hops, each for exactly n ms, so a hop can cross the block's teardown.
+ * Producers (any thread, a progress thread in dispatch included) only copy
+ * and push; a progress thread that wins the try-lock moves the
+ * pushed packets onto the not-yet-due list, detaches what is due, drops the
+ * try-lock and only then sends, so no send runs under the CQ token or the
+ * try-lock.  A held packet is not counted outstanding until it is sent, and
+ * quiesce frees what is still held (an undelivered message at shutdown is
+ * legal), unless a thread the shutdown gave up joining may still hold it. */
+struct net_held_msg_s {
+  _Atomic(struct net_held_msg_s *) next; /* the producers' stack */
+  struct net_held_msg_s *wnext; /* the wait and due lists: the lock's own */
+  uint64_t due_ns;
+  int rank;
+  unsigned int len;
+  char data[];
+};
+/* Producers' stack: pushed by CAS (release), taken whole by exchange
+ * (acquire) under the try-lock. */
+static _Atomic(struct net_held_msg_s *) g_held_push;
+/* The not-yet-due list: touched only by the try-lock's holder. */
+static struct net_held_msg_s *g_held_wait;
+/* The try-lock: acquired by CAS 0->1, dropped by a release store. */
+static _Atomic(unsigned int) g_held_lock;
+/* Set before any thread exists to send; 0 = off. */
+static int64_t g_req_delay_ns;
+/* Which kind is held: every request (randomly), or one kind exactly. */
+static int g_req_delay_mode = -1;
+static ARTS_THREAD_LOCAL uint64_t t_req_delay_rng;
+
+static void net_req_delay_init(void) {
+  const char *env = getenv("ARTS_REQUEST_DELAY_MS");
+  long ms = 0;
+  if (env != NULL && env[0] != '\0') {
+    char *end = NULL;
+    ms = strtol(env, &end, 10);
+    if (end != env && strcmp(end, ":ro") == 0) {
+      g_req_delay_mode = ARTS_HELD_READ;
+      end += 3;
+    } else if (end != env && strcmp(end, ":hop") == 0) {
+      g_req_delay_mode = ARTS_HELD_HOP;
+      end += 4;
+    }
+    if (end == env || *end != '\0' || ms < 0 || ms > 60000) {
+      ARTS_ERROR("arts_net: ARTS_REQUEST_DELAY_MS=\"%s\" is not a delay of "
+                 "0-60000 ms, optionally followed by :ro or :hop",
+                 env);
+    }
+  }
+  g_req_delay_ns = (int64_t)ms * 1000000;
+}
+
+bool arts_net_send_held(int rank, const char *message, unsigned int length,
+                        int kind) {
+  bool exact = g_req_delay_mode >= 0;
+  if (g_req_delay_ns == 0 || (exact && kind != g_req_delay_mode) ||
+      (!exact && kind == ARTS_HELD_HOP)) {
+    return false;
+  }
+  struct net_held_msg_s *h =
+      (struct net_held_msg_s *)arts_malloc(sizeof(*h) + length);
+  memcpy(h->data, message, length);
+  h->rank = rank;
+  h->len = length;
+  if (t_req_delay_rng == 0) {
+    t_req_delay_rng = (net_now_ns() ^ ((uint64_t)(uintptr_t)&h)) | 1u;
+  }
+  t_req_delay_rng ^= t_req_delay_rng << 13;
+  t_req_delay_rng ^= t_req_delay_rng >> 7;
+  t_req_delay_rng ^= t_req_delay_rng << 17;
+  h->due_ns = net_now_ns() + (exact
+                                  ? (uint64_t)g_req_delay_ns
+                                  : t_req_delay_rng %
+                                        (uint64_t)(g_req_delay_ns + 1));
+  struct net_held_msg_s *top =
+      atomic_load_explicit(&g_held_push, memory_order_relaxed);
+  do {
+    atomic_store_explicit(&h->next, top, memory_order_relaxed);
+  } while (!atomic_compare_exchange_weak_explicit(
+      &g_held_push, &top, h, memory_order_release, memory_order_relaxed));
+  return true;
+}
+
+/* Send the held packets that are due. */
+static void net_release_held(void) {
+  if (g_req_delay_ns == 0) {
+    return;
+  }
+  unsigned int free_lock = 0u;
+  if (!atomic_compare_exchange_strong_explicit(&g_held_lock, &free_lock, 1u,
+                                               memory_order_acquire,
+                                               memory_order_relaxed)) {
+    return;
+  }
+  struct net_held_msg_s *in = atomic_exchange_explicit(
+      &g_held_push, (struct net_held_msg_s *)NULL, memory_order_acquire);
+  while (in != NULL) {
+    struct net_held_msg_s *nx =
+        atomic_load_explicit(&in->next, memory_order_relaxed);
+    in->wnext = g_held_wait;
+    g_held_wait = in;
+    in = nx;
+  }
+  uint64_t now = net_now_ns();
+  struct net_held_msg_s *due = NULL;
+  for (struct net_held_msg_s **pp = &g_held_wait; *pp != NULL;) {
+    struct net_held_msg_s *h = *pp;
+    if (h->due_ns > now) {
+      pp = &h->wnext;
+      continue;
+    }
+    *pp = h->wnext;
+    h->wnext = due;
+    due = h;
+  }
+  atomic_store_explicit(&g_held_lock, 0u, memory_order_release);
+  while (due != NULL) {
+    struct net_held_msg_s *nx = due->wnext;
+    /* Only a remote branch holds a message, so the target is another rank. */
+    arts_net_send_core(due->rank, due->data, due->len, NULL, 0, 0, NULL);
+    arts_free(due);
+    due = nx;
+  }
+}
+
+static void net_free_held_push(struct net_held_msg_s *h) {
+  while (h != NULL) {
+    struct net_held_msg_s *nx =
+        atomic_load_explicit(&h->next, memory_order_relaxed);
+    arts_free(h);
+    h = nx;
+  }
+}
+
+static void net_free_held_wait(struct net_held_msg_s *h) {
+  while (h != NULL) {
+    struct net_held_msg_s *nx = h->wnext;
+    arts_free(h);
+    h = nx;
+  }
+}
+
+static void net_quiesce_held_requests(void) {
+  if (g_req_delay_ns == 0) {
+    return;
+  }
+  if (atomic_load_explicit(&arts_shutdown_abandon.unjoined_threads,
+                           memory_order_relaxed) != 0) {
+    return;
+  }
+  /* After the joins, which order every push and every try-lock holder's list
+   * before these accesses. */
+  net_free_held_push(atomic_exchange_explicit(
+      &g_held_push, (struct net_held_msg_s *)NULL, memory_order_relaxed));
+  net_free_held_wait(g_held_wait);
+  g_held_wait = NULL;
+}
+#else
+#define net_req_delay_init() ((void)0)
+#define net_release_held() ((void)0)
+#define net_quiesce_held_requests() ((void)0)
+#endif
+
 /* Reap ONE bounded CQ burst under the CQ token (caller MUST hold it): validate
  * and copy each inbound message onto the pending-dispatch list, repost released
  * landing buffers, and complete TX.  Does NOT dispatch — the caller decides
@@ -1362,6 +1530,7 @@ bool arts_net_progress(void) {
    * receives, which multiplies across latency-bound message chains). */
   net_live_cq_err_check();
   bool did = net_reap_and_dispatch();
+  net_release_held();
   did |= net_drain_all_rings();
   return did;
 }
@@ -1512,6 +1681,7 @@ struct fid_domain *arts_net_domain(void) { return g_net.domain; }
 void arts_net_init(const char *provider, const char *fabric_domain,
                    const char *net_interface) {
   net_write_delay_init();
+  net_req_delay_init();
   bool provider_pinned = provider && provider[0] != '\0';
   if (provider_pinned) {
     /* Config is the deliberate artifact, the env var is ambient: overwrite
@@ -1942,6 +2112,7 @@ void arts_net_quiesce(void) {
    * Called single-threaded, after every worker/progress thread has joined, so
    * net_reap_tx_only needs no CQ token — no other thread can contend the CQ. */
   net_quiesce_held_writes();
+  net_quiesce_held_requests();
   for (int i = 0;
        i < 100000 &&
        atomic_load_explicit(&g_net.tx_outstanding, memory_order_relaxed) != 0;

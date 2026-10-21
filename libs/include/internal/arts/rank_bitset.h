@@ -49,6 +49,12 @@ void arts_rank_bitset_destroy(struct arts_rank_bitset_s *r);
  * false when it was already set or `rank` is out of range: of concurrent
  * callers on one bit, exactly one sees true. */
 bool arts_rank_bitset_set(struct arts_rank_bitset_s *r, unsigned int rank);
+/* Put `value` in `rank`'s bit with one acq_rel RMW of its word (a fetch_or
+ * for 1, a fetch_and for 0) and return the bit's previous value; false, with
+ * nothing written, when `rank` is out of range.  Of two puts of one value on
+ * one bit, exactly one sees the other's. */
+bool arts_rank_bitset_put(struct arts_rank_bitset_s *r, unsigned int rank,
+                          bool value);
 /* Call cb(rank, ctx) once for every bit set, reading each word once.  A bit
  * set during the walk may be missed, so a caller that needs every member
  * walks only after every set: the destroy fan-out walks once the block's

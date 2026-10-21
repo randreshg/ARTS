@@ -110,6 +110,10 @@ typedef struct arts_db_rw_waiter_s rw_waiter_t;
 typedef struct arts_home_grantreq_node_s grantreq_node_t;
 typedef struct arts_home_grantreq_queue_s grantreq_queue_t;
 #endif
+#ifdef ARTS_PROTOCOL_VAL
+typedef struct arts_db_val_waiter_pool_s val_waiter_pool_t;
+typedef struct arts_db_val_waiter_s val_waiter_t;
+#endif
 #ifdef ARTS_PROTOCOL_INV
 typedef struct arts_db_inv_waiter_pool_s inv_waiter_pool_t;
 typedef struct arts_db_inv_waiter_s inv_waiter_t;
@@ -140,6 +144,7 @@ static void print_fingerprint(void) {
   MEMBER(read_waiter_t, link);
   MEMBER(read_waiter_t, edt_guid);
   MEMBER(read_waiter_t, slot);
+  MEMBER(read_waiter_t, cover);
   MEMBER(read_waiter_t, serve);
   MEMBER(read_waiter_t, requester);
   MEMBER(read_waiter_t, rdzv);
@@ -172,7 +177,9 @@ static void print_fingerprint(void) {
   MEMBER(cache_t, buf_freelist);
   MEMBER(cache_t, buf_retired);
   MEMBER(cache_t, pending_rw);
-  MEMBER(cache_t, grant_req_in_flight);
+#ifdef ARTS_PROTOCOL_VAL
+  MEMBER(cache_t, req_state);
+#endif
 #ifndef ARTS_RELEASE_PURGE
   MEMBER(cache_t, incoming_new_owner);
   MEMBER(cache_t, incoming_new_owner_rdzv);
@@ -196,9 +203,15 @@ static void print_fingerprint(void) {
 #endif
 #endif
 #ifdef ARTS_PROTOCOL_VAL
-  MEMBER(cache_t, snapshot_req_in_flight);
-  MEMBER(cache_t, ro_combine);
-  MEMBER(cache_t, ro_combine_group);
+  MEMBER(cache_t, waiters);
+  TYPE(val_waiter_pool_t);
+  MEMBER(val_waiter_pool_t, chunks);
+  MEMBER(val_waiter_pool_t, next_fresh);
+  MEMBER(val_waiter_pool_t, free_head);
+  TYPE(val_waiter_t);
+  MEMBER(val_waiter_t, next);
+  MEMBER(val_waiter_t, slot);
+  MEMBER(val_waiter_t, edt_guid);
 #endif
 #ifdef ARTS_PROTOCOL_INV
   MEMBER(cache_t, waiters);
@@ -256,6 +269,9 @@ static void print_fingerprint(void) {
   MEMBER(db_t, pending_rw);
   MEMBER(db_t, invalidate_in_flight);
   MEMBER(db_t, cached_ranks);
+  MEMBER(db_t, ro_parity);
+  MEMBER(db_t, cover_gate);
+  MEMBER(db_t, claim_rank);
 #endif
 #if defined(ARTS_PROTOCOL_VAL) && defined(ARTS_WRITE_POLICY_WT)
   MEMBER(db_t, cached_version);
@@ -272,7 +288,10 @@ static void print_fingerprint(void) {
   MEMBER(db_t, rw_waiters);
   MEMBER(db_t, ro_waiters);
   MEMBER(db_t, cached_ranks);
+  MEMBER(db_t, ro_parity);
+  MEMBER(db_t, claim_rank);
 #ifdef ARTS_RELEASE_RETAIN
+  MEMBER(db_t, cover_gate);
   MEMBER(db_t, ro_retainers);
 #endif
 #endif

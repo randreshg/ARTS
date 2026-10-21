@@ -441,13 +441,18 @@ endif()
 # Each hook stays inert until its own environment variable is set, so one
 # switch compiles them all and the run chooses which to use.
 option(ARTS_DEBUG_INJECTION
-    "Compile the run-time injection hooks, each inert until its environment variable is set: ARTS_SCHED_FUZZ, ARTS_WRITE_COMPLETION_DELAY_MS, ARTS_NET_MAX_MSG, ARTS_REGPOOL_FORCE_FULL_NODES" OFF)
+    "Compile the run-time injection hooks, each inert until its environment variable is set: ARTS_SCHED_FUZZ, ARTS_WRITE_COMPLETION_DELAY_MS, ARTS_NET_MAX_MSG, ARTS_REGPOOL_FORCE_FULL_NODES, ARTS_REQUEST_DELAY_MS" OFF)
 # Holds every freed coherent descriptor back, filled, and checks the fill when
 # it leaves: active in every run of the tree, since it watches all of them.
 option(ARTS_DEBUG_DB_QUARANTINE
     "Fill each freed coherent data-block descriptor and hold it back for the next 1024 frees by the same thread, reporting a write through a reference that outlived it" OFF)
+# One atomic per rendezvous landing drawn and per landing ended, so a test can
+# wait for every landing it caused to end.
+option(ARTS_DEBUG_LANDING_BALANCE
+    "Count each rank's rendezvous landings drawn and not yet ended (returned, adopted or installed); a leaked landing pins its cache's descriptor" OFF)
 
-set(ARTS_DEBUG_FACILITIES ARTS_DEBUG_INJECTION ARTS_DEBUG_DB_QUARANTINE)
+set(ARTS_DEBUG_FACILITIES ARTS_DEBUG_INJECTION ARTS_DEBUG_DB_QUARANTINE
+    ARTS_DEBUG_LANDING_BALANCE)
 if(CMAKE_BUILD_TYPE STREQUAL "Release")
     # INFO and DEBUG messages, and the teardown walk that only DEBUG compiles,
     # are a Debug build's own emission.  Every refusal is named at once.

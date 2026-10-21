@@ -320,6 +320,15 @@ bool arts_ooo_retire_item(arts_guid_t key, const void *item) {
   return false;
 }
 #endif /* ARTS_PROTOCOL_EXCL */
+/* The cover gate's home state, which the directory TUs touch at init and
+ * seed; never driven by this test. */
+#if defined(ARTS_PROTOCOL_INV)
+void arts_db_cover_home_init(struct arts_db_s *db, unsigned int nranks) {
+  (void)db;
+  (void)nranks;
+}
+void arts_db_cover_home_teardown(struct arts_db_s *db) { (void)db; }
+#endif
 #endif
 
 /* Pull in the protocol's directory.c (defines the queue bodies).  Done at the end so

@@ -847,7 +847,8 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug" AND NOT ARTS_DEBUG_INJECTION)
             ARTS_SCHED_FUZZ
             ARTS_WRITE_COMPLETION_DELAY_MS
             ARTS_NET_MAX_MSG
-            ARTS_REGPOOL_FORCE_FULL_NODES)
+            ARTS_REGPOOL_FORCE_FULL_NODES
+            ARTS_REQUEST_DELAY_MS)
         arts_add_test(injection_hook_refused_${_hook} STATUS 1
                       COMMAND term_shutdown)
         set_tests_properties(injection_hook_refused_${_hook} PROPERTIES
@@ -860,8 +861,8 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug" AND NOT ARTS_DEBUG_INJECTION)
     endforeach()
 endif()
 # Where the hooks are compiled, a value a hook cannot use stops the run
-# rather than leaving the hook off.  The provider ceiling and the write delay
-# are read when the fabric comes up, so those two run on several ranks.
+# rather than leaving the hook off.  The provider ceiling and the two delays
+# are read when the fabric comes up, so those three run on several ranks.
 if(ARTS_DEBUG_INJECTION)
     arts_test_cfg(_cfg 1n_20w)
     arts_test_cfg(_mn_cfg 2n_9w_1p)
@@ -889,10 +890,20 @@ if(ARTS_DEBUG_INJECTION)
         RESOURCE_LOCK "arts_runtime"
         ENVIRONMENT "ARTS_CONFIG=${_mn_cfg};ARTS_WRITE_COMPLETION_DELAY_MS=soon"
         PASS_REGULAR_EXPRESSION "is not a delay")
+    arts_add_test(injection_value_refused_request_delay STATUS 1
+                  COMMAND multinode_edt)
+    set_tests_properties(injection_value_refused_request_delay PROPERTIES
+        LABELS "multinode"
+        TIMEOUT 30
+        RESOURCE_LOCK "arts_runtime"
+        ENVIRONMENT "ARTS_CONFIG=${_mn_cfg};ARTS_REQUEST_DELAY_MS=5:rw"
+        PASS_REGULAR_EXPRESSION
+        "ARTS_REQUEST_DELAY_MS=\"5:rw\" is not a delay of 0-60000 ms")
     # A one-rank run brings no fabric up, so it refuses a fabric hook.
     foreach(_hook
             ARTS_NET_MAX_MSG
-            ARTS_WRITE_COMPLETION_DELAY_MS)
+            ARTS_WRITE_COMPLETION_DELAY_MS
+            ARTS_REQUEST_DELAY_MS)
         arts_add_test(injection_fabric_hook_refused_${_hook} STATUS 1
                       COMMAND term_shutdown)
         set_tests_properties(injection_fabric_hook_refused_${_hook} PROPERTIES
@@ -1971,6 +1982,192 @@ register_multinode_test(db_destroy_untouched_rank TIMEOUT 60 VARIANTS 2n_9w_1p)
 set_tests_properties(db_destroy_untouched_rank_2n_9w_1p PROPERTIES
     PASS_REGULAR_EXPRESSION "PASS: db_destroy_untouched_rank"
     FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
+
+# Covered requests: a request whose waiters something other than its own
+# answer served -- its rank's write turn, or a create's hold on the cache its
+# rank made by a first touch -- is still travelling when the program destroys
+# the block.  The home learns of each before the turn that covers it can end
+# and tears the block down only once every one has arrived.  Requests combine
+# per rank on every arm but FLUSH, whose fetch is answered before its EDT
+# runs, so no cover exists there and these are neither built nor registered
+# in that tree.  A variant that sets an injection hook (ARTS_REQUEST_DELAY_MS
+# reorders requests on the wire or holds one kind of them; ARTS_SCHED_FUZZ
+# widens the decision windows) registers only where the hooks are compiled.
+# Each name_<variant> runs PROGRAM with ARGS on that variant's cfg, the HOOK
+# variable added to its environment.
+function(arts_cover_test name program)
+    cmake_parse_arguments(ARG "" "TIMEOUT;PASS;HOOK" "ARGS;VARIANTS" ${ARGN})
+    if(ARG_UNPARSED_ARGUMENTS)
+        message(FATAL_ERROR "arts_cover_test(${name}): unexpected arguments "
+                "'${ARG_UNPARSED_ARGUMENTS}'")
+    endif()
+    if(NOT ARG_VARIANTS)
+        set(ARG_VARIANTS ${ARTS_TEST_MULTINODE_VARIANTS})
+    endif()
+    if(NOT ARG_TIMEOUT)
+        set(ARG_TIMEOUT 120)
+    endif()
+    foreach(_v IN LISTS ARG_VARIANTS)
+        arts_test_cfg(_cfg ${_v})
+        set(_env "ARTS_CONFIG=${_cfg}")
+        if(ARG_HOOK)
+            list(APPEND _env "${ARG_HOOK}")
+        endif()
+        arts_add_test(${name}_${_v} COMMAND ${program} ${ARG_ARGS})
+        set_tests_properties(${name}_${_v} PROPERTIES
+            LABELS "multinode;coherence_stress"
+            TIMEOUT ${ARG_TIMEOUT}
+            RESOURCE_LOCK "arts_runtime"
+            ENVIRONMENT "${_env}"
+            PASS_REGULAR_EXPRESSION "${ARG_PASS}"
+            FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
+    endforeach()
+endfunction()
+
+if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
+    # db_destroy_covered_read: rounds of blocks whose read request a write
+    # turn of its own rank served, each block destroyed once its holds are
+    # released; with the hook, requests overtake each other.
+    add_arts_test(db_destroy_covered_read)
+    arts_cover_test(db_destroy_covered_read db_destroy_covered_read
+                    PASS "PASS: db_destroy_covered_read 8 rounds x 32 blocks")
+    # db_destroy_claimed_first_touch: a create claims the cache its rank's
+    # consumers made by a first touch -- read-only, read-write and both --
+    # while their requests are on their way; wave2 adds consumers after the
+    # claim, whose requests travel beside the earlier ones.
+    add_arts_test(db_destroy_claimed_first_touch)
+    arts_cover_test(db_destroy_claimed_first_touch
+                    db_destroy_claimed_first_touch
+                    PASS "PASS: db_destroy_claimed_first_touch 64 blocks")
+    arts_cover_test(db_destroy_claimed_first_touch_wave2
+                    db_destroy_claimed_first_touch ARGS wave2
+                    PASS "PASS: db_destroy_claimed_first_touch 64 blocks \\(second wave\\)")
+    # db_read_dismissed_before_grant: the requester, the write turn's holder
+    # and the home are three distinct ranks.  Without the hook a
+    # reader may legally see the creator's value; with every read request
+    # held 100 ms the dismiss overtakes the grant and the readers ride the
+    # write request, so the strict oracle applies.
+    add_arts_test(db_read_dismissed_before_grant)
+    arts_cover_test(db_read_dismissed_before_grant
+                    db_read_dismissed_before_grant VARIANTS 4n_4w_1p
+                    PASS "PASS: db_read_dismissed_before_grant 8 blocks")
+    # db_destroy_cover_settles and db_create_races_acquire wait after their
+    # last destroy for every home of their blocks to be torn down and, where
+    # the build counts rendezvous landings, for every landing to end: an
+    # over-count at a home is a liveness failure no shutdown check sees.
+    add_arts_test(db_destroy_cover_settles)
+    arts_cover_test(db_destroy_cover_settles_t2 db_destroy_cover_settles
+                    ARGS t2 PASS "PASS: db_destroy_cover_settles 8 rounds x 32 blocks \\(t2\\)")
+    arts_cover_test(db_destroy_cover_settles_t1 db_destroy_cover_settles
+                    ARGS t1 PASS "PASS: db_destroy_cover_settles 8 rounds x 32 blocks \\(t1\\)")
+    add_arts_test(db_create_races_acquire)
+    arts_cover_test(db_create_races_acquire_writers db_create_races_acquire
+                    ARGS 0 6 VARIANTS 2n_9w_1p 2n_8w_2p
+                    PASS "PASS: db_create_races_acquire 32 blocks")
+    arts_cover_test(db_create_races_acquire_mixed db_create_races_acquire
+                    ARGS 3 3 VARIANTS 2n_9w_1p 2n_8w_2p
+                    PASS "PASS: db_create_races_acquire 32 blocks")
+    if(ARTS_DEBUG_INJECTION)
+        arts_cover_test(db_destroy_covered_read_delay db_destroy_covered_read
+                        HOOK "ARTS_REQUEST_DELAY_MS=5"
+                        PASS "PASS: db_destroy_covered_read 8 rounds x 32 blocks")
+        arts_cover_test(db_destroy_claimed_first_touch_delay
+                        db_destroy_claimed_first_touch
+                        HOOK "ARTS_REQUEST_DELAY_MS=5"
+                        PASS "PASS: db_destroy_claimed_first_touch 64 blocks")
+        arts_cover_test(db_destroy_claimed_first_touch_wave2_delay
+                        db_destroy_claimed_first_touch ARGS wave2
+                        HOOK "ARTS_REQUEST_DELAY_MS=5"
+                        PASS "PASS: db_destroy_claimed_first_touch 64 blocks \\(second wave\\)")
+        # db_read_rides_write: every read request held 60 s and no write
+        # request, so the write turn answers first; a reader left waiting for
+        # its own answer would outlast the budget.
+        add_arts_test(db_read_rides_write)
+        arts_cover_test(db_read_rides_write db_read_rides_write TIMEOUT 45
+                        HOOK "ARTS_REQUEST_DELAY_MS=60000:ro"
+                        PASS "PASS: db_read_rides_write 16 blocks")
+        arts_cover_test(db_read_dismissed_before_grant_strict
+                        db_read_dismissed_before_grant ARGS strict
+                        VARIANTS 4n_4w_1p HOOK "ARTS_REQUEST_DELAY_MS=100:ro"
+                        PASS "PASS: db_read_dismissed_before_grant 8 blocks")
+        arts_cover_test(db_destroy_cover_settles_t2_delay
+                        db_destroy_cover_settles ARGS t2
+                        HOOK "ARTS_REQUEST_DELAY_MS=5"
+                        PASS "PASS: db_destroy_cover_settles 8 rounds x 32 blocks \\(t2\\)")
+        arts_cover_test(db_destroy_cover_settles_t1_delay
+                        db_destroy_cover_settles ARGS t1
+                        HOOK "ARTS_REQUEST_DELAY_MS=5"
+                        PASS "PASS: db_destroy_cover_settles 8 rounds x 32 blocks \\(t1\\)")
+        arts_cover_test(db_create_races_acquire_writers_fuzz
+                        db_create_races_acquire ARGS 0 6
+                        VARIANTS 2n_9w_1p 2n_8w_2p HOOK "ARTS_SCHED_FUZZ=40"
+                        PASS "PASS: db_create_races_acquire 32 blocks")
+        arts_cover_test(db_create_races_acquire_mixed_fuzz
+                        db_create_races_acquire ARGS 3 3
+                        VARIANTS 2n_9w_1p 2n_8w_2p HOOK "ARTS_SCHED_FUZZ=40"
+                        PASS "PASS: db_create_races_acquire 32 blocks")
+        # A hop -- a write-back home's redirect, a holder's bounce, a
+        # retaining home's forward -- continues a request the home took in,
+        # so it is never an early arrival: held 200 ms it lands after the
+        # teardown and is answered (or dropped) rather than parked.  Only
+        # the arms whose home hops have one; four ranks give the holder a
+        # rank of its own.
+        if((ARTS_COHERENCE_ARM MATCHES "^(VAL|INV)$" AND
+            ARTS_WRITE_POLICY STREQUAL "WB") OR
+           (ARTS_COHERENCE_ARM STREQUAL "EXCL" AND
+            ARTS_RELEASE_POLICY STREQUAL "RETAIN"))
+            arts_cover_test(db_destroy_cover_settles_hop
+                            db_destroy_cover_settles ARGS t2 hop
+                            VARIANTS 4n_4w_1p HOOK "ARTS_REQUEST_DELAY_MS=200:hop"
+                            PASS "PASS: db_destroy_cover_settles 8 rounds x 32 blocks \\(t2, hop\\)")
+        endif()
+    endif()
+    # db_size_round_once reads the size rounds the home sent back from the
+    # counter file, which carries them only where the tree's counter config
+    # captures the arm's counters; elsewhere it is built and not registered.
+    # A store whose grants carry no payload sends no size round.
+    add_arts_test(db_size_round_once)
+    if(ARTS_COHERENCE_ARM STREQUAL "EXCL")
+        set(_size_counters NUM_EXCL_SIZE_CTS)
+    elseif(ARTS_COHERENCE_ARM STREQUAL "VAL")
+        set(_size_counters NUM_GRANT_SIZE_CTS NUM_SNAPSHOT_SIZE_CTS)
+    else()
+        set(_size_counters NUM_GRANT_SIZE_CTS NUM_INV_SIZE_CTS)
+    endif()
+    set(_size_captured ON)
+    foreach(_c IN LISTS _size_counters)
+        file(STRINGS "${COUNTER_CONFIG_FILE}" _line REGEX "^${_c}=")
+        if(NOT _line OR _line MATCHES "^${_c}=OFF")
+            set(_size_captured OFF)
+        endif()
+    endforeach()
+    if(_size_captured AND NOT ARTS_CXL_TREE_RESIDENCY)
+        arts_test_cfg(_cfg 2n_9w_1p)
+        foreach(_g reserved minted)
+            foreach(_m writes reads)
+                arts_add_test(db_size_round_once_${_g}_${_m}
+                              COMMAND db_size_round_once ${_g} ${_m})
+                set_tests_properties(db_size_round_once_${_g}_${_m} PROPERTIES
+                    LABELS "multinode"
+                    TIMEOUT 60
+                    RESOURCE_LOCK "arts_runtime"
+                    ENVIRONMENT "ARTS_CONFIG=${_cfg}"
+                    PASS_REGULAR_EXPRESSION "PASS: db_size_round_once"
+                    FAIL_REGULAR_EXPRESSION "FAIL:")
+            endforeach()
+        endforeach()
+    endif()
+endif()
+
+# db_create_minted_guid_refused: a create handed a GUID an earlier create
+# minted refuses it and the run ends with the refusal.  The check precedes
+# every cell's create path.
+if(ARTS_TEST_REFERENCE_TREE)
+    add_arts_test(db_create_minted_guid_refused)
+    register_single_node_test(db_create_minted_guid_refused TIMEOUT 30 STATUS 1)
+    set_tests_properties(db_create_minted_guid_refused PROPERTIES
+        PASS_REGULAR_EXPRESSION "was minted by a create")
+endif()
 
 # quiescent_shutdown_no_residue: a shutdown that leaves no work undone -- every
 # EDT touching a block inside a finish scope the shutting-down EDT waits on,

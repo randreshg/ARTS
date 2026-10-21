@@ -210,7 +210,8 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
                  .key = pack->rdzv.key,
                  .txid = pack->rdzv.txid,
                  .cookie = pack->rdzv.cookie},
-        .have_version = pack->have_version,
+        .have_version = pack->have_version & ARTS_GRANT_REQ_VERSION_MASK,
+        .cover = (uint32_t)(pack->have_version >> ARTS_GRANT_REQ_VERSION_BITS),
     };
     arts_ooo_dispatch_or_defer_guid(pack->db_guid, OOO_DB_GRANT_REQUEST,
                                     &args, sizeof(args));
@@ -323,8 +324,7 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
     struct arts_ooo_args_db_snapshot_request_s args = {
         .requester = pack->header.rank,
         .db_guid = pack->db_guid,
-        .edt_guid = pack->edt_guid,
-        .slot = pack->slot,
+        .cover = pack->cover,
         .rdzv = {.addr = pack->rdzv.addr,
                  .key = pack->rdzv.key,
                  .txid = pack->rdzv.txid,
@@ -345,8 +345,7 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
      * NULL-stored) resumes nothing — the parked EDT this 1:1 response would
      * resume was torn down — and only ends the landing. */
     struct arts_db_snapshot_response_args_s args = {
-        .edt_guid = pack->edt_guid,
-        .slot = pack->slot,
+        .cover = pack->cover,
         .data_present = pack->data_present,
         .version = pack->version,
         .db_size = pack->db_size,
@@ -722,16 +721,14 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
     ARTS_DEBUG("Coh SNAPSHOT_REDIRECT Received");
     struct arts_msg_snapshot_redirect_packet_s *pack =
         (struct arts_msg_snapshot_redirect_packet_s *)(packet);
-    /* Cat-C lookup-acquire-or-{CACHE_DESTROY}: HIT serves SNAPSHOT_RESPONSE from
-     * the ref-pinned owner-side db_s; MISS (a destroy issued while the read was
-     * pending, which the destroy contract excludes) sends CACHE_DESTROY to the
-     * requester, retiring its cache: the parked RO waiter is freed with it,
-     * never resumed. */
+    /* Cat-C lookup-or-dismiss: HIT serves SNAPSHOT_RESPONSE from the
+     * ref-pinned owner-side db_s; MISS is a block torn down after the home
+     * took the read in (the home names only an installed owner), answered
+     * with a dismiss that returns the reader's landing. */
     struct arts_db_snapshot_redirect_args_s args = {
         .db_guid = pack->db_guid,
-        .edt_guid = pack->edt_guid,
         .requester_rank = pack->requester_rank,
-        .slot = pack->slot,
+        .cover = pack->cover,
         .rdzv = {.addr = pack->rdzv.addr,
                  .key = pack->rdzv.key,
                  .txid = pack->rdzv.txid,
@@ -742,7 +739,10 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
     if (db != NULL) {
       arts_handler_db_snapshot_redirect(db, &args);
     } else {
-      arts_send_db_cache_destroy(pack->requester_rank, pack->db_guid);
+      arts_send_db_snapshot_response(pack->requester_rank, NULL,
+                                     pack->db_guid, /*version=*/0, pack->cover,
+                                     /*kind=*/2, /*db_size=*/0, &args.rdzv,
+                                     NULL);
     }
     arts_shared_release(&h);
     break;
@@ -840,6 +840,7 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
         .requester = pack->header.rank,
         .db_guid = pack->db_guid,
         .mode = pack->mode,
+        .cover = pack->cover,
         .rdzv = {.addr = pack->rdzv.addr,
                  .key = pack->rdzv.key,
                  .txid = pack->rdzv.txid,
@@ -967,16 +968,34 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
         /* The subject, not the sender: a holder that cannot serve re-sends a
          * read request on the reader's behalf. */
         .requester = pack->requester,
+        .bounce = (pack->flags & ARTS_INV_REQ_BOUNCE) != 0u,
 #else
         .requester = pack->header.rank,
 #endif
         .db_guid = pack->db_guid,
         .mode = (arts_db_access_mode_t)pack->mode,
+        .cover = pack->cover,
         .rdzv = {.addr = pack->rdzv.addr,
                  .key = pack->rdzv.key,
                  .txid = pack->rdzv.txid,
                  .cookie = pack->rdzv.cookie},
     };
+    if (args.bounce) {
+      /* A holder's re-send of a read its home had already taken in: the home
+       * was installed, so an empty slot is a block torn down since.  Never an
+       * early arrival: answer it with no bytes, which gives the reader its
+       * landing back, rather than park it. */
+      arts_shared_ptr_t h = arts_route_table_lookup_db(pack->db_guid);
+      struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(h);
+      if (db != NULL) {
+        arts_handler_db_inv_request(db, &args);
+      } else {
+        arts_send_db_inv_cts(args.requester, NULL, args.db_guid, 0u,
+                             args.cover, args.rdzv.cookie);
+      }
+      arts_shared_release(&h);
+      break;
+    }
     arts_ooo_dispatch_or_defer_guid(pack->db_guid, OOO_DB_INV_REQUEST, &args,
                                     sizeof(args));
     break;
@@ -985,12 +1004,15 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
     ARTS_DEBUG("Coh INV_CTS Received");
     struct arts_msg_inv_cts_packet_s *pack =
         (struct arts_msg_inv_cts_packet_s *)(packet);
-    /* Cat-C lookup-acquire-or-drop: HIT learns db_size + re-issues the
-     * request with a landing; MISS (DB destroyed) silently drops. */
+    /* Cat-C lookup-acquire-or-drop: HIT learns db_size, returns any landing
+     * and re-sends or closes the fetch; MISS (DB destroyed) only returns the
+     * landing. */
     arts_shared_ptr_t h = arts_route_table_lookup_db(pack->db_guid);
     struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(h);
     if (db != NULL) {
       arts_handler_db_inv_cts(db, pack);
+    } else {
+      arts_db_rdzv_discard_landing(0u, pack->rdzv_cookie);
     }
     arts_shared_release(&h);
     break;
@@ -1035,22 +1057,35 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
   }
 #ifdef ARTS_WRITE_POLICY_WB
   /* The home holds no bytes, so a read request it cannot answer is forwarded
-   * to the rank the directory names.  Cat-B: the forward can outrun the
-   * holder's own DB_CREATE on a remote-create path. */
+   * to the rank the directory names. */
   case MSG_DB_INV_REDIRECT: {
     ARTS_DEBUG("Coh INV_REDIRECT Received");
     struct arts_msg_inv_redirect_packet_s *pack =
         (struct arts_msg_inv_redirect_packet_s *)(packet);
     struct arts_ooo_args_db_inv_redirect_s args = {
         .requester = pack->requester,
+        .cover = pack->cover,
         .db_guid = pack->db_guid,
         .rdzv = {.addr = pack->rdzv.addr,
                  .key = pack->rdzv.key,
                  .txid = pack->rdzv.txid,
                  .cookie = pack->rdzv.cookie},
     };
-    arts_ooo_dispatch_or_defer_guid(pack->db_guid, OOO_DB_INV_REDIRECT, &args,
-                                    sizeof(args));
+    /* The home names a holder only after that holder's install (its CONFIRM,
+     * or the creator's own announce), so an empty slot here is a cache
+     * destroyed since.  Never an early arrival: answer the reader with no
+     * bytes, which gives its landing back, rather than park it. */
+    {
+      arts_shared_ptr_t h = arts_route_table_lookup_db(pack->db_guid);
+      struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(h);
+      if (db != NULL) {
+        arts_handler_db_inv_redirect(db, &args);
+      } else {
+        arts_send_db_inv_cts(args.requester, NULL, args.db_guid, 0u,
+                             args.cover, args.rdzv.cookie);
+      }
+      arts_shared_release(&h);
+    }
     break;
   }
 #else

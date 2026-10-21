@@ -220,6 +220,12 @@ void arts_db_home_init(struct arts_db_s *db, unsigned int rw_holder,
   arts_home_grantreq_queue_init(&db->rw_waiters);
   arts_lf_stack_init(&db->ro_waiters);
   arts_rank_bitset_init(&db->cached_ranks, nranks);
+  arts_rank_bitset_init(&db->ro_parity, nranks);
+  arts_rank_bitset_init(&db->ro_queued, nranks);
+  db->claim_rank = (unsigned int)-1;
+#ifdef ARTS_RELEASE_RETAIN
+  atomic_store_explicit(&db->cover_gate, 0u, memory_order_relaxed);
+#endif
   /* A creator on another rank holds a cache of the block from the moment it
    * made it, so the destroy must reach that rank too: its cache would
    * otherwise outlive the block, keeping its storage and the rank's route
@@ -247,10 +253,41 @@ void arts_db_home_teardown(struct arts_db_s *db) {
     node = nx;
   }
   arts_rank_bitset_destroy(&db->cached_ranks);
+  arts_rank_bitset_destroy(&db->ro_parity);
+  arts_rank_bitset_destroy(&db->ro_queued);
 #ifdef ARTS_RELEASE_RETAIN
   /* Retainers are legal at destroy — a retained grant has no live acquire — so
    * a non-empty roster here is a normal path, not an edge case. */
   arts_rank_bitset_destroy(&db->ro_retainers);
+#endif
+}
+
+void arts_db_home_seed_owed(struct arts_db_s *db, unsigned int creator,
+                            uint8_t owed) {
+  if (owed == 0u) {
+    return;
+  }
+  db->claim_rank = creator;
+  uint32_t n = 0u;
+  uint32_t rwo = (owed & ARTS_CREATE_OWED_RW) ? 1u : 0u;
+  uint32_t roo = (owed & ARTS_CREATE_OWED_RO) ? 1u : 0u;
+  if (roo) {
+    /* As if the pre-claim read request had arrived: the creator's next read
+     * request (the opposite parity) pairs as any. */
+    (void)arts_rank_bitset_put(&db->ro_parity, creator,
+                               (owed & ARTS_CREATE_OWED_RO_PAR) != 0u);
+  }
+  n = rwo + roo;
+#ifdef ARTS_RELEASE_PURGE
+  uint64_t s = atomic_load_explicit(&db->lock_state, memory_order_relaxed);
+  atomic_store_explicit(
+      &db->lock_state,
+      LOCK_MAKE_STATE_FULL(EXCL_STATE_TEARDOWN(s), EXCL_STATE_BIT(s), rwo, roo,
+                           n, EXCL_STATE_W(s), EXCL_STATE_R(s)),
+      memory_order_relaxed);
+#else
+  atomic_store_explicit(&db->cover_gate, (rwo << 30) | (roo << 29) | n,
+                        memory_order_relaxed);
 #endif
 }
 

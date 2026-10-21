@@ -69,9 +69,6 @@ MK_HANDLER(arts_handler_db_inv_request)
 #ifdef ARTS_RELEASE_PURGE
 MK_HANDLER(arts_handler_db_grant_return)
 #endif
-#ifdef ARTS_WRITE_POLICY_WB
-MK_HANDLER(arts_handler_db_inv_redirect)
-#endif
 #elif defined(ARTS_PROTOCOL_FLUSH)
 MK_HANDLER(arts_handler_db_fetch_request)
 MK_HANDLER(arts_handler_db_flush_announce)
@@ -150,9 +147,6 @@ static const struct expect_s g_expect[] = {
     E(OOO_DB_PUBLISH, arts_handler_db_publish),
 #ifdef ARTS_RELEASE_PURGE
     E(OOO_DB_GRANT_RETURN, arts_handler_db_grant_return),
-#endif
-#ifdef ARTS_WRITE_POLICY_WB
-    E(OOO_DB_INV_REDIRECT, arts_handler_db_inv_redirect),
 #endif
 #elif defined(ARTS_PROTOCOL_FLUSH)
     E(OOO_DB_ACQUIRE, arts_db_acquire_replay_dep),

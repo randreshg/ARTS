@@ -253,6 +253,44 @@ driver's cross-entry consensus and on the device itself.
 The protocols
 -------------
 
+Requests per node; a write turn covers reads
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+On the three arms that aggregate a node's acquires (VAL, INV, EXCL) requests
+are per node: a node has at most one read request and one write request out
+per DB, each closed only by its own answer — data, a size round (the size
+alone, for a request that could not name a landing), or a *dismiss* (an
+answer without data) — or by a create's claim of a cache the node made by a
+first touch, which closes both.  Write access covers read access
+(RW ⊇ RO), so:
+
+- a node whose read request is out sends its write request at once;
+- a reader that arrives while the node's write request is out sends nothing
+  and rides it;
+- when write permission reaches the node first — a grant, or a create's own
+  hold on a cache the node made before the create — every EDT parked there
+  is served at once, readers whose read request is still out included, and
+  that request's later answer serves nobody it already served.
+
+A request whose waiters something other than its own answer served (a
+*covered* request) can still be travelling when the program destroys the
+DB, a destroy that is legal because every hold was released.  The home
+neither serves such a request against a destroyed DB nor parks it: the
+node's write request names the read request it covers (by a one-bit parity),
+the create's announce names the requests a claimed cache had sent, and the
+home keeps one parity bit per requester node and a count of what is still
+coming.  The teardown waits for that count to reach zero, and a covered read
+request that reaches the home after the write request that named it is
+dismissed rather than served, before or after the destroy.  On EXCL a
+covered read request that reached the home first and still waits in its
+read queue is taken by that write request and dismissed when the queue
+drains, instead of being granted a read turn its node's write turn already
+served.  A redirect or forward of a request the home already took in is
+never an early arrival: if it finds the DB torn down it answers a dismiss
+(VAL, INV) or is dropped (EXCL, whose landing is the requester's own
+buffer).  FLUSH aggregates nothing — a fetch is answered before its EDT
+runs — so no request of it is ever covered.
+
 VAL — versioned snapshots, externally ordered updates
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -298,11 +336,13 @@ Request combining layers on top of this dedup: at most one snapshot request
 per DB and rank is in flight. A read acquire that finds one outstanding
 parks, and the readers parked when it completes share the next request and
 its response; a reader never rides a request sent before it parked, whose
-response may predate the releases it is ordered after. Every remote
-read-only acquire combines. It is orthogonal to write and release policy, and
-it is how the validation pull path suppresses duplicate concurrent requests,
-as every other message class does structurally (parked acquires under
-EXCL/INV, batched invalidation rounds, publish flights).
+response may predate the releases it is ordered after. A reader that finds
+its node's write request out opens no window and rides the write request
+instead. Every remote read-only acquire combines. It is orthogonal to write
+and release policy, and it is how the validation pull path suppresses
+duplicate concurrent requests, as every other message class does structurally
+(parked acquires under EXCL/INV, batched invalidation rounds, publish
+flights).
 
 INV — write-invalidate, durable reader copies (default)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
