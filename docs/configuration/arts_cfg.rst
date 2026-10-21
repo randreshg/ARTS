@@ -169,7 +169,12 @@ Networking
      - unset
      - Interface whose first IPv4 address the endpoint's source address is
        bound to (exact name, else name prefix); an empty value is unset.
-       Under ``tcp`` it steers the transport onto that network. Under
+       Under ``tcp`` it steers the transport onto that network; left unset
+       (and ``fabric_domain`` unset) under ``launcher=local``, every rank
+       binds the loopback address, the one interface all ranks of a one-host
+       run carry, since the provider's own pick follows the interfaces up at
+       each process's start and two ranks that split across interfaces can
+       reach each other only through address translation. Under
        ``verbs;ofi_rxm`` it makes every rank's fabric address the IPv4
        address of that interface (IPoIB, RoCE) and connections are resolved
        over it; left unset, the verbs stack is pinned to its native address

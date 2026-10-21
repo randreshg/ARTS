@@ -13,6 +13,8 @@
  *      bring-up negotiated must succeed (domain_attr->name plumbing).
  *   4. A net_interface that matches no interface is fatal (forked child must
  *      exit nonzero), never a silent fallback to the default route.
+ *   5. A one-host run with neither an interface nor a domain binds loopback
+ *      (127.0.0.1), the interface every rank of the run carries.
  *
  * Same shim pattern as net_selfsend.c: #includes net.c, fakes the runtime
  * globals, stubs dispatch as the RX sink.  tcp provider throughout — the only
@@ -92,7 +94,7 @@ int main(void) {
   pid_t pid = fork();
   if (pid == 0) {
     freopen("/dev/null", "w", stderr); /* silence the expected ERROR line */
-    arts_net_init("tcp", NULL, "no-such-interface-000");
+    arts_net_init("tcp", NULL, "no-such-interface-000", false);
     _exit(0); /* reaching here means the fatal contract was dropped */
   }
   int status = 0;
@@ -103,7 +105,7 @@ int main(void) {
   }
 
   /* --- (1) bind to loopback and verify the endpoint's own address ------- */
-  arts_net_init("tcp", NULL, "lo");
+  arts_net_init("tcp", NULL, "lo", false);
 
   unsigned char addr[ARTS_NET_ADDR_MAX];
   unsigned alen = arts_net_own_address(addr, sizeof(addr));
@@ -151,7 +153,7 @@ int main(void) {
   /* --- (3) pin the negotiated domain name in a fresh child -------------- */
   pid = fork();
   if (pid == 0) {
-    arts_net_init("tcp", domain_name, NULL);
+    arts_net_init("tcp", domain_name, NULL, false);
     _exit(arts_net_domain() != NULL ? 0 : 1);
   }
   waitpid(pid, &status, 0);
@@ -161,11 +163,34 @@ int main(void) {
     failures++;
   }
 
+  /* --- (5) a one-host run with no steering binds loopback ---------------- */
+  pid = fork();
+  if (pid == 0) {
+    arts_net_init("tcp", NULL, NULL, true);
+    unsigned char a5[ARTS_NET_ADDR_MAX];
+    unsigned l5 = arts_net_own_address(a5, sizeof(a5));
+    struct sockaddr_in s5;
+    if (l5 < sizeof(s5)) {
+      _exit(1);
+    }
+    memcpy(&s5, a5, sizeof(s5));
+    _exit(s5.sin_family == AF_INET &&
+                  s5.sin_addr.s_addr == htonl(INADDR_LOOPBACK)
+              ? 0
+              : 1);
+  }
+  waitpid(pid, &status, 0);
+  if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+    fprintf(stderr, "FAIL net_src_bind: a one-host run did not bind "
+                    "loopback\n");
+    failures++;
+  }
+
   if (failures) {
     return 1;
   }
   printf("PASS net_src_bind: lo-bound EP (127.0.0.1) delivered, domain pin "
-         "'%s' ok, bogus iface fatal\n",
+         "'%s' ok, bogus iface fatal, one-host bind on loopback\n",
          domain_name);
   return 0;
 }

@@ -258,9 +258,12 @@ struct fid_ep;
  * holds exactly one.  Ignored for the remaining providers, whose addressing
  * is not interface-based.  Naming an interface that has no usable address is
  * fatal: silently falling back to the default route would move all data
- * traffic to the wrong network. */
+ * traffic to the wrong network.  `one_host` says every rank of the run lives
+ * on this host: an IP provider steered by neither an interface nor a fabric
+ * domain then binds the loopback address, the one interface every rank
+ * carries. */
 void arts_net_init(const char *provider, const char *fabric_domain,
-                   const char *net_interface);
+                   const char *net_interface, bool one_host);
 
 /* The domain created by arts_net_init, for arts_regpool_init to register slabs
  * against.  NULL before init / after teardown. */

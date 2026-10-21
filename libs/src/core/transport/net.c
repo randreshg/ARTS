@@ -1679,7 +1679,7 @@ struct fid_domain *arts_net_domain(void) { return g_net.domain; }
 /* ------------------------------------------------------------------------- */
 
 void arts_net_init(const char *provider, const char *fabric_domain,
-                   const char *net_interface) {
+                   const char *net_interface, bool one_host) {
   net_write_delay_init();
   net_req_delay_init();
   bool provider_pinned = provider && provider[0] != '\0';
@@ -1769,16 +1769,34 @@ void arts_net_init(const char *provider, const char *fabric_domain,
       tcp_first ||
       (effective_provider != NULL && (strcmp(effective_provider, "tcp") == 0 ||
                                       strcmp(effective_provider, "sockets") == 0));
-  if (net_interface != NULL && (ip_provider || verbs_effective)) {
+  bool bind_interface =
+      net_interface != NULL && (ip_provider || verbs_effective);
+  /* Every rank must open the same interface, and the provider's own pick is
+   * each process's view of the interfaces up at that instant, which a bridge
+   * coming or going changes between two ranks' starts; a pair that splits
+   * across interfaces can reach each other only through address translation,
+   * which hides the peer's address from the provider.  All ranks of a
+   * one-host run carry loopback, and nothing rewrites it. */
+  bool bind_loopback = !bind_interface && one_host && ip_provider &&
+                       (fabric_domain == NULL || fabric_domain[0] == '\0');
+  if (bind_interface || bind_loopback) {
     /* fi_freeinfo frees hints->src_addr, so it must be heap-owned. */
     struct sockaddr_in *src =
         (struct sockaddr_in *)calloc(1, sizeof(struct sockaddr_in));
-    if (src == NULL || !arts_netif_ipv4_addr(net_interface, src)) {
-      ARTS_ERROR("arts_net: net_interface=%s has no usable IPv4 address — "
-                 "refusing to fall back to the default route",
-                 net_interface);
+    if (src == NULL) {
+      ARTS_ERROR("arts_net: out of memory for the source-address hint");
     }
-    src->sin_port = 0; /* any port; only the address constrains the bind */
+    if (bind_interface) {
+      if (!arts_netif_ipv4_addr(net_interface, src)) {
+        ARTS_ERROR("arts_net: net_interface=%s has no usable IPv4 address — "
+                   "refusing to fall back to the default route",
+                   net_interface);
+      }
+      src->sin_port = 0; /* any port; only the address constrains the bind */
+    } else {
+      src->sin_family = AF_INET;
+      src->sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    }
     hints->addr_format = FI_SOCKADDR_IN;
     hints->src_addr = src;
     hints->src_addrlen = sizeof(struct sockaddr_in);

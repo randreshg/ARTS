@@ -46,6 +46,7 @@
 #include <sched.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "arts/counter/Preamble.h"
 #include "arts/counter/counter.h"
@@ -140,7 +141,9 @@ void arts_runtime_node_init(struct arts_config_s *config) {
    * domain, identical to the plain-malloc path. */
   if (arts_global_rank_count > 1) {
     arts_net_init(config->provider, config->fabric_domain,
-                  config->net_interface);
+                  config->net_interface,
+                  config->launcher != NULL &&
+                      strcmp(config->launcher, "local") == 0);
     if (!arts_regpool_init(arts_net_domain(), arts_net_mr_endpoint(),
                            regpool_slab_bytes, 0)) {
       ARTS_ERROR("arts_runtime_node_init: registered pool init failed");

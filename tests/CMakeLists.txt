@@ -1222,8 +1222,9 @@ if(ARTS_MALLOC STREQUAL "mimalloc")
     set_tests_properties(net_rendezvous PROPERTIES ENVIRONMENT "FI_PROVIDER=tcp")
 
     # net_src_bind — whitebox for arts_net_init's steering hints: net_interface
-    # source-bind (loopback), fabric_domain pin, and the fatal missing-interface
-    # contract.  Same standalone harness shape as net_selfsend.
+    # source-bind (loopback), fabric_domain pin, the fatal missing-interface
+    # contract and a one-host run's loopback bind.  Same standalone harness
+    # shape as net_selfsend.
     add_executable(net_src_bind unit/net_src_bind.c $<TARGET_OBJECTS:arts_regpool>)
     target_include_directories(net_src_bind PRIVATE
         ${ARTS_PUBLIC_INCLUDE_DIR} ${ARTS_INTERNAL_INCLUDE_DIR}
