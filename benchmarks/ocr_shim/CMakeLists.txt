@@ -93,3 +93,31 @@ if(ARTS_BUILD_TESTS)
             FAIL_REGULAR_EXPRESSION "FAIL")
     endforeach()
 endif()
+
+# An EW dependence is refused with an abort, a death by a signal the runner
+# cannot be told to expect, so a bash wrapper turns SIGABRT's status (134) into
+# 0 and any other end into a failure; the refusal line is the pass regex.  No
+# cell changes it, so it is built and registered in the reference tree only.
+add_executable(ocr_shim_ew_refused EXCLUDE_FROM_ALL
+    ${CMAKE_SOURCE_DIR}/tests/shim/ew_refused.c
+    $<TARGET_OBJECTS:ocr_arts_objects>)
+target_include_directories(ocr_shim_ew_refused PRIVATE
+    ${OCR_ROOT}/inc ${SHIM_OCR_OPTIONS_DIR})
+target_compile_definitions(ocr_shim_ew_refused PRIVATE ${SHIM_OCR_TYPE_DEFINE})
+set_property(TARGET ocr_shim_ew_refused PROPERTY POSITION_INDEPENDENT_CODE OFF)
+target_compile_options(ocr_shim_ew_refused PRIVATE ${ARTS_NON_PIE_COMPILE_OPTIONS})
+target_link_options(ocr_shim_ew_refused PRIVATE ${ARTS_NON_PIE_LINK_OPTIONS})
+target_link_libraries(ocr_shim_ew_refused PRIVATE arts_static)
+if(ARTS_BUILD_TESTS AND ARTS_TEST_REFERENCE_TREE)
+    set_target_properties(ocr_shim_ew_refused PROPERTIES EXCLUDE_FROM_ALL FALSE)
+    arts_test_cfg(_cfg 1n_20w)
+    arts_add_test(ocr_shim_ew_refused COMMAND bash -c
+        "$<TARGET_FILE:ocr_shim_ew_refused> 2>&1\ntest $? -eq 134")
+    set_tests_properties(ocr_shim_ew_refused PROPERTIES
+        LABELS "single_node"
+        TIMEOUT 15
+        RESOURCE_LOCK "arts_runtime"
+        ENVIRONMENT "ARTS_CONFIG=${_cfg}"
+        PASS_REGULAR_EXPRESSION "\\[ARTS\\] unsupported OCR access mode DB_MODE_EW"
+        FAIL_REGULAR_EXPRESSION "FAIL")
+endif()

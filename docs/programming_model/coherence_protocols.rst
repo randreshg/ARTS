@@ -139,11 +139,15 @@ business of events (plus intra-node hardware atomics). For this reason ARTS
   normative rules of OCR §1.6 never mention it.
 * OCR ``Constant`` (an isolation promise embedded in a mode).
 
-The OCR-compatibility shim translates ``CONST→RO`` and ``EW→RW``. Both
-translations are **exact for data-race-free programs** and lossy only for racy
-programs that rely on CONST isolation or EW interval exclusion; such programs
-are outside the supported subset (this is a property of the translation, not a
-non-conformance of ARTS).
+The OCR-compatibility shim translates ``CONST→RO``, a translation **exact for
+data-race-free programs** and lossy only for racy programs that rely on CONST
+isolation; such programs are outside the supported subset (this is a property
+of the translation, not a non-conformance of ARTS). It refuses an EW
+dependence (``[ARTS] unsupported OCR access mode DB_MODE_EW``, then abort)
+rather than translate it: ``RW`` lets the writers on the write-granted node
+share the turn, so it would silently drop the interval exclusion an EW program
+relies on. A program whose dependences already order its EW writers states
+them as RW.
 
 Implementations may be stronger; programs must not rely on it
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -166,7 +170,7 @@ The DB-WRF model, which ``FLUSH`` requires, is a deliberately **weaker**
 contract than OCR — *exclusive write acquisition*:
 
   A write acquisition of a DataBlock is any acquisition in a write mode: an
-  EDT dependence in RW or EW mode, or the hold a creating EDT takes when it
+  EDT dependence in RW mode, or the hold a creating EDT takes when it
   creates the block without ``ARTS_DB_PROP_NO_ACQUIRE``. A program is
   DB-WRF-valid iff, for every DataBlock, every pair of its write
   acquisitions is ordered by happens-before — one is released (explicitly,

@@ -36,8 +36,8 @@
 
 /*
  * Both ARTS and OCR define enum values with identical names but different
- * semantics (DB_MODE_NULL, DB_MODE_RO, DB_MODE_RW, DB_MODE_RW).
- * ARTS: sequential (0,1,2,3...).  OCR: bitmask (0x0,0x1,0x2,0x4,0x8).
+ * semantics (DB_MODE_NULL, DB_MODE_RO, DB_MODE_RW).
+ * ARTS: sequential (0,1,2).  OCR: bitmask (0x0,0x1,0x2,0x4,0x8).
  *
  * Strategy: include OCR headers first (get the real OCR names), then redirect
  * ARTS's enum names through the preprocessor before including ARTS headers.
@@ -294,7 +294,7 @@ static void ocr_edt_trampoline(uint32_t paramc, const uint64_t *paramv,
   }
 
   /* Convert arts_edt_dep_t to ocrEdtDep_t.  Preserve the mode that ARTS
-   * resolved during arts_db_acquire_all (RO vs EW vs NULL) — the OCR EDT body
+   * resolved during arts_db_acquire_all (RO, RW or NULL) — the OCR EDT body
    * may inspect depv[i].mode for assertions or behavior, and surfacing
    * the actual ARTS-resolved mode is more honest than the previous
    * DB_DEFAULT_MODE hardcode. */
@@ -767,9 +767,11 @@ u8 ocrDbRelease(ocrGuid_t db) {
 /*
  * Map OCR access mode → ARTS access mode.
  *
- * ARTS datablocks support RO (shared read) and RW (per-node exclusive write).
- * OCR RW and EW both imply exclusive access, so both map to ARTS RW.  OCR RO
- * maps to ARTS RO.
+ * ARTS datablocks support RO (shared read) and RW (per-node exclusive write:
+ * the writers on the node that holds the write turn share it).  OCR RW maps
+ * to ARTS RW, OCR RO and CONST to ARTS RO.  OCR EW is refused: it promises
+ * that no two EW acquisitions of a block overlap, and no ARTS mode excludes
+ * the writers of one node from each other.
  *
  * ocrDbRelease() calls arts_db_release(), which releases a hold of either mode
  * before the EDT completes.  A hold must be released before the body's
@@ -782,8 +784,10 @@ u8 ocrDbRelease(ocrGuid_t db) {
  */
 static arts_db_access_mode_t ocr_to_arts_mode(ocrDbAccessMode_t ocr_mode) {
   switch (ocr_mode) {
-  case DB_MODE_EW: /* OCR 0x4 → ARTS RW */
-    return ARTS_MODE_RW;
+  case DB_MODE_EW: /* OCR 0x4: no ARTS equivalent */
+    (void)fprintf(stderr, "[ARTS] unsupported OCR access mode DB_MODE_EW "
+                          "(exclusive write)\n");
+    abort();
   case DB_MODE_RW: /* OCR 0x2 → ARTS RW */
     return ARTS_MODE_RW;
   case DB_MODE_NULL: /* OCR 0x0 → ARTS NULL (control-only dependence) */
@@ -801,11 +805,9 @@ static arts_db_access_mode_t ocr_to_arts_mode(ocrDbAccessMode_t ocr_mode) {
  * that to the OCR EDT body so user code (and OCR helper libraries that
  * read depv[i].mode for assertions or branching) sees the truth.
  *
- * RO is reported as DB_MODE_RO rather than DB_DEFAULT_MODE (RW) because
- * the OCR-RW-mapped-to-ARTS-RO path doesn't survive the round trip and
- * we have no way to distinguish "originally RW" from "originally RO".
- * Reporting RO is conservative and matches what arts_db_acquire_all actually
- * did.
+ * An ARTS RO slot is reported as DB_MODE_RO: OCR RO and CONST both map to it,
+ * and the round trip cannot tell them apart.  Reporting RO matches what
+ * arts_db_acquire_all actually did.
  */
 static u32 arts_to_ocr_mode(arts_db_access_mode_t arts_mode) {
   switch (arts_mode) {
@@ -840,8 +842,7 @@ u8 ocrAddDependence(ocrGuid_t source, ocrGuid_t destination, u32 slot,
   if (srcType == ARTS_GUID_DB) {
     /* DB → EDT/Event: arts_add_dependence does immediate satisfy for DB
      * sources (DBs are passive objects — no channel event, no waiting).
-     * Map OCR access modes to ARTS: RO→RO, EW/RW→RW (ARTS has no separate
-     * EW mode; both OCR EW and RW map to per-node-exclusive DB_MODE_RW).
+     * The access mode goes through ocr_to_arts_mode, which refuses EW.
      * GUID-sorted acquisition in arts_db_acquire_all prevents
      * acquisition-order deadlocks. */
     if (dstType == ARTS_GUID_EDT) {
