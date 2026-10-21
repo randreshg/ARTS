@@ -650,45 +650,15 @@ class ExperimentPanel(VerticalScroll):
                 # It also colours: a name in the DB-WRF style runs under
                 # DB-WRF·FLUSH too, so the tooltip on any other name says why
                 # not.
-                eligible = app.unordered_writes is None and not app.unsupported
+                eligible = app.unordered_writes is None
                 name_label = Label(
                     f"[@click=app.show_app_doc({app.name!r})]{app.name}[/]",
                     classes="bench-name wrf-eligible" if eligible else "bench-name",
                 )
                 if not eligible:
-                    # A row can be grey for either reason, or both at once
-                    # (independent axes: an unsupported program can also be
-                    # outside DB-WRF) — the tooltip must say why in every
-                    # case, not only the DB-WRF one.
-                    reasons = []
-                    if app.unordered_writes:
-                        reasons.append(
-                            f"program is outside DB-WRF: {app.unordered_writes}")
-                    if app.unsupported:
-                        reasons.append(
-                            f"application is unsupported: {app.unsupported}")
-                    name_label.tooltip = "\n".join(reasons)
+                    name_label.tooltip = (
+                        f"program is outside DB-WRF: {app.unordered_writes}")
                 yield name_label
-                if app.unsupported:
-                    # The row stays visible — the document and the reason are
-                    # the point — but its boxes cannot be taken: the program
-                    # needs semantics the runtime does not implement.
-                    for version in (Version.BASE, Version.HINTED,
-                                    Version.RESTRUCTURED):
-                        if version not in app.own_versions:
-                            yield Static("·", classes="bench-cell blank")
-                        else:
-                            with Horizontal(classes="bench-cell"):
-                                box = Toggle("", f"{app.name}:{version.value}",
-                                             value=False,
-                                             classes="app-toggle unsupported")
-                                box.disabled = True
-                                yield box
-                    box = Input(value="", placeholder=app.unsupported,
-                                id=f"a-{app.name}", classes="bench-args")
-                    box.disabled = True
-                    yield box
-                    continue
                 for version in (Version.BASE, Version.HINTED, Version.RESTRUCTURED):
                     if version not in app.own_versions:
                         yield Static("·", classes="bench-cell blank")
@@ -722,16 +692,14 @@ class ExperimentPanel(VerticalScroll):
                     # Its own verdict, coloured like the row's name: the
                     # rewrite is a different program, and the model judges
                     # programs.
-                    if rewrite.unordered_writes is None and not rewrite.unsupported:
+                    if rewrite.unordered_writes is None:
                         yield Label(f"  └ {rewrite.name}",
                                     classes="bench-name wrf-eligible")
                     else:
                         sub_label = Label(f"[dim]  └ {rewrite.name}[/dim]",
                                           classes="bench-name")
                         sub_label.tooltip = (
-                            f"program is outside DB-WRF: {rewrite.unordered_writes}"
-                            if rewrite.unordered_writes
-                            else f"application is unsupported: {rewrite.unsupported}")
+                            f"program is outside DB-WRF: {rewrite.unordered_writes}")
                         yield sub_label
                     for _ in range(3):
                         yield Static("", classes="bench-cell blank")
@@ -743,10 +711,7 @@ class ExperimentPanel(VerticalScroll):
 
     @property
     def toggles(self) -> list[Toggle]:
-        # Unsupported rows draw a box but never a choice: the shared
-        # all/none control and the selection reader skip them alike.
-        return [t for t in self.query(".app-toggle").results(Toggle)
-                if not t.disabled]
+        return list(self.query(".app-toggle").results(Toggle))
 
     def selected(self) -> dict[str, list[Version]]:
         out: dict[str, list[Version]] = {}

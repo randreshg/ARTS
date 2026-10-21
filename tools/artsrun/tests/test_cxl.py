@@ -251,6 +251,41 @@ def _campaign(tmp_path, prof):
                     profile=prof, build_dir=tmp_path, run_dir=tmp_path / "run")
 
 
+class _Stop(Exception):
+    pass
+
+
+def _jobs_of_a_run(tmp_path, monkeypatch, prof, prefix):
+    from types import SimpleNamespace
+
+    from artsrun.campaign import Campaign
+
+    seen = {}
+
+    def fake_build(plan, *, on_line=None, prefix=None, jobs=None):
+        seen["jobs"] = jobs
+        raise _Stop
+
+    camp = _campaign(tmp_path, prof)
+    monkeypatch.setattr(Campaign, "build_plan",
+                        lambda self, **k: SimpleNamespace(targets=[]))
+    monkeypatch.setattr(Campaign, "_build_prefix", lambda self: prefix)
+    monkeypatch.setattr("artsrun.campaign.build", fake_build)
+    with pytest.raises(_Stop):
+        camp.run()
+    return seen["jobs"]
+
+
+def test_the_build_width_is_the_profiles_cap_or_ninjas_own(tmp_path, monkeypatch):
+    assert _jobs_of_a_run(tmp_path, monkeypatch, profile(), []) is None
+    assert _jobs_of_a_run(tmp_path, monkeypatch, profile(build_jobs=3), []) == 3
+
+
+def test_a_scheduler_build_slot_overrides_the_profiles_cap(tmp_path, monkeypatch):
+    prof = profile(launcher="slurm", build_jobs=3, slurm={"build_cpus": 6})
+    assert _jobs_of_a_run(tmp_path, monkeypatch, prof, ["srun"]) == 6
+
+
 def test_a_dry_run_shows_the_reconfigure_and_changes_nothing(tmp_path, monkeypatch):
     cache(tmp_path, ARTS_CXL_REAL="ON")
     monkeypatch.setattr("artsrun.build.subprocess.run",

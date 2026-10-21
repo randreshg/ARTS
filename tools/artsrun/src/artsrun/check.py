@@ -20,6 +20,7 @@ import math
 import re
 from dataclasses import dataclass, field
 from enum import StrEnum
+from pathlib import Path
 
 from artsrun.model.catalog import ScalarKind, Section
 from artsrun.model.plane import RuntimeKind
@@ -135,6 +136,29 @@ def measured_and_complete(text: str, app) -> bool:
     return completed and extract_e2e(text) is not None
 
 
+# Past this a log is read as its head and its tail, which carry the command
+# line and the verdict lines: a runaway program can write gigabytes before
+# anything ends it.
+LOG_READ_LIMIT = 64 << 20
+
+
+def read_log(path: Path, limit: int = LOG_READ_LIMIT) -> str:
+    size = path.stat().st_size
+    with path.open("rb") as log:
+        if size <= limit:
+            data = log.read()
+        else:
+            half = limit // 2
+            head = log.read(half)
+            log.seek(size - half)
+            data = head + b"\n[... log truncated ...]\n" + log.read(half)
+    return data.decode("utf-8", errors="replace")
+
+
+def _noted(result: CellResult, note: str) -> str:
+    return f"{result.note}; {note}" if result.note else note
+
+
 def apply_to(result: CellResult) -> CellResult:
     """Fill in a finished cell's scalar, and settle a run whose exit status
     alone does not say whether it measured anything."""
@@ -143,7 +167,7 @@ def apply_to(result: CellResult) -> CellResult:
             result.status = Status.FAIL
             result.note = result.note or "no log"
         return result
-    text = result.log_path.read_text(errors="replace")
+    text = read_log(result.log_path)
     completed, scalar = extract(text, result.cell.app.marker, result.cell.app.scalar_re)
     result.scalar = scalar
     result.e2e_s = extract_e2e(text)
@@ -155,7 +179,7 @@ def apply_to(result: CellResult) -> CellResult:
     envelope = _ENVELOPE_RE.search(text)
     if envelope:
         result.status = Status.FAIL
-        result.note = f"envelope: {envelope.group(1)}"
+        result.note = _noted(result, f"envelope: {envelope.group(1)}")
         return result
     stamps = len(_E2E_RE.findall(text))
     if stamps > 1:
@@ -165,9 +189,10 @@ def apply_to(result: CellResult) -> CellResult:
         # solves the whole problem alone and "succeeds" — with the correct
         # scalar, so not even the consensus vote can catch it.
         result.status = Status.FAIL
-        result.note = (f"world-size mismatch: {stamps} [E2E] stamps against "
-                       f"a rank-0-only contract (PMI missing / singleton "
-                       f"MPI init suspected)")
+        result.note = _noted(
+            result, f"world-size mismatch: {stamps} [E2E] stamps against "
+                    f"a rank-0-only contract (PMI missing / singleton "
+                    f"MPI init suspected)")
         return result
     if result.cell.entry.kind is RuntimeKind.HPX:
         seen = _HPX_GEOM_RE.findall(text)
@@ -189,9 +214,10 @@ def apply_to(result: CellResult) -> CellResult:
         if wrong:
             shape = ", ".join(f"{n}x{t}" for n, t in sorted(got))
             result.status = Status.FAIL
-            result.note = (f"geometry: HPX realised localities {ids} of {shape}, "
-                           f"wanted ids 0..{want_n - 1} at {want_n} "
-                           f"localities x {want_t} threads")
+            result.note = _noted(
+                result, f"geometry: HPX realised localities {ids} of {shape}, "
+                        f"wanted ids 0..{want_n - 1} at {want_n} "
+                        f"localities x {want_t} threads")
             return result
     if result.status is Status.OK and not completed:
         result.status = Status.FAIL

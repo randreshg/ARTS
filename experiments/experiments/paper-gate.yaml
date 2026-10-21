@@ -13,15 +13,19 @@
 #
 # Sizing rule: shrink the duration/size knob, keep the width knob only as large
 # as the geometry needs (a gate has no width floor to defend), leave every
-# height knob a program pins at its published value.  Every argument list is
-# legal at 1, 2, 4 and 8 ranks, so no row needs an args_by_nodes ladder: a knob
-# that must follow the rank count is set to the value that satisfies the widest
-# rung, which is also legal at the narrower ones.  Because every list overrides
-# the catalog's, the catalog pins do not fire; the cross-runtime consensus vote
-# still grades every cell, and that vote is the gate.  The restructured tier
-# is not part of this gate, as it is not part of paper-main; the rewrites'
-# rows below keep their gate arguments, addressed by the rewrite's own name,
-# so listing `restructured` in a row's versions turns the tier back on.
+# height knob a program pins at its published value.  Memory binds a
+# development host before its cores do: at 1 and 2 ranks a cell's ranks
+# together peak at no more than 2 GiB (the rusage witness's per-rank peak times
+# the rank count, on the default cell), and a row over it shrinks its size
+# knob.  Every argument list is legal at 1, 2, 4 and 8 ranks, so no row needs
+# an args_by_nodes ladder: a knob that must follow the rank count is set to the
+# value that satisfies the widest rung, which is also legal at the narrower
+# ones.  Because every list overrides the catalog's, the catalog pins do not
+# fire; the cross-runtime consensus vote still grades every cell, and that vote
+# is the gate.  The restructured tier is not part of this gate, as it is not
+# part of paper-main; the rewrites' rows below keep their gate arguments,
+# addressed by the rewrite's own name, so listing `restructured` in a row's
+# versions turns the tier back on.
 name: paper-gate
 description: small-argument consensus gate for every paper-main row and version
 # The coherence entries this experiment runs unless -e names others.
@@ -73,7 +77,7 @@ apps:
     versions: [base, hinted]
     # The scatter depth must be deep enough that the heaviest subtree, F(n-d+1),
     # fits a rank's equal share F(n+1)/nranks at the widest geometry.
-    args: ['27', '10']
+    args: ['24', '10']
 
   graph500:
     enabled: true
@@ -99,9 +103,9 @@ apps:
     versions: [base, hinted]
     # The box grid must bottom out on a single box and agglomerate at most 125
     # fine boxes into one; the box edge stays at the published 4.
-    args: ['4', '1728']
+    args: ['4', '216']
   hpgmg_dist:
-    args: ['4', '1728']
+    args: ['4', '216']
 
   LCS_all_db_distributed:
     enabled: true
@@ -129,11 +133,11 @@ apps:
     # MAX_NUM_UNREFINED_BLOCKS.  num_tsteps stays at or above refine_freq so the
     # refinement path is still exercised.
     args: ['--nx', '10', '--ny', '10', '--nz', '10',
-           '--npx', '8', '--npy', '4', '--npz', '4',
+           '--npx', '4', '--npy', '4', '--npz', '4',
            '--num_refine', '1', '--num_tsteps', '10']
   miniAMR_intel_dist:
     args: ['--nx', '10', '--ny', '10', '--nz', '10',
-           '--npx', '8', '--npy', '4', '--npz', '4',
+           '--npx', '4', '--npy', '4', '--npz', '4',
            '--num_refine', '1', '--num_tsteps', '10']
 
   miniAMR_intel_chandra:
@@ -283,7 +287,7 @@ apps:
     enabled: true
     versions: [base, hinted]
     # depth must lie in [1, holes-2] for a board of holes = rows(rows+1)/2.
-    args: ['7', '1', '7']
+    args: ['6', '1', '7']
 
   XSBench_intel:
     enabled: true

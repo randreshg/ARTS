@@ -66,8 +66,6 @@ def _parse_apps(spec: str | None, catalog, experiment) -> dict[str, list[Version
         name, _, versions = item.partition(":")
         if name not in catalog.apps:
             _fail(f"unknown application: {name}")
-        if catalog.apps[name].unsupported:
-            _fail(f"{name} cannot be selected: {catalog.apps[name].unsupported}")
         if versions:
             try:
                 picked = [Version(v) for v in versions.split("+")]
@@ -460,8 +458,6 @@ def _tier_mark(catalog, entry, version: Version) -> str:
     """
     from artsrun.report import WRF_ELIGIBLE_STYLE
 
-    if entry.unsupported:
-        return "[dim]✗[/dim]"
     if version not in entry.own_versions:
         return "[dim]·[/dim]"
     row, _ = catalog.resolve(entry.name, version)

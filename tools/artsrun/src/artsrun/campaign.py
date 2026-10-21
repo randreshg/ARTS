@@ -305,9 +305,10 @@ class Campaign:
         plan = self.build_plan(on_line=say, bootstrap=True)
         say(f"building {len(plan.targets)} targets in {self.build_dir}")
         prefix = self._build_prefix()
-        # ninja sizes itself to the node it lands on; inside a narrow job it
-        # must size itself to the slot instead.
-        jobs = self.profile.sched_settings.build_cpus if prefix else None
+        # ninja sizes itself to the node it lands on unless the profile caps
+        # it; inside a narrow job it must size itself to the slot instead.
+        jobs = (self.profile.sched_settings.build_cpus if prefix
+                else self.profile.build_jobs)
         build(plan, on_line=lambda line: say(line), prefix=prefix, jobs=jobs)
 
         cells, skipped = self.cells()

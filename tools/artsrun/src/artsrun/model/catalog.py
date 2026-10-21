@@ -236,10 +236,6 @@ class AppEntry(BaseModel):
     post_verify: str | None = None
 
     default_enabled: bool = True
-    # An application whose correctness depends on semantics the runtime
-    # deliberately does not implement.  It stays a visible row — the doc and
-    # the reason are the point — but it cannot be selected or run.
-    unsupported: str | None = None
     # The program leaves two write-mode acquisitions of one DataBlock
     # unordered somewhere, so it is outside the DB-WRF memory model: an entry
     # whose protocol requires DB-WRF cannot run it, and says why.  One value per

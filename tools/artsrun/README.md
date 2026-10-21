@@ -161,6 +161,12 @@ flush trace; a cell with more than one rank sets it to `/dev/null`, because
 the library takes one path for all ranks and every rank on a host would
 overwrite the same file.
 
+A fake cell that crashed or was reaped leaves the library's region in `/dev/shm`
+(RAM) with its owner dead. After each fake cell the local runner unlinks it,
+only when its header carries the library's magic, is whole and names a dead
+owner pid, and the name still refers to the file that was checked; it waits up
+to two seconds for a just-killed owner to be gone first.
+
 Any key a profile or saved selection carries that no field takes is refused
 when it loads.
 
@@ -280,6 +286,15 @@ keeps at most that many of a campaign's jobs in the queue, pending or
 running, and submits the rest as they end. With a cap the submitter has work
 left until the last cell is out, so a campaign whose submitter died is
 continued with `--resume` rather than merely watched.
+
+A local run reads each cell's log as it grows, and a still-running local cell
+whose log passes 64 MiB is ended and fails (`log passed 64 MiB`): no program's
+verdict needs that much output, and a runaway rank would fill the disk. The
+checker reads a log that large as its head and its tail. The profile key
+`build_jobs` caps how many compiles a local build runs at once (unset: ninja
+sizes itself to the machine); a host whose memory cannot hold a full-width
+build beside a running cell sets it. A scheduler's build slot is sized by
+`slurm.build_cpus` instead.
 
 A node profile states host facts only; it names no plane entries. Which
 entries run is the experiment's choice — see below.

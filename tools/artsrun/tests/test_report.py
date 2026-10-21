@@ -215,7 +215,7 @@ def test_the_apps_table_marks_each_tier_by_the_row_that_supplies_it():
     assert WRF_ELIGIBLE_STYLE not in RT_COLOR.values()
     catalog = load_catalog()
     split = [a for a in catalog.rows
-             if a.restructured_as and not a.unsupported
+             if a.restructured_as
              and (a.unordered_writes is None)
              != (catalog.apps[a.restructured_as].unordered_writes is None)]
     if not split:

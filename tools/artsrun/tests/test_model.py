@@ -1078,6 +1078,27 @@ def test_sched_settings_reads_the_launchers_own_section():
     assert local.sched_settings is None
 
 
+def test_build_jobs_is_a_positive_cap_and_absent_by_default():
+    assert Profile.model_validate(_local()).build_jobs is None
+    assert Profile.model_validate(_local(build_jobs=4)).build_jobs == 4
+    with pytest.raises(ValidationError):
+        Profile.model_validate(_local(build_jobs=0))
+
+
+def test_build_jobs_round_trips_through_the_profile_form():
+    from artsrun.tui import form
+
+    absent = form.profile_to_values(Profile.model_validate(_local()))
+    assert absent["build_jobs"] == ""
+    assert "build_jobs" not in form.values_to_profile_data("t", absent)
+
+    capped = form.profile_to_values(Profile.model_validate(_local(build_jobs=4)))
+    assert capped["build_jobs"] == "4"
+    data = form.values_to_profile_data("t", capped)
+    assert data["build_jobs"] == 4
+    assert Profile.model_validate(data).build_jobs == 4
+
+
 def test_arts_only_probe_excludes_every_reference():
     """A probe built for the ARTS variants alone has no reference target: its
     xsocr/ocr-vx cells are structurally ineligible, never a build error."""
@@ -1101,7 +1122,6 @@ def test_arts_only_probe_excludes_every_reference():
 
     class _App:
         section = Section.OCR
-        unsupported = None
         multinode_skip = None
         ocrvx_skip = False
         arts_only = True

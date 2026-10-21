@@ -120,7 +120,7 @@ def test_a_rewrite_line_carries_the_rewrite_s_own_verdict():
     from artsrun.model.catalog import load_catalog
     catalog = load_catalog()
     split = [a for a in catalog.rows
-             if a.restructured_as and not a.unsupported
+             if a.restructured_as
              and (a.unordered_writes is None)
              != (catalog.apps[a.restructured_as].unordered_writes is None)]
     if not split:
@@ -186,7 +186,7 @@ def test_an_eligible_name_is_drawn_in_the_eligible_colour():
     # colour as an eligible rewrite line, and a row outside it in another.
     from artsrun.model.catalog import Kind, load_catalog
     catalog = load_catalog()
-    apps = [a for a in catalog.rows_of(Kind.APP) if not a.unsupported]
+    apps = [a for a in catalog.rows_of(Kind.APP) ]
     inside = next((a for a in apps if a.unordered_writes is None), None)
     outside = next((a for a in apps if a.unordered_writes), None)
     if inside is None or outside is None:

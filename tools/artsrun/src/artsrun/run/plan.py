@@ -84,10 +84,6 @@ def _ineligible(
     why = no_program(entry, app)
     if why:
         return why
-    # Belt over the selection surfaces' braces: a replayed selection.yaml can
-    # predate the catalog marking an application unsupported.
-    if app.unsupported:
-        return f"application is unsupported: {app.unsupported}"
     if nodes > 1 and app.multinode_skip:
         return f"application cannot run multinode: {app.multinode_skip}"
     if entry.kind is RuntimeKind.OCRVX and app.ocrvx_skip:

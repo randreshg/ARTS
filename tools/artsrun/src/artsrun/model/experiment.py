@@ -41,7 +41,6 @@ class ResolvedApp(BaseModel):
     extra_scalars: dict[str, str] = Field(default_factory=dict)
     args: list[str] = Field(default_factory=list)
     args_by_nodes: dict[int, list[str]] = Field(default_factory=dict)
-    unsupported: str | None = None
     unordered_writes: str | None = None
     post_verify: str | None = None
     multinode_skip: str | None = None
@@ -111,10 +110,6 @@ class Experiment(BaseModel):
         campaign rather than the whole catalog with three entries annotated.
         An experiment that lists none defers to the catalog's own defaults.
         """
-        if app.unsupported:
-            # Not a roster choice: the application needs semantics the
-            # runtime does not implement, so no experiment can turn it on.
-            return False
         entry = self.apps.get(app.name)
         if entry is not None and entry.enabled is not None:
             return entry.enabled
@@ -210,7 +205,6 @@ class Experiment(BaseModel):
                         extra_scalars=source.extra_scalars,
                         args=args,
                         args_by_nodes=args_by_nodes,
-                        unsupported=app.unsupported,
                         unordered_writes=source.unordered_writes,
                         post_verify=source.post_verify,
                         multinode_skip=source.multinode_skip,

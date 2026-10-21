@@ -195,6 +195,12 @@ class Profile(BaseModel):
     cell_timeout_s: int = Field(default=300, ge=1)
     repeats: int = Field(default=1, ge=1)
 
+    # Compiles a local build runs at once; unset lets ninja size itself to
+    # the machine.  A host whose memory cannot hold a full-width build beside
+    # a running cell sets it.  A scheduler's build slot is sized by its own
+    # build_cpus instead.
+    build_jobs: int | None = Field(default=None, ge=1)
+
     # Wrap every cell's binary in a getrusage witness (`/usr/bin/time -v`) to
     # recover peak resident set size and minor-fault counts alongside the
     # runtime's own end-to-end stamp — neither is otherwise observed. Off by

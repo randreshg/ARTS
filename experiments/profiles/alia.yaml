@@ -18,4 +18,6 @@ route_table_size: 14
 core_dump: false
 
 cell_timeout_s: 600
+# A full-width build beside a running cell exhausts this host's memory.
+build_jobs: 4
 repeats: 1

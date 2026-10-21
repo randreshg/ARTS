@@ -352,11 +352,84 @@ def test_a_completed_measured_cell_stuck_in_teardown_is_reaped(tmp_path, monkeyp
     try:
         # Through the deadline helper: a loop that never reaps must fail this
         # test, not hang it.
-        assert _wait_briefly(backend, proc, _measured_cell(), log) is True
+        from artsrun.run.local import _End
+        assert _wait_briefly(backend, proc, _measured_cell(), log) is _End.REAPED
         assert proc.poll() is not None
     finally:
         proc.kill()
         proc.wait()
+
+
+def test_the_verdict_is_found_across_reads_of_a_growing_log(tmp_path, monkeypatch):
+    from artsrun.run.local import _End
+    backend = _backend(tmp_path, monkeypatch)
+    # Each poll reads only what was appended; a marker and stamp that arrive
+    # in separate writes, one split mid-line, must still be seen together.
+    log, proc = _sleeper(tmp_path, "DONE su")
+    backend._current = proc
+    try:
+        import threading
+        import time
+
+        def grow():
+            time.sleep(0.2)
+            with log.open("a") as f:
+                f.write("m 42\n[E2")
+            time.sleep(0.2)
+            with log.open("a") as f:
+                f.write("E] 1000\n")
+        threading.Thread(target=grow, daemon=True).start()
+        assert _wait_briefly(backend, proc, _measured_cell(), log) is _End.REAPED
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+def test_a_cell_whose_log_passes_the_cap_is_ended(tmp_path, monkeypatch):
+    from artsrun.run import local as local_mod
+    backend = _backend(tmp_path, monkeypatch)
+    monkeypatch.setattr(local_mod, "LOG_CAP_BYTES", 1000)
+    # The cap holds even for a cell that is never reaped early.
+    log, proc = _sleeper(tmp_path, "x" * 2000)
+    backend._current = proc
+    try:
+        cell = _measured_cell(post_verify="test -f out")
+        assert _wait_briefly(backend, proc, cell, log) is local_mod._End.OVERFLOWED
+        assert proc.poll() is not None
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+def test_an_overflowed_cell_fails_with_its_reason(tmp_path, monkeypatch):
+    from artsrun.run import local as local_mod
+    from artsrun.run.types import Cell, Status
+    monkeypatch.setattr(local_mod, "LOG_CAP_BYTES", 1 << 16)
+    monkeypatch.setattr(local_mod, "_POLL_S", 0.05)
+    profile = Profile.model_validate({
+        "name": "t", "launcher": "local", "nodes": [1],
+        "workers": 1, "progress": 0,
+    })
+    binary = tmp_path / "yes_copy"
+    import shutil
+    shutil.copy("/usr/bin/yes", binary)
+    binary.chmod(0o755)
+    cell = Cell(entry=_entry(RuntimeKind.OCRVX), app=_measured_cell().app,
+                nodes=1, repeat=1, binary=binary, args=["garbage"],
+                timeout_s=60, cpu_width=16)
+    result = local_mod.LocalBackend(profile, tmp_path / "cells").submit(cell)
+    assert result.status is Status.FAIL
+    assert "log passed" in result.note
+
+
+def test_a_huge_log_is_read_as_its_head_and_tail(tmp_path):
+    from artsrun import check
+    log = tmp_path / "cell.log"
+    log.write_text("$ cmd\n" + "garbage\n" * 5000 + "DONE sum 7\n[E2E] 1000\n")
+    text = check.read_log(log, limit=4096)
+    assert text.startswith("$ cmd")
+    assert "DONE sum 7" in text and "[E2E] 1000" in text
+    assert len(text) < 4200
 
 
 def test_a_cell_without_its_timing_stamp_is_left_to_its_own_budget(tmp_path, monkeypatch):
@@ -448,3 +521,146 @@ def test_e_replaces_the_experiment_s_entries_and_may_name_any_of_them():
                "--dry-run")
     assert bad.exit_code != 0
     assert "-e names unknown plane entries: nope" in bad.output
+
+
+def test_an_abandoned_fake_cxl_region_is_unlinked(tmp_path, monkeypatch):
+    import os
+    import struct
+    import subprocess
+    from artsrun.run.local import drop_abandoned_fake_cxl_region
+
+    magic = 0x4152545343584C31
+    dead = subprocess.Popen(["true"])
+    dead.wait()
+    region = tmp_path / "arts_fake_cxl"
+    region.write_bytes(struct.pack("<QQQ", magic, 4096, dead.pid) + b"\0" * 40)
+    assert drop_abandoned_fake_cxl_region(region) is True
+    assert not region.exists()
+
+    # A region whose owner still runs is another run's, and stays.
+    region.write_bytes(struct.pack("<QQQ", magic, 4096, os.getpid()) + b"\0" * 40)
+    assert drop_abandoned_fake_cxl_region(region) is False
+    assert region.exists()
+
+    # A region re-created under the same name since the header was read is
+    # not the one that was judged.
+    stale = struct.pack("<QQQ", magic, 4096, dead.pid) + b"\0" * 40
+    region.write_bytes(stale)
+    real_stat = os.stat
+
+    def replaced(path, *a, **k):
+        if str(path) == str(region):
+            region.unlink()
+            region.write_bytes(struct.pack("<QQQ", magic, 4096, os.getpid())
+                               + b"\0" * 40)
+        return real_stat(path, *a, **k)
+
+    import artsrun.run.local as local_mod
+    monkeypatch.setattr(local_mod.os, "stat", replaced)
+    assert drop_abandoned_fake_cxl_region(region) is False
+    assert region.exists()
+    monkeypatch.undo()
+
+    # A header cut short is left alone.
+    region.write_bytes(b"\0" * 8)
+    assert drop_abandoned_fake_cxl_region(region) is False
+    assert region.exists()
+
+    # Anything that is not the library's region is left alone.
+    region.write_bytes(struct.pack("<QQQ", 1, 4096, dead.pid) + b"\0" * 40)
+    assert drop_abandoned_fake_cxl_region(region) is False
+    assert region.exists()
+
+
+def test_a_just_killed_owner_is_waited_for_before_the_region_is_dropped(tmp_path):
+    import struct
+    import subprocess
+    import threading
+    import time
+    from artsrun.run.local import drop_abandoned_fake_cxl_region
+
+    owner = subprocess.Popen(["sleep", "300"])
+    region = tmp_path / "arts_fake_cxl"
+    region.write_bytes(struct.pack("<QQQ", 0x4152545343584C31, 4096, owner.pid)
+                       + b"\0" * 40)
+
+    def end_owner():
+        time.sleep(0.2)
+        owner.kill()
+        owner.wait()
+    threading.Thread(target=end_owner, daemon=True).start()
+    try:
+        assert drop_abandoned_fake_cxl_region(region) is False
+        assert region.exists()
+        assert drop_abandoned_fake_cxl_region(region, wait_s=5.0) is True
+        assert not region.exists()
+    finally:
+        owner.kill()
+        owner.wait()
+
+
+def test_a_cell_drops_the_fake_cxl_region_only_on_the_fake_library(tmp_path, monkeypatch):
+    import dataclasses
+    import shutil
+    from artsrun.model.profile import CxlLibrary
+    from artsrun.run import local as local_mod
+
+    calls = []
+    monkeypatch.setattr(local_mod, "drop_abandoned_fake_cxl_region",
+                        lambda *a, **k: calls.append(1))
+    monkeypatch.setattr(local_mod, "cxl_wrap", lambda argv, cell, profile: argv)
+    monkeypatch.setattr(local_mod, "reap", lambda binary: 0)
+    profile = Profile.model_validate({
+        "name": "t", "launcher": "local", "nodes": [1],
+        "workers": 1, "progress": 0,
+    })
+    binary = tmp_path / "true_copy"
+    shutil.copy("/usr/bin/true", binary)
+    binary.chmod(0o755)
+    base = dataclasses.replace(_measured_cell(), binary=binary)
+    backend = local_mod.LocalBackend(profile, tmp_path / "cells")
+    for library, expected in ((None, 0), (CxlLibrary.REAL, 0), (CxlLibrary.FAKE, 1)):
+        calls.clear()
+        backend.submit(dataclasses.replace(base, cxl=library, cxl_region_bytes=1 << 20))
+        assert len(calls) == expected, library
+
+
+def test_a_log_rewritten_shorter_is_read_again_from_its_start(tmp_path, monkeypatch):
+    from artsrun.run.local import _End
+    backend = _backend(tmp_path, monkeypatch)
+    log, proc = _sleeper(tmp_path, "x" * 200)
+    backend._current = proc
+    try:
+        import threading
+        import time
+
+        def rewrite():
+            time.sleep(0.3)
+            log.write_text("DONE sum 42\n[E2E] 1000\n")
+        threading.Thread(target=rewrite, daemon=True).start()
+        assert _wait_briefly(backend, proc, _measured_cell(), log) is _End.REAPED
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+def test_an_overflowed_cell_stays_failed_with_its_note_when_its_log_is_read(tmp_path, monkeypatch):
+    from artsrun import check
+    from artsrun.run.types import CellResult, Status
+
+    monkeypatch.setattr(check.read_log, "__defaults__", (4096,))
+    log = tmp_path / "cell.log"
+    log.write_text("$ cmd\n" + "garbage\n" * 5000 + "DONE sum 7\n[E2E] 1000\n")
+    result = CellResult(cell=_measured_cell(), status=Status.FAIL, rc=-9,
+                        log_path=log, note="log passed 64 MiB; the cell was ended")
+    out = check.apply_to(result)
+    assert out.status is Status.FAIL
+    assert out.note == "log passed 64 MiB; the cell was ended"
+
+    log.write_text("$ cmd\n" + "garbage\n" * 5000
+                   + "DONE sum 7\n[E2E] 1000\n[E2E] 1001\n")
+    result = CellResult(cell=_measured_cell(), status=Status.FAIL, rc=-9,
+                        log_path=log, note="log passed 64 MiB; the cell was ended")
+    out = check.apply_to(result)
+    assert out.status is Status.FAIL
+    assert out.note.startswith("log passed 64 MiB; the cell was ended; world-size")
