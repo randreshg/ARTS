@@ -233,7 +233,7 @@ extern "C" void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   dim3 grid((tile_size + SMTILE - 1) / SMTILE);
 
   arts_edt_create_with_guid(finish_histogram, done_guid, 0, NULL, 2);
-  arts_signal_edt(done_guid, 0, histo_guid, DB_MODE_EW);
+  arts_signal_edt(done_guid, 0, histo_guid, DB_MODE_RW);
 
   {
     arts_gpu_hint_t gpu_hint = {};
@@ -245,7 +245,7 @@ extern "C" void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                                   num_blocks + 1, arts_from_dim3(grid),
                                   arts_from_dim3(threads), &gpu_hint);
   }
-  arts_signal_edt(final_sum_guid, 0, histo_guid, DB_MODE_EW);
+  arts_signal_edt(final_sum_guid, 0, histo_guid, DB_MODE_RW);
 
   for (unsigned int tile = 0; tile < num_blocks; tile++) {
     arts_guid_t input_tile_guid = input_tile_guids[tile];
@@ -275,8 +275,8 @@ extern "C" void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       arts_guid_t priv_histo_guid = arts_edt_create_gpu(
           private_histogram, 2, args, 2, arts_from_dim3(grid),
           arts_from_dim3(threads), &gpu_hint);
-      arts_signal_edt(priv_histo_guid, 0, input_tile_guid, DB_MODE_EW);
-      arts_signal_edt(priv_histo_guid, 1, partial_histo_guid, DB_MODE_EW);
+      arts_signal_edt(priv_histo_guid, 0, input_tile_guid, DB_MODE_RW);
+      arts_signal_edt(priv_histo_guid, 1, partial_histo_guid, DB_MODE_RW);
     }
   }
 

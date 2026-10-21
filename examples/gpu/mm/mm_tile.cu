@@ -110,7 +110,7 @@ void mm_kernel_cpu(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       }
     }
   }
-  arts_signal_edt(to_signal, k, c_tile_guid, DB_MODE_EW);
+  arts_signal_edt(to_signal, k, c_tile_guid, DB_MODE_RW);
 }
 
 void multiply_mm(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
@@ -153,17 +153,17 @@ void multiply_mm(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_guid_t mul_gpu_guid =
       arts_edt_create_gpu(mm_kernel, 1, args, 3, arts_from_dim3(grid),
                           arts_from_dim3(threads), &gpu_hint_mul);
-  arts_signal_edt(mul_gpu_guid, 0, a_tile_guid, DB_MODE_EW);
-  arts_signal_edt(mul_gpu_guid, 1, b_tile_guid, DB_MODE_EW);
-  arts_signal_edt(mul_gpu_guid, 2, c_tile_guid, DB_MODE_EW);
+  arts_signal_edt(mul_gpu_guid, 0, a_tile_guid, DB_MODE_RW);
+  arts_signal_edt(mul_gpu_guid, 1, b_tile_guid, DB_MODE_RW);
+  arts_signal_edt(mul_gpu_guid, 2, c_tile_guid, DB_MODE_RW);
 #else
   uint64_t args[] = {tile_size, to_signal, k, c_tile_guid};
   arts_hint_t hint_0 = {arts_get_current_node(), 0};
   arts_guid_t mul_gpu_guid =
       arts_edt_create(mm_kernel_cpu, 4, args, 3, &hint_0);
-  arts_signal_edt(mul_gpu_guid, 0, a_tile_guid, DB_MODE_EW);
-  arts_signal_edt(mul_gpu_guid, 1, b_tile_guid, DB_MODE_EW);
-  arts_signal_edt(mul_gpu_guid, 2, c_tile_guid, DB_MODE_EW);
+  arts_signal_edt(mul_gpu_guid, 0, a_tile_guid, DB_MODE_RW);
+  arts_signal_edt(mul_gpu_guid, 1, b_tile_guid, DB_MODE_RW);
+  arts_signal_edt(mul_gpu_guid, 2, c_tile_guid, DB_MODE_RW);
 #endif
 }
 
@@ -210,7 +210,7 @@ void sum_mm(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     }
   }
   arts_signal_edt(done_guid, 3 + (row * num_blocks + col), c_tile_guid,
-                  DB_MODE_EW);
+                  DB_MODE_RW);
 }
 
 void finish_block_mm(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
@@ -359,20 +359,20 @@ extern "C" void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
         arts_signal_edt(
             mul_guid, 0,
             arts_guid_from_index(a_tile_guids, (i * num_blocks) + k),
-            DB_MODE_EW);
+            DB_MODE_RW);
         arts_signal_edt(
             mul_guid, 1,
             arts_guid_from_index(b_tile_guids, (k * num_blocks) + j),
-            DB_MODE_EW);
+            DB_MODE_RW);
       }
     }
   }
 
   arts_edt_create_with_guid(finish_block_mm, done_guid, 0, NULL,
                             3 + (num_blocks * num_blocks));
-  arts_signal_edt(done_guid, 0, c_mat_guid, DB_MODE_EW);
-  arts_signal_edt(done_guid, 1, a_mat_guid, DB_MODE_EW);
-  arts_signal_edt(done_guid, 2, b_mat_guid, DB_MODE_EW);
+  arts_signal_edt(done_guid, 0, c_mat_guid, DB_MODE_RW);
+  arts_signal_edt(done_guid, 1, a_mat_guid, DB_MODE_RW);
+  arts_signal_edt(done_guid, 2, b_mat_guid, DB_MODE_RW);
   start = arts_get_time_stamp();
 }
 

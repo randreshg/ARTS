@@ -76,16 +76,16 @@ void launch2_kernel_edt(arts_edt_t fun_ptr, unsigned int tile_size,
       args[0] = (i + 1 < tiles) ? tile_size : total_size - (i * tile_size);
       arts_guid_t edt_guid =
           arts_edt_create_gpu(fun_ptr, 2, args, 2, g, t, &gpu_hint);
-      arts_signal_edt(edt_guid, 0, arts_guid_from_index(a_guid, i), DB_MODE_EW);
-      arts_signal_edt(edt_guid, 1, arts_guid_from_index(b_guid, i), DB_MODE_EW);
+      arts_signal_edt(edt_guid, 0, arts_guid_from_index(a_guid, i), DB_MODE_RW);
+      arts_signal_edt(edt_guid, 1, arts_guid_from_index(b_guid, i), DB_MODE_RW);
     }
   } else {
     for (unsigned int i = 0; i < tiles; ++i) {
       args[0] = (i + 1 < tiles) ? tile_size : total_size - (i * tile_size);
       arts_guid_t edt_guid =
           arts_edt_create_gpu(fun_ptr, 1, args, 2, g, t, &gpu_hint);
-      arts_signal_edt(edt_guid, 0, arts_guid_from_index(a_guid, i), DB_MODE_EW);
-      arts_signal_edt(edt_guid, 1, arts_guid_from_index(b_guid, i), DB_MODE_EW);
+      arts_signal_edt(edt_guid, 0, arts_guid_from_index(a_guid, i), DB_MODE_RW);
+      arts_signal_edt(edt_guid, 1, arts_guid_from_index(b_guid, i), DB_MODE_RW);
     }
   }
   arts_block_for_buffer(to_signal);
@@ -124,18 +124,18 @@ void launch3_kernel_edt(arts_edt_t fun_ptr, unsigned int tile_size,
       args[0] = (i + 1 < tiles) ? tile_size : total_size - (i * tile_size);
       arts_guid_t edt_guid =
           arts_edt_create_gpu(fun_ptr, 2, args, 3, g, t, &gpu_hint);
-      arts_signal_edt(edt_guid, 0, arts_guid_from_index(a_guid, i), DB_MODE_EW);
-      arts_signal_edt(edt_guid, 1, arts_guid_from_index(b_guid, i), DB_MODE_EW);
-      arts_signal_edt(edt_guid, 2, arts_guid_from_index(c_guid, i), DB_MODE_EW);
+      arts_signal_edt(edt_guid, 0, arts_guid_from_index(a_guid, i), DB_MODE_RW);
+      arts_signal_edt(edt_guid, 1, arts_guid_from_index(b_guid, i), DB_MODE_RW);
+      arts_signal_edt(edt_guid, 2, arts_guid_from_index(c_guid, i), DB_MODE_RW);
     }
   } else {
     for (unsigned int i = 0; i < tiles; ++i) {
       args[0] = (i + 1 < tiles) ? tile_size : total_size - (i * tile_size);
       arts_guid_t edt_guid =
           arts_edt_create_gpu(fun_ptr, 1, args, 3, g, t, &gpu_hint);
-      arts_signal_edt(edt_guid, 0, arts_guid_from_index(a_guid, i), DB_MODE_EW);
-      arts_signal_edt(edt_guid, 1, arts_guid_from_index(b_guid, i), DB_MODE_EW);
-      arts_signal_edt(edt_guid, 2, arts_guid_from_index(c_guid, i), DB_MODE_EW);
+      arts_signal_edt(edt_guid, 0, arts_guid_from_index(a_guid, i), DB_MODE_RW);
+      arts_signal_edt(edt_guid, 1, arts_guid_from_index(b_guid, i), DB_MODE_RW);
+      arts_signal_edt(edt_guid, 2, arts_guid_from_index(c_guid, i), DB_MODE_RW);
     }
   }
   arts_block_for_buffer(to_signal);
