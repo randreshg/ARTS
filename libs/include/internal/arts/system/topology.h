@@ -95,7 +95,7 @@ enum arts_thread_role {
   ARTS_ROLE_MAX
 };
 
-/* Per-thread descriptor (output of get_thread_mask).
+/* Per-thread descriptor (output of arts_get_thread_mask).
  * Combines HW topology info + thread assignment.
  * Consumed by arts_runtime_private_init(). */
 struct thread_mask_s {
@@ -113,9 +113,13 @@ struct thread_mask_s {
  * entries) and, when `facts` is non-NULL, the machine's NUMA facts the same
  * traversal discovers.  Both are read from the machine once, here, so no
  * other module re-discovers the topology for itself. */
-void get_thread_mask(struct arts_config_s *config, struct thread_mask_s *flat,
-                     struct arts_numa_facts_s *facts);
-void print_mask(struct thread_mask_s *threads, unsigned int num_threads);
+void arts_get_thread_mask(struct arts_config_s *config,
+                          struct thread_mask_s *flat,
+                          struct arts_numa_facts_s *facts);
+void arts_print_mask(struct thread_mask_s *threads, unsigned int num_threads);
+/* This rank's NUMA domain count, set by arts_get_thread_mask before any
+ * runtime thread is spawned (1 until then). */
+extern unsigned int arts_numa_domain_count;
 
 #ifdef __cplusplus
 }

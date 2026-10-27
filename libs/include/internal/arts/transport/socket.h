@@ -47,6 +47,18 @@ extern "C" {
 #include <stdbool.h>
 #include <stdint.h>
 
+/* The bootstrap mesh's sockets, set up by arts_transport_setup_outgoing /
+ * _incoming before any runtime thread exists and read by the address
+ * exchange on that same thread:
+ *   arts_socket_send_list[peer * arts_socket_ports + port]  this rank's
+ *     connection to peer;
+ *   arts_socket_receive_list[port + conn * arts_socket_ports]  accepted peer
+ *     connections, in acceptance order.
+ * arts_socket_ports is the configuration's port count. */
+extern unsigned int arts_socket_ports;
+extern int *arts_socket_send_list;
+extern int *arts_socket_receive_list;
+
 int arts_get_new_socket();
 int arts_get_socket_listening(struct sockaddr_in *listening_socket,
                               unsigned int port);

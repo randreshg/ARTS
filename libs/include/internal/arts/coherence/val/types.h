@@ -121,8 +121,8 @@ enum {
   VREQ_ACT_LATE,     /* an answer for no request out: the caller raises it */
 };
 
-uint64_t val_req_compute_next(uint64_t cur, int op, uint32_t idx,
-                              uint32_t *out_act);
+uint64_t arts_val_req_compute_next(uint64_t cur, int op, uint32_t idx,
+                                   uint32_t *out_act);
 
 /*--- Per-rank DB cache ---------------------------------------------------
  * Every rank that has acquired or hosts a given DB has one of these.  The
@@ -162,6 +162,10 @@ struct arts_db_cache_s {
    * drawer's hold on the descriptor; a park's decrement and the flag's add
    * are acq_rel, so every park is ordered before the storage free. */
   _Atomic(unsigned int) buf_holds;
+  /* The installed buffer.  Orders: a slot's (arts_shared_slot_t, shared.h).
+   * An install's release carries the buffer and its bytes to every thread
+   * that loads the slot, the one way a reader reaches them: no state of this
+   * arm certifies a copy, every acquire asks its home. */
   _Atomic(arts_shared_slot_t) buffer;
   arts_lockfree_pool_t buf_freelist; /* parked buffers, drawn first */
   /* Parked buffers a draw found too small: a popper must not free a node
@@ -218,7 +222,9 @@ struct arts_db_cache_s {
    * CAS: a reader's park carries its node's fields to the CAS that takes the
    * chain, and the write axis's claim and clear each pair with the pending_rw
    * stack through a seq_cst fence (arts_db_acquire_remote_rw,
-   * arts_db_grant_take_waiters). */
+   * arts_db_grant_take_waiters).  An answer's CAS carries no fact about the
+   * bytes it answers with: its committer installed them and serves the chain
+   * it took itself, and every other reader reaches them through the slot. */
   _Atomic(uint64_t) req_state;
   struct arts_db_reader_pool_s reader_pool; /* nodes of the word's chains */
 #ifdef ARTS_WRITE_POLICY_WB

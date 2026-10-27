@@ -53,7 +53,7 @@
 #include "arts/coherence/handlers.h"
 #include "arts/counter/Preamble.h"
 #include "arts/edt.h"
-#include "arts/edt_context.h" /* current_edt + created-DB tracking */
+#include "arts/edt_context.h" /* arts_current_edt + created-DB tracking */
 #include "arts/gas/guid.h"
 #include "arts/gas/route_table.h"
 #include "arts/ooo.h"
@@ -1722,7 +1722,7 @@ void arts_db_acquire_all(struct arts_edt_s *edt) {
 }
 
 /*
- * prep_dbs — Prepare DB dependencies just before EDT execution.
+ * arts_prep_dbs — Prepare DB dependencies just before EDT execution.
  *
  * A coherent block needs nothing here: its protocol did its work at acquire.
  * In GPU builds, a CPU EDT takes the read side of every ARTS_DB_GPU block's
@@ -1731,7 +1731,7 @@ void arts_db_acquire_all(struct arts_edt_s *edt) {
  *
  * Called from arts_run_edt() after all DB pointers have been resolved.
  */
-void prep_dbs(struct arts_edt_s *edt, bool gpu) {
+void arts_prep_dbs(struct arts_edt_s *edt, bool gpu) {
   (void)gpu;
   uint32_t depc = edt->depc;
   arts_edt_dep_t *depv = (arts_edt_dep_t *)arts_get_depv(edt);
@@ -1801,7 +1801,7 @@ static arts_shared_ptr_t dep_release_pin(const struct arts_edt_s *edt,
  * release_one_dep — Single source of truth for "release one dep slot".
  *
  * Used by:
- *   - release_dbs (EDT epilogue, all dep slots)
+ *   - arts_release_dbs (EDT epilogue, all dep slots)
  *   - arts_db_release Path 2 (mid-EDT release of one depv slot)
  *
  * Per access mode:
@@ -1810,7 +1810,7 @@ static arts_shared_ptr_t dep_release_pin(const struct arts_edt_s *edt,
  *     (arts_db_release_ro / arts_db_release_rw).  The GPU kinds have no
  *     DB-level coherence — release is a no-op.
  *   - ARTS_DB_GPU subtype (GPU build, a CPU EDT's non-LC_SYNC slot): drop
- *     the staging lock's read side prep_dbs took.
+ *     the staging lock's read side arts_prep_dbs took.
  *
  * `db_pin` is the descriptor pin the slot holds (NULL for none) and is
  * consumed.  Does NOT nullify caller-visible state (guid/ptr/mode).  Callers
@@ -1899,7 +1899,7 @@ static void release_one_dep(const struct arts_dep_release_s *dep,
   /* Reaching this point means the dep is for a GPU kind (ARTS_DB_GPU_PIN,
    * ARTS_DB_GPU) or a special access mode (LC_*, MEMSET) — none of which
    * carry DB-level coherence.  The subtype is
-   * the one the acquire recorded, as prep_dbs reads it: a coherent block's
+   * the one the acquire recorded, as arts_prep_dbs reads it: a coherent block's
    * dep->ptr is buffer data, with no descriptor before it. */
   arts_db_types_t db_subtype = dep->subtype;
 
@@ -1907,7 +1907,8 @@ static void release_one_dep(const struct arts_dep_release_s *dep,
              GET_DB_MODE_NAME(access_mode), GET_DB_TYPE_NAME(db_subtype));
 
 #ifdef ARTS_USE_GPU
-  /* The read side prep_dbs took, under exactly the condition it took it. */
+  /* The read side arts_prep_dbs took, under exactly the condition it took
+   * it. */
   if (!gpu && access_mode != DB_MODE_LC_SYNC && db_subtype == ARTS_DB_GPU &&
       dep->guid != NULL_GUID && dep->ptr != NULL) {
     struct arts_db_s *db = ((struct arts_db_s *)dep->ptr) - 1;
@@ -1923,10 +1924,10 @@ static void release_one_dep(const struct arts_dep_release_s *dep,
 }
 
 /*
- * release_dbs — Release DB dependencies after EDT execution completes.
+ * arts_release_dbs — Release DB dependencies after EDT execution completes.
  * Thin loop over depv calling the single-source-of-truth release_one_dep.
  */
-void release_dbs(struct arts_edt_s *edt, bool gpu) {
+void arts_release_dbs(struct arts_edt_s *edt, bool gpu) {
   uint32_t depc = edt->depc;
   arts_edt_dep_t *depv = (arts_edt_dep_t *)arts_get_depv(edt);
   for (uint32_t i = 0; i < depc; i++) {
@@ -1955,7 +1956,7 @@ void release_dbs(struct arts_edt_s *edt, bool gpu) {
  * with NO buffer ref to drop (auto_acquire never called acquire_buf).  The
  * creator of a GPU kind (ARTS_DB_GPU_PIN, ARTS_DB_GPU) holds nothing to
  * release: no coherence hold, and no side of a GPU staging lock, which only
- * prep_dbs takes.
+ * arts_prep_dbs takes.
  */
 static void release_one_created(arts_shared_ptr_t h) {
   struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(h);
@@ -1980,7 +1981,7 @@ static void release_one_created(arts_shared_ptr_t h) {
  * Both paths funnel through release_one_dep / release_one_created so the
  * per-mode, per-subtype and route-table-ref rules live in exactly one
  * place.  The slot/entry is marked released after the unwind so the
- * epilogue (release_dbs / arts_release_created_dbs) skips it cleanly.
+ * epilogue (arts_release_dbs / arts_release_created_dbs) skips it cleanly.
  */
 void arts_db_release(arts_guid_t guid, arts_db_access_mode_t mode) {
   /* The block, not the mode, decides what either path releases. */
@@ -2023,10 +2024,10 @@ void arts_db_release(arts_guid_t guid, arts_db_access_mode_t mode) {
    * Releasing the internal-mode slot first would retire the acquisition's
    * aliases while the acquisition itself stayed held, so the bytes would reach
    * the home later than the program asked. */
-  if (!current_edt) {
+  if (!arts_current_edt) {
     return;
   }
-  struct arts_edt_s *edt = current_edt;
+  struct arts_edt_s *edt = arts_current_edt;
   arts_edt_dep_t *depv = (arts_edt_dep_t *)arts_get_depv(edt);
   uint32_t depc = edt->depc;
   uint32_t owner = depc;
@@ -2050,7 +2051,7 @@ void arts_db_release(arts_guid_t guid, arts_db_access_mode_t mode) {
   if (owner == depc) {
     return;
   }
-  /* The flag prep_dbs ran this EDT's slots with. */
+  /* The flag arts_prep_dbs ran this EDT's slots with. */
   bool gpu = edt->edt_type == ARTS_EDT_GPU;
   struct arts_dep_release_s dep = dep_release_of(edt, depv, owner);
   release_one_dep(&dep, dep_release_pin(edt, owner), gpu);

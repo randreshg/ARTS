@@ -3,15 +3,15 @@
  * arts_lockfree_pool_t — DWCAS tagged-head Treiber-stack object pool.
  *
  * Layout: 16-byte head = (arts_lf_link_t *ptr, uintptr_t tag).  Every push
- * and every fetch increments the tag, so a fetch whose CAS compares a head
+ * and every pop increments the tag, so a pop whose CAS compares a head
  * that was popped and pushed back since its load (ABA) sees the tag differ
  * and retries.  Lifetime invariant: no node is freed while another thread
- * can pop it — fetch/release transfer ownership only, and only destroy,
- * which no other thread may overlap, frees.  This makes the batch_fetch
- * chain-walk safe (no use-after-free on `next`).
+ * can pop it — pop/release transfer ownership only, and only destroy,
+ * which no other thread may overlap, frees.  This is what makes a pop's read
+ * of the top node's link safe (no use-after-free on `next`).
  *
  * Orders: a release CASes the head with release, publishing the node and
- * what its owner wrote into it; a fetch loads and CASes the head with
+ * what its owner wrote into it; a pop loads and CASes the head with
  * acquire, taking them.  The node links are relaxed: the head's pair
  * carries them.
  *
@@ -98,67 +98,31 @@ static inline void arts_lf_pool_release(arts_lockfree_pool_t *p, void *node) {
   }
 }
 
-/* ── Batch primitives ───────────────────────────────────────────────────── */
+/* ── Single-node pop ───────────────────────────────────────────────────── */
 
-/** Try to detach up to `want` nodes from the top of the pool.  Walks the
- *  chain to determine the tail (or end), then DWCAS the new head.  On
- *  success, returns chain head and writes the actual count to *got.
- *  Returns NULL when the pool is empty (sets *got = 0).
- *
- *  Caller becomes the owner of the returned chain — must either re-push
- *  it, install it elsewhere, or free each node once no other thread can pop
- *  from the pool. */
-static inline arts_lf_link_t *arts_lf_pool_batch_fetch(arts_lockfree_pool_t *p,
-                                                       uint32_t want,
-                                                       uint32_t *got) {
-  if (got) {
-    *got = 0;
-  }
-  if (want == 0) {
-    return NULL;
-  }
+/** Pop one recycled node, detached, or NULL if the pool is empty: the caller
+ *  allocates on a miss.  The CAS's failure order stays acquire: a retry reads
+ *  the link of the head it reloaded, so the reload must synchronize with the
+ *  push that installed that head; a relaxed one could read an earlier value
+ *  of the link (a previous pop's detach) and cut the pool short. */
+static inline arts_lf_link_t *
+arts_lf_pool_pop_or_null(arts_lockfree_pool_t *p) {
   arts_lf_pool_head_t cur =
       atomic_load_explicit(&p->head, memory_order_acquire);
   for (;;) {
-    if (!cur.ptr) {
-      if (got) {
-        *got = 0;
-      }
+    if (cur.ptr == NULL) {
       return NULL;
     }
-    /* Walk up to `want` nodes: safe because no node is freed while another
-     * thread can pop it. */
-    arts_lf_link_t *tail = cur.ptr;
-    uint32_t taken = 1;
-    arts_lf_link_t *next_after =
-        atomic_load_explicit(&tail->next, memory_order_relaxed);
-    while (taken < want && next_after) {
-      tail = next_after;
-      next_after = atomic_load_explicit(&tail->next, memory_order_relaxed);
-      taken++;
-    }
-    arts_lf_pool_head_t newh = {next_after, cur.tag + 1};
+    arts_lf_link_t *next =
+        atomic_load_explicit(&cur.ptr->next, memory_order_relaxed);
+    arts_lf_pool_head_t newh = {next, cur.tag + 1};
     if (atomic_compare_exchange_weak_explicit(
             &p->head, &cur, newh, memory_order_acquire, memory_order_acquire)) {
-      /* Detach the chain (so caller doesn't accidentally walk into the
-       * remaining pool nodes). */
-      atomic_store_explicit(&tail->next, NULL, memory_order_relaxed);
-      if (got) {
-        *got = taken;
-      }
+      atomic_store_explicit(&cur.ptr->next, NULL, memory_order_relaxed);
       return cur.ptr;
     }
-    /* cur reloaded — retry walk from new top. */
+    /* cur reloaded — retry from the new top. */
   }
-}
-
-/** Pop exactly one recycled node, or NULL if the pool is empty: the caller
- *  allocates on a miss.  Built on batch_fetch(1) so it shares the DWCAS
- *  ABA-safe pop. */
-static inline arts_lf_link_t *
-arts_lf_pool_pop_or_null(arts_lockfree_pool_t *p) {
-  uint32_t got = 0;
-  return arts_lf_pool_batch_fetch(p, 1, &got);
 }
 
 #ifdef __cplusplus

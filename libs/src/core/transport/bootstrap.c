@@ -37,6 +37,7 @@
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
 #include "arts/transport/net.h"
+#include "arts/transport/socket.h"
 
 #include <errno.h>
 #include <stdint.h>
@@ -47,17 +48,13 @@
 #include "arts/system/print.h"
 #include "arts/utils/malloc.h"
 
-/* The bootstrap mesh's sockets, owned by socket.c.  The exchange rides them
- * once, while the runtime is otherwise quiescent (this runs before any worker
- * or progress thread is spawned, so no live traffic contends for these fds),
- * and consumes exactly one address frame per peer connection; afterward the
- * sockets carry no data and stay open only as liveness sentinels.
- *   remote_socket_send_list[peer*ports + port] — this rank's connection to peer
- *   remote_socket_receive_list[port + conn*ports] — accepted peer connections,
- *     in ACCEPTANCE order (not rank order), hence the embedded-rank demux. */
-extern int *remote_socket_send_list;
-extern int *remote_socket_receive_list;
-extern unsigned int ports;
+/* The bootstrap mesh's sockets (socket.h).  The exchange rides them once,
+ * while the runtime is otherwise quiescent (this runs before any worker or
+ * progress thread is spawned, so no live traffic contends for these fds), and
+ * consumes exactly one address frame per peer connection; afterward the
+ * sockets carry no data and stay open only as liveness sentinels.  The
+ * receive list is in ACCEPTANCE order (not rank order), hence the
+ * embedded-rank demux. */
 
 static bool xfer_write_all(int fd, const void *buf, size_t len) {
   const uint8_t *p = (const uint8_t *)buf;
@@ -116,7 +113,7 @@ void arts_net_exchange_addresses(void) {
     if (r == self) {
       continue;
     }
-    int fd = remote_socket_send_list[(size_t)r * ports + 0];
+    int fd = arts_socket_send_list[(size_t)r * arts_socket_ports + 0];
     if (!xfer_write_all(fd, &out, frame_bytes)) {
       ARTS_ERROR("arts_net_exchange: send of address to rank %u failed: %s", r,
                  strerror(errno));
@@ -127,7 +124,7 @@ void arts_net_exchange_addresses(void) {
    * the embedded rank (accept order != rank order). */
   unsigned peers = n - 1;
   for (unsigned c = 0; c < peers; c++) {
-    int fd = remote_socket_receive_list[(size_t)c * ports + 0];
+    int fd = arts_socket_receive_list[(size_t)c * arts_socket_ports + 0];
     struct arts_net_addr_frame_s in;
     if (!xfer_read_all(fd, &in, offsetof(struct arts_net_addr_frame_s, addr))) {
       ARTS_ERROR("arts_net_exchange: address frame header recv failed: %s",

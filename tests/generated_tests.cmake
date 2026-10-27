@@ -74,7 +74,7 @@ add_pure_unit_src(protocol_abi_asserts TIMEOUT 60)
 if(ARTS_TEST_REFERENCE_TREE)
 add_pure_unit_src(lf_lifo_drain PASS_REGEX "PASS lf_lifo_drain" TIMEOUT 60)
 add_pure_unit_src(lf_pool_dwcas PASS_REGEX "PASS lf_pool_dwcas" TIMEOUT 60)
-add_pure_unit_src(lf_pool_batch PASS_REGEX "PASS lf_pool_batch" TIMEOUT 60)
+add_pure_unit_src(lf_pool_churn PASS_REGEX "PASS lf_pool_churn" TIMEOUT 60)
 add_pure_unit_src(mpsc_drain_remaining PASS_REGEX "PASS mpsc_drain_remaining" TIMEOUT 60)
 add_pure_unit_src(mpsc_rethread_stub PASS_REGEX "PASS mpsc_rethread_stub" TIMEOUT 60)
 add_pure_unit_src(mpsc_transient_empty PASS_REGEX "PASS mpsc_transient_empty" TIMEOUT 60)
@@ -139,7 +139,7 @@ add_pure_unit_src(rank_u64_map_roundtrip SOURCES ${CMAKE_SOURCE_DIR}/libs/src/co
 add_pure_unit_src(rank_u64_map_advance SOURCES ${CMAKE_SOURCE_DIR}/libs/src/core/coherence/rank_u64_map.c PASS_REGEX "PASS rank_u64_map_advance" TIMEOUT 60)
 # An interface entry with no address (which getifaddrs may return) is skipped
 # by the rank-matching scan rather than dereferenced.
-add_pure_unit_src(socket_set_ip_null_ifa LIBS ${CMAKE_DL_LIBS} PASS_REGEX "PASS socket_set_ip_null_ifa" TIMEOUT 60)
+add_pure_unit_src(socket_set_ip_null_ifa PASS_REGEX "PASS socket_set_ip_null_ifa" TIMEOUT 60)
 add_pure_unit_src(socket_helpers PASS_REGEX "PASS socket_helpers" TIMEOUT 60)
 add_pure_unit_src(socket_net_interface_remap PASS_REGEX "PASS socket_net_interface_remap" TIMEOUT 60)
 add_pure_unit_src(launcher_shell_quote PASS_REGEX "PASS launcher_shell_quote" TIMEOUT 60)
@@ -988,9 +988,12 @@ if(_c)
         list(APPEND _gate 1:NUM_RO_COMBINE_WINDOW=1 1:NUM_RO_COMBINE_JOINED=1)
     endif()
 
-    # join and gate hold every read request: join's for 100 ms, so its
-    # answer serves both readers; gate's past the run, so the write turn
-    # serves them.
+    # join and gate hold every read request.  join's leaves once the EDT
+    # bodies runnable at its hold have returned: the one that sent it, after
+    # the next reader parked on it, and on VAL the first reader's, after the
+    # third parked on the next window; so each later reader parks on the
+    # request out whatever the timing.  gate's are held past the run, so the
+    # write turn serves them.
     set(_shapes two home recall claim pub)
     if(ARTS_DEBUG_INJECTION)
         list(APPEND _shapes join)
@@ -998,7 +1001,7 @@ if(_c)
             list(APPEND _shapes gate)
         endif()
     endif()
-    set(_hook_join "ARTS_REQUEST_DELAY_MS=100:ro")
+    set(_hook_join "ARTS_REQUEST_DELAY_MS=60000:drain")
     set(_hook_gate "ARTS_REQUEST_DELAY_MS=60000:ro")
     foreach(_v 2n_9w_1p 2n_8w_2p)
         arts_test_cfg(_cfg ${_v})

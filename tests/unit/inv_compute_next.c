@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * INV inv_cache_compute_next / inv_dir_compute_next — the PURE transition
+ * INV arts_inv_cache_compute_next / inv_dir_compute_next — the PURE transition
  * functions over the packed reader word [ro|inflight|head_ro] and the packed
  * directory word [round_open|acks].
  *
@@ -17,7 +17,10 @@
  *   - a landed reply grabs the whole chain in that same atom (head -> 0);
  *   - the kill mark (REQ -> REQ_KILL) still serves its cohort once, then owes
  *     the round an ack;
- *   - a reply with no fetch open is a superseded orphan and DROPs;
+ *   - a reply with no fetch open answers no request: LATE, which the caller
+ *     raises;
+ *   - a write request's give-back opens a fetch for its riders, leaves them to
+ *     a fetch already out, and is raised when it finds them on a valid copy;
  *   - the chain head carries the reader pool's full index width, and a head
  *     with every bit set leaves the request bits beside it untouched;
  *
@@ -63,7 +66,7 @@ static int g_fail;
 static void expect_cache(const char *what, uint64_t cur, int op, uint32_t idx,
                          uint64_t want_next, uint32_t want_act) {
   uint32_t act = 0xFFFFFFFFu;
-  uint64_t next = inv_cache_compute_next(cur, op, idx, &act);
+  uint64_t next = arts_inv_cache_compute_next(cur, op, idx, &act);
   /* The read plane's checks ignore the request bits (the parity is the
    * sender's); expect_req below checks them whole. */
   if ((next & ~INV_CACHE_REQ_MASK) != want_next || act != want_act) {
@@ -79,7 +82,7 @@ static void expect_cache(const char *what, uint64_t cur, int op, uint32_t idx,
 static void expect_req(const char *what, uint64_t cur, int op, uint32_t idx,
                        uint64_t want_next, uint32_t want_act) {
   uint32_t act = 0xFFFFFFFFu;
-  uint64_t next = inv_cache_compute_next(cur, op, idx, &act);
+  uint64_t next = arts_inv_cache_compute_next(cur, op, idx, &act);
   if (next != want_next || act != want_act) {
     (void)fprintf(stderr,
                   "FAIL inv_compute_next: %s — got word %016llx act %u, "
@@ -248,6 +251,27 @@ int main(void) {
     expect_req("a grant with no write request out is late",
                W(INV_RO_IDLE, 0u, ME, 0u, 0u, 0u), INV_CACHE_OP_RW_CLEAR, 0u,
                W(INV_RO_IDLE, 0u, ME, 0u, 0u, 0u), INV_CACHE_ACT_LATE);
+
+    /* The write request's give-back: riders with no fetch out get one; a
+     * fetch already out keeps them; riders on a valid copy are a state no
+     * transition makes (a reader never parks on one, and every way into a
+     * valid copy takes the chain), so the caller raises it. */
+    expect_req(
+        "a give-back opens a fetch for its riders",
+        W(INV_RO_IDLE, 0u, ME, INV_RW_OPEN, 0u, 0u), INV_CACHE_OP_RW_GIVE, 0u,
+        W(INV_RO_REQ, 1u, ME, INV_RW_IDLE, 1u, 0u), INV_CACHE_ACT_SEND_RO);
+    expect_req("a give-back with no riders only closes the OPEN",
+               W(INV_RO_IDLE, 0u, 0u, INV_RW_OPEN, 0u, 0u),
+               INV_CACHE_OP_RW_GIVE, 0u,
+               W(INV_RO_IDLE, 0u, 0u, INV_RW_IDLE, 0u, 0u), INV_CACHE_ACT_NONE);
+    expect_req("a give-back leaves its riders to the fetch already out",
+               W(INV_RO_REQ, 1u, ME, INV_RW_OPEN, 1u, 0u), INV_CACHE_OP_RW_GIVE,
+               0u, W(INV_RO_REQ, 1u, ME, INV_RW_IDLE, 1u, 0u),
+               INV_CACHE_ACT_NONE);
+    expect_req(
+        "a give-back that finds riders on a valid copy is raised",
+        W(INV_RO_VALID, 0u, ME, INV_RW_OPEN, 0u, 0u), INV_CACHE_OP_RW_GIVE, 0u,
+        W(INV_RO_VALID, 0u, ME, INV_RW_OPEN, 0u, 0u), INV_CACHE_ACT_LATE);
 
     /* A head with every bit of the field set, beside set request bits. */
     const uint32_t WIDE = (uint32_t)INV_CACHE_HEAD_MASK;

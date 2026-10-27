@@ -75,21 +75,21 @@ static inline void arts_socket_set_nodelay(int fd) {
 }
 
 struct arts_config_s *arts_global_message_table;
-unsigned int ports;
+unsigned int arts_socket_ports;
 // SOCKETS!
-int *remote_socket_send_list;
-struct sockaddr_in *remote_server_send_list;
-bool *remote_connection_alive;
+int *arts_socket_send_list;
+static struct sockaddr_in *remote_server_send_list;
+static bool *remote_connection_alive;
 
-int *local_socket_receive;
-int *remote_socket_receive_list;
-struct pollfd *poll_incoming;
+static int *local_socket_receive;
+int *arts_socket_receive_list;
+static struct pollfd *poll_incoming;
 
-char *ip_list;
+static char *ip_list;
 
 void arts_transport_set_config(struct arts_config_s *config) {
   arts_global_message_table = config;
-  ports = config->port_count;
+  arts_socket_ports = config->port_count;
 }
 /* Resolve `host_name` to a printable IPv4 address in `ip` (>= 100 bytes).
  * Returns 0, or getaddrinfo's error code; the caller decides what a failure
@@ -473,7 +473,7 @@ void arts_socket_sentinel_arm(void) {
     return;
   }
   if (local_socket_receive) {
-    for (int z = 0; z < (int)ports; z++) {
+    for (int z = 0; z < (int)arts_socket_ports; z++) {
       if (local_socket_receive[z] > 0) {
         close(local_socket_receive[z]);
         local_socket_receive[z] = 0;
@@ -505,7 +505,8 @@ bool arts_socket_sentinel_check(void) {
                            memory_order_acquire)) {
     return false;
   }
-  int n = (int)(arts_global_message_table->table_length - 1) * (int)ports;
+  int n = (int)(arts_global_message_table->table_length - 1) *
+          (int)arts_socket_ports;
   if (n <= 0) {
     return false;
   }
@@ -564,27 +565,27 @@ void arts_socket_cleanup() {
    * enters the same idempotent shutdown. */
   if (arts_global_message_table != NULL) {
     int count = (int)arts_global_message_table->table_length;
-    if (remote_socket_receive_list) {
-      for (int i = 0; i < (count - 1) * (int)ports; i++) {
-        if (remote_socket_receive_list[i] >= 0) {
-          close(remote_socket_receive_list[i]);
+    if (arts_socket_receive_list) {
+      for (int i = 0; i < (count - 1) * (int)arts_socket_ports; i++) {
+        if (arts_socket_receive_list[i] >= 0) {
+          close(arts_socket_receive_list[i]);
         }
       }
     }
-    if (remote_socket_send_list) {
-      for (int i = 0; i < count * (int)ports; i++) {
-        if (i / (int)ports != (int)arts_global_rank_id &&
-            remote_socket_send_list[i] >= 0) {
-          close(remote_socket_send_list[i]);
+    if (arts_socket_send_list) {
+      for (int i = 0; i < count * (int)arts_socket_ports; i++) {
+        if (i / (int)arts_socket_ports != (int)arts_global_rank_id &&
+            arts_socket_send_list[i] >= 0) {
+          close(arts_socket_send_list[i]);
         }
       }
     }
   }
   arts_free(ip_list);
-  arts_free(remote_socket_send_list);
+  arts_free(arts_socket_send_list);
   arts_free(remote_server_send_list);
   arts_free(remote_connection_alive);
-  arts_free(remote_socket_receive_list);
+  arts_free(arts_socket_receive_list);
   arts_free(poll_incoming);
   arts_free(local_socket_receive);
 }
@@ -612,25 +613,28 @@ static unsigned int arts_startup_budget_ms(void) {
 
 static inline bool arts_transport_connect(int rank, unsigned int port) {
 
-  if (!remote_connection_alive[(rank * ports) + port]) {
-    int res = connect(remote_socket_send_list[(rank * ports) + port],
-                      (struct sockaddr *)(remote_server_send_list +
-                                          ((size_t)rank * ports) + port),
-                      sizeof(struct sockaddr_in));
+  if (!remote_connection_alive[(rank * arts_socket_ports) + port]) {
+    int res =
+        connect(arts_socket_send_list[(rank * arts_socket_ports) + port],
+                (struct sockaddr *)(remote_server_send_list +
+                                    ((size_t)rank * arts_socket_ports) + port),
+                sizeof(struct sockaddr_in));
     if (res < 0) {
-      remote_connection_alive[(rank * ports) + port] = false;
+      remote_connection_alive[(rank * arts_socket_ports) + port] = false;
 
-      close(remote_socket_send_list[(rank * ports) + port]);
-      remote_socket_send_list[(rank * ports) + port] = arts_get_new_socket();
+      close(arts_socket_send_list[(rank * arts_socket_ports) + port]);
+      arts_socket_send_list[(rank * arts_socket_ports) + port] =
+          arts_get_new_socket();
 
       /* The peer may not be listening yet: ranks of one job start with a
        * skew the launcher does not bound, so retry until the startup budget
        * is spent. */
       int max_retries = (int)(arts_startup_budget_ms() / 100u);
       int retry_count = 0;
-      while (connect(remote_socket_send_list[(rank * ports) + port],
+      while (connect(arts_socket_send_list[(rank * arts_socket_ports) + port],
                      (struct sockaddr *)(remote_server_send_list +
-                                         ((size_t)rank * ports) + port),
+                                         ((size_t)rank * arts_socket_ports) +
+                                         port),
                      sizeof(struct sockaddr_in)) < 0) {
         /* Stop retrying once this rank's shutdown has begun.  During startup
          * only the signal watcher begins one, and it reports the signal. */
@@ -639,8 +643,8 @@ static inline bool arts_transport_connect(int rank, unsigned int port) {
           return false;
         }
         if (++retry_count >= max_retries) {
-          struct sockaddr_in *addr =
-              remote_server_send_list + ((size_t)rank * ports) + port;
+          struct sockaddr_in *addr = remote_server_send_list +
+                                     ((size_t)rank * arts_socket_ports) + port;
           /* Loud: the caller exits the rank on this, and a rank that dies
            * before its fabric is up leaves no other trace of why. */
           ARTS_WARN("arts_transport_connect: rank %u could not connect to "
@@ -651,17 +655,18 @@ static inline bool arts_transport_connect(int rank, unsigned int port) {
                     strerror(errno));
           return false;
         }
-        close(remote_socket_send_list[(rank * ports) + port]);
-        remote_socket_send_list[(rank * ports) + port] = arts_get_new_socket();
+        close(arts_socket_send_list[(rank * arts_socket_ports) + port]);
+        arts_socket_send_list[(rank * arts_socket_ports) + port] =
+            arts_get_new_socket();
         usleep(100000);
       }
 
-      remote_connection_alive[(rank * ports) + port] = true;
+      remote_connection_alive[(rank * arts_socket_ports) + port] = true;
 
       return true;
     }
 
-    remote_connection_alive[(rank * ports) + port] = true;
+    remote_connection_alive[(rank * arts_socket_ports) + port] = true;
   }
 
   return true;
@@ -679,16 +684,16 @@ bool arts_transport_setup_incoming() {
   socklen_t s_length = sizeof(struct sockaddr);
   int count = (int)(arts_global_message_table->table_length - 1);
 
-  remote_socket_receive_list =
-      (int *)arts_malloc(sizeof(int) * (size_t)(count + 1) * ports);
-  poll_incoming =
-      (struct pollfd *)arts_malloc(sizeof(struct pollfd) * (count + 1) * ports);
+  arts_socket_receive_list =
+      (int *)arts_malloc(sizeof(int) * (size_t)(count + 1) * arts_socket_ports);
+  poll_incoming = (struct pollfd *)arts_malloc(sizeof(struct pollfd) *
+                                               (count + 1) * arts_socket_ports);
 
   struct sockaddr_in test;
 
-  struct sockaddr_in *local_server_addr =
-      (struct sockaddr_in *)arts_calloc(ports, sizeof(struct sockaddr_in));
-  local_socket_receive = (int *)arts_calloc(ports, sizeof(int));
+  struct sockaddr_in *local_server_addr = (struct sockaddr_in *)arts_calloc(
+      arts_socket_ports, sizeof(struct sockaddr_in));
+  local_socket_receive = (int *)arts_calloc(arts_socket_ports, sizeof(int));
 
   int i_set_option;
   for (i = 0; i < (int)arts_global_message_table->port_count; i++) {
@@ -753,7 +758,7 @@ bool arts_transport_setup_incoming() {
     if (arts_global_message_table->my_rank ==
         arts_global_message_table->table[i].rank) {
       for (j = 0; j < count; j++) {
-        for (int z = 0; z < (int)ports; z++) {
+        for (int z = 0; z < (int)arts_socket_ports; z++) {
           s_length = sizeof(struct sockaddr_in);
 
           /* Poll with the startup budget before the blocking accept, so a
@@ -771,23 +776,24 @@ bool arts_transport_setup_incoming() {
             return false;
           }
 
-          remote_socket_receive_list[z + (j * ports)] = accept(
+          arts_socket_receive_list[z + (j * arts_socket_ports)] = accept(
               local_socket_receive[z], (struct sockaddr *)&test, &s_length);
-          if (remote_socket_receive_list[z + (j * ports)] < 0) {
+          if (arts_socket_receive_list[z + (j * arts_socket_ports)] < 0) {
             ARTS_WARN("arts_transport_setup_incoming: rank %u accept failed "
                       "on port index %d: %s",
                       arts_global_rank_id, z, strerror(errno));
             return false;
           }
-          arts_socket_set_nodelay(remote_socket_receive_list[z + (j * ports)]);
+          arts_socket_set_nodelay(
+              arts_socket_receive_list[z + (j * arts_socket_ports)]);
 
-          poll_incoming[z + (j * ports)].fd =
-              remote_socket_receive_list[z + (j * ports)];
-          poll_incoming[z + (j * ports)].events = POLLIN;
+          poll_incoming[z + (j * arts_socket_ports)].fd =
+              arts_socket_receive_list[z + (j * arts_socket_ports)];
+          poll_incoming[z + (j * arts_socket_ports)].events = POLLIN;
         }
       }
     } else {
-      for (int z = 0; z < (int)ports; z++) {
+      for (int z = 0; z < (int)arts_socket_ports; z++) {
         if (!arts_transport_connect(i, z)) {
           return false;
         }
@@ -803,12 +809,12 @@ void arts_transport_setup_outgoing() {
   int j;
   int count = (int)arts_global_message_table->table_length;
 
-  remote_socket_send_list =
-      (int *)arts_malloc(sizeof(int) * (size_t)count * ports);
+  arts_socket_send_list =
+      (int *)arts_malloc(sizeof(int) * (size_t)count * arts_socket_ports);
   remote_server_send_list = (struct sockaddr_in *)arts_calloc(
-      (size_t)count * ports, sizeof(struct sockaddr_in));
+      (size_t)count * arts_socket_ports, sizeof(struct sockaddr_in));
   remote_connection_alive =
-      (bool *)arts_calloc((size_t)count * ports, sizeof(bool));
+      (bool *)arts_calloc((size_t)count * arts_socket_ports, sizeof(bool));
 
   for (i = 0; i < count; i++) {
     unsigned int *target_ports = arts_global_message_table->table[i].ports;
@@ -816,10 +822,11 @@ void arts_transport_setup_outgoing() {
     ARTS_INFO("arts_transport_setup_outgoing: node %d ip_list='%s' port=%u", i,
               ip_list + ((ptrdiff_t)100 * i), target_ports[0]);
 
-    for (j = 0; j < (int)ports; j++) {
-      remote_socket_send_list[(i * ports) + j] = arts_get_socket_outgoing(
-          remote_server_send_list + ((size_t)i * ports) + j, target_ports[j],
-          inet_addr(ip_list + ((ptrdiff_t)100 * i)));
+    for (j = 0; j < (int)arts_socket_ports; j++) {
+      arts_socket_send_list[(i * arts_socket_ports) + j] =
+          arts_get_socket_outgoing(
+              remote_server_send_list + ((size_t)i * arts_socket_ports) + j,
+              target_ports[j], inet_addr(ip_list + ((ptrdiff_t)100 * i)));
     }
   }
 }

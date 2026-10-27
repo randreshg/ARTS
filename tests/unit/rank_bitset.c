@@ -1,20 +1,21 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * rank_bitset set / for_each / init / destroy (for_each snapshot
+ * rank_bitset set / cursor walk / init / destroy (the walk's snapshot
  * vs concurrent set; first-set-wins).  The bitset is a home's per-block rank
  * set: the destroy fan-out roster, and the arm's sharer or retainer set where
  * it keeps one.
  *
  * Each word covers 64 ranks; nwords == (nranks+63)/64.  arts_rank_bitset_set
  * returns true IFF the bit was previously clear (first-time set).
- * arts_rank_bitset_for_each invokes cb(rank,ctx) once per set bit (per-word
- * acquire snapshot — the contract requires no concurrent set DURING iteration,
+ * arts_rank_bitset_next yields each set bit's rank once (per-word acquire
+ * snapshot — the contract requires no concurrent set DURING the walk,
  * satisfied at destroy fan-out by the slot-absent invariant).
  *
  * Parts:
- *   1. init sizes: nranks 1/63/64/65/127/128/130 → nwords correct.
- *   2. Word-boundary set + for_each: set ranks {0,1,62,63,64,65,126,127} on a
- *      130-rank set; for_each visits EXACTLY those ranks, each once, no
+ *   1. init sizes: nranks 1/63/64/65/127/128/130 → nwords correct, and the
+ *      walk of the empty set yields nothing.
+ *   2. Word-boundary set + walk: set ranks {0,1,62,63,64,65,126,127} on a
+ *      130-rank set; the walk visits EXACTLY those ranks, each once, no
  *      duplicates, no spurious ranks (catches off-by-one across the 63/64 and
  *      127/128 word boundaries).
  *   3. First-set-wins single-thread: set(r)->true, set(r)->false.
@@ -23,7 +24,7 @@
  *      (atomic_fetch_or first-setter).  Repeated across rounds + ranks on both
  *      sides of a word boundary.
  *   6. Concurrency: K threads each set a DISTINCT rank (spanning word
- *      boundaries) → every set returns true once, for_each (after join) visits
+ *      boundaries) → every set returns true once, the walk (after join) visits
  *      every rank exactly once.
  *
  * Compiled with the one definition (coherence/rank_bitset.c) and the
@@ -48,14 +49,17 @@ struct visit_ctx {
   int count;
   int bad;
 };
-static void visit_cb(unsigned int rank, void *ctx) {
-  struct visit_ctx *v = (struct visit_ctx *)ctx;
-  if (rank >= (unsigned int)(NRANKS + 8)) {
-    v->bad = 1;
-    return;
+static void visit_all(const struct arts_rank_bitset_s *r, struct visit_ctx *v) {
+  struct arts_rank_bitset_cursor_s c = arts_rank_bitset_cursor(r);
+  unsigned int rank;
+  while (arts_rank_bitset_next(&c, &rank)) {
+    if (rank >= (unsigned int)(NRANKS + 8)) {
+      v->bad = 1;
+      continue;
+    }
+    v->seen[rank]++;
+    v->count++;
   }
-  v->seen[rank]++;
-  v->count++;
 }
 
 static int part1_sizes(void) {
@@ -70,6 +74,14 @@ static int part1_sizes(void) {
     if (r.nwords != cases[i].nwords || r.nranks != cases[i].nranks) {
       (void)fprintf(stderr, "FAIL rank_bitset: init(%u) nwords %u != %u\n",
                     cases[i].nranks, r.nwords, cases[i].nwords);
+      rc = 1;
+    }
+    struct arts_rank_bitset_cursor_s c = arts_rank_bitset_cursor(&r);
+    unsigned int rank;
+    if (arts_rank_bitset_next(&c, &rank)) {
+      (void)fprintf(stderr,
+                    "FAIL rank_bitset: an empty %u-rank set yields %u\n",
+                    cases[i].nranks, rank);
       rc = 1;
     }
     arts_rank_bitset_destroy(&r);
@@ -92,10 +104,10 @@ static int part2_boundaries(void) {
   }
   struct visit_ctx v;
   memset(&v, 0, sizeof(v));
-  arts_rank_bitset_for_each(&r, visit_cb, &v);
+  visit_all(&r, &v);
   if (v.bad || v.count != n) {
     (void)fprintf(
-        stderr, "FAIL rank_bitset: for_each visited %d (expected %d) bad=%d\n",
+        stderr, "FAIL rank_bitset: the walk visited %d (expected %d) bad=%d\n",
         v.count, n, v.bad);
     rc = 1;
   }
@@ -147,7 +159,7 @@ static int part4_oob(void) {
   /* No bits set by OOB calls. */
   struct visit_ctx v;
   memset(&v, 0, sizeof(v));
-  arts_rank_bitset_for_each(&r, visit_cb, &v);
+  visit_all(&r, &v);
   if (v.count != 0) {
     (void)fprintf(stderr, "FAIL rank_bitset: OOB set added %d bits\n", v.count);
     rc = 1;
@@ -206,7 +218,7 @@ static int part5_same_rank(void) {
   return rc;
 }
 
-/* --- Concurrency: distinct ranks → all set, for_each visits each once. --- */
+/* --- Concurrency: distinct ranks → all set, the walk visits each once. --- */
 static _Atomic(int) g_distinct_true;
 static void *distinct_setter(void *arg) {
   unsigned int rank = (unsigned int)(uintptr_t)arg;
@@ -244,9 +256,9 @@ static int part6_distinct(void) {
     }
     struct visit_ctx v;
     memset(&v, 0, sizeof(v));
-    arts_rank_bitset_for_each(&g_r, visit_cb, &v);
+    visit_all(&g_r, &v);
     if (v.count != THREADS || v.bad) {
-      (void)fprintf(stderr, "FAIL rank_bitset: distinct for_each count %d\n",
+      (void)fprintf(stderr, "FAIL rank_bitset: distinct walk count %d\n",
                     v.count);
       rc = 1;
     }
@@ -279,7 +291,7 @@ int main(void) {
   if (part6_distinct() != 0) {
     return 1;
   }
-  printf("PASS rank_bitset: sizes, word-boundary for_each single-visit, "
+  printf("PASS rank_bitset: sizes, word-boundary walk single-visit, "
          "first-set-wins, OOB reject, %d-thread same-rank exactly-once + "
          "distinct-rank all-set\n",
          THREADS);

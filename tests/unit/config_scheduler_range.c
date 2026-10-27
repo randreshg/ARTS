@@ -70,30 +70,30 @@ static int load_refused(unsigned int index) {
 }
 
 int main(void) {
-  if (scheduler_loop_count < 3u) {
+  if (arts_scheduler_loop_count < 3u) {
     printf("FAIL config_scheduler_range: the table has %u loops, fewer than "
            "the three every build carries\n",
-           scheduler_loop_count);
+           arts_scheduler_loop_count);
     return 1;
   }
-  int last = load_refused(scheduler_loop_count - 1u);
-  int past = load_refused(scheduler_loop_count);
+  int last = load_refused(arts_scheduler_loop_count - 1u);
+  int past = load_refused(arts_scheduler_loop_count);
   if (last != 0) {
     printf("FAIL config_scheduler_range: scheduler=%u (the last loop) was "
            "%s\n",
-           scheduler_loop_count - 1u,
+           arts_scheduler_loop_count - 1u,
            last < 0 ? "neither loaded nor refused" : "refused");
     return 1;
   }
   if (past != 1) {
     printf("FAIL config_scheduler_range: scheduler=%u (past the last loop) "
            "was %s\n",
-           scheduler_loop_count,
+           arts_scheduler_loop_count,
            past < 0 ? "neither loaded nor refused" : "accepted");
     return 1;
   }
   printf("PASS config_scheduler_range: scheduler=%u loads, scheduler=%u is "
          "refused\n",
-         scheduler_loop_count - 1u, scheduler_loop_count);
+         arts_scheduler_loop_count - 1u, arts_scheduler_loop_count);
   return 0;
 }

@@ -5,10 +5,11 @@
  * protocols use it for SNAPSHOT_RESPONSE dedup), so it lives in its own TU,
  * which an arm with no versions does not link.
  *
- * Concurrency: each rank slot is an independent _Atomic(uint64_t) accessed via
- * atomic load/store and a CAS-loop monotonic-max for advance.  No cross-slot
- * invariant; concurrent advances on the same slot are safe (a higher value
- * wins the CAS, losers are harmless).
+ * Concurrency: each rank slot is an independent _Atomic(uint64_t) carrying
+ * only its own value (directory.h), so every access is relaxed: a load, a
+ * store and a CAS-loop monotonic-max for advance.  No cross-slot invariant;
+ * concurrent advances on the same slot are safe (a higher value wins the CAS,
+ * losers are harmless).
  */
 
 #include "arts/coherence/directory.h"
@@ -43,7 +44,7 @@ uint64_t arts_rank_u64_map_get(const struct arts_rank_to_u64_map_s *m,
   if (rank >= m->nranks) {
     return 0;
   }
-  return atomic_load_explicit(&m->slots[rank], memory_order_acquire);
+  return atomic_load_explicit(&m->slots[rank], memory_order_relaxed);
 }
 
 void arts_rank_u64_map_set(struct arts_rank_to_u64_map_s *m, unsigned int rank,
@@ -51,7 +52,7 @@ void arts_rank_u64_map_set(struct arts_rank_to_u64_map_s *m, unsigned int rank,
   if (rank >= m->nranks) {
     return;
   }
-  atomic_store_explicit(&m->slots[rank], value, memory_order_release);
+  atomic_store_explicit(&m->slots[rank], value, memory_order_relaxed);
 }
 
 bool arts_rank_u64_map_advance(struct arts_rank_to_u64_map_s *m,
@@ -59,14 +60,14 @@ bool arts_rank_u64_map_advance(struct arts_rank_to_u64_map_s *m,
   if (rank >= m->nranks) {
     return false;
   }
-  uint64_t old = atomic_load_explicit(&m->slots[rank], memory_order_acquire);
+  uint64_t old = atomic_load_explicit(&m->slots[rank], memory_order_relaxed);
   while (1) {
     if (value <= old) {
       return false;
     }
     if (atomic_compare_exchange_weak_explicit(&m->slots[rank], &old, value,
-                                              memory_order_acq_rel,
-                                              memory_order_acquire)) {
+                                              memory_order_relaxed,
+                                              memory_order_relaxed)) {
       return true;
     }
     /* old refreshed by failed CAS; retry with new snapshot */
@@ -84,7 +85,7 @@ size_t arts_rank_u64_map_serialize(const struct arts_rank_to_u64_map_s *m,
                                               (sizeof(uint32_t) * 2));
   uint32_t n = 0;
   for (unsigned int r = 0; r < m->nranks; r++) {
-    uint64_t v = atomic_load_explicit(&m->slots[r], memory_order_acquire);
+    uint64_t v = atomic_load_explicit(&m->slots[r], memory_order_relaxed);
     if (v == 0) {
       continue;
     }
@@ -121,7 +122,7 @@ bool arts_rank_u64_map_load(struct arts_rank_to_u64_map_s *m, const void *in,
    * reader that catches the cleared instant reads "nothing known", which only
    * costs a payload send that was already legal to make. */
   for (unsigned int r = 0; r < m->nranks; r++) {
-    atomic_store_explicit(&m->slots[r], 0, memory_order_release);
+    atomic_store_explicit(&m->slots[r], 0, memory_order_relaxed);
   }
   const struct arts_msg_rank_version_pair_s *entries =
       (const struct arts_msg_rank_version_pair_s *)((const char *)in + head);

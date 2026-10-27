@@ -44,7 +44,7 @@
 #include <stddef.h>
 #include <string.h>
 
-#include "arts/edt_context.h" /* current_edt + run-start/end ctx hooks */
+#include "arts/edt_context.h" /* arts_current_edt + run-start/end ctx hooks */
 #include "arts/event.h"       /* arts_event_create (finish-scope proxy) */
 #include "arts/gas/guid.h"
 #include "arts/gas/route_table.h"
@@ -72,10 +72,10 @@
 #include "arts/gpu/gpu_internal.h"
 #endif
 
-/* Per-worker EDT-execution context (current_edt, owned-finish-events list,
+/* Per-worker EDT-execution context (arts_current_edt, owned-finish-events list,
  * created-DB tracking) lives in edt_context.c.
- * edt.c reads `current_edt` directly and calls the run-start/run-end context
- * hooks below via that header. */
+ * edt.c reads `arts_current_edt` directly and calls the run-start/run-end
+ * context hooks below via that header. */
 
 /*
  * arts_edt_deleter — shared_t deleter.
@@ -183,7 +183,7 @@ bool arts_edt_create_core(struct arts_edt_s *edt, arts_guid_kind_t guid_kind,
    * joins one by passing it in hint.finish_event, otherwise it inherits the
    * caller's ambient finish_event (transitive membership).  Either way the EDT
    * INCRs the scope at create and DECRs it on completion (in
-   * arts_unset_thread_local_edt_info).  `current_edt` is the thread-local
+   * arts_unset_thread_local_edt_info).  `arts_current_edt` is the thread-local
    * arts_set/unset_thread_local_edt_info maintain, read directly with no
    * route-table lookup. */
   arts_guid_t parent_fe;
@@ -200,8 +200,8 @@ bool arts_edt_create_core(struct arts_edt_s *edt, arts_guid_kind_t guid_kind,
     }
 #endif
     parent_fe = hint_finish_event;
-  } else if (current_edt) {
-    parent_fe = current_edt->finish_event;
+  } else if (arts_current_edt) {
+    parent_fe = arts_current_edt->finish_event;
   } else {
     parent_fe = NULL_GUID;
   }
@@ -337,11 +337,11 @@ arts_guid_t arts_edt_create(arts_edt_t func_ptr, uint32_t paramc,
 
 /* Register the running EDT's result GUID — delivered as the payload when the
  * run path satisfies the EDT's output_event after its data-block releases.
- * `current_edt` is the worker thread-local; outside a running EDT this is a
- * documented no-op. */
+ * `arts_current_edt` is the worker thread-local; outside a running EDT this is
+ * a documented no-op. */
 void arts_edt_set_result(arts_guid_t result_guid) {
-  if (current_edt) {
-    current_edt->output_data = result_guid;
+  if (arts_current_edt) {
+    arts_current_edt->output_data = result_guid;
   }
 }
 
@@ -552,7 +552,7 @@ void arts_edt_satisfy_slot(arts_guid_t edt_guid, uint32_t slot,
   TIME_EDT_SIGNAL_START();
   INCREMENT_NUM_EDT_SIGNAL_BY(1);
 
-  if (current_edt && current_edt->invalidate_count > 0) {
+  if (arts_current_edt && arts_current_edt->invalidate_count > 0) {
     /* GPU LC: hold the satisfy until the GPU wrapper EDT's invalidations
      * drain — force-push on the wrapper's slot so the re-signal of this EDT
      * replays only after the wrapper's invalidations drain. */
@@ -560,7 +560,8 @@ void arts_edt_satisfy_slot(arts_guid_t edt_guid, uint32_t slot,
                                             .data_guid = data_guid,
                                             .slot = slot,
                                             .mode = mode};
-    arts_ooo_push_guid(current_edt->guid, OOO_EDT_SATISFY_SLOT, &a, sizeof(a));
+    arts_ooo_push_guid(arts_current_edt->guid, OOO_EDT_SATISFY_SLOT, &a,
+                       sizeof(a));
   } else if (arts_guid_get_rank(edt_guid) == arts_global_rank_id) {
     /* Local home: acquire-or-defer; the handler supplies the dep slot. */
     edt_defer_satisfy(edt_guid, data_guid, slot, mode);

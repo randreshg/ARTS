@@ -422,7 +422,7 @@ static uint64_t val_req_step(struct arts_db_cache_s *cache, int op,
   uint64_t cur = atomic_load_explicit(&cache->req_state, memory_order_acquire);
   uint64_t next;
   for (;;) {
-    next = val_req_compute_next(cur, op, idx, act);
+    next = arts_val_req_compute_next(cur, op, idx, act);
     if (node != NULL) {
       atomic_store_explicit(&node->next,
                             *act == VREQ_ACT_PARK ? VREQ_NEXT(cur) : 0u,
@@ -1294,9 +1294,10 @@ void arts_db_cache_common_destroy_pre(struct arts_db_cache_s *cache) {
 /* The rank's route tables in one index space: one per thread, then the
  * remote shards. */
 static arts_route_table_t *quiescence_table(unsigned int t) {
-  return t < (unsigned int)num_tables
+  return t < (unsigned int)arts_guid_table_count
              ? arts_node_info.route_table[t]
-             : arts_node_info.remote_route_table[t - (unsigned int)num_tables];
+             : arts_node_info
+                   .remote_route_table[t - (unsigned int)arts_guid_table_count];
 }
 #endif
 
@@ -1397,7 +1398,8 @@ void arts_db_debug_quiescence_check(void) {
   /* Homes a destroy marked that still wait for a declared request: legal at
    * any shutdown, printed so a campaign can watch it. */
   unsigned int marked_owed = 0;
-  const unsigned int nt = (unsigned int)num_tables + ARTS_REMOTE_ROUTE_SHARDS;
+  const unsigned int nt =
+      (unsigned int)arts_guid_table_count + ARTS_REMOTE_ROUTE_SHARDS;
   /* Whether this shutdown was quiescent, named by contributor so a log's
    * reader knows why a residue went unreported.  Every one is pending work
    * the shutdown left undone: runnable EDTs dropped from a deque, release
@@ -1581,28 +1583,26 @@ void arts_db_debug_quiescence_check(void) {
            * no node of its rank queued is a lost take; reported after a
            * quiescent shutdown. */
           if (quiescent) {
-            const struct arts_rank_bitset_s *qb = &db->ro_queued;
-            for (unsigned int qw = 0; qw < qb->nwords; qw++) {
-              uint64_t qs =
-                  atomic_load_explicit(&qb->words[qw], memory_order_relaxed);
-              while (qs != 0u) {
-                unsigned int qr = qw * 64u + (unsigned int)__builtin_ctzll(qs);
-                qs &= qs - 1u;
-                bool node = false;
-                for (arts_lf_link_t *n = atomic_load_explicit(
-                         &db->ro_waiters.head, memory_order_relaxed);
-                     n != NULL && !node;
-                     n = atomic_load_explicit(&n->next, memory_order_relaxed)) {
-                  node = ARTS_CONTAINER_OF(n, struct arts_lock_ro_node_s, link)
-                             ->rank == qr;
-                }
-                if (!node) {
-                  ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu marks rank %u's read "
-                             "request queued with none of its nodes on the "
-                             "read queue",
-                             (unsigned long)c->db_guid, qr);
-                  viol++;
-                }
+            /* The cursor's acquire loads order nothing here: every handler
+             * has joined. */
+            struct arts_rank_bitset_cursor_s qc =
+                arts_rank_bitset_cursor(&db->ro_queued);
+            unsigned int qr;
+            while (arts_rank_bitset_next(&qc, &qr)) {
+              bool node = false;
+              for (arts_lf_link_t *n = atomic_load_explicit(
+                       &db->ro_waiters.head, memory_order_relaxed);
+                   n != NULL && !node;
+                   n = atomic_load_explicit(&n->next, memory_order_relaxed)) {
+                node = ARTS_CONTAINER_OF(n, struct arts_lock_ro_node_s, link)
+                           ->rank == qr;
+              }
+              if (!node) {
+                ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu marks rank %u's read "
+                           "request queued with none of its nodes on the "
+                           "read queue",
+                           (unsigned long)c->db_guid, qr);
+                viol++;
               }
             }
           }

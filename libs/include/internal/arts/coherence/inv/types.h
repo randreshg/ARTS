@@ -238,7 +238,7 @@ struct arts_db_inv_pub_s {
 struct arts_db_cache_s {
   /* Reader plane (INV_CACHE_*).  Every modification is an acq_rel CAS from
    * an acquire load: a parker's CAS carries its node's fields to the CAS
-   * that grabs the chain (DELIVER, or a SERVE: RW_CLEAR, CLAIM, RW_GIVE), and
+   * that grabs the chain (DELIVER, or a SERVE: RW_CLEAR, CLAIM), and
    * DELIVER's carries the install it follows to every acquire that then
    * finds the copy VALID. */
   _Atomic(uint64_t) cache_state;
@@ -256,7 +256,10 @@ struct arts_db_cache_s {
    * are acq_rel, so every park is ordered before the storage free. */
   _Atomic(unsigned int) buf_holds;
   /* The installed buffer.  Orders: a slot's (arts_shared_slot_t,
-   * shared.h). */
+   * shared.h): an install's release carries the bytes to whoever loads the
+   * slot.  A covering reader decides from cache_state before it loads the
+   * slot, so what orders an install before that decision is DELIVER's CAS on
+   * cache_state, not the slot. */
   _Atomic(arts_shared_slot_t) buffer;
   arts_lockfree_pool_t buf_freelist; /* parked buffers, drawn first */
   /* Parked buffers a draw found too small: a popper must not free a node
@@ -397,7 +400,7 @@ struct arts_db_s {
    * closes it, and the CLOSE carries the closer's clearing of round_entries
    * to the next CLAIM.  A producer's queue push and the closer's CLOSE are
    * each followed by a seq_cst fence before the other's word is read
-   * (inv_home_round_try_open, inv_home_round_close). */
+   * (arts_inv_home_round_try_open, inv_home_round_close). */
   _Atomic(uint64_t) dir_state;
   /* The home's canonical publication axis, advanced to each round's highest
    * published version.  It is NOT the installed buffer's version, and must not
@@ -410,9 +413,10 @@ struct arts_db_s {
    * that has already closed.  Advanced only under the round claim, with a
    * release store made after the batch's bytes are in place; a serve loads
    * it with acquire at any time, so the bytes it then sends are at least the
-   * ones the stamp names.  (Under WB the home holds no bytes and the field
-   * idles — there the owner's own buffer version IS the axis, because
-   * ownership migration carries it.) */
+   * ones the stamp names.  (Under WB the home holds no bytes and no serve
+   * reads the field — the round still advances it — because there the
+   * served buffer's own version IS the axis: ownership migration carries
+   * it.) */
   _Atomic(uint64_t) hver;
   arts_lf_stack_t pub_queue; /* releases awaiting a round */
   /* The open round's drained batch.  Written by the claim holder before its
@@ -490,12 +494,14 @@ struct arts_db_s {
 #define INV_CACHE_ACT_SERVE 12       /* serve the chain the CAS took */
 #define INV_CACHE_ACT_WON 13
 #define INV_CACHE_ACT_LOST 14
-#define INV_CACHE_ACT_LATE 15        /* no request out: the caller raises */
+/* A reply for no request, or a state no transition reaches: the caller
+ * raises. */
+#define INV_CACHE_ACT_LATE 15
 
 /* A read request's cover word from the word that opened it (engine.c). */
-uint32_t inv_read_cover(uint64_t s);
-uint64_t inv_cache_compute_next(uint64_t cur, int op, uint32_t self_idx,
-                                uint32_t *out_action);
+uint32_t arts_inv_read_cover(uint64_t s);
+uint64_t arts_inv_cache_compute_next(uint64_t cur, int op, uint32_t self_idx,
+                                     uint32_t *out_action);
 
 #define INV_DIR_OP_ROUND_CLAIM 0 /* open an invalidation round */
 #define INV_DIR_OP_ACKS_ARM 1    /* under the claim: arm the ack count */
@@ -506,23 +512,14 @@ uint64_t inv_cache_compute_next(uint64_t cur, int op, uint32_t self_idx,
 #define INV_DIR_ACT_CLAIMED 1
 #define INV_DIR_ACT_CLOSE 2 /* acks reached 0 with the round open */
 
-uint64_t inv_dir_compute_next(uint64_t cur, int op, unsigned int arg,
-                              uint32_t *out_action);
-
-/* The round's roster snapshot, one word at a time: who this round retires and
- * which bits stay (the batch's releasers remain sharers).  Pure; see
- * arbiters.c. */
-unsigned int inv_round_snapshot_word(uint64_t snap, unsigned int base,
-                                     const unsigned int *writers,
-                                     unsigned int nwriters,
-                                     unsigned int exempt,
-                                     unsigned int *targets, unsigned int cap,
-                                     unsigned int ntargets, uint64_t *keep);
+/* The round's two other deciders, inv_dir_compute_next and
+ * inv_round_snapshot_word, are the engine's own (arbiters.c, which engine.c
+ * includes). */
 
 /* ── shared machinery the write-policy TUs call (inv/engine.c) ───────────── */
 /* Drive the invalidation round: called by every producer (a publish push, a
  * close re-arm).  A claim that raced past the work it saw closes empty. */
-void inv_home_round_try_open(struct arts_db_s *db);
+void arts_inv_home_round_try_open(struct arts_db_s *db);
 
 #ifdef __cplusplus
 }

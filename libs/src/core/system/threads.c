@@ -55,7 +55,7 @@
 #include "arts/runtime_state.h"
 #include "arts/system/config.h"
 #include "arts/system/print.h"
-#include "arts/system/topology.h" /* get_thread_mask + the NUMA facts */
+#include "arts/system/topology.h" /* arts_get_thread_mask + the NUMA facts */
 #include "arts/transport/dispatcher.h"
 #include "arts/utils/malloc.h"
 
@@ -224,13 +224,13 @@ void arts_thread_init(struct arts_config_s *config) {
   {
     struct arts_numa_facts_s *facts =
         (struct arts_numa_facts_s *)arts_malloc(sizeof(*facts));
-    get_thread_mask(config, arts_thread_masks, facts);
+    arts_get_thread_mask(config, arts_thread_masks, facts);
     arts_regpool_set_topology(facts->node_count, facts->rank_nodes,
                               facts->distance_known ? facts->distance : NULL);
     arts_free(facts);
   }
   arts_runtime_node_init(config);
-  print_mask(arts_thread_masks, config->thread_count);
+  arts_print_mask(arts_thread_masks, config->thread_count);
 
   arts_thread_handles =
       (pthread_t *)arts_malloc(sizeof(pthread_t) * config->thread_count);

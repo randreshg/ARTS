@@ -2,17 +2,19 @@
  * runs on, so the pool's placement and sizing decisions can be driven and
  * observed identically on any host.
  *
- * Including this header DEFINES the process's `sched_getcpu`, `syscall` and
- * `fopen`, which the pool calls for every fact it takes from the machine but
- * the process's CPU affinity: the CPU a thread runs on (sched_getcpu) and
- * its node (getcpu, through syscall), the node a range is placed on (mbind,
- * through syscall), what the machine can still give (/proc/meminfo's
- * MemAvailable), a node's free pages (its sysfs meminfo) and a node's CPUs
- * (its sysfs cpulist).  Include it in
- * exactly one translation unit of a test program, and link the dynamic
- * loader library: the C library's own definitions are found at run time.
- * Until regpool_sim_declare() is called every call goes to the C library
- * unchanged.
+ * Including this header defines the link-time wrappers of `sched_getcpu`,
+ * `syscall` and `fopen`, which the pool calls for every fact it takes from
+ * the machine but the process's CPU affinity: the CPU a thread runs on
+ * (sched_getcpu) and its node (getcpu, through syscall), the node a range is
+ * placed on (mbind, through syscall), what the machine can still give
+ * (/proc/meminfo's MemAvailable), a node's free pages (its sysfs meminfo) and
+ * a node's CPUs (its sysfs cpulist).  Include it in exactly one translation
+ * unit of a test program and link that program with
+ * -Wl,--wrap=sched_getcpu,--wrap=syscall,--wrap=fopen: the link sends every
+ * call the program's own objects make (the pool's and the allocator's
+ * included) to the wrapper, and the C library's own definition stays its
+ * __real_ name.  Until regpool_sim_declare() is called every call goes to the
+ * C library unchanged.
  *
  * Once a machine of n nodes is declared:
  *   - getcpu reports the node set for the calling thread: node 0 unless
@@ -85,7 +87,6 @@
 #define _GNU_SOURCE
 #endif
 #include "arts/utils/stdatomic_compat.h"
-#include <dlfcn.h>
 #include <errno.h>
 #include <pthread.h>
 #include <sched.h>
@@ -273,7 +274,11 @@ static inline int regpool_sim_cpu_of_thread(void) {
          regpool_sim_node_of_thread();
 }
 
-long syscall(long nr, ...) {
+long __real_syscall(long nr, ...);
+int __real_sched_getcpu(void);
+FILE *__real_fopen(const char *path, const char *mode);
+
+long __wrap_syscall(long nr, ...) {
   va_list ap;
   va_start(ap, nr);
   long a0 = va_arg(ap, long), a1 = va_arg(ap, long), a2 = va_arg(ap, long);
@@ -308,30 +313,13 @@ long syscall(long nr, ...) {
       return 0;
     }
   }
-  /* Resolved by whichever thread first needs it; every resolution stores the
-   * same address, so the pointer carries only its own value. */
-  typedef long (*syscall_fn)(long, ...);
-  static _Atomic(syscall_fn) real;
-  syscall_fn fn = atomic_load_explicit(&real, memory_order_relaxed);
-  if (fn == NULL) {
-    fn = (syscall_fn)dlsym(RTLD_NEXT, "syscall");
-    atomic_store_explicit(&real, fn, memory_order_relaxed);
-  }
-  return fn(nr, a0, a1, a2, a3, a4, a5);
+  return __real_syscall(nr, a0, a1, a2, a3, a4, a5);
 }
 
-int sched_getcpu(void) {
+int __wrap_sched_getcpu(void) {
   if (regpool_sim_nodes > 0)
     return regpool_sim_cpu_of_thread();
-  /* Resolved as in syscall above. */
-  typedef int (*sched_getcpu_fn)(void);
-  static _Atomic(sched_getcpu_fn) real;
-  sched_getcpu_fn fn = atomic_load_explicit(&real, memory_order_relaxed);
-  if (fn == NULL) {
-    fn = (sched_getcpu_fn)dlsym(RTLD_NEXT, "sched_getcpu");
-    atomic_store_explicit(&real, fn, memory_order_relaxed);
-  }
-  return fn();
+  return __real_sched_getcpu();
 }
 
 /* A read-only stream over `text`, which must outlive the stream. */
@@ -339,17 +327,9 @@ static inline FILE *regpool_sim_stream(const char *text) {
   return fmemopen((void *)text, strlen(text), "r");
 }
 
-FILE *fopen(const char *path, const char *mode) {
-  /* Resolved as in syscall above. */
-  typedef FILE *(*fopen_fn)(const char *, const char *);
-  static _Atomic(fopen_fn) real_fopen;
-  fopen_fn real = atomic_load_explicit(&real_fopen, memory_order_relaxed);
-  if (real == NULL) {
-    real = (fopen_fn)dlsym(RTLD_NEXT, "fopen");
-    atomic_store_explicit(&real_fopen, real, memory_order_relaxed);
-  }
+FILE *__wrap_fopen(const char *path, const char *mode) {
   if (regpool_sim_nodes <= 0 || path == NULL)
-    return real(path, mode);
+    return __real_fopen(path, mode);
   bool own = regpool_sim_after_machine_read;
   regpool_sim_after_machine_read = false;
   if (strcmp(path, "/proc/meminfo") == 0) {
@@ -363,11 +343,11 @@ FILE *fopen(const char *path, const char *mode) {
   }
   static const char node_dir[] = "/sys/devices/system/node/node";
   if (strncmp(path, node_dir, sizeof node_dir - 1) != 0)
-    return real(path, mode);
+    return __real_fopen(path, mode);
   char *file = NULL;
   long n = strtol(path + sizeof node_dir - 1, &file, 10);
   if (file == path + sizeof node_dir - 1 || *file != '/')
-    return real(path, mode);
+    return __real_fopen(path, mode);
   file++;
   bool meminfo = strcmp(file, "meminfo") == 0;
   if (meminfo && n >= 0 && n < regpool_sim_nodes)

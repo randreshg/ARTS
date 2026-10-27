@@ -1217,6 +1217,17 @@ static void lock_deliver_commit(arts_shared_ptr_t db_h, arts_guid_t db_guid,
                    "out for (word=%llx)",
                    (unsigned long)db_guid, (unsigned long long)cur);
       }
+      /* The request was opened by a reader its own transition counted, and
+       * nothing but this grant serves the readers parked on it: a write turn
+       * of this rank that would serve them makes the home dismiss the request
+       * instead (the write request declares it), and a create's claim closes
+       * it.  So the count is at least one here, and a grant marked for return
+       * is repaid at the count's zero edge by the release that reaches it. */
+      if (CACHE_RO_CNT(cur) == 0u) {
+        ARTS_ERROR("lock: guid %lu got a read grant with no reader counted "
+                   "(word=%llx)",
+                   (unsigned long)db_guid, (unsigned long long)cur);
+      }
       if (!installed) {
         /* Deferred commit (universal invariant): a grant may become observable
          * only AFTER its bytes are installed.  A one-sided serve landed in the
@@ -1251,63 +1262,9 @@ static void lock_deliver_commit(arts_shared_ptr_t db_h, arts_guid_t db_guid,
     } while (!atomic_compare_exchange_weak_explicit(&cache->cache_state, &cur,
                                                     next, memory_order_acq_rel,
                                                     memory_order_acquire));
-    {
-      /* Bytes were installed before the publish above; wake the parked
-       * readers. */
-      lock_drain_pending(&cache->ro_pending, cache_owner_parked_ro(cur));
-      /* A grant marked to return while no reader holds it is returned by
-       * whichever side observes the complete state second.
-       *
-       * The mark is a promise to give the grant back at the read count's zero
-       * edge, and the release path keeps that promise.  A mark that becomes
-       * visible when the count is ALREADY zero promises an edge that is in the
-       * past: it cannot recur on its own, because a grant is relinquished only
-       * on that edge or on a recall, and a recall declines a grant that is
-       * already marked.  The promise would then be owed forever, and the
-       * directory's outstanding-reader count never falls to zero — so every
-       * writer queued behind this block waits on an event nobody will produce.
-       *
-       * Settling it here is safe precisely because the count covers waiters as
-       * well as holders (it is raised before a waiter is made drainable), so a
-       * zero count means no reader holds this grant and none is queued for it.
-       *
-       * The guard is re-evaluated on every attempt rather than tested once.
-       * The mark shares its word with unrelated state — a local write request
-       * moves the same word without touching either the mark or the read count
-       * — so a failed exchange proves only that the word moved, NEVER that the
-       * obligation found another payer.  Treating those two as the same fact is
-       * what strands the grant: the unrelated writer's change is read as "the
-       * other side has it" and neither side sends.  Re-reading the guard tells
-       * them apart, and it is the only thing that has to be re-read.
-       *
-       * The loop cannot spin against a peer that is not progressing: every
-       * retry follows another thread's committed change to the word, and the
-       * exit is either this side's own success or a guard that a payer now
-       * exists (a reader has joined, or the release edge settled it). */
-      if (CACHE_RO_ST(next) == CACHE_ST_GRANT_PURGE) {
-        uint64_t seen =
-            atomic_load_explicit(&cache->cache_state, memory_order_acquire);
-        for (;;) {
-          if (CACHE_RO_ST(seen) != CACHE_ST_GRANT_PURGE ||
-              CACHE_RO_CNT(seen) != 0u || !CACHE_GRANTED(seen)) {
-            break; /* the mark has a payer, or has already been paid */
-          }
-          /* CACHE_MAKE_FULL yields bit63 == 0, so the debt is discharged in the
-           * same word that retires the grant — the release path's rule. */
-          uint64_t settled =
-              CACHE_MAKE_FULL(CACHE_OWNER(seen), CACHE_RW_ST(seen),
-                              CACHE_ST_IDLE, CACHE_MIGRATE_TARGET(seen),
-                              CACHE_RW_CNT(seen), CACHE_RO_CNT(seen)) |
-              (seen & CACHE_OWNER_STICKY_MASK);
-          if (atomic_compare_exchange_weak_explicit(
-                  &cache->cache_state, &seen, settled, memory_order_acq_rel,
-                  memory_order_acquire)) {
-            arts_send_db_excl_roret(arts_guid_get_rank(db_guid), db_guid);
-            break;
-          }
-        }
-      }
-    }
+    /* Bytes were installed before the publish above; wake the parked
+     * readers. */
+    lock_drain_pending(&cache->ro_pending, cache_owner_parked_ro(cur));
   }
 
   arts_shared_release(&db_h);
@@ -1640,10 +1597,10 @@ static void lock_owner_home_forward(struct arts_db_s *db, uint32_t action,
      * own counts hold open).
      *
      * FORWARD-serve each reader UNCONDITIONALLY (the fixed single-target
-     * packet, same shape as SERVE_ONE).  No owner identity tracking here: a
-     * rank that is (or was) the owner gets the grant like any other, and its
-     * cache returns it immediately (RO_RETURN) when it already holds the data
-     * — see arts_handler_db_excl_deliver's RO arm. */
+     * packet, same shape as SERVE_ONE).  No owner check here: the reader is
+     * never the owner the fresh load names — a rank sends a read request only
+     * while it holds no bytes, and arts_handler_db_excl_forward refuses a rank
+     * its own read. */
     for (;;) {
       arts_sched_fuzz_point();
       arts_lf_link_t *node = arts_lf_stack_drain(&db->ro_waiters);

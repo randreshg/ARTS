@@ -161,7 +161,7 @@ void arts_handler_db_acquire(void *item, void *args) {
     cur = atomic_load_explicit(&cache->cache_state, memory_order_acquire);
     atomic_store_explicit(&node->next, INV_CACHE_HEAD_RO(cur),
                           memory_order_relaxed);
-    next = inv_cache_compute_next(cur, INV_CACHE_OP_ACQ_RO, idx, &act);
+    next = arts_inv_cache_compute_next(cur, INV_CACHE_OP_ACQ_RO, idx, &act);
     if (next == cur) {
       break; /* copy turned valid mid-retry: no word write */
     }
@@ -179,7 +179,7 @@ void arts_handler_db_acquire(void *item, void *args) {
     break;
   }
   case INV_CACHE_ACT_SEND_RO:
-    arts_send_db_inv_request(cache, DB_MODE_RO, inv_read_cover(next));
+    arts_send_db_inv_request(cache, DB_MODE_RO, arts_inv_read_cover(next));
     break;
   default: /* PARK: the fetch's committer will serve us */
     break;
@@ -360,7 +360,7 @@ void arts_handler_db_inv_request(void *item_v, void *args_v) {
     }
     /* Read serve: roster bit BEFORE the send — a serve whose copy departs
      * must already be a target of the next round.  The fetch_or and the
-     * round's snapshot exchange (inv_home_round_try_open) are acq_rel RMWs
+     * round's snapshot exchange (arts_inv_home_round_try_open) are acq_rel RMWs
      * of one word, so the later reads the other: either that round names
      * this reader, or this serve's stamp load sees the round's hver store,
      * which precedes the exchange. */

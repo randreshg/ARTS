@@ -47,16 +47,3 @@ bool arts_rank_bitset_put(struct arts_rank_bitset_s *r, unsigned int rank,
                                         memory_order_acq_rel);
   return (prev & bit) != 0;
 }
-
-void arts_rank_bitset_for_each(const struct arts_rank_bitset_s *r,
-                               void (*cb)(unsigned int rank, void *ctx),
-                               void *ctx) {
-  for (unsigned int w = 0; w < r->nwords; w++) {
-    uint64_t snap = atomic_load_explicit(&r->words[w], memory_order_acquire);
-    while (snap) {
-      unsigned int b = (unsigned int)__builtin_ctzll(snap);
-      cb(w * 64 + b, ctx);
-      snap &= snap - 1;
-    }
-  }
-}

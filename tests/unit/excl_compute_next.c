@@ -28,9 +28,9 @@
  * transition owes, the sticky owner's migration), and the home directory's
  * lock_owner_compute_next.
  *
- * The arbiters are non-static (exposed for this test); the file is built
- * standalone by #including coherence/excl/arbiters.c.  Built and registered
- * in every EXCL tree.
+ * The arbiters are static to the unit that includes them; this file reaches
+ * them the same way, by #including coherence/excl/arbiters.c.  Built and
+ * registered in every EXCL tree.
  *
  * Build: -DARTS_PROTOCOL_EXCL=1 -DARTS_RELEASE_{PURGE,RETAIN}=1
  * -DARTS_UNIT_STANDALONE_SHIMS.
@@ -58,8 +58,9 @@
 #define G_ALL_RO 2
 #define G_DESTROY 3
 
-/* Forward decl of the SUT (defined in the arbiter TU #included below). */
-uint64_t excl_compute_next(uint64_t cur, int op, uint32_t *out_grant);
+/* Forward decls of the SUT (static in the arbiter TU #included below). */
+static uint64_t excl_compute_next(uint64_t cur, int op, uint32_t *out_grant);
+static uint64_t cache_compute_next(uint64_t cur, int op, uint32_t *out_action);
 
 static int g_rc = 0;
 static int g_checks = 0;
@@ -472,9 +473,11 @@ int main(void) {
 #ifdef ARTS_RELEASE_RETAIN
 /* RETAIN's cache arbiter cache_owner_compute_next, its parked-population
  * reading, and the home arbiter lock_owner_compute_next. */
-uint64_t cache_owner_compute_next(uint64_t cur, int op, uint32_t *out_action);
-uint64_t lock_owner_compute_next(uint64_t cur, int op, unsigned int new_owner,
-                                 uint32_t *out_action);
+static uint64_t cache_owner_compute_next(uint64_t cur, int op,
+                                         uint32_t *out_action);
+static uint64_t lock_owner_compute_next(uint64_t cur, int op,
+                                        unsigned int new_owner,
+                                        uint32_t *out_action);
 static inline uint32_t cache_owner_parked_rw(uint64_t s);
 static inline uint32_t cache_owner_parked_ro(uint64_t s);
 

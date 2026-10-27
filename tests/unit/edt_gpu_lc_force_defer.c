@@ -3,8 +3,8 @@
  * GPU LC drain force-defer in arts_edt_satisfy_slot (route 2).
  *
  * When a satisfy is issued from inside a GPU wrapper EDT that still has pending
- * invalidations (current_edt->invalidate_count > 0), arts_edt_satisfy_slot must
- * NOT apply the satisfy immediately.  Instead it force-pushes the satisfy
+ * invalidations (arts_current_edt->invalidate_count > 0), arts_edt_satisfy_slot
+ * must NOT apply the satisfy immediately.  Instead it force-pushes the satisfy
  * onto the wrapper's OWN slot so the re-signal of the target replays only
  * after the wrapper's invalidations drain.  This test exercises that
  * push-on-wrapper path.

@@ -54,7 +54,7 @@ void arts_abort(uint8_t code) {
 }
 
 /* ── scheduler table size (config load bounds the `scheduler` key by it) ─── */
-const unsigned int scheduler_loop_count = 3;
+const unsigned int arts_scheduler_loop_count = 3;
 
 /* ── launcher backend symbols (address-taken only by config_setup_*) ─────── */
 void arts_launcher_ssh_startup_processes(struct arts_launcher_s *l) { (void)l; }

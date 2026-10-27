@@ -194,7 +194,12 @@ static inline struct arts_db_buffer_s *arts_db_buf_from_data(void *data) {
  * (new_version <= old->version) retreat and return the old buffer unchanged.
  * Publishes via a version-conditional shared-ptr compare-exchange; the slot
  * takes the cache-hold ref and the retired buffer's ref is dropped (its cb
- * deleter ends it once the last in-flight acquirer releases).
+ * deleter ends it once the last in-flight acquirer releases).  That
+ * compare-exchange's release carries the buffer, its bytes and its version to
+ * every thread that loads the slot after it; it says nothing about the arm's
+ * state word.  Where a reader decides from that word that its rank's copy
+ * covers it before loading the slot (INV's VALID, EXCL's grant), the arm's own
+ * CAS after the install is what orders the install before the decision.
  *
  * db_size == 0 installs nothing on either representation: a zero-sized block
  * has no storage to hold and NULL is its defined value, which is the same
@@ -259,8 +264,8 @@ bool arts_db_buf_adopt_landing(struct arts_db_cache_s *cache, uint64_t version,
 
 /* Install a PUT-landed buffer carrying `new_version` at cache.buffer — the
  * no-copy twin of arts_db_buf_install (the payload bytes are already in
- * landing->data).  Stale installs retreat, end the landing, and return
- * the newer installed buffer unchanged. */
+ * landing->data), publishing them the same way.  Stale installs retreat, end
+ * the landing, and return the newer installed buffer unchanged. */
 struct arts_db_buffer_s *
 arts_db_buf_install_landed(struct arts_db_cache_s *cache, uint64_t new_version,
                            struct arts_db_buffer_s *landing, uint64_t db_size);

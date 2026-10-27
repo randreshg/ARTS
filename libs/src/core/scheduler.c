@@ -55,6 +55,7 @@
 #include "arts/system/threads.h"
 #include "arts/system/topology.h"
 #include "arts/transport/dispatcher.h"
+#include "arts/transport/net.h"
 #include "arts/transport/protocol.h"
 #include "arts/transport/socket.h"
 #include "arts/utils/array_list.h"
@@ -69,7 +70,7 @@
 ARTS_THREAD_LOCAL struct arts_runtime_private_s arts_thread_info;
 
 #ifdef ARTS_USE_GPU
-scheduler_t scheduler_loop[] = {
+scheduler_t arts_scheduler_loop[] = {
     (scheduler_t)arts_default_scheduler_loop,
     (scheduler_t)arts_network_before_steal_scheduler_loop,
     (scheduler_t)arts_network_first_scheduler_loop,
@@ -77,13 +78,13 @@ scheduler_t scheduler_loop[] = {
     (scheduler_t)arts_gpu_scheduler_backoff_loop,
     (scheduler_t)arts_gpu_scheduler_demand_loop};
 #else
-scheduler_t scheduler_loop[] = {
+scheduler_t arts_scheduler_loop[] = {
     (scheduler_t)arts_default_scheduler_loop,
     (scheduler_t)arts_network_before_steal_scheduler_loop,
     (scheduler_t)arts_network_first_scheduler_loop};
 #endif
-const unsigned int scheduler_loop_count =
-    sizeof(scheduler_loop) / sizeof(scheduler_loop[0]);
+const unsigned int arts_scheduler_loop_count =
+    sizeof(arts_scheduler_loop) / sizeof(arts_scheduler_loop[0]);
 
 /* Schedule a fully DB-acquired EDT onto the calling thread's own
  * work-stealing deque.  Reached when the strict sequential acquire walk in
@@ -111,6 +112,7 @@ void arts_schedule_ready_edt(struct arts_edt_s *edt) {
     struct arts_deque_s *q = arts_thread_info.my_deque;
     assert(q != NULL && "only the owner of a deque pushes onto it");
     ARTS_INFO("EDT[Guid:%lu] pushed to worker deque", edt->guid);
+    arts_net_held_edt_runnable();
     arts_deque_push_front(q, edt, 0);
   }
 }
@@ -158,7 +160,7 @@ void arts_run_edt(struct arts_edt_s *edt) {
 
   ARTS_INFO("Running EDT[Guid:%lu, Deps: %u, Params: %u, DepvPtr: %p]",
             edt->guid, depc, paramc, depv);
-  prep_dbs(edt, false);
+  arts_prep_dbs(edt, false);
 
   arts_set_thread_local_edt_info(edt);
 
@@ -169,6 +171,7 @@ void arts_run_edt(struct arts_edt_s *edt) {
   (void)clock_gettime(CLOCK_MONOTONIC, &start_time);
 #endif
   func(paramc, paramv, depc, depv);
+  arts_net_held_edt_returned();
 #if ARTS_LOG_LEVEL >= 2
   (void)clock_gettime(CLOCK_MONOTONIC, &end_time);
 #endif
@@ -185,7 +188,7 @@ void arts_run_edt(struct arts_edt_s *edt) {
    * home grants nobody else until it has paired the release with its payload;
    * and where the payload rests in CXL memory the release is sent only after
    * the bytes are back in the store. */
-  release_dbs(edt, false);
+  arts_release_dbs(edt, false);
   arts_release_created_dbs();
 
   /* Retire the GUID before any completion signal leaves: whoever observes the

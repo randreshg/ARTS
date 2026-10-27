@@ -3,10 +3,11 @@
  * arts_thread_init worker-count derivation after the transport cutover
  * + config-surface cleanup (libs/src/core/system/threads.c).  This TU
  * #includes threads.c so the real derivation code runs; the runtime
- * collaborators arts_thread_init calls (get_thread_mask, arts_runtime_node_init,
- * print_mask, private_init/loop/cleanup, arts_malloc/calloc/free, counters,
- * ARTS_ERROR->arts_abort) are stubbed so the unit links standalone and we can
- * inspect the derived counts WITHOUT the full runtime.
+ * collaborators arts_thread_init calls (arts_get_thread_mask,
+ * arts_runtime_node_init, arts_print_mask, private_init/loop/cleanup,
+ * arts_malloc/calloc/free, counters, ARTS_ERROR->arts_abort) are stubbed so the
+ * unit links standalone and we can inspect the derived counts WITHOUT the full
+ * runtime.
  *
  * Property under test
  * -------------------
@@ -22,8 +23,8 @@
  * 1. rank_count==1 case: assert progress==0 and worker==thread_count.
  * 2. rank_count>1, progress==thread_count: worker==0 (the boundary).
  *
- * The stubbed get_thread_mask does nothing and the spawn loop is bounded by
- * thread_count (small), so the derived counts are read without starting any
+ * The stubbed arts_get_thread_mask does nothing and the spawn loop is bounded
+ * by thread_count (small), so the derived counts are read without starting any
  * thread.
  */
 
@@ -71,8 +72,9 @@ struct arts_runtime_shared_s arts_node_info;
 struct arts_shutdown_abandon_s arts_shutdown_abandon;
 ARTS_THREAD_LOCAL arts_counter_t arts_thread_local_counters[NUM_COUNTER_TYPES];
 
-void get_thread_mask(struct arts_config_s *config, struct thread_mask_s *flat,
-                     struct arts_numa_facts_s *facts) {
+void arts_get_thread_mask(struct arts_config_s *config,
+                          struct thread_mask_s *flat,
+                          struct arts_numa_facts_s *facts) {
   /* Inert: zero the flat array so the (bounded) spawn loop reads valid pu_ids,
    * and report a one-node machine so the pool's topology hand-off has
    * something consistent to consume.  Deliberately does NOT touch
@@ -90,7 +92,7 @@ void get_thread_mask(struct arts_config_s *config, struct thread_mask_s *flat,
     flat[t].pin = false;
   }
 }
-void print_mask(struct thread_mask_s *t, unsigned int n) {
+void arts_print_mask(struct thread_mask_s *t, unsigned int n) {
   (void)t;
   (void)n;
 }

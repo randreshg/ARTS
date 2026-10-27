@@ -59,7 +59,7 @@ extern "C" {
  * the current EDT directly (memory/coherence, event satisfy fast-path,
  * system info) can read it without a route-table lookup.
  */
-extern ARTS_THREAD_LOCAL struct arts_edt_s *current_edt;
+extern ARTS_THREAD_LOCAL struct arts_edt_s *arts_current_edt;
 
 /* Run-start / run-end context management (called from the EDT run path). */
 void arts_set_thread_local_edt_info(struct arts_edt_s *edt);

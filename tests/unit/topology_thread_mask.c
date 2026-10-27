@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * get_thread_mask against a DECLARED hwloc topology
+ * arts_get_thread_mask against a DECLARED hwloc topology
  * (libs/src/core/system/topology.c).  This TU #includes topology.c to drive
- * the (public, non-static) get_thread_mask plus the file-static helpers it
+ * the (public, non-static) arts_get_thread_mask plus the file-static helpers it
  * uses; the runtime symbols that ARTS_ERROR / ARTS_INFO reference are stubbed
  * so the unit links standalone.  The machine is declared through hwloc's own
  * synthetic-topology input (HWLOC_SYNTHETIC, read at every topology load), so
@@ -23,7 +23,7 @@
  *  - role counts equal the config split (worker/progress);
  *  - group_pos is 0..count-1 CONTIGUOUS within each role group;
  *  - flat[t].id == t;
- *  - num_numa_domains is the declared NUMA node count after the call;
+ *  - arts_numa_domain_count is the declared NUMA node count after the call;
  *  - local-multinode (shared_pu_pool=true) gives rank 0 and rank 1 DISJOINT
  *    pu_id slices (the structural oversubscription invariant);
  *  - pu_offset overflow (a slice exceeding total_pus) hits the bounds-check =>
@@ -121,7 +121,7 @@ static void fail(const char *msg) {
 }
 
 /* A config whose thread count is its worker and progress counts together:
- * get_thread_mask places that many threads, workers in the low slots
+ * arts_get_thread_mask places that many threads, workers in the low slots
  * [0, worker_thread_count) and progress threads in the rest. */
 static struct arts_config_s make_config(unsigned int thread_count,
                                         unsigned int progress, bool shared_pool,
@@ -210,9 +210,10 @@ static void death_test_offset_overflow(unsigned int total_pus) {
     struct arts_config_s c =
         make_config(total_pus, 0, /*shared_pool=*/true, /*my_rank=*/1);
     struct thread_mask_s *flat = calloc(total_pus, sizeof(*flat));
-    get_thread_mask(&c, flat, NULL); /* expected to ARTS_ERROR -> arts_abort */
+    /* expected to ARTS_ERROR -> arts_abort */
+    arts_get_thread_mask(&c, flat, NULL);
     /* If we get here, the bounds check did NOT fire — fail loudly. */
-    fprintf(stderr, "CHILD: get_thread_mask returned without abort\n");
+    fprintf(stderr, "CHILD: arts_get_thread_mask returned without abort\n");
     _exit(0); /* exit 0 signals the death test FAILED to abort */
   }
   int status = 0;
@@ -247,11 +248,11 @@ static void run_machine(unsigned int m) {
     if (!flat) {
       fail("calloc");
     }
-    get_thread_mask(&c, flat, NULL);
+    arts_get_thread_mask(&c, flat, NULL);
     check_mask(flat, &c, total_pus, machines[m].single_pu,
                machines[m].single_numa);
-    if (num_numa_domains != machines[m].numa) {
-      fail("num_numa_domains is not the declared NUMA node count");
+    if (arts_numa_domain_count != machines[m].numa) {
+      fail("arts_numa_domain_count is not the declared NUMA node count");
     }
     free(flat);
   }
@@ -268,10 +269,10 @@ static void run_machine(unsigned int m) {
     if (!f0 || !f1) {
       fail("calloc");
     }
-    get_thread_mask(&c0, f0, NULL);
+    arts_get_thread_mask(&c0, f0, NULL);
     check_mask(f0, &c0, total_pus, machines[m].rank0_pu,
                machines[m].rank0_numa);
-    get_thread_mask(&c1, f1, NULL);
+    arts_get_thread_mask(&c1, f1, NULL);
     check_mask(f1, &c1, total_pus, machines[m].rank1_pu,
                machines[m].rank1_numa);
 
@@ -293,7 +294,7 @@ static void run_machine(unsigned int m) {
   printf("  machine \"%s\": exact placement + in-range + distinct + "
          "role-split + group_pos contiguous + disjoint MN slices + "
          "offset-overflow abort (total_pus=%u num_numa=%u)\n",
-         desc, total_pus, num_numa_domains);
+         desc, total_pus, arts_numa_domain_count);
 }
 
 int main(void) {

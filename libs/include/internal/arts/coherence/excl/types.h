@@ -75,15 +75,21 @@ extern "C" {
 /* ── RETAIN cache_state ─────────────────────────────────────────────────────
  * Per-rank (owner) single 64-bit coherence word (RETAIN release policy only).
  * Layout (MSB→LSB):
- *   [ spare:1 (63) | owner:1 (62) | rw_st:2 (61..60) | ro_st:2 (59..58) |
- *     migrate_target:14 (57..44) | wc:22 (43..22) | rc:22 (21..0) ]
+ *   [ ro_granted:1 (63) | owner:1 (62) | rw_st:2 (61..60) | ro_st:2 (59..58) |
+ *     migrate_target:14 (57..44) | ro_parity:1 (43) | stub:1 (42) |
+ *     wc:20 (41..22) | rc:22 (21..0) ]
  *
+ *   ro_granted = the read grant this rank holds came from the home (below);
+ *                while the read request is still out, the early-recall token.
  *   owner-bit  = 1 when this node holds data ownership (fast-path RW/RO).
- *   rw_st/ro_st ∈ {IDLE=0, REQ=1, GRANT=2} — local RW/RO protocol state.
+ *   rw_st/ro_st ∈ {IDLE=0, REQ=1, GRANT=2, and for ro_st GRANT_PURGE=3} —
+ *                local RW/RO protocol state.
  *   migrate_target = 14-bit rank of the next RW owner (set by home FORWARD);
  *                    ARTS_EXCL_NO_TARGET (0x3FFF) = no pending migration.
+ *   ro_parity / stub = as under PURGE.
  *   wc/rc      = #RW/#RO EDTs on this rank acquired-not-released (local EDT
- *                count; 22 bits → ≥4 M concurrent EDTs, well above any limit).
+ *                counts; 20 and 22 bits → ≥1 M / ≥4 M concurrent EDTs, well
+ *                above any limit).
  *
  * Single-word CAS discipline: every transition — the acquire's count++
  * included — is one CAS (see arbiters.c for why the acquire's atomicity is
@@ -154,7 +160,7 @@ extern "C" {
 #define CACHE_OWNER(s)                                                         \
   ((uint32_t)(((s) >> CACHE_OWNER_OW_SHIFT) & CACHE_OWNER_OW_MASK))
 
-/* ro_granted flag — the single spare bit (63).  Set when this rank's current RO
+/* ro_granted flag — bit 63.  Set when this rank's current RO
  * grant arrived from the home via DELIVER(RO) (a home-COUNTED grant), as
  * opposed to an owner-fast-path local RO (never counted at home).  The
  * owner-local RO release path takes owner_try_execute and sends NO RO_RETURN;
@@ -306,10 +312,10 @@ extern "C" {
 
 /* ── home lock_state transition ops + grant codes (PURGE) ────────────────
  * excl_compute_next(cur, op, &grant) is the home arbiter, a pure function of
- * the single lock_state word run inside a CAS-retry loop.  Exposed here (not
- * just in purge.c) so the acquire/release handlers can run the SAME arbiter
- * LOCALLY when home == self — a local hit runs the handler logic directly, with
- * no wire round (HPC: a local op must not touch the network layer).
+ * the single lock_state word run inside a CAS-retry loop (arbiters.c, which
+ * the release policy's unit includes).  The acquire and release handlers run
+ * the SAME arbiter locally when home == self: a local hit runs the handler
+ * logic directly, with no wire round.
  */
 #ifdef ARTS_RELEASE_PURGE
 #define EXCL_OP_RW_ACQ 0
@@ -335,12 +341,15 @@ extern "C" {
 /* Not a grant: the transition would overflow a count field; the word is left
  * unchanged and the caller raises it. */
 #define LOCK_GRANT_FULL 4
-uint64_t excl_compute_next(uint64_t cur, int op, uint32_t *out_grant);
 #endif /* ARTS_RELEASE_PURGE */
 
 /* ── home lock_state transition ops + action codes (RETAIN) ────────────────
- * lock_owner_compute_next(cur, op, &action) is the RETAIN home arbiter.
- * Same CAS-retry pattern as PURGE's excl_compute_next. */
+ * lock_owner_compute_next(cur, op, new_owner, &action) is the RETAIN home
+ * arbiter (arbiters.c), with PURGE's CAS-retry pattern.  new_owner is read
+ * only by EXCL_OP_CONFIRM (sets owner in the same word as w--/phase).  The
+ * FORWARD recipient is LOCK_OWNER() of the returned word; the migrate target
+ * and the served reader(s) are resolved by the caller from rw_waiters /
+ * ro_waiters (a pure arbiter cannot peek the queues). */
 #ifdef ARTS_RELEASE_RETAIN
 #define EXCL_OP_RW_ACQ 0
 #define EXCL_OP_RO_ACQ 1
@@ -356,23 +365,16 @@ uint64_t excl_compute_next(uint64_t cur, int op, uint32_t *out_grant);
 #define EXCL_ACTION_FORWARD_SERVE_ALL                                          \
   3 /* home→owner: FORWARD(serve→held RO)                                  \
      */
-/* Home arbiter — pure function of the single lock_state word, run in a
- * CAS-retry loop.  new_owner is read only by EXCL_OP_CONFIRM (sets owner in the
- * same word as w--/phase); ignored by the other ops.  The FORWARD recipient is
- * LOCK_OWNER() of the returned word; the migrate target / served reader(s) are
- * resolved by the caller from rw_waiters/ro_waiters (a pure arbiter cannot peek
- * the queues). */
-uint64_t lock_owner_compute_next(uint64_t cur, int op, unsigned int new_owner,
-                                uint32_t *out_action);
 #endif /* ARTS_RELEASE_RETAIN */
 
 /* ── cache_state transition ops + actions (PURGE) ────────────────────────
- * cache_compute_next(cur, op, &action) is the cache-side analogue of the home's
- * excl_compute_next: a pure function of the current word, run inside a
- * CAS-retry loop.  The ACQ_* ops carry the count++ AND the request/join
- * decision inside the one CAS; the REL_* ops carry the count-- inside the CAS
- * (the decrement and the 0-edge state change must be atomic together).  See
- * arbiters.c for the invariants this single-atom shape upholds. */
+ * cache_compute_next(cur, op, &action) (arbiters.c) is the cache-side analogue
+ * of the home's excl_compute_next: a pure function of the current word, run
+ * inside a CAS-retry loop.  The ACQ_* ops carry the count++ AND the
+ * request/join decision inside the one CAS; the REL_* ops carry the count--
+ * inside the CAS (the decrement and the 0-edge state change must be atomic
+ * together).  See arbiters.c for the invariants this single-atom shape
+ * upholds. */
 #ifdef ARTS_RELEASE_PURGE
 #define CACHE_OP_ACQ_RW 0
 #define CACHE_OP_ACQ_RO 1
@@ -404,15 +406,11 @@ uint64_t lock_owner_compute_next(uint64_t cur, int op, unsigned int new_owner,
  * site raises it.  The arbiter leaves the word unchanged. */
 #define CACHE_ACT_LATE 10
 #define CACHE_ACT_RESEND_RO 11
-
-/* Defined in arbiters.c (included by purge.c); exposed non-static for the
- * cache-state model test (mirrors excl_compute_next's exposure). */
-uint64_t cache_compute_next(uint64_t cur, int op, uint32_t *out_action);
 #endif /* ARTS_RELEASE_PURGE */
 
 /* ── cache_state transition ops + actions (RETAIN) ─────────────────────────
  * cache_owner_compute_next(cur, op, &action) is the RETAIN owner-cache
- * arbiter. */
+ * arbiter (arbiters.c). */
 #ifdef ARTS_RELEASE_RETAIN
 #define CACHE_OP_ACQ_RW 0
 #define CACHE_OP_ACQ_RO 1
@@ -448,8 +446,6 @@ uint64_t cache_compute_next(uint64_t cur, int op, uint32_t *out_action);
  * CAS is the exactly-once token and a concurrent recall must not be able to
  * make two sites send for one grant.  Under RETAIN the edge may relinquish
  * (GRANT_PURGE) or retain (GRANT); the engine must be driven either way. */
-
-uint64_t cache_owner_compute_next(uint64_t cur, int op, uint32_t *out_action);
 #endif /* ARTS_RELEASE_RETAIN */
 
 /* The request packet's cover word: a read request carries its parity; a write
@@ -502,7 +498,10 @@ struct arts_db_cache_s {
    * only at destroy.  The address never moves, so DBs holding internal
    * self-pointers stay valid.  Under RETAIN, data stays with the owner; the
    * home-rank cache.buffer is unused by the coherence path.  Orders: a
-   * slot's (arts_shared_slot_t, shared.h). */
+   * slot's (arts_shared_slot_t, shared.h), whose release publishes the
+   * buffer once; the bytes a grant or publish writes in place reach a holder
+   * through cache_state's CAS that admits it (above), never through the
+   * slot. */
   _Atomic(arts_shared_slot_t) buffer;
   arts_lf_stack_t ro_pending; /* parked RO EDT waiters on this rank */
   arts_lf_stack_t rw_pending; /* parked RW EDT waiters on this rank */

@@ -1,11 +1,10 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
  * arts_lockfree_pool_t's primitives racing one head (lockfree_pool.h):
- * single release, single pop (pop_or_null) and batch_fetch, plus the batch
- * edge cases — want==0, want > available, an empty pool.
+ * release and pop_or_null, plus the empty pool's pop.
  *
  * The pool's lifetime invariant (no node is freed while another thread can
- * pop it) means a node is never freed by a fetch — ownership only transfers.
+ * pop it) means a node is never freed by a pop — ownership only transfers.
  * So a fixed universe of UNIVERSE nodes is seeded, many threads churn it
  * through the primitives, and every node must be accounted for exactly once
  * throughout: each node carries an owner stamp a thread takes by CAS when the
@@ -63,7 +62,7 @@ static void take(ctx_t *c, arts_lf_link_t *l) {
                                                memory_order_acq_rel,
                                                memory_order_acquire)) {
     (void)fprintf(stderr,
-                  "FAIL lf_pool_batch: node %u handed out while owned by %d\n",
+                  "FAIL lf_pool_churn: node %u handed out while owned by %d\n",
                   n->id, expect);
     abort();
   }
@@ -76,7 +75,7 @@ static void give(ctx_t *c, arts_lf_link_t *l) {
   if (!atomic_compare_exchange_strong_explicit(
           &n->owner, &expect, -1, memory_order_acq_rel, memory_order_acquire)) {
     (void)fprintf(stderr,
-                  "FAIL lf_pool_batch: releasing node %u not owned by me "
+                  "FAIL lf_pool_churn: releasing node %u not owned by me "
                   "(owner=%d)\n",
                   n->id, expect);
     abort();
@@ -90,51 +89,20 @@ static void *worker(void *arg) {
   }
   for (int i = 0; i < ITERS; i++) {
     uint64_t r = xs(&c->rng);
-    switch ((int)(r % 3)) {
-    case 0: { /* single pop */
+    if ((r & 1u) == 0u) { /* pop */
       if (c->hand_n < HAND_CAP) {
         arts_lf_link_t *l = arts_lf_pool_pop_or_null(&g_pool);
         if (l != NULL) {
           if (atomic_load_explicit(&l->next, memory_order_relaxed) != NULL) {
             (void)fprintf(stderr,
-                          "FAIL lf_pool_batch: popped node not detached\n");
+                          "FAIL lf_pool_churn: popped node not detached\n");
             abort();
           }
           take(c, l);
         }
       }
-      break;
-    }
-    case 1: { /* single release */
-      if (c->hand_n > 0) {
-        give(c, c->hand[--c->hand_n]);
-      }
-      break;
-    }
-    default: { /* batch_fetch up to 8 */
-      uint32_t want = 1 + (uint32_t)((r >> 2) & 7);
-      uint32_t got = 0;
-      arts_lf_link_t *chain = arts_lf_pool_batch_fetch(&g_pool, want, &got);
-      uint32_t cnt = 0;
-      while (chain) {
-        arts_lf_link_t *next =
-            atomic_load_explicit(&chain->next, memory_order_relaxed);
-        if (c->hand_n == HAND_CAP) {
-          give(c, c->hand[--c->hand_n]);
-        }
-        take(c, chain);
-        cnt++;
-        chain = next;
-      }
-      if (cnt != got || got > want) {
-        (void)fprintf(stderr,
-                      "FAIL lf_pool_batch: batch_fetch want=%u got=%u but "
-                      "chain=%u\n",
-                      want, got, cnt);
-        abort();
-      }
-      break;
-    }
+    } else if (c->hand_n > 0) { /* release */
+      give(c, c->hand[--c->hand_n]);
     }
   }
   return NULL;
@@ -144,44 +112,22 @@ static void *worker(void *arg) {
 static int edge_cases(void) {
   arts_lockfree_pool_t p;
   arts_lf_pool_init(&p);
-
-  uint32_t got = 99;
-  arts_lf_link_t *c = arts_lf_pool_batch_fetch(&p, 4, &got);
-  if (c != NULL || got != 0) {
-    (void)fprintf(stderr, "FAIL lf_pool_batch: empty fetch c=%p got=%u\n",
-                  (void *)c, got);
-    return 1;
-  }
   if (arts_lf_pool_pop_or_null(&p) != NULL) {
-    (void)fprintf(stderr, "FAIL lf_pool_batch: empty pop returned a node\n");
+    (void)fprintf(stderr, "FAIL lf_pool_churn: empty pop returned a node\n");
     return 1;
   }
-  got = 99;
-  c = arts_lf_pool_batch_fetch(&p, 0, &got);
-  if (c != NULL || got != 0) {
-    (void)fprintf(stderr, "FAIL lf_pool_batch: want0 c=%p got=%u\n", (void *)c,
-                  got);
-    return 1;
-  }
-
-  /* One node in the pool: a fetch that wants more returns it alone,
-   * detached. */
+  /* One node in the pool: it comes back alone, detached, and the pool is
+   * empty again. */
   node_t *one = (node_t *)calloc(1, sizeof(node_t));
   if (one == NULL) {
     return 1;
   }
   arts_lf_pool_release(&p, &one->link);
-  got = 0;
-  c = arts_lf_pool_batch_fetch(&p, 8, &got);
-  if (c != &one->link || got != 1) {
-    (void)fprintf(stderr,
-                  "FAIL lf_pool_batch: over-want c=%p got=%u (want the one "
-                  "node)\n",
-                  (void *)c, got);
-    return 1;
-  }
-  if (atomic_load_explicit(&c->next, memory_order_relaxed) != NULL) {
-    (void)fprintf(stderr, "FAIL lf_pool_batch: fetched chain not detached\n");
+  arts_lf_link_t *c = arts_lf_pool_pop_or_null(&p);
+  if (c != &one->link ||
+      atomic_load_explicit(&c->next, memory_order_relaxed) != NULL ||
+      arts_lf_pool_pop_or_null(&p) != NULL) {
+    (void)fprintf(stderr, "FAIL lf_pool_churn: one-node pop c=%p\n", (void *)c);
     return 1;
   }
   arts_lf_pool_release(&p, c);
@@ -227,34 +173,28 @@ int main(void) {
 
   /* Every universe node is back in the pool, and the pool holds exactly the
    * universe. */
-  unsigned in_pool = 0;
-  uint32_t got = 0;
-  arts_lf_link_t *chain = arts_lf_pool_batch_fetch(&g_pool, UNIVERSE + 1, &got);
-  for (arts_lf_link_t *l = chain; l != NULL;
-       l = atomic_load_explicit(&l->next, memory_order_relaxed)) {
-    in_pool++;
-  }
   for (int i = 0; i < UNIVERSE; i++) {
     int o = atomic_load_explicit(&g_nodes[i]->owner, memory_order_relaxed);
     if (o != -1) {
-      (void)fprintf(stderr, "FAIL lf_pool_batch: node %d still owned by %d\n",
+      (void)fprintf(stderr, "FAIL lf_pool_churn: node %d still owned by %d\n",
                     i, o);
       return 1;
     }
   }
-  if (in_pool != UNIVERSE || got != UNIVERSE) {
-    (void)fprintf(stderr,
-                  "FAIL lf_pool_batch: pool holds %u nodes (got=%u), "
-                  "want %d\n",
-                  in_pool, got, UNIVERSE);
+  unsigned in_pool = 0;
+  while (arts_lf_pool_pop_or_null(&g_pool) != NULL) {
+    in_pool++;
+  }
+  if (in_pool != UNIVERSE) {
+    (void)fprintf(stderr, "FAIL lf_pool_churn: pool holds %u nodes, want %d\n",
+                  in_pool, UNIVERSE);
     return 1;
   }
   for (int i = 0; i < UNIVERSE; i++) {
     free(g_nodes[i]);
   }
-  printf("PASS lf_pool_batch: %d threads x %d iters, release / pop / "
-         "batch_fetch raced one head, %d-node universe conserved (no "
-         "loss/dup), edge cases OK\n",
+  printf("PASS lf_pool_churn: %d threads x %d iters, release / pop raced one "
+         "head, %d-node universe conserved (no loss/dup), edge cases OK\n",
          THREADS, ITERS, UNIVERSE);
   return 0;
 }

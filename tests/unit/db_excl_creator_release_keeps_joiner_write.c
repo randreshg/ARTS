@@ -39,31 +39,39 @@
 
 /// @file db_excl_creator_release_keeps_joiner_write.c
 /// @brief EXCL-only: an RW release with nothing to publish is still an
-///        ordinary RW release, and a later real write through an RW
-///        dependency survives it.
+///        ordinary RW release, and a real write that joins a write turn kept
+///        open by such a holder survives every release around it.
 ///
 /// Under the EXCL protocol a dependency's RW hold and the creator's implicit
 /// hold are the arm's ordinary write hold, released through the same
-/// RW-release path.  A release is real even when its holder wrote nothing:
-/// the point pinned here is that such a release still behaves like an
-/// ordinary RW release and does not disturb a write that follows it.
+/// RW-release path, and a write turn this rank holds admits every later
+/// acquire on the rank, writer or reader (RW ⊇ RO), until its last holder
+/// releases.  A release is real even when its holder wrote nothing: the point
+/// pinned here is that such a release behaves like an ordinary RW release and
+/// does not disturb a write made in the same turn.
 ///
-/// Scenario, each phase in a finish scope of its own, the next phase created
-/// by a continuation gated on it:
+/// An acquire runs inside the arts_add_dependence call that makes its EDT
+/// ready, so a dependence added by a holder's body is acquired while that
+/// holder's hold is live: every join below is decided by program order, with
+/// no timing.  Each phase runs in a finish scope of its own, the next phase
+/// created by a continuation gated on it:
 ///   main_edt:    creates the block (its create hold, released at its
 ///                epilogue) and phase 1, which becomes ready inside main_edt's
-///                body and so joins the write turn the create hold keeps
-///                open: of the two holds, the first released is a non-final
-///                release;
+///                body and so joins the write turn the create hold keeps open:
+///                of the two holds, the first released is a non-final release;
 ///   phase 1:     an RW dependency holder that writes nothing;
-///   joiner EDT:  a real RW dependency on the same DB, acquired after both
-///                holds were released; writes a sentinel;
-///   reader EDT:  RO; MUST observe the joiner's update survived (not
-///                clobbered by an earlier release).
+///   phase 2:     an RW holder that writes nothing and, in its body, adds the
+///                joiner's RW dependence, so the joiner joins the turn the
+///                holder keeps open; the joiner writes a sentinel and, in its
+///                body, adds a reader's RO dependence, so the reader is
+///                admitted under the joiner's live write turn, and checks the
+///                sentinel;
+///   phase 3:     a reader, ordered after every release of phase 2 (the turn
+///                has ended), checks the sentinel once more.
 ///
-/// If a release with nothing to publish corrupted the lock state, the
-/// joiner's update would be lost -> reader mismatch -> arts_abort.  A stuck
-/// lock counter instead manifests as a hang caught by the ctest TIMEOUT.
+/// If a release with nothing to publish corrupted the lock state, the joiner's
+/// update would be lost -> reader mismatch -> arts_abort.  A stuck lock counter
+/// instead manifests as a hang caught by the ctest TIMEOUT.
 ///
 /// Meaningful only under EXCL, so built and registered only in an EXCL tree.
 
@@ -74,11 +82,11 @@
 
 #define JOINER_VAL 0x707070u
 
-/// creator_writes_nothing: takes the DB as an RW dep on purpose but performs
-/// no write.  The point is purely that its epilogue's release does not
-/// corrupt the lock for a writer that follows.
-void creator_writes_nothing(uint32_t paramc, const uint64_t *paramv,
-                            uint32_t depc, arts_edt_dep_t depv[]) {
+/// writes_nothing: takes the DB as an RW dep on purpose but performs no
+/// write.  The point is purely that its epilogue's release does not corrupt
+/// the lock for a writer that follows.
+void writes_nothing(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                    arts_edt_dep_t depv[]) {
   (void)paramc;
   (void)paramv;
   (void)depc;
@@ -86,36 +94,56 @@ void creator_writes_nothing(uint32_t paramc, const uint64_t *paramv,
   /* Intentionally no DB write, to isolate the release itself. */
 }
 
-/// joiner_writer: a real RW writer through a dependency — takes the lock,
-/// publishes JOINER_VAL, releases at epilogue.
+/// reader: RO; the joiner's update MUST survive the releases around it.
+/// paramv[0] names the check ("joined" inside the joiner's turn, "final"
+/// after the turn ended).
+void reader_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)depc;
+  const char *what = paramv[0] != 0u ? "final" : "joined";
+  unsigned int *d = (unsigned int *)depv[0].ptr;
+  if (d == NULL || d[0] != JOINER_VAL) {
+    (void)fprintf(
+        stderr,
+        "FAIL: db_excl_creator_release_keeps_joiner_write %s reader: joiner "
+        "update lost (got 0x%x want 0x%x)\n",
+        what, d ? d[0] : 0u, JOINER_VAL);
+    arts_abort(1);
+    return;
+  }
+  if (paramv[0] != 0u) {
+    arts_printf("PASS: db_excl_creator_release_keeps_joiner_write\n");
+  }
+}
+
+/// joiner_writer: a real RW writer admitted under the holder's live turn —
+/// publishes JOINER_VAL, then admits a reader under its own live turn.
+/// paramv[0] is the DB.
 void joiner_writer(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                    arts_edt_dep_t depv[]) {
   (void)paramc;
-  (void)paramv;
   (void)depc;
   unsigned int *d = (unsigned int *)depv[0].ptr;
   if (d != NULL) {
     d[0] = JOINER_VAL;
   }
+  uint64_t joined = 0u;
+  arts_guid_t rd =
+      arts_edt_create(reader_edt, 1, &joined, 1, &(arts_edt_hint_t){.rank = 0});
+  arts_add_dependence((arts_guid_t)paramv[0], rd, 0, DB_MODE_RO);
 }
 
-/// reader: RO; the JOINer's update MUST survive the earlier releases.
-void reader_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
-                arts_edt_dep_t depv[]) {
+/// holder_admits_joiner: an RW holder that writes nothing and admits the
+/// joiner under its live turn.  paramv[0] is the DB.
+void holder_admits_joiner(uint32_t paramc, const uint64_t *paramv,
+                          uint32_t depc, arts_edt_dep_t depv[]) {
   (void)paramc;
-  (void)paramv;
   (void)depc;
-  unsigned int *d = (unsigned int *)depv[0].ptr;
-  if (d == NULL || d[0] != JOINER_VAL) {
-    (void)fprintf(
-        stderr,
-        "FAIL: db_excl_creator_release_keeps_joiner_write joiner update "
-        "lost (got 0x%x want 0x%x)\n",
-        d ? d[0] : 0u, JOINER_VAL);
-    arts_abort(1);
-    return;
-  }
-  arts_printf("PASS: db_excl_creator_release_keeps_joiner_write\n");
+  (void)depv;
+  arts_guid_t jn = arts_edt_create(joiner_writer, 1, paramv, 1,
+                                   &(arts_edt_hint_t){.rank = 0});
+  arts_add_dependence((arts_guid_t)paramv[0], jn, 0, DB_MODE_RW);
 }
 
 /// Creates the next phase on rank 0, gated on the previous phase's finish
@@ -135,32 +163,34 @@ static void finale(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_shutdown();
 }
 
-/// Phase 3: RO reader confirms the JOINer's update survived.
+/// Phase 3: a reader on a fresh turn confirms the joiner's update survived.
 static void read_phase(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                        arts_edt_dep_t depv[]) {
   (void)paramc;
   (void)depc;
   (void)depv;
   arts_guid_t e_rd = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  uint64_t final_check = 1u;
   arts_guid_t rd =
-      arts_edt_create(reader_edt, 0, NULL, 1,
+      arts_edt_create(reader_edt, 1, &final_check, 1,
                       &(arts_edt_hint_t){.rank = 0, .finish_event = e_rd});
   arts_add_dependence((arts_guid_t)paramv[0], rd, 0, DB_MODE_RO);
   then(finale, paramv, e_rd);
 }
 
-/// Phase 2: a real RW JOINer writes JOINER_VAL.  Runs once the creator EDT and
-/// phase 1 have both completed, so both their releases precede this write.
+/// Phase 2: the holder, the joiner it admits and the reader the joiner
+/// admits all join one finish scope.  Runs once main_edt and phase 1 have
+/// both completed, so both their releases precede this phase.
 static void join_phase(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                        arts_edt_dep_t depv[]) {
   (void)paramc;
   (void)depc;
   (void)depv;
   arts_guid_t e_jn = arts_event_create(&ARTS_EVENT_HINT_FINISH);
-  arts_guid_t jn =
-      arts_edt_create(joiner_writer, 0, NULL, 1,
+  arts_guid_t h =
+      arts_edt_create(holder_admits_joiner, 1, paramv, 1,
                       &(arts_edt_hint_t){.rank = 0, .finish_event = e_jn});
-  arts_add_dependence((arts_guid_t)paramv[0], jn, 0, DB_MODE_RW);
+  arts_add_dependence((arts_guid_t)paramv[0], h, 0, DB_MODE_RW);
   then(read_phase, paramv, e_jn);
 }
 
@@ -189,7 +219,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
    * epilogue's release must not disturb a write that follows it. */
   arts_guid_t e_cr = arts_event_create(&ARTS_EVENT_HINT_FINISH);
   arts_guid_t cr =
-      arts_edt_create(creator_writes_nothing, 0, NULL, 1,
+      arts_edt_create(writes_nothing, 0, NULL, 1,
                       &(arts_edt_hint_t){.rank = 0, .finish_event = e_cr});
   arts_add_dependence(db, cr, 0, DB_MODE_RW);
   /* e_cr fires only once this EDT returns (its epilogue releases the create

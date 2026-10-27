@@ -218,14 +218,15 @@ arts_guid_t arts_guid_create_for_rank(unsigned int rank, unsigned int type);
 
 /* The GUID geometry, written once by arts_guid_node_geometry_init before the
  * runtime threads are created; every thread only reads it, after the thread
- * creation that publishes it.  num_tables is one route table per local
- * thread.  This rank's flat keys are [arts_guid_flat_base,
+ * creation that publishes it.  arts_guid_table_count is one route table per
+ * local thread.  This rank's flat keys are [arts_guid_flat_base,
  * arts_guid_flat_base + 2^48 / N), of which thread t mints from the block of
- * keys_per_thread keys at arts_guid_flat_base + t * keys_per_thread; the
- * blocks cover [arts_guid_flat_base, arts_guid_flat_base +
- * arts_guid_flat_span), and a key in the rest of the slice is never minted. */
-extern uint64_t num_tables;
-extern uint64_t keys_per_thread;
+ * arts_guid_keys_per_thread keys at arts_guid_flat_base + t *
+ * arts_guid_keys_per_thread; the blocks cover [arts_guid_flat_base,
+ * arts_guid_flat_base + arts_guid_flat_span), and a key in the rest of the
+ * slice is never minted. */
+extern uint64_t arts_guid_table_count;
+extern uint64_t arts_guid_keys_per_thread;
 extern uint64_t arts_guid_flat_base;
 extern uint64_t arts_guid_flat_span;
 

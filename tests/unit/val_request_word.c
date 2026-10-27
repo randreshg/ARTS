@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * Truth table of VAL's request word (val_req_compute_next): both request
+ * Truth table of VAL's request word (arts_val_req_compute_next): both request
  * axes, the read request's parity, the first-touch stub bit and the two
  * reader chains in one word, so every decision that couples the axes is one
  * CAS.  Checked here: a reader opens a window or parks (on the write request,
@@ -24,7 +24,7 @@ static int g_fail = 0;
 static void expect(const char *what, uint64_t cur, int op, uint32_t idx,
                    uint64_t want, uint32_t want_act) {
   uint32_t act = 0xffffffffu;
-  uint64_t next = val_req_compute_next(cur, op, idx, &act);
+  uint64_t next = arts_val_req_compute_next(cur, op, idx, &act);
   if (next != want || act != want_act) {
     (void)fprintf(stderr,
                   "FAIL val_request_word: %s -- got word %016llx act %u, want "

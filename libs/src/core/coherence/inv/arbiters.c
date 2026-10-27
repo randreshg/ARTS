@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * INV pure state-transition arbiters: inv_cache_compute_next (reader plane)
- * and inv_dir_compute_next (invalidation round).
+ * INV pure state-transition arbiters: arts_inv_cache_compute_next (reader
+ * plane) and inv_dir_compute_next (invalidation round).
  *
  * Two pure functions of one packed 64-bit word each, both run inside a
  * CAS-retry loop by their callers.  Purity is the point: every decision a
@@ -15,9 +15,10 @@
  * lives in its own counter rather than in either word, so neither arbiter
  * carries rw state or a writer count.
  *
- * engine.c #includes this file to get its private copy; the whitebox
- * unit tests also #include it directly.  NOT listed in CMakeLists.txt as a
- * standalone TU.
+ * engine.c #includes this file: the round's deciders are its own, and the
+ * reader-plane decider is the one the write-policy units call too.  The
+ * whitebox unit tests also #include it directly.  NOT listed in
+ * CMakeLists.txt as a standalone TU.
  */
 #ifdef ARTS_PROTOCOL_INV
 
@@ -27,7 +28,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-/* ===== inv_cache_compute_next ==========================================
+/* ===== arts_inv_cache_compute_next ==========================================
  *
  * The reader plane.  A copy is durable: once ro reaches VALID it survives
  * reader release, so a covering acquire is a pure load — no message, no CAS,
@@ -42,8 +43,8 @@
  * self_idx is the caller's pre-written pool node, consumed only by the actions
  * that park it (SEND_RO / PARK).
  */
-uint64_t inv_cache_compute_next(uint64_t cur, int op, uint32_t self_idx,
-                                uint32_t *out_action) {
+uint64_t arts_inv_cache_compute_next(uint64_t cur, int op, uint32_t self_idx,
+                                     uint32_t *out_action) {
   uint32_t ro = INV_CACHE_RO(cur);
   uint32_t inflight = INV_CACHE_INFLIGHT(cur);
   uint32_t hro = INV_CACHE_HEAD_RO(cur);
@@ -221,8 +222,9 @@ uint64_t inv_cache_compute_next(uint64_t cur, int op, uint32_t self_idx,
       par ^= 1u;
       act = INV_CACHE_ACT_SEND_RO;
     } else if (hro != 0u && ro == INV_RO_VALID) {
-      hro = 0u;
-      act = INV_CACHE_ACT_SERVE; /* a copy turned valid under them */
+      /* Unreachable: a reader never parks on a valid copy, and every way
+       * into one takes the chain.  The caller raises it. */
+      act = INV_CACHE_ACT_LATE;
     }
     break;
 
@@ -246,8 +248,8 @@ uint64_t inv_cache_compute_next(uint64_t cur, int op, uint32_t self_idx,
  *
  * arg: only ACKS_ARM reads it (the target count).
  */
-uint64_t inv_dir_compute_next(uint64_t cur, int op, unsigned int arg,
-                              uint32_t *out_action) {
+static uint64_t inv_dir_compute_next(uint64_t cur, int op, unsigned int arg,
+                                     uint32_t *out_action) {
   uint32_t open = INV_DIR_ROUND_OPEN(cur);
   uint32_t acks = INV_DIR_ACKS(cur);
   uint32_t act = INV_DIR_ACT_NONE;
@@ -304,12 +306,10 @@ uint64_t inv_dir_compute_next(uint64_t cur, int op, unsigned int arg,
  * count, or UINT_MAX when a target did not fit below `cap` (the caller
  * fails loudly).
  */
-unsigned int inv_round_snapshot_word(uint64_t snap, unsigned int base,
-                                     const unsigned int *writers,
-                                     unsigned int nwriters,
-                                     unsigned int exempt,
-                                     unsigned int *targets, unsigned int cap,
-                                     unsigned int ntargets, uint64_t *keep) {
+static unsigned int inv_round_snapshot_word(
+    uint64_t snap, unsigned int base, const unsigned int *writers,
+    unsigned int nwriters, unsigned int exempt, unsigned int *targets,
+    unsigned int cap, unsigned int ntargets, uint64_t *keep) {
   uint64_t kept = 0u;
   for (unsigned int k = 0; k < nwriters; k++) {
     unsigned int w = writers[k];

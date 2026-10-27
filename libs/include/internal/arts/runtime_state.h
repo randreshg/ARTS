@@ -211,12 +211,13 @@ extern struct arts_shutdown_abandon_s arts_shutdown_abandon;
 #endif
 
 /* Back-compat: the runtime function prototypes (and the scheduler_t typedef /
- * scheduler_loop extern) used to live here.  They now live in arts/runtime.h.
- * Include it at the end so every existing runtime_state.h includer still
- * transitively sees them without source churn.  This header must be included
- * AFTER the struct layouts above so the include direction stays one-way
- * (runtime_state.h -> runtime.h); runtime.h itself only forward-declares the
- * struct types it references, never including this header back. */
+ * arts_scheduler_loop extern) used to live here.  They now live in
+ * arts/runtime.h.  Include it at the end so every existing runtime_state.h
+ * includer still transitively sees them without source churn.  This header must
+ * be included AFTER the struct layouts above so the include direction stays
+ * one-way (runtime_state.h -> runtime.h); runtime.h itself only
+ * forward-declares the struct types it references, never including this header
+ * back. */
 #include "arts/runtime.h"
 
 #endif

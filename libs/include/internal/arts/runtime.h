@@ -91,8 +91,8 @@ bool arts_gpu_scheduler_demand_loop();
  * bodies, with its entry count; config load refuses an index at or past that
  * count. */
 typedef bool (*scheduler_t)(void);
-extern scheduler_t scheduler_loop[];
-extern const unsigned int scheduler_loop_count;
+extern scheduler_t arts_scheduler_loop[];
+extern const unsigned int arts_scheduler_loop_count;
 
 #ifdef __cplusplus
 }

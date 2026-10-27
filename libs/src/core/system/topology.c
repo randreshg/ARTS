@@ -47,7 +47,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-unsigned int num_numa_domains = 1;
+unsigned int arts_numa_domain_count = 1;
 
 static const char *role_char(enum arts_thread_role role) {
   switch (role) {
@@ -60,7 +60,7 @@ static const char *role_char(enum arts_thread_role role) {
   }
 }
 
-void print_mask(struct thread_mask_s *threads, unsigned int num_threads) {
+void arts_print_mask(struct thread_mask_s *threads, unsigned int num_threads) {
   (void)threads;
   (void)num_threads;
   ARTS_INFO(" Id  Role  GrpPos  NUMA  Pkg  Core    PU  Pin");
@@ -136,8 +136,9 @@ static void read_numa_distances(hwloc_topology_t topology,
   hwloc_distances_release(topology, dist);
 }
 
-void get_thread_mask(struct arts_config_s *config, struct thread_mask_s *flat,
-                     struct arts_numa_facts_s *facts) {
+void arts_get_thread_mask(struct arts_config_s *config,
+                          struct thread_mask_s *flat,
+                          struct arts_numa_facts_s *facts) {
   /* Init hwloc topology */
   hwloc_topology_t topology;
   if (hwloc_topology_init(&topology) < 0) {
@@ -202,13 +203,13 @@ void get_thread_mask(struct arts_config_s *config, struct thread_mask_s *flat,
 
   /* NUMA domain count for public API */
   unsigned int mem = hwloc_get_nbobjs_by_type(topology, HWLOC_OBJ_NUMANODE);
-  num_numa_domains = mem ? mem : 1;
+  arts_numa_domain_count = mem ? mem : 1;
 
   if (facts != NULL) {
     memset(facts, 0, sizeof(*facts));
-    facts->node_count = (num_numa_domains > ARTS_MAX_NUMA_NODES)
+    facts->node_count = (arts_numa_domain_count > ARTS_MAX_NUMA_NODES)
                             ? ARTS_MAX_NUMA_NODES
-                            : num_numa_domains;
+                            : arts_numa_domain_count;
     /* The rank's nodes are exactly the ones its placed threads sit on: the
      * slice is contiguous in the base order, but which nodes that spans is a
      * property of the machine, so it is read off the placement rather than

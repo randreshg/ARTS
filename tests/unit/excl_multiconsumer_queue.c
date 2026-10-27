@@ -20,12 +20,12 @@
  * ctest TIMEOUT (no in-test watchdog, no spin).
  *
  * The W/R EDTs all join one finish scope; verify_edt is gated on that scope
- * firing.  The finish DECR is emitted at EDT completion — AFTER release_dbs —
- * so verify observes every writer's increment only once its RW grant has been
- * released (committed).  Satisfying a plain latch from the writer body instead
- * would fire verify before the last writer's release, letting its RO read a
- * pre-commit (stale) accumulator (a satisfy-before-release / OCR §"release
- * before signal" violation).
+ * firing.  The finish DECR is emitted at EDT completion — AFTER
+ * arts_release_dbs — so verify observes every writer's increment only once its
+ * RW grant has been released (committed).  Satisfying a plain latch from the
+ * writer body instead would fire verify before the last writer's release,
+ * letting its RO read a pre-commit (stale) accumulator (a
+ * satisfy-before-release / OCR §"release before signal" violation).
  *
  * Registered on every arm whose runtime serializes a block's write
  * acquisitions, so the accumulator deterministically reaches N_WRITERS; not
@@ -116,9 +116,10 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
   arts_db_release(db, DB_MODE_RW);
 
-  /* Finish scope joined by every participant; its DECR is emitted at each EDT's
-   * completion (after release_dbs), so it fires only once every writer's RW
-   * grant has been released — the post-condition then reads committed data. */
+  /* Finish scope joined by every participant; its DECR is emitted at each
+   * EDT's completion (after arts_release_dbs), so it fires only once every
+   * writer's RW grant has been released — the post-condition then reads
+   * committed data. */
   arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
   if (fe == NULL_GUID) {
     (void)fprintf(stderr, "FAIL: finish-event create NULL_GUID\n");

@@ -89,13 +89,10 @@ bool arts_db_acquire_is_serialized(arts_db_access_mode_t mode) {
 }
 
 /* ===== release_rw (WB arm) =======================================
- * The WB write policy drops the buffer ref BEFORE decrementing writer_count, so
- * the slot's cache-hold is the only ref that can keep the buffer alive past
- * writer_count==0 (a concurrent teardown then ends it via the cb deleter with
- * no dangling local ref).  In the WT write policy this window does not exist
- * (local_transfer_now restores the sentinel); the WB write policy has no sentinel
- * restoration, so it must close the window by releasing the ref before exposing
- * writer_count==0. */
+ * The bytes stay here: the release bumps the version of the buffer this
+ * rank's writers wrote, under the releaser's own hold, and the count's edge
+ * (arts_db_grant_release_commit) ships the grant on when a revocation named
+ * a target.  The reference the bump takes is scoped to the bump. */
 /* A create's hold is this arm's ordinary write hold, taken when the block was
  * made; the bytes under it are the cache's own, so the release needs no
  * pointer to them. */
@@ -126,8 +123,6 @@ void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload) {
                                 new_version);
     }
   }
-  /* Drop the buffer ref BEFORE the writer_count decrement (close the
-   * writer_count==0 teardown window). */
   if (buf != NULL) {
     arts_db_buf_release(&buf_h);
   }
@@ -262,14 +257,6 @@ void arts_handler_db_snapshot_request(void *item_v, void *args_v) {
                                  &a->rdzv);
 }
 
-/* Fan-out callback for arts_rank_bitset_for_each during destroy.  ctx carries
- * the db_guid encoded as uintptr_t (the callback is synchronous). */
-static void owner_destroy_fanout_cb(unsigned int rank, void *ctx) {
-  if (rank != arts_global_rank_id) {
-    arts_send_db_cache_destroy(rank, (arts_guid_t)(uintptr_t)ctx);
-  }
-}
-
 /* Cat-B pure body (OoO g_ooo_table[OOO_DB_DESTROY]): the OoO engine has already
  * acquired the home db_s and pinned a ref across this call (cache is its FIRST
  * member).  Order: roster fan-out, then arts_ooo_retire_item LAST (a parked
@@ -294,8 +281,14 @@ void arts_handler_db_destroy(void *item_v, void *args_v) {
  * return.  The request FIFO is not read: its one consumer is the baton holder,
  * and every queued requester is already on the bit-set. */
 void arts_db_home_destroy_now(struct arts_db_s *db) {
-  arts_rank_bitset_for_each(&db->cached_ranks, owner_destroy_fanout_cb,
-                            (void *)(uintptr_t)db->cache.db_guid);
+  struct arts_rank_bitset_cursor_s c =
+      arts_rank_bitset_cursor(&db->cached_ranks);
+  unsigned int rank;
+  while (arts_rank_bitset_next(&c, &rank)) {
+    if (rank != arts_global_rank_id) {
+      arts_send_db_cache_destroy(rank, db->cache.db_guid);
+    }
+  }
   (void)arts_ooo_retire_item(db->cache.db_guid, db);
 }
 

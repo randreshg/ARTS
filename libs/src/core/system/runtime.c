@@ -165,12 +165,12 @@ void arts_runtime_node_init(struct arts_config_s *config) {
    * but the scheduler is still at its default selection, promote to the GPU
    * scheduler loop.  An explicit non-default choice (e.g. a GPU backoff/demand
    * variant) is respected.  Index 3 is arts_gpu_scheduler_loop in the GPU
-   * build's scheduler_loop[] dispatch table. */
+   * build's arts_scheduler_loop[] dispatch table. */
   if (config->gpu > 0 && config->scheduler == 0) {
     config->scheduler = 3;
   }
 #endif
-  arts_node_info.scheduler = scheduler_loop[config->scheduler];
+  arts_node_info.scheduler = arts_scheduler_loop[config->scheduler];
 
   /* Per-thread indexed arrays */
   arts_node_info.deque =

@@ -39,16 +39,14 @@
 #include <stdint.h>
 
 #include "arts.h"
-#include "arts/edt_context.h" /* current_edt (per-worker running EDT) */
+#include "arts/edt_context.h" /* arts_current_edt (per-worker running EDT) */
 #include "arts/runtime_state.h"
 #include "arts/system/threads.h"
-
-/* num_numa_domains is the topology global (defined in system/topology.c). */
-extern unsigned int num_numa_domains;
+#include "arts/system/topology.h"
 
 arts_guid_t arts_edt_get_current_guid() {
-  if (current_edt) {
-    return current_edt->guid;
+  if (arts_current_edt) {
+    return arts_current_edt->guid;
   }
   return NULL_GUID;
 }
@@ -71,6 +69,6 @@ unsigned int arts_get_current_numa_domain() {
   return arts_thread_info.numa_domain_id;
 }
 
-unsigned int arts_get_total_numa_domains() { return num_numa_domains; }
+unsigned int arts_get_total_numa_domains() { return arts_numa_domain_count; }
 
 unsigned int arts_get_gpus_per_rank() { return arts_node_info.gpu; }

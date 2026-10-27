@@ -144,26 +144,20 @@ void arts_excl_home_teardown(struct arts_db_s *db, arts_guid_t db_guid) {
   if (!arts_ooo_retire_item(db_guid, db)) {
     return;
   }
-  unsigned int self = arts_global_rank_id;
-  /* Inline the bitset word-walk (arts_rank_bitset_for_each requires a
-   * callback; C has no local functions, so we open-code the loop). */
-  const struct arts_rank_bitset_s *bs = &db->cached_ranks;
-  for (unsigned int w = 0; w < bs->nwords; w++) {
-    uint64_t snap = atomic_load_explicit(&bs->words[w], memory_order_acquire);
-    while (snap) {
-      unsigned int b = (unsigned int)__builtin_ctzll(snap);
-      unsigned int rank = w * 64 + b;
-      if (rank != self) {
-        arts_send_db_cache_destroy(rank, db_guid);
-      }
-      snap &= snap - 1;
+  struct arts_rank_bitset_cursor_s c =
+      arts_rank_bitset_cursor(&db->cached_ranks);
+  unsigned int rank;
+  while (arts_rank_bitset_next(&c, &rank)) {
+    if (rank != arts_global_rank_id) {
+      arts_send_db_cache_destroy(rank, db_guid);
     }
   }
-  /* No rw_waiters drain here: the request queue is single-consumer (the CONFIRM
-   * that pops the migrated requester is its only consumer, serialized by the
-   * lock phase machine).  Every rank that ever requested RW is in cached_ranks
-   * (recorded at request time) and was just notified above.  Draining here
-   * would be a second, unsynchronized consumer of a single-consumer queue — a
-   * use-after-free against a concurrent CONFIRM. */
+  /* No rw_waiters drain here: the request queue is single-consumer (under
+   * RETAIN the CONFIRM that pops the migrated requester, under PURGE the
+   * committer of the transition that grants the front its write turn,
+   * serialized by the lock phase machine).  Every rank that ever requested RW
+   * is in cached_ranks (recorded at request time) and was just notified
+   * above.  Draining here would be a second, unsynchronized consumer of a
+   * single-consumer queue — a use-after-free against a concurrent pop. */
 }
 

@@ -47,8 +47,8 @@
 
 /* Written once by arts_guid_node_geometry_init, before the runtime threads
  * are created; thread creation publishes them. */
-uint64_t num_tables = 0;
-uint64_t keys_per_thread = 0;
+uint64_t arts_guid_table_count = 0;
+uint64_t arts_guid_keys_per_thread = 0;
 uint64_t arts_guid_flat_base = 0;
 uint64_t arts_guid_flat_span = 0;
 
@@ -126,7 +126,7 @@ uint64_t *arts_guid_generator_get_key(unsigned int rank, unsigned int type) {
 /* The first key of the calling thread's flat-kind block. */
 static inline uint64_t thread_block_base(void) {
   return arts_guid_flat_base +
-         (keys_per_thread * (uint64_t)arts_thread_info.thread_id);
+         (arts_guid_keys_per_thread * (uint64_t)arts_thread_info.thread_id);
 }
 
 arts_guid_t arts_guid_create_for_rank_internal(unsigned int rank,
@@ -161,7 +161,7 @@ arts_guid_t arts_guid_create_for_rank_internal(unsigned int rank,
   } else {
     uint64_t *key_ptr = arts_guid_generator_get_key(rank, type);
     uint64_t value = *key_ptr;
-    if (value + guid_count < keys_per_thread) {
+    if (value + guid_count < arts_guid_keys_per_thread) {
       key = value + thread_block_base();
       (*key_ptr) += guid_count;
     } else {
@@ -177,7 +177,7 @@ arts_guid_t arts_guid_create_for_rank(unsigned int rank, unsigned int type) {
 
 void arts_guid_generator_cleanup() {
   if (db_cursor_registry != NULL) {
-    for (uint64_t t = 0; t < num_tables; t++) {
+    for (uint64_t t = 0; t < arts_guid_table_count; t++) {
       arts_free(db_cursor_registry[t]);
     }
     arts_free((void *)db_cursor_registry);
@@ -193,16 +193,18 @@ void arts_guid_node_geometry_init(void) {
   /* Every key a thread mints lies in a range only it draws from, fixed by
    * values every rank shares (the key widths, the rank count) and its own
    * rank and thread ids.  Flat keys: rank r owns [r*S, (r+1)*S) with
-   * S = 2^48 / N, and its thread t the block of keys_per_thread keys from
-   * arts_guid_flat_base + t * keys_per_thread, so a flat key's local table is
-   * one division and no rank's thread count matters to another's.  DB seqs:
-   * creator r owns [r*B, (r+1)*B) of every home's seq space, B = 2^38 / N. */
+   * S = 2^48 / N, and its thread t the block of arts_guid_keys_per_thread keys
+   * from arts_guid_flat_base + t * arts_guid_keys_per_thread, so a flat key's
+   * local table is one division and no rank's thread count matters to
+   * another's.  DB seqs: creator r owns [r*B, (r+1)*B) of every home's seq
+   * space, B = 2^38 / N. */
   uint64_t nrank = arts_global_rank_count ? arts_global_rank_count : 1;
-  num_tables = arts_node_info.total_thread_count;
+  arts_guid_table_count = arts_node_info.total_thread_count;
   uint64_t slice = ((uint64_t)1 << ARTS_GUID_KEY_BITS) / nrank;
-  keys_per_thread = num_tables ? slice / num_tables : 0;
+  arts_guid_keys_per_thread =
+      arts_guid_table_count ? slice / arts_guid_table_count : 0;
   arts_guid_flat_base = slice * arts_global_rank_id;
-  arts_guid_flat_span = keys_per_thread * num_tables;
+  arts_guid_flat_span = arts_guid_keys_per_thread * arts_guid_table_count;
 
   arts_db_seq_budget = (ARTS_GUID_DB_SEQ_MASK + 1) / nrank;
   db_seq_creator_base = arts_db_seq_budget * arts_global_rank_id;
@@ -213,7 +215,7 @@ void arts_guid_node_geometry_init(void) {
     atomic_init(&db_seq_next[r], db_seq_creator_base + 1);
   }
   db_cursor_registry = (struct db_seq_cursor_s **)arts_calloc(
-      num_tables, sizeof(struct db_seq_cursor_s *));
+      arts_guid_table_count, sizeof(struct db_seq_cursor_s *));
 }
 
 void arts_guid_key_generator_init() {
@@ -325,7 +327,7 @@ arts_guid_t arts_guid_reserve_range(arts_guid_kind_t kind, unsigned int size,
         base_value = v;
       }
     }
-    if (base_value + stride >= keys_per_thread) {
+    if (base_value + stride >= arts_guid_keys_per_thread) {
       ARTS_ERROR("GUID range reservation failed: thread key space exhausted");
     }
     for (unsigned int r = 0; r < nrank; r++) {

@@ -22,8 +22,8 @@
  * full is set through the pool's own force-full override, the one machine
  * fact the test changes while several threads run.  The retired mapping R is
  * placed on node 1, and node 1 has room again only once R's munmap has
- * returned: the test defines munmap (finding the C library's own at run
- * time), holds the request that tears R down inside it until the test has
+ * returned: the test wraps munmap at link time (-Wl,--wrap=munmap), holds
+ * the request that tears R down inside the wrapper until the test has
  * observed what must hold during the teardown, and lifts node 1's override
  * after the real munmap.
  *
@@ -107,18 +107,9 @@ static sem_t g_in_teardown, g_release;
 static void *g_d_base, *g_d2_base;
 static _Atomic(bool) g_d_gone, g_d2_gone;
 
-int munmap(void *addr, size_t len) {
-  /* Resolved at the first call: initialisation order across shared objects,
-   * and among equal-priority constructors, is outside the test's control, so
-   * no constructor is sure to run first.  Every resolution stores the same
-   * address, so the pointer publishes nothing and relaxed suffices. */
-  typedef int (*munmap_fn)(void *, size_t);
-  static _Atomic(munmap_fn) real_munmap;
-  munmap_fn real = atomic_load_explicit(&real_munmap, memory_order_relaxed);
-  if (real == NULL) {
-    real = (munmap_fn)dlsym(RTLD_NEXT, "munmap");
-    atomic_store_explicit(&real_munmap, real, memory_order_relaxed);
-  }
+int __real_munmap(void *addr, size_t len);
+
+int __wrap_munmap(void *addr, size_t len) {
   bool held = addr == g_r_base && len == g_r_len &&
               atomic_exchange_explicit(&g_r_armed, false, memory_order_acquire);
   if (held) {
@@ -126,7 +117,7 @@ int munmap(void *addr, size_t len) {
     while (sem_wait(&g_release) != 0 && errno == EINTR)
       ;
   }
-  int rc = real(addr, len);
+  int rc = __real_munmap(addr, len);
   if (held)
     arts_regpool_set_forced_full(0x1); /* node 1 has R's room back */
   if (addr != NULL && addr == g_d_base && len == D_BYTES)

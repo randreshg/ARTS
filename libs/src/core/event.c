@@ -69,7 +69,7 @@ static void event_simple_step(struct arts_event_s *e, arts_guid_t guid, int op,
 
 #include "arts.h"
 #include "arts/edt.h"
-#include "arts/edt_context.h" /* current_edt */
+#include "arts/edt_context.h" /* arts_current_edt */
 #include "arts/gas/guid.h"
 #include "arts/gas/route_table.h"
 #include "arts/ooo.h"
@@ -467,8 +467,8 @@ void arts_event_satisfy_slot(arts_guid_t event_guid, arts_guid_t data_guid,
                              uint32_t slot) {
   struct arts_ooo_args_event_satisfy_s a = {
       .event_guid = event_guid, .data_guid = data_guid, .slot = slot};
-  if (current_edt && current_edt->invalidate_count > 0) {
-    arts_ooo_push_guid(current_edt->guid, OOO_EVENT_SATISFY_SLOT, &a,
+  if (arts_current_edt && arts_current_edt->invalidate_count > 0) {
+    arts_ooo_push_guid(arts_current_edt->guid, OOO_EVENT_SATISFY_SLOT, &a,
                        sizeof(a));
   } else if (arts_guid_get_rank(event_guid) != arts_global_rank_id) {
     arts_send_event_satisfy_slot(event_guid, data_guid, slot);

@@ -61,7 +61,7 @@ static uint64_t inv_req_step_tok(struct arts_db_cache_s *cache, int op,
   uint64_t cur = atomic_load_explicit(&cache->cache_state, memory_order_acquire);
   uint64_t next;
   for (;;) {
-    next = inv_cache_compute_next(cur, op, tok, act);
+    next = arts_inv_cache_compute_next(cur, op, tok, act);
     if (next == cur ||
         atomic_compare_exchange_weak_explicit(&cache->cache_state, &cur, next,
                                               memory_order_acq_rel,
@@ -80,7 +80,7 @@ static uint64_t inv_req_step(struct arts_db_cache_s *cache, int op,
 
 /* A read request's cover word: its parity, and PRECLAIM while the cache is a
  * claimable first touch (such a request leaves without a landing). */
-uint32_t inv_read_cover(uint64_t s) {
+uint32_t arts_inv_read_cover(uint64_t s) {
   return (INV_CACHE_PAR(s) ? ARTS_COVER_PAR : 0u) |
          (INV_CACHE_STUB(s) ? ARTS_COVER_PRECLAIM : 0u);
 }
@@ -121,13 +121,13 @@ void arts_db_rw_req_giveback(struct arts_db_cache_s *cache, uint32_t tok) {
   uint64_t post;
   uint32_t act;
   uint64_t pre = inv_req_step_tok(cache, INV_CACHE_OP_RW_GIVE, tok, &post, &act);
+  if (act == INV_CACHE_ACT_LATE) {
+    ARTS_ERROR("inv: guid %lu gave back a write request with readers parked "
+               "on a valid copy (word=%llx)",
+               (unsigned long)cache->db_guid, (unsigned long long)pre);
+  }
   if (act == INV_CACHE_ACT_SEND_RO) {
-    arts_send_db_inv_request(cache, DB_MODE_RO, inv_read_cover(post));
-  } else if (act == INV_CACHE_ACT_SERVE) {
-    /* No serve section: a valid copy never has a parked chain (every
-     * transition into it leaves the chain empty, and an arrival on it serves
-     * itself), so this takes no reader. */
-    arts_db_reader_serve_chain(&cache->reader_pool, INV_CACHE_HEAD_RO(pre));
+    arts_send_db_inv_request(cache, DB_MODE_RO, arts_inv_read_cover(post));
   }
 }
 
@@ -337,17 +337,12 @@ void arts_handler_db_destroy(void *item_v, void *args_v) {
 void arts_db_home_destroy_now(struct arts_db_s *db) {
   struct arts_db_cache_s *cache = &db->cache;
   arts_guid_t guid = cache->db_guid;
-  unsigned int self = arts_global_rank_id;
-  const struct arts_rank_bitset_s *bs = &db->cached_ranks;
-  for (unsigned int w = 0; w < bs->nwords; w++) {
-    uint64_t snap = atomic_load_explicit(&bs->words[w], memory_order_acquire);
-    while (snap) {
-      unsigned int b = (unsigned int)__builtin_ctzll(snap);
-      unsigned int rank = w * 64u + b;
-      if (rank != self) {
-        arts_send_db_cache_destroy(rank, guid);
-      }
-      snap &= snap - 1;
+  struct arts_rank_bitset_cursor_s c =
+      arts_rank_bitset_cursor(&db->cached_ranks);
+  unsigned int rank;
+  while (arts_rank_bitset_next(&c, &rank)) {
+    if (rank != arts_global_rank_id) {
+      arts_send_db_cache_destroy(rank, guid);
     }
   }
   (void)arts_ooo_retire_item(guid, db);
@@ -421,7 +416,7 @@ static void inv_home_round_close(struct arts_db_s *db,
                                                   memory_order_acq_rel,
                                                   memory_order_acquire));
   /* seq_cst fence: store->load pair with a producer, which pushes onto
-   * pub_queue and passes the fence at the head of inv_home_round_try_open
+   * pub_queue and passes the fence at the head of arts_inv_home_round_try_open
    * before it reads this word.  Of the two fences in S the later one's side
    * sees the other's store: either the queue probe that follows every close
    * reads the push or a later value of the head (a drain that already took
@@ -449,7 +444,7 @@ static void inv_home_round_close(struct arts_db_s *db,
   }
 }
 
-void inv_home_round_try_open(struct arts_db_s *db) {
+void arts_inv_home_round_try_open(struct arts_db_s *db) {
   struct arts_db_cache_s *cache = &db->cache;
   /* seq_cst fence: store->load pair with inv_home_round_close, which CASes
    * the round closed and passes a fence before its queue probe.  A producer
@@ -564,10 +559,18 @@ void inv_home_round_try_open(struct arts_db_s *db) {
             break;
           }
         }
-        if (!seen &&
-            nwriters < (unsigned int)(sizeof(writers) / sizeof(writers[0]))) {
-          writers[nwriters++] = e->releaser_rank;
+        if (seen) {
+          continue;
         }
+        /* A batch holds releases of the one rank that holds the write
+         * right, which leaves it only at a commit after that rank's round
+         * closed, so it names one releaser; a releaser dropped here would be
+         * a target of its own round and lose its sharer bit. */
+        if (nwriters == (unsigned int)(sizeof(writers) / sizeof(writers[0]))) {
+          ARTS_ERROR("inv: guid %lu round batch names more than %u releasers",
+                     (unsigned long)cache->db_guid, nwriters);
+        }
+        writers[nwriters++] = e->releaser_rank;
       }
 #ifdef ARTS_WRITE_POLICY_WT
       unsigned int self = arts_global_rank_id;
@@ -654,7 +657,7 @@ static void inv_pub_landed_cb(void *arg) {
     return;
   }
   arts_lf_stack_push(&db->pub_queue, &ctx->entry->link);
-  inv_home_round_try_open(db);
+  arts_inv_home_round_try_open(db);
   arts_shared_release(&ctx->db_h);
   arts_free(ctx);
 }
@@ -721,7 +724,7 @@ void arts_handler_db_publish(void *item_v, void *args_v) {
     return;
   }
   arts_lf_stack_push(&db->pub_queue, &e->link);
-  inv_home_round_try_open(db);
+  arts_inv_home_round_try_open(db);
 }
 
 /* ===== Cat-C handler bodies ============================================= */
@@ -746,7 +749,7 @@ void arts_handler_db_inv_cts(struct arts_db_s *db,
                (unsigned long long)pre);
   }
   if (act == INV_CACHE_ACT_RESEND) {
-    arts_send_db_inv_request(cache, DB_MODE_RO, inv_read_cover(post));
+    arts_send_db_inv_request(cache, DB_MODE_RO, arts_inv_read_cover(post));
   } else if (act == INV_CACHE_ACT_CLOSE_ACK) {
     arts_send_db_inv_invalidate_ack(arts_guid_get_rank(cache->db_guid),
                                     cache->db_guid);
@@ -772,7 +775,7 @@ static void inv_deliver_commit(arts_shared_ptr_t db_h, uint64_t version,
   uint64_t cur, next;
   do {
     cur = atomic_load_explicit(&cache->cache_state, memory_order_acquire);
-    next = inv_cache_compute_next(cur, INV_CACHE_OP_DELIVER, 0u, &act);
+    next = arts_inv_cache_compute_next(cur, INV_CACHE_OP_DELIVER, 0u, &act);
     if (act == INV_CACHE_ACT_LATE) {
       ARTS_ERROR("inv: guid %lu got a read reply it has no fetch out for "
                  "(word=%llx)",
@@ -794,7 +797,8 @@ static void inv_deliver_commit(arts_shared_ptr_t db_h, uint64_t version,
         ARTS_ERROR("inv: reserved purge found ro=%u (drifted)",
                    INV_CACHE_RO(cur));
       }
-      next = inv_cache_compute_next(cur, INV_CACHE_OP_KILL_PURGE, 0u, &pact);
+      next =
+          arts_inv_cache_compute_next(cur, INV_CACHE_OP_KILL_PURGE, 0u, &pact);
     } while (!atomic_compare_exchange_weak_explicit(
         &cache->cache_state, &cur, next, memory_order_acq_rel,
         memory_order_acquire));
@@ -898,7 +902,7 @@ void arts_handler_db_inv_invalidate(struct arts_db_s *db) {
         0u) {
       ARTS_ERROR("inv: invalidate hit the grant holder");
     }
-    next = inv_cache_compute_next(cur, INV_CACHE_OP_INVALIDATE, 0u, &act);
+    next = arts_inv_cache_compute_next(cur, INV_CACHE_OP_INVALIDATE, 0u, &act);
   } while (!atomic_compare_exchange_weak_explicit(&cache->cache_state, &cur,
                                                   next, memory_order_acq_rel,
                                                   memory_order_acquire));
@@ -937,7 +941,7 @@ void arts_handler_db_inv_invalidate_ack(struct arts_db_s *db,
     inv_home_round_close(db, entries);
     /* Re-arm work that queued while the round was in flight. */
     if (!arts_lf_stack_empty(&db->pub_queue)) {
-      inv_home_round_try_open(db);
+      arts_inv_home_round_try_open(db);
     }
   }
 }

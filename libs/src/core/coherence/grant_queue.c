@@ -20,13 +20,15 @@
  * waiter embeds an arts_lf_link_t as its first member.
  *
  * Concurrency model:
- *   Producers — foreign-rank acquire_remote_rw, multi-threaded; push prepends
- *               to the head with an acq_rel CAS.
- *   Consumers — the grant's drains take the whole chain out with one atomic
- *               exchange (arts_db_grant_take_waiters):
+ *   Producers — this rank's acquiring threads (arts_db_acquire_remote_rw on a
+ *               worker or a progress thread), any number at once; push
+ *               prepends to the head with an acq_rel CAS.
+ *   Consumers — each take moves the whole chain out with one atomic
+ *               exchange: a grant's drain (arts_db_grant_take_waiters —
  *               arts_db_drain_pending_rw_after_grant wakes it, and under
- *               PURGE arts_db_grant_commit_drain counts it before waking it;
- *               teardown destroys what is left.
+ *               PURGE arts_db_grant_commit_drain counts it before waking it)
+ *               and a create's claim (arts_db_grant_claim_writers); teardown
+ *               destroys what is left.
  *
  * Memory: heap-allocated waiters (one malloc per producer).  chain_wake /
  * destroy free each waiter (chain_wake after its callback).  The consume order

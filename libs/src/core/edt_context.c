@@ -43,9 +43,9 @@
 #include "arts/utils/shared.h"
 #include "arts/utils/vector.h"
 
-ARTS_THREAD_LOCAL struct arts_edt_s *current_edt = NULL;
-ARTS_THREAD_LOCAL arts_vector_t created_db_list = {0};
-ARTS_THREAD_LOCAL arts_vector_t owned_finish_list = {0};
+ARTS_THREAD_LOCAL struct arts_edt_s *arts_current_edt = NULL;
+static ARTS_THREAD_LOCAL arts_vector_t created_db_list = {0};
+static ARTS_THREAD_LOCAL arts_vector_t owned_finish_list = {0};
 
 void arts_owned_finish_register(arts_guid_t fe_guid) {
   if (!fe_guid) {
@@ -84,7 +84,7 @@ void arts_owned_finish_cleanup(void) {
 }
 
 arts_guid_t arts_current_finish_event(void) {
-  return current_edt ? current_edt->finish_event : NULL_GUID;
+  return arts_current_edt ? arts_current_edt->finish_event : NULL_GUID;
 }
 
 void arts_track_created_db(arts_shared_ptr_t h) {
@@ -121,7 +121,7 @@ void arts_set_thread_local_edt_info(struct arts_edt_s *edt) {
                (unsigned long)arts_vector_count(&created_db_list));
   }
 #endif
-  current_edt = edt;
+  arts_current_edt = edt;
 }
 
 void arts_cleanup_edt_tls() {
@@ -134,11 +134,12 @@ void arts_unset_thread_local_edt_info(bool decr_finish) {
    * - Joined/inherited finish_event: balances the INCR emitted at create time.
    * - Cross-node proxy finish_event: counter==0 fires the latch, propagating
    *   DECR to the parent's finish_event via the dep registered at allocation.
-   * `current_edt` is still valid here (cleared on the next line). */
-  if (decr_finish && current_edt && current_edt->finish_event != NULL_GUID) {
-    arts_event_satisfy_slot(current_edt->finish_event, NULL_GUID,
+   * `arts_current_edt` is still valid here (cleared on the next line). */
+  if (decr_finish && arts_current_edt &&
+      arts_current_edt->finish_event != NULL_GUID) {
+    arts_event_satisfy_slot(arts_current_edt->finish_event, NULL_GUID,
                             ARTS_EVENT_LATCH_DECR_SLOT);
   }
   arts_owned_finish_cleanup(); /* creator-tokens not handed back early */
-  current_edt = NULL;
+  arts_current_edt = NULL;
 }

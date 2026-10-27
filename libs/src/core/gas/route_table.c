@@ -130,8 +130,8 @@ static inline arts_route_table_t *arts_get_route_table(arts_guid_t guid) {
      * take the shared remote shards. */
     uint64_t seq = key & ARTS_GUID_DB_SEQ_MASK;
     if (seq / arts_db_seq_budget == arts_global_rank_id) {
-      return arts_node_info
-          .route_table[(seq >> ARTS_GUID_DB_CHUNK_BITS) % num_tables];
+      return arts_node_info.route_table[(seq >> ARTS_GUID_DB_CHUNK_BITS) %
+                                        arts_guid_table_count];
     }
     return arts_node_info
         .remote_route_table[key & (ARTS_REMOTE_ROUTE_SHARDS - 1)];
@@ -142,7 +142,7 @@ static inline arts_route_table_t *arts_get_route_table(arts_guid_t guid) {
    * indexes past route_table[].  A span of 0 sends every key remote. */
   uint64_t off = key - arts_guid_flat_base;
   if (off < arts_guid_flat_span) {
-    return arts_node_info.route_table[off / keys_per_thread];
+    return arts_node_info.route_table[off / arts_guid_keys_per_thread];
   }
   return arts_node_info
       .remote_route_table[key & (ARTS_REMOTE_ROUTE_SHARDS - 1)];

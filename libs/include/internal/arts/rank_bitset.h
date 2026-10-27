@@ -26,9 +26,9 @@ extern "C" {
 
 /* `words` is allocated before the descriptor is published and freed after
  * its last user, so the pointer itself is plain.  Its elements are accessed
- * only atomically: by the functions below and directly by the arms that set,
- * drain or walk a roster themselves.  arts_rank_bitset_set is an acq_rel
- * fetch_or, and arts_rank_bitset_for_each loads each word with acquire.  In
+ * only atomically: by the functions below and directly by the arms that
+ * drain a roster themselves.  arts_rank_bitset_set is an acq_rel fetch_or,
+ * and a cursor (arts_rank_bitset_next) loads each word with acquire.  In
  * a destroy roster and in EXCL's recall roster a bit carries only its own
  * value: the caller sends to the ranks named.  INV's copy roster needs the
  * set's acquire half: a read serve's set and the round's snapshot exchange
@@ -55,13 +55,43 @@ bool arts_rank_bitset_set(struct arts_rank_bitset_s *r, unsigned int rank);
  * one bit, exactly one sees the other's. */
 bool arts_rank_bitset_put(struct arts_rank_bitset_s *r, unsigned int rank,
                           bool value);
-/* Call cb(rank, ctx) once for every bit set, reading each word once.  A bit
- * set during the walk may be missed, so a caller that needs every member
- * walks only after every set: the destroy fan-out walks once the block's
- * route-table slot is absent, so no later acquire can register a rank. */
-void arts_rank_bitset_for_each(const struct arts_rank_bitset_s *r,
-                               void (*cb)(unsigned int rank, void *ctx),
-                               void *ctx);
+/* A walk over the members of a set, each word read once:
+ *
+ *   struct arts_rank_bitset_cursor_s c = arts_rank_bitset_cursor(set);
+ *   unsigned int rank;
+ *   while (arts_rank_bitset_next(&c, &rank)) { ... }
+ *
+ * yields every rank whose bit was set when its word was read, in ascending
+ * order, each once.  A bit set during the walk may be missed, so a caller that
+ * needs every member walks only after every set: the destroy fan-out walks
+ * once the block's route-table slot is absent, so no later acquire can
+ * register a rank. */
+struct arts_rank_bitset_cursor_s {
+  const struct arts_rank_bitset_s *set;
+  unsigned int word; /* the next word to read */
+  uint64_t bits;     /* the last word read's members not yet yielded */
+};
+
+static inline struct arts_rank_bitset_cursor_s
+arts_rank_bitset_cursor(const struct arts_rank_bitset_s *r) {
+  struct arts_rank_bitset_cursor_s c = {r, 0u, 0u};
+  return c;
+}
+
+static inline bool arts_rank_bitset_next(struct arts_rank_bitset_cursor_s *c,
+                                         unsigned int *rank) {
+  while (c->bits == 0u) {
+    if (c->word >= c->set->nwords) {
+      return false;
+    }
+    c->bits =
+        atomic_load_explicit(&c->set->words[c->word], memory_order_acquire);
+    c->word++;
+  }
+  *rank = (c->word - 1u) * 64u + (unsigned int)__builtin_ctzll(c->bits);
+  c->bits &= c->bits - 1u;
+  return true;
+}
 
 #ifdef __cplusplus
 }

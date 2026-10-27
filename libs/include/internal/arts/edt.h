@@ -98,7 +98,7 @@ void arts_send_edt_destroy(unsigned int home_rank, arts_guid_t guid);
 void arts_send_edt_satisfy_slot(arts_guid_t edt, arts_guid_t db, uint32_t slot,
                                 arts_db_access_mode_t mode);
 
-/* Per-worker EDT-execution context (current_edt, owned-finish-events list,
+/* Per-worker EDT-execution context (arts_current_edt, owned-finish-events list,
  * created-DB tracking) is declared in arts/edt_context.h. */
 
 void *arts_get_depv(void *edt_ptr);

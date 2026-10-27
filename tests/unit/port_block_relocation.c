@@ -68,7 +68,6 @@
 #include "arts/transport/socket.h"
 
 #include <arpa/inet.h>
-#include <dlfcn.h>
 #include <errno.h>
 #include <netinet/in.h>
 #include <stdio.h>
@@ -85,14 +84,15 @@ static int fails = 0;
 static unsigned int g_held_base;
 static unsigned int g_held_count;
 
-/* Defines the process's bind: an IPv4 bind to an occupied port fails as one
- * held by a live listener does; every other bind is the C library's. */
-int bind(int fd, const struct sockaddr *addr, socklen_t len) {
-  static int (*real)(int, const struct sockaddr *, socklen_t);
-  if (real == NULL) {
-    real = (int (*)(int, const struct sockaddr *, socklen_t))dlsym(RTLD_NEXT,
-                                                                   "bind");
-  }
+/* bind and fopen are wrapped at link time (-Wl,--wrap=bind,--wrap=fopen):
+ * every call this program's objects make reaches the wrapper, and the C
+ * library's own definition stays its __real_ name. */
+int __real_bind(int fd, const struct sockaddr *addr, socklen_t len);
+FILE *__real_fopen(const char *path, const char *mode);
+
+/* An IPv4 bind to an occupied port fails as one held by a live listener does;
+ * every other bind is the C library's. */
+int __wrap_bind(int fd, const struct sockaddr *addr, socklen_t len) {
   if (addr != NULL && addr->sa_family == AF_INET &&
       len >= (socklen_t)sizeof(struct sockaddr_in)) {
     unsigned int port = ntohs(((const struct sockaddr_in *)addr)->sin_port);
@@ -101,22 +101,18 @@ int bind(int fd, const struct sockaddr *addr, socklen_t len) {
       return -1;
     }
   }
-  return real(fd, addr, len);
+  return __real_bind(fd, addr, len);
 }
 
-/* Defines the process's fopen: the kernel's ephemeral port range reads as the
- * stock 32768-60999; every other path is the C library's. */
-FILE *fopen(const char *path, const char *mode) {
-  static FILE *(*real)(const char *, const char *);
-  if (real == NULL) {
-    real = (FILE * (*)(const char *, const char *)) dlsym(RTLD_NEXT, "fopen");
-  }
+/* The kernel's ephemeral port range reads as the stock 32768-60999; every
+ * other path is the C library's. */
+FILE *__wrap_fopen(const char *path, const char *mode) {
   if (path != NULL &&
       strcmp(path, "/proc/sys/net/ipv4/ip_local_port_range") == 0) {
     static const char range[] = "32768\t60999\n";
     return fmemopen((void *)range, sizeof range - 1, "r");
   }
-  return real(path, mode);
+  return __real_fopen(path, mode);
 }
 
 /* Hold a port as a foreign process would: a live listener, which no

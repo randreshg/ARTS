@@ -60,13 +60,6 @@ struct roster_probe_s {
   bool found;
 };
 
-static void roster_cb(unsigned int rank, void *ctx) {
-  struct roster_probe_s *p = (struct roster_probe_s *)ctx;
-  if (rank == p->want) {
-    p->found = true;
-  }
-}
-
 /* depv[0] = the creator's output event, depv[1] = the block, RO — the read
  * dependence is the ordering against the create: the home serves it only once
  * the announce has installed the object here.  paramv = {the block, the
@@ -85,7 +78,14 @@ static void home_check_edt(uint32_t paramc, const uint64_t *paramv,
   if (db == NULL || !db->home_initialized) {
     fail("the home has no directory for a block it was announced");
   } else {
-    arts_rank_bitset_for_each(&db->cached_ranks, roster_cb, &probe);
+    struct arts_rank_bitset_cursor_s c =
+        arts_rank_bitset_cursor(&db->cached_ranks);
+    unsigned int rank;
+    while (arts_rank_bitset_next(&c, &rank)) {
+      if (rank == probe.want) {
+        probe.found = true;
+      }
+    }
     if (!probe.found) {
       fail("an acquiring creator is not on the block's destroy roster");
     }

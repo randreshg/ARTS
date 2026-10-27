@@ -1092,15 +1092,16 @@ register_pure_unit_test(config_flux_setup TIMEOUT 30)
 set_tests_properties(config_flux_setup PROPERTIES
     PASS_REGULAR_EXPRESSION "PASS config_flux_setup")
 # Occupies one port of a block, declared through its own bind and by a real
-# listener, and checks the selector moves off the block.  It defines bind and
-# fopen (the ephemeral port range) and finds the C library's own at run time.
+# listener, and checks the selector moves off the block.  It wraps bind and
+# fopen (the ephemeral port range) at link time.
 register_pure_unit_test(port_block_relocation TIMEOUT 30)
-target_link_libraries(port_block_relocation PRIVATE ${CMAKE_DL_LIBS})
+target_link_options(port_block_relocation PRIVATE -Wl,--wrap=bind,--wrap=fopen)
 set_tests_properties(port_block_relocation PROPERTIES
     PASS_REGULAR_EXPRESSION "PASS port_block_relocation")
 
-# Programs including unit/regpool_numa_sim.h find the C library's own
-# sched_getcpu, syscall and fopen at run time.
+# Programs including unit/regpool_numa_sim.h wrap sched_getcpu, syscall and
+# fopen at link time; regpool_evict_wait also wraps munmap.
+set(_regpool_sim_wrap -Wl,--wrap=sched_getcpu,--wrap=syscall,--wrap=fopen)
 set(_regpool_sim_tests regpool_basic regpool_lazy_carve
     regpool_ladder regpool_fallback_order regpool_spill_cycle
     regpool_spill_target regpool_direct_oversize regpool_theap_no_room
@@ -1109,8 +1110,11 @@ if(ARTS_DEBUG_INJECTION)
     list(APPEND _regpool_sim_tests ${ARTS_REGPOOL_INJECTION_TESTS})
 endif()
 foreach(_regpool_sim_test IN LISTS _regpool_sim_tests)
-    target_link_libraries(${_regpool_sim_test} PRIVATE ${CMAKE_DL_LIBS})
+    target_link_options(${_regpool_sim_test} PRIVATE ${_regpool_sim_wrap})
 endforeach()
+if(ARTS_DEBUG_INJECTION)
+    target_link_options(regpool_evict_wait PRIVATE -Wl,--wrap=munmap)
+endif()
 
 # The pool tests below assert the arena/slab machinery and the confinement
 # invariant (every returned pointer resolves through arts_regpool_lookup to a
@@ -1198,8 +1202,8 @@ if(ARTS_MALLOC STREQUAL "mimalloc")
         ${ARTS_BUILD_INTERNAL_INCLUDE_DIR})
     arts_apply_protocol(allocator_error_abort ${ARTS_COHERENCE_ARM} ${ARTS_WRITE_POLICY} ${ARTS_RELEASE_POLICY})
     target_link_libraries(allocator_error_abort PRIVATE
-        Threads::Threads mimalloc-static arts::libfabric ${RT_LIBRARY}
-        ${CMAKE_DL_LIBS})
+        Threads::Threads mimalloc-static arts::libfabric ${RT_LIBRARY})
+    target_link_options(allocator_error_abort PRIVATE ${_regpool_sim_wrap})
     set(_allocator_error_tests allocator_error_abort)
     arts_add_test(allocator_error_abort
                   COMMAND allocator_error_abort 1 2 3 3b 4 5)
@@ -1248,8 +1252,8 @@ if(ARTS_MALLOC STREQUAL "mimalloc")
             ${ARTS_BUILD_INTERNAL_INCLUDE_DIR})
         arts_apply_protocol(regpool_spill_and_latch ${ARTS_COHERENCE_ARM} ${ARTS_WRITE_POLICY} ${ARTS_RELEASE_POLICY})
         target_link_libraries(regpool_spill_and_latch PRIVATE
-            Threads::Threads mimalloc-static arts::libfabric ${RT_LIBRARY}
-            ${CMAKE_DL_LIBS})
+            Threads::Threads mimalloc-static arts::libfabric ${RT_LIBRARY})
+        target_link_options(regpool_spill_and_latch PRIVATE ${_regpool_sim_wrap})
         register_pure_unit_test(regpool_spill_and_latch TIMEOUT 60)
         set_tests_properties(regpool_spill_and_latch PROPERTIES
             PASS_REGULAR_EXPRESSION "PASS regpool_spill_and_latch")

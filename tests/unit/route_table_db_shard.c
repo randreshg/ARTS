@@ -7,14 +7,14 @@
  *   1. Before node init (geometry 0) every key, DB or flat, resolves to a
  *      remote shard.
  *   2. Self-created DB keys resolve to the local per-thread table at
- *      (seq >> CHUNK_BITS) % num_tables — chunk-mates share a table.
+ *      (seq >> CHUNK_BITS) % arts_guid_table_count — chunk-mates share a table.
  *   3. A foreign creator's DB key resolves to a remote shard; the SAME key
  *      seen on its creating rank resolves local (the local/remote split,
  *      recovered arithmetically).
  *   4. A reserved DB member (of a single-rank and of a round-robin range)
- *      resolves to route_table[(seq >> CHUNK_BITS) % num_tables] on the rank
- *      whose creator slice holds its seq, and to a remote shard on every
- *      other rank, sentinel szhint notwithstanding.
+ *      resolves to route_table[(seq >> CHUNK_BITS) % arts_guid_table_count]
+ *      on the rank whose creator slice holds its seq, and to a remote shard on
+ *      every other rank, sentinel szhint notwithstanding.
  *   5. A reserved flat GUID (arts_guid_reserve, an explicit-rank range's
  *      members, a round-robin range's members) resolves to its reserving
  *      thread's table on the reserving rank and to a remote shard on every

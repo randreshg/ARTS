@@ -28,7 +28,7 @@
  * op codes: EXCL_OP_RW_ACQ / EXCL_OP_RO_ACQ / EXCL_OP_RW_REL / EXCL_OP_RO_REL
  * grant codes: LOCK_GRANT_NONE / LOCK_GRANT_ONE_RW / LOCK_GRANT_ALL_RO
  */
-uint64_t excl_compute_next(uint64_t cur, int op, uint32_t *out_grant) {
+static uint64_t excl_compute_next(uint64_t cur, int op, uint32_t *out_grant) {
   uint32_t w = EXCL_STATE_W(cur);
   uint32_t r = EXCL_STATE_R(cur);
   uint32_t bit = EXCL_STATE_BIT(cur);
@@ -176,7 +176,7 @@ uint64_t excl_compute_next(uint64_t cur, int op, uint32_t *out_grant) {
  *     grant committer the sole drainer, with nothing to serve stale.
  * The REL_* ops carry the count-- inside the CAS, since the decrement and
  * the 0-edge state change must be atomic together. */
-uint64_t cache_compute_next(uint64_t cur, int op, uint32_t *out_action) {
+static uint64_t cache_compute_next(uint64_t cur, int op, uint32_t *out_action) {
   uint32_t rws = CACHE_RW_ST(cur);
   uint32_t ros = CACHE_RO_ST(cur);
   uint32_t par = CACHE_RO_PAR(cur);
@@ -395,7 +395,8 @@ static inline uint32_t cache_owner_parked_ro(uint64_t s) {
  * above).  The REL_* ops carry the count-- inside the CAS, because the
  * decrement and the 0-edge transition must be atomic together.
  */
-uint64_t cache_owner_compute_next(uint64_t cur, int op, uint32_t *out_action) {
+static uint64_t cache_owner_compute_next(uint64_t cur, int op,
+                                         uint32_t *out_action) {
   uint32_t own = CACHE_OWNER(cur);
   uint32_t rws = CACHE_RW_ST(cur);
   uint32_t ros = CACHE_RO_ST(cur);
@@ -600,8 +601,9 @@ uint64_t cache_owner_compute_next(uint64_t cur, int op, uint32_t *out_action) {
  * The FORWARD recipient is LOCK_OWNER() of the returned word.  The migrate
  * target / served reader(s) are resolved by the caller from
  * rw_waiters/ro_waiters. */
-uint64_t lock_owner_compute_next(uint64_t cur, int op, unsigned int new_owner,
-                                uint32_t *out_action) {
+static uint64_t lock_owner_compute_next(uint64_t cur, int op,
+                                        unsigned int new_owner,
+                                        uint32_t *out_action) {
   uint32_t phase = LOCK_PHASE(cur);
   uint32_t owner = LOCK_OWNER(cur);
   uint32_t w = LOCK_W(cur);

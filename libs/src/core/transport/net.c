@@ -1204,7 +1204,12 @@ static void net_quiesce_held_writes(void) {
  * from the same thread, so a target that dispatches with one progress thread
  * takes the write request in first whatever the timing, given the
  * send-after-send order the provider grants (a read request that no write
- * request follows leaves after n ms).
+ * request follows leaves after n ms).  <n>:drain holds each read request
+ * until as many EDT bodies have returned on its rank as EDTs had been made
+ * runnable there when it was held (or n ms pass), so an acquire made after it
+ * in the body that sent it, or in a body runnable by then, is decided before
+ * it leaves whatever the timing.  The trigger is a count, not an identity:
+ * it names those bodies only while nothing else runs on the rank.
  * Producers (any thread, a progress thread in dispatch included) only copy
  * and push; a progress thread that wins the try-lock moves the
  * pushed packets onto the not-yet-due list, detaches what is due, drops the
@@ -1217,6 +1222,7 @@ struct net_held_msg_s {
   _Atomic(struct net_held_msg_s *) next; /* the producers' stack */
   struct net_held_msg_s *wnext; /* the wait and due lists: the lock's own */
   uint64_t due_ns;
+  uint64_t runnable; /* the drain form: g_held_runnable at the hold */
   arts_guid_t guid;
   int rank;
   int kind;
@@ -1233,10 +1239,33 @@ static _Atomic(unsigned int) g_held_lock;
 /* Set before any thread exists to send; 0 = off. */
 static int64_t g_req_delay_ns;
 /* Which kind is held: every request (randomly) or one kind exactly; or, with
- * the trail form, read requests until their write request leaves. */
+ * the trail form, read requests until their write request leaves, or with the
+ * drain form, read requests until the bodies counted at their hold returned. */
 static int g_req_delay_mode = -1;
 static bool g_req_delay_trail;
+static bool g_req_delay_drain;
 static ARTS_THREAD_LOCAL uint64_t t_req_delay_rng;
+/* The drain form's counts, only while it is set.  runnable: EDTs this rank
+ * made runnable, bumped relaxed by the thread that schedules one (before the
+ * push that hands it on, so the body that sends a held request is counted)
+ * and read relaxed at the hold, a value only.  returned: bodies that
+ * returned, bumped with release by the thread that ran one, right after the
+ * body; the try-lock holder loads it with acquire before it sends what is
+ * due, so the send follows every acquire those bodies made. */
+static _Atomic(uint64_t) g_held_runnable;
+static _Atomic(uint64_t) g_held_returned;
+
+void arts_net_held_edt_runnable(void) {
+  if (g_req_delay_drain) {
+    atomic_fetch_add_explicit(&g_held_runnable, 1u, memory_order_relaxed);
+  }
+}
+
+void arts_net_held_edt_returned(void) {
+  if (g_req_delay_drain) {
+    atomic_fetch_add_explicit(&g_held_returned, 1u, memory_order_release);
+  }
+}
 
 static void net_req_delay_init(void) {
   const char *env = getenv("ARTS_REQUEST_DELAY_MS");
@@ -1253,10 +1282,15 @@ static void net_req_delay_init(void) {
     } else if (end != env && strcmp(end, ":trail") == 0) {
       g_req_delay_trail = true;
       end += 6;
+    } else if (end != env && strcmp(end, ":drain") == 0) {
+      g_req_delay_mode = ARTS_HELD_READ;
+      g_req_delay_drain = true;
+      end += 6;
     }
     if (end == env || *end != '\0' || ms < 0 || ms > 60000) {
       ARTS_ERROR("arts_net: ARTS_REQUEST_DELAY_MS=\"%s\" is not a delay of "
-                 "0-60000 ms, optionally followed by :ro, :hop or :trail",
+                 "0-60000 ms, optionally followed by :ro, :hop, :trail or "
+                 ":drain",
                  env);
     }
   }
@@ -1291,6 +1325,9 @@ bool arts_net_send_held(int rank, const char *message, unsigned int length,
     hold = t_req_delay_rng % (hold + 1u);
   }
   h->due_ns = net_now_ns() + hold;
+  h->runnable = g_req_delay_drain ? atomic_load_explicit(&g_held_runnable,
+                                                         memory_order_relaxed)
+                                  : 0u;
   struct net_held_msg_s *top =
       atomic_load_explicit(&g_held_push, memory_order_relaxed);
   do {
@@ -1321,10 +1358,14 @@ static void net_release_held(void) {
     in = nx;
   }
   uint64_t now = net_now_ns();
+  uint64_t returned =
+      g_req_delay_drain
+          ? atomic_load_explicit(&g_held_returned, memory_order_acquire)
+          : 0u;
   struct net_held_msg_s *due = NULL;
   for (struct net_held_msg_s **pp = &g_held_wait; *pp != NULL;) {
     struct net_held_msg_s *h = *pp;
-    if (h->due_ns > now) {
+    if (h->due_ns > now && !(g_req_delay_drain && returned >= h->runnable)) {
       pp = &h->wnext;
       continue;
     }

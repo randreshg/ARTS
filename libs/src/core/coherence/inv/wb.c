@@ -144,7 +144,7 @@ void arts_handler_db_acquire(void *item, void *args) {
     cur = atomic_load_explicit(&cache->cache_state, memory_order_acquire);
     atomic_store_explicit(&node->next, INV_CACHE_HEAD_RO(cur),
                           memory_order_relaxed);
-    next = inv_cache_compute_next(cur, INV_CACHE_OP_ACQ_RO, idx, &act);
+    next = arts_inv_cache_compute_next(cur, INV_CACHE_OP_ACQ_RO, idx, &act);
     if (next == cur) {
       break; /* copy turned valid mid-retry: no word write */
     }
@@ -162,7 +162,7 @@ void arts_handler_db_acquire(void *item, void *args) {
     break;
   }
   case INV_CACHE_ACT_SEND_RO:
-    arts_send_db_inv_request(cache, DB_MODE_RO, inv_read_cover(next));
+    arts_send_db_inv_request(cache, DB_MODE_RO, arts_inv_read_cover(next));
     break;
   default: /* PARK: the fetch's committer will serve us */
     break;
@@ -251,7 +251,7 @@ void arts_handler_db_inv_request(void *item_v, void *args_v) {
     return;
   }
   /* Roster bit BEFORE the serve/redirect departs.  Same-word pairing with
-   * the round's snapshot exchange (inv_home_round_try_open): either that
+   * the round's snapshot exchange (arts_inv_home_round_try_open): either that
    * round names this reader, or this serve is ordered after the snapshot.
    * A reader still sent to the previous holder is one unordered with that
    * round's write, and may read the older version. */

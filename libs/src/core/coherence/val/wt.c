@@ -608,17 +608,12 @@ void arts_handler_db_destroy(void *item_v, void *args_v) {
  * and the roster is complete without them. */
 void arts_db_home_destroy_now(struct arts_db_s *db) {
   arts_guid_t guid = db->cache.db_guid;
-  unsigned int self = arts_global_rank_id;
-  const struct arts_rank_bitset_s *bs = &db->cached_ranks;
-  for (unsigned int w = 0; w < bs->nwords; w++) {
-    uint64_t snap = atomic_load_explicit(&bs->words[w], memory_order_acquire);
-    while (snap) {
-      unsigned int b = (unsigned int)__builtin_ctzll(snap);
-      unsigned int rank = w * 64u + b;
-      if (rank != self) {
-        arts_send_db_cache_destroy(rank, guid);
-      }
-      snap &= snap - 1;
+  struct arts_rank_bitset_cursor_s c =
+      arts_rank_bitset_cursor(&db->cached_ranks);
+  unsigned int rank;
+  while (arts_rank_bitset_next(&c, &rank)) {
+    if (rank != arts_global_rank_id) {
+      arts_send_db_cache_destroy(rank, guid);
     }
   }
   (void)arts_ooo_retire_item(guid, db);

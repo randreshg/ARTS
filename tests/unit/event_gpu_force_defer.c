@@ -8,8 +8,9 @@
  * Target: arts_event_satisfy_slot route 1 (event.c) — the invalidate_count
  * force-defer branch:
  *
- *     if (current_edt && current_edt->invalidate_count > 0)
- *         arts_ooo_push_guid(current_edt->guid, OOO_EVENT_SATISFY_SLOT, ...);
+ *     if (arts_current_edt && arts_current_edt->invalidate_count > 0)
+ *         arts_ooo_push_guid(arts_current_edt->guid,
+ *                            OOO_EVENT_SATISFY_SLOT, ...);
  *
  * This branch exists for GPU LC invalidation drain ordering: a GPU EDT wrapper
  * sets invalidate_count=1 for the duration of its body and clears it at

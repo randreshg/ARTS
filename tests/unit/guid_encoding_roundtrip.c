@@ -133,16 +133,16 @@ static const char *geometry_mismatch(unsigned int r, unsigned int n,
                                      unsigned int t) {
   uint64_t slice = ((uint64_t)1 << ARTS_GUID_KEY_BITS) / n;
   uint64_t budget = (ARTS_GUID_DB_SEQ_MASK + 1) / n;
-  if (num_tables != t) {
-    return "num_tables";
+  if (arts_guid_table_count != t) {
+    return "arts_guid_table_count";
   }
-  if (keys_per_thread != slice / t) {
-    return "keys_per_thread";
+  if (arts_guid_keys_per_thread != slice / t) {
+    return "arts_guid_keys_per_thread";
   }
   if (arts_guid_flat_base != slice * r) {
     return "flat base";
   }
-  if (arts_guid_flat_span != keys_per_thread * t) {
+  if (arts_guid_flat_span != arts_guid_keys_per_thread * t) {
     return "flat span";
   }
   if (arts_db_seq_budget != budget || db_seq_creator_base != budget * r) {
@@ -162,7 +162,7 @@ static const char *geometry_mismatch(unsigned int r, unsigned int n,
 static int flat_table_of(uint64_t key) {
   arts_route_table_t *t =
       arts_get_route_table(ARTS_GUID_MAKE(ARTS_GUID_EVENT, 0, key));
-  for (unsigned int i = 0; i < num_tables; i++) {
+  for (unsigned int i = 0; i < arts_guid_table_count; i++) {
     if (t == arts_node_info.route_table[i]) {
       return (int)i;
     }
@@ -200,7 +200,8 @@ static void exhaust_db_slice(void) {
 
 static void exhaust_thread_block(void) {
   node_init(0, 1, 1);
-  *arts_guid_generator_get_key(0, ARTS_GUID_EDT) = keys_per_thread - 4;
+  *arts_guid_generator_get_key(0, ARTS_GUID_EDT) =
+      arts_guid_keys_per_thread - 4;
   for (int i = 0; i < 4; i++) {
     (void)arts_guid_create_for_rank(0, ARTS_GUID_EDT);
   }
@@ -468,15 +469,15 @@ int main(void) {
         }
         uint64_t base = arts_guid_flat_base;
         for (unsigned int t = 0; t < nt; t++) {
-          uint64_t lo = base + keys_per_thread * t;
-          uint64_t hi = lo + keys_per_thread;
+          uint64_t lo = base + arts_guid_keys_per_thread * t;
+          uint64_t hi = lo + arts_guid_keys_per_thread;
           blocks[nblocks++] = (block_t){lo, hi, r};
           arts_thread_info.thread_id = t;
           unsigned int home = (r + t) % n;
           uint64_t first = ARTS_GUID_GET_KEY(
               arts_guid_create_for_rank(home, ARTS_GUID_EVENT));
           *arts_guid_generator_get_key(home, ARTS_GUID_EDT) =
-              keys_per_thread - 2;
+              arts_guid_keys_per_thread - 2;
           uint64_t last =
               ARTS_GUID_GET_KEY(arts_guid_create_for_rank(home, ARTS_GUID_EDT));
           if (first != lo + 1 || last != hi - 2) {

@@ -825,7 +825,7 @@ void arts_run_gpu(void *edt_packet, arts_gpu_t *arts_gpu) {
     atomic_fetch_add_explicit(&free_bytes, free_mem_size, memory_order_relaxed);
   }
 
-  prep_dbs(&edt->wrapper_edt, true);
+  arts_prep_dbs(&edt->wrapper_edt, true);
   arts_schedule_to_gpu(func, paramc, paramv, depc, depv, edt_packet, arts_gpu);
 
   arts_cuda_restore_device();
@@ -838,7 +838,7 @@ void arts_gpu_host_wrap_up(void *edt_packet, arts_guid_t to_signal,
   const uint64_t *paramv = (uint64_t *)(edt + 1);
   arts_edt_dep_t *depv = (arts_edt_dep_t *)(paramv + paramc);
 
-  release_dbs(&edt->wrapper_edt, true);
+  arts_release_dbs(&edt->wrapper_edt, true);
   arts_release_created_dbs();
 
   if (edt->lib) {

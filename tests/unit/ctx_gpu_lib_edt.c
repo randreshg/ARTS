@@ -14,14 +14,15 @@
  * any non-GPU build the file is a clean SKIP that links against the ordinary
  * (CPU) libarts.  Pattern mirrors the protocol-macro self-skip idiom.
  *
- * What the real body pins inside a lib EDT body (where current_edt is the lib
- * EDT and the worker's created_db_list starts empty — the previous EDT's
+ * What the real body pins inside a lib EDT body (where arts_current_edt is the
+ * lib EDT and the worker's created_db_list starts empty — the previous EDT's
  * epilogue drained it):
  *   1. A DB created inside the lib body is tracked into THIS lib EDT's context
  *      (created_db_list length == 1 after one create — the epilogue left it
  *      empty, track appended exactly one).
- *   2. arts_current_finish_event()/current_edt are non-NULL inside the lib body
- *      (the lib EDT context is established by set before the body runs).
+ *   2. arts_current_finish_event()/arts_current_edt are non-NULL inside the
+ *      lib body (the lib EDT context is established by set before the body
+ *      runs).
  *   3. The lib body writes a sentinel into a counter DB (RW dep); a successor
  *      gated on the lib EDT's completion (finish event) reads it back, proving
  *      the lib EDT ran to completion through the set/unset bracket.
@@ -45,7 +46,7 @@ int main(void) {
 
 #else /* ARTS_TEST_GPU — real body, requires a CUDA-enabled libarts */
 
-#include "arts/edt_context.h" /* current_edt, arts_get_created_db_list */
+#include "arts/edt_context.h" /* arts_current_edt, arts_get_created_db_list */
 #include "arts/gpu.h"
 #include "arts/utils/vector.h"
 
@@ -63,8 +64,9 @@ void lib_body(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   int *c = (int *)depv[0].ptr;
 
   /* (2) the lib EDT context is established by set before the body runs. */
-  if (current_edt == NULL) {
-    arts_printf("FAIL ctx_gpu_lib_edt: lib body has no current_edt context\n");
+  if (arts_current_edt == NULL) {
+    arts_printf(
+        "FAIL ctx_gpu_lib_edt: lib body has no arts_current_edt context\n");
     g_failed = 1;
   }
 

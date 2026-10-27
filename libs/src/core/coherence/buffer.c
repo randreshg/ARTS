@@ -376,7 +376,10 @@ bool arts_db_buf_withdraw(struct arts_db_cache_s *cache, const void *payload) {
  * payload bytes already set; no cb yet).  Shared by the copy install
  * (arts_db_buf_install) and the rendezvous landed install
  * (arts_db_buf_install_landed).  On a stale loss the private buffer's life
- * ends and the newer installed buffer is returned. */
+ * ends and the newer installed buffer is returned.  The publishing CAS's
+ * release carries new_buf's bytes and version to every later loader of the
+ * slot; what a reader decides from its arm's state word is ordered by that
+ * arm's CAS after this one (arts_db_buf_install). */
 static struct arts_db_buffer_s *buf_publish(struct arts_db_cache_s *cache,
                                             struct arts_db_buffer_s *new_buf,
                                             uint64_t new_version) {

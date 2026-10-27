@@ -111,8 +111,15 @@ void arts_transport_send_async(int rank, char *message, unsigned int length);
 #ifdef ARTS_DEBUG_INJECTION
 bool arts_net_send_held(int rank, const char *message, unsigned int length,
                         int kind, arts_guid_t guid);
+/* The hook's drain form counts the EDTs this rank makes runnable (called
+ * before the scheduling push) and the bodies that return (called right after
+ * the body, before its releases); both do nothing unless the form is set. */
+void arts_net_held_edt_runnable(void);
+void arts_net_held_edt_returned(void);
 #else
 #define arts_net_send_held(rank, message, length, kind, guid) false
+#define arts_net_held_edt_runnable() ((void)0)
+#define arts_net_held_edt_returned() ((void)0)
 #endif
 void arts_transport_send_payload_async_free(int rank, char *message,
                                             unsigned int length, char *payload,

@@ -71,7 +71,7 @@ static unsigned int slot_of(uint32_t idx) { return idx ^ 0x2B5u; }
 #define ACT_PARK INV_CACHE_ACT_PARK
 #define ACT_SEND INV_CACHE_ACT_SEND_RO
 static uint64_t arbiter(uint64_t cur, int op, uint32_t arg, uint32_t *act) {
-  return inv_cache_compute_next(cur, op, arg, act);
+  return arts_inv_cache_compute_next(cur, op, arg, act);
 }
 /* The newest parked index, wherever the arm keeps it. */
 static uint32_t newest(uint64_t w) { return INV_CACHE_HEAD_RO(w); }
@@ -85,7 +85,7 @@ static uint32_t link_of(uint64_t cur, uint32_t act) {
 #define ACT_PARK VREQ_ACT_PARK
 #define ACT_SEND VREQ_ACT_SEND_RO
 static uint64_t arbiter(uint64_t cur, int op, uint32_t arg, uint32_t *act) {
-  return val_req_compute_next(cur, op, arg, act);
+  return arts_val_req_compute_next(cur, op, arg, act);
 }
 static uint32_t newest(uint64_t w) { return VREQ_NEXT(w); }
 static uint32_t link_of(uint64_t cur, uint32_t act) {

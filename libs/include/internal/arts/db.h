@@ -70,18 +70,18 @@ extern const char *const arts_type_name[];
 #endif
 
 #define DB_MODE_NAME                                                           \
-  const char *const db_mode_name[] = {"DB_MODE_NULL", "DB_MODE_RO",            \
-                                      "DB_MODE_RW"};                           \
-  const char *const db_mode_internal_name[] = {                                \
+  const char *const arts_db_mode_name[] = {"DB_MODE_NULL", "DB_MODE_RO",       \
+                                           "DB_MODE_RW"};                      \
+  const char *const arts_db_mode_internal_name[] = {                           \
       "DB_MODE_LC_SYNC", "DB_MODE_LC_NO_COPY", "DB_MODE_MEMSET"}
 
 #define GET_DB_MODE_NAME(x)                                                    \
   ((x) >= DB_MODE_INTERNAL_BASE                                                \
-       ? db_mode_internal_name[(x) - DB_MODE_INTERNAL_BASE]                    \
-       : db_mode_name[x])
+       ? arts_db_mode_internal_name[(x) - DB_MODE_INTERNAL_BASE]               \
+       : arts_db_mode_name[x])
 
-extern const char *const db_mode_name[];
-extern const char *const db_mode_internal_name[];
+extern const char *const arts_db_mode_name[];
+extern const char *const arts_db_mode_internal_name[];
 
 /* Order MUST match the arts_db_types_t enum in arts.h:
  * ARTS_DB(0), ARTS_DB_GPU(1), ARTS_DB_GPU_PIN(2). */
@@ -247,9 +247,9 @@ void arts_db_resume_list_free(void);
  * arts_ooo_args_db_acquire_s {edt, db_guid, slot}.  NOT the coherent handler
  * directly — that would mishandle non-coherent subtypes. */
 void arts_db_acquire_replay_dep(void *item, void *args);
-void release_dbs(struct arts_edt_s *edt, bool gpu);
+void arts_release_dbs(struct arts_edt_s *edt, bool gpu);
 void arts_release_created_dbs(void);
-void prep_dbs(struct arts_edt_s *edt, bool gpu);
+void arts_prep_dbs(struct arts_edt_s *edt, bool gpu);
 
 void arts_db_free(void *ptr);
 

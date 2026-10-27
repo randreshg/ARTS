@@ -103,11 +103,8 @@
  * satisfy.  That consumer would be dropped and its slot never satisfied. */
 #define EV_ACT_DESTROY 0x8u
 
-uint64_t event_compute_next(uint64_t cur, int op, bool counted, bool
-                            auto_destroy, uint32_t *out_action);
-
-uint64_t event_compute_next(uint64_t cur, int op, bool counted,
-                            bool auto_destroy, uint32_t *out_action) {
+static uint64_t event_compute_next(uint64_t cur, int op, bool counted,
+                                   bool auto_destroy, uint32_t *out_action) {
   int32_t latch = EV_LATCH(cur);
   uint32_t nb = EV_NBDEPS(cur);
   uint32_t fire = EV_FIRE(cur);

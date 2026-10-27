@@ -52,12 +52,13 @@
 
 #include "arts.h"
 #include "arts/gas/route_table.h" /* shard bits, COLLISION_RESOLVES */
-#include "arts/runtime.h" /* scheduler_loop_count */
+#include "arts/runtime.h"         /* arts_scheduler_loop_count */
 #include "arts/system/print.h"
 #include "arts/transport/launcher.h"
 #include "arts/utils/malloc.h"
 
-char *extract_nodelist_lsf(const char *envr, int stride, unsigned int *cnt) {
+static char *extract_nodelist_lsf(const char *envr, int stride,
+                                  unsigned int *cnt) {
   char *lsf_nodes;
   char *res_string;
   char *last;
@@ -1393,11 +1394,11 @@ static void config_compute_derived(struct arts_config_s *config) {
     ARTS_ERROR("worker_init_deque_size=0: a deque needs at least one slot");
   }
 
-  if (config->scheduler >= scheduler_loop_count) {
+  if (config->scheduler >= arts_scheduler_loop_count) {
     ARTS_ERROR("scheduler=%u names no scheduler loop: this build has %u "
                "(0..%u)",
-               config->scheduler, scheduler_loop_count,
-               scheduler_loop_count - 1u);
+               config->scheduler, arts_scheduler_loop_count,
+               arts_scheduler_loop_count - 1u);
   }
 }
 

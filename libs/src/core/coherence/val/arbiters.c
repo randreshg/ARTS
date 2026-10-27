@@ -3,8 +3,8 @@
 
 /* The VAL request word's arbiter: a pure function of the word (no calls, no
  * global state), included by coherence.c and by the unit test. */
-uint64_t val_req_compute_next(uint64_t cur, int op, uint32_t idx,
-                              uint32_t *out_act) {
+uint64_t arts_val_req_compute_next(uint64_t cur, int op, uint32_t idx,
+                                   uint32_t *out_act) {
   uint32_t rw = VREQ_RW(cur), ro = VREQ_RO(cur), rp = VREQ_RP(cur);
   uint32_t par = VREQ_PAR(cur), stub = VREQ_STUB(cur);
   uint32_t group = VREQ_GROUP(cur), next = VREQ_NEXT(cur);
