@@ -12,7 +12,7 @@
  * Coverage:
  *   1. small (<= inject_size) header-only send -> fi_inject -> RX -> exact bytes
  *   2. one > inject_size send -> registered bounce + fi_send -> TX completion
- *      frees the bounce (tx_outstanding returns to 0)
+ *      frees the bounce (net_tx_outstanding() returns to 0)
  *   3. 200 rapid sends -> all delivered; report any EAGAIN-ring passes (soft:
  *      the tcp provider rarely back-pressures a loopback, so this only logs)
  *
@@ -48,7 +48,18 @@ struct arts_shutdown_abandon_s arts_shutdown_abandon;
 void arts_abort(uint8_t code) { exit(code ? code : 1); }
 void *arts_malloc(size_t size) { return malloc(size); }
 void *arts_calloc(size_t n, size_t size) { return calloc(n, size); }
+void *arts_calloc_aligned(size_t n, size_t size, size_t align) {
+  void *p = NULL;
+  if (posix_memalign(&p, align, n * size) != 0) {
+    return NULL;
+  }
+  memset(p, 0, n * size);
+  return p;
+}
 void arts_free(void *ptr) { free(ptr); }
+#ifdef ARTS_DEBUG_INJECTION
+void arts_sched_fuzz_point(void) {}
+#endif
 
 /* ---- dispatch capture (the stubbed RX sink) ------------------------------ */
 static _Atomic(int) g_recv_count;
@@ -171,15 +182,14 @@ int main(void) {
   free(big);
 
   /* Let any straggling TX completion reap; the bounce path must return
-   * tx_outstanding to zero once completions drain. */
+   * net_tx_outstanding() to zero once completions drain. */
   for (int i = 0; i < 1000; i++) {
-    if (atomic_load_explicit(&g_net.tx_outstanding, memory_order_relaxed) == 0) {
+    if (net_tx_outstanding() == 0) {
       break;
     }
     arts_net_progress();
   }
-  uint64_t outstanding =
-      atomic_load_explicit(&g_net.tx_outstanding, memory_order_relaxed);
+  uint64_t outstanding = net_tx_outstanding();
   if (outstanding != 0) {
     fprintf(stderr, "FAIL net_selfsend: %llu TX still outstanding after drain\n",
             (unsigned long long)outstanding);
@@ -218,7 +228,7 @@ int main(void) {
 
   /* Final drain so no TX is left outstanding before teardown. */
   for (int i = 0; i < 2000; i++) {
-    if (atomic_load_explicit(&g_net.tx_outstanding, memory_order_relaxed) == 0) {
+    if (net_tx_outstanding() == 0) {
       break;
     }
     arts_net_progress();

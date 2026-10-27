@@ -18,8 +18,9 @@
  *   4. order B (expect before data): register the expectation FIRST, then PUT
  *      — the callback must fire from the progress path once the immediate
  *      arrives, bytes verified again.
- *   5. local completion: the on_local_done callback runs and tx_outstanding
- *      returns to zero (source-buffer release gate).
+ *   5. local completion: the on_local_done callback runs and the outstanding
+ *      count (net_tx_outstanding) returns to zero (source-buffer release
+ *      gate).
  *
  * Standalone: #includes net.c (its statics) and links the real regpool object
  * + libfabric; runtime externs are libc-backed shims.  FI_PROVIDER=tcp is
@@ -53,7 +54,18 @@ struct arts_shutdown_abandon_s arts_shutdown_abandon;
 void arts_abort(uint8_t code) { exit(code ? code : 1); }
 void *arts_malloc(size_t size) { return malloc(size); }
 void *arts_calloc(size_t n, size_t size) { return calloc(n, size); }
+void *arts_calloc_aligned(size_t n, size_t size, size_t align) {
+  void *p = NULL;
+  if (posix_memalign(&p, align, n * size) != 0) {
+    return NULL;
+  }
+  memset(p, 0, n * size);
+  return p;
+}
 void arts_free(void *ptr) { free(ptr); }
+#ifdef ARTS_DEBUG_INJECTION
+void arts_sched_fuzz_point(void) {}
+#endif
 
 /* ---- dispatch stub (no fi_send messages are exercised here) --------------- */
 void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
@@ -231,12 +243,12 @@ int main(void) {
     ++failures;
   }
   for (int i = 0; i < 2000; i++) {
-    if (atomic_load_explicit(&g_net.tx_outstanding, memory_order_relaxed) == 0) {
+    if (net_tx_outstanding() == 0) {
       break;
     }
     arts_net_progress();
   }
-  if (atomic_load_explicit(&g_net.tx_outstanding, memory_order_relaxed) != 0) {
+  if (net_tx_outstanding() != 0) {
     fprintf(stderr, "FAIL net_rendezvous: TX still outstanding after drain\n");
     ++failures;
   }

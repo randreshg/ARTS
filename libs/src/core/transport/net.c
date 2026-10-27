@@ -65,6 +65,7 @@
 #include "arts/memory/regpool.h"
 #include "arts/system/identity.h" /* arts_global_rank_id / arts_global_rank_count */
 #include "arts/system/print.h"
+#include "arts/system/schedfuzz.h"
 #include "arts/system/threads.h"        /* arts_thread_info, ARTS_THREAD_LOCAL */
 #include "arts/transport/dispatcher.h"  /* arts_transport_dispatch_packet */
 #include "arts/transport/netif.h"       /* arts_netif_ipv4_addr */
@@ -154,7 +155,10 @@ static inline void net_put_retired(uint64_t posted_ns) {
 struct net_ring_s {
   /* Consumer cursor (monotone), written by the drain-token holder: its
    * release store says the slot was read and its txn posted, and the owner's
-   * acquire load orders a slot reuse, or a direct post, after that post. */
+   * acquire load orders a slot reuse, or a direct post, after that post.  The
+   * owner's direct post stays behind a drainer's post of its queued txns by
+   * that acquire alone when the drain gate saw the ring empty while the
+   * drainer still held the token. */
   _Atomic(uint32_t) head;
   /* Producer cursor (monotone), written by the owner alone: its release store
    * publishes the slot, which a drainer's acquire load consumes. */
@@ -163,6 +167,11 @@ struct net_ring_s {
    * stored to `head`, and the holder returns it with a release store. */
   _Atomic(int) draining;
   struct net_txn_s *slots[ARTS_NET_RING_CAP];
+  /* Transmits the ring's owning thread has posted, whoever's txn it posted:
+   * written only by that thread (a relaxed load and a relaxed store), before
+   * each post and back after a refused one.  net_tx_outstanding reads it
+   * after its acquire of tx_completed. */
+  _Alignas(ARTS_CACHE_LINE_SIZE) _Atomic(uint64_t) posted;
 };
 
 /* ------------------------------------------------------------------------- */
@@ -195,6 +204,11 @@ static struct {
                          * order posted: what lets a payload above max_msg go
                          * as pieces paired on the last piece's immediate      */
   bool is_cxi;          /* negotiated provider is the cxi core (selfcheck)     */
+  /* Teardown began: refuse new submissions.  Set once every runtime thread
+   * has passed the ready_to_clean barrier, joined or not; a sender or reaper
+   * that reads it set stands down and reads nothing the store published, so
+   * every load is relaxed.  Beside the init-only fields every send reads. */
+  _Atomic(bool) quiescing;
   /* First completion error seen while no shutdown was recognized here, as a
    * monotonic stamp (0 = none) and the provider's text.  A lost transfer is
    * fatal on a live run, but a peer already shutting down flushes this rank's
@@ -215,6 +229,15 @@ static struct {
   void *rxbuf[ARTS_NET_RECV_BUF_COUNT];
   void *rxdesc[ARTS_NET_RECV_BUF_COUNT];
   struct net_recv_ctx_s rxctx[ARTS_NET_RECV_BUF_COUNT];
+
+  /* Transmits completed, written only by the CQ token holder, or once every
+   * runtime thread has passed the ready_to_clean barrier: a reap burst counts
+   * its completions and ends with one release store, which the next holder's
+   * token CAS carries on.  Its acquire load in net_tx_outstanding makes every
+   * counted completion's post, and that post's `posted` store, visible.  It
+   * heads the line of the token-owned and refused-post words, apart from the
+   * fields every send reads. */
+  _Alignas(ARTS_CACHE_LINE_SIZE) _Atomic(uint64_t) tx_completed;
   /* Bitmask of landing buffers whose FI_MULTI_RECV repost returned -FI_EAGAIN
    * (provider queues momentarily full — a legal transient, NOT an error).  The
    * repost is retried at the top of every CQ reap pass: reaping is exactly
@@ -223,17 +246,8 @@ static struct {
    * by the teardown reap once every runtime thread has passed the
    * ready_to_clean barrier, so a plain unsigned suffices. */
   unsigned rx_repost_pending;
-
-  /* Posts not yet completed, counted before each post and uncounted at its
-   * completion or failure, so it never reads 0 while a post is outstanding:
-   * only its own value. */
-  _Atomic(uint64_t) tx_outstanding;
   /* Posts the provider refused with EAGAIN: only its own value. */
   _Atomic(uint64_t) eagain_count;
-  /* Teardown began: refuse new submissions.  Set once every runtime thread
-   * has passed the ready_to_clean barrier, joined or not; a sender or reaper
-   * that reads it set stands down and reads nothing the store published. */
-  _Atomic(bool) quiescing;
 } g_net;
 
 /* The stamp's value while its election winner writes the text: a monotonic
@@ -342,8 +356,8 @@ static struct net_ring_s *net_get_ring(void) {
   if (t_ring != NULL) {
     return t_ring;
   }
-  struct net_ring_s *r =
-      (struct net_ring_s *)arts_calloc(1, sizeof(struct net_ring_s));
+  struct net_ring_s *r = (struct net_ring_s *)arts_calloc_aligned(
+      1, sizeof(struct net_ring_s), ARTS_CACHE_LINE_SIZE);
   pthread_mutex_lock(&g_ring_reg_lock);
   uint32_t idx = atomic_load_explicit(&g_ring_count, memory_order_relaxed);
   if (idx >= ARTS_NET_MAX_RINGS) {
@@ -390,12 +404,16 @@ static struct net_txn_s *net_txn_new(fi_addr_t addr, void *buf, size_t len,
   return txn;
 }
 
-/* Post a txn once (fi_send or fi_writedata by op).  0 = accepted (now
- * outstanding), -FI_EAGAIN = provider busy, other = fatal. */
-static inline ssize_t net_try_post(struct net_txn_s *txn) {
-  /* Counted before the post: once posted, any thread may reap its completion
-   * and uncount it. */
-  atomic_fetch_add_explicit(&g_net.tx_outstanding, 1, memory_order_relaxed);
+/* Post a txn once (fi_send or fi_writedata by op), counted on the posting
+ * thread's own ring `mine`.  0 = accepted (now outstanding), -FI_EAGAIN =
+ * provider busy, other = fatal. */
+static inline ssize_t net_try_post(struct net_txn_s *txn,
+                                   struct net_ring_s *mine) {
+  /* Counted before the post: once posted, any thread may reap its
+   * completion. */
+  uint64_t posted = atomic_load_explicit(&mine->posted, memory_order_relaxed);
+  atomic_store_explicit(&mine->posted, posted + 1, memory_order_relaxed);
+  arts_sched_fuzz_point(); /* widen the count<->post window */
   ssize_t rc;
   if (txn->op == NET_TXN_SEND) {
     rc = fi_send(g_net.ep, txn->buf, txn->len, txn->desc, txn->addr, txn);
@@ -418,7 +436,7 @@ static inline ssize_t net_try_post(struct net_txn_s *txn) {
     }
   }
   if (rc != 0) {
-    atomic_fetch_sub_explicit(&g_net.tx_outstanding, 1, memory_order_relaxed);
+    atomic_store_explicit(&mine->posted, posted, memory_order_relaxed);
   }
   if (rc != 0 && rc != -FI_EAGAIN) {
     ARTS_ERROR("arts_net: %s failed: %s",
@@ -430,9 +448,20 @@ static inline ssize_t net_try_post(struct net_txn_s *txn) {
   return rc;
 }
 
-/* Retry queued txns FIFO until one EAGAINs again or the ring empties.  Single
- * drainer at a time (CAS token); the owner enqueues concurrently (SPSC). */
-static bool net_ring_drain(struct net_ring_s *r) {
+/* Retry queued txns FIFO until one EAGAINs again or the ring empties, posting
+ * on the calling thread's ring `mine`.  Single drainer at a time (CAS token);
+ * the owner enqueues concurrently (SPSC). */
+static bool net_ring_drain(struct net_ring_s *r, struct net_ring_s *mine) {
+  /* A read-only gate: an empty ring stays unwritten, so its line stays shared
+   * with its owner.  The owner's own gate is exact (it alone writes tail, and
+   * head only grows up to it); another thread's stale read only defers the
+   * ring to the next poll, as a lost token CAS does, and the loop below
+   * re-reads both cursors. */
+  if (atomic_load_explicit(&r->head, memory_order_relaxed) ==
+      atomic_load_explicit(&r->tail, memory_order_relaxed)) {
+    return false;
+  }
+  arts_sched_fuzz_point(); /* widen the gate<->token window */
   int expected = 0;
   if (!atomic_compare_exchange_strong_explicit(
           &r->draining, &expected, 1, memory_order_acq_rel,
@@ -447,7 +476,7 @@ static bool net_ring_drain(struct net_ring_s *r) {
       break;
     }
     struct net_txn_s *txn = r->slots[h % ARTS_NET_RING_CAP];
-    ssize_t rc = net_try_post(txn);
+    ssize_t rc = net_try_post(txn, mine);
     if (rc == -FI_EAGAIN) {
       break; /* still blocked — leave it (and the rest) for the next pass */
     }
@@ -466,10 +495,12 @@ static bool net_ring_drain(struct net_ring_s *r) {
  * dispatch on a thread that may hold a DB lock).  Returns true if it posted
  * anything. */
 static bool net_drain_all_rings(void) {
+  /* Resolved before any token is taken: a first call registers the ring. */
+  struct net_ring_s *mine = net_get_ring();
   bool did = false;
   uint32_t rc = atomic_load_explicit(&g_ring_count, memory_order_acquire);
   for (uint32_t k = 0; k < rc; k++) {
-    if (g_rings[k] != NULL && net_ring_drain(g_rings[k])) {
+    if (g_rings[k] != NULL && net_ring_drain(g_rings[k], mine)) {
       did = true;
     }
   }
@@ -508,12 +539,12 @@ static bool net_reap_no_dispatch(void);
  * accepts. */
 static void net_submit(struct net_txn_s *txn, bool is_ack) {
   struct net_ring_s *r = net_get_ring();
-  net_ring_drain(r);
+  net_ring_drain(r, r);
 
   uint32_t h = atomic_load_explicit(&r->head, memory_order_acquire);
   uint32_t t = atomic_load_explicit(&r->tail, memory_order_relaxed);
   if (h == t) {
-    ssize_t rc = net_try_post(txn);
+    ssize_t rc = net_try_post(txn, r);
     if (rc == 0) {
       return;
     }
@@ -585,7 +616,7 @@ void arts_net_send_core(int rank, char *message, unsigned int length,
   /* Teardown has begun (every runtime thread is past the ready_to_clean
    * barrier): drop the send, but still run its completion-gated free so the
    * caller payload is not leaked. */
-  if (atomic_load_explicit(&g_net.quiescing, memory_order_acquire)) {
+  if (atomic_load_explicit(&g_net.quiescing, memory_order_relaxed)) {
     if (free_method != NULL) {
       free_method(payload);
     }
@@ -681,6 +712,12 @@ static void net_post_recv(unsigned idx) {
 static _Atomic(int) g_net_cq_busy;
 
 static inline bool net_cq_trylock(void) {
+  /* A read-only gate: a held token is not taken exclusive by a CAS bound to
+   * fail.  A stale "busy" only skips one pass; no caller needs the try to
+   * succeed. */
+  if (atomic_load_explicit(&g_net_cq_busy, memory_order_relaxed) != 0) {
+    return false;
+  }
   int expected = 0;
   return atomic_compare_exchange_strong_explicit(
       &g_net_cq_busy, &expected, 1, memory_order_acq_rel, memory_order_relaxed);
@@ -913,7 +950,7 @@ static bool net_put(int rank, uint64_t raddr, uint64_t rkey, uint64_t txid,
   /* Teardown has begun: drop the PUT but still run the local-done hook so the
    * source buffer's completion-gated release is not leaked (mirrors
    * arts_net_send_core's quiescing contract). */
-  if (atomic_load_explicit(&g_net.quiescing, memory_order_acquire)) {
+  if (atomic_load_explicit(&g_net.quiescing, memory_order_relaxed)) {
     if (on_local_done != NULL) {
       on_local_done(arg);
     }
@@ -1005,7 +1042,7 @@ static inline void net_live_cq_err_check(void) {
   }
   if (atomic_load_explicit(&arts_node_info.shutdown_state,
                            memory_order_acquire) != 0 ||
-      atomic_load_explicit(&g_net.quiescing, memory_order_acquire)) {
+      atomic_load_explicit(&g_net.quiescing, memory_order_relaxed)) {
     return;
   }
   if (net_now_ns() - t < ARTS_NET_LIVE_CQ_ERR_GRACE_NS) {
@@ -1017,10 +1054,40 @@ static inline void net_live_cq_err_check(void) {
              g_net.live_cq_err_what);
 }
 
+/* End a reap burst that completed `n` transmits.  Only the CQ token holder,
+ * or the teardown once every runtime thread has passed the ready_to_clean
+ * barrier, writes tx_completed, so its own last value is current. */
+static inline void net_count_completed(uint64_t n) {
+  if (n != 0) {
+    atomic_store_explicit(
+        &g_net.tx_completed,
+        atomic_load_explicit(&g_net.tx_completed, memory_order_relaxed) + n,
+        memory_order_release);
+  }
+}
+
+/* Transmits posted and not yet completed: never 0 while a counted post that
+ * happens-before the call is outstanding.  tx_completed is read first: its
+ * acquire makes every counted completion's post, its ring's registration and
+ * its `posted` store visible, so the sum is at least the count; a refused
+ * post seen without its give-back only overcounts. */
+static uint64_t net_tx_outstanding(void) {
+  uint64_t completed =
+      atomic_load_explicit(&g_net.tx_completed, memory_order_acquire);
+  uint32_t nr = atomic_load_explicit(&g_ring_count, memory_order_acquire);
+  uint64_t posted = 0;
+  for (uint32_t k = 0; k < nr; k++) {
+    if (g_rings[k] != NULL) {
+      posted += atomic_load_explicit(&g_rings[k]->posted, memory_order_relaxed);
+    }
+  }
+  return posted - completed;
+}
+
 /* Reclaim a failed transmit's txn from a CQ error entry (both live and teardown
  * paths).  A failed send still owns its bookkeeping; reclaim it so it does not
- * leak and the outstanding count stays honest for the shutdown drain. */
-static void net_reap_cq_err(void) {
+ * leak.  Returns the transmits it completed, for its caller's burst count. */
+static uint64_t net_reap_cq_err(void) {
   struct fi_cq_err_entry err;
   memset(&err, 0, sizeof(err));
   if (fi_cq_readerr(g_net.cq, &err, 0) == 1) {
@@ -1054,7 +1121,7 @@ static void net_reap_cq_err(void) {
      * so the first live error only starts the clock (net_live_cq_err_check). */
     if (atomic_load_explicit(&arts_node_info.shutdown_state,
                              memory_order_acquire) == 0 &&
-        !atomic_load_explicit(&g_net.quiescing, memory_order_acquire)) {
+        !atomic_load_explicit(&g_net.quiescing, memory_order_relaxed)) {
       uint64_t none = 0;
       if (atomic_compare_exchange_strong_explicit(
               &g_net.live_cq_err_ns, &none, NET_CQ_ERR_RECORDING,
@@ -1068,9 +1135,10 @@ static void net_reap_cq_err(void) {
     }
     if ((err.flags & (FI_SEND | FI_WRITE)) && err.op_context != NULL) {
       net_txn_complete((struct net_txn_s *)err.op_context);
-      atomic_fetch_sub_explicit(&g_net.tx_outstanding, 1, memory_order_relaxed);
+      return 1;
     }
   }
+  return 0;
 }
 
 /* Teardown-only reap: run once every worker/progress thread has passed the
@@ -1084,20 +1152,21 @@ static bool net_reap_tx_only(void) {
   struct fi_cq_data_entry ents[ARTS_NET_CQ_BURST];
   ssize_t n = fi_cq_read(g_net.cq, ents, ARTS_NET_CQ_BURST);
   if (n > 0) {
+    uint64_t done = 0;
     for (ssize_t i = 0; i < n; i++) {
       /* FI_SEND and (local) FI_WRITE completions both carry our txn as
        * op_context; a target-side FI_REMOTE_WRITE completion does not set
        * FI_WRITE, so this cannot mistake an inbound RMA event for a txn. */
       if (ents[i].flags & (FI_SEND | FI_WRITE)) {
         net_txn_complete((struct net_txn_s *)ents[i].op_context);
-        atomic_fetch_sub_explicit(&g_net.tx_outstanding, 1,
-                                  memory_order_relaxed);
+        done++;
       }
     }
+    net_count_completed(done);
     return true;
   }
   if (n == -FI_EAVAIL) {
-    net_reap_cq_err();
+    net_count_completed(net_reap_cq_err());
     return true;
   }
   if (n != -FI_EAGAIN) {
@@ -1159,11 +1228,13 @@ static bool net_hold_write(struct net_txn_s *txn) {
   return true;
 }
 
-/* Run the held completions that are due, or every one with `all`. */
-static void net_run_held_writes(bool all) {
+/* Run the held completions that are due, or every one with `all`; returns
+ * how many ran, for its caller's burst count. */
+static uint64_t net_run_held_writes(bool all) {
   if (g_held_writes == NULL) {
-    return;
+    return 0;
   }
+  uint64_t done = 0;
   uint64_t now = all ? UINT64_MAX : net_now_ns();
   for (struct net_held_write_s **pp = &g_held_writes; *pp != NULL;) {
     struct net_held_write_s *h = *pp;
@@ -1173,9 +1244,10 @@ static void net_run_held_writes(bool all) {
     }
     *pp = h->next;
     net_txn_complete(h->txn);
-    atomic_fetch_sub_explicit(&g_net.tx_outstanding, 1, memory_order_relaxed);
+    done++;
     arts_free(h);
   }
+  return done;
 }
 /* Quiesce's turn: run every held completion.  Every runtime thread has
  * passed the ready_to_clean barrier, joined or not, so none reaps again. */
@@ -1183,12 +1255,12 @@ static void net_quiesce_held_writes(void) {
   if (g_write_delay_ns == 0) {
     return;
   }
-  net_run_held_writes(true);
+  net_count_completed(net_run_held_writes(true));
 }
 #else
 #define net_write_delay_init() ((void)0)
 #define net_hold_write(txn) false
-#define net_run_held_writes(all) ((void)0)
+#define net_run_held_writes(all) ((uint64_t)0)
 #define net_quiesce_held_writes() ((void)0)
 #endif
 
@@ -1446,7 +1518,7 @@ static void net_quiesce_held_requests(void) {
  * held so the multi-recv buffer can be reposted immediately with no borrow
  * outliving the reap.  Returns true if any completion or error entry was seen. */
 static bool net_reap_locked(void) {
-  net_run_held_writes(false);
+  uint64_t done = net_run_held_writes(false);
   /* Retry any landing-buffer repost the provider EAGAIN-deferred: this runs
    * under the CQ token on every reap pass, and each pass drains completions —
    * exactly the action that frees the provider queue slots the repost needs.
@@ -1534,16 +1606,17 @@ static bool net_reap_locked(void) {
           !((e->flags & FI_WRITE) &&
             net_hold_write((struct net_txn_s *)e->op_context))) {
         net_txn_complete((struct net_txn_s *)e->op_context);
-        atomic_fetch_sub_explicit(&g_net.tx_outstanding, 1,
-                                  memory_order_relaxed);
+        done++;
       }
     }
+    net_count_completed(done);
     return true;
   }
   if (n == -FI_EAVAIL) {
-    net_reap_cq_err();
+    net_count_completed(done + net_reap_cq_err());
     return true;
   }
+  net_count_completed(done);
   if (n != -FI_EAGAIN) {
     ARTS_ERROR("arts_net: fi_cq_read failed: %s", fi_strerror((int)-n));
   }
@@ -2170,11 +2243,13 @@ void arts_net_quiesce(void) {
    * here, while the pool is still live, so the pool cleanup that follows can
    * close those MRs without any outstanding reference — and no desc ever names
    * a closed MR. */
-  atomic_store_explicit(&g_net.quiescing, true, memory_order_release);
+  atomic_store_explicit(&g_net.quiescing, true, memory_order_relaxed);
 
   /* Discard queued-but-unposted retry txns.  These never reached the provider,
-   * so they are NOT part of tx_outstanding; run their completion-gated frees
-   * (caller payload + bounce back to the still-live pool) and drop them. */
+   * so they are not outstanding; run their completion-gated frees (caller
+   * payload + bounce back to the still-live pool) and drop them.  The rings
+   * themselves outlive the reap below, whose bound sums their post counts,
+   * and nothing reads their slots again. */
   uint32_t nr = atomic_load_explicit(&g_ring_count, memory_order_acquire);
   for (uint32_t k = 0; k < nr; k++) {
     struct net_ring_s *r = g_rings[k];
@@ -2183,11 +2258,7 @@ void arts_net_quiesce(void) {
     for (; h != t; h++) {
       net_txn_complete(r->slots[h % ARTS_NET_RING_CAP]);
     }
-    arts_free(r);
-    g_rings[k] = NULL;
   }
-  atomic_store_explicit(&g_ring_count, 0, memory_order_release);
-  t_ring = NULL;
 
   /* Free any inbound messages reaped but not yet dispatched (a producer's
    * net_reap_no_dispatch can leave entries on the pending list).  Quiescent
@@ -2221,12 +2292,16 @@ void arts_net_quiesce(void) {
    * net_reap_tx_only needs no CQ token — no other thread contends the CQ. */
   net_quiesce_held_writes();
   net_quiesce_held_requests();
-  for (int i = 0;
-       i < 100000 &&
-       atomic_load_explicit(&g_net.tx_outstanding, memory_order_relaxed) != 0;
-       i++) {
+  for (int i = 0; i < 100000 && net_tx_outstanding() != 0; i++) {
     net_reap_tx_only();
   }
+  for (uint32_t k = 0; k < nr; k++) {
+    arts_free(g_rings[k]);
+    g_rings[k] = NULL;
+  }
+  atomic_store_explicit(&g_ring_count, 0, memory_order_release);
+  atomic_store_explicit(&g_net.tx_completed, 0, memory_order_relaxed);
+  t_ring = NULL;
 
   /* Endpoint-bound registrations hold references the endpoint cannot close
    * under (fi_close would return -FI_EBUSY and the endpoint would leak, then
@@ -2322,7 +2397,7 @@ void arts_net_drain_outstanding(unsigned int deadline_ms) {
   struct timespec start;
   (void)clock_gettime(CLOCK_MONOTONIC, &start);
   for (;;) {
-    if (atomic_load_explicit(&g_net.tx_outstanding, memory_order_acquire) == 0) {
+    if (net_tx_outstanding() == 0) {
       ARTS_INFO("arts_net: shutdown TX drain complete");
       return;
     }
@@ -2335,8 +2410,7 @@ void arts_net_drain_outstanding(unsigned int deadline_ms) {
     if (elapsed >= deadline_ns) {
       ARTS_WARN("arts_net: shutdown TX drain timeout (%llu sends still "
                 "outstanding)",
-                (unsigned long long)atomic_load_explicit(&g_net.tx_outstanding,
-                                                         memory_order_relaxed));
+                (unsigned long long)net_tx_outstanding());
       return;
     }
     struct timespec ts = {.tv_sec = 0, .tv_nsec = 200000L /* 0.2 ms */};

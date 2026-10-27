@@ -1334,6 +1334,24 @@ if(ARTS_MALLOC STREQUAL "mimalloc")
     register_pure_unit_test(net_rendezvous TIMEOUT 60)
     set_tests_properties(net_rendezvous PROPERTIES ENVIRONMENT "FI_PROVIDER=tcp")
 
+    # net_tx_accounting — whitebox for the outstanding-transmit count: the
+    # posting threads' per-ring counts against the CQ token holder's
+    # completions, read by several senders while one thread reaps, and the
+    # quiesce that reaps by it before it frees the rings.  Same standalone
+    # harness shape as net_selfsend.
+    add_executable(net_tx_accounting unit/net_tx_accounting.c $<TARGET_OBJECTS:arts_regpool>)
+    target_include_directories(net_tx_accounting PRIVATE
+        ${ARTS_PUBLIC_INCLUDE_DIR} ${ARTS_INTERNAL_INCLUDE_DIR}
+        ${ARTS_BUILD_INTERNAL_INCLUDE_DIR})
+    arts_apply_protocol(net_tx_accounting ${ARTS_COHERENCE_ARM} ${ARTS_WRITE_POLICY} ${ARTS_RELEASE_POLICY})
+    set_test_log_level(net_tx_accounting 2)
+    target_link_libraries(net_tx_accounting PRIVATE
+        Threads::Threads mimalloc-static arts::libfabric ${RT_LIBRARY})
+    register_pure_unit_test(net_tx_accounting TIMEOUT 120)
+    set_tests_properties(net_tx_accounting PROPERTIES
+        ENVIRONMENT "FI_PROVIDER=tcp"
+        PASS_REGULAR_EXPRESSION "PASS net_tx_accounting")
+
     # net_src_bind — whitebox for arts_net_init's steering hints: net_interface
     # source-bind (loopback), fabric_domain pin, the fatal missing-interface
     # contract and a one-host run's loopback bind.  Same standalone harness
