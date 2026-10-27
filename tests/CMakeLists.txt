@@ -104,6 +104,7 @@ set(ARTS_REFERENCE_TREE_PROGRAMS
     event_scalar_return
     event_payload_policy
     event_chain
+    edt_null_guid_db_mode
     event_channel_lifetime
     multinode_edt
     multinode_event_types
@@ -209,8 +210,7 @@ set(ARTS_TESTS_INLINE_PAYLOAD_WHITEBOX
     buffer_zero_size
     buffer_version_guard
     buffer_stub_db_size_learn
-    buffer_destroy_vs_acquire
-    mark_edt_ready_idempotent)
+    buffer_destroy_vs_acquire)
 set(ARTS_CXL_DIRECT_EXCLUDED "")
 if(ARTS_CXL_TREE_RESIDENCY STREQUAL "DIRECT")
     set(ARTS_CXL_DIRECT_EXCLUDED ${ARTS_TESTS_INLINE_PAYLOAD_WHITEBOX})
@@ -833,6 +833,21 @@ foreach(_t edt_dep_slot_handoff edt_dep_slot_handoff_2n_9w_1p
         PASS_REGULAR_EXPRESSION "PASS: edt_dep_slot_handoff"
         FAIL_REGULAR_EXPRESSION "FAIL:")
 endforeach()
+
+# A dependence satisfied with NULL_GUID keeps its read or write mode: the
+# acquire phase skips the slot, and so does the EDT's release, which routes on
+# the GUID's kind.  No cell sees such a slot, so the reference tree runs it; on
+# several ranks the NULL_GUID satisfies arrive from another rank.
+if(ARTS_TEST_REFERENCE_TREE)
+register_single_node_test(edt_null_guid_db_mode TIMEOUT 30)
+register_multinode_test(edt_null_guid_db_mode TIMEOUT 60)
+foreach(_t edt_null_guid_db_mode edt_null_guid_db_mode_2n_9w_1p
+        edt_null_guid_db_mode_4n_4w_1p edt_null_guid_db_mode_2n_8w_2p)
+    set_tests_properties(${_t} PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS: edt_null_guid_db_mode"
+        FAIL_REGULAR_EXPRESSION "FAIL:")
+endforeach()
+endif()
 
 if(ARTS_TEST_REFERENCE_TREE)
 register_single_node_test(stress_edt TIMEOUT 30)
@@ -2619,13 +2634,14 @@ set(_arts_fail_token_tests
     csr_graph ctx_created_db_release_order
     ctx_crossrank_proxy_finish ctx_owned_finish_cleanup db_acquire_all_bias
     db_create_claims_first_touch_stub db_create_with_data_bytes
-    dbcreate_matrix edt_create_basic edt_sentinel_single_fire event_chain
+    dbcreate_matrix dep_slot_resolved_once edt_create_basic
+    edt_sentinel_single_fire event_chain
     event_channel_fifo event_channel_lifetime event_channel_transient_null
     event_destroy_before_create excl_multiconsumer_queue excl_purge_grant_d6_d7
     excl_request_coalesce excl_samerank_rw_grant_race finish_event_stress
     grant_purge_churn grant_purge_handback_regrant
     grant_purge_no_acquire_creator guid_keygen_table_coupling
-    launcher_no_respawn mark_edt_ready_idempotent multinode_edt
+    launcher_no_respawn multinode_edt
     multinode_event_types random_thread_safe round_robin_home_distribution
     runtime_barrier_counts scheduler_acquire_bias self_send_vs_dispatcher_parity
     stress_edt threads_pin_affinity)

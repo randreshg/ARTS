@@ -968,10 +968,9 @@ static void lock_drain_pending(arts_lf_stack_t *q, uint32_t expected) {
           atomic_load_explicit(&node->next, memory_order_relaxed);
       struct arts_db_excl_waiter_s *w =
           ARTS_CONTAINER_OF(node, struct arts_db_excl_waiter_s, link);
-      /* Claim the slot's acquire record with the installed buffer, let the
-       * serialized walk past this slot, and account (which may hand the
-       * payload to depv and schedule the EDT when acquire_remaining reaches
-       * 0). */
+      /* Resolve the slot on the installed buffer, let the serialized walk
+       * past this slot, and account (which may hand the payload to depv and
+       * schedule the EDT when acquire_remaining reaches 0). */
       mark_edt_ready_by_guid(w->edt_guid, w->slot);
       arts_free(w);
       served++;
@@ -1250,7 +1249,7 @@ void arts_handler_db_acquire(void *item, void *args) {
   if (act == CACHE_ACT_SELF_SERVE) {
     /* Served exactly as a drained waiter is, from the turn this rank holds. */
     uint8_t census = arts_db_census_serving(false);
-    mark_edt_ready_by_guid(edt->guid, slot);
+    arts_db_resolve_slot_cached(edt, slot);
     arts_db_census_served(census);
     return;
   }

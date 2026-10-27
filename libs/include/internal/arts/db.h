@@ -94,37 +94,41 @@ extern const char *const db_mode_internal_name[];
 extern const char *const arts_db_type_name[];
 
 /* The acquire phase's per-slot state, one record per dependence slot.  The
- * frames of one EDT's acquire phase (its walk, the wakes that resolve a parked
+ * frames of one EDT's acquire phase (its walk, the resolution of a parked
  * slot, an alias fill, an out-of-order replay) meet here and never in the
  * public dependence vector, which no frame writes until the phase ends: the
  * frame whose decrement of acquire_remaining reaches zero copies `ptr` into
- * depv[i].ptr for every claimed slot before it schedules the EDT.  A slot the
- * acquire phase does not resolve keeps what its satisfy wrote (guid, mode,
- * NULL ptr).  No word is reset while the EDT lives, so a resolution that
- * arrives after the zero edge finds its slot claimed and changes nothing.
+ * depv[i].ptr for every slot that resolved to a payload before it schedules
+ * the EDT.  A slot the acquire phase does not resolve keeps what its satisfy
+ * wrote (guid, mode, NULL ptr).
+ *
+ * Every owner slot the phase hands to an arm is resolved by exactly one
+ * frame: the frame that fired it, or the one frame a plane's take hands its
+ * waiter to.  An alias is filled exactly once, by its owner's resolver.  So
+ * the plain members have one writer each, and every reader is ordered after
+ * it by acquire_remaining's RMW chain (the writer's decrement, then the zero
+ * edge's) or by the publication of the slot to its resolver.
  *
  * Zero-filled storage is the unresolved state of every member. */
 struct arts_dep_acq_s {
-  /* The slot's payload, claimed NULL -> payload by exactly one frame.  No data
-   * rides it: what a frame secured reaches the copy through that frame's own
-   * decrement of acquire_remaining. */
-  _Atomic(void *) ptr;
-  /* The descriptor pin (an arts_shared_ptr_t) the slot holds from its
-   * resolution to its release; claimed NULL -> handle, which also arbitrates
-   * a slot whose payload is NULL.  The release consumes it.  The claims are
-   * release CASes and the release's load is acquire, but they carry only
-   * the handle: the release is ordered after the claim by the zero edge of
-   * acquire_remaining. */
-  _Atomic(void *) pin;
-  /* The storage kind the slot resolved to, written by the frame that
-   * resolves it; the release routes on it. */
+  /* The slot's payload: written by the slot's one resolver before its
+   * account; read by the frame whose account reaches zero. */
+  void *ptr;
+  /* The descriptor pin the slot holds from its firing to its release.  An
+   * owner's is stored by the frame that fires it, before the arm's handler
+   * can publish the slot; an alias's by its owner's resolver.  Reaches the
+   * resolver through the handler's publication of the waiter, the release
+   * through acquire_remaining's zero edge and the hand-off to the run. */
+  arts_shared_ptr_t pin;
+  /* The storage kind: written before the handler, or by the alias fill; the
+   * release routes on it. */
   arts_db_types_t subtype;
   /* An alias on another slot's acquisition (arts_dep_sort_and_classify),
    * decided before anything fires. */
   bool alias;
-  /* Set by the frame whose claim of `ptr` won, before its decrement of
-   * acquire_remaining, which publishes it to the frame that reaches zero. */
-  bool claimed;
+  /* Written by Debug builds only: the slot's one resolver exchanges it to 1,
+   * and a second resolution aborts.  Relaxed: only its own value. */
+  _Atomic(uint8_t) resolved;
 };
 
 /* The storage kind slot `slot` of `edt` resolved to. */
@@ -133,14 +137,25 @@ static inline arts_db_types_t arts_dep_subtype(const struct arts_edt_s *edt,
   return edt->dep_acq[slot].subtype;
 }
 
+/* Every resolution's first act, before the record, the pin, the alias bit or
+ * depv is read: a Debug build aborts on a slot resolved after its EDT's
+ * acquire phase ended or resolved twice.  A Release build checks nothing. */
+#ifndef NDEBUG
+void arts_dep_acq_resolve_once(struct arts_edt_s *edt, uint32_t slot);
+#else
+static inline void arts_dep_acq_resolve_once(struct arts_edt_s *edt,
+                                             uint32_t slot) {
+  (void)edt;
+  (void)slot;
+}
+#endif
+
 /* A dependence that the frame which fired it resolved on the spot (a local
- * hit).  Such a slot never parked, so no other frame resolves it and the
- * store is its claim. */
+ * hit).  Such a slot never parked, so this frame is its one resolver. */
 static inline void arts_db_acquire_local_hit(struct arts_edt_s *edt,
                                              uint32_t slot, void *ptr) {
-  struct arts_dep_acq_s *rec = &edt->dep_acq[slot];
-  atomic_store_explicit(&rec->ptr, ptr, memory_order_relaxed);
-  rec->claimed = true;
+  arts_dep_acq_resolve_once(edt, slot);
+  edt->dep_acq[slot].ptr = ptr;
 }
 
 /* Begin one EDT's acquire phase: allocate its acquire record and visit order
@@ -151,8 +166,9 @@ void arts_db_acquire_prepare(struct arts_edt_s *edt);
 void arts_db_acquire_all(struct arts_edt_s *edt);
 
 /* Whether a dep's acquisition is ordered by the EDT's serialized (RW-cursor)
- * walk: the arm's answer for its mode, with the non-coherent subtypes that
- * bypass the walk excluded.  A pure function of the slot. */
+ * walk: the arm's answer for its mode, whatever the block's storage kind (no
+ * arm serializes a device-side internal mode).  A pure function of the
+ * slot. */
 bool arts_dep_is_serialized(const arts_edt_dep_t *depv, uint32_t i);
 
 /* Order one EDT's dependence vector and classify it, once, before any of it
@@ -170,10 +186,10 @@ void arts_dep_sort_and_classify(const arts_edt_dep_t *depv,
                                 struct arts_dep_acq_s *acq, uint32_t depc,
                                 uint32_t *sorted);
 
-/* Advance one EDT's serialized-acquire cursor past `slot`.  It is
- * position-idempotent: it moves only while the cursor still points at `slot`,
- * so a wake for a slot the walk has already passed changes nothing.  It fires
- * no dependence of its own: it either flags the walk running in this execution
+/* Advance one EDT's serialized-acquire cursor past `slot`, which the cursor
+ * must be at: a serialized slot is fired only at the cursor, the cursor moves
+ * only past a secured slot, and the slot has one resolver.  It fires no
+ * dependence of its own: it either flags the walk running in this execution
  * context to continue, or appends the EDT to the flat resume worklist below —
  * so the calling frame grows the stack by nothing.
  *
@@ -203,9 +219,10 @@ void arts_db_resume_list_free(void);
 /* OOO_DB_ACQUIRE replay (table entry): re-dispatch the ONE deferred local dep
  * through the per-dep 3-way (subtype-aware — ARTS_DB → arts_handler_db_acquire,
  * a GPU kind → its inline ptr path, still-absent → re-defer).  item = the
- * just-installed db_s (ignored; the 3-way re-looks-it-up under the drain's
- * pinned ref); args = arts_ooo_args_db_acquire_s {edt, db_guid, slot}.  NOT the
- * coherent handler directly — that would mishandle non-coherent subtypes. */
+ * just-installed db_s (the 3-way re-looks it up; the OoO dispatcher's pin on
+ * it keeps the descriptor alive across the call); args =
+ * arts_ooo_args_db_acquire_s {edt, db_guid, slot}.  NOT the coherent handler
+ * directly — that would mishandle non-coherent subtypes. */
 void arts_db_acquire_replay_dep(void *item, void *args);
 void release_dbs(struct arts_edt_s *edt, bool gpu);
 void arts_release_created_dbs(void);

@@ -123,7 +123,7 @@ void arts_handler_db_acquire(void *item, void *args) {
       }
     }
     uint8_t census = arts_db_census_serving(false);
-    mark_edt_ready_by_guid(edt->guid, slot);
+    arts_db_resolve_slot_cached(edt, slot);
     arts_db_census_served(census);
     return;
   }
@@ -139,7 +139,7 @@ void arts_handler_db_acquire(void *item, void *args) {
           0) {
     /* A durable copy answers with no message and no CAS. */
     uint8_t census = arts_db_census_serving(false);
-    mark_edt_ready_by_guid(edt->guid, slot);
+    arts_db_resolve_slot_cached(edt, slot);
     arts_db_census_served(census);
     return;
   }
@@ -172,7 +172,7 @@ void arts_handler_db_acquire(void *item, void *args) {
     /* The copy turned valid while we were deciding — served from here. */
     arts_db_reader_free(&cache->reader_pool, idx);
     uint8_t census = arts_db_census_serving(false);
-    mark_edt_ready_by_guid(edt->guid, slot);
+    arts_db_resolve_slot_cached(edt, slot);
     arts_db_census_served(census);
     break;
   }

@@ -212,7 +212,7 @@ static void print_fingerprint(void) {
   MEMBER(dep_acq_t, pin);
   MEMBER(dep_acq_t, subtype);
   MEMBER(dep_acq_t, alias);
-  MEMBER(dep_acq_t, claimed);
+  MEMBER(dep_acq_t, resolved);
   MEMBER(edt_t, func_ptr);
   MEMBER(edt_t, paramc);
   MEMBER(edt_t, depc);

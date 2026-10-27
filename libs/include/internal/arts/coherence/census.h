@@ -138,7 +138,7 @@ static inline bool arts_db_census_serving_remote(void) {
 #endif
 }
 
-/* A parked acquisition of db_guid whose slot this thread's serve claimed. */
+/* A parked acquisition of db_guid whose slot this thread's serve resolved. */
 static inline void arts_db_census_count_serve(arts_guid_t db_guid) {
 #if ARTS_DB_CENSUS
   assert(arts_db_census_serve != ARTS_DB_SERVE_NONE &&

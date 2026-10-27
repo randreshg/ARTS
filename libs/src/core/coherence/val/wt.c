@@ -585,8 +585,8 @@ void arts_handler_db_publish(void *item_v, void *args_v) {
  * acquired the home db_s and pinned a ref across this call (cache is its FIRST
  * member).  Order: roster fan-out, then arts_ooo_retire_item LAST (detach the
  * slot cb + drop the install ref); a waiter left parked at destroy (UB) is
- * freed by the refcount-0 destructor, and the cb deleter frees the cache once
- * outstanding lookup refs drain.  A second DESTROY_REQ parks on the empty
+ * never woken and keeps the descriptor through its slot's pin, and the cb
+ * deleter frees the cache once every ref drains.  A second DESTROY_REQ parks on the empty
  * slot (a second destroy is a program error).  WT roster source =
  * home->cached_ranks.  The teardown is immediate: every release that sends
  * the home anything (a publish, a hand-back) blocks until the home ACKs it,

@@ -130,42 +130,63 @@ arts_shared_ptr_t arts_db_cache_stub_install(arts_guid_t db_guid,
 
 /* The coherent acquire of one dep (per model).  item = the installed db_s;
  * args = arts_ooo_args_db_acquire_s {edt, db_guid, slot}.  Attempts the one
- * dep's acquire (mode x ownership dispatch); on a synchronous resolve calls
- * arts_db_acquire_resolved; on a remote request, parks.  Called only by the
+ * dep's acquire (mode x ownership dispatch): a local hit records its payload
+ * and calls arts_db_acquire_resolved, an in-frame serve resolves the slot
+ * through the arm's resolver, anything else parks.  Called only by the
  * driver's acquire_one_dep, which an OOO_DB_ACQUIRE replay reaches too: that
- * kind's table entry is arts_db_acquire_replay_dep, never this body. */
+ * kind's table entry is arts_db_acquire_replay_dep, never this body.  The
+ * slot's subtype and descriptor pin are in its acquire record before the call.
+ *
+ * A handler publishes the slot to its one resolver -- the RMW that links its
+ * waiter, its push, or the send that names (edt, slot) -- or resolves it in
+ * its own frame.  After that it touches neither the slot's acquire record nor
+ * the EDT (its depv included): the resolver may already have accounted the
+ * slot, and the EDT may have run.  It may keep using the descriptor it was
+ * called with.  The frame that called it keeps the descriptor alive: the
+ * acquire phase's own frame (its first pass and the walk, under the phase's
+ * bias) or a resume drain, through the account it still owes (the EDT cannot
+ * run, so the record's pin stays); an off-walk OoO replay through the OoO
+ * dispatcher's pin on the installed object, held across every dispatch --
+ * not through the record's pin, which the EDT's release drops.  So the rest of an off-walk replay's handler (a
+ * read's request send, a write-through home's re-check and drain of its
+ * publication waiters) may run after the slot's EDT ran, released and the
+ * program legally destroyed the block: the caller's pin covers the free; the
+ * destroy's synchronous half touches no state that rest touches; and a
+ * request sent after its slot was served is a covered request the home
+ * already counts (declared by a write request or owed by a create's
+ * announce).  A serialized slot's replay runs under the account its worklist
+ * entry owes, so its handler finishes before its EDT can run. */
 void arts_handler_db_acquire(void *item, void *args);
 
 /* Decrement acquire_remaining; schedule the EDT if it reaches 0. Caller must
  * not touch the EDT afterward (it may have been scheduled + run). */
 void arts_db_acquire_account(struct arts_edt_s *edt);
 
-/* A dep resolved locally (its acquire record claimed): if it is the serialized
- * dep at the cursor, advance the cursor (the acquire loop, not this call, fires
- * the next one); hand the payload to the slots that alias it; then count the
- * dep down, which may schedule the EDT. */
+/* A dep the firing frame resolved locally (its acquire record written): if it
+ * is serialized, advance the cursor, which is at it (the acquire loop, not
+ * this call, fires the next one); hand the payload to the slots that alias it;
+ * then count the dep down, which may schedule the EDT. */
 void arts_db_acquire_resolved(struct arts_edt_s *edt, unsigned int slot);
 
 /* An EDT acquires each distinct block ONCE: the owner slot asks an arm for it,
  * every other slot naming it is an alias that requests nothing and skips the
  * arm's release.  This hands the block's payload to those aliases — the same
  * address, a per-slot buffer ref and descriptor pin, one account each — and is
- * the ONLY place an alias is resolved, on every arm.  Call it where an owner's
- * pointer becomes final, BEFORE accounting the owner (that account may schedule
- * the EDT, after which nothing may read its acquire state); a NULL payload
- * resolves the aliases to NULL, the value a block with no bytes reads as.  One
- * pass over depv in the calling frame: no dispatch, no recursion.
+ * the ONLY place an alias is resolved, on every arm.  Call it from the owner's
+ * one resolver, where its pointer becomes final, BEFORE accounting the owner
+ * (that account may schedule the EDT, after which nothing may read its acquire
+ * state); a NULL payload resolves the aliases to NULL, the value a block with
+ * no bytes reads as.  One pass over depv in the calling frame: no dispatch, no
+ * recursion.
  *
- * owner_db_h is the descriptor handle the calling frame holds for the block,
- * BORROWED for the call (the caller still owns it), or NULL when the frame
- * holds none.  Pass it whenever there is one: an alias must never end with a
+ * The aliases copy the owner's record pin: an alias must never end with a
  * buffer ref and no descriptor pin (a release that cannot derive the buffer
  * from the payload address finds it through the descriptor), and a fresh
  * lookup can miss under a concurrent destroy while the payload is still alive
- * under the owner's own pin.  With no handle the block is looked up here, and
- * a miss resolves the aliases to NULL with no ref at all. */
-void arts_db_fill_aliases(struct arts_edt_s *edt, unsigned int owner_slot,
-                          arts_shared_ptr_t owner_db_h);
+ * under the owner's own pin.  Only an owner with no pin (a non-coherent block)
+ * has the block looked up here, and a miss resolves the aliases to NULL with
+ * no ref at all. */
+void arts_db_fill_aliases(struct arts_edt_s *edt, unsigned int owner_slot);
 
 /* Per-protocol classification used by the arts_db_acquire_all driver: returns
  * true for the dep modes whose acquire can WAIT on another rank, which the
@@ -264,35 +285,35 @@ arts_db_acquire_remote_ro(struct arts_db_cache_s *cache, arts_guid_t edt_guid,
                           unsigned int slot);
 #endif
 
-/* Resume the parked (edt_guid, slot) on buf_h: on success the ref becomes the
- * EDT's hold; returns false when the slot was already resolved, in which case
- * the caller still owns buf_h.  A NULL buf_h resolves a block with no bytes;
- * no pointer CAS can arbitrate that value, so the claim is db_h itself —
- * exactly one such wake installs the pin and accounts — and with no db_h
- * either, nothing arbitrates.
+/* The one resolution of an owner slot the EDT's acquire phase handed to an
+ * arm, by the frame that fired it or the one frame a plane's take hands its
+ * waiter to.  Whether the slot also holds up the EDT's SERIALIZED acquire walk
+ * is read off the slot itself: a resolution of a serialized owner slot lets
+ * the walk past it in the same frame — after the payload is published, before
+ * the account that may schedule the EDT — and any other slot leaves the walk
+ * where it stands.  The slot's descriptor pin, stored before the arm's handler
+ * ran, keeps the descriptor alive.  A Debug build aborts on a second
+ * resolution of the slot or one after the EDT's acquire phase ended.
  *
- * db_h is a pinned handle on the block's descriptor and is CONSUMED by the
- * call: a winning slot claim MOVES it into the slot's pin (released last in
- * release_one_dep), a slot that already carries a pin releases it, and every
- * other path — lost claim, NULL data, EDT gone — releases it before
- * returning.  The caller must take it together with buf_h, from the same
- * lookup: the slot's release reaches the descriptor through this pin, so a
- * pin fetched separately could miss a destroy between the two and leave the
- * dep holding a buffer ref with no pin to release it against. */
-bool arts_db_resume_parked(arts_guid_t edt_guid, unsigned int slot,
-                           arts_shared_ptr_t buf_h, arts_shared_ptr_t db_h);
+ * arts_db_resolve_slot resolves to buf_h, which it CONSUMES (it becomes the
+ * slot's hold; NULL resolves a block with no bytes): an arm that gives every
+ * EDT a private copy passes that copy.  arts_db_resume_parked is its form for
+ * a parked slot named by (edt_guid, slot). */
+#ifdef ARTS_PROTOCOL_FLUSH
+void arts_db_resolve_slot(struct arts_edt_s *edt, unsigned int slot,
+                          arts_shared_ptr_t buf_h);
+void arts_db_resume_parked(arts_guid_t edt_guid, unsigned int slot,
+                           arts_shared_ptr_t buf_h);
+#endif
 
 #if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV) ||               \
     defined(ARTS_PROTOCOL_EXCL)
-/* Wake a parked EDT's dep slot against the DB's CACHE-installed buffer (the
- * cache-slot form of the resume above).  Used by the drain paths and the
- * response handlers of every arm whose readers share the rank's own copy.
- *
- * Whether the slot also holds up the EDT's SERIALIZED acquire walk is read off
- * the slot itself: a wake that publishes a serialized owner slot lets the walk
- * past it in the same frame — after the payload is published, before the
- * account that may schedule the EDT — and a wake of any other slot leaves the
- * walk where it stands.  There is no separate advance to compose with. */
+/* The cache-slot form of the resolution: the buffer is whatever this rank's
+ * cache holds for the block, read through the descriptor the slot pins.  Used
+ * by the in-frame serves, the drain paths and the response handlers of every
+ * arm whose readers share the rank's own copy; mark_edt_ready_by_guid is its
+ * form for a parked slot named by (edt_guid, slot). */
+void arts_db_resolve_slot_cached(struct arts_edt_s *edt, unsigned int slot);
 void mark_edt_ready_by_guid(arts_guid_t edt_guid, unsigned int slot);
 #endif
 

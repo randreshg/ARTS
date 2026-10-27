@@ -273,8 +273,8 @@ static void owner_destroy_fanout_cb(unsigned int rank, void *ctx) {
 
 /* Cat-B pure body (OoO g_ooo_table[OOO_DB_DESTROY]): the OoO engine has already
  * acquired the home db_s and pinned a ref across this call (cache is its FIRST
- * member).  Order: roster fan-out, then arts_ooo_retire_item LAST (parked
- * waiter at destroy = UB, cleaned up by the refcount-0 destructor).  WB roster
+ * member).  Order: roster fan-out, then arts_ooo_retire_item LAST (a parked
+ * waiter at destroy = UB, never woken: its slot's pin keeps it).  WB roster
  * source = the cached-ranks bit-set: the creator joins it at create and every
  * requester when its request arrives, so it names rw_holder and, during a
  * transfer, pending_install_owner too.  The teardown is immediate: no release

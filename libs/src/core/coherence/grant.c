@@ -129,8 +129,9 @@ arts_db_acquire_remote_rw(struct arts_db_cache_s *cache, arts_guid_t edt_guid,
    * slot's value to NULL, before anything frees the block, so an acquire
    * issued after the retire misses in the route table and never reaches this
    * cache.  Destroying a DB an EDT still has a pending acquire on is undefined
-   * per OCR; a waiter left parked at that point is freed (not woken) by the
-   * refcount-0 cache destructor. */
+   * per OCR; a waiter left parked at that point is never woken, and its
+   * slot's descriptor pin keeps the descriptor, and so the waiter, until the
+   * process ends. */
   /* Park the waiter on the cache's pending-RW Treiber stack.  A grant takes
    * the whole stack at once and wakes every waiter on it, newest first; order
    * is immaterial, since every waiter is woken. */

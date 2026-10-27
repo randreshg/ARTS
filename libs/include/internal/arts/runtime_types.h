@@ -135,11 +135,11 @@ struct arts_edt_s {
    * with the EDT; NULL before. */
   struct arts_dep_acq_s *dep_acq;
   /** Dependences whose data is not yet resolved at this rank, plus one per
-   * frame still touching the acquire state (the walk's bias, a resume entry,
-   * a replay).  Every frame decrements acq_rel after its slot work (the
-   * record, buffer refs, pins, the cursor): the decrement that reaches 0
-   * acquires all of it, hands the resolved slots to depv and schedules the
-   * EDT.  Increments are taken while the count is above zero. */
+   * frame still touching the acquire state (the walk's bias, a resume
+   * entry).  Every frame decrements acq_rel after its slot work (the record,
+   * buffer refs, pins, the cursor): the decrement that reaches 0 acquires all
+   * of it, hands the resolved slots to depv and schedules the EDT.
+   * Increments are taken while the count is above zero. */
   _Atomic(unsigned int) acquire_remaining;
   unsigned int invalidate_count; /**< Outstanding cache invalidations of a GPU
                                       wrapper EDT: set while it is private,

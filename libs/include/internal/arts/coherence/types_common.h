@@ -331,10 +331,10 @@ struct arts_db_read_waiter_s {
   arts_lf_link_t link; /* FIRST — required by arts_lf_stack_t */
   arts_guid_t edt_guid;
   unsigned int slot;
-  /* Deferred-serve arm: NULL = local waiter (drain resumes the parked EDT;
-   * the resume claims the slot's acquire record with the installed buffer).
-   * Non-NULL = deferred remote serve; the drain invokes serve(cache, w)
-   * BEFORE freeing w, and requester/cover/rdzv carry the original request. */
+  /* Deferred-serve arm: NULL = local waiter (the drain resolves the parked
+   * slot on the installed buffer).  Non-NULL = deferred remote serve; the
+   * drain invokes serve(cache, w) BEFORE freeing w, and requester/cover/rdzv
+   * carry the original request. */
   uint32_t cover;
   void (*serve)(struct arts_db_cache_s *cache, struct arts_db_read_waiter_s *w);
   unsigned int requester;

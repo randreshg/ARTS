@@ -12,9 +12,9 @@
  *
  *   2. Acquire path (the routines every arm's arts_handler_db_acquire body
  *      shares).  Inline comments highlight the trickier race resolutions.
- *      Wake mechanism: a wake looks up the parked EDT, claims the slot's
- *      acquire record with the buffer data pointer, and counts the dep down
- *      through arts_db_acquire_account (acquire_remaining); the decrement that
+ *      Wake mechanism: a slot's one resolver writes the slot's acquire
+ *      record with the buffer data pointer, and counts the dep down through
+ *      arts_db_acquire_account (acquire_remaining); the decrement that
  *      reaches 0 hands the payload to depv and the EDT to the scheduler.  A
  *      serialized slot handed to the resume worklist is counted down by the
  *      drain, after the walk.
@@ -221,43 +221,28 @@ void arts_db_cxl_slot_discard(struct arts_db_cache_s *cache) {
 /* ===== Acquire path =============================================== */
 /* ================================================================== */
 
-/* ===== EDT wake helper ============================================== */
+/* ===== The slot resolver ============================================ */
 
-/* Resume `edt`'s parked `slot` on a buffer the caller supplies, and — when the
- * slot is one the EDT's serialized acquire walk is parked at — advance that
- * walk past it, in this one frame.  The caller holds the EDT for the whole
- * call, so the wake reads its acquire state and accounts under a single ref —
- * except an account the cursor step hands to the resume worklist, which an
- * outer drain may issue after that ref is gone: an EDT still owing it has not
- * run, so its runnable-phase reference keeps it alive.
+/* The one resolution of an owner slot the EDT's acquire phase handed to an
+ * arm: the frame that fired it (an in-frame serve) or the one frame a plane's
+ * take hands its waiter to.  Nothing arbitrates, because nothing can meet it:
+ * every plane hands a parked slot to one runner by the RMW that takes its
+ * waiter (or by the one response to its one request), and the firing frame
+ * touches neither the slot nor the EDT after it published the slot.  The
+ * frame that fired the slot stored the descriptor pin before the arm's
+ * handler ran, so the slot's descriptor is alive here and the release reaches
+ * it through the pin.
  *
- * The ref in buf_h is what the EDT's dep slot will hold for the rest of its
- * life: on a won claim it becomes the EDT's hold (release_one_dep drops it
- * through the block's descriptor) and the descriptor is pinned for that same
- * span.  A lost claim leaves the ref with the caller, which is the only way
- * the two delivery paths that can wake one slot both stay leak-free.
+ * buf_h is CONSUMED: it becomes the slot's hold (release_one_dep drops it
+ * through the payload's buffer).  A NULL handle resolves a zero-size block,
+ * whose defined value is NULL.
  *
- * Whose buffer it is, is the arm's business: an arm whose payload lives in
- * the rank's cache passes the cache slot's buffer (the cache-slot wrappers
- * below), an arm that gives every EDT a private copy passes that copy.  A
- * NULL handle resolves a zero-size block, whose defined value is NULL.
+ * The tail runs payload, aliases, cursor, account, and both of its orderings
+ * are load-bearing:
  *
- * db_h is a pin on the block's descriptor and is CONSUMED: a won claim moves
- * it into the dep slot, where the slot's release reaches the descriptor
- * through it.  The two must be ONE pin taken with the buffer, never a fresh
- * lookup here — a lookup between them could miss a destroy's slot withdrawal
- * and leave the dep holding a buffer ref with no pin to release it against.
- *
- * Whether this wake also discharges the slot's place in the EDT's serialized
- * walk is read off the slot itself — a serialized owner slot, never an alias —
- * and never off the caller, so whichever frame wins the claim is the one that
- * lets the walk past it.  The tail then runs claim, aliases, cursor, account,
- * and both of its orderings are load-bearing:
- *
- *   claim BEFORE cursor — the cursor passing a slot is what entitles a frame
- *   to fire the next one, and such a frame reads the passed slot's payload as
- *   final.  Publishing first is what makes "the cursor is never ahead of an
- *   unpublished payload" an invariant instead of a race.
+ *   payload BEFORE cursor — the cursor passing a slot is what entitles a
+ *   frame to fire the next one, and such a frame reads the passed slot's
+ *   payload as final.
  *
  *   cursor BEFORE account — the account may be the decrement that schedules
  *   the EDT, and a scheduled EDT's acquire state belongs to whoever runs it;
@@ -265,181 +250,81 @@ void arts_db_cxl_slot_discard(struct arts_db_cache_s *cache) {
  *   walk to the resume worklist, the account goes with it and the drain issues
  *   it after the walk, so the walk too runs before the EDT can be scheduled.
  *
- * A wake that LOSES the claim owes neither step: the winner owns the
- * continuation, and a second frame advancing the same cursor would put two
- * threads in one walk.  A winning wake whose payload is NULL — a block with no
- * bytes, or one destroyed under a pending acquire — still owes the cursor step,
- * because NULL is that slot's resolved value and a walk never advanced past it
- * never finishes.
- *
  * Stack depth is bounded on every path: the cursor step does nothing but raise
  * a thread-local flag or append to the resume worklist, and the walk it hands
- * off to runs in the single top-level loop of the drain, never nested here.
- *
- * Returns false when the ref was NOT taken — the slot was already resolved by
- * another wake — and the caller still owns buf_h. */
-static bool resume_parked(struct arts_edt_s *edt, unsigned int slot,
-                          arts_shared_ptr_t buf_h, arts_shared_ptr_t db_h) {
+ * off to runs in the single top-level loop of the drain, never nested here. */
+static void resolve_slot_body(struct arts_edt_s *edt, unsigned int slot,
+                              arts_shared_ptr_t buf_h) {
   arts_edt_dep_t *depv = (arts_edt_dep_t *)arts_get_depv(edt);
   struct arts_dep_acq_s *rec = &edt->dep_acq[slot];
   bool secured = !rec->alias && arts_dep_is_serialized(depv, slot);
   struct arts_db_buffer_s *buf =
       (struct arts_db_buffer_s *)arts_shared_get(buf_h);
-  /* A resolved acquire owes the EDT storage of the DB's declared size.
-   * data == NULL therefore means db_size == 0 (a sentinel block, whose
-   * defined value is NULL) or the DB was destroyed under a pending
-   * acquire, which the programming model leaves undefined. */
-  void *data = buf ? buf->data : NULL;
-  /* The descriptor this resolution belongs to, borrowed for the alias fill
-   * below: the aliases pin THIS handle rather than looking the block up again,
-   * because a lookup can miss under a concurrent destroy while the payload is
-   * still alive under the pin installed here.  Taken before db_h is moved into
-   * the slot and dropped on every path out. */
-  arts_shared_ptr_t alias_pin = arts_shared_copy(db_h);
-  if (data != NULL) {
-    /* Idempotent slot claim: whichever paths wake the same (edt, slot), the
-     * slot resolves exactly once.  CAS the record's ptr NULL->data so only
-     * the first wake keeps its buffer ref (the EDT's hold) and accounts; a
-     * loser leaves the ref with its caller and returns WITHOUT accounting —
-     * no double-decrement of acquire_remaining, no buffer-ref leak.  The
-     * claim carries no data: what this wake secured reaches the EDT through
-     * its own account. */
-    void *expected = NULL;
-    if (!atomic_compare_exchange_strong_explicit(&rec->ptr, &expected, data,
-                                                 memory_order_relaxed,
-                                                 memory_order_relaxed)) {
-      arts_shared_release(&alias_pin);
-      arts_shared_release(&db_h);
-      return false;
-    }
-    rec->claimed = true;
-    /* Won: MOVE the pin into the slot (released in release_one_dep) rather
-     * than dropping it here: the release resolves the descriptor through it,
-     * which a lookup cannot do once a destroy has retired the GUID. */
-    if (db_h != NULL) {
-      /* Claimed by CAS, as the acquiring walk's tail claims it: the two can
-       * both see the slot resolved, and only one handle may be kept. */
-      void *pin_expected = NULL;
-      if (atomic_compare_exchange_strong_explicit(
-              &rec->pin, &pin_expected, (void *)db_h, memory_order_release,
-              memory_order_relaxed)) {
-        db_h = NULL;
-      }
-    }
-  } else if (db_h != NULL) {
-    /* A block with no bytes resolves to NULL, which no CAS on the pointer can
-     * arbitrate — the resolved value and the unresolved one are the same.  So
-     * the descriptor pin is the claim instead: exactly one wake installs it,
-     * and only that wake accounts.  (With no handle at all the block is gone
-     * and there is nothing to arbitrate on; a destroyed block woken twice is
-     * outside the programming model.) */
-    void *pin_expected = NULL;
-    if (!atomic_compare_exchange_strong_explicit(
-            &rec->pin, &pin_expected, (void *)db_h, memory_order_release,
-            memory_order_relaxed)) {
-      arts_shared_release(&alias_pin);
-      arts_shared_release(&db_h);
-      return false;
-    }
-    db_h = NULL; /* the slot owns it now */
-  }
-  arts_shared_release(&db_h); /* no-op when moved into the pin above */
+  rec->ptr = buf != NULL ? buf->data : NULL;
   arts_db_census_count_serve(depv[slot].guid);
   /* The block's payload is final for this EDT now: every other slot naming it
-   * shares these bytes.  Run after the claim published them, and before this
-   * slot's own account, which may be the one that schedules the EDT. */
-  arts_db_fill_aliases(edt, slot, alias_pin);
-  arts_shared_release(&alias_pin);
-  /* Every byte this slot resolves to is published, so the walk may pass it. */
+   * shares these bytes.  Before this slot's own account, which may be the one
+   * that schedules the EDT. */
+  arts_db_fill_aliases(edt, slot);
   if (secured && arts_db_rw_secure(edt, slot)) {
     /* The walk and this slot's account now belong to the worklist entry. */
     arts_db_drain_resume_list();
-    return true;
+    return;
   }
-  /* Data resolved for this dep — count it down; the actor that reaches 0
-   * schedules. The caller's ref on the EDT keeps it alive even if the schedule
-   * lets another worker run (and free) it; do NOT touch edt after
-   * arts_db_acquire_account returns. */
+  /* The last touch: do NOT touch edt after the account returns. */
   arts_db_acquire_account(edt);
-  return true;
 }
 
-/* Resolve the parked EDT and hold it for the whole wake: every read of its
- * acquire state, and the account that may schedule it, happen under this one
- * ref, so the wake needs no second lookup and can meet no intervening
- * teardown.  An account handed to the resume worklist is the exception (see
- * resume_parked).  NULL means the EDT is no longer there, and the caller has
- * nothing left to wake. */
-static struct arts_edt_s *parked_edt_pin(arts_guid_t edt_guid,
-                                         arts_shared_ptr_t *edt_h) {
-  *edt_h = arts_route_table_lookup_edt(edt_guid);
-  struct arts_edt_s *edt = (struct arts_edt_s *)arts_shared_get(*edt_h);
+#ifdef ARTS_PROTOCOL_FLUSH
+void arts_db_resolve_slot(struct arts_edt_s *edt, unsigned int slot,
+                          arts_shared_ptr_t buf_h) {
+  arts_dep_acq_resolve_once(edt, slot);
+  resolve_slot_body(edt, slot, buf_h);
+}
+
+/* An EDT that is no longer there has nothing left to resolve. */
+void arts_db_resume_parked(arts_guid_t edt_guid, unsigned int slot,
+                           arts_shared_ptr_t buf_h) {
+  arts_shared_ptr_t edt_h = arts_route_table_lookup_edt(edt_guid);
+  struct arts_edt_s *edt = (struct arts_edt_s *)arts_shared_get(edt_h);
   if (edt == NULL) {
     ARTS_INFO("coherence: edt_guid %lu not found at trigger time", edt_guid);
-    arts_shared_release(edt_h);
+    arts_shared_release(&edt_h);
+    arts_db_buf_release(&buf_h);
+    return;
   }
-  return edt;
-}
-
-bool arts_db_resume_parked(arts_guid_t edt_guid, unsigned int slot,
-                           arts_shared_ptr_t buf_h, arts_shared_ptr_t db_h) {
-  arts_shared_ptr_t edt_h = NULL;
-  struct arts_edt_s *edt =
-      (edt_guid == NULL_GUID) ? NULL : parked_edt_pin(edt_guid, &edt_h);
-  if (edt == NULL) {
-    arts_shared_release(&db_h);
-    return false;
-  }
-  bool claimed = resume_parked(edt, slot, buf_h, db_h);
+  arts_db_resolve_slot(edt, slot, buf_h);
   arts_shared_release(&edt_h);
-  return claimed;
 }
+#endif
 
 #if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV) ||               \
     defined(ARTS_PROTOCOL_EXCL)
-/* The cache-slot form of the resume: the buffer is whatever this rank's cache
- * currently holds for the DB the dep names.  This wake reaches any rank for
- * any parked slot and knows nothing about whether this one may hold the
- * block, so it never materializes a buffer: the arm that decided to wake the
- * slot did that at the point it established the hold.
- *
- * Cross-TU: the response handlers and the drain paths resume a parked EDT by
- * (edt_guid, slot) through the wrapper below. */
-static void resume_cache_slot(arts_guid_t edt_guid, unsigned int slot) {
+/* The cache-slot form: the buffer is whatever this rank's cache holds for the
+ * block, read through the descriptor the slot pins, so the pin and the ref
+ * name one object by construction.  It never materializes a buffer: the arm
+ * that decided to resolve the slot did that at the point it established the
+ * hold. */
+void arts_db_resolve_slot_cached(struct arts_edt_s *edt, unsigned int slot) {
+  arts_dep_acq_resolve_once(edt, slot); /* before the pin is read */
+  struct arts_db_s *db =
+      (struct arts_db_s *)arts_shared_get(edt->dep_acq[slot].pin);
+  resolve_slot_body(edt, slot, arts_db_buf_acquire(&db->cache));
+}
+
+void mark_edt_ready_by_guid(arts_guid_t edt_guid, unsigned int slot) {
   if (edt_guid == NULL_GUID) {
     return;
   }
-  arts_shared_ptr_t edt_h = NULL;
-  struct arts_edt_s *edt = parked_edt_pin(edt_guid, &edt_h);
+  arts_shared_ptr_t edt_h = arts_route_table_lookup_edt(edt_guid);
+  struct arts_edt_s *edt = (struct arts_edt_s *)arts_shared_get(edt_h);
   if (edt == NULL) {
+    ARTS_INFO("coherence: edt_guid %lu not found at trigger time", edt_guid);
+    arts_shared_release(&edt_h);
     return;
   }
-  /* The dep slot names the DB whose cache holds the bytes. */
-  arts_guid_t db_guid = ((arts_edt_dep_t *)arts_get_depv(edt))[slot].guid;
-  arts_shared_ptr_t buf_h = NULL;
-  arts_shared_ptr_t db_h = NULL;
-  if (db_guid != NULL_GUID) {
-    db_h = arts_route_table_lookup_db(db_guid);
-    struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(db_h);
-    if (db != NULL && db->db_type == ARTS_DB) {
-      buf_h = arts_db_buf_acquire(&db->cache);
-    }
-  }
-  /* One lookup yields both the buffer and the pin the dep will carry; the
-   * resume CONSUMES the pin, so there is no second lookup and no window in
-   * which the two could disagree about whether the block still exists. */
-  if (!resume_parked(edt, slot, buf_h, db_h)) {
-    arts_db_buf_release(&buf_h); /* lost the claim: drop the extra ref */
-  }
+  arts_db_resolve_slot_cached(edt, slot);
   arts_shared_release(&edt_h);
-}
-
-/* One wake, one EDT lookup, one block lookup.  A slot the EDT's serialized
- * walk is parked at is let past in the same frame, once its payload is there
- * to be read; any other slot is resolved and accounted with the walk left
- * where it stands. */
-void mark_edt_ready_by_guid(arts_guid_t edt_guid, unsigned int slot) {
-  resume_cache_slot(edt_guid, slot);
 }
 #endif /* arms whose readers resume on the rank's own cache */
 
@@ -800,9 +685,8 @@ void arts_db_drain_publication_waiters(struct arts_db_cache_s *cache) {
       arts_guid_t edt_local = w->edt_guid;
       unsigned int slot_local = w->slot;
       arts_free(w);
-      /* Wake after free: mark_edt_ready_by_guid claims the slot's acquire
-       * record with the (now-installed) cache buffer and resumes the acquire
-       * walk. */
+      /* Resolved after the free: the slot reads the (now-installed) cache
+       * buffer. */
       mark_edt_ready_by_guid(edt_local, slot_local);
     }
     node = next;
@@ -1203,7 +1087,7 @@ void arts_handler_db_publish_ack(void *item_v, void *args_v) {
 void arts_db_release_ro(struct arts_db_cache_s *cache) {
   /* RO release is a no-op for VAL: the EDT's buf ref is dropped
    * by release_one_dep's DIST branch via release_buf (matching the
-   * acquire_buf in mark_edt_ready_by_guid / acquire_local).
+   * acquire_buf in the slot resolver / acquire_local).
    * EXCL defines its own arts_db_release_ro in coherence/excl/purge.c and
    * coherence/excl/retain.c. */
   (void)cache;

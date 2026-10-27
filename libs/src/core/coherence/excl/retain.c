@@ -185,11 +185,11 @@ void arts_db_create_install_home_buffer(struct arts_db_cache_s *cache,
  * whole stack, and the caller is its sole drainer.  A counted waiter may not
  * have pushed yet: between the CAS that counted it and its push it only
  * allocates and fills its small node (no lock, no wait), and the drain waits
- * for that by re-draining.  Serving = claim the slot's acquire record with the
- * installed buffer + position-idempotent cursor advance (which is what fires
- * the next serialized dep) + account (may hand the payload to depv and
- * schedule the EDT when acquire_remaining reaches 0).  It does NOT touch the
- * count, which the waiter's acquire CAS carried. */
+ * for that by re-draining.  Serving = resolve the slot on the installed
+ * buffer + cursor advance (which is what fires the next serialized dep) +
+ * account (may hand the payload to depv and schedule the EDT when
+ * acquire_remaining reaches 0).  It does NOT touch the count, which the
+ * waiter's acquire CAS carried. */
 static void lock_drain_pending(arts_lf_stack_t *q, uint32_t expected) {
   uint32_t served = 0;
   while (served < expected) {
@@ -943,7 +943,7 @@ void arts_handler_db_acquire(void *item, void *args) {
     (void)arts_db_buf_ensure(
         cache, atomic_load_explicit(&cache->db_size, memory_order_relaxed));
     uint8_t census = arts_db_census_serving(false);
-    mark_edt_ready_by_guid(edt->guid, slot);
+    arts_db_resolve_slot_cached(edt, slot);
     arts_db_census_served(census);
     return;
   }

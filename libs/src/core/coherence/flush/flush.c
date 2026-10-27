@@ -278,7 +278,6 @@ void arts_db_flush_discard_landing(uint64_t txid, uint64_t len,
 }
 
 struct fetch_landed_ctx_s {
-  arts_shared_ptr_t db_h; /* consumed by the resume */
   struct arts_db_buffer_s *copy;
   arts_guid_t edt_guid;
   uint32_t slot;
@@ -288,24 +287,9 @@ static void fetch_landed_cb(void *arg) {
   struct fetch_landed_ctx_s *ctx = (struct fetch_landed_ctx_s *)arg;
   /* A one-sided payload comes from another rank. */
   uint8_t census = arts_db_census_serving(true);
-  if (arts_shared_get(ctx->db_h) == NULL) {
-    /* The block went away under a pending acquire, which the model leaves
-     * undefined — but the slot still resolves, to NULL, the value a block
-     * with no storage reads as, so the EDT is not left parked forever.  The
-     * landed bytes have no descriptor to belong to and die here. */
-    (void)arts_db_resume_parked(ctx->edt_guid, ctx->slot, NULL, ctx->db_h);
-    arts_db_census_served(census);
-    copy_drop(ctx->copy);
-    arts_free(ctx);
-    return;
-  }
-  arts_shared_ptr_t copy_h = ctx->copy->cb;
-  /* The ref becomes the EDT's hold on success, and the descriptor pin the
-   * handler took is consumed by the resume.  A duplicate wake keeps the first
-   * copy, so this copy dies here either way. */
-  if (!arts_db_resume_parked(ctx->edt_guid, ctx->slot, copy_h, ctx->db_h)) {
-    arts_shared_release(&copy_h);
-  }
+  /* The copy's ref becomes the EDT's hold; the slot's own pin keeps the
+   * block's descriptor for its release. */
+  arts_db_resume_parked(ctx->edt_guid, ctx->slot, ctx->copy->cb);
   arts_db_census_served(census);
   arts_free(ctx);
 }
@@ -340,14 +324,12 @@ void arts_handler_db_fetch_response(void *item_v, void *args_v) {
     copy_drop(copy);
     /* Only a rank other than the home fetches. */
     uint8_t census = arts_db_census_serving(true);
-    (void)arts_db_resume_parked(a->edt_guid, a->slot, NULL,
-                                arts_route_table_lookup_db(cache->db_guid));
+    arts_db_resume_parked(a->edt_guid, a->slot, NULL);
     arts_db_census_served(census);
     return;
   }
   struct fetch_landed_ctx_s *ctx =
       (struct fetch_landed_ctx_s *)arts_malloc(sizeof(*ctx));
-  ctx->db_h = arts_route_table_lookup_db(cache->db_guid);
   ctx->copy = copy;
   ctx->edt_guid = a->edt_guid;
   ctx->slot = a->slot;

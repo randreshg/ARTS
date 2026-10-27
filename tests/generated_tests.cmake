@@ -508,16 +508,14 @@ register_single_node_test(db_create_with_data_bytes TIMEOUT 60)
 set_tests_properties(db_create_with_data_bytes PROPERTIES
     PASS_REGULAR_EXPRESSION "PASS: db_create_with_data_bytes")
 
-# A ready EDT is claimed once whichever wake reaches it: the claim is one CAS
-# on the EDT, and the wakes come from the arm's cache slots (whitebox, one
-# rank; not under FLUSH, where every acquirer owns its own bytes and no cache
-# slot wakes anything).
-if(NOT "mark_edt_ready_idempotent" IN_LIST ARTS_CXL_DIRECT_EXCLUDED AND
-   NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
-add_arts_test(mark_edt_ready_idempotent)
-register_single_node_test(mark_edt_ready_idempotent TIMEOUT 60)
-set_tests_properties(mark_edt_ready_idempotent PROPERTIES PASS_REGULAR_EXPRESSION
-    "PASS: mark_edt_ready_idempotent")
+# A slot the acquire phase handed to an arm has one resolver, and a second
+# resolution of it ends the run (whitebox, one rank).  The check is a Debug
+# assertion, and the resolver runs no cell-dependent code before it.
+if(CMAKE_BUILD_TYPE STREQUAL "Debug" AND ARTS_TEST_REFERENCE_TREE)
+add_arts_test(dep_slot_resolved_once)
+register_single_node_test(dep_slot_resolved_once TIMEOUT 60 STATUS 1)
+set_tests_properties(dep_slot_resolved_once PROPERTIES PASS_REGULAR_EXPRESSION
+    "acquire_remaining: before=100 after=99 delta=1.*resolved twice")
 endif()
 
 # Each round's block lives off rank 0 and every rank's readers race its

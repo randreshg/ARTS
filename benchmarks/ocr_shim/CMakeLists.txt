@@ -121,3 +121,29 @@ if(ARTS_BUILD_TESTS AND ARTS_TEST_REFERENCE_TREE)
         PASS_REGULAR_EXPRESSION "\\[ARTS\\] unsupported OCR access mode DB_MODE_EW"
         FAIL_REGULAR_EXPRESSION "FAIL")
 endif()
+
+# A dependence that carries NULL_GUID in the default (read-write) mode: an
+# event satisfied with NULL_GUID on a create-time slot, and an output event
+# satisfied with no result.  Neither slot names a data block, so the consumer
+# acquires and releases neither.  No cell changes it, so it is built and
+# registered in the reference tree only.
+add_executable(ocr_shim_null_guid_dep EXCLUDE_FROM_ALL
+    ${CMAKE_SOURCE_DIR}/tests/shim/null_guid_dep.c
+    $<TARGET_OBJECTS:ocr_arts_objects>)
+target_include_directories(ocr_shim_null_guid_dep PRIVATE
+    ${OCR_ROOT}/inc ${SHIM_OCR_OPTIONS_DIR})
+target_compile_definitions(ocr_shim_null_guid_dep PRIVATE
+    ${SHIM_OCR_TYPE_DEFINE})
+set_property(TARGET ocr_shim_null_guid_dep PROPERTY
+    POSITION_INDEPENDENT_CODE OFF)
+target_compile_options(ocr_shim_null_guid_dep PRIVATE ${ARTS_NON_PIE_COMPILE_OPTIONS})
+target_link_options(ocr_shim_null_guid_dep PRIVATE ${ARTS_NON_PIE_LINK_OPTIONS})
+target_link_libraries(ocr_shim_null_guid_dep PRIVATE arts_static)
+if(ARTS_BUILD_TESTS AND ARTS_TEST_REFERENCE_TREE)
+    set_target_properties(ocr_shim_null_guid_dep PROPERTIES
+        EXCLUDE_FROM_ALL FALSE)
+    register_single_node_test(ocr_shim_null_guid_dep TIMEOUT 30)
+    set_tests_properties(ocr_shim_null_guid_dep PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS: NULL_GUID dependences in the default mode"
+        FAIL_REGULAR_EXPRESSION "FAIL")
+endif()

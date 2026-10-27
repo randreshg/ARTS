@@ -82,8 +82,9 @@
  * destroy roster (the creator, the readers, every write requester) — so its
  * whole body lives in each arm's own write-policy TU.  Every body runs the
  * roster fan-out, then retires the slot by the dispatched item; any waiter
- * left parked at destroy time (UB per OCR) is cleaned up by the refcount-0
- * cache destructor. */
+ * left parked at destroy time (UB per OCR) is never woken, and its slot's
+ * descriptor pin keeps the descriptor, and so the waiter, until the process
+ * ends. */
 
 /* NO_ACQUIRE home normalization.  The creator neither acquires nor releases,
  * so the home is the sole idle owner.  Every home create path seeds a
