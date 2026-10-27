@@ -1301,6 +1301,18 @@ target_link_libraries(regpool_entry_word PRIVATE Threads::Threads)
 register_pure_unit_test(regpool_entry_word TIMEOUT 30)
 set_tests_properties(regpool_entry_word PROPERTIES
     PASS_REGULAR_EXPRESSION "PASS regpool_entry_word")
+# The declared-arrival gate's one step, from every boundary word: the word it
+# leaves, the teardown edge and the mark (a duplicate MARK reports no edge).
+# One header serves VAL, INV and EXCL x RETAIN alike.  Header-only.
+add_executable(cover_gate_step unit/cover_gate_step.c)
+target_include_directories(cover_gate_step PRIVATE
+    ${ARTS_PUBLIC_INCLUDE_DIR} ${ARTS_INTERNAL_INCLUDE_DIR}
+    ${ARTS_BUILD_INTERNAL_INCLUDE_DIR})
+arts_apply_protocol(cover_gate_step ${ARTS_COHERENCE_ARM} ${ARTS_WRITE_POLICY} ${ARTS_RELEASE_POLICY})
+target_link_libraries(cover_gate_step PRIVATE Threads::Threads)
+register_pure_unit_test(cover_gate_step TIMEOUT 30)
+set_tests_properties(cover_gate_step PROPERTIES
+    PASS_REGULAR_EXPRESSION "PASS cover_gate_step")
 
 # net_selfsend — whitebox self-send exercise for the libfabric transport core
 # (transport/net.c).  It #includes net.c directly (statics under test) with a

@@ -26,6 +26,9 @@
  *   6. Concurrency: K threads each set a DISTINCT rank (spanning word
  *      boundaries) → every set returns true once, the walk (after join) visits
  *      every rank exactly once.
+ *   7. note: sets a clear bit, leaves a set one (idempotent), never clears
+ *      another rank's bit, ignores rank >= nranks; K threads noting ranks
+ *      across word boundaries leave exactly those bits.
  *
  * Compiled with the one definition (coherence/rank_bitset.c) and the
  * libc-backed alloc shims below, without the runtime.
@@ -275,6 +278,78 @@ static int part6_distinct(void) {
   return rc;
 }
 
+struct note_arg {
+  struct arts_rank_bitset_s *r;
+  unsigned int id;
+};
+static void *note_thread(void *p) {
+  struct note_arg *a = (struct note_arg *)p;
+  for (int round = 0; round < 1000; round++) {
+    for (unsigned int k = a->id; k < NRANKS; k += THREADS) {
+      arts_rank_bitset_note(a->r, k);
+      arts_rank_bitset_note(a->r, k);
+    }
+  }
+  return NULL;
+}
+
+static int part7_note(void) {
+  struct arts_rank_bitset_s r;
+  arts_rank_bitset_init(&r, NRANKS);
+  arts_rank_bitset_note(&r, 63);
+  arts_rank_bitset_note(&r, 63);
+  arts_rank_bitset_note(&r, 64);
+  arts_rank_bitset_note(&r, NRANKS);
+  arts_rank_bitset_note(&r, 100000);
+  struct visit_ctx v;
+  memset(&v, 0, sizeof(v));
+  visit_all(&r, &v);
+  if (v.bad || v.count != 2 || v.seen[63] != 1 || v.seen[64] != 1) {
+    (void)fprintf(stderr, "FAIL rank_bitset: note left %d bits (63:%d 64:%d)\n",
+                  v.count, v.seen[63], v.seen[64]);
+    arts_rank_bitset_destroy(&r);
+    return 1;
+  }
+  if (arts_rank_bitset_set(&r, 63) || !arts_rank_bitset_set(&r, 62)) {
+    (void)fprintf(stderr, "FAIL rank_bitset: note and set disagree\n");
+    arts_rank_bitset_destroy(&r);
+    return 1;
+  }
+  arts_rank_bitset_destroy(&r);
+
+  arts_rank_bitset_init(&r, NRANKS);
+  pthread_t t[THREADS];
+  struct note_arg a[THREADS];
+  for (unsigned int i = 0; i < THREADS; i++) {
+    a[i].r = &r;
+    a[i].id = i;
+    pthread_create(&t[i], NULL, note_thread, &a[i]);
+  }
+  for (unsigned int i = 0; i < THREADS; i++) {
+    pthread_join(t[i], NULL);
+  }
+  memset(&v, 0, sizeof(v));
+  visit_all(&r, &v);
+  arts_rank_bitset_destroy(&r);
+  if (v.bad || v.count != NRANKS) {
+    (void)fprintf(stderr,
+                  "FAIL rank_bitset: concurrent notes left %d of %d "
+                  "bits\n",
+                  v.count, NRANKS);
+    return 1;
+  }
+  for (int k = 0; k < NRANKS; k++) {
+    if (v.seen[k] != 1) {
+      (void)fprintf(stderr,
+                    "FAIL rank_bitset: rank %d visited %d times after "
+                    "concurrent notes\n",
+                    k, v.seen[k]);
+      return 1;
+    }
+  }
+  return 0;
+}
+
 int main(void) {
   if (part1_sizes() != 0) {
     return 1;
@@ -291,9 +366,12 @@ int main(void) {
   if (part6_distinct() != 0) {
     return 1;
   }
+  if (part7_note() != 0) {
+    return 1;
+  }
   printf("PASS rank_bitset: sizes, word-boundary walk single-visit, "
          "first-set-wins, OOB reject, %d-thread same-rank exactly-once + "
-         "distinct-rank all-set\n",
+         "distinct-rank all-set, note\n",
          THREADS);
   return 0;
 }

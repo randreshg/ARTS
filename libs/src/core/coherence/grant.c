@@ -519,7 +519,7 @@ void arts_handler_db_grant_request(void *item_v, void *args_v) {
    * so the destroy must reach it: its cache would otherwise outlive the
    * block, keeping its storage and its rank's route slot for the GUID. */
   if (requester != arts_global_rank_id) {
-    (void)arts_rank_bitset_set(&db->cached_ranks, requester);
+    arts_rank_bitset_note(&db->cached_ranks, requester);
   }
   uint64_t db_size =
       atomic_load_explicit(&cache->db_size, memory_order_relaxed);

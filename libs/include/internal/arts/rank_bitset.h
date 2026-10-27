@@ -28,10 +28,11 @@ extern "C" {
  * its last user, so the pointer itself is plain.  Its elements are accessed
  * only atomically: by the functions below and directly by the arms that
  * drain a roster themselves.  arts_rank_bitset_set is an acq_rel fetch_or,
- * and a cursor (arts_rank_bitset_next) loads each word with acquire.  In
- * a destroy roster and in EXCL's recall roster a bit carries only its own
- * value: the caller sends to the ranks named.  INV's copy roster needs the
- * set's acquire half: a read serve's set and the round's snapshot exchange
+ * arts_rank_bitset_note a relaxed load and, only when the bit is clear, a
+ * relaxed fetch_or, and a cursor (arts_rank_bitset_next) loads each word with
+ * acquire.  In a destroy roster and in EXCL's recall roster a bit carries only
+ * its own value: the caller sends to the ranks named.  INV's copy roster needs
+ * the set's acquire half: a read serve's set and the round's snapshot exchange
  * RMW the same word, so either the round names the reader, or the set reads
  * the exchange and the serve is ordered after the round's stamp (see that
  * roster's declaration). */
@@ -49,6 +50,23 @@ void arts_rank_bitset_destroy(struct arts_rank_bitset_s *r);
  * false when it was already set or `rank` is out of range: of concurrent
  * callers on one bit, exactly one sees true. */
 bool arts_rank_bitset_set(struct arts_rank_bitset_s *r, unsigned int rank);
+/* Set `rank`'s bit unless a relaxed load already finds it; nothing when
+ * `rank` is out of range.  For a monotone roster whose bit carries only its
+ * own value and is read by a walk that every set it must see happens before
+ * (a destroy roster): a skipped set read some set of the bit, which the walk
+ * then reads or reads past, and every write of the word is a fetch_or. */
+static inline void arts_rank_bitset_note(struct arts_rank_bitset_s *r,
+                                         unsigned int rank) {
+  if (rank >= r->nranks) {
+    return;
+  }
+  uint64_t bit = (uint64_t)1 << (rank % 64u);
+  if ((atomic_load_explicit(&r->words[rank / 64u], memory_order_relaxed) &
+       bit) == 0u) {
+    (void)atomic_fetch_or_explicit(&r->words[rank / 64u], bit,
+                                   memory_order_relaxed);
+  }
+}
 /* Put `value` in `rank`'s bit with one acq_rel RMW of its word (a fetch_or
  * for 1, a fetch_and for 0) and return the bit's previous value; false, with
  * nothing written, when `rank` is out of range.  Of two puts of one value on
@@ -63,9 +81,9 @@ bool arts_rank_bitset_put(struct arts_rank_bitset_s *r, unsigned int rank,
  *
  * yields every rank whose bit was set when its word was read, in ascending
  * order, each once.  A bit set during the walk may be missed, so a caller that
- * needs every member walks only after every set: the destroy fan-out walks
- * once the block's route-table slot is absent, so no later acquire can
- * register a rank. */
+ * needs every member walks only after every set it must see: the destroy
+ * fan-out walks at the home's teardown edge, which every request the home
+ * processed happens before. */
 struct arts_rank_bitset_cursor_s {
   const struct arts_rank_bitset_s *set;
   unsigned int word; /* the next word to read */

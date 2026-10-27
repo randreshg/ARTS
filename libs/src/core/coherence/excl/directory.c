@@ -23,6 +23,7 @@
 #include <stdlib.h>
 
 #include "arts/coherence/coherence.h"
+#include "arts/coherence/cover_gate.h"
 #include "arts/coherence/handlers.h"
 #include "arts/coherence/directory.h"
 #include "arts/gas/route_table.h"
@@ -125,7 +126,9 @@ void arts_db_home_seed_owed(struct arts_db_s *db, unsigned int creator,
                            n, EXCL_STATE_W(s), EXCL_STATE_R(s)),
       memory_order_relaxed);
 #else
-  atomic_store_explicit(&db->cover_gate, (rwo << 30) | (roo << 29) | n,
+  atomic_store_explicit(&db->cover_gate,
+                        (rwo != 0u ? ARTS_COVER_GATE_RWO : 0u) |
+                            (roo != 0u ? ARTS_COVER_GATE_ROO : 0u) | n,
                         memory_order_relaxed);
 #endif
 }

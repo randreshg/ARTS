@@ -340,7 +340,8 @@ struct arts_db_s {
   struct arts_home_grantreq_queue_s pending_rw; /* embedded Vyukov MPSC */
   /* The serving baton, a claim counter (directory.h). */
   _Atomic(uint64_t) grant_baton;
-  /* destroy fan-out roster: creator, readers, writers */
+  /* destroy fan-out roster: creator, readers, writers; the creator's bit is
+   * set at home init, every other by arts_rank_bitset_note */
   struct arts_rank_bitset_s cached_ranks;
   /* The declared-arrival state: per requester rank the parity of its last
    * read request this home accounted for (by its arrival or a declaration of
@@ -369,7 +370,9 @@ struct arts_db_s {
    * roster: a rank can hold a cache the ledger never credits (a version-0
    * reply, a holder with no buffer). */
   struct arts_rank_to_u64_map_s *cached_version;
-  struct arts_rank_bitset_s cached_ranks; /* destroy fan-out roster */
+  /* destroy fan-out roster; the creator's bit is set at home init, every
+   * other by arts_rank_bitset_note */
+  struct arts_rank_bitset_s cached_ranks;
   /* The declared-arrival state: per requester rank the parity of its last
    * read request this home accounted for (by its arrival or a declaration of
    * it, whichever came first); the gate [td:1 | rwo:1 | roo:1 | owed:29],

@@ -42,8 +42,14 @@ static void sharers_mark(struct arts_db_s *db, unsigned int rank) {
       rank / SHARER_BITS >= db->sharer_words) {
     return;
   }
-  atomic_fetch_or_explicit(&db->sharers[rank / SHARER_BITS],
-                           1UL << (rank % SHARER_BITS), memory_order_relaxed);
+  /* A monotone roster whose bit carries only its own value: a set bit needs
+   * no write. */
+  if ((atomic_load_explicit(&db->sharers[rank / SHARER_BITS],
+                            memory_order_relaxed) &
+       (1UL << (rank % SHARER_BITS))) == 0u) {
+    atomic_fetch_or_explicit(&db->sharers[rank / SHARER_BITS],
+                             1UL << (rank % SHARER_BITS), memory_order_relaxed);
+  }
 }
 
 static bool sharers_test(const struct arts_db_s *db, unsigned int rank) {

@@ -75,8 +75,9 @@ struct arts_db_s {
   bool home_initialized;
   /* Ranks that hold a stub for this block (fetched it, or were told the
    * line's address at create): the destroy fan-out roster and nothing else.
-   * Bits are set by relaxed fetch_or from any handler or worker and read
-   * relaxed: only their own value is relied on. */
+   * Bits are set from any handler or worker by a relaxed load and, when the
+   * bit is clear, a relaxed fetch_or, and read relaxed: only their own value
+   * is relied on. */
   _Atomic(unsigned long) *sharers;
   unsigned int sharer_words;
 #ifdef ARTS_GPU_LAYOUT

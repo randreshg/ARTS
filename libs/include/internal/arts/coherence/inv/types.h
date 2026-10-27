@@ -431,7 +431,9 @@ struct arts_db_s {
    * writes the batch's releasers back in: they are sharers from their
    * release on. */
   struct arts_rank_bitset_s roster;
-  struct arts_rank_bitset_s cached_ranks; /* destroy fan-out roster */
+  /* destroy fan-out roster; the creator's bit is set at home init, every
+   * other by arts_rank_bitset_note */
+  struct arts_rank_bitset_s cached_ranks;
   /* The declared-arrival state: per requester rank the parity of its last
    * read request this home accounted for (by its arrival or a declaration of
    * it, whichever came first); the gate [td:1 | rwo:1 | roo:1 | owed:29],

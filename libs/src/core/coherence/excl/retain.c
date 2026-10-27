@@ -38,6 +38,7 @@
 #include "arts/coherence/buffer.h"
 #include "arts/coherence/census.h"
 #include "arts/coherence/coherence.h"
+#include "arts/coherence/cover_gate.h"
 #include "arts/coherence/handlers.h"
 #include "arts/coherence/directory.h"
 #include "arts/db.h"
@@ -1369,67 +1370,12 @@ void arts_db_release_ro(struct arts_db_cache_s *cache) {
   }
 }
 
-/* The cover gate [td:1 (31) | rwo:1 (30) | roo:1 (29) | owed:29].  A destroy
- * marks it and tears the home down when nothing is owed; otherwise the last
- * owed request's arrival does.  No release here owes the home anything it must
- * wait for: the payload legs move owner->owner, a pending migration means a
- * live acquire, which the destroy contract excludes, and a RO_RETURN or
- * CONFIRM that trails the teardown finds no home and is dropped. */
-#define EXCL_GATE_TD 0x80000000u
-#define EXCL_GATE_RWO 0x40000000u
-#define EXCL_GATE_ROO 0x20000000u
-#define EXCL_GATE_OWED_MASK 0x1fffffffu
-
-enum gate_op { GATE_OWE, GATE_ARRIVE, GATE_RWO_ARRIVE, GATE_ROO_ARRIVE, GATE_MARK };
-
-/* One RMW of the gate.  Returns true when this step is the one that leaves a
- * marked gate with nothing owed (the caller tears down); *marked reports
- * whether the gate was marked when the step committed. */
-static bool gate_step(struct arts_db_s *db, enum gate_op op, bool *marked) {
-  uint32_t cur = atomic_load_explicit(&db->cover_gate, memory_order_acquire);
-  uint32_t next;
-  bool edge;
-  do {
-    uint32_t owed = cur & EXCL_GATE_OWED_MASK;
-    uint32_t flag = (op == GATE_RWO_ARRIVE)   ? EXCL_GATE_RWO
-                    : (op == GATE_ROO_ARRIVE) ? EXCL_GATE_ROO
-                                              : 0u;
-    next = cur;
-    edge = false;
-    switch (op) {
-    case GATE_OWE:
-      if (owed == EXCL_GATE_OWED_MASK) {
-        ARTS_ERROR("lock: guid %lu owes more requests than its gate holds "
-                   "(gate=%x)",
-                   (unsigned long)db->cache.db_guid, cur);
-      }
-      next = cur + 1u;
-      break;
-    case GATE_ARRIVE:
-    case GATE_RWO_ARRIVE:
-    case GATE_ROO_ARRIVE:
-      if (owed == 0u || (flag != 0u && (cur & flag) == 0u)) {
-        ARTS_ERROR("lock: guid %lu settles a request it was never owed "
-                   "(gate=%x)",
-                   (unsigned long)db->cache.db_guid, cur);
-      }
-      next = (cur - 1u) & ~flag;
-      edge = (cur & EXCL_GATE_TD) != 0u && owed == 1u;
-      break;
-    case GATE_MARK:
-      if ((cur & EXCL_GATE_TD) != 0u) {
-        *marked = true;
-        return false; /* a duplicate destroy */
-      }
-      next = cur | EXCL_GATE_TD;
-      edge = (owed == 0u);
-      break;
-    }
-  } while (!atomic_compare_exchange_weak_explicit(
-      &db->cover_gate, &cur, next, memory_order_acq_rel, memory_order_acquire));
-  *marked = (cur & EXCL_GATE_TD) != 0u;
-  return edge;
-}
+/* The cover gate (arts/coherence/cover_gate.h).  A destroy marks it and
+ * tears the home down when nothing is owed; otherwise the last owed request's
+ * arrival does.  No release here owes the home anything it must wait for: the
+ * payload legs move owner->owner, a pending migration means a live acquire,
+ * which the destroy contract excludes, and a RO_RETURN or CONFIRM that trails
+ * the teardown finds no home and is dropped. */
 
 /* The declared-arrival rule, before a request is processed.  Returns false
  * when the request is not processed: the claiming creator's pre-claim
@@ -1442,17 +1388,19 @@ static bool lock_request_cover(struct arts_db_s *db, unsigned int requester,
                                bool reads) {
   bool marked = false;
   if ((cover & EXCL_COVER_PRECLAIM) != 0u && requester == db->claim_rank) {
-    if (gate_step(db, mode == DB_MODE_RW ? GATE_RWO_ARRIVE : GATE_ROO_ARRIVE,
-                  &marked)) {
+    if (arts_cover_gate_step(db,
+                             mode == DB_MODE_RW ? ARTS_COVER_GATE_RWO_ARRIVE
+                                                : ARTS_COVER_GATE_ROO_ARRIVE,
+                             &marked)) {
       arts_excl_home_teardown(db, db->cache.db_guid);
     }
     return false;
   }
   if (mode == DB_MODE_RW && (cover & EXCL_COVER_RO_OPEN) != 0u) {
     bool par = (cover & EXCL_COVER_RO_PAR) != 0u;
-    (void)gate_step(db, GATE_OWE, &marked);
+    (void)arts_cover_gate_step(db, ARTS_COVER_GATE_OWE, &marked);
     if (arts_rank_bitset_put(&db->ro_parity, requester, par) == par) {
-      if (gate_step(db, GATE_ARRIVE, &marked)) {
+      if (arts_cover_gate_step(db, ARTS_COVER_GATE_ARRIVE, &marked)) {
         arts_excl_home_teardown(db, db->cache.db_guid);
         return false;
       }
@@ -1472,7 +1420,7 @@ static bool lock_request_cover(struct arts_db_s *db, unsigned int requester,
       }
       /* Declared before it came: a write turn of this rank covers it.
        * Dismissed, never processed as a read. */
-      bool edge = gate_step(db, GATE_ARRIVE, &marked);
+      bool edge = arts_cover_gate_step(db, ARTS_COVER_GATE_ARRIVE, &marked);
       arts_send_db_excl_cts(db, requester,
                             atomic_load_explicit(&db->cache.db_size,
                                                  memory_order_relaxed),
@@ -1495,7 +1443,7 @@ void arts_handler_db_destroy(void *item_v, void *args_v) {
     return;
   }
   bool marked = false;
-  if (gate_step(db, GATE_MARK, &marked)) {
+  if (arts_cover_gate_step(db, ARTS_COVER_GATE_MARK, &marked)) {
     arts_excl_home_teardown(db, a->db_guid);
   }
 }
@@ -1705,8 +1653,8 @@ void arts_handler_db_excl_request(void *item_v, void *args_v) {
     return;
   }
 
-  arts_rank_bitset_set(&db->cached_ranks,
-                       requester); /* destroy fan-out roster */
+  arts_rank_bitset_note(&db->cached_ranks,
+                        requester); /* destroy fan-out roster */
 
   uint32_t action;
   uint64_t cur, next;

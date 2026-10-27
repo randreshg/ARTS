@@ -440,8 +440,8 @@ void arts_handler_db_excl_request(void *item_v, void *args_v) {
    * travels in the grant, which the grantee records before it reads. */
 #endif
 
-  arts_rank_bitset_set(&db->cached_ranks,
-                       requester); /* destroy fan-out roster */
+  arts_rank_bitset_note(&db->cached_ranks,
+                        requester); /* destroy fan-out roster */
 
   uint32_t grant;
   uint64_t cur, next;

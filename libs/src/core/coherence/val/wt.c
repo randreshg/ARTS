@@ -386,8 +386,7 @@ void arts_handler_db_snapshot_request(void *item_v, void *args_v) {
   /* A reader holds a cache of the block from here on, so the destroy must
    * reach it (a size-0 block's reply credits no version to the ledger). */
   if (requester != arts_global_rank_id) {
-    (void)arts_rank_bitset_set(&arts_db_of_cache(cache)->cached_ranks,
-                               requester);
+    arts_rank_bitset_note(&arts_db_of_cache(cache)->cached_ranks, requester);
   }
 
   /* A remote first use of a block whose create took no hold: the home is the

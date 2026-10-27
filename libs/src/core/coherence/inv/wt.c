@@ -301,7 +301,7 @@ void arts_handler_db_inv_request(void *item_v, void *args_v) {
       return;
     }
   }
-  (void)arts_rank_bitset_set(&db->cached_ranks, a->requester);
+  arts_rank_bitset_note(&db->cached_ranks, a->requester);
   if (a->rdzv.txid == 0 &&
       atomic_load_explicit(&cache->db_size, memory_order_relaxed) != 0 &&
       a->requester != arts_global_rank_id) {

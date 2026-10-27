@@ -579,7 +579,9 @@ struct arts_db_s {
   _Atomic(uint64_t) lock_state;
   struct arts_home_grantreq_queue_s rw_waiters; /* Vyukov MPSC, pop-one */
   arts_lf_stack_t ro_waiters;                  /* Treiber, XCHG drain */
-  struct arts_rank_bitset_s cached_ranks;      /* destroy fan-out roster */
+  /* destroy fan-out roster; the creator's bit is set at home init, every
+   * other by arts_rank_bitset_note */
+  struct arts_rank_bitset_s cached_ranks;
   /* Per requester rank, the parity of its last read request this home has
    * accounted for, by its arrival or by a declaration of it, whichever came
    * first: the one that finds the bit already at the request's parity is the

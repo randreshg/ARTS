@@ -233,7 +233,7 @@ void arts_handler_db_snapshot_request(void *item_v, void *args_v) {
    * value NULL-stored before destroy) + the handler single-actor invariant —
    * no per-home destroy flag. */
   struct arts_db_s *db = arts_db_of_cache(cache);
-  arts_rank_bitset_set(&db->cached_ranks, requester);
+  arts_rank_bitset_note(&db->cached_ranks, requester);
   /* Forward to the current owner unconditionally: even mid-transfer, rw_holder
    * still names the OLD owner, which retains its buffer + cached_version
    * permanently and serves the REDIRECT from its own copy.  Client-side
