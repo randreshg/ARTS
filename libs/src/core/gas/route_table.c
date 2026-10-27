@@ -585,11 +585,11 @@ bool arts_route_table_install_handle_if_absent(arts_shared_ptr_t cb,
       return false;
     }
     if (arts_shared_slot_install_empty(&item->value, ext, cb)) {
-      /* Orders the install before the drain's detach of the OoO list; pairs
-       * with the fence in arts_ooo_dispatch_or_defer between a parker's push
-       * and its re-read of the value, so either this drain takes the node or
-       * the parker sees the value and drains itself. */
-      atomic_thread_fence(memory_order_seq_cst);
+      /* Same-word pairing on ooo_list with a parker's push and re-read in
+       * arts_ooo_dispatch_or_defer: the drain's exchange is acq_rel and
+       * unconditional, so either it takes the node or the parker's push
+       * reads from it or a later RMW and its re-read sees the install or a
+       * later write. */
       arts_ooo_drain(item);
       return true;
     }
@@ -668,13 +668,11 @@ bool arts_route_table_set_destroyed_if(arts_guid_t key, arts_shared_ptr_t cb) {
   }
   arts_shared_set_tag(cb, 0);
   atomic_store_explicit(&item->key, (arts_guid_t)0, memory_order_release);
-  /* Orders the value's removal and the key's return before the re-drive's
-   * detach of the OoO list; pairs with the fences in
-   * arts_ooo_dispatch_or_defer and ooo_dispatch_create between a parker's
-   * push and its re-read of the value and the key, so either this re-drive
-   * takes the node or the parker sees the slot emptied or returned and drains
-   * it itself. */
-  atomic_thread_fence(memory_order_seq_cst);
+  /* Same-word pairing on ooo_list with a parker's push and re-read in
+   * arts_ooo_dispatch_or_defer and ooo_dispatch_create: the re-drive's
+   * exchange is acq_rel and unconditional, so either it takes the node or
+   * the parker's push reads from it or a later RMW and its re-read sees the
+   * slot emptied and returned, or a later write. */
   arts_ooo_redrive_all(item);
   return true;
 }

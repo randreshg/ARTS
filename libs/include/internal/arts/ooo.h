@@ -506,11 +506,13 @@ void arts_ooo_push_guid(arts_guid_t guid, ooo_kind_t kind, const void *args,
 /* Create handler's last step: replay accumulated payloads against the
  * just-installed item.  Detaches one snapshot of the slot's OoO chain
  * (reverse_drain → FIFO) and runs each through dispatch_or_defer.  Lock-free:
- * concurrent drains detach disjoint snapshots. */
+ * concurrent drains detach disjoint snapshots.  The detach is an
+ * unconditional exchange, which an install's pairing with a parker needs. */
 void arts_ooo_drain(struct arts_route_item_s *slot);
 
-/* Convenience: look up the slot for `guid` and drain it.  Used by create
- * handlers that hold only the GUID (e.g. coherence DB_CREATE). */
+/* Convenience: look up the slot for `guid` and drain it, for a caller that
+ * holds only the GUID: the GPU wrapper EDT's wrap-up replays the satisfies
+ * arts_ooo_push_guid held back. */
 void arts_ooo_drain_guid(arts_guid_t guid);
 
 /* Free every payload still queued on a slot's chain without dispatching —
@@ -520,7 +522,8 @@ void arts_ooo_free_all(struct arts_route_item_s *slot);
 
 /* Re-resolve every parked node against its own GUID and defer it again.  A
  * teardown calls this after returning the slot, so a node that raced the
- * return is moved to the slot its GUID now maps to instead of being stranded. */
+ * return is moved to the slot its GUID now maps to instead of being stranded.
+ * Its detach is an unconditional exchange, as arts_ooo_drain's is. */
 void arts_ooo_redrive_all(struct arts_route_item_s *slot);
 
 #ifdef __cplusplus

@@ -81,6 +81,7 @@ add_pure_unit_src(mpsc_transient_empty PASS_REGEX "PASS mpsc_transient_empty" TI
 add_pure_unit_src(shared_compare_exchange SOURCES ${CMAKE_SOURCE_DIR}/libs/src/core/utils/shared.c PASS_REGEX "PASS shared_compare_exchange" TIMEOUT 60)
 add_pure_unit_src(shared_lifecycle_race SOURCES ${CMAKE_SOURCE_DIR}/libs/src/core/utils/shared.c PASS_REGEX "PASS shared_lifecycle_race" TIMEOUT 60)
 add_pure_unit_src(route_table_install_if_absent PASS_REGEX "PASS route_table_install_if_absent" TIMEOUT 60)
+add_pure_unit_src(ooo_park_install_retire PASS_REGEX "PASS ooo_park_install_retire" TIMEOUT 120)
 add_pure_unit_src(route_table_segment_grow PASS_REGEX "PASS route_table_segment_grow" TIMEOUT 60)
 add_pure_unit_src(route_table_growth_residency PASS_REGEX "PASS route_table_growth_residency" TIMEOUT 60)
 add_pure_unit_src(route_item_mirror_bridge PASS_REGEX "PASS route_item_mirror_bridge" TIMEOUT 60)

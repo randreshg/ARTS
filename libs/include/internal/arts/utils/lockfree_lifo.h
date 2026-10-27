@@ -42,8 +42,9 @@ typedef struct arts_lf_link_s {
  *  its pusher wrote before the push, and a push after a drain sees what the
  *  drainer wrote before the drain.  So a caller that pushes and then loads
  *  another word, against one that stores that word and then drains the same
- *  stack, needs no fence.  The emptiness probe is a relaxed load that
- *  carries only its value. */
+ *  stack, needs no fence, provided the drain is unconditional: a drain
+ *  skipped on an emptiness probe is no RMW and pairs with nothing.  The
+ *  emptiness probe is a relaxed load that carries only its value. */
 typedef struct {
   _Atomic(arts_lf_link_t *) head;
 } arts_lf_stack_t;

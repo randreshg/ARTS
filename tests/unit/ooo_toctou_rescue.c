@@ -4,7 +4,9 @@
  *
  * Property under test (ooo.c arts_ooo_dispatch_or_defer MISS path):
  *   A producer that observes slot->value == NULL pushes its payload onto the
- *   slot's ooo_list, then executes a seq_cst fence and re-loads slot->value.
+ *   slot's ooo_list, then re-loads slot->value; the push and the installer's
+ *   unconditional drain are acq_rel RMWs of the list's head, so neither side
+ *   needs a fence.
  *   If an installer published `value` after the producer's initial NULL load
  *   but before/around the push, the producer's own post-push re-check MUST
  *   observe the install and drain the slot — so the just-pushed node is never
@@ -17,7 +19,7 @@
  *   SAME freshly-reset slot while one installer thread publishes value and
  *   drains.  A start-gate releases all threads simultaneously to maximise the
  *   window where a producer loads NULL, then the installer publishes, then the
- *   producer pushes (the exact stranding window the fence+reload rescues).
+ *   producer pushes (the exact stranding window the post-push re-load rescues).
  *   The dispatch handler increments a per-round atomic counter; after join we
  *   assert dispatched == pushed and the slot's ooo_list is empty.
  *
@@ -188,8 +190,6 @@ static void after_park_hook(arts_route_item_t *slot) {
      * is re-claimed by another GUID with no re-drive, so the parker must move
      * its own node.  TEARDOWN: the teardown's re-drive takes the node. */
     atomic_store_explicit(&slot->key, (arts_guid_t)0, memory_order_release);
-    /* The retire's fence in arts_route_table_set_destroyed_if, mirrored. */
-    atomic_thread_fence(memory_order_seq_cst);
     atomic_store_explicit(&g_slots[1].key, G_CREATE, memory_order_release);
     arts_shared_ptr_t cb = arts_shared_make(&g_obj, noop_deleter);
     arts_shared_set_tag(cb, (uint64_t)G_CREATE);
@@ -209,8 +209,6 @@ static void after_park_hook(arts_route_item_t *slot) {
     atomic_store_explicit(&slot->key, (arts_guid_t)0, memory_order_release);
   } else if (m == HOOK_TEARDOWN) {
     atomic_store_explicit(&slot->key, (arts_guid_t)0, memory_order_release);
-    /* The retire's fence in arts_route_table_set_destroyed_if, mirrored. */
-    atomic_thread_fence(memory_order_seq_cst);
     arts_ooo_redrive_all(slot);
   } else { /* HOOK_RECLAIM: the returned slot is claimed by another GUID,
               which parks a message of its own there. */

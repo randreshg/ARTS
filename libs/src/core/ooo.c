@@ -278,15 +278,16 @@ static void ooo_dispatch_create(struct arts_route_item_s *slot,
   arts_lf_stack_push(&slot->ooo_list, &payload->link);
   OOO_AFTER_PARK(slot);
 
-  /* TOCTOU rescue, the non-create one inverted.  The fence orders the push
-   * before the re-read of the value and the key; it pairs with the fence in
-   * arts_route_table_set_destroyed_if between the occupant's retire (value
-   * cleared, key returned) and its re-drive of the chain.  So either that
-   * re-drive carries our node, or we see the slot emptied or returned and
-   * drain it ourselves.  Draining — never re-entering with a copy — keeps the
-   * node single-owner: whichever side detaches it from the chain dispatches
-   * it, and the other finds it gone. */
-  atomic_thread_fence(memory_order_seq_cst);
+  /* TOCTOU rescue, the non-create one inverted: same-word pairing on
+   * ooo_list with arts_route_table_set_destroyed_if, which clears the value
+   * and returns the key before its re-drive's exchange.  The push and that
+   * exchange are acq_rel RMWs of one head, so either the re-drive carries
+   * our node, or our push reads from it or a later RMW and the re-read below
+   * sees the retire's writes or later ones.  We drain unless the slot is
+   * occupied by this GUID again, whose retire re-drives in turn.  Draining —
+   * never re-entering with a copy — keeps the node single-owner: whichever
+   * side detaches it from the chain dispatches it, and the other finds it
+   * gone. */
   arts_shared_ptr_t h = arts_shared_slot_load(&slot->value);
   bool occupied = (h != NULL) && arts_shared_tag(h) == (uint64_t)guid;
   if (h != NULL) {
@@ -371,18 +372,18 @@ void arts_ooo_dispatch_or_defer(struct arts_route_item_s *slot,
   arts_lf_stack_push(&slot->ooo_list, &payload->link);
   OOO_AFTER_PARK(slot);
 
-  /* TOCTOU rescue, against an install and against a teardown.  The fence
-   * orders the push before the re-read of the value and the key; it pairs
-   * with the fence in arts_route_table_install_handle_if_absent between an
-   * install and its drain, and with the fence in
-   * arts_route_table_set_destroyed_if between a retire (value cleared, key
-   * returned) and its re-drive.  So either the installer's drain or the
-   * retire's re-drive carries our node, or we see the value published or the
-   * key moved and drain the slot ourselves.  Draining — never re-entering
-   * with a copy — keeps the node single-owner: whichever side detaches it
-   * dispatches it (to the installed object, or on to the slot its GUID names
-   * now), and the other finds it gone. */
-  atomic_thread_fence(memory_order_seq_cst);
+  /* TOCTOU rescue, against an install and against a teardown: same-word
+   * pairing on ooo_list with arts_route_table_install_handle_if_absent (the
+   * install, then its drain) and arts_route_table_set_destroyed_if (the
+   * value cleared and the key returned, then its re-drive).  The push and
+   * their exchange are acq_rel RMWs of one head, so either the drain or the
+   * re-drive carries our node, or our push reads from it or a later RMW and
+   * the re-read below sees those writes or later ones.  We drain unless the
+   * slot is this GUID's and empty again, whose install drains in turn.
+   * Draining — never re-entering with a copy — keeps the node
+   * single-owner: whichever side detaches it dispatches it (to the installed
+   * object, or on to the slot its GUID names now), and the other finds it
+   * gone. */
   h = arts_shared_slot_load(&slot->value);
   bool installed = (h != NULL);
   if (h) {
@@ -415,7 +416,9 @@ void arts_ooo_push_guid(arts_guid_t guid, ooo_kind_t kind, const void *args,
 
 void arts_ooo_drain(struct arts_route_item_s *slot) {
   /* One snapshot, walked once.  Re-pushed misses land on a fresh chain and
-   * await the next install's drain. */
+   * await the next install's drain.  The exchange is unconditional, never
+   * skipped on an emptiness probe: an installer's pairing with a parker
+   * rests on it. */
   arts_lf_link_t *head = arts_lf_stack_reverse_drain(&slot->ooo_list);
   while (head != NULL) {
     /* Save next first: dispatch_or_defer may re-push this node (re-setting its
@@ -442,7 +445,8 @@ void arts_ooo_drain_guid(arts_guid_t guid) {
  * instant too late must not be stranded on a slot another identity is about to
  * claim.  A node whose GUID is simply gone re-defers on a fresh reservation and
  * is reaped at shutdown, the same as any request for an object that never
- * arrives. */
+ * arrives.  Its exchange is unconditional, as the drain's is: the retire's
+ * pairing with a parker rests on it. */
 void arts_ooo_redrive_all(struct arts_route_item_s *slot) {
   arts_lf_link_t *head = arts_lf_stack_reverse_drain(&slot->ooo_list);
   while (head != NULL) {
