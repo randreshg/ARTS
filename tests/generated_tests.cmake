@@ -822,6 +822,15 @@ if(ARTS_COHERENCE_ARM STREQUAL "INV")
 add_pure_unit_src(inv_compute_next DEFINES ARTS_UNIT_STANDALONE_SHIMS PASS_REGEX "PASS inv_compute_next:" TIMEOUT 60)
 endif()
 
+# db_reader_pool: the parked-reader pool on a cache of the cell, with no
+# runtime started (links libarts for the cell's arbiter and destructor).  The
+# arms that chain readers by index only; each cell's destructor is its own.
+if(ARTS_COHERENCE_ARM STREQUAL "VAL" OR ARTS_COHERENCE_ARM STREQUAL "INV")
+add_arts_test(db_reader_pool)
+register_pure_unit_test(db_reader_pool TIMEOUT 120)
+set_tests_properties(db_reader_pool PROPERTIES PASS_REGULAR_EXPRESSION "PASS db_reader_pool:")
+endif()
+
 # acquire_is_serialized: it does NOT #include a coherence .c; it links the real
 # arts_db_acquire_is_serialized symbol out of the per-config static libarts and
 # never starts the runtime, so it uses add_arts_test (links libarts) +

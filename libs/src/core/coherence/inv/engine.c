@@ -2,8 +2,8 @@
  *
  * The INV engine — everything both write policies run identically.
  *
- * The reader plane (waiter pool, chain serve, fetch install) and the
- * invalidation round (claim, roster snapshot, multicast, ack accounting,
+ * The reader plane (fetch install and the transitions that take its chain)
+ * and the invalidation round (claim, roster snapshot, multicast, ack accounting,
  * close) live here, along with the cache lifecycle and the wire senders.  What
  * is left to the write-policy TUs is exactly three decisions, because those are
  * the only three that "where do the canonical bytes live" actually changes:
@@ -52,126 +52,6 @@
 
 /* ===== pure arbiters (private copy — see arbiters.c) ==================== */
 #include "arbiters.c"
-
-/* ===== waiter pool (index-addressed chain nodes) ========================
- * Chain nodes live in per-DB chunked storage addressed by an 18-bit index
- * (0 = none) so a chain head fits the cache word.  Alloc = tagged free-list
- * pop (the tag defeats index ABA under concurrent alloc/free) with a
- * bump-allocator fallback; free = tagged push.  Who writes and reads a
- * node's fields, and under which CAS, is stated at arts_db_inv_waiter_s. */
-
-#define INV_WAITER_NCHUNKS                                                     \
-  ((uint32_t)(((uint64_t)INV_WAITER_IDX_MAX + 1u) / INV_WAITER_CHUNK_CAP))
-#define INV_FREE_IDX(h) ((uint32_t)((h) & INV_CACHE_HEAD_MASK))
-#define INV_FREE_TAG(h) ((uint32_t)((h) >> INV_CACHE_HEAD_BITS))
-#define INV_FREE_MAKE(tag, idx)                                                \
-  ((uint32_t)((((tag) & 0x3FFFu) << INV_CACHE_HEAD_BITS) |                     \
-              ((idx) & INV_CACHE_HEAD_MASK)))
-
-/* Each chunk is installed once by a CAS whose release carries the zeroed
- * chunk to every acquire load of the slot. */
-struct inv_waiter_dir_s {
-  _Atomic(struct arts_db_inv_waiter_s *) chunk[INV_WAITER_NCHUNKS];
-};
-
-static struct inv_waiter_dir_s *inv_waiter_dir(struct arts_db_cache_s *c) {
-  uintptr_t d = atomic_load_explicit(&c->waiters.chunks, memory_order_acquire);
-  if (d == 0) {
-    struct inv_waiter_dir_s *fresh =
-        (struct inv_waiter_dir_s *)arts_calloc(1, sizeof(*fresh));
-    uintptr_t expect = 0;
-    if (atomic_compare_exchange_strong_explicit(
-            &c->waiters.chunks, &expect, (uintptr_t)fresh,
-            memory_order_acq_rel, memory_order_acquire)) {
-      d = (uintptr_t)fresh;
-    } else {
-      arts_free(fresh);
-      d = expect;
-    }
-  }
-  return (struct inv_waiter_dir_s *)d;
-}
-
-struct arts_db_inv_waiter_s *inv_waiter_ptr(struct arts_db_cache_s *c,
-                                                   uint32_t idx) {
-  struct inv_waiter_dir_s *dir = inv_waiter_dir(c);
-  struct arts_db_inv_waiter_s *chunk = atomic_load_explicit(
-      &dir->chunk[idx / INV_WAITER_CHUNK_CAP], memory_order_acquire);
-  return &chunk[idx % INV_WAITER_CHUNK_CAP];
-}
-
-uint32_t inv_waiter_alloc(struct arts_db_cache_s *c) {
-  for (;;) {
-    uint32_t h =
-        atomic_load_explicit(&c->waiters.free_head, memory_order_acquire);
-    uint32_t idx = INV_FREE_IDX(h);
-    if (idx == 0u) {
-      break; /* free list empty: bump-allocate */
-    }
-    uint32_t next = atomic_load_explicit(&inv_waiter_ptr(c, idx)->next,
-                                         memory_order_relaxed);
-    uint32_t nh = INV_FREE_MAKE(INV_FREE_TAG(h) + 1u, next);
-    if (atomic_compare_exchange_weak_explicit(&c->waiters.free_head, &h, nh,
-                                              memory_order_acq_rel,
-                                              memory_order_acquire)) {
-      return idx;
-    }
-  }
-  uint32_t idx = atomic_fetch_add_explicit(&c->waiters.next_fresh, 1u,
-                                           memory_order_relaxed);
-  if (idx > (uint32_t)INV_WAITER_IDX_MAX) {
-    ARTS_ERROR("inv: parked-waiter pool exhausted (index space)");
-  }
-  struct inv_waiter_dir_s *dir = inv_waiter_dir(c);
-  _Atomic(struct arts_db_inv_waiter_s *) *slot =
-      &dir->chunk[idx / INV_WAITER_CHUNK_CAP];
-  struct arts_db_inv_waiter_s *chunk =
-      atomic_load_explicit(slot, memory_order_acquire);
-  if (chunk == NULL) {
-    struct arts_db_inv_waiter_s *fresh = (struct arts_db_inv_waiter_s *)
-        arts_calloc(INV_WAITER_CHUNK_CAP, sizeof(*fresh));
-    struct arts_db_inv_waiter_s *expect = NULL;
-    if (!atomic_compare_exchange_strong_explicit(slot, &expect, fresh,
-                                                 memory_order_acq_rel,
-                                                 memory_order_acquire)) {
-      arts_free(fresh);
-    }
-  }
-  return idx;
-}
-
-void inv_waiter_free(struct arts_db_cache_s *c, uint32_t idx) {
-  struct arts_db_inv_waiter_s *node = inv_waiter_ptr(c, idx);
-  for (;;) {
-    uint32_t h =
-        atomic_load_explicit(&c->waiters.free_head, memory_order_acquire);
-    atomic_store_explicit(&node->next, INV_FREE_IDX(h), memory_order_relaxed);
-    uint32_t nh = INV_FREE_MAKE(INV_FREE_TAG(h) + 1u, idx);
-    if (atomic_compare_exchange_weak_explicit(&c->waiters.free_head, &h, nh,
-                                              memory_order_acq_rel,
-                                              memory_order_acquire)) {
-      return;
-    }
-  }
-}
-
-/* ===== chain serve (the committer's continuation) =======================
- * Serve every node of a privately-owned chain.  The chain was grabbed in the
- * same CAS that published the install, so it holds exactly the fetch's
- * cohort — however late this loop runs, no other actor can reach these
- * nodes.  Whether a woken slot also advances the EDT's serialized walk is the
- * wake's own reading of the slot, never a property of the chain. */
-void inv_serve_chain(struct arts_db_cache_s *cache, uint32_t head) {
-  while (head != 0u) {
-    struct arts_db_inv_waiter_s *w = inv_waiter_ptr(cache, head);
-    uint32_t next = atomic_load_explicit(&w->next, memory_order_relaxed);
-    arts_guid_t edt_guid = w->edt_guid;
-    unsigned int slot = w->slot;
-    inv_waiter_free(cache, head);
-    mark_edt_ready_by_guid(edt_guid, slot);
-    head = next;
-  }
-}
 
 /* ===== the request axes (shared grant plane hooks) ======================= */
 /* Commit `op` on the reader word; returns the pre-image, *post the image. */
@@ -243,7 +123,7 @@ void arts_db_rw_req_giveback(struct arts_db_cache_s *cache, uint32_t tok) {
   if (act == INV_CACHE_ACT_SEND_RO) {
     arts_send_db_inv_request(cache, DB_MODE_RO, inv_read_cover(post));
   } else if (act == INV_CACHE_ACT_SERVE) {
-    inv_serve_chain(cache, INV_CACHE_HEAD_RO(pre));
+    arts_db_reader_serve_chain(&cache->reader_pool, INV_CACHE_HEAD_RO(pre));
   }
 }
 
@@ -259,7 +139,7 @@ void arts_db_rw_req_clear(struct arts_db_cache_s *cache) {
                "(word=%llx)",
                (unsigned long)cache->db_guid, (unsigned long long)pre);
   }
-  inv_serve_chain(cache, INV_CACHE_HEAD_RO(pre));
+  arts_db_reader_serve_chain(&cache->reader_pool, INV_CACHE_HEAD_RO(pre));
 }
 
 uint32_t arts_db_rw_req_declaim(struct arts_db_cache_s *cache) {
@@ -290,9 +170,6 @@ void arts_db_cache_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
     seed = INV_CACHE_WITH_REQ(0ULL, INV_RW_IDLE, 0u, 1u);
   }
   atomic_store_explicit(&c->cache_state, seed, memory_order_relaxed);
-  atomic_store_explicit(&c->waiters.chunks, (uintptr_t)0, memory_order_relaxed);
-  atomic_store_explicit(&c->waiters.next_fresh, 1u, memory_order_relaxed);
-  atomic_store_explicit(&c->waiters.free_head, 0u, memory_order_relaxed);
   /* Grant plane.  A creator boots holding the write right with the
    * create-default RW acquire's own hold under it; everyone else starts at
    * the all-zero word, which IS "not the owner". */
@@ -320,9 +197,6 @@ void arts_db_cache_destructor(struct arts_db_cache_s *cache) {
   }
   arts_db_cache_common_destroy_pre(cache); /* buffer-NULL FIRST */
   arts_pending_rw_queue_destroy(&cache->pending_rw);
-  /* The reader chain lives in the cache word; with no outstanding acquirers a
-   * legitimate destroy leaves the head at 0 (only fetch-open states park), so
-   * only the node-pool storage itself is torn down here. */
   arts_db_cache_common_destroy_post(cache);
 }
 
@@ -365,7 +239,7 @@ bool arts_db_create_take_hold(struct arts_db_cache_s *cache, uint8_t *owed) {
   if (INV_CACHE_RW(pre) == INV_RW_SENT) {
     *owed |= ARTS_CREATE_OWED_RW;
   }
-  inv_serve_chain(cache, INV_CACHE_HEAD_RO(pre));
+  arts_db_reader_serve_chain(&cache->reader_pool, INV_CACHE_HEAD_RO(pre));
   arts_db_grant_rearm(cache);
   return true;
 }
@@ -909,7 +783,7 @@ static void inv_deliver_commit(arts_shared_ptr_t db_h, uint64_t version,
                                                   next, memory_order_acq_rel,
                                                   memory_order_acquire));
   if (act == INV_CACHE_ACT_PUBLISH || act == INV_CACHE_ACT_PUBLISH_KILL) {
-    inv_serve_chain(cache, INV_CACHE_HEAD_RO(cur));
+    arts_db_reader_serve_chain(&cache->reader_pool, INV_CACHE_HEAD_RO(cur));
   }
   if (act == INV_CACHE_ACT_PUBLISH_KILL) {
     uint32_t pact;

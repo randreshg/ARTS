@@ -127,8 +127,9 @@ void arts_handler_db_acquire(void *item, void *args) {
 
   /* Park-or-open: the decision CAS links our node as the chain head in the
    * same atom (node fields written before every attempt). */
-  uint32_t idx = inv_waiter_alloc(cache);
-  struct arts_db_inv_waiter_s *node = inv_waiter_ptr(cache, idx);
+  uint32_t idx = arts_db_reader_alloc(&cache->reader_pool);
+  struct arts_db_reader_node_s *node =
+      arts_db_reader_node(&cache->reader_pool, idx);
   node->edt_guid = edt->guid;
   node->slot = slot;
 
@@ -150,7 +151,7 @@ void arts_handler_db_acquire(void *item, void *args) {
   case INV_CACHE_ACT_SELF_SERVE:
     /* The copy turned valid while we were deciding — served from here. */
     INCREMENT_NUM_DB_ACQUIRE_LOCAL_HIT_BY(1);
-    inv_waiter_free(cache, idx);
+    arts_db_reader_free(&cache->reader_pool, idx);
     mark_edt_ready_by_guid(edt->guid, slot);
     break;
   case INV_CACHE_ACT_SEND_RO:

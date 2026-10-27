@@ -115,9 +115,9 @@ void arts_db_cache_common_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
               (kind == ARTS_DB_INIT_STUB && ARTS_DB_STUB_CLAIMABLE(db_guid))
                   ? VREQ_MAKE(0u, 0u, 0u, 0u, 1u, 0u, 0u)
                   : (uint64_t)0);
-  atomic_init(&c->waiters.chunks, (uintptr_t)0);
-  atomic_init(&c->waiters.next_fresh, 1u);
-  atomic_init(&c->waiters.free_head, (uint64_t)0);
+#endif
+#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
+  arts_db_reader_pool_init(&c->reader_pool);
 #endif
 #ifdef ARTS_DB_BUF_POOL
   arts_lf_pool_init(&c->buf_freelist);
@@ -543,152 +543,22 @@ void *arts_db_acquire_local(struct arts_db_cache_s *cache) {
  * acquire's decision CAS and a serve takes a whole chain in the CAS that
  * decides it: no reader can miss the request it joined or be served twice. */
 
-/* ---- reader pool (index-addressed chain nodes) ------------------------ */
-#define VAL_WAITER_IDX_MAX ((uint32_t)VREQ_HEAD_MASK)
-#define VAL_WAITER_NCHUNKS 22u
-#define VAL_FREE_IDX(h) ((uint32_t)((h) & 0xffffffffULL))
-#define VAL_FREE_TAG(h) ((uint32_t)((h) >> 32))
-#define VAL_FREE_MAKE(tag, idx) ((((uint64_t)(tag)) << 32) | (uint64_t)(idx))
-
-/* Index i >= 1 lives in chunk k at offset o, where i + 255 = 2^(k+8) + o. */
-static inline uint32_t val_waiter_chunk_of(uint32_t idx, uint32_t *off) {
-  uint32_t j = idx + 255u;
-  uint32_t k = (uint32_t)(31 - __builtin_clz(j)) - 8u;
-  *off = j - (1u << (k + 8u));
-  return k;
-}
-
-struct val_waiter_dir_s {
-  _Atomic(struct arts_db_val_waiter_s *) chunk[VAL_WAITER_NCHUNKS];
-};
-
-static struct val_waiter_dir_s *val_waiter_dir(struct arts_db_cache_s *c) {
-  uintptr_t d = atomic_load_explicit(&c->waiters.chunks, memory_order_acquire);
-  if (d == 0) {
-    struct val_waiter_dir_s *fresh =
-        (struct val_waiter_dir_s *)arts_calloc(1, sizeof(*fresh));
-    uintptr_t expect = 0;
-    if (atomic_compare_exchange_strong_explicit(
-            &c->waiters.chunks, &expect, (uintptr_t)fresh,
-            memory_order_acq_rel, memory_order_acquire)) {
-      d = (uintptr_t)fresh;
-    } else {
-      arts_free(fresh);
-      d = expect;
-    }
-  }
-  return (struct val_waiter_dir_s *)d;
-}
-
-static struct arts_db_val_waiter_s *val_waiter_ptr(struct arts_db_cache_s *c,
-                                                   uint32_t idx) {
-  uint32_t off;
-  uint32_t k = val_waiter_chunk_of(idx, &off);
-  struct val_waiter_dir_s *dir = val_waiter_dir(c);
-  struct arts_db_val_waiter_s *chunk =
-      atomic_load_explicit(&dir->chunk[k], memory_order_acquire);
-  return &chunk[off];
-}
-
-static uint32_t val_waiter_alloc(struct arts_db_cache_s *c) {
-  for (;;) {
-    uint64_t h =
-        atomic_load_explicit(&c->waiters.free_head, memory_order_acquire);
-    uint32_t idx = VAL_FREE_IDX(h);
-    if (idx == 0u) {
-      break;
-    }
-    uint32_t next = atomic_load_explicit(&val_waiter_ptr(c, idx)->next,
-                                         memory_order_relaxed);
-    uint64_t nh = VAL_FREE_MAKE(VAL_FREE_TAG(h) + 1u, next);
-    if (atomic_compare_exchange_weak_explicit(&c->waiters.free_head, &h, nh,
-                                              memory_order_acq_rel,
-                                              memory_order_acquire)) {
-      return idx;
-    }
-  }
-  uint32_t idx = atomic_fetch_add_explicit(&c->waiters.next_fresh, 1u,
-                                           memory_order_relaxed);
-  if (idx > VAL_WAITER_IDX_MAX) {
-    ARTS_ERROR("val: parked-reader pool exhausted (index space)");
-  }
-  uint32_t off;
-  uint32_t k = val_waiter_chunk_of(idx, &off);
-  struct val_waiter_dir_s *dir = val_waiter_dir(c);
-  _Atomic(struct arts_db_val_waiter_s *) *slotp = &dir->chunk[k];
-  if (atomic_load_explicit(slotp, memory_order_acquire) == NULL) {
-    struct arts_db_val_waiter_s *fresh = (struct arts_db_val_waiter_s *)
-        arts_calloc((size_t)1 << (k + 8u), sizeof(*fresh));
-    struct arts_db_val_waiter_s *expect = NULL;
-    if (!atomic_compare_exchange_strong_explicit(slotp, &expect, fresh,
-                                                 memory_order_acq_rel,
-                                                 memory_order_acquire)) {
-      arts_free(fresh);
-    }
-  }
-  return idx;
-}
-
-static void val_waiter_free(struct arts_db_cache_s *c, uint32_t idx) {
-  struct arts_db_val_waiter_s *node = val_waiter_ptr(c, idx);
-  for (;;) {
-    uint64_t h =
-        atomic_load_explicit(&c->waiters.free_head, memory_order_acquire);
-    atomic_store_explicit(&node->next, VAL_FREE_IDX(h), memory_order_relaxed);
-    uint64_t nh = VAL_FREE_MAKE(VAL_FREE_TAG(h) + 1u, idx);
-    if (atomic_compare_exchange_weak_explicit(&c->waiters.free_head, &h, nh,
-                                              memory_order_acq_rel,
-                                              memory_order_acquire)) {
-      return;
-    }
-  }
-}
-
-void arts_db_val_waiters_free(struct arts_db_cache_s *c) {
-  uintptr_t d = atomic_load_explicit(&c->waiters.chunks, memory_order_relaxed);
-  if (d == 0) {
-    return;
-  }
-  struct val_waiter_dir_s *dir = (struct val_waiter_dir_s *)d;
-  for (uint32_t i = 0; i < VAL_WAITER_NCHUNKS; i++) {
-    struct arts_db_val_waiter_s *ch =
-        atomic_load_explicit(&dir->chunk[i], memory_order_relaxed);
-    if (ch != NULL) {
-      arts_free(ch);
-    }
-  }
-  arts_free(dir);
-  atomic_store_explicit(&c->waiters.chunks, (uintptr_t)0, memory_order_relaxed);
-}
-
-/* Serve every node of a chain a CAS took (no other actor can reach it). */
-static void val_serve_chain(struct arts_db_cache_s *cache, uint32_t head) {
-  while (head != 0u) {
-    struct arts_db_val_waiter_s *w = val_waiter_ptr(cache, head);
-    uint32_t next = atomic_load_explicit(&w->next, memory_order_relaxed);
-    arts_guid_t edt_guid = w->edt_guid;
-    unsigned int slot = w->slot;
-    val_waiter_free(cache, head);
-    mark_edt_ready_by_guid(edt_guid, slot);
-    head = next;
-  }
-}
-
 /* ---- the arbiter (val/arbiters.c: a pure function of the word) ---------- */
 #include "val/arbiters.c"
 
 /* Commit `op` on the word; returns the pre-image, *post the image. */
 static uint64_t val_req_step(struct arts_db_cache_s *cache, int op,
                              uint32_t idx, uint64_t *post, uint32_t *act) {
+  struct arts_db_reader_node_s *node =
+      op == VREQ_OP_ACQ_RO ? arts_db_reader_node(&cache->reader_pool, idx)
+                           : NULL;
   uint64_t cur = atomic_load_explicit(&cache->req_state, memory_order_acquire);
   uint64_t next;
   for (;;) {
     next = val_req_compute_next(cur, op, idx, act);
-    if (op == VREQ_OP_ACQ_RO && *act == VREQ_ACT_PARK) {
-      atomic_store_explicit(&val_waiter_ptr(cache, idx)->next, VREQ_NEXT(cur),
-                            memory_order_relaxed);
-    } else if (op == VREQ_OP_ACQ_RO) {
-      atomic_store_explicit(&val_waiter_ptr(cache, idx)->next, 0u,
+    if (node != NULL) {
+      atomic_store_explicit(&node->next,
+                            *act == VREQ_ACT_PARK ? VREQ_NEXT(cur) : 0u,
                             memory_order_relaxed);
     }
     if (next == cur ||
@@ -714,8 +584,9 @@ arts_db_acquire_remote_ro(struct arts_db_cache_s *cache, arts_guid_t edt_guid,
   assert(arts_global_rank_count > 1 &&
          "a rank alone homes every block and reads it locally");
   INCREMENT_NUM_DB_ACQUIRE_REMOTE_BY(1);
-  uint32_t idx = val_waiter_alloc(cache);
-  struct arts_db_val_waiter_s *w = val_waiter_ptr(cache, idx);
+  uint32_t idx = arts_db_reader_alloc(&cache->reader_pool);
+  struct arts_db_reader_node_s *w =
+      arts_db_reader_node(&cache->reader_pool, idx);
   w->edt_guid = edt_guid;
   w->slot = slot;
   uint64_t post;
@@ -743,7 +614,7 @@ void arts_db_ro_combine_on_terminal(struct arts_db_cache_s *cache,
   }
   /* The cohort that rode this request, unless a write permission already
    * served it (then the chain is empty: the answer serves nobody). */
-  val_serve_chain(cache, VREQ_GROUP(pre));
+  arts_db_reader_serve_chain(&cache->reader_pool, VREQ_GROUP(pre));
   if (act == VREQ_ACT_SERVE_SEND) {
     INCREMENT_NUM_RO_COMBINE_WINDOW_BY(1);
     val_send_window(cache, post);
@@ -777,8 +648,8 @@ void arts_db_ro_combine_grant_drain(struct arts_db_cache_s *cache) {
   uint64_t post;
   uint32_t act;
   uint64_t pre = val_req_step(cache, VREQ_OP_COVER, 0u, &post, &act);
-  val_serve_chain(cache, VREQ_GROUP(pre));
-  val_serve_chain(cache, VREQ_NEXT(pre));
+  arts_db_reader_serve_chain(&cache->reader_pool, VREQ_GROUP(pre));
+  arts_db_reader_serve_chain(&cache->reader_pool, VREQ_NEXT(pre));
 }
 
 /* ---- the write axis, for the shared grant plane ------------------------- */
@@ -831,8 +702,8 @@ void arts_db_rw_req_clear(struct arts_db_cache_s *cache) {
                "(word=%llx)",
                (unsigned long)cache->db_guid, (unsigned long long)pre);
   }
-  val_serve_chain(cache, VREQ_GROUP(pre));
-  val_serve_chain(cache, VREQ_NEXT(pre));
+  arts_db_reader_serve_chain(&cache->reader_pool, VREQ_GROUP(pre));
+  arts_db_reader_serve_chain(&cache->reader_pool, VREQ_NEXT(pre));
 }
 
 uint32_t arts_db_rw_req_declaim(struct arts_db_cache_s *cache) {
@@ -864,8 +735,8 @@ uint8_t arts_db_val_claim_cover(struct arts_db_cache_s *cache) {
   if (VREQ_RW(pre) == VREQ_RW_SENT) {
     owed |= ARTS_CREATE_OWED_RW;
   }
-  val_serve_chain(cache, VREQ_GROUP(pre));
-  val_serve_chain(cache, VREQ_NEXT(pre));
+  arts_db_reader_serve_chain(&cache->reader_pool, VREQ_GROUP(pre));
+  arts_db_reader_serve_chain(&cache->reader_pool, VREQ_NEXT(pre));
   return owed;
 }
 #endif /* the versioned-snapshot read path */
@@ -2268,9 +2139,9 @@ void arts_db_cache_common_destroy_post(struct arts_db_cache_s *cache) {
     }
   }
 #endif
-#ifdef ARTS_PROTOCOL_VAL
+#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
   /* Readers still parked at destroy are freed with the pool, not woken. */
-  arts_db_val_waiters_free(cache);
+  arts_db_reader_pool_destroy(&cache->reader_pool);
 #endif
   {
     struct arts_db_s *db_self = arts_db_of_cache(cache);

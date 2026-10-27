@@ -33,8 +33,8 @@ extern "C" {
  *
  * The protocol-specific cache/db ownership layout lives in the per-protocol
  * coherence/<proto>/types.h, selected by arts/coherence/types.h.  Anything
- * here is identical across all protocols: the buffer, the parked-read node,
- * the shared defines/typedefs, and container_of.
+ * here is identical in every protocol that carries it: the buffer, the
+ * parked-read nodes, the shared defines/typedefs, and container_of.
  *
  * @note Internal header.  User code should include @c arts.h.
  */
@@ -307,8 +307,8 @@ struct arts_db_cache_s;
  * (cache.publication_waiters): a home-local RO acquire, or a remote read whose
  * serve was deferred — `serve` is non-NULL — because the home's copy was not
  * yet published; drained whole once it is (arts_db_drain_publication_waiters).
- * A VAL requester's parked readers are not these: they are chained in its
- * request word (val/types.h). */
+ * A VAL or INV requester's parked readers are not these: they are the reader
+ * pool's nodes below, chained in its request word. */
 struct arts_db_read_waiter_s {
   arts_lf_link_t link; /* FIRST — required by arts_lf_stack_t */
   arts_guid_t edt_guid;
@@ -322,6 +322,49 @@ struct arts_db_read_waiter_s {
   unsigned int requester;
   struct arts_rdzv_landing_s rdzv;
 };
+#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
+/*--- Parked readers ------------------------------------------------------
+ * The readers a rank parks on its cache are nodes of a per-cache pool,
+ * addressed by index (0 = none) so a chain head fits beside the arm's request
+ * state in one word (VAL's req_state, INV's cache_state): parking is the
+ * acquire's own decision CAS, and a serve takes a whole chain in the CAS that
+ * decides it, which leaves the chain private to its server.  An index names
+ * one node for the pool's whole life, and the storage goes with the cache
+ * (arts_db_reader_pool_destroy).  Chunk k holds 2^(k+8) nodes, so the
+ * directory stays small; the indices the chunks cover fit the head field. */
+#define ARTS_DB_READER_IDX_BITS 29
+#define ARTS_DB_READER_NCHUNKS 21u
+#define ARTS_DB_READER_IDX_MAX                                                 \
+  ((uint32_t)((1ULL << (ARTS_DB_READER_NCHUNKS + 8u)) - 256u))
+
+/* A node's fields are written by its owner before the CAS that links it
+ * (its park on the request word, or a push onto the free list) and read by
+ * whoever a later acquiring CAS or load hands it to: the serve that took the
+ * chain, or the pop that takes the node. */
+struct arts_db_reader_node_s {
+  /* Pool index of the next node, 0 = end.  A pop can also read it while the
+   * node's next owner rewrites it; the pop's tagged CAS then fails and the
+   * value is discarded: relaxed. */
+  _Atomic(uint32_t) next;
+  unsigned int slot;    /* dep slot of the parked acquire */
+  arts_guid_t edt_guid; /* the parked EDT */
+};
+
+struct arts_db_reader_pool_s {
+  /* The chunk directory, and each chunk in it, installed once by a CAS whose
+   * release carries the zeroed storage to every acquire load of it. */
+  _Atomic(uintptr_t) chunks;
+  /* Bump allocator over the index space: only its own value. */
+  _Atomic(uint32_t) next_fresh;
+  /* The free list, [tag:32 | index:32], index 0 = empty.  Every change is an
+   * acq_rel CAS that advances the tag: a push's release carries every link of
+   * what it pushes (its own writes, and a served chain's links its server
+   * acquired with the chain) to the pop that acquires the head naming them,
+   * and a pop whose head was recycled inside its window fails on the tag. */
+  _Atomic(uint64_t) free_head;
+};
+#endif
+
 /*--- Pending RW waiters --------------------------------------------------
  * edt_guid + slot together identify the parked EDT's dep slot to fill on
  * trigger.  The RW waiter chain is a Treiber stack (cache.pending_rw,

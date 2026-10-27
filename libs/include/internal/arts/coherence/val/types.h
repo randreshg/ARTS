@@ -45,6 +45,8 @@ extern "C" {
 #error "val/types.h is the VAL layout; this translation unit's cell is another"
 #endif
 
+#include <assert.h>
+
 /* ========================================================================= */
 
 /*--- Per-DB home metadata ------------------------------------------------
@@ -90,10 +92,11 @@ struct arts_home_grantreq_queue_s {
  *         home installed yet: the create's claim clears it, and so does every
  *         reply unless rw is OPEN (the OPEN's holder acts only while the bit
  *         it read stands).  A request sent while it is set carries PRECLAIM.
- *   group the window's cohort, fixed when its request left (pool indices).
+ *   group the window's cohort, fixed when its request left (reader pool
+ *         indices).
  *   next  readers waiting for the next window, or riding the write request.
  */
-#define VREQ_HEAD_BITS 29
+#define VREQ_HEAD_BITS ARTS_DB_READER_IDX_BITS
 #define VREQ_HEAD_MASK ((uint64_t)((1ULL << VREQ_HEAD_BITS) - 1))
 #define VREQ_NEXT(s) ((uint32_t)((s) & VREQ_HEAD_MASK))
 #define VREQ_GROUP(s) ((uint32_t)(((s) >> VREQ_HEAD_BITS) & VREQ_HEAD_MASK))
@@ -108,6 +111,8 @@ struct arts_home_grantreq_queue_s {
    (((uint64_t)(stub) & 1ULL) << 58) |                                        \
    (((uint64_t)(group) & VREQ_HEAD_MASK) << VREQ_HEAD_BITS) |                 \
    ((uint64_t)(next) & VREQ_HEAD_MASK))
+static_assert(2 * VREQ_HEAD_BITS == 58,
+              "the two chain heads must fill the bits below stub");
 #define VREQ_RW_IDLE 0u
 #define VREQ_RW_OPEN 1u
 #define VREQ_RW_SENT 2u
@@ -143,23 +148,6 @@ enum {
 
 uint64_t val_req_compute_next(uint64_t cur, int op, uint32_t idx,
                               uint32_t *out_act);
-
-/* A parked reader, a node of the per-DB pool (index-addressed so a chain
- * head fits the word).  Its fields are written by its owner before the CAS
- * that links it and read by whoever a later CAS hands the chain to. */
-struct arts_db_val_waiter_s {
-  _Atomic(uint32_t) next;
-  unsigned int slot;
-  arts_guid_t edt_guid;
-};
-/* Chunk k holds 2^(k+8) nodes, so 22 chunks cover the 29-bit index space and
- * the directory stays small; free_head is [tag:32 | index:32]. */
-struct arts_db_val_waiter_pool_s {
-  _Atomic(uintptr_t) chunks;
-  /* Bump allocator over the index space: only its own value. */
-  _Atomic(uint32_t) next_fresh;
-  _Atomic(uint64_t) free_head;
-};
 
 /*--- Per-rank DB cache ---------------------------------------------------
  * Every rank that has acquired or hosts a given DB has one of these.  The
@@ -257,7 +245,7 @@ struct arts_db_cache_s {
    * stack through a seq_cst fence (arts_db_acquire_remote_rw,
    * arts_db_grant_take_waiters). */
   _Atomic(uint64_t) req_state;
-  struct arts_db_val_waiter_pool_s waiters;
+  struct arts_db_reader_pool_s reader_pool; /* nodes of the word's chains */
 #ifdef ARTS_WRITE_POLICY_WB
   /* WB: owner-side dedup map.  Allocated with the cache and freed with it; its
    * content migrates with ownership (GRANT_RESPONSE serializes it). */

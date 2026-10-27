@@ -110,13 +110,9 @@ typedef struct arts_db_rw_waiter_s rw_waiter_t;
 typedef struct arts_home_grantreq_node_s grantreq_node_t;
 typedef struct arts_home_grantreq_queue_s grantreq_queue_t;
 #endif
-#ifdef ARTS_PROTOCOL_VAL
-typedef struct arts_db_val_waiter_pool_s val_waiter_pool_t;
-typedef struct arts_db_val_waiter_s val_waiter_t;
-#endif
-#ifdef ARTS_PROTOCOL_INV
-typedef struct arts_db_inv_waiter_pool_s inv_waiter_pool_t;
-typedef struct arts_db_inv_waiter_s inv_waiter_t;
+#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
+typedef struct arts_db_reader_pool_s reader_pool_t;
+typedef struct arts_db_reader_node_s reader_node_t;
 #endif
 #ifdef ARTS_PROTOCOL_EXCL
 typedef struct arts_lock_ro_node_s lock_ro_node_t;
@@ -202,27 +198,16 @@ static void print_fingerprint(void) {
   MEMBER(cache_t, grant_generation);
 #endif
 #endif
-#ifdef ARTS_PROTOCOL_VAL
-  MEMBER(cache_t, waiters);
-  TYPE(val_waiter_pool_t);
-  MEMBER(val_waiter_pool_t, chunks);
-  MEMBER(val_waiter_pool_t, next_fresh);
-  MEMBER(val_waiter_pool_t, free_head);
-  TYPE(val_waiter_t);
-  MEMBER(val_waiter_t, next);
-  MEMBER(val_waiter_t, slot);
-  MEMBER(val_waiter_t, edt_guid);
-#endif
-#ifdef ARTS_PROTOCOL_INV
-  MEMBER(cache_t, waiters);
-  TYPE(inv_waiter_pool_t);
-  MEMBER(inv_waiter_pool_t, chunks);
-  MEMBER(inv_waiter_pool_t, next_fresh);
-  MEMBER(inv_waiter_pool_t, free_head);
-  TYPE(inv_waiter_t);
-  MEMBER(inv_waiter_t, next);
-  MEMBER(inv_waiter_t, slot);
-  MEMBER(inv_waiter_t, edt_guid);
+#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
+  MEMBER(cache_t, reader_pool);
+  TYPE(reader_pool_t);
+  MEMBER(reader_pool_t, chunks);
+  MEMBER(reader_pool_t, next_fresh);
+  MEMBER(reader_pool_t, free_head);
+  TYPE(reader_node_t);
+  MEMBER(reader_node_t, next);
+  MEMBER(reader_node_t, slot);
+  MEMBER(reader_node_t, edt_guid);
 #endif
 #ifdef ARTS_PROTOCOL_EXCL
   TYPE(lock_ro_node_t);

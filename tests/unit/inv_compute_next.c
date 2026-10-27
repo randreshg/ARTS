@@ -18,6 +18,8 @@
  *   - the kill mark (REQ -> REQ_KILL) still serves its cohort once, then owes
  *     the round an ack;
  *   - a reply with no fetch open is a superseded orphan and DROPs;
+ *   - the chain head carries the reader pool's full index width, and a head
+ *     with every bit set leaves the request bits beside it untouched;
  *
  *   dir (invalidation round):
  *   - round claim mutual exclusion;
@@ -49,6 +51,10 @@ _Static_assert(INV_CACHE_HEAD_RO_SHIFT == 0 && INV_CACHE_INFLIGHT_SHIFT == 61 &&
                "cache word field shifts drifted");
 _Static_assert(INV_DIR_ROUND_SHIFT == 63 && INV_DIR_ACKS_SHIFT == 49,
                "dir word field shifts drifted");
+_Static_assert(INV_CACHE_HEAD_BITS == 29 &&
+                   INV_CACHE_HEAD_BITS == ARTS_DB_READER_IDX_BITS &&
+                   ARTS_DB_READER_IDX_MAX <= INV_CACHE_HEAD_MASK,
+               "the chain head must hold every reader pool index");
 
 #include "core/coherence/inv/arbiters.c"
 
@@ -242,6 +248,35 @@ int main(void) {
     expect_req("a grant with no write request out is late",
                W(INV_RO_IDLE, 0u, ME, 0u, 0u, 0u), INV_CACHE_OP_RW_CLEAR, 0u,
                W(INV_RO_IDLE, 0u, ME, 0u, 0u, 0u), INV_CACHE_ACT_LATE);
+
+    /* A head with every bit of the field set, beside set request bits. */
+    const uint32_t WIDE = (uint32_t)INV_CACHE_HEAD_MASK;
+    if (INV_CACHE_HEAD_RO(W(INV_RO_REQ, 1u, WIDE, INV_RW_SENT, 1u, 1u)) !=
+            WIDE ||
+        INV_CACHE_STUB(W(INV_RO_REQ, 1u, WIDE, INV_RW_IDLE, 0u, 0u)) != 0u ||
+        INV_CACHE_PAR(W(INV_RO_REQ, 1u, WIDE, INV_RW_IDLE, 0u, 0u)) != 0u ||
+        INV_CACHE_RW(W(INV_RO_REQ, 1u, WIDE, INV_RW_IDLE, 0u, 0u)) != 0u) {
+      (void)fprintf(stderr, "FAIL inv_compute_next: a full-width head does "
+                            "not round-trip beside the request bits\n");
+      g_fail = 1;
+    }
+    expect_req("a full-width index opens the fetch",
+               W(INV_RO_IDLE, 0u, 0u, 0u, 0u, 1u), INV_CACHE_OP_ACQ_RO, WIDE,
+               W(INV_RO_REQ, 1u, WIDE, 0u, 1u, 1u), INV_CACHE_ACT_SEND_RO);
+    expect_req("a full-width index rides the write request",
+               W(INV_RO_IDLE, 0u, OTH, INV_RW_SENT, 1u, 1u),
+               INV_CACHE_OP_ACQ_RO, WIDE,
+               W(INV_RO_IDLE, 0u, WIDE, INV_RW_SENT, 1u, 1u),
+               INV_CACHE_ACT_PARK);
+    expect_req("the reply takes a full-width chain; the OPEN keeps the stub",
+               W(INV_RO_REQ_KILL, 1u, WIDE, INV_RW_OPEN, 1u, 1u),
+               INV_CACHE_OP_DELIVER, 0u,
+               W(INV_RO_VALID, 0u, 0u, INV_RW_OPEN, 1u, 1u),
+               INV_CACHE_ACT_PUBLISH_KILL);
+    expect_req("the claim takes a full-width chain",
+               W(INV_RO_REQ, 1u, WIDE, INV_RW_SENT, 0u, 1u),
+               INV_CACHE_OP_CLAIM, 0u, W(INV_RO_IDLE, 0u, 0u, 0u, 0u, 0u),
+               INV_CACHE_ACT_SERVE);
 #undef W
   }
 

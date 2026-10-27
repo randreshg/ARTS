@@ -474,11 +474,27 @@ void arts_db_cover_destroy(struct arts_db_s *db);
 void arts_db_home_destroy_now(struct arts_db_s *db);
 void arts_db_cover_home_init(struct arts_db_s *db, unsigned int nranks);
 void arts_db_cover_home_teardown(struct arts_db_s *db);
+
+/* The parked-reader pool (struct arts_db_reader_pool_s, reader_pool.c).
+ * alloc hands out an index the caller owns until it links the node; free
+ * returns one owned node; free_chain returns a chain the caller owns, linked
+ * head to tail through next, with one push; serve_chain wakes every node of a
+ * chain a CAS took and then returns it.  destroy frees the storage, with no
+ * thread left to touch the pool; a node still linked is freed, not woken. */
+void arts_db_reader_pool_init(struct arts_db_reader_pool_s *p);
+uint32_t arts_db_reader_alloc(struct arts_db_reader_pool_s *p);
+struct arts_db_reader_node_s *
+arts_db_reader_node(struct arts_db_reader_pool_s *p, uint32_t idx);
+void arts_db_reader_free(struct arts_db_reader_pool_s *p, uint32_t idx);
+void arts_db_reader_free_chain(struct arts_db_reader_pool_s *p, uint32_t head,
+                               uint32_t tail);
+void arts_db_reader_serve_chain(struct arts_db_reader_pool_s *p,
+                                uint32_t head);
+void arts_db_reader_pool_destroy(struct arts_db_reader_pool_s *p);
 #endif
 #ifdef ARTS_PROTOCOL_VAL
 void arts_db_ro_combine_on_cts(struct arts_db_cache_s *cache, uint32_t cover);
 uint8_t arts_db_val_claim_cover(struct arts_db_cache_s *cache);
-void arts_db_val_waiters_free(struct arts_db_cache_s *c);
 #endif
 
 /* The counterpart, for a create that gives the block its first image in a
