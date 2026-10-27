@@ -6,9 +6,9 @@
  *
  * A route_table band is COLLISION_RESOLVES (8) wide.  When >8 DISTINCT GUIDs
  * hash to the same band on the root segment, the 9th claim cannot fit and
- * search_for_empty lazily grows the chain: the one thread whose CAS takes
- * `->next` from NULL to GROWING builds the 2x / shift+1 segment and publishes
- * it; every other thread at the chain's end waits for that publication.
+ * search_for_empty lazily grows the chain: every thread at the chain's end
+ * builds a 2x / shift+1 segment of its own and CASes it into `->next`; the
+ * losers discard theirs and continue in the winner's.
  *
  * We hand-pick >8 GUIDs that all hash to band base 0 at the root (size=16,
  * shift=4), forcing at least one growth, then:
@@ -19,7 +19,9 @@
  *
  *   2. Concurrent grow race: many threads simultaneously search_for_empty the
  *      same overflowing key-set → all converge on one slot per key, with no
- *      lost or duplicate slot.
+ *      lost or duplicate slot, and every segment built is either linked or
+ *      discarded (a counting segment-ops wrapper: builds - discards equals
+ *      the segments grown).
  *
  *   3. Growth always helps: search_for_empty extends the chain whenever
  *      `next == NULL`, so an arbitrarily large colliding set is absorbed and
@@ -58,6 +60,10 @@ void *arts_calloc_aligned(size_t n, size_t s, size_t a) {
   return p;
 }
 void arts_free(void *p) { free(p); }
+#ifdef ARTS_DEBUG_INJECTION
+/* route_table.c's windows are scheduling-fuzz points in an injection tree. */
+void arts_sched_fuzz_point(void) {}
+#endif
 
 struct arts_route_item_s;
 void arts_ooo_drain(struct arts_route_item_s *s) { (void)s; }
@@ -84,7 +90,7 @@ ARTS_THREAD_LOCAL struct arts_runtime_private_s arts_thread_info;
  * get_route_table_key returns `(hash >> (64-shift)) * COLLISION_RESOLVES`, a
  * band base in [0, 2^shift * 8), and the slot array has exactly size*8 slots.
  * arts_new_route_table asserts it of every table it builds, and the grow
- * path's newFunc(2*size, shift+1) preserves it (2*2^shift == 2^(shift+1)).
+ * path's build(2*size, shift+1) preserves it (2*2^shift == 2^(shift+1)).
  * We pick a SMALL but invariant-respecting root: shift=4 → size=16 (128 slots),
  * so growth is reached quickly while every grown band base stays in range. */
 static arts_route_table_t *g_root;
@@ -104,6 +110,36 @@ static int collect_colliding_keys(void) {
     }
   }
   return found;
+}
+
+/* The CPU segment ops, counted: every segment built and every one discarded
+ * (a lost race's own, or the chain's at delete). */
+static _Atomic(unsigned) g_builds;
+static _Atomic(unsigned) g_discards;
+static arts_route_table_t *counting_build(unsigned int windows,
+                                          unsigned int shift);
+static void counting_discard(arts_route_table_t *t);
+static const arts_route_segment_ops_t counting_ops = {counting_build,
+                                                      counting_discard};
+static arts_route_table_t *counting_build(unsigned int windows,
+                                          unsigned int shift) {
+  arts_route_table_t *t = route_segment_cpu_ops.build(windows, shift);
+  if (t != NULL) {
+    atomic_fetch_add_explicit(&g_builds, 1u, memory_order_relaxed);
+    t->ops = &counting_ops;
+  }
+  return t;
+}
+static void counting_discard(arts_route_table_t *t) {
+  atomic_fetch_add_explicit(&g_discards, 1u, memory_order_relaxed);
+  route_segment_cpu_ops.discard(t);
+}
+static arts_route_table_t *counted_root(void) {
+  arts_route_table_t *t = arts_new_route_table(ROOT_SIZE, ROOT_SHIFT);
+  t->ops = &counting_ops;
+  atomic_store_explicit(&g_builds, 0u, memory_order_relaxed);
+  atomic_store_explicit(&g_discards, 0u, memory_order_relaxed);
+  return t;
 }
 
 static unsigned chain_len(arts_route_table_t *t) {
@@ -208,7 +244,7 @@ int main(void) {
   }
 
   /* ---- 1. Serial growth + canonical slots. ---- */
-  g_root = arts_new_route_table(ROOT_SIZE, ROOT_SHIFT);
+  g_root = counted_root();
   arts_route_item_t *slots[NCOLLIDE];
   for (int i = 0; i < NCOLLIDE; i++) {
     slots[i] = arts_route_table_search_for_empty(g_root, g_keys[i]);
@@ -224,6 +260,14 @@ int main(void) {
   if (chain_len(g_root) < 2) {
     FAIL("1: chain did not grow (len=%u) despite %d colliding keys\n",
          chain_len(g_root), NCOLLIDE);
+  }
+  if (atomic_load_explicit(&g_builds, memory_order_relaxed) !=
+          chain_len(g_root) - 1 ||
+      atomic_load_explicit(&g_discards, memory_order_relaxed) != 0) {
+    FAIL("1: one thread grew %u segments with %u builds and %u discards\n",
+         chain_len(g_root) - 1,
+         atomic_load_explicit(&g_builds, memory_order_relaxed),
+         atomic_load_explicit(&g_discards, memory_order_relaxed));
   }
   /* Every key resolves back to exactly its slot; no aliasing. */
   for (int i = 0; i < NCOLLIDE; i++) {
@@ -241,7 +285,7 @@ int main(void) {
   arts_delete_route_table(g_root);
 
   /* ---- 2. Concurrent grow race. ---- */
-  g_root = arts_new_route_table(ROOT_SIZE, ROOT_SHIFT);
+  g_root = counted_root();
   pthread_t tids[GROW_THREADS];
   grow_ctx_t ctx[GROW_THREADS];
   _Atomic(int) gate;
@@ -283,6 +327,14 @@ int main(void) {
     }
   }
   free(storage);
+  unsigned builds = atomic_load_explicit(&g_builds, memory_order_relaxed);
+  unsigned discards = atomic_load_explicit(&g_discards, memory_order_relaxed);
+  (void)fprintf(stderr, "2: %u segments grown, %u built, %u discarded\n",
+                chain_len(g_root) - 1, builds, discards);
+  if (builds - discards != chain_len(g_root) - 1) {
+    FAIL("2: %u builds and %u discards for %u grown segments\n", builds,
+         discards, chain_len(g_root) - 1);
+  }
   arts_delete_route_table(g_root);
 
   /* ---- 3. A large colliding set is always absorbed. ---------------------- *

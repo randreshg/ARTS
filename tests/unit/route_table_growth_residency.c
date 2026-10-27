@@ -1,32 +1,38 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * route_table_growth_residency — one growth of a segment chain builds one
- * segment, and a segment's memory is resident only where slots are touched.
+ * route_table_growth_residency — every racer at the end of a segment chain
+ * builds its own next segment and one of them is published; a segment's
+ * memory is resident only where slots are touched, and a lost racer's
+ * segment is unmapped untouched.
  *
  * T threads, released together, each claim a key whose probe window in the
  * root segment is full, so every one of them reaches the end of the chain at
  * once.  Both growth sites are driven: search_for_empty on a standalone table
- * (phase A) and reserve_or_lookup through the key's table (phase B).  For
- * each, the test asserts:
- *   - the next segment is built once: one call of the table's constructor;
- *   - every key ends in exactly one slot, and the chain grew by one segment;
+ * (phase A) and reserve_or_lookup through the key's table (phase B).  Every
+ * racer is held inside its build until all T have entered it, so each builds.
+ * For each phase the test asserts:
+ *   - builds - discards == 1: one segment is linked, every other is
+ *     discarded, and munmap was called for exactly each discarded segment's
+ *     built range and returned 0 (route_table.c's munmap is wrapped at link
+ *     time; an exact record is immune to address reuse);
+ *   - every key ends in exactly one slot of the published segment;
  *   - the grown segment's resident pages (mincore) are only pages holding a
  *     probe window some key touched, not the segment.
  * Phase A also bounds the root segment's resident pages the same way and,
- * outside ThreadSanitizer, the peak resident set (VmHWM) while the chain
- * grows to well under one segment, and its delete drains the one slot
- * holding a payload and writes no other slot.  While the builder sits in the
- * constructor, phase B runs every chain walker against the table (key
- * search, iteration, parked count, the retire-time pin), each of which must
- * take the unfinished link for the end of the chain.  Phase C returns a slot
- * of a full window while the next segment is being built: a reserver that
- * claims that slot ends its settle walk at the unfinished link and publishes
- * there, and a reserver of the same key that claims in the new segment after
- * publication must resolve to that one slot.
+ * outside ThreadSanitizer, the peak resident set (VmHWM) while T racers map
+ * T segments, and its delete drains the one slot holding a payload and
+ * writes no other slot.  While the racers are held, phase B runs every chain
+ * walker against the table (key search, iteration, parked count, the
+ * retire-time pin), with the link still NULL.  Phase C returns a slot of a
+ * full window while a racer is held in its build: a reserver that claims that
+ * slot ends its scan at the NULL link and publishes there, and the held
+ * racer, once it links its segment and claims there, resolves to that one
+ * slot.  Phase D is the no-wait witness: one racer is held inside its build
+ * while a second reaches the chain's end, builds, links, claims and returns;
+ * released, the first finds the link taken and discards its segment.
  *
- * The constructor is the table's own newFunc, wrapped to count calls and to
- * hold the builder until the test releases it, after the other threads have
- * had time to reach the chain's end.  No runtime: route_table.c + guid.c +
+ * The segment ops are the CPU ops wrapped to count, record and hold builds
+ * (route_table_segment_probe.h).  No runtime: route_table.c + guid.c +
  * shared.c #include'd.
  */
 
@@ -56,6 +62,10 @@ void *arts_calloc_aligned(size_t n, size_t s, size_t a) {
   return p;
 }
 void arts_free(void *p) { free(p); }
+#ifdef ARTS_DEBUG_INJECTION
+/* route_table.c's windows are scheduling-fuzz points in an injection tree. */
+void arts_sched_fuzz_point(void) {}
+#endif
 
 struct arts_route_item_s;
 void arts_ooo_drain(struct arts_route_item_s *s) { (void)s; }
@@ -64,6 +74,8 @@ void arts_ooo_redrive_all(struct arts_route_item_s *s) { (void)s; }
 #include "../../libs/src/core/gas/guid.c"
 #include "../../libs/src/core/gas/route_table.c"
 #include "../../libs/src/core/utils/shared.c"
+
+#include "route_table_segment_probe.h"
 
 struct arts_runtime_shared_s arts_node_info;
 ARTS_THREAD_LOCAL struct arts_runtime_private_s arts_thread_info;
@@ -90,7 +102,6 @@ static int g_failed;
 /* A root of 2^16 windows is 32 MiB, so the grown segment is 64 MiB. */
 #define ROOT_SHIFT 16u
 #define ROOT_SIZE (1u << ROOT_SHIFT)
-#define BUILD_HOLD_MS 300
 /* COLLISION_RESOLVES keys fill the root window; THREADS more overflow it; the
  * last one is never claimed and serves the walkers' missed searches. */
 #define NKEYS (COLLISION_RESOLVES + THREADS + 1)
@@ -99,22 +110,35 @@ static size_t seg_bytes(unsigned int size) {
   return (size_t)size * COLLISION_RESOLVES * sizeof(arts_route_item_t);
 }
 
-/* ── the table's constructor, counted and held ─────────────────────────── */
+/* ── builds, held ──────────────────────────────────────────────────────── */
 
-static _Atomic(unsigned int) g_builds;
-static _Atomic(int) g_building;
+/* Racers entered into a build and not yet released; the gate the test opens.
+ * A thread with t_pass set builds without being held. */
+static _Atomic(unsigned int) g_building;
 static _Atomic(int) g_release;
+static __thread int t_pass;
 
-static arts_route_table_t *held_new_route_table(unsigned int size,
-                                                unsigned int shift) {
-  atomic_fetch_add_explicit(&g_builds, 1, memory_order_relaxed);
-  atomic_store_explicit(&g_building, 1, memory_order_release);
-  struct timespec ts = {0, BUILD_HOLD_MS * 1000000L};
-  nanosleep(&ts, NULL);
+static void hold_build(void) {
+  if (t_pass) {
+    return;
+  }
+  atomic_fetch_add_explicit(&g_building, 1, memory_order_release);
   while (!atomic_load_explicit(&g_release, memory_order_acquire)) {
     sched_yield();
   }
-  return arts_new_route_table(size, shift);
+}
+
+/* Waits until `n` racers are held in their builds; 0 if they never get
+ * there within the bound. */
+static int await_building(unsigned int n) {
+  for (int i = 0; i < 20000; i++) {
+    if (atomic_load_explicit(&g_building, memory_order_acquire) >= n) {
+      return 1;
+    }
+    struct timespec ts = {0, 1000000L};
+    nanosleep(&ts, NULL);
+  }
+  return 0;
 }
 
 /* ── keys ──────────────────────────────────────────────────────────────── */
@@ -256,9 +280,18 @@ static void check_growth(const char *phase, arts_route_table_t *root,
                          const arts_guid_t *keys, claimer_t *c) {
   arts_route_table_t *seg =
       atomic_load_explicit(&root->next, memory_order_acquire);
-  unsigned builds = atomic_load_explicit(&g_builds, memory_order_relaxed);
-  (void)fprintf(stderr, "%s: constructor calls %u\n", phase, builds);
-  CHECK(builds == 1, "%s: the segment was built %u times\n", phase, builds);
+  unsigned builds = atomic_load_explicit(&probe_builds, memory_order_relaxed);
+  unsigned discards =
+      atomic_load_explicit(&probe_discards, memory_order_relaxed);
+  (void)fprintf(stderr, "%s: %u builds, %u discards\n", phase, builds,
+                discards);
+  CHECK(builds == THREADS, "%s: %u of %d racers built a segment\n", phase,
+        builds, THREADS);
+  CHECK(builds - discards == 1, "%s: %u builds and %u discards, not one link\n",
+        phase, builds, discards);
+  CHECK(probe_discards_not_unmapped(0) == 0,
+        "%s: %u discarded segments were not unmapped exactly\n", phase,
+        probe_discards_not_unmapped(0));
   if (seg == NULL) {
     CHECK(0, "%s: the chain did not grow\n", phase);
     return;
@@ -293,15 +326,15 @@ static void check_growth(const char *phase, arts_route_table_t *root,
         phase, res, bound);
 }
 
-static void reset_counts(int released) {
-  atomic_store_explicit(&g_builds, 0, memory_order_relaxed);
+static void reset_counts(void) {
+  probe_reset();
   atomic_store_explicit(&g_building, 0, memory_order_relaxed);
-  atomic_store_explicit(&g_release, released, memory_order_relaxed);
+  atomic_store_explicit(&g_release, 0, memory_order_relaxed);
+  probe_build_hook = hold_build;
 }
 
-static int link_is_growing(arts_route_table_t *t) {
-  return atomic_load_explicit(&t->next, memory_order_acquire) ==
-         ARTS_ROUTE_TABLE_GROWING;
+static int link_is_null(arts_route_table_t *t) {
+  return atomic_load_explicit(&t->next, memory_order_acquire) == NULL;
 }
 
 /* ── phase A: search_for_empty on a standalone table ───────────────────── */
@@ -312,13 +345,12 @@ static void phase_a(void) {
     CHECK(0, "A: not enough colliding keys\n");
     return;
   }
-  arts_route_table_t *root = arts_new_route_table(ROOT_SIZE, ROOT_SHIFT);
-  root->newFunc = held_new_route_table;
+  arts_route_table_t *root = probe_root(ROOT_SIZE, ROOT_SHIFT);
   for (int i = 0; i < COLLISION_RESOLVES; i++) {
     arts_route_table_search_for_empty(root, keys[i]);
   }
 
-  reset_counts(1);
+  reset_counts();
   pthread_barrier_t start;
   pthread_barrier_init(&start, NULL, THREADS + 1);
   pthread_t tid[THREADS];
@@ -332,6 +364,10 @@ static void phase_a(void) {
   long rss0 = status_kb("VmRSS:");
 #endif
   pthread_barrier_wait(&start);
+  CHECK(await_building(THREADS), "A: the racers never all reached a build\n");
+  CHECK(link_is_null(root), "A: a segment was linked while every racer was "
+                            "held in its build\n");
+  atomic_store_explicit(&g_release, 1, memory_order_release);
   for (int t = 0; t < THREADS; t++) {
     pthread_join(tid[t], NULL);
   }
@@ -351,8 +387,10 @@ static void phase_a(void) {
 #if PEAK_RSS_BOUND
   if (peak_ok && rss0 > 0 && hwm > 0) {
     long grew_kb = hwm - rss0;
-    (void)fprintf(stderr, "A: peak resident set grew %ld KiB during growth\n",
-                  grew_kb);
+    (void)fprintf(stderr,
+                  "A: peak resident set grew %ld KiB while %d racers "
+                  "mapped segments\n",
+                  grew_kb, THREADS);
     CHECK((size_t)(grew_kb > 0 ? grew_kb : 0) * 1024 <
               seg_bytes(2 * ROOT_SIZE) / 4,
           "A: peak resident set grew %ld KiB, a quarter segment is %zu KiB\n",
@@ -367,6 +405,7 @@ static void phase_a(void) {
   static arts_lf_link_t parked;
   arts_lf_stack_push(&root->data[0].ooo_list, &parked);
   atomic_store_explicit(&g_frees, 0, memory_order_relaxed);
+  probe_build_hook = NULL;
   arts_delete_route_table(root);
   unsigned frees = atomic_load_explicit(&g_frees, memory_order_relaxed);
   (void)fprintf(stderr, "A: delete drained %u slot(s)\n", frees);
@@ -449,13 +488,13 @@ static void phase_b(void) {
     return;
   }
   CHECK(all_in_root(keys, NKEYS), "B: a key does not classify to the root\n");
-  root->newFunc = held_new_route_table;
+  root->ops = &probe_ops;
   for (int i = 0; i < COLLISION_RESOLVES; i++) {
     arts_route_item_t *s = NULL;
     arts_route_table_reserve_or_lookup(keys[i], &s);
   }
 
-  reset_counts(0);
+  reset_counts();
   pthread_barrier_t start;
   pthread_barrier_init(&start, NULL, THREADS + 1);
   pthread_t tid[THREADS];
@@ -465,22 +504,25 @@ static void phase_b(void) {
     pthread_create(&tid[t], NULL, claim_by_reserve, &c[t]);
   }
   pthread_barrier_wait(&start);
-  while (atomic_load_explicit(&g_building, memory_order_acquire) == 0) {
-    sched_yield();
-  }
-  CHECK(link_is_growing(root), "B: the link is not GROWING while building\n");
+  CHECK(await_building(THREADS), "B: the racers never all reached a build\n");
+  CHECK(link_is_null(root), "B: the link is not NULL while every racer is "
+                            "held in its build\n");
   walk_while_building(keys);
-  CHECK(link_is_growing(root), "B: the link left GROWING during the walk\n");
+  CHECK(link_is_null(root), "B: the link left NULL during the walk\n");
   atomic_store_explicit(&g_release, 1, memory_order_release);
   for (int t = 0; t < THREADS; t++) {
     pthread_join(tid[t], NULL);
   }
   pthread_barrier_destroy(&start);
   check_growth("B", root, keys, c);
+  unsigned claims = 0, published = 0;
+  probe_scan_chain(root, 0, &claims, &published);
+  CHECK(claims == 0, "B: %u claim or retiring words left\n", claims);
+  probe_build_hook = NULL;
   rt_fini();
 }
 
-/* ── phase C: a settle walk that ends at the unfinished link ───────────── */
+/* ── phase C: a scan that ends at the NULL link ────────────────────────── */
 
 #define C_SHIFT 4u
 #define C_SIZE (1u << C_SHIFT)
@@ -488,34 +530,44 @@ static void phase_b(void) {
 typedef struct {
   arts_guid_t key;
   arts_route_item_t *slot;
+  _Atomic(int) done;
+  int pass; /* builds without being held */
 } reserver_t;
 
 static void *reserve_one(void *vp) {
   reserver_t *r = (reserver_t *)vp;
+  t_pass = r->pass;
   arts_route_table_reserve_or_lookup(r->key, &r->slot);
+  atomic_store_explicit(&r->done, 1, memory_order_release);
   return NULL;
 }
 
-static void phase_c(void) {
-  arts_guid_t fill[COLLISION_RESOLVES];
-  arts_guid_t key = 0;
+/* COLLISION_RESOLVES keys filling window 0 of a C_SHIFT root, and `extra`
+ * more of that window, all of thread 0's block; 0 if not found. */
+static int window_family(arts_guid_t *fill, arts_guid_t *extra, int nextra) {
   int found = 0;
-  arts_route_table_t *root = arts_new_route_table(C_SIZE, C_SHIFT);
-  rt_init(root);
   uint64_t first = thread_block_base() + 1;
   for (uint64_t k = first;
-       found <= COLLISION_RESOLVES && k < first + (1ull << 30); k++) {
+       found < COLLISION_RESOLVES + nextra && k < first + (1ull << 30); k++) {
     arts_guid_t g = ARTS_GUID_MAKE(ARTS_GUID_EVENT, 0, k);
     if (get_route_table_key((uint64_t)g, C_SHIFT) == 0) {
       if (found < COLLISION_RESOLVES) {
         fill[found] = g;
       } else {
-        key = g;
+        extra[found - COLLISION_RESOLVES] = g;
       }
       found++;
     }
   }
-  if (found <= COLLISION_RESOLVES) {
+  return found == COLLISION_RESOLVES + nextra;
+}
+
+static void phase_c(void) {
+  arts_guid_t fill[COLLISION_RESOLVES];
+  arts_guid_t key = 0;
+  arts_route_table_t *root = arts_new_route_table(C_SIZE, C_SHIFT);
+  rt_init(root);
+  if (!window_family(fill, &key, 1)) {
     CHECK(0, "C: not enough colliding keys\n");
     rt_fini();
     return;
@@ -526,46 +578,107 @@ static void phase_c(void) {
     arts_route_item_t *s = NULL;
     arts_route_table_reserve_or_lookup(fill[i], &s);
   }
-  root->newFunc = held_new_route_table;
-  reset_counts(0);
+  root->ops = &probe_ops;
+  reset_counts();
 
   /* A finds the window full and builds the next segment, held. */
-  reserver_t a = {key, NULL};
+  reserver_t a = {key, NULL, 0, 0};
   pthread_t ta;
   pthread_create(&ta, NULL, reserve_one, &a);
-  while (atomic_load_explicit(&g_building, memory_order_acquire) == 0) {
-    sched_yield();
-  }
+  CHECK(await_building(1), "C: A never reached its build\n");
   /* A retire returns one slot of the window while A builds. */
   arts_route_item_t *returned = arts_route_table_search_for_key(root, fill[3]);
   atomic_store_explicit(&returned->key, (arts_guid_t)0, memory_order_release);
-  CHECK(link_is_growing(root), "C: the link is not GROWING before B\n");
-  /* B claims the returned slot; its settle walk ends at the unfinished link. */
-  reserver_t b = {key, NULL};
+  CHECK(link_is_null(root), "C: the link is not NULL while A is held\n");
+  /* B claims the returned slot; its scan ends at the NULL link. */
+  reserver_t b = {key, NULL, 0, 1};
   pthread_t tb;
   pthread_create(&tb, NULL, reserve_one, &b);
   pthread_join(tb, NULL);
-  CHECK(link_is_growing(root), "C: the link left GROWING before B finished\n");
+  CHECK(link_is_null(root), "C: the link left NULL before B finished\n");
   atomic_store_explicit(&g_release, 1, memory_order_release);
   pthread_join(ta, NULL);
 
   CHECK(b.slot == returned, "C: B did not publish in the returned slot\n");
   CHECK(a.slot == b.slot, "C: A and B resolved the key to different slots\n");
-  unsigned keyed = 0, marked = 0;
-  for (arts_route_table_t *t = root; t != NULL;
-       t = atomic_load_explicit(&t->next, memory_order_acquire)) {
-    for (uint64_t i = 0; i < (uint64_t)t->size * COLLISION_RESOLVES; i++) {
-      arts_guid_t k =
-          atomic_load_explicit(&t->data[i].key, memory_order_acquire);
-      keyed += k == key;
-      marked += k == route_key_claiming(key);
-    }
+  unsigned claims = 0, keyed = 0;
+  probe_scan_chain(root, key, &claims, &keyed);
+  (void)fprintf(stderr, "C: slots publishing the key %u, claim words left %u\n",
+                keyed, claims);
+  CHECK(keyed == 1 && claims == 0,
+        "C: %u slots publish the key and %u claim words are left\n", keyed,
+        claims);
+  probe_build_hook = NULL;
+  rt_fini();
+}
+
+/* ── phase D: no racer waits on another's build ───────────────────────── */
+
+static void phase_d(void) {
+  arts_guid_t fill[COLLISION_RESOLVES];
+  arts_guid_t extra[2];
+  arts_route_table_t *root = arts_new_route_table(C_SIZE, C_SHIFT);
+  rt_init(root);
+  if (!window_family(fill, extra, 2)) {
+    CHECK(0, "D: not enough colliding keys\n");
+    rt_fini();
+    return;
   }
-  (void)fprintf(stderr, "C: slots publishing the key %u, unsettled claims %u\n",
-                keyed, marked);
-  CHECK(keyed == 1 && marked == 0,
-        "C: %u slots publish the key and %u claims are unsettled\n", keyed,
-        marked);
+  for (int i = 0; i < COLLISION_RESOLVES; i++) {
+    arts_route_item_t *s = NULL;
+    arts_route_table_reserve_or_lookup(fill[i], &s);
+  }
+  root->ops = &probe_ops;
+  reset_counts();
+
+  /* A reaches the chain's end and is held inside its build. */
+  reserver_t a = {extra[0], NULL, 0, 0};
+  pthread_t ta;
+  pthread_create(&ta, NULL, reserve_one, &a);
+  CHECK(await_building(1), "D: A never reached its build\n");
+  /* B reaches the end too, builds, links, claims and returns, A still held. */
+  reserver_t b = {extra[1], NULL, 0, 1};
+  pthread_t tb;
+  pthread_create(&tb, NULL, reserve_one, &b);
+  pthread_join(tb, NULL);
+  CHECK(!atomic_load_explicit(&a.done, memory_order_acquire),
+        "D: A returned while held in its build\n");
+  arts_route_table_t *seg =
+      atomic_load_explicit(&root->next, memory_order_acquire);
+  CHECK(seg != NULL && b.slot != NULL && b.slot >= seg->data &&
+            b.slot < seg->data + (size_t)seg->size * COLLISION_RESOLVES,
+        "D: B did not claim in the segment it linked\n");
+  CHECK(atomic_load_explicit(&probe_builds, memory_order_relaxed) == 1 &&
+            atomic_load_explicit(&probe_discards, memory_order_relaxed) == 0,
+        "D: before A's release, %u builds and %u discards\n",
+        atomic_load_explicit(&probe_builds, memory_order_relaxed),
+        atomic_load_explicit(&probe_discards, memory_order_relaxed));
+  /* Released, A finds the link taken: it discards its own and claims in B's. */
+  atomic_store_explicit(&g_release, 1, memory_order_release);
+  pthread_join(ta, NULL);
+  CHECK(atomic_load_explicit(&probe_builds, memory_order_relaxed) == 2 &&
+            atomic_load_explicit(&probe_discards, memory_order_relaxed) == 1,
+        "D: %u builds and %u discards, expected 2 and 1\n",
+        atomic_load_explicit(&probe_builds, memory_order_relaxed),
+        atomic_load_explicit(&probe_discards, memory_order_relaxed));
+  CHECK(probe_discards_not_unmapped(0) == 0,
+        "D: A's discarded segment was not unmapped exactly\n");
+  CHECK(atomic_load_explicit(&root->next, memory_order_acquire) == seg &&
+            atomic_load_explicit(&seg->next, memory_order_acquire) == NULL,
+        "D: the chain is not root -> B's segment\n");
+  CHECK(a.slot != NULL && a.slot >= seg->data &&
+            a.slot < seg->data + (size_t)seg->size * COLLISION_RESOLVES &&
+            atomic_load_explicit(&a.slot->key, memory_order_acquire) ==
+                extra[0] &&
+            atomic_load_explicit(&b.slot->key, memory_order_acquire) ==
+                extra[1],
+        "D: A's or B's key is not published in B's segment\n");
+  unsigned claims = 0, published = 0;
+  probe_scan_chain(root, 0, &claims, &published);
+  CHECK(claims == 0, "D: %u claim words left\n", claims);
+  (void)fprintf(stderr, "D: B returned while A was held in its build; A "
+                        "discarded its segment\n");
+  probe_build_hook = NULL;
   rt_fini();
 }
 
@@ -575,6 +688,7 @@ int main(void) {
   phase_a();
   phase_b();
   phase_c();
+  phase_d();
   if (g_failed) {
     return 1;
   }

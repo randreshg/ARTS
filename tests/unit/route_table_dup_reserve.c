@@ -8,9 +8,9 @@
  * K dies and returns E.  B now claims E, the first free slot in probe order.
  *
  * The reservation invariant is that at most one slot publishes a key and an
- * installed object is never moved.  B's claim is made under a marker no search
- * matches, and B's settling scan finds L publishing G, so B gives E up and
- * resolves to L.  Asserted:
+ * installed object is never moved.  B's claim is made under a CLAIM word no
+ * search matches, and B's scan finds L publishing G, so B's claim loses, B
+ * frees E and resolves to L.  Asserted:
  *   1. one slot is keyed G, it is L, E is free, B resolved to L, and a lookup
  *      of G finds A's object;
  *   2. a create of G's next generation issued while B's claim is unsettled
@@ -47,6 +47,10 @@ void *arts_calloc_aligned(size_t n, size_t s, size_t a) {
   return p;
 }
 void arts_free(void *p) { free(p); }
+#ifdef ARTS_DEBUG_INJECTION
+/* route_table.c's windows are scheduling-fuzz points in an injection tree. */
+void arts_sched_fuzz_point(void) {}
+#endif
 
 struct arts_route_item_s;
 void arts_ooo_drain(struct arts_route_item_s *s) { (void)s; }

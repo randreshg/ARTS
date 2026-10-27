@@ -57,13 +57,15 @@ extern "C" {
  * a teardown parks in the slot while it detaches the value.  It is the KEY
  * word, not a lock beside it: one CAS from the GUID to this sentinel carries
  * both halves of what a teardown needs — proof the slot still names that
- * GUID, and sole ownership of the teardown — so there is nothing to hold and
- * nothing to wait on, and a loser is simply not the destroyer.  It is not 0,
- * so a claim CAS skips the slot, and it carries kind ARTS_GUID_RESERVED (never
- * a valid object), so it equals no real GUID and a key search stops matching
- * at once — a request arriving mid-teardown resolves to a fresh reservation.
- * That reservation publishes only after the retire settles, because an
- * identity retire that finds another object hands the key back. */
+ * GUID, and sole ownership of the teardown — so a loser is simply not the
+ * destroyer.  The retire leaves it within a few atomics, returning the slot
+ * (0) or handing the key back when it found another object; only the retirer
+ * knows which, so a reservation whose probe sequence covers the slot, and a
+ * retire of the same object, wait that window out.  It is not 0, so a claim
+ * skips the slot, and it carries kind ARTS_GUID_RESERVED (never a valid
+ * object), so it equals no real GUID and a key search stops matching at once
+ * — a request arriving mid-teardown resolves to a new reservation of the key,
+ * which publishes only after the retire settles. */
 #define ARTS_ROUTE_KEY_RETIRING ((arts_guid_t)1)
 /* Number of independent shards for the remote_route_table: a power of 2, so
  * (key & (N-1)) is the shard selector and each shard holds
@@ -87,14 +89,24 @@ extern "C" {
  * tag names the key looked up, and a retire clears that tag.  A retire
  * returns the slot and re-drives its OoO chain by each payload's own GUID. */
 struct arts_route_item_s {
-  /* Written by a reservation (acq_rel claim CAS 0 -> marker, then a release
-   * store of the key or 0), by a retire (acq_rel CAS key -> RETIRING, then a
-   * release store of 0 or of the key handed back), by a mirror table's claim
-   * (arts_route_table_search_for_empty: acq_rel CAS 0 -> key) and by a mirror
-   * slot's teardown (free_gpu_item: relaxed store of 0 after the join).  Every
-   * load that decides on it is acquire, so what a writer did to the slot's
-   * value before its write is visible to a reader that sees the write; loads
-   * after the runtime threads have joined are relaxed. */
+  /* Written only by a CAS on the exact word it leaves, or by a store out of a
+   * state its writer alone holds:
+   *   claim: acq_rel CAS 0 or LOST(u) -> BUSY, then the BUSY owner's release
+   *     store BUSY -> CLAIM(v), claim_key written before it;
+   *   kill (any reserver of the key): acq_rel CAS CLAIM(v) -> LOST(v);
+   *   publish (the owner or a helper): acq_rel CAS CLAIM(v) -> the GUID;
+   *   free (the claim's owner): CAS LOST(v) -> 0, release, relaxed on failure;
+   *   fresh publish (a create of a GUID it minted, which nothing names yet):
+   *     acq_rel CAS 0 or LOST(u) -> the GUID;
+   *   retire: acq_rel CAS GUID -> RETIRING, then the retirer's release store
+   *     of 0 or of the GUID handed back;
+   *   a mirror table's claim (arts_route_table_search_for_empty: acq_rel CAS
+   *     0 -> GUID) and a mirror slot's teardown (relaxed store of 0 after the
+   *     join).
+   * BUSY, CLAIM(v) and LOST(v) carry kind ARTS_GUID_RESERVED and equal no
+   * GUID.  Every load that decides on the word is acquire, so what a writer
+   * did to the slot before its write is visible to a reader that sees the
+   * write; loads after the runtime threads have joined are relaxed. */
   _Atomic(arts_guid_t) key;
   /* value == NULL means "absent" — deliberately NOT distinguishing
    * "never created" from "destroyed".  The OoO engine treats both
@@ -111,48 +123,69 @@ struct arts_route_item_s {
    * (arts_shared_slot_t, shared.h). */
   _Atomic(arts_shared_slot_t) value;
   arts_lf_stack_t ooo_list; /* OoO defer chain (Treiber) */
+  /* The key a live or lost claim stands for.  Written (relaxed) by the claim's
+   * owner while the key word is BUSY, before its release store of CLAIM(v);
+   * read (relaxed) after an acquire load of the key word that saw CLAIM(v),
+   * so the key word orders it: the read returns v's key, or a later claim's
+   * once v ended (every CAS naming v then fails, and skipping is safe). */
+  _Atomic(arts_guid_t) claim_key;
+  /* Versions of this slot's claims; written and read only by the owner of a
+   * BUSY key word, ordered between successive owners by the key word (the
+   * release store or RMW that frees the slot, the acq_rel CAS that claims it).
+   */
+  uint64_t claim_ver;
 } ARTS_ALIGNED_MAX;
 
 typedef struct arts_route_item_s arts_route_item_t;
 
 typedef struct arts_route_table_s arts_route_table_t;
 
-/* Builds one segment of `route_table_size` windows whose `data` comes from
- * arts_route_table_map_slots(COLLISION_RESOLVES * route_table_size).
- * `route_table_size` must be 2^`shift`: a key's window is the top `shift`
- * bits of its hash, so a larger shift probes past the segment's slots and a
- * smaller one never reaches its upper windows. */
-typedef arts_route_table_t *(*new_route_table_t)(unsigned int route_table_size,
-                                                 unsigned int shift);
-
-/* The value of `next` while its segment is being built. */
-#define ARTS_ROUTE_TABLE_GROWING ((struct arts_route_table_s *)(uintptr_t)1)
+/* How one kind of segment is made and released.  Immutable; a segment points
+ * at the table of the kind that built it. */
+typedef struct arts_route_segment_ops_s {
+  /* A segment of `windows` (= 2^`shift`) windows that no other thread can
+   * reach: header built, next NULL, slots an untouched mapping.  A key's
+   * window is the top `shift` bits of its hash, so a larger shift probes past
+   * the segment's slots and a smaller one never reaches its upper windows.
+   * NULL, with errno kept and nothing left allocated or registered, when a
+   * mapping fails. */
+  arts_route_table_t *(*build)(unsigned int windows, unsigned int shift);
+  /* Releases a segment no other thread can reach: a lost race's own segment,
+   * or any segment at teardown. */
+  void (*discard)(arts_route_table_t *segment);
+} arts_route_segment_ops_t;
 
 struct arts_route_table_s {
   arts_route_item_t *data;
   unsigned int size;
   unsigned int shift;
-  /* The growable segment chain: NULL -> ARTS_ROUTE_TABLE_GROWING -> segment.
-   * The one thread whose CAS takes the link from NULL to GROWING builds the
-   * next segment and publishes it with a release store; every other thread
-   * that reaches the end of the chain waits for that store, so one growth
-   * builds one segment.  A walker takes GROWING for the end of the chain,
-   * since an unpublished segment holds no key and no claim.  A published
-   * segment is never unlinked before teardown, so the link is monotonic.
-   * Every load of the link is acquire: it publishes the segment's fields. */
+  /* NULL until one CAS links the next segment; never written again before
+   * teardown.  Every thread that finds NULL builds its own segment and CASes
+   * it in (acq_rel: the release half publishes the segment, and the acquire
+   * half only completes the pair a failure order needs; failure acquire); a
+   * loser discards its own, which no thread saw.  Every load is acquire: it
+   * publishes the segment's header and slot mapping. */
   _Atomic(struct arts_route_table_s *) next;
-  new_route_table_t newFunc;
+  const arts_route_segment_ops_t *ops; /* published with the header */
 };
 
 /* `slots` zero items in an anonymous mapping, page-aligned, populated only
- * where written; arts_delete_route_table releases it. */
-arts_route_item_t *arts_route_table_map_slots(uint64_t slots);
+ * where written; NULL with errno kept when the mapping fails. */
+arts_route_item_t *arts_route_table_try_map_slots(uint64_t slots);
+/* Releases a mapping arts_route_table_try_map_slots returned. */
+void arts_route_table_unmap_slots(arts_route_item_t *data, uint64_t slots);
 
 typedef struct {
   uint64_t index;
   arts_route_table_t *table;
 } arts_route_table_iterator_t;
 
+/* A chain's first segment, built by `ops`; a failed mapping ends the process,
+ * since a root has no other builder to fall back on. */
+arts_route_table_t *
+arts_route_table_new_root(const arts_route_segment_ops_t *ops,
+                          unsigned int windows, unsigned int shift);
+/* arts_route_table_new_root with the global table's segments. */
 arts_route_table_t *arts_new_route_table(unsigned int route_table_size,
                                          unsigned int shift);
 
@@ -207,6 +240,11 @@ arts_shared_ptr_t arts_route_table_make_handle(void *obj, arts_guid_t key);
  * nothing changes and the passed ref stays the caller's. */
 bool arts_route_table_install_handle_if_absent(arts_shared_ptr_t cb,
                                                arts_guid_t key);
+
+/* install_handle_if_absent for a GUID that arts_route_table_reserve_fresh may
+ * reserve.  False only when the GUID was not fresh after all. */
+bool arts_route_table_install_handle_fresh(arts_shared_ptr_t cb,
+                                           arts_guid_t key);
 
 /* Retires, one teardown.  Each detaches an object, drops the install ref, and
  * RETURNS the slot: the key is zeroed and the slot's parked payloads are
@@ -284,11 +322,22 @@ arts_shared_ptr_t arts_route_item_acquire(arts_route_item_t *item);
 bool arts_route_item_install_data(arts_route_item_t *item, void *obj,
                                   void (*deleter)(void *));
 
-/* Slot reserve or lookup — returns the permanent route_item for `key`,
- * creating it (value == NULL) if absent.  The OoO engine (arts/ooo.h) uses
- * this to reach a slot's ooo_list. */
+/* Slot reserve or lookup — returns the route_item that publishes `key`,
+ * reserving one (value == NULL) if none does.  No reservation waits on
+ * another; the one wait is a retire's window.  The OoO engine (arts/ooo.h)
+ * uses this to reach a slot's ooo_list. */
 void arts_route_table_reserve_or_lookup(arts_guid_t key,
                                         arts_route_item_t **out);
+
+/* Reserve the slot of a GUID this thread minted itself (for this rank, or a
+ * data block's GUID from this rank's slice of another home's space) inside a
+ * create that has not returned, and that nothing has named to another thread:
+ * no other reservation of it can exist, so the first free slot of its probe
+ * sequence publishes it at once, with no claim, fence or settle, and the
+ * reservation never waits.  The caller must not name the GUID anywhere (a
+ * message, a parameter, a shared word) before this returns; a Debug build
+ * ends the process when another reservation of it is visible. */
+void arts_route_table_reserve_fresh(arts_guid_t key, arts_route_item_t **out);
 
 void arts_reset_route_table_iterator(arts_route_table_iterator_t *iter,
                                      arts_route_table_t *table);

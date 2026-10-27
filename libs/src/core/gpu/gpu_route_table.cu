@@ -38,6 +38,9 @@
 ******************************************************************************/
 #include "arts/gpu/gpu_route_table.h"
 
+#include <errno.h>
+#include <stddef.h>
+
 #include "arts.h"
 #include "arts/gpu/gpu_stream.h"
 #include "arts/runtime_state.h"
@@ -102,15 +105,33 @@ unsigned int set_gpu_timestamp(_Atomic(unsigned int) *time_stamp) {
   return old_time_stamp;
 }
 
-arts_route_table_t *arts_gpu_new_route_table(unsigned int route_table_size,
-                                             unsigned int shift) {
-  uint64_t total_elems = (uint64_t)COLLISION_RESOLVES * route_table_size;
+static arts_route_table_t *gpu_route_segment_build(unsigned int windows,
+                                                   unsigned int shift);
+static void gpu_route_segment_discard(arts_route_table_t *segment);
+
+static const arts_route_segment_ops_t gpu_route_segment_ops = {
+    gpu_route_segment_build, gpu_route_segment_discard};
+
+static arts_route_table_t *gpu_route_segment_build(unsigned int windows,
+                                                   unsigned int shift) {
+  uint64_t total_elems = (uint64_t)COLLISION_RESOLVES * windows;
   arts_gpu_route_table_t *gpu_route_table =
       (arts_gpu_route_table_t *)arts_calloc(1, sizeof(arts_gpu_route_table_t));
-  gpu_route_table->routingTable.data = arts_route_table_map_slots(total_elems);
-  gpu_route_table->routingTable.size = route_table_size;
+  gpu_route_table->routingTable.data =
+      arts_route_table_try_map_slots(total_elems);
+  if (gpu_route_table->routingTable.data == NULL) {
+    int err = errno;
+    arts_free(gpu_route_table);
+    errno = err;
+    return NULL;
+  }
+  gpu_route_table->routingTable.size = windows;
   gpu_route_table->routingTable.shift = shift;
-  gpu_route_table->routingTable.newFunc = arts_gpu_new_route_table;
+  /* Unpublished, so a relaxed store initializes it. */
+  atomic_store_explicit(&gpu_route_table->routingTable.next,
+                        (struct arts_route_table_s *)NULL,
+                        memory_order_relaxed);
+  gpu_route_table->routingTable.ops = &gpu_route_segment_ops;
 
   /* Persistent per-slot wrapper array (parallel to routingTable.data[]).  The
    * slot's cb (value) starts NULL; the wrapper is installed into the slot cb on
@@ -121,6 +142,24 @@ arts_route_table_t *arts_gpu_new_route_table(unsigned int route_table_size,
   pthread_mutex_init(&gpu_route_table->gc_lock, NULL);
 
   return &gpu_route_table->routingTable;
+}
+
+static void gpu_route_segment_discard(arts_route_table_t *segment) {
+  arts_gpu_route_table_t *gpu_route_table =
+      (arts_gpu_route_table_t *)((char *)segment -
+                                 offsetof(arts_gpu_route_table_t,
+                                          routingTable));
+  arts_free(gpu_route_table->wrappers);
+  pthread_mutex_destroy(&gpu_route_table->gc_lock);
+  arts_route_table_unmap_slots(segment->data,
+                               (uint64_t)segment->size * COLLISION_RESOLVES);
+  arts_free(gpu_route_table);
+}
+
+arts_route_table_t *arts_gpu_new_route_table(unsigned int route_table_size,
+                                             unsigned int shift) {
+  return arts_route_table_new_root(&gpu_route_segment_ops, route_table_size,
+                                   shift);
 }
 
 uint64_t arts_gpu_lookup_db(arts_guid_t key) {

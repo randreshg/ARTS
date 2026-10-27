@@ -583,21 +583,25 @@ static bool db_parked_here(arts_guid_t guid) {
   return false;
 }
 
-bool arts_db_create_install_local(arts_shared_ptr_t cb) {
+bool arts_db_create_install_local(arts_shared_ptr_t cb, bool fresh) {
   struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(cb);
   arts_guid_t guid = db->cache.db_guid;
   /* The install's drain can retire the descriptor (a destroy deferred before
    * the create), so the reads below go through a ref of this call's own. */
   arts_shared_ptr_t pin = arts_shared_copy(cb);
-  if (!arts_route_table_install_handle_if_absent(cb, guid)) {
+  bool installed = fresh ? arts_route_table_install_handle_fresh(cb, guid)
+                         : arts_route_table_install_handle_if_absent(cb, guid);
+  if (!installed) {
     arts_shared_release(&pin);
     return false;
   }
   unsigned int home = arts_guid_get_rank(guid);
   if (home != arts_global_rank_id && db->db_type == ARTS_DB) {
     /* After the install: an acquire that no longer sees the create parked
-     * finds its descriptor. */
-    db_parked_remove(guid);
+     * finds its descriptor.  A fresh create was never registered. */
+    if (!fresh) {
+      db_parked_remove(guid);
+    }
     /* The announce follows the install: whatever the home sends back for the
      * block finds this rank's descriptor. */
     arts_send_db_create_coherent(
@@ -616,7 +620,7 @@ bool arts_db_create_install_local(arts_shared_ptr_t cb) {
  * descriptor, whether the create installs now or parks behind an object the
  * GUID still names on this rank. */
 static void db_create_enter(struct arts_db_s *db, arts_guid_t guid,
-                            bool acquires, void **addr) {
+                            bool acquires, bool fresh, void **addr) {
   arts_shared_ptr_t cb = arts_route_table_make_handle(db, guid);
   if (acquires) {
     arts_db_auto_acquire(arts_shared_copy(cb));
@@ -624,7 +628,14 @@ static void db_create_enter(struct arts_db_s *db, arts_guid_t guid,
   *addr = acquires ? arts_db_user_ptr(db) : NULL;
   struct arts_ooo_args_create_local_s a = {
       .size = ARTS_OOO_CREATE_ADOPT, .guid = guid, .descriptor = (void *)cb};
-  arts_ooo_dispatch_or_defer_guid(guid, OOO_DB_CREATE, &a, sizeof(a));
+  if (fresh) {
+    /* Minted by this create and named to no one yet. */
+    arts_route_item_t *slot;
+    arts_route_table_reserve_fresh(guid, &slot);
+    arts_ooo_dispatch_or_defer(slot, NULL, OOO_DB_CREATE, guid, &a, sizeof(a));
+  } else {
+    arts_ooo_dispatch_or_defer_guid(guid, OOO_DB_CREATE, &a, sizeof(a));
+  }
 }
 
 /* A cache on this rank that a dependence made before the block's create
@@ -710,56 +721,61 @@ static void db_create_remote_creator(arts_guid_t guid, uint64_t len,
   arts_shared_ptr_t cb = NULL;
   arts_shared_ptr_t mine = NULL;
   struct arts_db_s *stub = NULL;
-  /* Before this rank's slot is examined: an acquire that finds the slot empty
-   * from here on defers behind this create instead of installing a
-   * first-touch cache the create would have to park behind.  Withdrawn when
-   * the create installs (arts_db_create_install_local) or claims a cache.  A
-   * freshly minted GUID is named by nothing else yet, so its create cannot
-   * park and is not registered. */
-  if (labeled) {
+  if (!labeled) {
+    /* A freshly minted GUID is named by nothing else yet: no dependence can
+     * have made a cache of it here and its create cannot park, so it is
+     * neither looked up nor registered. */
+    stub = db_creator_descriptor(guid, len, &cb, &mine);
+    if (arts_db_create_install_local(cb, /*fresh=*/true)) {
+      *addr = arts_db_user_ptr(stub);
+      arts_db_auto_acquire(mine);
+      return;
+    }
+  } else {
+    /* Before this rank's slot is examined: an acquire that finds the slot
+     * empty from here on defers behind this create instead of installing a
+     * first-touch cache the create would have to park behind.  Withdrawn when
+     * the create installs (arts_db_create_install_local) or claims a cache. */
     db_parked_add(guid);
     /* Orders the registration above before the slot lookups below; the
      * other side is acquire_one_dep's fence between its lookup miss and its
      * table read (the parked-create table's pair). */
     atomic_thread_fence(memory_order_seq_cst);
-  }
-  for (;;) {
-    arts_shared_ptr_t found_h = arts_route_table_lookup_db(guid);
-    struct arts_db_s *found = (struct arts_db_s *)arts_shared_get(found_h);
-    if (found != NULL) {
-      uint8_t owed = 0u;
-      if (found->db_type == ARTS_DB &&
-          db_create_claim_first_touch(found, len, &owed)) {
-        if (stub != NULL) {
+    for (;;) {
+      arts_shared_ptr_t found_h = arts_route_table_lookup_db(guid);
+      struct arts_db_s *found = (struct arts_db_s *)arts_shared_get(found_h);
+      if (found != NULL) {
+        uint8_t owed = 0u;
+        if (found->db_type == ARTS_DB &&
+            db_create_claim_first_touch(found, len, &owed)) {
+          if (stub != NULL) {
 #ifdef ARTS_USE_CXL
-          /* Never published: the slot this create minted for its own
-           * descriptor is left to the arena. */
-          arts_db_cxl_slot_discard(&stub->cache);
+            /* Never published: the slot this create minted for its own
+             * descriptor is left to the arena. */
+            arts_db_cxl_slot_discard(&stub->cache);
 #endif
-          arts_shared_release(&mine);
-          arts_shared_release(&cb);
-        }
-        if (labeled) {
+            arts_shared_release(&mine);
+            arts_shared_release(&cb);
+          }
           db_parked_remove(guid);
+          arts_send_db_create_coherent(
+              home, guid, len, ARTS_DB_PROP_NONE, (uint16_t)ARTS_DB,
+              arts_db_cxl_slot_addr(&found->cache), owed);
+          *addr = arts_db_user_ptr(found);
+          arts_db_auto_acquire(found_h);
+          return;
         }
-        arts_send_db_create_coherent(home, guid, len, ARTS_DB_PROP_NONE,
-                                     (uint16_t)ARTS_DB,
-                                     arts_db_cxl_slot_addr(&found->cache),
-                                     owed);
-        *addr = arts_db_user_ptr(found);
-        arts_db_auto_acquire(found_h);
+        arts_shared_release(&found_h);
+        break;
+      }
+      if (stub == NULL) {
+        stub = db_creator_descriptor(guid, len, &cb, &mine);
+      }
+      if (arts_db_create_install_local(cb, /*fresh=*/false)) {
+        *addr = arts_db_user_ptr(stub);
+        arts_db_auto_acquire(mine);
         return;
       }
-      arts_shared_release(&found_h);
-      break;
-    }
-    if (stub == NULL) {
-      stub = db_creator_descriptor(guid, len, &cb, &mine);
-    }
-    if (arts_db_create_install_local(cb)) {
-      *addr = arts_db_user_ptr(stub);
-      arts_db_auto_acquire(mine);
-      return;
     }
   }
   /* This rank's slot holds a block a create made, or a dependence's cache that
@@ -861,7 +877,8 @@ arts_guid_t arts_db_create(void **addr, uint64_t len, arts_db_types_t db_type,
     if (no_acquire && db_type == ARTS_DB) {
       db_create_no_acquire_local((struct arts_db_s *)ptr);
     }
-    db_create_enter((struct arts_db_s *)ptr, guid, !no_acquire, addr);
+    db_create_enter((struct arts_db_s *)ptr, guid, !no_acquire,
+                    /*fresh=*/pre_guid == NULL_GUID, addr);
     ARTS_DEBUG("arts_db_create: DB[Guid:%lu, Type:%s, Size:%lu] "
                "created locally",
                guid, GET_DB_TYPE_NAME(db_type), len);

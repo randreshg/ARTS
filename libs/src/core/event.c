@@ -230,7 +230,8 @@ static void event_install(arts_guid_t *guid, const arts_event_hint_t *h_in) {
   if (rank == ARTS_HINT_CURRENT_RANK) {
     rank = arts_global_rank_id;
   }
-  if (*guid == NULL_GUID) {
+  bool minted = *guid == NULL_GUID;
+  if (minted) {
     *guid = arts_guid_create_for_rank(rank, ARTS_GUID_EVENT);
   }
   struct arts_event_s *event =
@@ -241,7 +242,15 @@ static void event_install(arts_guid_t *guid, const arts_event_hint_t *h_in) {
     /* The engine installs this very object; it is the create's until then. */
     struct arts_ooo_args_create_local_s a = {
         .size = ARTS_OOO_CREATE_ADOPT, .guid = *guid, .descriptor = event};
-    arts_ooo_dispatch_or_defer_guid(*guid, OOO_EVENT_CREATE, &a, sizeof(a));
+    if (minted) {
+      /* Minted above and named to no one yet. */
+      arts_route_item_t *slot;
+      arts_route_table_reserve_fresh(*guid, &slot);
+      arts_ooo_dispatch_or_defer(slot, NULL, OOO_EVENT_CREATE, *guid, &a,
+                                 sizeof(a));
+    } else {
+      arts_ooo_dispatch_or_defer_guid(*guid, OOO_EVENT_CREATE, &a, sizeof(a));
+    }
     return;
   }
   /* The GUID is minted for the home rank before the ship, so the caller has

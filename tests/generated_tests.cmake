@@ -89,6 +89,46 @@ add_pure_unit_src(route_table_install_if_absent PASS_REGEX "PASS route_table_ins
 add_pure_unit_src(ooo_park_install_retire PASS_REGEX "PASS ooo_park_install_retire" TIMEOUT 120)
 add_pure_unit_src(route_table_segment_grow PASS_REGEX "PASS route_table_segment_grow" TIMEOUT 60)
 add_pure_unit_src(route_table_growth_residency PASS_REGEX "PASS route_table_growth_residency" TIMEOUT 60)
+# The route-table growth tests observe each segment's mapping through
+# route_table.c's own mmap/munmap, wrapped at link time: --wrap rewrites only
+# the test object's references, and it is the one object that includes
+# route_table.c.
+target_link_options(route_table_growth_residency PRIVATE -Wl,--wrap=mmap,--wrap=munmap)
+# Reservations of one key decide among their claims without waiting on each
+# other: a kill, a help while the helped claim's owner is held, a stale help,
+# a retire of the key being reserved and a taken LOST word, each driven
+# through route_table.c's hooks.
+add_pure_unit_src(route_table_claim_assist PASS_REGEX "PASS route_table_claim_assist" TIMEOUT 60)
+# A racer whose segment mapping fails re-reads the link once and goes on in a
+# published segment, or ends the process naming the mapping, never waiting.
+add_pure_unit_src(route_table_growth_mapfail PASS_REGEX "PASS route_table_growth_mapfail" TIMEOUT 60)
+target_link_options(route_table_growth_mapfail PRIVATE -Wl,--wrap=mmap,--wrap=munmap)
+# Claims of one key, the growth of their chain and retires of the keys being
+# reserved race for 200 rounds from fresh roots; in an injection tree also
+# under the scheduling fuzz.
+add_pure_unit_src(route_table_growth_race
+    SOURCES ${CMAKE_SOURCE_DIR}/libs/src/core/system/schedfuzz.c
+            ${CMAKE_SOURCE_DIR}/libs/src/core/utils/random.c
+    PASS_REGEX "PASS route_table_growth_race" TIMEOUT 300)
+target_link_options(route_table_growth_race PRIVATE -Wl,--wrap=mmap,--wrap=munmap)
+if(ARTS_DEBUG_INJECTION)
+    set_tests_properties(route_table_growth_race PROPERTIES
+        ENVIRONMENT "ARTS_SCHED_FUZZ=0")
+    foreach(_pct 10 40)
+        arts_add_test(route_table_growth_race_fuzz${_pct}
+                      COMMAND route_table_growth_race)
+        set_tests_properties(route_table_growth_race_fuzz${_pct} PROPERTIES
+            LABELS "single_node"
+            TIMEOUT 300
+            RESOURCE_LOCK "pure_unit_test"
+            ENVIRONMENT "ARTS_SCHED_FUZZ=${_pct}"
+            PASS_REGULAR_EXPRESSION "PASS route_table_growth_race")
+    endforeach()
+endif()
+# The reservation of a freshly minted GUID: one CAS of the first free word of
+# its window, past other keys' claims and a held retire, with no wait; a
+# fresh reservation of a GUID something already named is caught in Debug.
+add_pure_unit_src(route_table_fresh PASS_REGEX "PASS route_table_fresh" TIMEOUT 60)
 add_pure_unit_src(route_item_mirror_bridge PASS_REGEX "PASS route_item_mirror_bridge" TIMEOUT 60)
 add_pure_unit_src(guid_encoding_roundtrip PASS_REGEX "PASS guid_encoding_roundtrip" TIMEOUT 60)
 add_pure_unit_src(guid_from_index_overflow PASS_REGEX "PASS guid_from_index_overflow" TIMEOUT 60)
@@ -502,6 +542,40 @@ register_multinode_test(guid_keygen_table_coupling TIMEOUT 120
 add_arts_test(round_robin_home_distribution)
 register_multinode_test(round_robin_home_distribution TIMEOUT 120
                         VARIANTS 2n_9w_1p 4n_4w_1p)
+
+# A local create of a GUID it minted reserves the GUID's slot by the fresh
+# path and every other create by the general one, which the slot's claim_key
+# tells apart while the object lives.
+add_arts_test(route_fresh_path_taken)
+register_single_node_test(route_fresh_path_taken TIMEOUT 60)
+register_multinode_test(route_fresh_path_taken TIMEOUT 90
+                        VARIANTS 2n_9w_1p 2n_8w_2p)
+foreach(_t route_fresh_path_taken route_fresh_path_taken_2n_9w_1p
+        route_fresh_path_taken_2n_8w_2p)
+    set_tests_properties(${_t} PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS: route_fresh_path_taken"
+        FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
+endforeach()
+
+# Every worker creates events of one reserved range, so their creates, the
+# satisfies racing them and their consumers' bindings reserve keys of one
+# chain at once; a tiny route_table_size makes that chain grow under the race
+# (and the scheduling fuzz, in an injection tree).
+add_arts_test(route_growth_labeled)
+register_single_node_test(route_growth_labeled TIMEOUT 120)
+register_multinode_test(route_growth_labeled TIMEOUT 180
+                        VARIANTS 2n_9w_1p 2n_8w_2p)
+foreach(_t route_growth_labeled route_growth_labeled_2n_9w_1p
+        route_growth_labeled_2n_8w_2p)
+    set_property(TEST ${_t} APPEND PROPERTY ENVIRONMENT "route_table_size=4")
+    if(ARTS_DEBUG_INJECTION)
+        set_property(TEST ${_t} APPEND PROPERTY ENVIRONMENT
+                     "ARTS_SCHED_FUZZ=20")
+    endif()
+    set_tests_properties(${_t} PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS: route_growth_labeled 2048 events fired once each"
+        FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
+endforeach()
 endif()
 
 # --- DB create-with-data / stub install ---

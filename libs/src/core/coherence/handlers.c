@@ -174,7 +174,8 @@ void arts_handler_db_create(void *item_v, void *args_v) {
       ARTS_OOO_CREATE_ADOPT) {
     const struct arts_ooo_args_create_local_s *l =
         (const struct arts_ooo_args_create_local_s *)args_v;
-    if (!arts_db_create_install_local((arts_shared_ptr_t)l->descriptor)) {
+    if (!arts_db_create_install_local((arts_shared_ptr_t)l->descriptor,
+                                      /*fresh=*/false)) {
       arts_ooo_dispatch_or_defer_guid(l->guid, OOO_DB_CREATE, l, sizeof(*l));
     }
     return;

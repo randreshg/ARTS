@@ -55,6 +55,7 @@
 #include "arts/ooo.h"           /* arts_ooo_drain / arts_ooo_redrive_all */
 #include "arts/runtime_state.h" /* arts_node_info */
 #include "arts/system/print.h"
+#include "arts/system/schedfuzz.h"
 #include "arts/utils/lockfree_lifo.h"
 #include "arts/utils/malloc.h"
 #include "arts/utils/shared.h"
@@ -192,43 +193,83 @@ void arts_route_table_delete_unpublished(arts_guid_t key, void *obj) {
 #define ROUTE_TABLE_LEAK_UNROOT(p, n) ((void)0)
 #endif
 
-arts_route_item_t *arts_route_table_map_slots(uint64_t slots) {
+arts_route_item_t *arts_route_table_try_map_slots(uint64_t slots) {
   size_t bytes = (size_t)slots * sizeof(arts_route_item_t);
   void *p = mmap(NULL, bytes, PROT_READ | PROT_WRITE,
                  MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
   if (p == MAP_FAILED) {
-    ARTS_ERROR("route table: mapping a segment of %lu slots (%zu bytes) "
-               "failed: %s; route_table_size (gpu_route_table_size for a GPU "
-               "table) sets the first segment, each growth doubles it",
-               (unsigned long)slots, bytes, strerror(errno));
+    return NULL;
   }
   ROUTE_TABLE_LEAK_ROOT(p, bytes);
   return (arts_route_item_t *)p;
 }
 
-static void route_table_unmap_slots(arts_route_item_t *data, uint64_t slots) {
+void arts_route_table_unmap_slots(arts_route_item_t *data, uint64_t slots) {
   size_t bytes = (size_t)slots * sizeof(arts_route_item_t);
   ROUTE_TABLE_LEAK_UNROOT(data, bytes);
   munmap(data, bytes);
 }
 
-arts_route_table_t *arts_new_route_table(unsigned int route_table_size,
-                                         unsigned int shift) {
-  assert(route_table_size == (uint64_t)1 << shift);
-  arts_route_table_t *route_table =
-      (arts_route_table_t *)arts_calloc(1, sizeof(arts_route_table_t));
-  route_table->data = arts_route_table_map_slots((uint64_t)COLLISION_RESOLVES *
-                                                 route_table_size);
-  route_table->size = route_table_size;
-  route_table->shift = shift;
-  route_table->newFunc = arts_new_route_table;
-  return route_table;
+static void route_table_map_failed(uint64_t slots, int err) {
+  ARTS_ERROR("route table: mapping a segment of %lu slots (%zu bytes) "
+             "failed: %s; route_table_size (gpu_route_table_size for a GPU "
+             "table) sets the first segment, each growth doubles it",
+             (unsigned long)slots, (size_t)slots * sizeof(arts_route_item_t),
+             strerror(err));
 }
 
-/* Bound on waiting for another thread's step: every step waited on (a claim
- * settling, a retire returning or handing back its slot, a grown segment being
- * published) waits on no other thread and is a few instructions or one
- * segment's construction, so anything near the bound is a lost step. */
+static arts_route_table_t *route_segment_build(unsigned int windows,
+                                               unsigned int shift);
+static void route_segment_discard(arts_route_table_t *t);
+
+static const arts_route_segment_ops_t route_segment_cpu_ops = {
+    .build = route_segment_build, .discard = route_segment_discard};
+
+static arts_route_table_t *route_segment_build(unsigned int windows,
+                                               unsigned int shift) {
+  assert(windows == (uint64_t)1 << shift);
+  arts_route_table_t *t =
+      (arts_route_table_t *)arts_calloc(1, sizeof(arts_route_table_t));
+  t->data =
+      arts_route_table_try_map_slots((uint64_t)COLLISION_RESOLVES * windows);
+  if (t->data == NULL) {
+    int err = errno;
+    arts_free(t);
+    errno = err;
+    return NULL;
+  }
+  t->size = windows;
+  t->shift = shift;
+  atomic_init(&t->next, NULL);
+  t->ops = &route_segment_cpu_ops;
+  return t;
+}
+
+static void route_segment_discard(arts_route_table_t *t) {
+  arts_route_table_unmap_slots(t->data, (uint64_t)t->size * COLLISION_RESOLVES);
+  arts_free(t);
+}
+
+arts_route_table_t *
+arts_route_table_new_root(const arts_route_segment_ops_t *ops,
+                          unsigned int windows, unsigned int shift) {
+  arts_route_table_t *t = ops->build(windows, shift);
+  if (t == NULL) {
+    route_table_map_failed((uint64_t)COLLISION_RESOLVES * windows, errno);
+  }
+  return t;
+}
+
+arts_route_table_t *arts_new_route_table(unsigned int route_table_size,
+                                         unsigned int shift) {
+  return arts_route_table_new_root(&route_segment_cpu_ops, route_table_size,
+                                   shift);
+}
+
+/* Bound on waiting for another thread's step.  The one step any route-table
+ * wait waits out is a retire's RETIRING window, a few atomics with no
+ * allocation, system call, lock or wait inside it, so anything near the bound
+ * is a lost step. */
 #define ROUTE_TABLE_WAIT_NS (5ull * 1000000000ull)
 
 typedef struct {
@@ -262,44 +303,53 @@ static void route_wait_tick(route_wait_t *w, arts_guid_t key, const char *what,
   sched_yield();
 }
 
-/* The segment after `t`, or NULL at the end of the chain.  A growth in flight
- * is the end: its segment holds no key and no claim until it is published. */
+/* The segment after `t`, or NULL at the end of the chain. */
 static inline arts_route_table_t *
 route_table_next(const arts_route_table_t *t) {
-  arts_route_table_t *next =
-      atomic_load_explicit(&t->next, memory_order_acquire);
-  return next == ARTS_ROUTE_TABLE_GROWING ? NULL : next;
+  return atomic_load_explicit(&t->next, memory_order_acquire);
 }
 
-/* The segment after `t`, grown if the chain ends at `t`.  Only the thread
- * whose CAS takes the link from NULL to GROWING builds the segment; every
- * other thread waits for its publication instead of building one of its own.
- * The release store pairs with every walker's acquire load of the link. */
+#ifndef ROUTE_TABLE_BEFORE_LINK
+/* Runs between a racer's build of the next segment and its link CAS. */
+#define ROUTE_TABLE_BEFORE_LINK(key) ((void)(key), arts_sched_fuzz_point())
+#endif
+
+/* The segment after `t`, grown if the chain ends at `t`.  Every thread that
+ * finds the end builds a segment of its own and CASes it in; the losers
+ * discard theirs, which no other thread saw, and go on in the winner's.  No
+ * racer waits on another's build. */
 static arts_route_table_t *route_table_next_or_grow(arts_route_table_t *t,
                                                     arts_guid_t key) {
   arts_route_table_t *next =
       atomic_load_explicit(&t->next, memory_order_acquire);
-  if (next == NULL) {
-    if (t->size > UINT_MAX / 2) {
-      ARTS_ERROR("GUID %lu: its probe window is full in every segment, and "
-                 "the last holds %u windows, the most a segment can; the "
-                 "route table cannot grow (route_table_size sets the first "
-                 "segment, each growth doubles it)",
-                 (unsigned long)key, t->size);
-    }
-    if (atomic_compare_exchange_strong_explicit(
-            &t->next, &next, ARTS_ROUTE_TABLE_GROWING, memory_order_acq_rel,
-            memory_order_acquire)) {
-      next = t->newFunc(2 * t->size, t->shift + 1);
-      atomic_store_explicit(&t->next, next, memory_order_release);
+  if (next != NULL) {
+    return next;
+  }
+  if (t->size > UINT_MAX / 2) {
+    ARTS_ERROR("GUID %lu: its probe window is full in every segment, and "
+               "the last holds %u windows, the most a segment can; the "
+               "route table cannot grow (route_table_size sets the first "
+               "segment, each growth doubles it)",
+               (unsigned long)key, t->size);
+  }
+  arts_route_table_t *mine = t->ops->build(2 * t->size, t->shift + 1);
+  if (mine == NULL) {
+    /* One re-read: a segment another racer published serves the caller;
+     * otherwise the failed mapping ends the process, as a single builder's
+     * would. */
+    int err = errno;
+    next = atomic_load_explicit(&t->next, memory_order_acquire);
+    if (next != NULL) {
       return next;
     }
+    route_table_map_failed((uint64_t)COLLISION_RESOLVES * 2 * t->size, err);
   }
-  route_wait_t w = {0};
-  while (next == ARTS_ROUTE_TABLE_GROWING) {
-    route_wait_tick(&w, key, "the next segment was never published", 0);
-    next = atomic_load_explicit(&t->next, memory_order_acquire);
+  ROUTE_TABLE_BEFORE_LINK(key);
+  if (atomic_compare_exchange_strong_explicit(
+          &t->next, &next, mine, memory_order_acq_rel, memory_order_acquire)) {
+    return mine;
   }
+  mine->ops->discard(mine);
   return next;
 }
 
@@ -355,6 +405,48 @@ arts_route_table_search_for_empty(arts_route_table_t *route_table,
              (void *)route_table);
 }
 
+/* Claim states of the key word, beside 0 (free), a GUID (published) and
+ * ARTS_ROUTE_KEY_RETIRING.  Bits 63-60 carry a tag no GUID has (a GUID's kind
+ * bits 63-62 are never 0), so none equals a GUID and no key search matches
+ * one.  The predicates compare the whole tag: one bit of it alone can be set
+ * in a GUID's rank field.
+ *   BUSY      a claimer owns the slot and is filling claim_key;
+ *   CLAIM(v)  claim v of the key in claim_key is live;
+ *   LOST(v)   claim v lost and never publishes.
+ * v numbers the slot's claims (claim_ver) and never recurs in a slot, so a
+ * CAS that names v acts on that claim alone. */
+#define ROUTE_KEY_BUSY ((arts_guid_t)2)
+#define ROUTE_KEY_VERSION_MASK (((uint64_t)1 << 60) - 1)
+#define ROUTE_KEY_CLAIM_TAG ((uint64_t)2 << 60)
+#define ROUTE_KEY_LOST_TAG ((uint64_t)1 << 60)
+#define ROUTE_KEY_CLAIM(v) ((arts_guid_t)(ROUTE_KEY_CLAIM_TAG | (uint64_t)(v)))
+#define ROUTE_KEY_LOST(v) ((arts_guid_t)(ROUTE_KEY_LOST_TAG | (uint64_t)(v)))
+#define ROUTE_KEY_IS_CLAIM(w)                                                  \
+  (((uint64_t)(w) & ~ROUTE_KEY_VERSION_MASK) == ROUTE_KEY_CLAIM_TAG)
+#define ROUTE_KEY_IS_LOST(w)                                                   \
+  (((uint64_t)(w) & ~ROUTE_KEY_VERSION_MASK) == ROUTE_KEY_LOST_TAG)
+#define ROUTE_KEY_VERSION(w) ((uint64_t)(w) & ROUTE_KEY_VERSION_MASK)
+
+_Static_assert((ROUTE_KEY_CLAIM_TAG >> ARTS_GUID_TYPE_SHIFT) ==
+                       ARTS_GUID_RESERVED &&
+                   (ROUTE_KEY_LOST_TAG >> ARTS_GUID_TYPE_SHIFT) ==
+                       ARTS_GUID_RESERVED,
+               "a claim word carries kind ARTS_GUID_RESERVED");
+_Static_assert(ROUTE_KEY_CLAIM_TAG != ROUTE_KEY_LOST_TAG,
+               "a live claim and a lost one carry different tags");
+_Static_assert(((uint64_t)ARTS_ROUTE_KEY_RETIRING & ~ROUTE_KEY_VERSION_MASK) ==
+                       0 &&
+                   ((uint64_t)ROUTE_KEY_BUSY & ~ROUTE_KEY_VERSION_MASK) == 0 &&
+                   ROUTE_KEY_BUSY != ARTS_ROUTE_KEY_RETIRING,
+               "RETIRING and BUSY match neither claim tag");
+
+/* An RMW of a slot's key word, on the exact word it leaves. */
+static inline bool route_key_cas(_Atomic(arts_guid_t) *word,
+                                 arts_guid_t *expect, arts_guid_t desired) {
+  return atomic_compare_exchange_strong_explicit(
+      word, expect, desired, memory_order_acq_rel, memory_order_acquire);
+}
+
 #ifndef ROUTE_TABLE_AFTER_MISS
 /* Runs between a reservation's missed search and its claim.  Empty in the
  * runtime; a whitebox test that compiles this file defines it to drive another
@@ -363,150 +455,237 @@ arts_route_table_search_for_empty(arts_route_table_t *route_table,
 #endif
 
 #ifndef ROUTE_TABLE_AFTER_CLAIM
-/* Runs between a reservation's claim and the scan that settles it.  Empty in
- * the runtime; a whitebox test defines it to act inside that window. */
-#define ROUTE_TABLE_AFTER_CLAIM(key) ((void)(key))
+/* Runs between a claim's fence and the scan that decides it. */
+#define ROUTE_TABLE_AFTER_CLAIM(key) ((void)(key), arts_sched_fuzz_point())
 #endif
 
-/* The key a reservation carries until it is known unique: the GUID's bits
- * under kind ARTS_GUID_RESERVED, so it equals no GUID (a key search never
- * matches it) and is neither 0 nor RETIRING.  GUIDs that differ only in kind
- * share a marker; mistaking another GUID's claim for one's own costs a wait
- * or a retry, never a second published slot. */
-static inline arts_guid_t route_key_claiming(arts_guid_t key) {
-  /* Unsigned: a shift into the sign bit of arts_guid_t is undefined. */
-  arts_guid_t m = (arts_guid_t)((uint64_t)key &
-                                ~(ARTS_GUID_TYPE_MASK << ARTS_GUID_TYPE_SHIFT));
-  return m > ARTS_ROUTE_KEY_RETIRING ? m : ARTS_ROUTE_KEY_RETIRING + 1;
-}
+#ifndef ROUTE_TABLE_BEFORE_HELP
+/* Runs between a scanner's read of an earlier live claim and its help. */
+#define ROUTE_TABLE_BEFORE_HELP(key) ((void)(key), arts_sched_fuzz_point())
+#endif
 
-/* Claim the first free slot of `key`'s probe window under `marker`, growing
- * the chain as search_for_empty does.  NULL, having claimed nothing, when the
- * window already publishes `key`. */
-static arts_route_item_t *route_table_claim(arts_route_table_t *route_table,
-                                            arts_guid_t key,
-                                            arts_guid_t marker) {
-  arts_route_table_t *current = route_table;
-  for (;;) {
-    uint64_t pos = get_route_table_key((uint64_t)key, current->shift);
-    for (int i = 0; i < COLLISION_RESOLVES; i++, pos++) {
-      arts_guid_t expected = (arts_guid_t)0;
-      if (atomic_compare_exchange_strong_explicit(
-              &current->data[pos].key, &expected, marker, memory_order_acq_rel,
-              memory_order_acquire)) {
-        return &current->data[pos];
-      }
-      if (expected == key) {
-        return NULL;
-      }
-    }
-    current = route_table_next_or_grow(current, key);
-  }
-}
-
-/* Decide a claim: publish `key` on `mine`, or give the claim up.  Called after
- * the claim and a full fence.  Walks the whole probe window in probe order
- * (segment, then position — one global order, since windows are aligned
- * blocks):
- *   - a slot publishing `key`: give up and use it;
- *   - a slot RETIRING: wait until it is returned or handed back — a hand-back
- *     re-publishes the key there, and the slot must not be missed;
- *   - a slot under `marker` before `mine`: give up, then wait for that claim
- *     to settle (it may publish the key) before the caller searches again;
- *   - a slot under `marker` after `mine`: wait for it to settle, and give up
- *     if it publishes the key.
- * Returns true once `key` is published on `mine`. */
-static bool route_table_claim_settle(arts_route_table_t *route_table,
-                                     arts_guid_t key, arts_guid_t marker,
-                                     arts_route_item_t *mine) {
-  bool before_mine = true;
-  for (arts_route_table_t *t = route_table; t != NULL;
-       t = route_table_next(t)) {
+/* Claim the first slot of `key`'s probe sequence whose word is 0 or LOST(u),
+ * taking it to BUSY, and grow the chain when the sequence has none.  A word
+ * is read before it is CASed, so an occupied slot costs a load, not an RMW.
+ * NULL, having claimed nothing, when the sequence already publishes `key`. */
+static arts_route_item_t *route_table_claim(arts_route_table_t *table,
+                                            arts_guid_t key) {
+  for (arts_route_table_t *t = table;; t = route_table_next_or_grow(t, key)) {
     uint64_t pos = get_route_table_key((uint64_t)key, t->shift);
     for (int i = 0; i < COLLISION_RESOLVES; i++, pos++) {
       arts_route_item_t *slot = &t->data[pos];
-      if (slot == mine) {
-        before_mine = false;
+      arts_guid_t w = atomic_load_explicit(&slot->key, memory_order_acquire);
+      while (w == 0 || ROUTE_KEY_IS_LOST(w)) {
+        if (route_key_cas(&slot->key, &w, ROUTE_KEY_BUSY)) {
+          return slot;
+        }
+      }
+      if (w == key) {
+        return NULL;
+      }
+    }
+  }
+}
+
+/* Publish `key` at `target`, whose claim is CLAIM(tv), or find where it is
+ * published.  Probe order is one global order (segment, then position, since
+ * windows are aligned blocks): the earliest live claim of a key wins and is
+ * helped by every later one, and a later live claim is killed.  A RETIRING
+ * slot is waited out, since its hand-back re-publishes the key there.
+ * Returns the slot that publishes `key`, or NULL when the claim helped last
+ * died (the caller reserves again). */
+static arts_route_item_t *route_table_assist(arts_route_table_t *table,
+                                             arts_guid_t key,
+                                             arts_route_item_t *target,
+                                             uint64_t tv) {
+restart:;
+  bool passed = false;
+  for (arts_route_table_t *t = table; t != NULL; t = route_table_next(t)) {
+    uint64_t pos = get_route_table_key((uint64_t)key, t->shift);
+    for (int i = 0; i < COLLISION_RESOLVES; i++, pos++) {
+      arts_route_item_t *slot = &t->data[pos];
+      if (slot == target) {
+        passed = true;
         continue;
       }
       route_wait_t w = {0};
       for (;;) {
         arts_guid_t k = atomic_load_explicit(&slot->key, memory_order_acquire);
         if (k == key) {
-          atomic_store_explicit(&mine->key, (arts_guid_t)0,
-                                memory_order_release);
-          return false;
+          /* Published here: the target loses, unless it was published
+           * itself after this slot's publication ended. */
+          arts_guid_t e = ROUTE_KEY_CLAIM(tv);
+          if (!route_key_cas(&target->key, &e, ROUTE_KEY_LOST(tv)) &&
+              e == key) {
+            return target;
+          }
+          return slot;
         }
         if (k == ARTS_ROUTE_KEY_RETIRING) {
-          route_wait_tick(
-              &w, key, "a retiring slot of its window never settled", k);
+          route_wait_tick(&w, key,
+                          "a retiring slot of its window never settled", k);
           continue;
         }
-        if (k == marker) {
-          if (before_mine) {
-            atomic_store_explicit(&mine->key, (arts_guid_t)0,
-                                  memory_order_release);
-            while (atomic_load_explicit(&slot->key, memory_order_acquire) ==
-                   marker) {
-              route_wait_tick(
-                  &w, key, "an earlier claim never settled", marker);
-            }
-            return false;
+        if (!ROUTE_KEY_IS_CLAIM(k) ||
+            atomic_load_explicit(&slot->claim_key, memory_order_relaxed) !=
+                key) {
+          break; /* free, BUSY, LOST, or another key's */
+        }
+        uint64_t v = ROUTE_KEY_VERSION(k);
+        if (!passed) {
+          /* An earlier live claim: the target yields to it, and this thread
+           * helps it to publication instead of waiting for it. */
+          arts_guid_t e = ROUTE_KEY_CLAIM(tv);
+          if (!route_key_cas(&target->key, &e, ROUTE_KEY_LOST(tv)) &&
+              e == key) {
+            return target;
           }
-          route_wait_tick(&w, key, "a later claim never settled", k);
-          continue;
+          ROUTE_TABLE_BEFORE_HELP(key);
+          target = slot;
+          tv = v;
+          /* The CLAIM just read against the scan of whichever reservation
+           * publishes an earlier claim of the key: this fence pairs with
+           * that reservation's own fence before its scan (the claim fence in
+           * arts_route_table_reserve_or_lookup, or this one in its helper),
+           * so of the two scans at least one sees the other's claim. */
+          atomic_thread_fence(memory_order_seq_cst);
+          goto restart;
         }
-        break;
+        if (atomic_load_explicit(&target->key, memory_order_acquire) !=
+            ROUTE_KEY_CLAIM(tv)) {
+          goto settle; /* the target is decided already */
+        }
+        /* A later live claim loses; the slot is examined again. */
+        arts_guid_t e = k;
+        (void)route_key_cas(&slot->key, &e, ROUTE_KEY_LOST(v));
       }
     }
   }
-  atomic_store_explicit(&mine->key, key, memory_order_release);
-  return true;
+settle:;
+  arts_guid_t e = ROUTE_KEY_CLAIM(tv);
+  if (route_key_cas(&target->key, &e, key) || e == key) {
+    return target;
+  }
+  return NULL;
 }
 
-/* Reserve a slot for `key` (or look it up if already present).  Strictly
- * lock-free on the common path: no per-GUID lock.  On return, *out is the one
- * slot that publishes `key`.  The cb (value) may be NULL.
+/* Reserve a slot for `key` (or look it up if already present).  No
+ * reservation waits on another; the one wait is a retire's window.  On
+ * return, *out is the one slot that publishes `key`.  The cb (value) may be
+ * NULL.
  *
- * Invariant: at most one slot publishes a key.  Slots are returned on
- * destroy, so the first free slot of a window is not stable, and two
- * reservers that each missed the key can claim two different slots.  A claim
- * is therefore made under a marker that no search matches, and published only
- * after a fence and a scan of the whole window (route_table_claim_settle).
- * Two claimers each store their marker, fence, then load the other's slot, so
- * at least one of them sees the other's marker or key.  The one that sees an
- * earlier marker, or a published key, gives its claim up; the one that sees a
- * later marker waits for it to settle and gives up if it publishes.  So of
- * two claims one is given up before either is published, and a published
- * key never meets a second published slot: an installed object sits in the
- * key's one slot for its whole life and is never moved.  Waits go only to
- * later slots of one global order, or to a retire, which never waits, so
- * there is no cycle.  A retire's hand-back (the key restored after a failed
- * identity check) is waited out by the scan, so it cannot be missed either. */
+ * Invariant: at most one slot publishes a key.  Slots are returned on destroy,
+ * so the first free slot of a probe sequence is not stable, and two reservers
+ * that each missed the key can claim two different slots.  A claim is made
+ * under a versioned CLAIM word that no search matches, and it is published
+ * only after a fence and a scan of the whole probe sequence
+ * (route_table_assist).  The earliest live claim of a key in probe order
+ * wins; a later one is killed; a reserver that finds an earlier one helps it
+ * to publication rather than wait for it.  Of two claimers at least one sees
+ * the other (the fences), and every CAS names the claim's version, so no
+ * decision acts on a claim other than the one it read.  A RETIRING slot of the
+ * sequence is waited out, since its hand-back re-publishes the key there. */
 void arts_route_table_reserve_or_lookup(arts_guid_t key,
                                         arts_route_item_t **out) {
-  arts_route_table_t *route_table = arts_get_route_table(key);
-  const arts_guid_t marker = route_key_claiming(key);
+  arts_route_table_t *table = arts_get_route_table(key);
   for (;;) {
-    arts_route_item_t *item =
-        arts_route_table_search_for_key(route_table, key);
+    arts_route_item_t *item = arts_route_table_search_for_key(table, key);
     if (item != NULL) {
       *out = item;
       return;
     }
     ROUTE_TABLE_AFTER_MISS(key);
-    arts_route_item_t *mine = route_table_claim(route_table, key, marker);
+    arts_route_item_t *mine = route_table_claim(table, key);
     if (mine == NULL) {
       continue;
     }
-    /* Orders the claim before the settle scan's loads of the window; pairs
-     * with the same fence in a concurrent arts_route_table_reserve_or_lookup
-     * of the key, so of two claims at least one scan sees the other. */
+    uint64_t v = ++mine->claim_ver;
+    assert(v <= ROUTE_KEY_VERSION_MASK);
+    atomic_store_explicit(&mine->claim_key, key, memory_order_relaxed);
+    atomic_store_explicit(&mine->key, ROUTE_KEY_CLAIM(v), memory_order_release);
+    /* This CLAIM store against the scan of every other reservation of the
+     * key: pairs with the same fence in a concurrent
+     * arts_route_table_reserve_or_lookup, or with the helper's fence in
+     * route_table_assist, each before its slot and link loads. */
     atomic_thread_fence(memory_order_seq_cst);
     ROUTE_TABLE_AFTER_CLAIM(key);
-    if (route_table_claim_settle(route_table, key, marker, mine)) {
-      *out = mine;
+    arts_route_item_t *at = route_table_assist(table, key, mine, v);
+    if (at != mine) {
+      /* Free only claim v's own LOST word.  A failure means a helper
+       * published claim v and the word now belongs to that publication's
+       * life, or a claimer took the LOST word: either way it is not this
+       * thread's.  Weaker than the key word's acq_rel RMWs: the release
+       * orders claim_ver for the slot's next claimer, and a failure writes
+       * nothing and reads nothing this thread uses. */
+      arts_guid_t e = ROUTE_KEY_LOST(v);
+      (void)atomic_compare_exchange_strong_explicit(
+          &mine->key, &e, (arts_guid_t)0, memory_order_release,
+          memory_order_relaxed);
+    }
+    if (at != NULL) {
+      *out = at;
       return;
+    }
+  }
+}
+
+#ifndef ROUTE_TABLE_AFTER_FRESH
+/* Runs between a fresh publication and the return to its create. */
+#define ROUTE_TABLE_AFTER_FRESH(key) ((void)(key), arts_sched_fuzz_point())
+#endif
+
+#ifndef NDEBUG
+/* A fresh GUID is named by nothing else, so no other slot of its probe
+ * sequence publishes it or holds a live claim of it.  Best effort: it adds
+ * no fence, so a general claim of the GUID racing the fresh CAS can go unseen
+ * by both sides. */
+static void route_table_fresh_check(arts_route_table_t *table, arts_guid_t key,
+                                    const arts_route_item_t *mine) {
+  for (arts_route_table_t *t = table; t != NULL; t = route_table_next(t)) {
+    uint64_t pos = get_route_table_key((uint64_t)key, t->shift);
+    for (int i = 0; i < COLLISION_RESOLVES; i++, pos++) {
+      arts_route_item_t *slot = &t->data[pos];
+      if (slot == mine) {
+        continue;
+      }
+      arts_guid_t w = atomic_load_explicit(&slot->key, memory_order_acquire);
+      if (w == key || (ROUTE_KEY_IS_CLAIM(w) &&
+                       atomic_load_explicit(&slot->claim_key,
+                                            memory_order_relaxed) == key)) {
+        ARTS_ERROR("GUID %lu took the fresh path but another reservation "
+                   "holds it",
+                   (unsigned long)key);
+      }
+    }
+  }
+}
+#endif
+
+void arts_route_table_reserve_fresh(arts_guid_t key, arts_route_item_t **out) {
+  arts_route_table_t *table = arts_get_route_table(key);
+  for (arts_route_table_t *t = table;; t = route_table_next_or_grow(t, key)) {
+    uint64_t pos = get_route_table_key((uint64_t)key, t->shift);
+    for (int i = 0; i < COLLISION_RESOLVES; i++, pos++) {
+      arts_route_item_t *slot = &t->data[pos];
+      arts_guid_t w = atomic_load_explicit(&slot->key, memory_order_acquire);
+      while (w == 0 || ROUTE_KEY_IS_LOST(w)) {
+        if (route_key_cas(&slot->key, &w, key)) {
+#ifndef NDEBUG
+          route_table_fresh_check(table, key, slot);
+#endif
+          ROUTE_TABLE_AFTER_FRESH(key);
+          *out = slot;
+          return;
+        }
+      }
+      if (w == key) {
+#ifndef NDEBUG
+        ARTS_ERROR("GUID %lu took the fresh path but is already published",
+                   (unsigned long)key);
+#endif
+        *out = slot;
+        return;
+      }
     }
   }
 }
@@ -594,6 +773,28 @@ bool arts_route_table_install_handle_if_absent(arts_shared_ptr_t cb,
   }
 }
 
+bool arts_route_table_install_handle_fresh(arts_shared_ptr_t cb,
+                                           arts_guid_t key) {
+  /* For a GUID that is fresh, no object of it exists to install or retire,
+   * so the slot stays the key's and its empty value word changes only by
+   * this install.  The key is still checked after the snapshot, as every
+   * install does, so a GUID that was not fresh never lands in a slot that no
+   * longer names it. */
+  arts_route_item_t *item;
+  arts_route_table_reserve_fresh(key, &item);
+  uint64_t ext = 0;
+  if (!arts_shared_slot_peek_empty(&item->value, &ext) ||
+      atomic_load_explicit(&item->key, memory_order_acquire) != key ||
+      !arts_shared_slot_install_empty(&item->value, ext, cb)) {
+    return false;
+  }
+  /* A returned slot can still carry a node a previous occupant's parker
+   * pushed; the drain's unconditional exchange sends it on by its own GUID,
+   * as install_handle_if_absent's does. */
+  arts_ooo_drain(item);
+  return true;
+}
+
 #ifndef ROUTE_TABLE_BEFORE_RETIRE_CLAIM
 /* Runs in an identity retire between its holds() peek and its key claim, and
  * after a won claim, before the value exchange.  Empty in the runtime; a
@@ -648,6 +849,10 @@ bool arts_route_table_set_destroyed_if(arts_guid_t key, arts_shared_ptr_t cb) {
     return false;
   }
   ROUTE_TABLE_BEFORE_RETIRE_CLAIM(key);
+  /* From this claim of RETIRING to the store that leaves it, reservers and
+   * other retires of the slot wait this window out (route_wait_tick).  It is
+   * tolerated only because it is a few atomics: nothing inside it may
+   * allocate, make a system call, take a lock or wait for another thread. */
   arts_guid_t expect = key;
   if (!atomic_compare_exchange_strong_explicit(
           &item->key, &expect, ARTS_ROUTE_KEY_RETIRING, memory_order_acq_rel,
@@ -864,8 +1069,7 @@ void arts_delete_route_table(arts_route_table_t *route_table) {
         arts_ooo_free_all(&route_table->data[i]);
       }
     }
-    route_table_unmap_slots(route_table->data, slots);
-    arts_free(route_table);
+    route_table->ops->discard(route_table);
     route_table = next;
   }
 }

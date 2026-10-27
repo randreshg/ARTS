@@ -251,11 +251,13 @@ static void print_fingerprint(void) {
   MEMBER(arts_route_item_t, key);
   MEMBER(arts_route_item_t, value);
   MEMBER(arts_route_item_t, ooo_list);
+  MEMBER(arts_route_item_t, claim_key);
+  MEMBER(arts_route_item_t, claim_ver);
   TYPE(route_table_t);
   MEMBER(route_table_t, data);
   MEMBER(route_table_t, size);
   MEMBER(route_table_t, next);
-  MEMBER(route_table_t, newFunc);
+  MEMBER(route_table_t, ops);
 
   TYPE(runtime_shared_t);
   MEMBER(runtime_shared_t, scheduler);

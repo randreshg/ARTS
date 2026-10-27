@@ -61,6 +61,10 @@ void *arts_calloc_aligned(size_t n, size_t s, size_t a) {
   return p;
 }
 void arts_free(void *p) { free(p); }
+#ifdef ARTS_DEBUG_INJECTION
+/* route_table.c's windows are scheduling-fuzz points in an injection tree. */
+void arts_sched_fuzz_point(void) {}
+#endif
 
 /* Per-thread xorshift; each thread seeds its own. */
 static __thread uint64_t t_rng;

@@ -166,7 +166,8 @@ bool arts_edt_create_core(struct arts_edt_s *edt, arts_guid_kind_t guid_kind,
    * arts_edt_total_size(paramc/depc) — no per-object header stores them. */
   (void)edt_space;
 
-  if (*guid == NULL_GUID) {
+  bool minted = *guid == NULL_GUID;
+  if (minted) {
     *guid = arts_guid_create_for_rank(rank, guid_kind);
   }
   edt->guid = *guid;
@@ -265,7 +266,15 @@ bool arts_edt_create_core(struct arts_edt_s *edt, arts_guid_kind_t guid_kind,
     /* The engine installs this very object; it is the create's until then. */
     struct arts_ooo_args_create_local_s a = {
         .size = ARTS_OOO_CREATE_ADOPT, .guid = *guid, .descriptor = edt};
-    arts_ooo_dispatch_or_defer_guid(*guid, OOO_EDT_CREATE, &a, sizeof(a));
+    if (minted) {
+      /* Minted above and named to no one yet. */
+      arts_route_item_t *slot;
+      arts_route_table_reserve_fresh(*guid, &slot);
+      arts_ooo_dispatch_or_defer(slot, NULL, OOO_EDT_CREATE, *guid, &a,
+                                 sizeof(a));
+    } else {
+      arts_ooo_dispatch_or_defer_guid(*guid, OOO_EDT_CREATE, &a, sizeof(a));
+    }
   }
 
   INCREMENT_NUM_EDT_CREATE_BY(1);
