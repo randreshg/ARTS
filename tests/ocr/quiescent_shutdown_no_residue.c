@@ -1,7 +1,7 @@
 /* A shutdown that leaves no work undone must leave no coherence residue.
  *
  * Every EDT that touches a data block belongs to a finish scope the shutting
- * down EDT waits on, and that EDT holds no block, so when the runtime tears
+ * down EDT is gated on, and that EDT holds no block, so when the runtime tears
  * down nothing is owed to anyone: every release has completed, every parked
  * acquirer has been granted, every hold has been released.  The runtime's
  * teardown walk (a debug build's QUIESCENCE-DEBUG markers) must then find
@@ -69,28 +69,32 @@ static void check(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_printf("PASS: quiescent_shutdown_no_residue counter=%u\n", got);
 }
 
-void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
-              arts_edt_dep_t depv[]) {
+static void finale(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                   arts_edt_dep_t depv[]) {
   (void)paramc;
   (void)paramv;
   (void)depc;
   (void)depv;
+  arts_shutdown();
+}
+
+/* paramv: the round, the two counters. */
+enum { P_ROUND, P_CTR0, P_CTR1, P_COUNT };
+
+static void round_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                      arts_edt_dep_t depv[]);
+
+/* One round of writers in a scope of its own, the next round gated on it;
+ * after the last, the touches and the checks, and the shutdown gated on
+ * those. */
+static void round_step(const uint64_t *paramv) {
   unsigned int nranks = arts_get_total_ranks();
   unsigned int last = nranks - 1u;
+  const arts_guid_t ctr[2] = {(arts_guid_t)paramv[P_CTR0],
+                              (arts_guid_t)paramv[P_CTR1]};
+  uint64_t r = paramv[P_ROUND];
 
-  /* One counter homed on rank 0 and one on the last rank, so a home's own
-   * write turns and a non-zero home's hand-overs both occur. */
-  arts_guid_t ctr[2];
-  for (unsigned int k = 0; k < 2u; k++) {
-    void *p = NULL;
-    ctr[k] = arts_db_create(&p, sizeof(unsigned int), ARTS_DB,
-                            ARTS_DB_PROP_NONE,
-                            &(arts_db_hint_t){.rank = k ? last : 0u});
-    atomic_init((_Atomic(unsigned int) *)p, 0u);
-    arts_db_release(ctr[k], DB_MODE_RW);
-  }
-
-  for (unsigned int r = 0; r < ROUNDS; r++) {
+  if (r < ROUNDS) {
     arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
     for (unsigned int h = 0; h < BURST; h++) {
       /* Writers go out in pairs, one per counter, so every rank writes
@@ -100,7 +104,11 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
           &(arts_edt_hint_t){.rank = (h >> 1) % nranks, .finish_event = fe});
       arts_add_dependence(ctr[h & 1u], e, 0, DB_MODE_RW);
     }
-    arts_event_wait(fe);
+    uint64_t next[P_COUNT] = {r + 1u, paramv[P_CTR0], paramv[P_CTR1]};
+    arts_guid_t n = arts_edt_create(round_edt, P_COUNT, next, 1,
+                                    &(arts_edt_hint_t){.rank = 0u});
+    arts_add_dependence(fe, n, 0, DB_MODE_NULL);
+    return;
   }
 
   arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
@@ -121,8 +129,40 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
         &(arts_edt_hint_t){.rank = last, .finish_event = fe});
     arts_add_dependence(ctr[k], c, 0, DB_MODE_RO);
   }
-  arts_event_wait(fe);
-  arts_shutdown();
+  arts_guid_t f =
+      arts_edt_create(finale, 0, NULL, 1, &(arts_edt_hint_t){.rank = 0u});
+  arts_add_dependence(fe, f, 0, DB_MODE_NULL);
+}
+
+static void round_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                      arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)depc;
+  (void)depv;
+  round_step(paramv);
+}
+
+void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+              arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)paramv;
+  (void)depc;
+  (void)depv;
+  unsigned int last = arts_get_total_ranks() - 1u;
+
+  /* One counter homed on rank 0 and one on the last rank, so a home's own
+   * write turns and a non-zero home's hand-overs both occur. */
+  uint64_t pv[P_COUNT] = {0u, NULL_GUID, NULL_GUID};
+  for (unsigned int k = 0; k < 2u; k++) {
+    void *p = NULL;
+    arts_guid_t ctr =
+        arts_db_create(&p, sizeof(unsigned int), ARTS_DB, ARTS_DB_PROP_NONE,
+                       &(arts_db_hint_t){.rank = k ? last : 0u});
+    atomic_init((_Atomic(unsigned int) *)p, 0u);
+    arts_db_release(ctr, DB_MODE_RW);
+    pv[P_CTR0 + k] = (uint64_t)ctr;
+  }
+  round_step(pv);
 }
 
 int main(int argc, char **argv) {

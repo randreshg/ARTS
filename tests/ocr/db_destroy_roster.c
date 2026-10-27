@@ -21,6 +21,10 @@
  * The same is repeated with two zero-size labels, whose caches the home's
  * version bookkeeping never records: one read by those ranks, one written by
  * them (a write turn with no buffer publishes nothing).
+ *
+ * The runs are strictly sequential: each runs in a finish scope of its own,
+ * and the next step, which issues any destroy due before its own run, is a
+ * continuation gated on that scope.
  */
 
 #include <stdint.h>
@@ -81,8 +85,24 @@ static void reader(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
 }
 
+/* {size, how the other ranks use it}: a written block, a zero-size block
+ * read, a zero-size block written. */
+static const struct {
+  uint64_t size;
+  arts_edt_t use;
+} cases[3] = {{sizeof(uint32_t), writer}, {0u, reader}, {0u, writer}};
+
+/* paramv of a step: the case, the step within it, the case's label. */
+enum { P_CASE, P_STEP, P_LABEL, P_COUNT };
+
+static void step_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                     arts_edt_dep_t depv[]);
+
+/* Runs fn on rank in a finish scope of its own, and the step after `pv`
+ * gated on that scope. */
 static void run_on(arts_edt_t fn, unsigned int rank, uint32_t paramc,
-                   const uint64_t *paramv, arts_guid_t dep) {
+                   const uint64_t *paramv, arts_guid_t dep,
+                   const uint64_t *pv) {
   arts_guid_t done = arts_event_create(&ARTS_EVENT_HINT_FINISH);
   arts_guid_t e = arts_edt_create(
       fn, paramc, paramv, dep != NULL_GUID ? 1u : 0u,
@@ -90,7 +110,79 @@ static void run_on(arts_edt_t fn, unsigned int rank, uint32_t paramc,
   if (dep != NULL_GUID) {
     arts_add_dependence(dep, e, 0, fn == writer ? DB_MODE_RW : DB_MODE_RO);
   }
-  (void)arts_event_wait(done);
+  uint64_t next[P_COUNT] = {pv[P_CASE], pv[P_STEP] + 1u, pv[P_LABEL]};
+  arts_guid_t n = arts_edt_create(step_edt, P_COUNT, next, 1,
+                                  &(arts_edt_hint_t){.rank = 0u});
+  arts_add_dependence(done, n, 0, DB_MODE_NULL);
+}
+
+/* A case is, with W writer ranks and R = 1 for the sized block (0 for the
+ * others): steps 0 .. W-1 each writer rank's use, step W the home's read
+ * (sized block only), then for each writer rank two steps, its create of the
+ * next generation and the home's read of it.  The label is destroyed before
+ * step W+R and before each create after it, and once more after the last
+ * read; step 0 creates the case's first generation. */
+static void step(const uint64_t *paramv) {
+  unsigned int writers = arts_get_total_ranks() >= 3u ? 2u : 1u;
+  uint64_t pv[P_COUNT] = {paramv[P_CASE], paramv[P_STEP], paramv[P_LABEL]};
+  for (;;) {
+    if (pv[P_CASE] == 3u) {
+      if (arts_test_status() == 0) {
+        arts_printf("PASS: db_destroy_roster %u writer ranks\n", writers);
+      }
+      arts_shutdown();
+      return;
+    }
+    uint64_t first = writers + (cases[pv[P_CASE]].size != 0u ? 1u : 0u);
+    uint64_t k = pv[P_STEP];
+    if (k >= first && (k - first) % 2u == 0u) {
+      arts_db_destroy((arts_guid_t)pv[P_LABEL]);
+    }
+    if (k < first + 2u * writers) {
+      break;
+    }
+    pv[P_CASE] += 1u;
+    pv[P_STEP] = 0u;
+  }
+  uint64_t size = cases[pv[P_CASE]].size;
+  uint64_t k = pv[P_STEP];
+  if (k == 0u) {
+    arts_guid_t label = arts_guid_reserve(ARTS_GUID_DB, 0u);
+    uint32_t *p = (uint32_t *)arts_db_create_with_guid(
+        label, size, ARTS_DB, ARTS_DB_PROP_NONE, NULL);
+    if (size != 0u) {
+      *p = VALUE(0);
+    }
+    arts_db_release(label, DB_MODE_RW);
+    pv[P_LABEL] = (uint64_t)label;
+  }
+  arts_guid_t label = (arts_guid_t)pv[P_LABEL];
+  uint64_t first = writers + (size != 0u ? 1u : 0u);
+  if (k < writers) {
+    uint64_t upv[2] = {k + 1u, size};
+    run_on(cases[pv[P_CASE]].use, (unsigned int)(k + 1u), 2, upv, label, pv);
+  } else if (k < first) {
+    uint64_t rpv[2] = {writers, size};
+    run_on(reader, 0u, 2, rpv, label, pv);
+  } else {
+    uint64_t w = (k - first) / 2u + 1u;
+    uint64_t gen = 10u + w;
+    if ((k - first) % 2u == 0u) {
+      uint64_t cpv[3] = {(uint64_t)label, gen, size};
+      run_on(creator, (unsigned int)w, 3, cpv, NULL_GUID, pv);
+    } else {
+      uint64_t gpv[2] = {gen, size};
+      run_on(reader, 0u, 2, gpv, label, pv);
+    }
+  }
+}
+
+static void step_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                     arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)depc;
+  (void)depv;
+  step(paramv);
 }
 
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
@@ -99,51 +191,12 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)paramv;
   (void)depc;
   (void)depv;
-  unsigned int nranks = arts_get_total_ranks();
-  if (nranks < 2u) {
+  if (arts_get_total_ranks() < 2u) {
     arts_printf("SKIP db_destroy_roster: needs >= 2 ranks\n");
     arts_shutdown();
     return;
   }
-  unsigned int writers = nranks >= 3u ? 2u : 1u;
-  /* {size, how the other ranks use it}: a written block, a zero-size block
-   * read, a zero-size block written. */
-  const struct {
-    uint64_t size;
-    arts_edt_t use;
-  } cases[3] = {{sizeof(uint32_t), writer}, {0u, reader}, {0u, writer}};
-  for (unsigned int c = 0; c < 3u; c++) {
-    uint64_t size = cases[c].size;
-    arts_guid_t label = arts_guid_reserve(ARTS_GUID_DB, 0u);
-    uint32_t *p = (uint32_t *)arts_db_create_with_guid(
-        label, size, ARTS_DB, ARTS_DB_PROP_NONE, NULL);
-    if (size != 0u) {
-      *p = VALUE(0);
-    }
-    arts_db_release(label, DB_MODE_RW);
-    for (unsigned int w = 1; w <= writers; w++) {
-      uint64_t upv[2] = {w, size};
-      run_on(cases[c].use, w, 2, upv, label);
-    }
-    if (size != 0u) {
-      uint64_t rpv[2] = {writers, size};
-      run_on(reader, 0u, 2, rpv, label);
-    }
-    arts_db_destroy(label);
-
-    for (unsigned int w = 1; w <= writers; w++) {
-      uint64_t gen = 10u + w;
-      uint64_t cpv[3] = {(uint64_t)label, gen, size};
-      run_on(creator, w, 3, cpv, NULL_GUID);
-      uint64_t gpv[2] = {gen, size};
-      run_on(reader, 0u, 2, gpv, label);
-      arts_db_destroy(label);
-    }
-  }
-  if (arts_test_status() == 0) {
-    arts_printf("PASS: db_destroy_roster %u writer ranks\n", writers);
-  }
-  arts_shutdown();
+  step((const uint64_t[P_COUNT]){0u, 0u, NULL_GUID});
 }
 
 int main(int argc, char **argv) {

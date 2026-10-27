@@ -158,27 +158,46 @@ static void write_once(arts_guid_t db, unsigned int rank, arts_guid_t scope) {
   arts_add_dependence(db, e, 0, DB_MODE_RW);
 }
 
-void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
-              arts_edt_dep_t depv[]) {
+/* The shutdown EDT runs on the home; by the time it is scheduled the
+ * burst's releases are in flight. */
+static void start_shutdown(void) {
+  arts_edt_create(shutdown_edt, 0, NULL, 0, &(arts_edt_hint_t){.rank = 0});
+}
+
+/* Gated on the pre-burst writes' scope.  paramv = the BURST blocks.  The
+ * burst: one more write per block, off its home, interleaved with the away
+ * creators, so both kinds of release are in flight when the shutdown comes.
+ * No finish scope: shutdown_edt is its own. */
+static void burst_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                      arts_edt_dep_t depv[]) {
   (void)paramc;
   (void)depc;
   (void)depv;
-
-  int argc = (int)paramv[0];
-  char **argv = (char **)paramv[1];
-  bool contended = argc > 1 && strcmp(argv[1], "contended") == 0;
-
-  arts_printf("=== await_publish_ack_shutdown%s ===\n",
-              contended ? " contended" : "");
-
   unsigned int nranks = arts_get_total_ranks();
-  arts_guid_t db = create_counter();
+  for (unsigned int h = 0; h < BURST; h++) {
+    write_once((arts_guid_t)paramv[h], away_rank(h, nranks), NULL_GUID);
+    arts_edt_create(away_creator_edt, 0, NULL, 0,
+                    &(arts_edt_hint_t){.rank = away_rank(h, nranks)});
+  }
+  start_shutdown();
+}
 
-  /* Warmup: completed write hand-offs around the ranks, one at a time.  A
-   * release off the home that waits for the home's answer gets it here,
-   * before the shutdown, and where an acknowledgement leaves a landing every
-   * rank keeps the one its last acknowledgement left. */
-  for (unsigned int it = 0; it < WARMUP; it++) {
+/* paramv of a warmup round: the round, the warmup's block, the form. */
+enum { P_ROUND, P_DB, P_CONTENDED, P_COUNT };
+
+static void warmup_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                       arts_edt_dep_t depv[]);
+
+/* Warmup: completed write hand-offs around the ranks, one round at a time,
+ * each in a finish scope of its own and the next round gated on it.  A
+ * release off the home that waits for the home's answer gets it here, before
+ * the shutdown, and where an acknowledgement leaves a landing every rank
+ * keeps the one its last acknowledgement left.  After the last round, the
+ * burst. */
+static void warmup(const uint64_t *paramv) {
+  unsigned int nranks = arts_get_total_ranks();
+  arts_guid_t db = (arts_guid_t)paramv[P_DB];
+  if (paramv[P_ROUND] < WARMUP) {
     arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
     arts_guid_t prev = NULL_GUID;
     for (unsigned int h = 0; h < 2u * nranks; h++) {
@@ -193,39 +212,60 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       }
       prev = oe;
     }
-    arts_event_wait(fe);
+    uint64_t next[P_COUNT] = {paramv[P_ROUND] + 1u, paramv[P_DB],
+                              paramv[P_CONTENDED]};
+    arts_guid_t n = arts_edt_create(warmup_edt, P_COUNT, next, 1,
+                                    &(arts_edt_hint_t){.rank = 0});
+    arts_add_dependence(fe, n, 0, DB_MODE_NULL);
+    return;
   }
 
-  if (contended) {
+  if (paramv[P_CONTENDED]) {
     /* Every writer of the warmup's block at once, several per rank.  No
      * finish scope: shutdown_edt is its own. */
     for (unsigned int h = 0; h < BURST; h++) {
       write_once(db, h % nranks, NULL_GUID);
     }
-  } else {
-    /* Each burst block is written once, ahead of the burst, on the rank that
-     * writes it again in the burst. */
-    arts_guid_t blocks[BURST];
-    arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
-    for (unsigned int h = 0; h < BURST; h++) {
-      blocks[h] = create_counter();
-      write_once(blocks[h], away_rank(h, nranks), fe);
-    }
-    arts_event_wait(fe);
-
-    /* The burst: one more write per block, off its home, interleaved with
-     * the away creators, so both kinds of release are in flight when the
-     * shutdown comes.  No finish scope: shutdown_edt is its own. */
-    for (unsigned int h = 0; h < BURST; h++) {
-      write_once(blocks[h], away_rank(h, nranks), NULL_GUID);
-      arts_edt_create(away_creator_edt, 0, NULL, 0,
-                      &(arts_edt_hint_t){.rank = away_rank(h, nranks)});
-    }
+    start_shutdown();
+    return;
   }
+  /* Each burst block is written once, ahead of the burst, on the rank that
+   * writes it again in the burst. */
+  uint64_t blocks[BURST];
+  arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  for (unsigned int h = 0; h < BURST; h++) {
+    arts_guid_t b = create_counter();
+    blocks[h] = (uint64_t)b;
+    write_once(b, away_rank(h, nranks), fe);
+  }
+  arts_guid_t n = arts_edt_create(burst_edt, BURST, blocks, 1,
+                                  &(arts_edt_hint_t){.rank = 0});
+  arts_add_dependence(fe, n, 0, DB_MODE_NULL);
+}
 
-  /* The shutdown EDT runs on the home; by the time it is scheduled the
-   * burst's releases are in flight. */
-  arts_edt_create(shutdown_edt, 0, NULL, 0, &(arts_edt_hint_t){.rank = 0});
+static void warmup_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                       arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)depc;
+  (void)depv;
+  warmup(paramv);
+}
+
+void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+              arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)depc;
+  (void)depv;
+
+  int argc = (int)paramv[0];
+  char **argv = (char **)paramv[1];
+  bool contended = argc > 1 && strcmp(argv[1], "contended") == 0;
+
+  arts_printf("=== await_publish_ack_shutdown%s ===\n",
+              contended ? " contended" : "");
+
+  uint64_t pv[P_COUNT] = {0u, (uint64_t)create_counter(), contended ? 1u : 0u};
+  warmup(pv);
 }
 
 int main(int argc, char **argv) {

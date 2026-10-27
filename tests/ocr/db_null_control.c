@@ -2,7 +2,9 @@
  * value: the slot keeps the GUID and mode and is never acquired, whether the
  * block is live or already destroyed when the EDT becomes ready, and on every
  * rank.  Beside a real dependence on the same block, releasing the block
- * releases the real slot and leaves the opaque one as it was. */
+ * releases the real slot and leaves the opaque one as it was.  Each case runs
+ * in a finish scope of its own, and the next case starts in a continuation
+ * gated on it. */
 
 #include "arts.h"
 
@@ -46,48 +48,79 @@ static arts_guid_t make_block(uint64_t value) {
   return db;
 }
 
-void main_edt(uint32_t pc, const uint64_t *pv, uint32_t dc,
-              arts_edt_dep_t dv[]) {
-  (void)pc;
-  (void)pv;
-  (void)dc;
-  (void)dv;
-  for (unsigned int retired = 0; retired < 2; ++retired) {
-    for (unsigned int rank = 0; rank < arts_get_total_ranks(); ++rank) {
-      arts_guid_t data = make_block(42);
-      arts_guid_t finish = arts_event_create(&ARTS_EVENT_HINT_FINISH);
-      arts_guid_t source = arts_event_create(&ARTS_EVENT_HINT_DEFAULTS);
-      uint64_t args[] = {(uint64_t)data};
-      arts_guid_t sink = arts_edt_create(
-          check_control, 1, args, 2,
-          &(arts_edt_hint_t){.rank = rank, .finish_event = finish});
-      arts_add_dependence(source, sink, 0, DB_MODE_NULL);
-      arts_event_satisfy(source, data);
-      if (retired)
-        arts_db_destroy(data);
-      /* The sink becomes ready only after the optional retirement. */
-      arts_add_dependence(NULL_GUID, sink, 1, DB_MODE_NULL);
-      arts_event_wait(finish);
-      arts_event_destroy(source);
-      if (!retired)
-        arts_db_destroy(data);
-    }
-  }
-  for (unsigned int rank = 0; rank < arts_get_total_ranks(); ++rank) {
+/* A case's number, and what the previous case leaves to retire once its scope
+ * drained: its source event and its block (NULL_GUID for none). */
+enum { P_CASE, P_SOURCE, P_DATA, P_COUNT };
+
+static void step_edt(uint32_t pc, const uint64_t *pv, uint32_t dc,
+                     arts_edt_dep_t dv[]);
+
+/* Cases 0 .. 2n-1 are the control lane, live (retired 0) then retired, one
+ * per rank; cases 2n .. 3n-1 the release lane, one per rank. */
+static void step(const uint64_t *pv) {
+  if ((arts_guid_t)pv[P_SOURCE] != NULL_GUID)
+    arts_event_destroy((arts_guid_t)pv[P_SOURCE]);
+  if ((arts_guid_t)pv[P_DATA] != NULL_GUID)
+    arts_db_destroy((arts_guid_t)pv[P_DATA]);
+  unsigned int ranks = arts_get_total_ranks();
+  uint64_t c = pv[P_CASE];
+  uint64_t next[P_COUNT] = {c + 1u, NULL_GUID, NULL_GUID};
+  arts_guid_t finish;
+  if (c < 2u * ranks) {
+    unsigned int retired = (unsigned int)(c / ranks);
+    unsigned int rank = (unsigned int)(c % ranks);
+    arts_guid_t data = make_block(42);
+    finish = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+    arts_guid_t source = arts_event_create(&ARTS_EVENT_HINT_DEFAULTS);
+    uint64_t args[] = {(uint64_t)data};
+    arts_guid_t sink = arts_edt_create(
+        check_control, 1, args, 2,
+        &(arts_edt_hint_t){.rank = rank, .finish_event = finish});
+    arts_add_dependence(source, sink, 0, DB_MODE_NULL);
+    arts_event_satisfy(source, data);
+    if (retired)
+      arts_db_destroy(data);
+    /* The sink becomes ready only after the optional retirement. */
+    arts_add_dependence(NULL_GUID, sink, 1, DB_MODE_NULL);
+    next[P_SOURCE] = (uint64_t)source;
+    next[P_DATA] = retired ? NULL_GUID : (uint64_t)data;
+  } else if (c < 3u * ranks) {
+    unsigned int rank = (unsigned int)(c - 2u * ranks);
     arts_guid_t db = make_block(0);
-    arts_guid_t finish = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+    finish = arts_event_create(&ARTS_EVENT_HINT_FINISH);
     arts_edt_hint_t hint = ARTS_EDT_HINT_DEFAULTS;
     hint.rank = rank;
     hint.finish_event = finish;
     arts_guid_t sink = arts_edt_create(check_release, 0, NULL, 2, &hint);
     arts_edt_satisfy_slot(sink, 0, db, DB_MODE_NULL);
     arts_add_dependence(db, sink, 1, DB_MODE_RW);
-    arts_event_wait(finish);
-    arts_db_destroy(db);
+    next[P_DATA] = (uint64_t)db;
+  } else {
+    arts_printf("PASS: live and retired NULL control dependencies, and a "
+                "release that leaves an equal opaque value alone\n");
+    arts_shutdown();
+    return;
   }
-  arts_printf("PASS: live and retired NULL control dependencies, and a "
-              "release that leaves an equal opaque value alone\n");
-  arts_shutdown();
+  arts_guid_t then = arts_edt_create(step_edt, P_COUNT, next, 1,
+                                     &(arts_edt_hint_t){.rank = 0u});
+  arts_add_dependence(finish, then, 0, DB_MODE_NULL);
+}
+
+static void step_edt(uint32_t pc, const uint64_t *pv, uint32_t dc,
+                     arts_edt_dep_t dv[]) {
+  (void)pc;
+  (void)dc;
+  (void)dv;
+  step(pv);
+}
+
+void main_edt(uint32_t pc, const uint64_t *pv, uint32_t dc,
+              arts_edt_dep_t dv[]) {
+  (void)pc;
+  (void)pv;
+  (void)dc;
+  (void)dv;
+  step((const uint64_t[P_COUNT]){0u, NULL_GUID, NULL_GUID});
 }
 
 int main(int argc, char **argv) { return arts_rt(argc, argv) != 0; }

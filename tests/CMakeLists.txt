@@ -2337,7 +2337,7 @@ if(ARTS_TEST_REFERENCE_TREE)
 endif()
 
 # quiescent_shutdown_no_residue: a shutdown that leaves no work undone -- every
-# EDT touching a block inside a finish scope the shutting-down EDT waits on,
+# EDT touching a block inside a finish scope the shutting-down EDT is gated on,
 # and that EDT holding nothing -- must leave the teardown walk silent, so any
 # QUIESCENCE-DEBUG marker fails it.  The shapes are the ones whose interrupted
 # forms leave residue: on one rank, home-local write turns and write holders

@@ -1,8 +1,9 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
  * ctx_owned_finish_cleanup — a finish event's creator token is dropped exactly
- * once: by arts_event_wait when the creator waits on the event (consumed), or
- * by the creator EDT's epilogue when it returns without waiting (unconsumed).
+ * once: by arts_event_release_creator_token when the creator hands it back
+ * (consumed), or by the creator EDT's epilogue when it returns holding it
+ * (unconsumed).
  *
  * The token list is private to the runtime, so the contract is checked through
  * what it controls: every finish scope fires exactly once, and only after its
@@ -11,11 +12,11 @@
  * unfinished) or twice (a successor count above one).
  *
  * Two shapes, one checker:
- *  (1) One orchestrator creates K scopes; it waits on the even ones and
- *      returns with the odd ones unconsumed, so a wait must clear only the
+ *  (1) One orchestrator creates K scopes; it hands back the even ones' tokens
+ *      and returns holding the odd ones, so a hand-back must clear only the
  *      token it names and leave the rest to the epilogue.
- *  (2) WAVES producer EDTs each create SCOPES scopes and return without
- *      waiting, so every token of every wave is dropped by an epilogue; the
+ *  (2) WAVES producer EDTs each create SCOPES scopes and return holding
+ *      every token, so every token of every wave is dropped by an epilogue; the
  *      producers run back to back on the workers' reused per-thread lists,
  *      each of which must be left empty.
  *
@@ -30,7 +31,7 @@
 
 #include "../test_failure_status.h"
 
-#define K 6 /* orchestrator scopes: even ones waited on, odd ones not */
+#define K 6 /* orchestrator scopes: even ones handed back, odd ones not */
 #define WAVES 4
 #define SCOPES 5
 #define TOTAL (K + WAVES * SCOPES)
@@ -118,15 +119,16 @@ void checker(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     }
   }
   if (arts_test_status() == 0) {
-    arts_printf("PASS ctx_owned_finish_cleanup: %d scopes (%d waited on, %d "
+    arts_printf("PASS ctx_owned_finish_cleanup: %d scopes (%d handed back, %d "
                 "dropped by an epilogue) each fired exactly once\n",
                 TOTAL, (K + 1) / 2, TOTAL - (K + 1) / 2);
   }
   arts_shutdown();
 }
 
-/* The orchestrator holds no grant on the counter block: it waits on scopes
- * whose leaves need the block for writing. */
+/* Each scope's one member and its successor are wired inside make_scope, so
+ * an even scope's token is handed back only after its whole membership is
+ * joined. */
 void orchestrator(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                   arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -137,7 +139,7 @@ void orchestrator(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   for (int i = 0; i < K; i++) {
     arts_guid_t fe = make_scope(i, cdb, outer);
     if ((i % 2) == 0) {
-      arts_event_wait(fe);
+      arts_event_release_creator_token(fe);
     }
   }
 }

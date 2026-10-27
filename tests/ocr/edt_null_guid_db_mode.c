@@ -56,6 +56,21 @@ static void body(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
 }
 
+/* Runs once the body's scope drained.  paramv: the two events, the block. */
+static void finale(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                   arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)depc;
+  (void)depv;
+  arts_event_destroy((arts_guid_t)paramv[0]);
+  arts_event_destroy((arts_guid_t)paramv[1]);
+  arts_db_destroy((arts_guid_t)paramv[2]);
+  if (arts_test_status() == 0) {
+    arts_printf("PASS: edt_null_guid_db_mode\n");
+  }
+  arts_shutdown();
+}
+
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
               arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -81,14 +96,10 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_add_dependence(block, e, 3, DB_MODE_RW);
   arts_event_satisfy(ev_rw, NULL_GUID);
   arts_event_satisfy(ev_ro, NULL_GUID);
-  arts_event_wait(scope);
-  arts_event_destroy(ev_rw);
-  arts_event_destroy(ev_ro);
-  arts_db_destroy(block);
-  if (arts_test_status() == 0) {
-    arts_printf("PASS: edt_null_guid_db_mode\n");
-  }
-  arts_shutdown();
+  uint64_t fv[3] = {(uint64_t)ev_rw, (uint64_t)ev_ro, (uint64_t)block};
+  arts_guid_t f =
+      arts_edt_create(finale, 3, fv, 1, &(arts_edt_hint_t){.rank = 0u});
+  arts_add_dependence(scope, f, 0, DB_MODE_NULL);
 }
 
 int main(int argc, char **argv) {

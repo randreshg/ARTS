@@ -120,6 +120,46 @@ void reader(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_printf("PASS: db_destroy_implicit_release\n");
 }
 
+/// Creates the next phase, gated on the previous phase's finish scope.  Every
+/// phase's paramv[0] is the label.
+static void then(arts_edt_t next, const uint64_t *param, arts_guid_t scope) {
+  arts_guid_t n =
+      arts_edt_create(next, 1, param, 1, &(arts_edt_hint_t){.rank = 0});
+  arts_add_dependence(scope, n, 0, DB_MODE_NULL);
+}
+
+static void finale(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                   arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)depc;
+  (void)depv;
+  arts_db_destroy((arts_guid_t)paramv[0]);
+  arts_shutdown();
+}
+
+static void after_recreate(uint32_t paramc, const uint64_t *paramv,
+                           uint32_t depc, arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)depc;
+  (void)depv;
+  arts_guid_t e_a = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_guid_t r = arts_edt_create(
+      reader, 0, NULL, 1, &(arts_edt_hint_t){.rank = 0, .finish_event = e_a});
+  arts_add_dependence((arts_guid_t)paramv[0], r, 0, DB_MODE_RO);
+  then(finale, paramv, e_a);
+}
+
+static void after_destroy(uint32_t paramc, const uint64_t *paramv,
+                          uint32_t depc, arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)depc;
+  (void)depv;
+  arts_guid_t e_r = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_edt_create(recreator, 1, paramv, 0,
+                  &(arts_edt_hint_t){.rank = 0, .finish_event = e_r});
+  then(after_recreate, paramv, e_r);
+}
+
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
               arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -135,21 +175,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_guid_t e_c = arts_event_create(&ARTS_EVENT_HINT_FINISH);
   arts_edt_create(creator_destroyer, 1, &param, 0,
                   &(arts_edt_hint_t){.rank = 0, .finish_event = e_c});
-  arts_event_wait(e_c);
-
-  arts_guid_t e_r = arts_event_create(&ARTS_EVENT_HINT_FINISH);
-  arts_edt_create(recreator, 1, &param, 0,
-                  &(arts_edt_hint_t){.rank = 0, .finish_event = e_r});
-  arts_event_wait(e_r);
-
-  arts_guid_t e_a = arts_event_create(&ARTS_EVENT_HINT_FINISH);
-  arts_guid_t r = arts_edt_create(
-      reader, 0, NULL, 1, &(arts_edt_hint_t){.rank = 0, .finish_event = e_a});
-  arts_add_dependence(db, r, 0, DB_MODE_RO);
-  arts_event_wait(e_a);
-
-  arts_db_destroy(db);
-  arts_shutdown();
+  then(after_destroy, &param, e_c);
 }
 
 int main(int argc, char **argv) {

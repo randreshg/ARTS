@@ -2091,16 +2091,3 @@ void arts_release_created_dbs(void) {
     release_one_created(h);
   }
 }
-
-/*
- * arts_wait_release_dbs / arts_wait_reacquire_dbs -- Pre-/post-yield
- * hooks invoked around arts_event_wait.
- *
- * No-op under the OCR model: multi-EDT same-rank concurrent acquire is
- * allowed (writer_count CAS-loop), so the creator's hold persists across the
- * yield and is dropped exactly once at EDT epilogue via
- * arts_release_created_dbs.  The GPU kinds have no DB-level coherence to
- * drop either.  Kept as stable hooks for future per-EDT release semantics.
- */
-void arts_wait_release_dbs(void) {}
-void arts_wait_reacquire_dbs(void) {}

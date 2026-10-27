@@ -299,7 +299,6 @@ bool arts_default_scheduler_loop() {
 
   if (edt_found) {
     arts_run_edt(edt_found);
-    // arts_wake_up_context();
     return true;
   }
   arts_runtime_idle_pause();

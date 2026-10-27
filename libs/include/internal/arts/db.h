@@ -282,11 +282,6 @@ bool arts_db_create_install_local(arts_shared_ptr_t cb, bool fresh);
  * on a coherent DB. */
 void *arts_db_user_ptr(struct arts_db_s *db);
 
-/* Internal pre/post-yield helpers used when an EDT yields (e.g.
- * arts_event_wait). Not part of the public ARTS API. */
-void arts_wait_release_dbs(void);
-void arts_wait_reacquire_dbs(void);
-
 #ifdef __cplusplus
 }
 #endif

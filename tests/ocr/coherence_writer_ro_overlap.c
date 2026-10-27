@@ -49,7 +49,8 @@
 /// one, or nothing at all.  That is the gap this test closes.
 ///
 /// SHAPE.  N_DBS DBs, homed round-robin.  The run is a sequence of ROUNDS,
-/// each a finish scope, so round r begins only after every round-(r-1) EDT has
+/// each a finish scope with the next round's EDTs created by a continuation
+/// gated on it, so round r begins only after every round-(r-1) EDT has
 /// completed and released.  Inside a round, per DB:
 ///   * WRITERS_PER_DB RW EDTs are issued with no ordering among themselves, in
 ///     runs of consecutive EDTs pinned to the same rank, each run on the NEXT
@@ -250,6 +251,77 @@ static void reader_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   verify_view(b, round, db_idx, "reader");
 }
 
+static void round_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                      arts_edt_dep_t depv[]);
+
+/* paramv of a round: the round, then the N_DBS blocks. */
+static void run_round(const uint64_t *paramv) {
+  unsigned int nranks = arts_get_total_ranks();
+  unsigned r = (unsigned)paramv[0];
+  arts_guid_t dbs[N_DBS];
+  for (int d = 0; d < N_DBS; d++) {
+    dbs[d] = (arts_guid_t)paramv[1 + d];
+  }
+  if (r > (unsigned)N_ROUNDS) {
+    arts_printf("PASS: rw-write window/ro-overlap rounds=%d dbs=%d reads=%d "
+                "writes=%d ranks=%u\n",
+                N_ROUNDS, N_DBS, N_ROUNDS * N_DBS * READERS_PER_DB,
+                N_ROUNDS * N_DBS * WRITERS_PER_DB, nranks);
+    arts_shutdown();
+    return;
+  }
+  arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+
+  for (int d = 0; d < N_DBS; d++) {
+    uint64_t pv[2] = {(uint64_t)r, (uint64_t)d};
+    int w = 0;
+    int k = 0;
+    /* Interleave the two families so read requests keep arriving while the
+     * write windows are open, instead of queueing behind them. */
+    while (w < WRITERS_PER_DB || k < READERS_PER_DB) {
+      if (w < WRITERS_PER_DB) {
+        unsigned int wr =
+            (unsigned int)((unsigned)d + r + (unsigned)(w / WRITER_RUN(d))) %
+            nranks;
+        arts_guid_t we =
+            arts_edt_create(writer_edt, 2, pv, 1,
+                            &(arts_edt_hint_t){.rank = wr, .finish_event = fe});
+        arts_add_dependence(dbs[d], we, 0, DB_MODE_RW);
+        w++;
+      }
+      if (k < READERS_PER_DB) {
+        /* Two-rank reader window that rotates every other round: a rank
+         * inside it in consecutive rounds re-reads a copy it already had,
+         * a rank the window has not reached yet acquires this DB cold. */
+        unsigned int rr =
+            (unsigned int)((unsigned)d + (r / 2u) + (unsigned)(k % 2)) % nranks;
+        arts_guid_t re =
+            arts_edt_create(reader_edt, 2, pv, 1,
+                            &(arts_edt_hint_t){.rank = rr, .finish_event = fe});
+        arts_add_dependence(dbs[d], re, 0, DB_MODE_RO);
+        k++;
+      }
+    }
+  }
+
+  uint64_t next[1 + N_DBS];
+  next[0] = (uint64_t)r + 1u;
+  for (int d = 0; d < N_DBS; d++) {
+    next[1 + d] = (uint64_t)dbs[d];
+  }
+  arts_guid_t n = arts_edt_create(round_edt, 1 + N_DBS, next, 1,
+                                  &(arts_edt_hint_t){.rank = 0});
+  arts_add_dependence(fe, n, 0, DB_MODE_NULL);
+}
+
+static void round_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                      arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)depc;
+  (void)depv;
+  run_round(paramv);
+}
+
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
               arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -265,64 +337,22 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   /* Round 0: main_edt is the DBs' single header writer and stamps the churn
    * region with STAMP(0).  Releasing before any round-1 EDT is created makes
    * that write happen-before every acquire below. */
-  arts_guid_t dbs[N_DBS];
+  uint64_t pv[1 + N_DBS];
+  pv[0] = 1u;
   for (int d = 0; d < N_DBS; d++) {
     void *raw = NULL;
-    dbs[d] = arts_db_create(&raw, PAYLOAD_BYTES, ARTS_DB, ARTS_DB_PROP_NONE,
-                            &(arts_db_hint_t){.rank =
-                                                  (unsigned int)d % nranks});
+    arts_guid_t db =
+        arts_db_create(&raw, PAYLOAD_BYTES, ARTS_DB, ARTS_DB_PROP_NONE,
+                       &(arts_db_hint_t){.rank = (unsigned int)d % nranks});
     block_t *b = (block_t *)raw;
     header_write(b, (uint64_t)d);
     for (uint32_t i = 0; i < CHURN_WORDS; i++) {
       atomic_init(&b->churn[i], STAMP_WORD(0));
     }
-    arts_db_release(dbs[d], DB_MODE_RW);
+    arts_db_release(db, DB_MODE_RW);
+    pv[1 + d] = (uint64_t)db;
   }
-
-  for (unsigned r = 1; r <= (unsigned)N_ROUNDS; r++) {
-    arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
-
-    for (int d = 0; d < N_DBS; d++) {
-      uint64_t pv[2] = {(uint64_t)r, (uint64_t)d};
-      int w = 0;
-      int k = 0;
-      /* Interleave the two families so read requests keep arriving while the
-       * write windows are open, instead of queueing behind them. */
-      while (w < WRITERS_PER_DB || k < READERS_PER_DB) {
-        if (w < WRITERS_PER_DB) {
-          unsigned int wr =
-              (unsigned int)((unsigned)d + r + (unsigned)(w / WRITER_RUN(d))) %
-              nranks;
-          arts_guid_t we = arts_edt_create(
-              writer_edt, 2, pv, 1,
-              &(arts_edt_hint_t){.rank = wr, .finish_event = fe});
-          arts_add_dependence(dbs[d], we, 0, DB_MODE_RW);
-          w++;
-        }
-        if (k < READERS_PER_DB) {
-          /* Two-rank reader window that rotates every other round: a rank
-           * inside it in consecutive rounds re-reads a copy it already had,
-           * a rank the window has not reached yet acquires this DB cold. */
-          unsigned int rr =
-              (unsigned int)((unsigned)d + (r / 2u) + (unsigned)(k % 2)) %
-              nranks;
-          arts_guid_t re = arts_edt_create(
-              reader_edt, 2, pv, 1,
-              &(arts_edt_hint_t){.rank = rr, .finish_event = fe});
-          arts_add_dependence(dbs[d], re, 0, DB_MODE_RO);
-          k++;
-        }
-      }
-    }
-
-    arts_event_wait(fe);
-  }
-
-  arts_printf("PASS: rw-write window/ro-overlap rounds=%d dbs=%d reads=%d writes=%d "
-              "ranks=%u\n",
-              N_ROUNDS, N_DBS, N_ROUNDS * N_DBS * READERS_PER_DB,
-              N_ROUNDS * N_DBS * WRITERS_PER_DB, nranks);
-  arts_shutdown();
+  run_round(pv);
 }
 
 int main(int argc, char **argv) {

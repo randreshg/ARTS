@@ -57,9 +57,10 @@ void arts_owned_finish_register(arts_guid_t fe_guid) {
   arts_vector_push(&owned_finish_list, &fe_guid);
 }
 
-/* Mark fe_guid consumed (by arts_event_wait) so completion cleanup skips it.
- * Removed, not blanked: cleanup walks what is still OWED, so a consumed
- * entry leaves the list instead of lingering as a slot to skip. */
+/* Mark fe_guid consumed (by arts_event_release_creator_token) so completion
+ * cleanup skips it.  Removed, not blanked: cleanup walks what is still OWED,
+ * so a consumed entry leaves the list instead of lingering as a slot to
+ * skip. */
 void arts_owned_finish_consume(arts_guid_t fe_guid) {
   uint64_t n = arts_vector_count(&owned_finish_list);
   for (uint64_t i = 0; i < n; i++) {
@@ -71,7 +72,8 @@ void arts_owned_finish_consume(arts_guid_t fe_guid) {
   }
 }
 
-/* Completion: DECR creator-token of every finish event not consumed by wait. */
+/* Completion: DECR the creator-token of every finish event not handed back
+ * early. */
 void arts_owned_finish_cleanup(void) {
   uint64_t n = arts_vector_count(&owned_finish_list);
   for (uint64_t i = 0; i < n; i++) {
@@ -107,12 +109,11 @@ arts_vector_t *arts_get_created_db_list(void) { return &created_db_list; }
 
 void arts_set_thread_local_edt_info(struct arts_edt_s *edt) {
   /* The created-DB list must already be EMPTY here: the epilogue
-   * (arts_release_created_dbs) drains it after every EDT, and a parked outer
-   * EDT's entries are not in the TLS at all — arts_edt_ctx_save moved them
-   * out by value.  There is deliberately no clear: clearing would silently
-   * DROP any hold a broken run path failed to release, and the entries would
-   * otherwise be released against the next EDT's epilogue — a stranger's
-   * task.  An entry surviving to this point is that bug, made loud. */
+   * (arts_release_created_dbs) drains it after every EDT.  There is
+   * deliberately no clear: clearing would silently DROP any hold a broken run
+   * path failed to release, and the entries would otherwise be released
+   * against the next EDT's epilogue — a stranger's task.  An entry surviving
+   * to this point is that bug, made loud. */
 #ifndef NDEBUG
   if (arts_vector_count(&created_db_list) != 0) {
     ARTS_ERROR("created_db_list carries %lu entries into a new EDT — a hold "
@@ -121,24 +122,6 @@ void arts_set_thread_local_edt_info(struct arts_edt_s *edt) {
   }
 #endif
   current_edt = edt;
-}
-
-void arts_edt_ctx_save(arts_edt_ctx_t *tl) {
-  tl->current_edt = current_edt;
-  tl->created_db_list = created_db_list; /* struct copy: ownership moves */
-  tl->owned_finish_list = owned_finish_list;
-
-  current_edt = NULL;
-  created_db_list = (arts_vector_t){0};
-  owned_finish_list = (arts_vector_t){0};
-}
-
-void arts_edt_ctx_restore(arts_edt_ctx_t *tl) {
-  current_edt = tl->current_edt;
-  created_db_list_free(&created_db_list);
-  created_db_list = tl->created_db_list;
-  arts_vector_free(&owned_finish_list);
-  owned_finish_list = tl->owned_finish_list;
 }
 
 void arts_cleanup_edt_tls() {
@@ -156,7 +139,6 @@ void arts_unset_thread_local_edt_info(bool decr_finish) {
     arts_event_satisfy_slot(current_edt->finish_event, NULL_GUID,
                             ARTS_EVENT_LATCH_DECR_SLOT);
   }
-  arts_owned_finish_cleanup(); /* DECR creator-token of un-waited finish events
-                                */
+  arts_owned_finish_cleanup(); /* creator-tokens not handed back early */
   current_edt = NULL;
 }

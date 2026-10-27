@@ -129,6 +129,20 @@ static void gate_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_add_dependence((arts_guid_t)paramv[0], reader, 0, DB_MODE_RO);
 }
 
+/// Gated on the scope every iteration's EDTs joined.
+static void finale(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                   arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)paramv;
+  (void)depc;
+  (void)depv;
+  if (arts_test_status() == 0) {
+    arts_printf("PASS: db_create_claims_first_touch_stub %u iters x %u ranks\n",
+                ITERS, arts_get_total_ranks());
+  }
+  arts_shutdown();
+}
+
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
               arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -170,13 +184,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                                        .output_event = done});
   }
 
-  arts_event_wait(outer);
-  if (arts_test_status() == 0) {
-    arts_printf(
-        "PASS: db_create_claims_first_touch_stub %u iters x %u ranks\n",
-        ITERS, ranks);
-  }
-  arts_shutdown();
+  arts_guid_t f =
+      arts_edt_create(finale, 0, NULL, 1, &(arts_edt_hint_t){.rank = 0});
+  arts_add_dependence(outer, f, 0, DB_MODE_NULL);
 }
 
 int main(int argc, char **argv) {

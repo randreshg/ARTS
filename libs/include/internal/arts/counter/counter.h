@@ -62,7 +62,6 @@ extern "C" {
   X(NUM_EDT_ACQUIRE)                                                           \
   X(NUM_EDT_FINISH)                                                            \
   X(NUM_EDT_SIGNAL)                                                            \
-  X(NUM_YIELD)                                                                 \
   /* Time: DB lifecycle */                                                     \
   X(TIME_DB_CREATE)                                                            \
   /* Num: DB lifecycle.  A create is counted on the creating rank whatever     \

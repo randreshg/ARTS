@@ -38,30 +38,32 @@
 ******************************************************************************/
 
 /// @file db_excl_creator_release_keeps_joiner_write.c
-/// @brief EXCL-only: a creator EDT that writes nothing through its DB
-///        dependency is still tracked and still runs an ordinary RW release
-///        at its epilogue; a JOINer's later real write through an RW
-///        dependency must survive that release.
+/// @brief EXCL-only: an RW release with nothing to publish is still an
+///        ordinary RW release, and a later real write through an RW
+///        dependency survives it.
 ///
-/// Under the EXCL protocol the creator's implicit hold is the arm's ordinary
-/// write hold, seeded when the block is made and released through the same
-/// RW-release path any dependency's release uses.  The release is real, not
-/// skipped: the point pinned here is that a release with nothing to publish
-/// still behaves like an ordinary RW release and does not disturb a write
-/// that follows it.
+/// Under the EXCL protocol a dependency's RW hold and the creator's implicit
+/// hold are the arm's ordinary write hold, released through the same
+/// RW-release path.  A release is real even when its holder wrote nothing:
+/// the point pinned here is that such a release still behaves like an
+/// ordinary RW release and does not disturb a write that follows it.
 ///
-/// Scenario (single creator EDT that does NOT write through an RW dep, plus a
-/// JOINer that DOES write through a real RW dep):
-///   creator EDT: arts_db_create (ARTS_DB, default props) but writes nothing
-///                via a dependency; its epilogue's RW release must not
-///                disturb a write that comes after it.
-///   joiner EDT:  a real RW dependency on the same DB; writes a sentinel.
-///   reader EDT:  RO; MUST observe the JOINer's update survived (not
-///                clobbered by the creator's release).
+/// Scenario, each phase in a finish scope of its own, the next phase created
+/// by a continuation gated on it:
+///   main_edt:    creates the block (its create hold, released at its
+///                epilogue) and phase 1, which becomes ready inside main_edt's
+///                body and so joins the write turn the create hold keeps
+///                open: of the two holds, the first released is a non-final
+///                release;
+///   phase 1:     an RW dependency holder that writes nothing;
+///   joiner EDT:  a real RW dependency on the same DB, acquired after both
+///                holds were released; writes a sentinel;
+///   reader EDT:  RO; MUST observe the joiner's update survived (not
+///                clobbered by an earlier release).
 ///
-/// If the creator's release corrupted the lock state, the JOINer's update
-/// would be lost -> reader mismatch -> arts_abort.  A stuck lock counter
-/// instead manifests as a hang caught by the ctest TIMEOUT.
+/// If a release with nothing to publish corrupted the lock state, the
+/// joiner's update would be lost -> reader mismatch -> arts_abort.  A stuck
+/// lock counter instead manifests as a hang caught by the ctest TIMEOUT.
 ///
 /// Meaningful only under EXCL, so built and registered only in an EXCL tree.
 
@@ -97,7 +99,7 @@ void joiner_writer(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
 }
 
-/// reader: RO; the JOINer's update MUST survive the creator's earlier release.
+/// reader: RO; the JOINer's update MUST survive the earlier releases.
 void reader_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                 arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -114,6 +116,52 @@ void reader_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     return;
   }
   arts_printf("PASS: db_excl_creator_release_keeps_joiner_write\n");
+}
+
+/// Creates the next phase on rank 0, gated on the previous phase's finish
+/// scope.  Every phase's paramv[0] is the DB.
+static void then(arts_edt_t next, const uint64_t *param, arts_guid_t scope) {
+  arts_guid_t n =
+      arts_edt_create(next, 1, param, 1, &(arts_edt_hint_t){.rank = 0});
+  arts_add_dependence(scope, n, 0, DB_MODE_NULL);
+}
+
+static void finale(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                   arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)paramv;
+  (void)depc;
+  (void)depv;
+  arts_shutdown();
+}
+
+/// Phase 3: RO reader confirms the JOINer's update survived.
+static void read_phase(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                       arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)depc;
+  (void)depv;
+  arts_guid_t e_rd = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_guid_t rd =
+      arts_edt_create(reader_edt, 0, NULL, 1,
+                      &(arts_edt_hint_t){.rank = 0, .finish_event = e_rd});
+  arts_add_dependence((arts_guid_t)paramv[0], rd, 0, DB_MODE_RO);
+  then(finale, paramv, e_rd);
+}
+
+/// Phase 2: a real RW JOINer writes JOINER_VAL.  Runs once the creator EDT and
+/// phase 1 have both completed, so both their releases precede this write.
+static void join_phase(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                       arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)depc;
+  (void)depv;
+  arts_guid_t e_jn = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_guid_t jn =
+      arts_edt_create(joiner_writer, 0, NULL, 1,
+                      &(arts_edt_hint_t){.rank = 0, .finish_event = e_jn});
+  arts_add_dependence((arts_guid_t)paramv[0], jn, 0, DB_MODE_RW);
+  then(read_phase, paramv, e_jn);
 }
 
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
@@ -137,33 +185,17 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     ((unsigned int *)ptr)[0] = 0u;
   }
 
-  /* Phase 1: a creator EDT that holds the DB as an RW dep but writes
-   * nothing.  Its epilogue's release must not disturb a write that follows
-   * it. */
+  /* Phase 1: an EDT that holds the DB as an RW dep but writes nothing.  Its
+   * epilogue's release must not disturb a write that follows it. */
   arts_guid_t e_cr = arts_event_create(&ARTS_EVENT_HINT_FINISH);
   arts_guid_t cr =
       arts_edt_create(creator_writes_nothing, 0, NULL, 1,
                       &(arts_edt_hint_t){.rank = 0, .finish_event = e_cr});
   arts_add_dependence(db, cr, 0, DB_MODE_RW);
-  arts_event_wait(e_cr);
-
-  /* Phase 2: a real RW JOINer writes JOINER_VAL. */
-  arts_guid_t e_jn = arts_event_create(&ARTS_EVENT_HINT_FINISH);
-  arts_guid_t jn =
-      arts_edt_create(joiner_writer, 0, NULL, 1,
-                      &(arts_edt_hint_t){.rank = 0, .finish_event = e_jn});
-  arts_add_dependence(db, jn, 0, DB_MODE_RW);
-  arts_event_wait(e_jn);
-
-  /* Phase 3: RO reader confirms the JOINer's update survived. */
-  arts_guid_t e_rd = arts_event_create(&ARTS_EVENT_HINT_FINISH);
-  arts_guid_t rd =
-      arts_edt_create(reader_edt, 0, NULL, 1,
-                      &(arts_edt_hint_t){.rank = 0, .finish_event = e_rd});
-  arts_add_dependence(db, rd, 0, DB_MODE_RO);
-  arts_event_wait(e_rd);
-
-  arts_shutdown();
+  /* e_cr fires only once this EDT returns (its epilogue releases the create
+   * hold and the creator-token) and phase 1 has released its RW hold. */
+  uint64_t param = (uint64_t)db;
+  then(join_phase, &param, e_cr);
 }
 
 int main(int argc, char **argv) {

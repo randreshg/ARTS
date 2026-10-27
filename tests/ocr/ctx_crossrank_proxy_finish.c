@@ -18,8 +18,8 @@
  *     scope, the proxy: it INCRs the proxy (local) and registers f -> proxy
  *     DECR.  f's creator-token is registered in the orchestrator's
  *     owned_finish_list.
- *   - the orchestrator spawns leaves under f (rank 1) and RETURNS WITHOUT
- *     WAITING.  Its epilogue DECRs the proxy for its own membership and
+ *   - the orchestrator spawns leaves under f (rank 1) and RETURNS HOLDING
+ *     f's TOKEN.  Its epilogue DECRs the proxy for its own membership and
  *     arts_owned_finish_cleanup DECRs f's creator-token; once f's leaves also
  *     DECR, f fires and DECRs the proxy, which then fires and DECRs F on rank 0
  *     (the cross-rank wire).  This is the cleanup -> cross-rank-proxy DECR
@@ -52,7 +52,7 @@ void leaf(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 /* orchestrator on rank 1: member of remote F through its local proxy; creates
- * inner finish f and returns without waiting -> cleanup DECRs f's token, and
+ * inner finish f and returns holding its token -> cleanup DECRs f's token, and
  * f's fire reaches F on rank 0 through the proxy.
  */
 void orchestrator(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
@@ -73,7 +73,7 @@ void orchestrator(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_guid_t l = arts_edt_create(leaf, 1, &slot, 1, &lh);
     arts_add_dependence(cdb, l, 0, DB_MODE_RW);
   }
-  /* Return WITHOUT arts_event_wait(f): epilogue cleanup DECRs f's token. */
+  /* Return holding f's token: epilogue cleanup DECRs it. */
 }
 
 /* checker on rank 0: depends on F + RO counter DB. */

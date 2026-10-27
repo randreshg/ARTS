@@ -144,10 +144,10 @@ Finish Events
 
 A FINISH event (``ARTS_EVENT_HINT_FINISH``) is a latch used for
 hierarchical termination detection: its counter tracks the live EDTs of
-a *finish scope*, and it fires when the scope has fully drained.  Wait
-on it with :c:func:`arts_event_wait` or chain a continuation EDT with
-:c:func:`arts_add_dependence`.  See :doc:`finish_events` for scope
-membership, inheritance, and nesting.
+a *finish scope*, and it fires when the scope has fully drained.  Act
+on it by chaining a continuation EDT with :c:func:`arts_add_dependence`.
+See :doc:`finish_events` for scope membership, inheritance, and
+nesting.
 
 Destroying Events
 -----------------

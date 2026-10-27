@@ -88,6 +88,15 @@ static void consumer(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
 }
 
+static void finale(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                   arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)paramv;
+  (void)depc;
+  (void)depv;
+  arts_shutdown();
+}
+
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
               arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -97,8 +106,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_guid_t label = arts_guid_reserve(ARTS_GUID_EVENT, 0u);
   arts_guid_t finish = arts_event_create(&ARTS_EVENT_HINT_FINISH);
   start_generation(label, finish, 0u);
-  arts_event_wait(finish);
-  arts_shutdown();
+  arts_guid_t f =
+      arts_edt_create(finale, 0, NULL, 1, &(arts_edt_hint_t){.rank = 0u});
+  arts_add_dependence(finish, f, 0, DB_MODE_NULL);
 }
 
 int main(int argc, char **argv) {

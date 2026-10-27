@@ -99,7 +99,7 @@ void arts_send_edt_satisfy_slot(arts_guid_t edt, arts_guid_t db, uint32_t slot,
                                 arts_db_access_mode_t mode);
 
 /* Per-worker EDT-execution context (current_edt, owned-finish-events list,
- * created-DB tracking, ctx save/restore) is declared in arts/edt_context.h. */
+ * created-DB tracking) is declared in arts/edt_context.h. */
 
 void *arts_get_depv(void *edt_ptr);
 

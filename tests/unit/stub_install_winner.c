@@ -88,6 +88,81 @@ static void reader_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
 }
 
+/// paramv of the round continuations: the round, the DB GUID, the value.
+enum { P_ROUND, P_DB, P_VAL, P_COUNT };
+
+static void wave_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                     arts_edt_dep_t depv[]);
+
+/// Seeds round `rnd`'s DB in a finish scope; its wave is gated on that scope.
+static void start_round(uint64_t rnd) {
+  unsigned int nranks = arts_get_total_ranks();
+  uint64_t val = 0x1A2B0000u + rnd;
+  /* Owner on a remote rank when possible so consumer ranks have no cache. */
+  unsigned int owner =
+      (nranks > 1) ? (1u + ((unsigned int)rnd % (nranks - 1u))) : 0u;
+
+  /* Seed the DB on the owner rank so the value is installed at the owner
+   * before any consumer acquires it. */
+  arts_guid_t g = arts_guid_reserve(ARTS_GUID_DB, owner);
+
+  arts_guid_t e_seed = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  uint64_t seed_pv[2] = {(uint64_t)g, val};
+  arts_edt_create(seeder_edt, 2, seed_pv, 0,
+                  &(arts_edt_hint_t){.rank = owner, .finish_event = e_seed});
+  uint64_t pv[P_COUNT] = {rnd, (uint64_t)g, val};
+  arts_guid_t w =
+      arts_edt_create(wave_edt, P_COUNT, pv, 1, &(arts_edt_hint_t){.rank = 0});
+  arts_add_dependence(e_seed, w, 0, DB_MODE_NULL);
+}
+
+/// Gated on the wave's scope: every reader has acquired AND released.
+static void round_end_edt(uint32_t paramc, const uint64_t *paramv,
+                          uint32_t depc, arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)depc;
+  (void)depv;
+  /* Destroy only after the whole wave has acquired AND released (the finish
+   * scope drained): no RO acquire is in flight, so the destroy is
+   * well-defined under the OCR model. */
+  arts_db_destroy((arts_guid_t)paramv[P_DB]);
+  if (paramv[P_ROUND] + 1u < ROUNDS) {
+    start_round(paramv[P_ROUND] + 1u);
+    return;
+  }
+  arts_printf("PASS: stub_install_winner %u rounds, single winner / no stub "
+              "leak\n",
+              ROUNDS);
+  arts_shutdown();
+}
+
+/// Gated on the seed's scope.
+static void wave_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                     arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)depc;
+  (void)depv;
+  unsigned int nranks = arts_get_total_ranks();
+  arts_guid_t g = (arts_guid_t)paramv[P_DB];
+  uint64_t val = paramv[P_VAL];
+
+  /* Concurrent acquire wave: each consumer rank's first acquirer
+   * stub-installs the stub; the per-rank acquirers race it. */
+  arts_guid_t e_acq = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  for (unsigned int rank = 0; rank < nranks; rank++) {
+    for (unsigned int k = 0; k < ACQUIRERS_PER_RANK; k++) {
+      uint64_t rpv[1] = {val};
+      arts_guid_t r = arts_edt_create(
+          reader_edt, 1, rpv, 1,
+          &(arts_edt_hint_t){.rank = rank, .finish_event = e_acq});
+      arts_add_dependence(g, r, 0, DB_MODE_RO);
+    }
+  }
+  arts_guid_t e = arts_edt_create(round_end_edt, P_COUNT, paramv, 1,
+                                  &(arts_edt_hint_t){.rank = 0});
+  arts_add_dependence(e_acq, e, 0, DB_MODE_NULL);
+}
+
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
               arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -96,48 +171,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depv;
 
   arts_printf("=== stub_install_winner ===\n");
-
-  unsigned int nranks = arts_get_total_ranks();
-
-  for (unsigned int rnd = 0; rnd < ROUNDS; rnd++) {
-    uint64_t val = 0x1A2B0000u + rnd;
-    /* Owner on a remote rank when possible so consumer ranks have no cache. */
-    unsigned int owner = (nranks > 1) ? (1u + (rnd % (nranks - 1u))) : 0u;
-
-    /* Seed the DB on the owner rank so the value is installed at the owner
-     * before any consumer acquires it. */
-    arts_guid_t g = arts_guid_reserve(ARTS_GUID_DB, owner);
-
-    arts_guid_t e_seed = arts_event_create(&ARTS_EVENT_HINT_FINISH);
-    uint64_t seed_pv[2] = {(uint64_t)g, val};
-    arts_edt_create(seeder_edt, 2, seed_pv, 0,
-                    &(arts_edt_hint_t){.rank = owner, .finish_event = e_seed});
-    arts_event_wait(e_seed);
-
-    /* Concurrent acquire wave: each consumer rank's first acquirer
-     * stub-installs the stub; the per-rank acquirers race it. */
-    arts_guid_t e_acq = arts_event_create(&ARTS_EVENT_HINT_FINISH);
-    for (unsigned int rank = 0; rank < nranks; rank++) {
-      for (unsigned int k = 0; k < ACQUIRERS_PER_RANK; k++) {
-        uint64_t rpv[1] = {val};
-        arts_guid_t r = arts_edt_create(
-            reader_edt, 1, rpv, 1,
-            &(arts_edt_hint_t){.rank = rank, .finish_event = e_acq});
-        arts_add_dependence(g, r, 0, DB_MODE_RO);
-      }
-    }
-    arts_event_wait(e_acq);
-
-    /* Destroy only after the whole wave has acquired AND released (the finish
-     * scope drained): no RO acquire is in flight, so the destroy is
-     * well-defined under the OCR model. */
-    arts_db_destroy(g);
-  }
-
-  arts_printf("PASS: stub_install_winner %u rounds, single winner / no stub "
-              "leak\n",
-              ROUNDS);
-  arts_shutdown();
+  start_round(0u);
 }
 
 int main(int argc, char **argv) {

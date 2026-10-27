@@ -92,6 +92,60 @@ static void ro_reader_edt(uint32_t paramc, const uint64_t *paramv,
   (void)depv; /* tolerant — the point is that it runs (woken), not the value. */
 }
 
+static void generation_edt(uint32_t paramc, const uint64_t *paramv,
+                           uint32_t depc, arts_edt_dep_t depv[]);
+
+/* paramv: the generation, and the previous generation's block (NULL_GUID
+ * for none), destroyed once its scope drained. */
+static void generation(const uint64_t *paramv) {
+  unsigned int nranks = arts_get_total_ranks();
+  uint64_t it = paramv[0];
+  if ((arts_guid_t)paramv[1] != NULL_GUID) {
+    /* A leaked Cat-C ref would keep the cb from reaching refcount 0. */
+    arts_db_destroy((arts_guid_t)paramv[1]);
+  }
+  if (it == ITERS) {
+    arts_printf("PASS: cat_c_ref_balance %u iters x %u ranks\n", ITERS, nranks);
+    arts_shutdown();
+    return;
+  }
+
+  void *ptr = NULL;
+  arts_guid_t db =
+      arts_db_create(&ptr, sizeof(unsigned int), ARTS_DB, ARTS_DB_PROP_NONE,
+                     &(arts_db_hint_t){.rank = 0});
+  ((unsigned int *)ptr)[0] = 0u;
+  arts_db_release(db, DB_MODE_RW);
+
+  /* Drive RW (publish/ownership/ACK Cat-C) then RO (snapshot/redirect
+   * Cat-C) across every rank so each foreign rank's cache pins + must
+   * release. */
+  arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  for (unsigned int r = 0; r < nranks; r++) {
+    arts_guid_t w =
+        arts_edt_create(rw_writer_edt, 0, NULL, 1,
+                        &(arts_edt_hint_t){.rank = r, .finish_event = fe});
+    arts_add_dependence(db, w, 0, DB_MODE_RW);
+
+    arts_guid_t ro =
+        arts_edt_create(ro_reader_edt, 0, NULL, 1,
+                        &(arts_edt_hint_t){.rank = r, .finish_event = fe});
+    arts_add_dependence(db, ro, 0, DB_MODE_RO);
+  }
+  uint64_t next[2] = {it + 1u, (uint64_t)db};
+  arts_guid_t n = arts_edt_create(generation_edt, 2, next, 1,
+                                  &(arts_edt_hint_t){.rank = 0});
+  arts_add_dependence(fe, n, 0, DB_MODE_NULL);
+}
+
+static void generation_edt(uint32_t paramc, const uint64_t *paramv,
+                           uint32_t depc, arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)depc;
+  (void)depv;
+  generation(paramv);
+}
+
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
               arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -100,40 +154,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depv;
 
   arts_printf("=== cat_c_ref_balance ===\n");
-
-  unsigned int nranks = arts_get_total_ranks();
-
-  for (unsigned int it = 0; it < ITERS; it++) {
-    void *ptr = NULL;
-    arts_guid_t db =
-        arts_db_create(&ptr, sizeof(unsigned int), ARTS_DB, ARTS_DB_PROP_NONE,
-                       &(arts_db_hint_t){.rank = 0});
-    ((unsigned int *)ptr)[0] = 0u;
-    arts_db_release(db, DB_MODE_RW);
-
-    /* Drive RW (publish/ownership/ACK Cat-C) then RO (snapshot/redirect
-     * Cat-C) across every rank so each foreign rank's cache pins + must
-     * release. */
-    arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
-    for (unsigned int r = 0; r < nranks; r++) {
-      arts_guid_t w =
-          arts_edt_create(rw_writer_edt, 0, NULL, 1,
-                          &(arts_edt_hint_t){.rank = r, .finish_event = fe});
-      arts_add_dependence(db, w, 0, DB_MODE_RW);
-
-      arts_guid_t ro =
-          arts_edt_create(ro_reader_edt, 0, NULL, 1,
-                          &(arts_edt_hint_t){.rank = r, .finish_event = fe});
-      arts_add_dependence(db, ro, 0, DB_MODE_RO);
-    }
-    arts_event_wait(fe);
-
-    /* A leaked Cat-C ref would keep the cb from reaching refcount 0. */
-    arts_db_destroy(db);
-  }
-
-  arts_printf("PASS: cat_c_ref_balance %u iters x %u ranks\n", ITERS, nranks);
-  arts_shutdown();
+  generation((const uint64_t[2]){0u, NULL_GUID});
 }
 
 int main(int argc, char **argv) {

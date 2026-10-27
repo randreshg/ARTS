@@ -180,8 +180,8 @@ Release and Lifetime
 --------------------
 
 A creating EDT holds RW access until it returns.  To publish writes
-early — required when the EDT blocks inside its body (e.g. via
-:c:func:`arts_event_wait`) — release explicitly:
+before then — required when the body hands the block onward or starts work
+leading to its destroyer (below) — release explicitly:
 
 .. code-block:: c
 

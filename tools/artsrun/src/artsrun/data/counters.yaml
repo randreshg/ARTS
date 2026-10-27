@@ -13,7 +13,7 @@ counters:
   TIME_EDT_EXEC:
     group: 'EDT time'
     unit: ns
-    help: 'Wall time inside EDT bodies, summed over a rank''s threads and paused while a body blocks in arts_event_wait; includes every runtime call the body makes, not the acquires before it or the releases after'
+    help: 'Wall time inside EDT bodies, summed over a rank''s threads; includes every runtime call the body makes, not the acquires before it or the releases after'
 
   TIME_EDT_CREATE:
     group: 'EDT time'
@@ -44,11 +44,6 @@ counters:
     group: 'EDT counts'
     unit: count
     help: 'EDT dependence-slot satisfactions (arts_edt_satisfy_slot calls), counted on the rank that issues them'
-
-  NUM_YIELD:
-    group: 'EDT counts'
-    unit: count
-    help: 'Calls to arts_event_wait'
 
   TIME_DB_CREATE:
     group: 'DB time'

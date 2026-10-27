@@ -68,16 +68,13 @@ static void event_simple_step(struct arts_event_s *e, arts_guid_t guid, int op,
                               arts_guid_t data_guid);
 
 #include "arts.h"
-#include "arts/db.h" /* arts_wait_release_dbs / arts_wait_reacquire_dbs */
 #include "arts/edt.h"
 #include "arts/edt_context.h" /* current_edt */
 #include "arts/gas/guid.h"
 #include "arts/gas/route_table.h"
 #include "arts/ooo.h"
-#include "arts/runtime_state.h" /* arts_node_info */
 #include "arts/system/print.h"
 #include "arts/system/schedfuzz.h"
-#include "arts/system/threads.h"
 #include "arts/transport/net.h"    /* outbound send helpers */
 #include "arts/transport/protocol.h"  /* wire packet structs */
 #include "arts/utils/lockfree_lifo.h" /* arts_lf_stack_init / drain */
@@ -719,54 +716,4 @@ void arts_send_event_satisfy_slot(arts_guid_t event_guid, arts_guid_t data_guid,
 void arts_event_release_creator_token(arts_guid_t event_guid) {
   arts_owned_finish_consume(event_guid);
   arts_event_satisfy_slot(event_guid, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
-}
-
-/*
- * arts_event_wait — Block current EDT until a finish (auto_destroy) event
- * drains.
- *
- * Consumes the creator-token so EDT completion cleanup skips it, then
- * decrements the latch (mirrors the creator's own INCR at create time).
- * Spin-polls the scheduler loop until the event fires, auto-destroys, and
- * is detached from the route table — at which point lookup returns NULL and
- * we resume.  Absence is monotonic, so there is no missed-wakeup risk.
- *
- * DB release/reacquire hooks are called around the wait to allow member EDTs
- * to make progress on the same data; the stubs are no-ops until the DB
- * handoff feature lands.
- */
-bool arts_event_wait(arts_guid_t event_guid) {
-  TIME_EDT_EXEC_STOP();
-  /* Consume the creator-token: skip it in completion cleanup, then decrement
-   * the latch to close the scope (mirrors the paired INCR issued at create). */
-  arts_owned_finish_consume(event_guid);
-  arts_event_satisfy_slot(event_guid, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
-
-  /* Release acquired DBs so member EDTs can progress while we wait. */
-  arts_wait_release_dbs();
-
-  INCREMENT_NUM_YIELD_BY(1);
-  arts_edt_ctx_t tl;
-  arts_edt_ctx_save(&tl);
-  while (atomic_load_explicit(&arts_thread_info.alive, memory_order_acquire)) {
-    /* Fire -> auto_destroy -> mark_delete detaches the slot; lookup returns
-     * NULL and we exit.  Use the lookup/release pair so we never read freed
-     * memory after the deleter runs. */
-    arts_shared_ptr_t e_h = arts_route_table_lookup_event(event_guid);
-    struct arts_event_s *e = (struct arts_event_s *)arts_shared_get(e_h);
-    if (!e) {
-      break;
-    }
-    arts_shared_release(&e_h);
-    arts_node_info.scheduler();
-  }
-  /* Drain any remaining ready work before restoring context. */
-  while (arts_node_info.scheduler()) {
-    ;
-  }
-  arts_edt_ctx_restore(&tl);
-
-  arts_wait_reacquire_dbs();
-  TIME_EDT_EXEC_START();
-  return true;
 }

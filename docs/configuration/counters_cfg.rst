@@ -92,10 +92,9 @@ EDT Lifecycle — Time
    * - Counter
      - Description
    * - ``TIME_EDT_EXEC``
-     - Wall time inside EDT bodies, summed over a rank's threads and
-       paused while a body blocks in ``arts_event_wait()``.  It includes
-       every runtime call the body makes, not the DB acquires before the
-       body or the releases after it.
+     - Wall time inside EDT bodies, summed over a rank's threads.  It
+       includes every runtime call the body makes, not the DB acquires
+       before the body or the releases after it.
    * - ``TIME_EDT_CREATE``
      - Wall time of ``arts_edt_create()`` on the creating thread:
        placement, allocation, GUID, finish-scope join, and either the ship
@@ -129,8 +128,6 @@ EDT Lifecycle — Count
    * - ``NUM_EDT_SIGNAL``
      - EDT dependence-slot satisfactions (``arts_edt_satisfy_slot()``
        calls), counted on the rank that issues them.
-   * - ``NUM_YIELD``
-     - Calls to ``arts_event_wait()``.
 
 DataBlock Lifecycle — Time
 ~~~~~~~~~~~~~~~~~~~~~~~~~~

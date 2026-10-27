@@ -9,9 +9,9 @@
  * Two EDTs join one finish scope and each waits on a dependence nobody
  * satisfies: one homed on the first rank (the scope's own rank), one homed on
  * the last rank (on several ranks it joins the scope through a local proxy).
- * Both are destroyed; the scope must then drain, so the waiting EDT resumes
- * and the run ends with no work left undone.  A destroy that left the scope's
- * INCR open would hang the wait.
+ * Both are destroyed; the scope must then drain, so the continuation gated on
+ * it runs and the run ends with no work left undone.  A destroy that left the
+ * scope's INCR open would leave that continuation unrun.
  *
  * Neither EDT carries an output event: the programming model does not say
  * what a destroyed EDT's output event does, so the runtime leaves it alone.
@@ -32,6 +32,18 @@ static void victim(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_test_fail();
 }
 
+static void finale(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                   arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)paramv;
+  (void)depc;
+  (void)depv;
+  if (arts_test_status() == 0) {
+    arts_printf("PASS: edt_destroy_pending_scope\n");
+  }
+  arts_shutdown();
+}
+
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
               arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -48,11 +60,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       &(arts_edt_hint_t){.rank = last, .finish_event = scope});
   arts_edt_destroy(here);
   arts_edt_destroy(there);
-  arts_event_wait(scope);
-  if (arts_test_status() == 0) {
-    arts_printf("PASS: edt_destroy_pending_scope\n");
-  }
-  arts_shutdown();
+  arts_guid_t f =
+      arts_edt_create(finale, 0, NULL, 1, &(arts_edt_hint_t){.rank = 0u});
+  arts_add_dependence(scope, f, 0, DB_MODE_NULL);
 }
 
 int main(int argc, char **argv) {

@@ -211,6 +211,15 @@ static arts_guid_t make_record(void) {
   return record;
 }
 
+static void finale(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                   arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)paramv;
+  (void)depc;
+  (void)depv;
+  arts_shutdown();
+}
+
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
               arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -233,8 +242,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       &(arts_edt_hint_t){.rank = 0u, .finish_event = finish});
   arts_edt_satisfy_slot(first, 0, NULL_GUID, DB_MODE_NULL);
   arts_add_dependence(late_record, first, 1, DB_MODE_RO);
-  arts_event_wait(finish);
-  arts_shutdown();
+  arts_guid_t f =
+      arts_edt_create(finale, 0, NULL, 1, &(arts_edt_hint_t){.rank = 0u});
+  arts_add_dependence(finish, f, 0, DB_MODE_NULL);
 }
 
 int main(int argc, char **argv) {

@@ -26,7 +26,8 @@
  * To put many participants in the same home phase simultaneously they are
  * launched depc=0 (ready immediately) and contend on the lock; the writers'
  * happens-before is enforced only where the data value is asserted (the seed
- * writer runs first via a finish-event gate so readers have a defined value).
+ * writer runs first: the D7 storm is created by a continuation gated on its
+ * finish scope, so readers have a defined value).
  *
  * Built and registered only in an EXCL tree.
  */
@@ -136,6 +137,35 @@ static void shutdown_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_shutdown();
 }
 
+/* The D7 storm, gated on the seed writer's scope: ownership and value are
+ * established before it.  paramv = {d7, d7_latch}. */
+static void storm_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                      arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)depc;
+  (void)depv;
+  unsigned int nranks = arts_get_total_ranks();
+  unsigned int home = 0u;
+  arts_guid_t d7 = (arts_guid_t)paramv[0];
+  uint64_t d7_pv[1] = {paramv[1]};
+
+  /* A trailing RW writer parked at home (w>0) plus a burst of RO requests: the
+   * RO phase must extend (D7) and serve all readers, then the writer runs. */
+  arts_guid_t tw = arts_edt_create(trail_writer_edt, 1, d7_pv, 1,
+                                   &(arts_edt_hint_t){.rank = home});
+  arts_add_dependence(d7, tw, 0, DB_MODE_RW);
+  for (int i = 0; i < N_EXTEND_READERS; i++) {
+    unsigned int r = (nranks > 1) ? (unsigned int)(i % nranks) : 0u;
+    arts_guid_t rd = arts_edt_create(extend_reader_edt, 1, d7_pv, 1,
+                                     &(arts_edt_hint_t){.rank = r});
+    arts_add_dependence(d7, rd, 0, DB_MODE_RO);
+  }
+
+  arts_guid_t shut =
+      arts_edt_create(shutdown_edt, 0, NULL, 1, &(arts_edt_hint_t){.rank = 0});
+  arts_add_dependence((arts_guid_t)paramv[1], shut, 0, DB_MODE_NULL);
+}
+
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
               arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -191,23 +221,10 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       arts_edt_create(seed_writer_edt, 0, NULL, 1,
                       &(arts_edt_hint_t){.rank = home, .finish_event = e_seed});
   arts_add_dependence(d7, seed, 0, DB_MODE_RW);
-  arts_event_wait(e_seed); /* ownership/value established before the storm */
-
-  /* A trailing RW writer parked at home (w>0) plus a burst of RO requests: the
-   * RO phase must extend (D7) and serve all readers, then the writer runs. */
-  arts_guid_t tw = arts_edt_create(trail_writer_edt, 1, d7_pv, 1,
-                                   &(arts_edt_hint_t){.rank = home});
-  arts_add_dependence(d7, tw, 0, DB_MODE_RW);
-  for (int i = 0; i < N_EXTEND_READERS; i++) {
-    unsigned int r = (nranks > 1) ? (unsigned int)(i % nranks) : 0u;
-    arts_guid_t rd = arts_edt_create(extend_reader_edt, 1, d7_pv, 1,
-                                     &(arts_edt_hint_t){.rank = r});
-    arts_add_dependence(d7, rd, 0, DB_MODE_RO);
-  }
-
-  arts_guid_t shut =
-      arts_edt_create(shutdown_edt, 0, NULL, 1, &(arts_edt_hint_t){.rank = 0});
-  arts_add_dependence(d7_latch, shut, 0, DB_MODE_NULL);
+  uint64_t storm_pv[2] = {(uint64_t)d7, (uint64_t)d7_latch};
+  arts_guid_t storm =
+      arts_edt_create(storm_edt, 2, storm_pv, 1, &(arts_edt_hint_t){.rank = 0});
+  arts_add_dependence(e_seed, storm, 0, DB_MODE_NULL);
 }
 
 int main(int argc, char **argv) {

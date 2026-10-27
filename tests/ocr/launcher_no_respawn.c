@@ -138,6 +138,59 @@ void verify_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
 }
 
+static void finale_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                       arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)paramv;
+  (void)depc;
+  (void)depv;
+  arts_printf("PASS: launcher_no_respawn (%u ranks, each once, no recursive "
+              "spawn)\n",
+              arts_get_total_ranks());
+  arts_shutdown();
+}
+
+static void probe_step_edt(uint32_t paramc, const uint64_t *paramv,
+                           uint32_t depc, arts_edt_dep_t depv[]);
+
+/* paramv: the next probe's rank, the marker block.  One probe at a time,
+ * each in a finish scope of its own and the next gated on it, so each write
+ * turn is ordered before the next; then the verifier, and the end of the run
+ * gated on it. */
+static void probe_step(const uint64_t *paramv) {
+  unsigned int total = arts_get_total_ranks();
+  unsigned int r = (unsigned int)paramv[0];
+  arts_guid_t db = (arts_guid_t)paramv[1];
+  arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_guid_t n;
+  if (r < total) {
+    uint64_t params[2] = {(uint64_t)r, (uint64_t)total};
+    arts_guid_t p =
+        arts_edt_create(rank_probe_edt, 2, params, 1,
+                        &(arts_edt_hint_t){.rank = r, .finish_event = fe});
+    arts_add_dependence(db, p, 0, DB_MODE_RW);
+    uint64_t next[2] = {(uint64_t)r + 1u, (uint64_t)db};
+    n = arts_edt_create(probe_step_edt, 2, next, 1,
+                        &(arts_edt_hint_t){.rank = 0});
+  } else {
+    uint64_t vparams[1] = {(uint64_t)total};
+    arts_guid_t v =
+        arts_edt_create(verify_edt, 1, vparams, 1,
+                        &(arts_edt_hint_t){.rank = 0, .finish_event = fe});
+    arts_add_dependence(db, v, 0, DB_MODE_RO);
+    n = arts_edt_create(finale_edt, 0, NULL, 1, &(arts_edt_hint_t){.rank = 0});
+  }
+  arts_add_dependence(fe, n, 0, DB_MODE_NULL);
+}
+
+static void probe_step_edt(uint32_t paramc, const uint64_t *paramv,
+                           uint32_t depc, arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)depc;
+  (void)depv;
+  probe_step(paramv);
+}
+
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
               arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -156,29 +209,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
   arts_db_release(db, DB_MODE_RW);
 
-  /* One probe at a time: each write turn is ordered before the next. */
-  for (unsigned int r = 0; r < total; r++) {
-    arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
-    uint64_t params[2] = {(uint64_t)r, (uint64_t)total};
-    arts_guid_t p =
-        arts_edt_create(rank_probe_edt, 2, params, 1,
-                        &(arts_edt_hint_t){.rank = r, .finish_event = fe});
-    arts_add_dependence(db, p, 0, DB_MODE_RW);
-    arts_event_wait(fe);
-  }
-
-  arts_guid_t vfe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
-  uint64_t vparams[1] = {(uint64_t)total};
-  arts_guid_t v =
-      arts_edt_create(verify_edt, 1, vparams, 1,
-                      &(arts_edt_hint_t){.rank = 0, .finish_event = vfe});
-  arts_add_dependence(db, v, 0, DB_MODE_RO);
-  arts_event_wait(vfe);
-
-  arts_printf("PASS: launcher_no_respawn (%u ranks, each once, no recursive "
-              "spawn)\n",
-              total);
-  arts_shutdown();
+  probe_step((const uint64_t[2]){0u, (uint64_t)db});
 }
 
 int main(int argc, char **argv) {

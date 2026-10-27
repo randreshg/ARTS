@@ -133,6 +133,76 @@ static void read_turn(arts_edt_t body, arts_guid_t db, uint64_t *value,
   arts_add_dependence(db, r, 0, DB_MODE_RO);
 }
 
+/// paramv of an iteration's phases: the iteration, the persistent sized and
+/// zero-size blocks, the iteration's fresh block.
+enum { P_IT, P_PERSISTENT, P_EMPTY, P_DB, P_COUNT };
+
+/// Creates phase `next` on rank 0, gated on the previous phase's scope.
+static void then(arts_edt_t next, const uint64_t *pv, arts_guid_t scope) {
+  arts_guid_t n =
+      arts_edt_create(next, P_COUNT, pv, 1, &(arts_edt_hint_t){.rank = 0});
+  arts_add_dependence(scope, n, 0, DB_MODE_NULL);
+}
+
+static void read_phase(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                       arts_edt_dep_t depv[]);
+
+/// Iteration `pv[P_IT]`'s write turns, its reads gated on them.
+static void write_phase(const uint64_t *paramv) {
+  /* Remote writer when possible. */
+  unsigned int W = (arts_get_total_ranks() > 1) ? 1u : 0u;
+  uint64_t vnew = (uint64_t)(BASE + paramv[P_IT]);
+  arts_guid_t db = make_block(sizeof(unsigned int));
+
+  arts_guid_t e_w = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  write_turn(db, &vnew, W, e_w);
+  write_turn((arts_guid_t)paramv[P_PERSISTENT], &vnew, W, e_w);
+  write_turn((arts_guid_t)paramv[P_EMPTY], &vnew, W, e_w);
+  uint64_t pv[P_COUNT] = {paramv[P_IT], paramv[P_PERSISTENT], paramv[P_EMPTY],
+                          (uint64_t)db};
+  then(read_phase, pv, e_w);
+}
+
+/// Gated on the iteration's read turns: retires its block, then starts the
+/// next iteration or ends the run.
+static void iteration_end(uint32_t paramc, const uint64_t *paramv,
+                          uint32_t depc, arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)depc;
+  (void)depv;
+  arts_db_destroy((arts_guid_t)paramv[P_DB]);
+  if (paramv[P_IT] + 1u < ITERS) {
+    uint64_t pv[P_COUNT] = {paramv[P_IT] + 1u, paramv[P_PERSISTENT],
+                            paramv[P_EMPTY], NULL_GUID};
+    write_phase(pv);
+    return;
+  }
+  arts_printf("PASS: self_send_vs_dispatcher_parity %u iters x %u ranks\n",
+              ITERS, arts_get_total_ranks());
+  arts_shutdown();
+}
+
+/// Gated on the iteration's write turns.
+static void read_phase(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                       arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)depc;
+  (void)depv;
+  unsigned int nranks = arts_get_total_ranks();
+  uint64_t vnew = (uint64_t)(BASE + paramv[P_IT]);
+  arts_guid_t db = (arts_guid_t)paramv[P_DB];
+  arts_guid_t persistent = (arts_guid_t)paramv[P_PERSISTENT];
+  arts_guid_t empty = (arts_guid_t)paramv[P_EMPTY];
+
+  arts_guid_t e_r = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  for (unsigned int r = 0; r < nranks; r++) {
+    read_turn(reader_edt, db, &vnew, r, e_r);
+    read_turn(reader_edt, persistent, &vnew, r, e_r);
+    read_turn(empty_reader_edt, empty, &vnew, r, e_r);
+  }
+  then(iteration_end, paramv, e_r);
+}
+
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
               arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -142,35 +212,10 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   arts_printf("=== self_send_vs_dispatcher_parity ===\n");
 
-  unsigned int nranks = arts_get_total_ranks();
-  unsigned int W = (nranks > 1) ? 1u : 0u; /* remote writer when possible */
   arts_guid_t persistent = make_block(sizeof(unsigned int));
   arts_guid_t empty = make_block(0u);
-
-  for (unsigned int it = 0; it < ITERS; it++) {
-    uint64_t vnew = (uint64_t)(BASE + it);
-    arts_guid_t db = make_block(sizeof(unsigned int));
-
-    arts_guid_t e_w = arts_event_create(&ARTS_EVENT_HINT_FINISH);
-    write_turn(db, &vnew, W, e_w);
-    write_turn(persistent, &vnew, W, e_w);
-    write_turn(empty, &vnew, W, e_w);
-    arts_event_wait(e_w);
-
-    arts_guid_t e_r = arts_event_create(&ARTS_EVENT_HINT_FINISH);
-    for (unsigned int r = 0; r < nranks; r++) {
-      read_turn(reader_edt, db, &vnew, r, e_r);
-      read_turn(reader_edt, persistent, &vnew, r, e_r);
-      read_turn(empty_reader_edt, empty, &vnew, r, e_r);
-    }
-    arts_event_wait(e_r);
-
-    arts_db_destroy(db);
-  }
-
-  arts_printf("PASS: self_send_vs_dispatcher_parity %u iters x %u ranks\n",
-              ITERS, nranks);
-  arts_shutdown();
+  uint64_t pv[P_COUNT] = {0u, (uint64_t)persistent, (uint64_t)empty, NULL_GUID};
+  write_phase(pv);
 }
 
 int main(int argc, char **argv) {

@@ -8,25 +8,27 @@
  * (arts_edt_create_core) and exactly one DECR at completion
  * (arts_unset_thread_local_edt_info).  The scope (a LATCH(1) finish event with
  * a creator-token) fires when its counter returns to 0 — i.e. when the creator
- * releases its token (arts_event_wait) AND every joined EDT has completed.
+ * has completed (its epilogue releases the token) AND every joined EDT has
+ * completed.
  *
  * For a REMOTE EDT the INCR is emitted on the source rank inside create_core
  * (against the parent finish event there), and the create body at the EDT's
  * home, finding the parent homed on another rank, installs a local proxy
  * LATCH(1) wired to forward a DECR to the parent when the proxy drains.  So a
- * remote member still contributes a clean +1/-1 to the parent scope.  If any INCR or DECR is dropped (or doubled) the
- * scope never drains and arts_event_wait hangs forever (caught by ctest
- * TIMEOUT); an over-DECR would fire the scope early before members ran, which
- * the per-member tally would expose.
+ * remote member still contributes a clean +1/-1 to the parent scope.  If any
+ * INCR or DECR is dropped (or doubled) the scope never drains and the
+ * continuation gated on it never runs (caught by ctest TIMEOUT); an over-DECR
+ * would fire the scope early before members ran, which the per-member tally
+ * would expose.
  *
  * Scenario
  * --------
  * main_edt creates a finish event, then M member EDTs joined to it spread
  * round-robin across all ranks (local + remote when nranks>1), each marking a
- * block of its own.  main_edt then arts_event_wait(fe): this releases the
- * creator-token and blocks until every member completes.  After the wait
- * returns, every member must have run exactly once — proving the scope drained
- * precisely when (and only when) all members finished.  Then shut down.
+ * block of its own, and a continuation gated on the event; main_edt's return
+ * releases the creator-token.  When the continuation runs, every member must
+ * have run exactly once — proving the scope drained precisely when (and only
+ * when) all members finished.  Then shut down.
  *
  * One block per member: no two write acquisitions of a block ever overlap, so
  * the tally is exact under every memory model.  A shared counter would make
@@ -87,6 +89,37 @@ void verifier(uint32_t pc, const uint64_t *pv, uint32_t dc,
   }
 }
 
+/* Gated on the verifier's scope. */
+static void finale(uint32_t pc, const uint64_t *pv, uint32_t dc,
+                   arts_edt_dep_t dv[]) {
+  (void)pc;
+  (void)pv;
+  (void)dc;
+  (void)dv;
+  arts_shutdown();
+}
+
+/* Gated on the members' scope: every member's DECR landed, which happens only
+ * after each member body ran.  Reads the marks back through a verifier EDT
+ * (RO acquires) rather than the stale create-time pointers, then shuts down
+ * once that second scope drains.  pv[i] = member i's block. */
+static void after_members(uint32_t pc, const uint64_t *pv, uint32_t dc,
+                          arts_edt_dep_t dv[]) {
+  (void)pc;
+  (void)dc;
+  (void)dv;
+  arts_guid_t fe2 = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_guid_t v =
+      arts_edt_create(verifier, 0, NULL, MEMBERS,
+                      &(arts_edt_hint_t){.rank = 0, .finish_event = fe2});
+  for (int i = 0; i < MEMBERS; i++) {
+    arts_add_dependence((arts_guid_t)pv[i], v, (uint32_t)i, DB_MODE_RO);
+  }
+  arts_guid_t f =
+      arts_edt_create(finale, 0, NULL, 1, &(arts_edt_hint_t){.rank = 0});
+  arts_add_dependence(fe2, f, 0, DB_MODE_NULL);
+}
+
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
               arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -126,24 +159,17 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_add_dependence(blocks[i], m, 0, DB_MODE_RW);
   }
 
-  /* Release the creator-token and block until the scope drains (all members
-   * completed).  If any INCR/DECR is dropped the scope never reaches 0 and this
-   * hangs — caught by the ctest TIMEOUT. */
-  arts_event_wait(fe);
-
-  /* The wait returned ⇒ the scope drained ⇒ every member's DECR landed, which
-   * happens only after each member body ran.  Read the marks back through a
-   * verifier EDT (RO acquires) rather than the stale create-time pointers,
-   * then shut down once that second scope drains. */
-  arts_guid_t fe2 = arts_event_create(&ARTS_EVENT_HINT_FINISH);
-  arts_guid_t v = arts_edt_create(
-      verifier, 0, NULL, MEMBERS,
-      &(arts_edt_hint_t){.rank = 0, .finish_event = fe2});
+  /* The continuation runs once the scope drains (all members completed and
+   * this EDT returned, releasing the creator-token).  If any INCR/DECR is
+   * dropped the scope never reaches 0 and it never runs — caught by the ctest
+   * TIMEOUT. */
+  uint64_t bv[MEMBERS];
   for (int i = 0; i < MEMBERS; i++) {
-    arts_add_dependence(blocks[i], v, (uint32_t)i, DB_MODE_RO);
+    bv[i] = (uint64_t)blocks[i];
   }
-  arts_event_wait(fe2);
-  arts_shutdown();
+  arts_guid_t a = arts_edt_create(after_members, MEMBERS, bv, 1,
+                                  &(arts_edt_hint_t){.rank = 0});
+  arts_add_dependence(fe, a, 0, DB_MODE_NULL);
 }
 
 int main(int argc, char **argv) {

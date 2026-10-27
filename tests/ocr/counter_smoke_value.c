@@ -10,8 +10,9 @@
 /// The per-node JSON (n0.json) carries a "NUM_EDT_CREATE" and a
 /// "NUM_EDT_FINISH" object whose numeric "value" is reduced (SUM) across this
 /// node's threads.  We create a known number N of EDTs; with the main EDT the
-/// runtime creates and runs, each value must be exactly N + 1.  The test is
-/// registered only in a tree whose counter config captures both counters.
+/// runtime creates and runs and the continuation that ends the run, each value
+/// must be exactly N + 2.  The test is registered only in a tree whose counter
+/// config captures both counters.
 
 #include "arts.h"
 
@@ -31,6 +32,16 @@ void worker_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depv;
 }
 
+/* Gated on the workers' finish scope. */
+static void done_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                     arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)paramv;
+  (void)depc;
+  (void)depv;
+  arts_shutdown();
+}
+
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
               arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -43,8 +54,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_edt_create(worker_edt, 0, NULL, 0,
                     &(arts_edt_hint_t){.rank = 0, .finish_event = fe});
   }
-  arts_event_wait(fe);
-  arts_shutdown();
+  arts_guid_t done =
+      arts_edt_create(done_edt, 0, NULL, 1, &(arts_edt_hint_t){.rank = 0});
+  arts_add_dependence(fe, done, 0, DB_MODE_NULL);
 }
 
 /* Locate counter object `name` inside the JSON, then read its "value" field.
@@ -109,7 +121,7 @@ int main(int argc, char **argv) {
   buf[got] = '\0';
 
   static const char *const names[] = {"NUM_EDT_CREATE", "NUM_EDT_FINISH"};
-  const uint64_t want = (uint64_t)N_EDTS + 1u;
+  const uint64_t want = (uint64_t)N_EDTS + 2u;
   int failures = 0;
   for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
     uint64_t value = 0;

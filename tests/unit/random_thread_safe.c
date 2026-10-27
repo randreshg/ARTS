@@ -58,7 +58,7 @@
 ///       values: impossible in either degenerate case, near-certain otherwise.
 ///
 /// Single-node test; protocol-agnostic.  Completion is driven by a finish event
-/// + arts_event_wait, never by spinning.
+/// and a continuation gated on it, never by spinning.
 
 #include <stdint.h>
 
@@ -124,8 +124,9 @@ void rng_sampler(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   me->draws = DRAWS_PER_EDT;
 }
 
-/// Runs after every sampler has folded in (joined the same finish scope via the
-/// main EDT's wait).  Evaluates the two properties and prints the verdict.
+/// Runs after every sampler has folded in (created by the continuation gated
+/// on the samplers' finish scope).  Evaluates the two properties and prints the
+/// verdict.
 void rng_check(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -194,6 +195,18 @@ void rng_check(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_shutdown();
 }
 
+/// Gated on the samplers' finish scope: runs the checker, which reads the
+/// fully-aggregated record RO and shuts the runtime down.  paramv[0] = the
+/// aggregation DB.
+static void after_samplers(uint32_t paramc, const uint64_t *paramv,
+                           uint32_t depc, arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)depc;
+  (void)depv;
+  arts_guid_t chk = arts_edt_create(rng_check, 0, NULL, 1, NULL);
+  arts_add_dependence((arts_guid_t)paramv[0], chk, 0, DB_MODE_RO);
+}
+
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
               arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -226,12 +239,10 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_add_dependence(db, s, 0, DB_MODE_RW);
   }
 
-  /* Wait for all samplers to finish folding in, then run the checker which
-   * reads the fully-aggregated record RO and shuts the runtime down. */
-  arts_event_wait(fe);
-
-  arts_guid_t chk = arts_edt_create(rng_check, 0, NULL, 1, NULL);
-  arts_add_dependence(db, chk, 0, DB_MODE_RO);
+  uint64_t pv[1] = {(uint64_t)db};
+  arts_guid_t then =
+      arts_edt_create(after_samplers, 1, pv, 1, &(arts_edt_hint_t){.rank = 0});
+  arts_add_dependence(fe, then, 0, DB_MODE_NULL);
 }
 
 int main(int argc, char **argv) {

@@ -399,7 +399,10 @@ typedef struct {
    *  fields (latch, channel, guid) are ignored — forced to a simple
    *  latch=1 (creator-token), current rank, auto-allocated GUID, auto_destroy.
    *  The runtime auto-chains it to the ambient finish scope and tracks its
-   *  creator-token for cleanup. Wait on it with arts_event_wait. Default false.
+   *  creator-token for cleanup.  Act on its fire with a continuation EDT
+   *  wired by arts_add_dependence; the continuation must not name this
+   *  event as its own finish_event, or the scope would wait for it and
+   *  never drain.  Default false.
    */
   bool finish;
   /** If true, this event self-destructs (route-slot detach) the instant it
@@ -808,29 +811,16 @@ void arts_event_add_dependence(arts_guid_t source, arts_guid_t destination,
 void arts_event_destroy(arts_guid_t guid);
 
 /**
- * @brief Block the calling EDT until a FINISH event drains (bulk sync).
- *
- * Releases the finish event's creator-token, releases the caller's acquired
- * DBs, context-switches into the scheduler until the event fires and
- * auto-destroys, then reacquires DBs and resumes. Intended for the carts
- * compiler fallback; idiomatic code uses a continuation (arts_add_dependence
- * on the finish event) instead. Only meaningful for finish (auto_destroy)
- * events. Returns true on success.
- */
-bool arts_event_wait(arts_guid_t event_guid);
-
-/**
- * @brief Hand a FINISH event's creator-token back without waiting.
+ * @brief Hand a FINISH event's creator-token back before the creator returns.
  *
  * The creator of a finish event holds one token that keeps the scope open
- * until the creator completes (or waits on it).  Releasing it here lets the
- * scope fire as soon as its members finish, while the creator keeps running.
+ * until the creator completes.  Releasing it here lets the scope fire as soon
+ * as its members finish, while the creator keeps running.
  * Call it only from the token's owner — the EDT that created @p event_guid,
  * on the thread running that EDT — at most once, and only after that EDT has
  * joined every member it wants the scope to cover (a join after the release
- * may find the scope already fired).  Calling it twice, from any other EDT,
- * or together with arts_event_wait on the same event (which releases the
- * token too) decrements the scope one time too many and is undefined.
+ * may find the scope already fired).  Calling it twice, or from any other
+ * EDT, decrements the scope one time too many and is undefined.
  */
 void arts_event_release_creator_token(arts_guid_t event_guid);
 
@@ -935,10 +925,7 @@ static inline void *arts_db_create_with_guid(arts_guid_t guid, uint64_t len,
  * names.  Call this to release that access early — before the EDT function
  * returns — so that consumer EDTs waiting on the DB can proceed.
  *
- * This is required when an EDT creates DBs and then blocks inside its
- * body (e.g. via arts_event_wait), because the automatic release
- * in the EDT epilogue cannot run until the function returns.  It is
- * required too when the EDT, in its body, hands a DB it holds onward, or
+ * This is required when the EDT, in its body, hands a DB it holds onward, or
  * starts work that leads to the DB's destroyer: a destroy is ordered after
  * the release of every hold on the block (see arts_db_destroy), so the
  * release comes right after the EDT's last access to the DB and before that

@@ -112,6 +112,89 @@ void rw_checker(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
 }
 
+static void check_phase(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                        arts_edt_dep_t depv[]);
+
+/// Iteration `it`: the mixed EDT in a finish scope, its check gated on it.
+static void iteration(uint64_t it) {
+  unsigned int nranks = arts_get_total_ranks();
+  arts_guid_t ro[NRO];
+  arts_guid_t rw[NRW];
+
+  /* RO deps homed locally (rank 0) -> synchronous local hits. */
+  for (unsigned int i = 0; i < NRO; i++) {
+    void *p = NULL;
+    ro[i] = arts_db_create(&p, sizeof(unsigned int), ARTS_DB, ARTS_DB_PROP_NONE,
+                           &(arts_db_hint_t){.rank = 0});
+    if (p != NULL) {
+      ((unsigned int *)p)[0] = 0u;
+    }
+    arts_db_release(ro[i], DB_MODE_RW);
+  }
+  /* RW deps homed remotely (rank 1+) -> ownership parks resolved by GRANT. */
+  for (unsigned int i = 0; i < NRW; i++) {
+    unsigned int home = 1u + (i % (nranks - 1u));
+    void *p = NULL;
+    rw[i] = arts_db_create(&p, sizeof(unsigned int), ARTS_DB, ARTS_DB_PROP_NONE,
+                           &(arts_db_hint_t){.rank = home});
+    arts_db_release(rw[i], DB_MODE_RW);
+  }
+
+  arts_guid_t e_m = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_guid_t m =
+      arts_edt_create(mixed_edt, 0, NULL, NDEP,
+                      &(arts_edt_hint_t){.rank = 0, .finish_event = e_m});
+  for (unsigned int i = 0; i < NRO; i++) {
+    arts_add_dependence(ro[i], m, i, DB_MODE_RO);
+  }
+  for (unsigned int i = 0; i < NRW; i++) {
+    arts_add_dependence(rw[i], m, NRO + i, DB_MODE_RW);
+  }
+
+  /* paramv of the check phase: the iteration, then the RW blocks. */
+  uint64_t cv[1 + NRW];
+  cv[0] = it;
+  for (unsigned int i = 0; i < NRW; i++) {
+    cv[1 + i] = (uint64_t)rw[i];
+  }
+  arts_guid_t c = arts_edt_create(check_phase, 1 + NRW, cv, 1,
+                                  &(arts_edt_hint_t){.rank = 0});
+  arts_add_dependence(e_m, c, 0, DB_MODE_NULL);
+}
+
+/// Gated on the checkers' scope: the next iteration, or the end of the run.
+static void next_iteration(uint32_t paramc, const uint64_t *paramv,
+                           uint32_t depc, arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)depc;
+  (void)depv;
+  if (paramv[0] + 1u < ITERS) {
+    iteration(paramv[0] + 1u);
+    return;
+  }
+  arts_printf("PASS: db_acquire_all_bias %u iterations\n", ITERS);
+  arts_shutdown();
+}
+
+/// Gated on the mixed EDT's scope.
+static void check_phase(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                        arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)depc;
+  (void)depv;
+  arts_guid_t e_c = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  for (unsigned int i = 0; i < NRW; i++) {
+    uint64_t slot = NRO + i;
+    arts_guid_t c =
+        arts_edt_create(rw_checker, 1, &slot, 1,
+                        &(arts_edt_hint_t){.rank = 0, .finish_event = e_c});
+    arts_add_dependence((arts_guid_t)paramv[1 + i], c, 0, DB_MODE_RO);
+  }
+  arts_guid_t n = arts_edt_create(next_iteration, 1, paramv, 1,
+                                  &(arts_edt_hint_t){.rank = 0});
+  arts_add_dependence(e_c, n, 0, DB_MODE_NULL);
+}
+
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
               arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -128,56 +211,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_shutdown();
     return;
   }
-
-  for (unsigned int it = 0; it < ITERS; it++) {
-    arts_guid_t ro[NRO];
-    arts_guid_t rw[NRW];
-
-    /* RO deps homed locally (rank 0) -> synchronous local hits. */
-    for (unsigned int i = 0; i < NRO; i++) {
-      void *p = NULL;
-      ro[i] = arts_db_create(&p, sizeof(unsigned int), ARTS_DB,
-                             ARTS_DB_PROP_NONE, &(arts_db_hint_t){.rank = 0});
-      if (p != NULL) {
-        ((unsigned int *)p)[0] = 0u;
-      }
-      arts_db_release(ro[i], DB_MODE_RW);
-    }
-    /* RW deps homed remotely (rank 1+) -> ownership parks resolved by GRANT. */
-    for (unsigned int i = 0; i < NRW; i++) {
-      unsigned int home = 1u + (i % (nranks - 1u));
-      void *p = NULL;
-      rw[i] =
-          arts_db_create(&p, sizeof(unsigned int), ARTS_DB, ARTS_DB_PROP_NONE,
-                         &(arts_db_hint_t){.rank = home});
-      arts_db_release(rw[i], DB_MODE_RW);
-    }
-
-    arts_guid_t e_m = arts_event_create(&ARTS_EVENT_HINT_FINISH);
-    arts_guid_t m =
-        arts_edt_create(mixed_edt, 0, NULL, NDEP,
-                        &(arts_edt_hint_t){.rank = 0, .finish_event = e_m});
-    for (unsigned int i = 0; i < NRO; i++) {
-      arts_add_dependence(ro[i], m, i, DB_MODE_RO);
-    }
-    for (unsigned int i = 0; i < NRW; i++) {
-      arts_add_dependence(rw[i], m, NRO + i, DB_MODE_RW);
-    }
-    arts_event_wait(e_m);
-
-    arts_guid_t e_c = arts_event_create(&ARTS_EVENT_HINT_FINISH);
-    for (unsigned int i = 0; i < NRW; i++) {
-      uint64_t slot = NRO + i;
-      arts_guid_t c =
-          arts_edt_create(rw_checker, 1, &slot, 1,
-                          &(arts_edt_hint_t){.rank = 0, .finish_event = e_c});
-      arts_add_dependence(rw[i], c, 0, DB_MODE_RO);
-    }
-    arts_event_wait(e_c);
-  }
-
-  arts_printf("PASS: db_acquire_all_bias %u iterations\n", ITERS);
-  arts_shutdown();
+  iteration(0u);
 }
 
 int main(int argc, char **argv) {

@@ -30,12 +30,10 @@ A finish event is created with :c:func:`arts_event_create` and
 The hint forces a simple latch event on the current rank with an
 initial count of 1 — the **creator-token** — and marks it
 auto-destroy.  The token keeps the scope open while the creating EDT is
-still spawning members; it is released when the creating EDT completes
-(or consumed by :c:func:`arts_event_wait`, see below, or handed back
-early by :c:func:`arts_event_release_creator_token` once every member is
-joined).  The event fires
-when the latch drains to zero: creator-token released and every member
-task finished.
+still spawning members; it is released when the creating EDT completes,
+or handed back early by :c:func:`arts_event_release_creator_token` once
+every member is joined.  The event fires when the latch drains to zero:
+creator-token released and every member task finished.
 
 Joining EDTs to a Scope
 -----------------------
@@ -83,30 +81,31 @@ with no extra user code.
 Consuming the Result
 --------------------
 
-There are two ways to act on scope completion.
-
-**Continuation (idiomatic).**  Wire a successor EDT onto the finish
-event with :c:func:`arts_add_dependence`; it fires once the scope has
-drained:
+Scope completion is acted on by a continuation: wire a successor EDT
+onto the finish event with :c:func:`arts_add_dependence`; it becomes
+ready once the scope has drained:
 
 .. code-block:: c
 
    arts_guid_t s = arts_edt_create(successor, 0, NULL, 1, NULL);
    arts_add_dependence(fe, s, 0, DB_MODE_NULL);
 
-**Blocking wait.**  :c:func:`arts_event_wait` blocks the calling EDT
-until the finish event drains.  It releases the creator-token, releases
-the caller's acquired DBs (so member EDTs can progress), runs the
-scheduler until the event fires and auto-destroys, then reacquires the
-DBs and resumes:
+An EDT body never blocks on a scope: work that must follow the scope's
+completion goes into the successor, which receives what it needs through
+its parameters and dependences.  The finish event is reclaimed when it
+fires, so the dependence is added while the creator still holds its
+token — before the creating EDT returns, and before any
+:c:func:`arts_event_release_creator_token`; a dependence added after the
+fire finds no event and is never satisfied.
 
-.. code-block:: c
-
-   bool ok = arts_event_wait(fe);
-   /* all scope-joined work is done here */
-
-``arts_event_wait`` is only meaningful for finish (auto-destroy)
-events; prefer the continuation form where the control flow allows it.
+With a NULL hint, or a hint whose ``finish_event`` is ``NULL_GUID``, the
+successor joins its creator's ambient scope.  It must never name the
+scope it depends on as its ``finish_event``: that would make it a member
+of the scope it waits for, and the scope could never drain.  A NULL hint
+also leaves the successor's placement to the no-hint policy
+(``ARTS_NOHINT_EDT_PLACEMENT``); set ``rank`` in a hint when it must run
+on a given rank, for example when it reads state kept in one process's
+memory.
 
 Minimal Example
 ---------------
@@ -121,6 +120,12 @@ A fork-join over ``NUM_TASKS`` workers (after
        /* ... do work; may spawn children, which inherit the scope ... */
    }
 
+   void done(uint32_t paramc, const uint64_t *paramv,
+             uint32_t depc, arts_edt_dep_t depv[]) {
+       /* all scope-joined work is done here */
+       arts_shutdown();
+   }
+
    void main_edt(uint32_t paramc, const uint64_t *paramv,
                  uint32_t depc, arts_edt_dep_t depv[]) {
        arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
@@ -130,6 +135,6 @@ A fork-join over ``NUM_TASKS`` workers (after
        for (unsigned int i = 0; i < NUM_TASKS; i++)
            arts_edt_create(worker, 0, NULL, 0, &h);
 
-       arts_event_wait(fe);   /* releases creator-token, blocks until drained */
-       arts_shutdown();
-   }
+       arts_guid_t d = arts_edt_create(done, 0, NULL, 1, NULL);
+       arts_add_dependence(fe, d, 0, DB_MODE_NULL);
+   }   /* returning releases the creator-token */

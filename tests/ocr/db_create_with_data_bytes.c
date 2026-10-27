@@ -89,6 +89,20 @@ static void consume(arts_guid_t g, uint64_t size, unsigned int id,
   arts_add_dependence(g, e, 0, mode);
 }
 
+/// Runs once every consumer's scope drained.
+static void finale(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                   arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)paramv;
+  (void)depc;
+  (void)depv;
+  if (arts_test_status() == 0) {
+    arts_printf("PASS: db_create_with_data_bytes %u cases byte-exact\n",
+                NUM_LABELED + 1u);
+  }
+  arts_shutdown();
+}
+
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
               arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -122,12 +136,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_db_release(minted, DB_MODE_RW);
   consume(minted, MINTED_BYTES, NUM_LABELED, DB_MODE_RW, fe);
 
-  arts_event_wait(fe);
-  if (arts_test_status() == 0) {
-    arts_printf("PASS: db_create_with_data_bytes %u cases byte-exact\n",
-                NUM_LABELED + 1u);
-  }
-  arts_shutdown();
+  arts_guid_t f =
+      arts_edt_create(finale, 0, NULL, 1, &(arts_edt_hint_t){.rank = 0});
+  arts_add_dependence(fe, f, 0, DB_MODE_NULL);
 }
 
 int main(int argc, char **argv) {

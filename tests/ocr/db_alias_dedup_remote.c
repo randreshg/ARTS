@@ -261,26 +261,105 @@ void home_checker_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
 }
 
-/* Runs one aliasing EDT on `writer_rank`, then a home-side check of `want`. */
-static void phase(arts_edt_t body, arts_guid_t db, unsigned int writer_rank,
-                  unsigned int slots, const arts_db_access_mode_t *modes,
-                  unsigned int want, unsigned int announce) {
-  arts_guid_t e_w = arts_event_create(&ARTS_EVENT_HINT_FINISH);
-  arts_guid_t w = arts_edt_create(
-      body, 0, NULL, slots,
-      &(arts_edt_hint_t){.rank = writer_rank, .finish_event = e_w});
-  for (unsigned int i = 0; i < slots; i++) {
-    arts_add_dependence(db, w, i, modes[i]);
-  }
-  arts_event_wait(e_w);
+/* The aliasing phases, run in this order, each followed by a home-side check
+ * of its value. */
+#define PHASES 4u
+static const struct {
+  arts_edt_t body;
+  unsigned int slots;
+  arts_db_access_mode_t modes[3];
+  unsigned int want;
+} phases[PHASES] = {
+    {aliased_edt, 2, {DB_MODE_RW, DB_MODE_RW}, MAGIC},
+    /* Read slot first, write slot second: the write must still own the one
+     * acquisition. */
+    {mixed_alias_edt, 2, {DB_MODE_RO, DB_MODE_RW}, MAGIC2},
+    {triple_alias_edt, 3, {DB_MODE_RO, DB_MODE_RW, DB_MODE_RO}, MAGIC3},
+    {alias_release_edt, 2, {DB_MODE_RW, DB_MODE_RW}, MAGIC5},
+};
 
-  uint64_t want_v[2] = {(uint64_t)want, (uint64_t)announce};
+/* paramv of a step: the step (2p runs phase p's aliasing EDT, 2p+1 its home
+ * check), the block, the aliasing EDT's rank. */
+enum { P_STEP, P_DB, P_WRITER, P_COUNT };
+
+static void step_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                     arts_edt_dep_t depv[]);
+
+static void finale(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                   arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)paramv;
+  (void)depc;
+  (void)depv;
+  arts_shutdown();
+}
+
+/* The mid-body release, after every phase: the run ends once both the
+ * releasing EDT's scope and the reader's have drained. */
+static void mid_release(arts_guid_t db, unsigned int writer_rank) {
+  /* The reader is wired before the releasing EDT exists, so its dependence
+   * on the gate is registered before anything can satisfy it. */
+  arts_guid_t gate = arts_event_create(&ARTS_EVENT_HINT_DEFAULTS);
+  uint64_t want_v[2] = {(uint64_t)MAGIC4, 1u};
   arts_guid_t e_rd = arts_event_create(&ARTS_EVENT_HINT_FINISH);
   arts_guid_t r =
-      arts_edt_create(home_checker_edt, 2, want_v, 1,
+      arts_edt_create(home_checker_edt, 2, want_v, 2,
                       &(arts_edt_hint_t){.rank = 0, .finish_event = e_rd});
   arts_add_dependence(db, r, 0, DB_MODE_RO);
-  arts_event_wait(e_rd);
+  arts_add_dependence(gate, r, 1, DB_MODE_NULL);
+
+  uint64_t gate_v[1] = {(uint64_t)gate};
+  arts_guid_t e_mr = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_guid_t mr = arts_edt_create(
+      mid_release_edt, 1, gate_v, 2,
+      &(arts_edt_hint_t){.rank = writer_rank, .finish_event = e_mr});
+  arts_add_dependence(db, mr, 0, DB_MODE_RO);
+  arts_add_dependence(db, mr, 1, DB_MODE_RW);
+  arts_guid_t f =
+      arts_edt_create(finale, 0, NULL, 2, &(arts_edt_hint_t){.rank = 0});
+  arts_add_dependence(e_mr, f, 0, DB_MODE_NULL);
+  arts_add_dependence(e_rd, f, 1, DB_MODE_NULL);
+}
+
+/* Each step in a finish scope of its own, the next step gated on it. */
+static void step(const uint64_t *paramv) {
+  uint64_t s = paramv[P_STEP];
+  arts_guid_t db = (arts_guid_t)paramv[P_DB];
+  unsigned int writer_rank = (unsigned int)paramv[P_WRITER];
+  if (s == 2u * PHASES) {
+    mid_release(db, writer_rank);
+    return;
+  }
+  unsigned int p = (unsigned int)(s / 2u);
+  arts_guid_t scope = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  if (s % 2u == 0u) {
+    /* Runs one aliasing EDT on `writer_rank`. */
+    arts_guid_t w = arts_edt_create(
+        phases[p].body, 0, NULL, phases[p].slots,
+        &(arts_edt_hint_t){.rank = writer_rank, .finish_event = scope});
+    for (unsigned int i = 0; i < phases[p].slots; i++) {
+      arts_add_dependence(db, w, i, phases[p].modes[i]);
+    }
+  } else {
+    /* Then a home-side check of its value. */
+    uint64_t want_v[2] = {(uint64_t)phases[p].want, 0u};
+    arts_guid_t r =
+        arts_edt_create(home_checker_edt, 2, want_v, 1,
+                        &(arts_edt_hint_t){.rank = 0, .finish_event = scope});
+    arts_add_dependence(db, r, 0, DB_MODE_RO);
+  }
+  uint64_t next[P_COUNT] = {s + 1u, paramv[P_DB], paramv[P_WRITER]};
+  arts_guid_t n = arts_edt_create(step_edt, P_COUNT, next, 1,
+                                  &(arts_edt_hint_t){.rank = 0});
+  arts_add_dependence(scope, n, 0, DB_MODE_NULL);
+}
+
+static void step_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                     arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)depc;
+  (void)depv;
+  step(paramv);
 }
 
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
@@ -305,40 +384,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   ((unsigned int *)ptr)[0] = 0u;
   arts_db_release(db, DB_MODE_RW);
 
-  const arts_db_access_mode_t rw_rw[2] = {DB_MODE_RW, DB_MODE_RW};
-  const arts_db_access_mode_t ro_rw[2] = {DB_MODE_RO, DB_MODE_RW};
-  const arts_db_access_mode_t ro_rw_ro[3] = {DB_MODE_RO, DB_MODE_RW,
-                                             DB_MODE_RO};
-  phase(aliased_edt, db, writer_rank, 2, rw_rw, MAGIC, 0u);
-  /* Read slot first, write slot second: the write must still own the one
-   * acquisition. */
-  phase(mixed_alias_edt, db, writer_rank, 2, ro_rw, MAGIC2, 0u);
-  phase(triple_alias_edt, db, writer_rank, 3, ro_rw_ro, MAGIC3, 0u);
-  phase(alias_release_edt, db, writer_rank, 2, rw_rw, MAGIC5, 0u);
-
-  /* The mid-body release.  The reader is wired before the releasing EDT
-   * exists, so its dependence on the gate is registered before anything can
-   * satisfy it. */
-  arts_guid_t gate = arts_event_create(&ARTS_EVENT_HINT_DEFAULTS);
-  uint64_t want_v[2] = {(uint64_t)MAGIC4, 1u};
-  arts_guid_t e_rd = arts_event_create(&ARTS_EVENT_HINT_FINISH);
-  arts_guid_t r =
-      arts_edt_create(home_checker_edt, 2, want_v, 2,
-                      &(arts_edt_hint_t){.rank = 0, .finish_event = e_rd});
-  arts_add_dependence(db, r, 0, DB_MODE_RO);
-  arts_add_dependence(gate, r, 1, DB_MODE_NULL);
-
-  uint64_t gate_v[1] = {(uint64_t)gate};
-  arts_guid_t e_mr = arts_event_create(&ARTS_EVENT_HINT_FINISH);
-  arts_guid_t mr = arts_edt_create(
-      mid_release_edt, 1, gate_v, 2,
-      &(arts_edt_hint_t){.rank = writer_rank, .finish_event = e_mr});
-  arts_add_dependence(db, mr, 0, DB_MODE_RO);
-  arts_add_dependence(db, mr, 1, DB_MODE_RW);
-  arts_event_wait(e_mr);
-  arts_event_wait(e_rd);
-
-  arts_shutdown();
+  step((const uint64_t[P_COUNT]){0u, (uint64_t)db, writer_rank});
 }
 
 int main(int argc, char **argv) {

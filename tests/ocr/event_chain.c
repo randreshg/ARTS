@@ -77,6 +77,16 @@ void already_fired_end(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_printf("  PASS: already-fired event triggered EDT immediately\n");
 }
 
+/// Gated on the finish scope every chain end joined.
+static void finale(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                   arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)paramv;
+  (void)depc;
+  (void)depv;
+  arts_shutdown();
+}
+
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
               arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -130,8 +140,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_add_dependence(ev4, edt4, 0, DB_MODE_RW);
   arts_event_destroy(ev4);
 
-  arts_event_wait(fe);
-  arts_shutdown();
+  arts_guid_t f =
+      arts_edt_create(finale, 0, NULL, 1, &(arts_edt_hint_t){.rank = 0});
+  arts_add_dependence(fe, f, 0, DB_MODE_NULL);
 }
 
 int main(int argc, char **argv) {

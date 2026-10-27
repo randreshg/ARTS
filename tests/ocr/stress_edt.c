@@ -105,6 +105,16 @@ void chain_final(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
 }
 
+/// Gated on the finish scope every stress EDT joined.
+static void finale(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                   arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)paramv;
+  (void)depc;
+  (void)depv;
+  arts_shutdown();
+}
+
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
               arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -143,8 +153,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   // Seed first stage.
   arts_edt_satisfy_slot(prev, 0, (arts_guid_t)(0), DB_MODE_NULL);
 
-  arts_event_wait(fe);
-  arts_shutdown();
+  arts_guid_t f =
+      arts_edt_create(finale, 0, NULL, 1, &(arts_edt_hint_t){.rank = 0});
+  arts_add_dependence(fe, f, 0, DB_MODE_NULL);
 }
 
 int main(int argc, char **argv) {

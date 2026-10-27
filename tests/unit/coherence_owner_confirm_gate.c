@@ -52,8 +52,7 @@
 ///   reset  (rank 0, RW): re-own on the home, write vprev   [e_reset]
 ///   writer (rank W, RW): transfer 0->W, write vnew         [e_writer]
 ///   reader (rank 0, RO): MUST read vnew                    [e_reader]
-/// main_edt waits on each scope in that order before creating the next EDT,
-/// releasing the creator-token so the scope can drain.
+/// Each EDT is created by a continuation gated on the previous one's scope.
 ///
 /// Registered on two ranks, with one and with two progress threads per rank;
 /// two, which reorder one peer's messages, widen the race.  On one rank there
@@ -108,6 +107,89 @@ void reader_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
 }
 
+/// paramv of a phase: the iteration, the DB.
+enum { P_IT, P_DB, P_COUNT };
+
+/// Creates phase `next` on rank 0, gated on the previous phase's scope.
+static void then(arts_edt_t next, const uint64_t *pv, arts_guid_t scope) {
+  arts_guid_t n =
+      arts_edt_create(next, P_COUNT, pv, 1, &(arts_edt_hint_t){.rank = 0});
+  arts_add_dependence(scope, n, 0, DB_MODE_NULL);
+}
+
+static void writer_phase(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                         arts_edt_dep_t depv[]);
+
+/// Phase 1: reset EDT re-establishes ownership on home (rank 0).
+static void reset_phase(const uint64_t *paramv) {
+  uint64_t vprev = (uint64_t)(RESET_BASE + paramv[P_IT]);
+  arts_guid_t e_reset = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_guid_t rst =
+      arts_edt_create(reset_edt, 1, &vprev, 1,
+                      &(arts_edt_hint_t){.rank = 0, .finish_event = e_reset});
+  arts_add_dependence((arts_guid_t)paramv[P_DB], rst, 0, DB_MODE_RW);
+  /* The writer phase runs once the reset EDT has completed and e_reset has
+   * fired, meaning ownership is back on rank 0. */
+  then(writer_phase, paramv, e_reset);
+}
+
+static void reader_phase(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                         arts_edt_dep_t depv[]);
+
+/// Gated on the reader's scope: the next iteration, or the end of the run.
+static void next_iteration(uint32_t paramc, const uint64_t *paramv,
+                           uint32_t depc, arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)depc;
+  (void)depv;
+  if (paramv[P_IT] + 1u < ITERS) {
+    uint64_t pv[P_COUNT] = {paramv[P_IT] + 1u, paramv[P_DB]};
+    reset_phase(pv);
+    return;
+  }
+  arts_printf("PASS: coherence_owner_confirm_gate %u iterations\n", ITERS);
+  arts_shutdown();
+}
+
+/// Phase 2: writer EDT on rank W; forces 0->W ownership transfer.
+static void writer_phase(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                         arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)depc;
+  (void)depv;
+  /* Writer rank (remote when possible). */
+  unsigned int W = (arts_get_total_ranks() > 1) ? 1u : 0u;
+  uint64_t vnew = (uint64_t)(WRITE_BASE + paramv[P_IT]);
+  arts_guid_t e_writer = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_guid_t wr =
+      arts_edt_create(writer_edt, 1, &vnew, 1,
+                      &(arts_edt_hint_t){.rank = W, .finish_event = e_writer});
+  arts_add_dependence((arts_guid_t)paramv[P_DB], wr, 0, DB_MODE_RW);
+  /* The writer EDT acquires RW ownership (home redirects 0->W) and writes
+   * vnew.  The window the gate closes: the home flips rw_holder only on W's
+   * CONFIRM, which without the gate could arrive AFTER the writer EDT has
+   * completed and e_writer has fired. */
+  then(reader_phase, paramv, e_writer);
+}
+
+/// Phase 3: reader EDT on home (rank 0); MUST see vnew.
+static void reader_phase(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                         arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)depc;
+  (void)depv;
+  /* Causally ordered AFTER the writer (this phase runs only once e_writer
+   * fired), but the RO acquire's request can race W's in-flight CONFIRM at
+   * the home — the window the gate closes. */
+  uint64_t vnew = (uint64_t)(WRITE_BASE + paramv[P_IT]);
+  arts_guid_t e_reader = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_guid_t rd =
+      arts_edt_create(reader_edt, 1, &vnew, 1,
+                      &(arts_edt_hint_t){.rank = 0, .finish_event = e_reader});
+  arts_add_dependence((arts_guid_t)paramv[P_DB], rd, 0, DB_MODE_RO);
+  then(next_iteration, paramv, e_reader);
+}
+
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
               arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -117,10 +199,6 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   arts_printf("=== coherence_owner_confirm_gate ===\n");
 
-  unsigned int nranks = arts_get_total_ranks();
-  unsigned int W =
-      (nranks > 1) ? 1u : 0u; /* writer rank (remote when possible) */
-
   void *ptr = NULL;
   arts_guid_t db =
       arts_db_create(&ptr, sizeof(unsigned int), ARTS_DB, ARTS_DB_PROP_NONE,
@@ -128,49 +206,8 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   ((unsigned int *)ptr)[0] = 0u;
   arts_db_release(db, DB_MODE_RW);
 
-  for (unsigned int it = 0; it < ITERS; it++) {
-    uint64_t vprev = (uint64_t)(RESET_BASE + it);
-    uint64_t vnew = (uint64_t)(WRITE_BASE + it);
-
-    /* --- Phase 1: reset EDT re-establishes ownership on home (rank 0). --- */
-    arts_guid_t e_reset = arts_event_create(&ARTS_EVENT_HINT_FINISH);
-    arts_guid_t rst =
-        arts_edt_create(reset_edt, 1, &vprev, 1,
-                        &(arts_edt_hint_t){.rank = 0, .finish_event = e_reset});
-    arts_add_dependence(db, rst, 0, DB_MODE_RW);
-    /* Release the e_reset creator-token and wait for the reset EDT to finish.
-     * When this returns, the reset EDT has completed and e_reset has fired,
-     * meaning ownership is back on rank 0. */
-    arts_event_wait(e_reset);
-
-    /* --- Phase 2: writer EDT on rank W; forces 0->W ownership transfer. --- */
-    arts_guid_t e_writer = arts_event_create(&ARTS_EVENT_HINT_FINISH);
-    arts_guid_t wr = arts_edt_create(
-        writer_edt, 1, &vnew, 1,
-        &(arts_edt_hint_t){.rank = W, .finish_event = e_writer});
-    arts_add_dependence(db, wr, 0, DB_MODE_RW);
-    /* Release the e_writer creator-token and wait for the writer EDT to finish.
-     * While this call is spinning (DB released for member EDT progress), the
-     * writer EDT acquires RW ownership (home redirects 0->W) and writes vnew.
-     * The window the gate closes: the home flips rw_holder only on W's
-     * CONFIRM, which without the gate could arrive AFTER the writer EDT has
-     * completed and e_writer has fired here. */
-    arts_event_wait(e_writer);
-
-    /* --- Phase 3: reader EDT on home (rank 0); MUST see vnew. ---
-     * Causally ordered AFTER the writer (we only create this EDT after
-     * arts_event_wait(e_writer) returns), but the RO acquire's request can
-     * race W's in-flight CONFIRM at the home — the window the gate closes. */
-    arts_guid_t e_reader = arts_event_create(&ARTS_EVENT_HINT_FINISH);
-    arts_guid_t rd = arts_edt_create(
-        reader_edt, 1, &vnew, 1,
-        &(arts_edt_hint_t){.rank = 0, .finish_event = e_reader});
-    arts_add_dependence(db, rd, 0, DB_MODE_RO);
-    arts_event_wait(e_reader);
-  }
-
-  arts_printf("PASS: coherence_owner_confirm_gate %u iterations\n", ITERS);
-  arts_shutdown();
+  uint64_t pv[P_COUNT] = {0u, (uint64_t)db};
+  reset_phase(pv);
 }
 
 int main(int argc, char **argv) {

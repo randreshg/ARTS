@@ -139,6 +139,19 @@ static void creator(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       &(arts_edt_hint_t){.rank = home, .finish_event = scope});
 }
 
+/* Gated on the scope.  paramv[0] = the event the destroyer satisfied. */
+static void finale(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                   arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)depc;
+  (void)depv;
+  arts_event_destroy((arts_guid_t)paramv[0]);
+  if (arts_test_status() == 0) {
+    arts_printf("PASS: edt_create_destroy_proxy\n");
+  }
+  arts_shutdown();
+}
+
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
               arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -158,12 +171,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       &(arts_edt_hint_t){.rank = arts_get_current_rank(),
                          .finish_event = scope});
   arts_add_dependence(running, c, 0, DB_MODE_NULL);
-  arts_event_wait(scope);
-  arts_event_destroy(running);
-  if (arts_test_status() == 0) {
-    arts_printf("PASS: edt_create_destroy_proxy\n");
-  }
-  arts_shutdown();
+  arts_guid_t f = arts_edt_create(
+      finale, 1, dp, 1, &(arts_edt_hint_t){.rank = arts_get_current_rank()});
+  arts_add_dependence(scope, f, 0, DB_MODE_NULL);
 }
 
 int main(int argc, char **argv) {

@@ -14,7 +14,6 @@
 #include "arts/gas/route_table.h"
 
 #include <stdio.h>
-#include <unistd.h>
 
 #include "../test_failure_status.h"
 
@@ -28,6 +27,16 @@ static void noop_dep(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)paramv;
   (void)depc;
   (void)depv;
+}
+
+/* Gated on the noop EDTs' finish scope. */
+static void finale(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                   arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)paramv;
+  (void)depc;
+  (void)depv;
+  arts_shutdown();
 }
 
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
@@ -53,8 +62,6 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_event_satisfy_slot(ch, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
   }
 
-  usleep(50000);
-
   /* Event must still be alive after N fires. */
   arts_shared_ptr_t h = arts_route_table_lookup_event(ch);
   struct arts_event_s *e = (struct arts_event_s *)arts_shared_get(h);
@@ -71,7 +78,6 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   /* Explicit destroy releases it. */
   arts_event_destroy(ch);
-  usleep(50000);
 
   h = arts_route_table_lookup_event(ch);
   e = (struct arts_event_s *)arts_shared_get(h);
@@ -103,11 +109,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   for (int i = 0; i < N_UNPAIRED; i++) {
     arts_add_dependence(ch_dep, sink, ARTS_EVENT_LATCH_DECR_SLOT, DB_MODE_NULL);
   }
-  usleep(50000);
   arts_event_destroy(ch_sat);
   arts_event_destroy(ch_dep);
   arts_event_destroy(sink);
-  usleep(50000);
   const arts_guid_t held[2] = {ch_sat, ch_dep};
   for (int i = 0; i < 2; i++) {
     h = arts_route_table_lookup_event(held[i]);
@@ -127,8 +131,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       "  PASS: CHANNEL persistent across %d fires; destroyed explicitly, "
       "also with %d unpaired satisfies or dependences queued\n",
       N_GENS, N_UNPAIRED);
-  arts_event_wait(fe);
-  arts_shutdown();
+  arts_guid_t f =
+      arts_edt_create(finale, 0, NULL, 1, &(arts_edt_hint_t){.rank = 0});
+  arts_add_dependence(fe, f, 0, DB_MODE_NULL);
 }
 
 int main(int argc, char **argv) {

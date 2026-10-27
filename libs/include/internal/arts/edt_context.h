@@ -51,9 +51,9 @@ extern "C" {
  *
  * Each worker thread maintains, while it runs an EDT, a small set of
  * thread-local pieces of state: which EDT is currently running and the list
- * of DBs the running EDT has created.  These are owned by the worker and are
- * saved/restored around any nested EDT-like execution (e.g. an event waiter
- * that re-enters the runtime).
+ * of DBs the running EDT has created.  An EDT runs to completion on its
+ * worker with no other EDT running inside it, so the worker holds one such
+ * set at a time.
  *
  * The running-EDT pointer has external linkage so foreign TUs that consult
  * the current EDT directly (memory/coherence, event satisfy fast-path,
@@ -61,22 +61,11 @@ extern "C" {
  */
 extern ARTS_THREAD_LOCAL struct arts_edt_s *current_edt;
 
-/* Snapshot of the per-worker EDT context, used to save and restore the
- * thread-locals around a nested execution. */
-typedef struct {
-  struct arts_edt_s *current_edt;
-  /* Both lists saved by value — each vector owns its block. */
-  arts_vector_t created_db_list;
-  arts_vector_t owned_finish_list;
-} arts_edt_ctx_t;
-
 /* Run-start / run-end context management (called from the EDT run path). */
 void arts_set_thread_local_edt_info(struct arts_edt_s *edt);
 /* `decr_finish`: emit the EDT's own finish-scope DECR here; false when the
  * caller emits it later, after the EDT's GUID is retired. */
 void arts_unset_thread_local_edt_info(bool decr_finish);
-void arts_edt_ctx_save(arts_edt_ctx_t *tl);
-void arts_edt_ctx_restore(arts_edt_ctx_t *tl);
 void arts_cleanup_edt_tls(void);
 
 /* Created-DB tracking on the current worker (auto-acquire / release path).
@@ -88,7 +77,8 @@ void arts_cleanup_edt_tls(void);
 void arts_track_created_db(arts_shared_ptr_t h);
 arts_vector_t *arts_get_created_db_list(void);
 
-/* Finish-event owned-list: register creator-token, consume on wait, cleanup. */
+/* Finish-event owned-list: register a creator-token, consume one handed back
+ * early, drop the rest at completion. */
 void arts_owned_finish_register(arts_guid_t fe_guid);
 void arts_owned_finish_consume(arts_guid_t fe_guid);
 void arts_owned_finish_cleanup(void);

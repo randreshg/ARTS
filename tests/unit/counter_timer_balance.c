@@ -20,7 +20,8 @@
 /// timer functions only touch atomics + arts_get_time_stamp + (on error)
 /// arts_abort, so they are safe to call directly without arts_rt — keeping the
 /// contract check runtime-free and deterministic.  arts_rt is still driven (a
-/// trivial EDT + finish event) so this registers as a runtime single-node test.
+/// trivial EDT in a finish scope, and a continuation gated on it that ends the
+/// run) so this registers as a runtime single-node test.
 ///
 /// Config-agnostic: the timer functions behave identically under every
 /// coherence and counter configuration (atomic CAS/swap on a single uint64
@@ -117,6 +118,15 @@ void leaf_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depv;
 }
 
+static void finale(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                   arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)paramv;
+  (void)depc;
+  (void)depv;
+  arts_shutdown();
+}
+
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
               arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -127,8 +137,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
   arts_edt_create(leaf_edt, 0, NULL, 0,
                   &(arts_edt_hint_t){.rank = 0, .finish_event = fe});
-  arts_event_wait(fe);
-  arts_shutdown();
+  arts_guid_t f =
+      arts_edt_create(finale, 0, NULL, 1, &(arts_edt_hint_t){.rank = 0});
+  arts_add_dependence(fe, f, 0, DB_MODE_NULL);
 }
 
 int main(int argc, char **argv) {

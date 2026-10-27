@@ -126,6 +126,68 @@ static arts_guid_t spawn_inc(arts_guid_t db, unsigned int rank,
   return w;
 }
 
+static void finale(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                   arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)paramv;
+  (void)depc;
+  (void)depv;
+  arts_shutdown();
+}
+
+/* paramv of a phase: the phase (batches 0 .. N_BATCHES-1, then steps), the
+ * block, the increments spawned so far. */
+enum { P_PHASE, P_DB, P_TOTAL, P_COUNT };
+
+static void phase_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                      arts_edt_dep_t depv[]);
+
+/* One batch or one step in a finish scope of its own, the next phase gated
+ * on it; after the last step, the check in a scope of its own and the
+ * shutdown gated on that. */
+static void phase(const uint64_t *paramv) {
+  unsigned int nranks = arts_get_total_ranks();
+  arts_guid_t db = (arts_guid_t)paramv[P_DB];
+  uint64_t p = paramv[P_PHASE];
+  uint64_t total = paramv[P_TOTAL];
+  arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  if (p < (uint64_t)N_BATCHES) {
+    unsigned int b = (unsigned int)p;
+    for (int i = 0; i < INCS_PER_BATCH; i++) {
+      spawn_inc(db, (b * INCS_PER_BATCH + (unsigned)i) % nranks, fe);
+      total++;
+    }
+  } else if (p < (uint64_t)N_BATCHES + STEPS) {
+    unsigned int r1 = 1u;
+    unsigned int r2 = (nranks > 2) ? 2u : 1u;
+    spawn_inc(db, 0u, fe);
+    spawn_inc(db, r1, fe);
+    spawn_inc(db, r2, fe);
+    total += 3;
+  } else {
+    arts_guid_t chk =
+        arts_edt_create(check_edt, 1, &total, 1,
+                        &(arts_edt_hint_t){.rank = 0, .finish_event = fe});
+    arts_add_dependence(db, chk, 0, DB_MODE_RO);
+    arts_guid_t f =
+        arts_edt_create(finale, 0, NULL, 1, &(arts_edt_hint_t){.rank = 0});
+    arts_add_dependence(fe, f, 0, DB_MODE_NULL);
+    return;
+  }
+  uint64_t next[P_COUNT] = {p + 1u, (uint64_t)db, total};
+  arts_guid_t n = arts_edt_create(phase_edt, P_COUNT, next, 1,
+                                  &(arts_edt_hint_t){.rank = 0});
+  arts_add_dependence(fe, n, 0, DB_MODE_NULL);
+}
+
+static void phase_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                      arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)depc;
+  (void)depv;
+  phase(paramv);
+}
+
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
               arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -149,35 +211,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   atomic_init((_Atomic(uint64_t) *)ptr, (uint64_t)0);
   arts_db_release(db, DB_MODE_RW);
 
-  uint64_t total = 0;
-  for (int b = 0; b < N_BATCHES; b++) {
-    arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
-    for (int i = 0; i < INCS_PER_BATCH; i++) {
-      spawn_inc(db, ((unsigned)b * INCS_PER_BATCH + (unsigned)i) % nranks, fe);
-      total++;
-    }
-    arts_event_wait(fe);
-  }
-
-  unsigned int r1 = 1u;
-  unsigned int r2 = (nranks > 2) ? 2u : 1u;
-  for (unsigned int s = 0; s < STEPS; s++) {
-    arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
-    spawn_inc(db, 0u, fe);
-    spawn_inc(db, r1, fe);
-    spawn_inc(db, r2, fe);
-    total += 3;
-    arts_event_wait(fe);
-  }
-
-  arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
-  arts_guid_t chk =
-      arts_edt_create(check_edt, 1, &total, 1,
-                      &(arts_edt_hint_t){.rank = 0, .finish_event = fe});
-  arts_add_dependence(db, chk, 0, DB_MODE_RO);
-  arts_event_wait(fe);
-
-  arts_shutdown();
+  phase((const uint64_t[P_COUNT]){0u, (uint64_t)db, 0u});
 }
 
 int main(int argc, char **argv) {

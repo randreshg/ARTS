@@ -151,8 +151,26 @@ static void tail(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depv;
 }
 
+/* Gated on main's scope.  paramv[0] = the chain's done event. */
+static void finale(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                   arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)depc;
+  (void)depv;
+  arts_event_destroy((arts_guid_t)paramv[0]);
+  if (!g_closed) {
+    arts_printf("FAIL: db_destroy_untouched_rank chain did not close\n");
+    arts_test_fail();
+  } else if (arts_test_status() == 0) {
+    arts_printf("PASS: db_destroy_untouched_rank destroyed from rank %u, "
+                "generation 2 read there and at the home\n",
+                last_rank());
+  }
+  arts_shutdown();
+}
+
 /* The chain belongs to no finish scope: its last task signals the home, where
- * the only scope main waits on lives with its one member. */
+ * the only scope the finale is gated on lives with its one member. */
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
               arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -168,17 +186,10 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   uint64_t pv[P_COUNT] = {(uint64_t)label, (uint64_t)done};
   (void)arts_edt_create(first_creator, P_COUNT, pv, 0,
                         &(arts_edt_hint_t){.rank = 0u});
-  (void)arts_event_wait(finish);
-  arts_event_destroy(done);
-  if (!g_closed) {
-    arts_printf("FAIL: db_destroy_untouched_rank chain did not close\n");
-    arts_test_fail();
-  } else if (arts_test_status() == 0) {
-    arts_printf("PASS: db_destroy_untouched_rank destroyed from rank %u, "
-                "generation 2 read there and at the home\n",
-                last_rank());
-  }
-  arts_shutdown();
+  uint64_t fv[1] = {(uint64_t)done};
+  arts_guid_t f =
+      arts_edt_create(finale, 1, fv, 1, &(arts_edt_hint_t){.rank = 0u});
+  arts_add_dependence(finish, f, 0, DB_MODE_NULL);
 }
 
 int main(int argc, char **argv) {
