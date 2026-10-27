@@ -68,23 +68,17 @@ void arts_handler_db_acquire(void *item, void *args) {
   if (mode == DB_MODE_RO) {
     if (is_home ||
         is_owner) { /* WT RO predicate (home holds current data) */
-      /* Pre-check the publication signal so an unpublished (v0, installed
-       * at create) stable buffer parks WITHOUT taking the EDT's acquire
-       * hold — the resume re-derives the slot's pointer from the published
-       * buffer. */
-      bool unpublished = false;
-      {
-        arts_shared_ptr_t ph = arts_db_buf_acquire(cache);
-        struct arts_db_buffer_s *pb =
-            (struct arts_db_buffer_s *)arts_shared_get(ph);
-        unpublished =
-            (pb != NULL &&
-             atomic_load_explicit(&pb->version, memory_order_acquire) == 0);
-        arts_db_buf_release(&ph);
-      }
-      void *payload =
-          (unpublished && db_size > 0) ? NULL : arts_db_acquire_local(cache);
-      if (payload == NULL && db_size > 0) {
+      /* One slot load decides and, when the buffer is published (or the
+       * block has no bytes), is kept as the EDT's hold; an unpublished one
+       * (no buffer yet, or the v0 installed at create) parks WITHOUT a hold —
+       * the resume re-derives the slot's pointer from the published buffer. */
+      arts_shared_ptr_t h = arts_db_buf_acquire(cache);
+      struct arts_db_buffer_s *b =
+          (struct arts_db_buffer_s *)arts_shared_get(h);
+      if (db_size > 0 &&
+          (b == NULL ||
+           atomic_load_explicit(&b->version, memory_order_acquire) == 0)) {
+        arts_db_buf_release(&h);
         /* Home before the creator's first PUBLISH: a cross-rank create
          * installs home metadata only — no buffer exists until the creator's
          * release publishes one.  A dependence satisfied before that release
@@ -122,7 +116,8 @@ void arts_handler_db_acquire(void *item, void *args) {
         return;
       }
       INCREMENT_NUM_DB_ACQUIRE_LOCAL_HIT_BY(1);
-      arts_db_acquire_local_hit(edt, slot, payload);
+      /* h, when a buffer is installed, is the EDT's hold. */
+      arts_db_acquire_local_hit(edt, slot, b != NULL ? b->data : NULL);
       arts_db_acquire_resolved(edt, slot);
       return;
     }
@@ -158,7 +153,6 @@ void arts_db_release_created(struct arts_db_cache_s *cache) {
 }
 
 void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload) {
-  (void)payload;
   /* Defensive: no local hold to drop means our acquire never bumped ownership;
    * decrementing would underflow.  Which word states carry no hold is the
    * release policy's — possession alone is one of them under a
@@ -166,11 +160,29 @@ void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload) {
   if (arts_db_grant_release_skip(cache)) {
     return;
   }
-  /* Acquire current buffer for the version bump + PUBLISH send.  Local ref
-   * scoped to release_rw — the EDT's own ref is dropped by release_one_dep. */
-  arts_shared_ptr_t buf_h = arts_db_buf_acquire(cache);
-  struct arts_db_buffer_s *buf =
-      (struct arts_db_buffer_s *)arts_shared_get(buf_h);
+#ifndef NDEBUG
+  if (payload != NULL) {
+    arts_shared_ptr_t chk = arts_db_buf_acquire(cache);
+    bool installed = arts_shared_get(chk) == arts_db_buf_from_data(payload);
+    arts_db_buf_release(&chk);
+    if (!installed) {
+      ARTS_ERROR("db: DB[Guid:%lu] write turn's buffer is not the installed "
+                 "one",
+                 (unsigned long)cache->db_guid);
+    }
+  }
+#endif
+  /* The buffer for the version bump: while this rank holds a write turn the
+   * installed buffer is the one the turn's payload names, and the EDT's ref
+   * keeps it alive across the release (release_one_dep drops it after).  Only
+   * a creator's release (or a block with no bytes) passes no payload and
+   * loads the slot, scoped to release_rw. */
+  arts_shared_ptr_t buf_h = NULL;
+  struct arts_db_buffer_s *buf = arts_db_buf_from_data(payload);
+  if (buf == NULL) {
+    buf_h = arts_db_buf_acquire(cache);
+    buf = (struct arts_db_buffer_s *)arts_shared_get(buf_h);
+  }
   uint64_t new_version = 0;
   if (buf != NULL) {
     new_version =
@@ -193,10 +205,8 @@ void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload) {
      * version bump above. */
     arts_db_publish_sync(cache, new_version);
   }
-  /* WT: release buffer ref after the publish (which reads buf->data). */
-  if (buf != NULL) {
-    arts_db_buf_release(&buf_h);
-  }
+  /* WT: release a slot load after the publish (which reads buf->data). */
+  arts_db_buf_release(&buf_h);
 
   /* The count-dropping edge, and what this rank owes at it, belong to the
    * release policy — a revoked grant ships onward to the target the round

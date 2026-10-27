@@ -22,6 +22,7 @@
 #include "arts/ooo.h"             /* OOO_DB_* args (handler bodies) */
 #include "arts/runtime_state.h"
 #include "arts/runtime_types.h"
+#include "arts/system/print.h"
 #include "arts/system/threads.h"   /* arts_global_rank_id */
 #include "arts/transport/net.h" /* arts_transport_send_async */
 #include "arts/transport/protocol.h"
@@ -101,31 +102,39 @@ void arts_db_release_created(struct arts_db_cache_s *cache) {
 }
 
 void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload) {
-  (void)payload;
   /* Defensive: no local hold to drop means our acquire never bumped ownership;
    * decrementing would underflow. */
   if (arts_db_grant_release_skip(cache)) {
     return;
   }
-  /* Version bump on the current buffer (local ref scoped to release_rw). */
-  arts_shared_ptr_t buf_h = arts_db_buf_acquire(cache);
-  struct arts_db_buffer_s *buf =
-      (struct arts_db_buffer_s *)arts_shared_get(buf_h);
-  if (buf != NULL) {
-    uint64_t new_version =
-        atomic_fetch_add_explicit(&buf->version, 1u, memory_order_acq_rel) + 1u;
-    /* Self-credit: this rank now holds the bumped version.  Keeps the
-     * owner-side ledger's invariant ("floor of what each rank's cache holds")
-     * true for the producer itself; the ship path re-credits before the map
-     * migrates. */
-    if (cache->cached_version != NULL) {
-      arts_rank_u64_map_advance(cache->cached_version, arts_global_rank_id,
-                                new_version);
+#ifndef NDEBUG
+  if (payload != NULL) {
+    arts_shared_ptr_t chk = arts_db_buf_acquire(cache);
+    bool installed = arts_shared_get(chk) == arts_db_buf_from_data(payload);
+    arts_db_buf_release(&chk);
+    if (!installed) {
+      ARTS_ERROR("db: DB[Guid:%lu] write turn's buffer is not the installed "
+                 "one",
+                 (unsigned long)cache->db_guid);
     }
   }
-  if (buf != NULL) {
-    arts_db_buf_release(&buf_h);
+#endif
+  /* Version bump on the turn's buffer: while this rank holds a write turn the
+   * installed buffer is the one the turn's payload names, and the EDT's ref
+   * keeps it alive.  Only a creator's release (or a block with no bytes)
+   * loads the slot, scoped to release_rw.  This rank's own entry in the
+   * dedup ledger is not advanced here: the ship credits it before the ledger
+   * migrates, and a redirect for this rank answers from its own cache. */
+  arts_shared_ptr_t buf_h = NULL;
+  struct arts_db_buffer_s *buf = arts_db_buf_from_data(payload);
+  if (buf == NULL) {
+    buf_h = arts_db_buf_acquire(cache);
+    buf = (struct arts_db_buffer_s *)arts_shared_get(buf_h);
   }
+  if (buf != NULL) {
+    (void)atomic_fetch_add_explicit(&buf->version, 1u, memory_order_acq_rel);
+  }
+  arts_db_buf_release(&buf_h);
 
   /* The count-dropping edge: the last releaser ships the grant onward when a
    * GRANT_INVALIDATE has already named a target; otherwise the home keeps
@@ -371,8 +380,12 @@ void arts_handler_db_snapshot_redirect(void *item_v, void *args_v) {
    * the release that set it (its acq_rel bump in arts_db_release_rw) must be
    * visible to the serve. */
   uint64_t cur_v = atomic_load_explicit(&buf->version, memory_order_acquire);
+  /* A redirect for this rank itself answers from its own cache, which holds
+   * the buffer just read; the ledger credits this rank only at a ship. */
   uint64_t known_v =
-      arts_rank_u64_map_get(cache->cached_version, requester);
+      requester == arts_global_rank_id
+          ? cur_v
+          : arts_rank_u64_map_get(cache->cached_version, requester);
 
   if (known_v >= cur_v) {
     /* Requester already holds this version — no payload moves; echo the

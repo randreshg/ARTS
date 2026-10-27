@@ -1204,6 +1204,18 @@ if(ARTS_COHERENCE_ARM STREQUAL "VAL")
 add_pure_unit_src(val_request_word DEFINES ARTS_UNIT_STANDALONE_SHIMS PASS_REGEX "PASS val_request_word:" TIMEOUT 60)
 endif()
 
+# val_release_buffer_check: a VAL write release bumps its write turn's own
+# buffer, and a Debug build ends a release that names another one in the
+# named fatal error.  Each write policy has its own release and its own check
+# (the PURGE release shares the WT one).
+if(CMAKE_BUILD_TYPE STREQUAL "Debug" AND ARTS_COHERENCE_ARM STREQUAL "VAL" AND
+   ARTS_RELEASE_POLICY STREQUAL "RETAIN")
+add_arts_test(val_release_buffer_check)
+register_single_node_test(val_release_buffer_check TIMEOUT 30 STATUS 1)
+set_tests_properties(val_release_buffer_check PROPERTIES
+    PASS_REGULAR_EXPRESSION "write turn's buffer is not the installed one")
+endif()
+
 # inv_compute_next: INV only.  One truth table covers both write policies —
 # the arbiters do not depend on the write policy.
 if(ARTS_COHERENCE_ARM STREQUAL "INV")
