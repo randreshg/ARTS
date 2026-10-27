@@ -38,11 +38,16 @@
 ******************************************************************************/
 /* Thin wrappers over the active allocator (mimalloc when ARTS_MALLOC_MIMALLOC,
  * else the C library).  Validation is delegated to the allocator wherever it
- * already does it: overflow (nmemb*size) and bad alignment (zero / not a power
- * of two) both surface as a NULL return, which the wrappers turn into a fatal
- * error.  The only ARTS-level guards are the size==0 -> NULL contract and a
- * uniform minimum alignment, so over-alignment behaves identically regardless
- * of which allocator the build selected.
+ * already does it.  Under the C library an overflow (nmemb*size) and a bad
+ * alignment (zero / not a power of two) both surface as a NULL return, which
+ * the wrappers turn into a fatal error.  Under mimalloc a bad alignment, and
+ * an aligned request too large to serve, are an invalid argument, which the
+ * allocator error report the registered pool installs turns into an abort
+ * before anything returns; only an unaligned request too large and an
+ * nmemb*size overflow return NULL, which the wrappers make fatal.  The only
+ * ARTS-level guards are the size==0 -> NULL contract and a uniform minimum
+ * alignment, so over-alignment behaves identically regardless of which
+ * allocator the build selected.
  *
  * No per-allocation bookkeeping header is stored: the allocator already tracks
  * every block's size internally (it must, for free to work), so the
@@ -84,9 +89,10 @@
  * requirement, so the two allocator backends accept the same alignment set. */
 #define ALIGNMENT 16
 
-/* Native aligned allocation returning a directly-freeable pointer.  Returns
- * NULL for an invalid (zero / non-power-of-two) alignment — the allocator
- * validates it. */
+/* Native aligned allocation returning a directly-freeable pointer.  The
+ * allocator validates the alignment: the C library returns NULL for an invalid
+ * (zero / non-power-of-two) one, while under mimalloc the allocator error
+ * report aborts first. */
 static inline void *sys_malloc_aligned(size_t size, size_t align) {
 #ifdef ARTS_MALLOC_MIMALLOC
   return mi_malloc_aligned(size, align);
@@ -97,8 +103,10 @@ static inline void *sys_malloc_aligned(size_t size, size_t align) {
 }
 
 /* Native aligned + zeroed allocation.  mimalloc has a native entry that zeroes,
- * overflow-checks, and validates the alignment; the C library has none, so fall
- * back to aligned + memset with an explicit product-overflow guard. */
+ * overflow-checks, and validates the alignment (an invalid one reaches the
+ * allocator error report, which aborts; an overflow returns NULL); the C
+ * library has none, so fall back to aligned + memset with an explicit
+ * product-overflow guard, both failures returning NULL. */
 static inline void *sys_calloc_aligned(size_t nmemb, size_t size,
                                        size_t align) {
 #ifdef ARTS_MALLOC_MIMALLOC

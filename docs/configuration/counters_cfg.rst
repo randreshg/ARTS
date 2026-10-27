@@ -609,7 +609,10 @@ hand-back and do not overlap: their sum is every hand-back, and
    identically.
 
    ``ARTS_REGPOOL_REPORT`` is the other env-gated marker: set it and every
-   rank prints the registered pool's shape to stderr at teardown —
+   rank prints the registered pool's shape to stderr at teardown — at the
+   pool's cleanup, or, when a thread was left unjoined, by the teardown that
+   leaves the pool open, so in a ``mimalloc`` build a missing line means a
+   rank that never reached its teardown —
    ``[REGPOOL] node <n>:`` per NUMA node (carve state, arena count, mapped
    MiB, grow count, the milliseconds its grows spent mapping and the number
    and milliseconds of waits — a grow attempt that found the node's grow
@@ -624,8 +627,11 @@ hand-back and do not overlap: their sum is every hand-back, and
    landed on a single ``node<k>``, or were left ``unplaced`` for the kernel
    to position) and ``[REGPOOL] total:`` (with ``arena_slots``, the
    allocator arena-table slots the pool's slabs hold out of the table's
-   size, and ``table_refusals``, the slabs the full table refused — nonzero
-   means the pool stopped growing its arenas for the rest of the run).  The
+   size, ``table_refusals``, the slabs the full table refused — nonzero
+   means the pool stopped growing its arenas for the rest of the run — and
+   ``theap_refusals``, the binds since the pool's init that found an arena
+   with no free slice for the calling thread's part of its heap; the thread
+   was served from another arena or a fresh one).  The
    pool's resident set is its mapped capacity, so these lines are what a
    memory measurement is read against; they cost nothing when the variable
    is unset.
@@ -642,6 +648,9 @@ File naming depends on the counter level:
 - **NODE** — ``n{node}.json`` (one file per node, reduced across threads).
 - **CLUSTER** — ``cluster.json`` (single file on the master node, reduced
   across all nodes).
+
+A thread the shutdown could not join writes no ``n{node}_t{thread}.json``,
+and its counts are missing from the node and cluster values.
 
 Each JSON file includes a ``timestamp`` (Unix epoch), a ``version``
 string, and a ``counters`` object whose keys are counter names.

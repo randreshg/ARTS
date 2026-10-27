@@ -370,14 +370,20 @@ static void arts_count_abandoned_edts(struct arts_deque_s *dq) {
 }
 
 void arts_runtime_global_cleanup() {
-  // Write all counter outputs (thread, node, and cluster levels)
+  /* Write all counter outputs (thread, node, and cluster levels).  A thread
+   * the shutdown gave up joining may still be writing its own row, so it has
+   * no thread file and the node and cluster values leave it out. */
   unsigned int tc = arts_node_info.total_thread_count;
+  const bool *unjoined = arts_shutdown_abandon.unjoined;
   for (unsigned int t = 0; t < tc; t++) {
+    if (unjoined != NULL && unjoined[t]) {
+      continue;
+    }
     arts_counter_write(arts_node_info.counter_folder, arts_global_rank_id, t);
   }
-  /* Every runtime thread has joined: coherence wait-structures must be
-   * empty now.  Reports (does not abort); compiled out below DEBUG log
-   * level — see the check's definition. */
+  /* When every runtime thread has joined, coherence wait-structures must be
+   * empty now (the check skips itself otherwise).  Reports (does not abort);
+   * compiled out below DEBUG log level — see the check's definition. */
   arts_db_debug_quiescence_check();
   /* Final-teardown fast path: every runtime thread has joined and the process
    * is about to exit, so running each leftover object's destructor only moves
@@ -407,7 +413,9 @@ void arts_runtime_global_cleanup() {
   }
 #endif
 
-  /* Counter cleanup (reverse of arts_runtime_node_init allocation) */
+  /* Counter cleanup (reverse of arts_runtime_node_init allocation).  A thread
+   * never joined writes its row of saved_counters after the teardown barrier,
+   * so then the rows and the array are left to the process exit. */
   for (unsigned int t = 0; t < tc; t++) {
     if (arts_node_info.capture_arrays && arts_node_info.capture_arrays[t]) {
       for (unsigned int i = 0; i < NUM_COUNTER_TYPES; i++) {
@@ -417,12 +425,14 @@ void arts_runtime_global_cleanup() {
       }
       arts_free(arts_node_info.capture_arrays[t]);
     }
-    if (arts_node_info.saved_counters) {
+    if (arts_node_info.saved_counters && !tables_reachable) {
       arts_free(arts_node_info.saved_counters[t]);
     }
   }
   arts_free(arts_node_info.capture_arrays);
-  arts_free(arts_node_info.saved_counters);
+  if (!tables_reachable) {
+    arts_free(arts_node_info.saved_counters);
+  }
   arts_free(arts_node_info.live_counters);
 
 #ifdef ARTS_USE_CXL
@@ -467,11 +477,14 @@ void arts_runtime_global_cleanup() {
   /* Socket server global arrays (safe to call even for single-node) */
   arts_socket_cleanup();
 
-  /* Fabric teardown is two-phase around the pool cleanup.  Phase 1 runs BEFORE
-   * the pool is freed: refuse new sends, discard/reap in-flight txns (their
-   * bounces return to the still-live pool) and close ep/cq/av while returning
-   * the recv landing buffers to the pool — so afterward no send desc or recv
-   * buffer references a slab MR the pool cleanup is about to close. */
+  /* Fabric teardown is two-phase around the pool cleanup.  Phase 1 always
+   * runs, joined or not: every runtime thread has passed the ready_to_clean
+   * barrier, so none touches the fabric again.  It refuses new sends,
+   * discards/reaps in-flight txns (their bounces return to the still-live
+   * pool) and closes ep/cq/av while returning the recv landing buffers to the
+   * pool — so afterward no send desc or recv buffer references a slab MR the
+   * pool cleanup is about to close.  Only the pool cleanup and phase 2 depend
+   * on every thread having joined. */
   if (arts_global_rank_count > 1) {
     arts_net_quiesce();
   }
@@ -479,8 +492,17 @@ void arts_runtime_global_cleanup() {
   arts_db_descriptor_quarantine_drain();
 #endif
 
-  /* Registered-slab pool: torn down last.  Every runtime thread has joined,
-   * so no thread is still allocating from it. */
+  /* Registered-slab pool and the domain: torn down last when every runtime
+   * thread has joined.  With one unjoined, its post-barrier tail may still
+   * free DB buffers into the pool, and closing the domain could rewrite the C
+   * library's mapping functions under it (a provider's memory monitor
+   * restores the code it patched), so both are left to the process exit. */
+  if (tables_reachable) {
+    arts_regpool_report_if_requested();
+    ARTS_WARN("registered pool, domain and fabric left unfreed: a thread "
+              "never joined");
+    return;
+  }
   arts_regpool_cleanup();
 
   /* Phase 2: the pool's slab MRs (backing both sends and the recv buffers) are

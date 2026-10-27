@@ -127,6 +127,7 @@ set(ARTS_REFERENCE_TREE_PROGRAMS
     regpool_spill_cycle
     regpool_spill_target
     regpool_direct_oversize
+    regpool_theap_no_room
 )
 
 # Pins an assertion of the runtime (edt.c's remote finish-scope guard), which
@@ -638,15 +639,17 @@ endfunction()
 # schedules it).  A test the runner judges has its pass regex moved into the
 # runner, since CTest would otherwise ignore its exit status; one without a
 # regex is given an empty one, so a value in the caller's environment never
-# applies.  Every test then has two kinds of output matched as well, being
-# failures its own exit status may not carry: a sanitizer's report -- UBSan's
-# leaves the status unchanged, and a forked child's reaches only its parent --
-# and the local launcher's verdict on a rank it spawned, which reaches the
-# master's status only where the test passes arts_rt's result on: a rank that
-# died on a signal always, one that exited non-zero unless the status is the
-# one the test sets in ARTS_EXPECTS_RANK_FAILURE, a rank's exit it provokes,
-# and one that did not exit after the run ended, which the launcher stops
-# without counting it failed.  That last verdict is a warning printed once the
+# applies.  Every test then has three kinds of output matched as well, being
+# failures its own exit status may not carry: a sanitizer's report (UBSan's
+# leaves the status unchanged, and a forked child's reaches only its parent);
+# the allocator error report, which a forked child or a rank whose status
+# does not reach the master can print; and the local launcher's verdict on a
+# rank it spawned, which reaches the master's status only where the test
+# passes arts_rt's result on: a rank that died on a signal always, one that
+# exited non-zero unless the status is the one the test sets in
+# ARTS_EXPECTS_RANK_FAILURE, a rank's exit it provokes, and one that did not
+# exit after the run ended, which the launcher stops without counting it
+# failed.  That last verdict is a warning printed once the
 # launcher's grace period has passed: a tree that compiles warnings out never
 # prints it, and a rank still escaping the waits it was blocked in at the
 # shutdown (each escape re-checks once a second) has only a few seconds of
@@ -687,6 +690,7 @@ function(arts_test_finalize)
         endif()
         list(APPEND _fail "ERROR: (Address|Leak)Sanitizer"
              "WARNING: ThreadSanitizer" ": runtime error: "
+             "\\[ARTS\\] allocator error:"
              "Local launcher: rank [0-9]+ \\(pid [0-9]+\\) died on signal"
              "Local launcher: rank [0-9]+ \\(pid [0-9]+\\) did not exit within")
         get_test_property(${_t} ARTS_EXPECTS_RANK_FAILURE _expects)
@@ -1083,7 +1087,7 @@ set_tests_properties(port_block_relocation PROPERTIES
 # syscall and fopen at run time.
 set(_regpool_sim_tests regpool_basic regpool_lazy_carve
     regpool_ladder regpool_fallback_order regpool_spill_cycle
-    regpool_spill_target regpool_direct_oversize)
+    regpool_spill_target regpool_direct_oversize regpool_theap_no_room)
 if(ARTS_DEBUG_INJECTION)
     list(APPEND _regpool_sim_tests ${ARTS_REGPOOL_INJECTION_TESTS})
 endif()
@@ -1137,9 +1141,43 @@ if(ARTS_MALLOC STREQUAL "mimalloc")
     register_pure_unit_test(regpool_direct_oversize TIMEOUT 60)
     set_tests_properties(regpool_direct_oversize PROPERTIES
         PASS_REGULAR_EXPRESSION "PASS regpool_direct_oversize")
+    # A thread with no part of its heap in a full arena is served from
+    # another slab: an allocation never aborts on the room an arena lacks.
+    register_pure_unit_test(regpool_theap_no_room TIMEOUT 60)
+    set_tests_properties(regpool_theap_no_room PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS regpool_theap_no_room")
+    # Every corruption or misuse the allocator detects ends in the allocator
+    # error report, and every pool misuse the pool sees in its fatal error, one
+    # forked child per mode.  It links the pool's object and the allocator
+    # directly, so the pool, the test's own allocator calls and the report
+    # share one allocator.  The modes a debug build of the allocator alone
+    # checks run only in a Debug tree.
+    add_executable(allocator_error_abort unit/allocator_error_abort.c
+        $<TARGET_OBJECTS:arts_regpool>)
+    target_include_directories(allocator_error_abort PRIVATE
+        ${ARTS_PUBLIC_INCLUDE_DIR} ${ARTS_INTERNAL_INCLUDE_DIR}
+        ${ARTS_BUILD_INTERNAL_INCLUDE_DIR})
+    arts_apply_protocol(allocator_error_abort ${ARTS_COHERENCE_ARM} ${ARTS_WRITE_POLICY} ${ARTS_RELEASE_POLICY})
+    target_link_libraries(allocator_error_abort PRIVATE
+        Threads::Threads mimalloc-static arts::libfabric ${RT_LIBRARY}
+        ${CMAKE_DL_LIBS})
+    set(_allocator_error_tests allocator_error_abort)
+    arts_add_test(allocator_error_abort
+                  COMMAND allocator_error_abort 1 2 3 3b 4 5)
+    if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+        arts_add_test(allocator_error_abort_debug
+                      COMMAND allocator_error_abort 6 7 8 9 10 11 12)
+        list(APPEND _allocator_error_tests allocator_error_abort_debug)
+    endif()
+    set_tests_properties(${_allocator_error_tests} PROPERTIES
+        LABELS "single_node"
+        TIMEOUT 120
+        RESOURCE_LOCK "pure_unit_test"
+        PASS_REGULAR_EXPRESSION "PASS allocator_error_abort: all [0-9]+ modes")
     set(_regpool_numa_tests regpool_basic regpool_lazy_carve
         regpool_ladder regpool_fallback_order regpool_spill_cycle
-        regpool_spill_target regpool_direct_oversize)
+        regpool_spill_target regpool_direct_oversize regpool_theap_no_room
+        ${_allocator_error_tests})
     if(ARTS_DEBUG_INJECTION)
         # Eviction of retired mappings and the unplaced fallback behind it,
         # driven by the force-full override on one node and on two.

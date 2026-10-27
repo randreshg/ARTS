@@ -198,6 +198,12 @@ struct arts_shutdown_abandon_s {
    * quiescence walk does not run, since a thread still alive may be mid
    * transition on anything it would read. */
   _Atomic(unsigned int) unjoined_threads;
+  /* Which threads those are, by thread index: NULL until the first, then
+   * total_thread_count flags.  Written only by the main thread's join loop and
+   * read only by that thread afterwards.  Such a thread is past the teardown
+   * barrier but may still write its own counter row, so its counts are left
+   * out of every counter report. */
+  bool *unjoined;
 };
 extern struct arts_shutdown_abandon_s arts_shutdown_abandon;
 

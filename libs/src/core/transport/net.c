@@ -220,8 +220,8 @@ static struct {
    * repost is retried at the top of every CQ reap pass: reaping is exactly
    * what frees provider queue slots, so retry-after-reap converges.  Only
    * touched under the CQ consumer token, before any runtime thread exists, or
-   * by the teardown reap after every runtime thread has joined, so a plain
-   * unsigned suffices. */
+   * by the teardown reap once every runtime thread has passed the
+   * ready_to_clean barrier, so a plain unsigned suffices. */
   unsigned rx_repost_pending;
 
   /* Posts not yet completed, counted before each post and uncounted at its
@@ -231,8 +231,8 @@ static struct {
   /* Posts the provider refused with EAGAIN: only its own value. */
   _Atomic(uint64_t) eagain_count;
   /* Teardown began: refuse new submissions.  Set once every runtime thread
-   * has joined; a sender or reaper that reads it set stands down and reads
-   * nothing the store published. */
+   * has passed the ready_to_clean barrier, joined or not; a sender or reaper
+   * that reads it set stands down and reads nothing the store published. */
   _Atomic(bool) quiescing;
 } g_net;
 
@@ -582,8 +582,9 @@ static void net_inject_header(fi_addr_t addr, const void *buf, size_t len,
 void arts_net_send_core(int rank, char *message, unsigned int length,
                         char *payload, unsigned int offset, uint64_t size,
                         void (*free_method)(void *)) {
-  /* Teardown has begun (threads have joined): drop the send, but still run its
-   * completion-gated free so the caller payload is not leaked. */
+  /* Teardown has begun (every runtime thread is past the ready_to_clean
+   * barrier): drop the send, but still run its completion-gated free so the
+   * caller payload is not leaked. */
   if (atomic_load_explicit(&g_net.quiescing, memory_order_acquire)) {
     if (free_method != NULL) {
       free_method(payload);
@@ -1072,8 +1073,10 @@ static void net_reap_cq_err(void) {
   }
 }
 
-/* Teardown-only reap: run single-threaded after every worker/progress thread
- * has joined (no CQ token needed — nothing else can touch the CQ).  Completes
+/* Teardown-only reap: run once every worker/progress thread has passed the
+ * ready_to_clean barrier, joined or not (no CQ token needed — none of them
+ * touches the CQ again, and the barrier orders each one's last access before
+ * this).  Completes
  * outstanding TX so completion-gated frees run; inbound completions are ignored
  * (no dispatch, no re-arm — the recvs are about to be cancelled).  Returns true
  * if any completion or error entry was seen. */
@@ -1116,7 +1119,8 @@ struct net_held_write_s {
   struct net_txn_s *txn;
   uint64_t due_ns;
 };
-/* Touched under the CQ token, or at quiesce once every thread has joined. */
+/* Touched under the CQ token, or at quiesce once every runtime thread has
+ * passed the ready_to_clean barrier. */
 static struct net_held_write_s *g_held_writes;
 static uint64_t g_write_delay_rng;
 /* Set when the fabric comes up, before any thread exists to reap; 0 = off. */
@@ -1173,17 +1177,10 @@ static void net_run_held_writes(bool all) {
     arts_free(h);
   }
 }
-/* Quiesce's turn: run every held completion, unless a thread the shutdown
- * gave up joining may still be reaping, and with it the held list; what it
- * holds is then left to it. */
+/* Quiesce's turn: run every held completion.  Every runtime thread has
+ * passed the ready_to_clean barrier, joined or not, so none reaps again. */
 static void net_quiesce_held_writes(void) {
   if (g_write_delay_ns == 0) {
-    return;
-  }
-  if (atomic_load_explicit(&arts_shutdown_abandon.unjoined_threads,
-                           memory_order_relaxed) != 0) {
-    ARTS_WARN("arts_net: held write completions left unrun: a thread never "
-              "joined");
     return;
   }
   net_run_held_writes(true);
@@ -1208,7 +1205,8 @@ static void net_quiesce_held_writes(void) {
  * try-lock and only then sends, so no send runs under the CQ token or the
  * try-lock.  A held packet is not counted outstanding until it is sent, and
  * quiesce frees what is still held (an undelivered message at shutdown is
- * legal), unless a thread the shutdown gave up joining may still hold it. */
+ * legal): every runtime thread has passed the ready_to_clean barrier by then,
+ * so none holds or pushes one again. */
 struct net_held_msg_s {
   _Atomic(struct net_held_msg_s *) next; /* the producers' stack */
   struct net_held_msg_s *wnext; /* the wait and due lists: the lock's own */
@@ -1346,12 +1344,8 @@ static void net_quiesce_held_requests(void) {
   if (g_req_delay_ns == 0) {
     return;
   }
-  if (atomic_load_explicit(&arts_shutdown_abandon.unjoined_threads,
-                           memory_order_relaxed) != 0) {
-    return;
-  }
-  /* After the joins, which order every push and every try-lock holder's list
-   * before these accesses. */
+  /* After the ready_to_clean barrier, whose arrivals order every push and
+   * every try-lock holder's list before these accesses. */
   net_free_held_push(atomic_exchange_explicit(
       &g_held_push, (struct net_held_msg_s *)NULL, memory_order_relaxed));
   net_free_held_wait(g_held_wait);
@@ -2084,8 +2078,10 @@ void arts_net_rx_arm(void) {
 }
 
 void arts_net_quiesce(void) {
-  /* Phase 1 of teardown, run BEFORE the registered pool is torn down and after
-   * every runtime thread has joined.  Discarding sends that were
+  /* Phase 1 of teardown, run BEFORE the registered pool is torn down, once
+   * every runtime thread has passed the ready_to_clean barrier: none touches
+   * the fabric again, joined or not, and the barrier's arrivals order each
+   * one's last access before this.  Discarding sends that were
    * never accepted by the provider at final teardown is deliberate — it mirrors
    * a bounded drain-then-exit and must never block shutdown on a peer that has
    * already gone.  The ordering matters: everything that references a slab MR
@@ -2140,8 +2136,8 @@ void arts_net_quiesce(void) {
    * to the still-live pool).  TX-only: inbound completions are ignored and no
    * landing buffer is re-armed — they are about to be cancelled.  Bounded — the
    * bound guards against a completion that never arrives on a wedged provider.
-   * Called single-threaded, after every worker/progress thread has joined, so
-   * net_reap_tx_only needs no CQ token — no other thread can contend the CQ. */
+   * Every worker/progress thread has passed the ready_to_clean barrier, so
+   * net_reap_tx_only needs no CQ token — no other thread contends the CQ. */
   net_quiesce_held_writes();
   net_quiesce_held_requests();
   for (int i = 0;
@@ -2155,11 +2151,11 @@ void arts_net_quiesce(void) {
    * under (fi_close would return -FI_EBUSY and the endpoint would leak, then
    * the domain behind it).  The pool's MRs serve remote access only — no
    * local descriptor references them on such a provider (no FI_MR_LOCAL) —
-   * so closing them first at this single-threaded point only makes a peer's
-   * still-in-flight PUT fail at the NIC, the same exposure the endpoint
-   * close below already creates.  Providers WITH FI_MR_LOCAL keep today's
-   * order: their posted recvs hold MR descriptors until the endpoint close
-   * cancels them, so their MRs must outlive the endpoint. */
+   * so closing them first, once no runtime thread touches the fabric, only
+   * makes a peer's still-in-flight PUT fail at the NIC, the same exposure the
+   * endpoint close below already creates.  Providers WITH FI_MR_LOCAL keep
+   * today's order: their posted recvs hold MR descriptors until the endpoint
+   * close cancels them, so their MRs must outlive the endpoint. */
   if ((g_net.mr_mode & FI_MR_ENDPOINT) != 0) {
     arts_regpool_unregister();
   }

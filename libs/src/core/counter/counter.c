@@ -457,6 +457,13 @@ static void arts_close_counter_file(arts_json_writer_t *writer, FILE *fp) {
   (void)fclose(fp);
 }
 
+/* A thread the shutdown gave up joining may still be writing its saved row,
+ * so its counts are left out of every node and cluster value. */
+static bool arts_counter_thread_left_out(unsigned int t) {
+  return arts_shutdown_abandon.unjoined != NULL &&
+         arts_shutdown_abandon.unjoined[t];
+}
+
 // Helper function to compute node-level reduced value across all threads
 // Safe to call after threads have closed - uses saved_counters data
 static uint64_t arts_compute_node_reduced_value(unsigned int index) {
@@ -466,7 +473,7 @@ static uint64_t arts_compute_node_reduced_value(unsigned int index) {
       (reduce_method == ARTS_COUNTER_REDUCE_MIN) ? UINT64_MAX : 0;
   for (unsigned int t = 0; t < arts_node_info.total_thread_count; t++) {
     uint64_t *saved = arts_node_info.saved_counters[t];
-    if (!saved) {
+    if (!saved || arts_counter_thread_left_out(t)) {
       continue; // Thread never registered or data not available
     }
     node_value =
@@ -513,6 +520,9 @@ static void arts_compute_node_reduced_captures(unsigned int counter_index,
                                              sizeof(arts_counter_capture_t *));
 
   for (unsigned int t = 0; t < tc; t++) {
+    if (arts_counter_thread_left_out(t)) {
+      continue;
+    }
     arts_array_list_t *thread_list =
         arts_node_info.capture_arrays[t][counter_index];
     if (thread_list && thread_list->index > 0) {

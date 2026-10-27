@@ -4,7 +4,7 @@
  * + config-surface cleanup (libs/src/core/system/threads.c).  This TU
  * #includes threads.c so the real derivation code runs; the runtime
  * collaborators arts_thread_init calls (get_thread_mask, arts_runtime_node_init,
- * print_mask, private_init/loop/cleanup, arts_malloc/arts_free, counters,
+ * print_mask, private_init/loop/cleanup, arts_malloc/calloc/free, counters,
  * ARTS_ERROR->arts_abort) are stubbed so the unit links standalone and we can
  * inspect the derived counts WITHOUT the full runtime.
  *
@@ -53,6 +53,10 @@ _Noreturn void arts_abort(uint8_t code) {
 
 void *arts_malloc(size_t n);
 void *arts_malloc(size_t n) { return calloc(1, n ? n : 1); }
+void *arts_calloc(size_t nmemb, size_t size);
+void *arts_calloc(size_t nmemb, size_t size) {
+  return calloc(nmemb ? nmemb : 1, size ? size : 1);
+}
 void arts_free(void *p);
 void arts_free(void *p) { free(p); }
 

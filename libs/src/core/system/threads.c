@@ -179,6 +179,11 @@ void arts_thread_main_join() {
         ARTS_WARN("arts_thread_main_join: thread %u did not join after "
                   "cancel (rc=%d); leaking and continuing",
                   i, rc);
+        if (arts_shutdown_abandon.unjoined == NULL) {
+          arts_shutdown_abandon.unjoined = (bool *)arts_calloc(
+              arts_node_info.total_thread_count, sizeof(bool));
+        }
+        arts_shutdown_abandon.unjoined[i] = true;
         atomic_fetch_add_explicit(&arts_shutdown_abandon.unjoined_threads, 1u,
                                   memory_order_relaxed);
       }
@@ -186,7 +191,13 @@ void arts_thread_main_join() {
   }
   arts_runtime_global_cleanup();
   // arts_free(args);
-  arts_free(mask);
+  /* A thread never joined reads its own entry after the teardown barrier, so
+   * the table is left to the process exit. */
+  if (arts_shutdown_abandon.unjoined == NULL) {
+    arts_free(mask);
+  }
+  arts_free(arts_shutdown_abandon.unjoined);
+  arts_shutdown_abandon.unjoined = NULL;
   arts_free(node_thread_list);
 }
 

@@ -176,24 +176,32 @@ void arts_regpool_set_topology(unsigned int node_count, uint64_t node_set,
 unsigned int arts_regpool_node_order(int from, int *out, unsigned int max);
 
 /* Release pool bookkeeping and unregister every slab.  Must be called only at
- * teardown with no thread still allocating from the pool. */
+ * teardown with no thread still allocating from or freeing into the pool: a
+ * pointer freed after it resolves to no slab, which is fatal. */
 void arts_regpool_cleanup(void);
+
+/* At a teardown that leaves the pool to the process exit instead of cleaning
+ * it up, print the report cleanup would print (see arts_regpool_report) when
+ * ARTS_REGPOOL_REPORT was set at init; otherwise nothing. */
+void arts_regpool_report_if_requested(void);
 
 /* Close every live slab registration and detach the pool from the fabric
  * (domain and endpoint references cleared): later allocations still succeed
  * but are no longer fabric-registered, and later cleanup skips the closed
  * handles.  Exists for endpoint-bound registrations, whose MRs hold
  * references the endpoint cannot close under — the transport calls this
- * before closing its endpoint.  Single-threaded teardown only, like
- * arts_regpool_cleanup. */
+ * before closing its endpoint.  No thread may allocate from the pool or read
+ * a slab's registration while it runs; frees may run concurrently, since the
+ * free path reads neither the registration nor the domain or endpoint. */
 void arts_regpool_unregister(void);
 
 /* Allocate `size` bytes aligned to at least `align` (floored to the payload
- * alignment invariant) from the calling thread's NUMA-local arena, growing the
- * pool on demand.  An oversize request, or one aligned past the 64 KiB an
- * arena honours, takes a dedicated mapping instead (at least 2 MiB, resident
- * like every slab), reusing a retired one of the same length and an
- * alignment at least as strict when there is one.
+ * alignment invariant; above it, an alignment that is not a power of two is a
+ * fatal error) from the calling thread's NUMA-local arena, growing the pool
+ * on demand.  An oversize request, or one aligned past the 64 KiB an arena
+ * honours, takes a dedicated mapping instead (at least 2 MiB, resident like
+ * every slab), reusing a retired one of the same length and an alignment at
+ * least as strict when there is one.
  * NUMA placement is a preference throughout: a request is never refused for
  * want of memory on one node.  The returned pointer is guaranteed to resolve
  * through arts_regpool_lookup; a pointer that escaped the registered slabs is
@@ -203,8 +211,11 @@ void *arts_regpool_alloc_aligned(size_t size, size_t align);
 /* Return a pointer previously obtained from arts_regpool_alloc_aligned.  The
  * caller must have finished with the memory, transport operations against it
  * included: the pointer stops resolving through arts_regpool_lookup here.
- * An oversize block is freed by the pointer that was returned for it; an
- * interior pointer of such a block is a fatal error. */
+ * An oversize block is freed by the pointer that was returned for it.  A
+ * pointer no live slab holds (a foreign one, one freed after cleanup, an
+ * oversize block freed before) and an interior pointer of an oversize block
+ * are fatal errors; a double free inside an arena is reported only as far as
+ * the allocator detects it. */
 void arts_regpool_free(void *p);
 
 /* Resolve `p` to the registered slab that contains it, or NULL if `p` lies in
@@ -266,10 +277,13 @@ void arts_regpool_set_forced_full(uint64_t node_mask);
  * allocations were moved onto another node's arena because it could not grow);
  * the direct mappings live, retired, where they landed (per node, interleaved,
  * or unplaced) and the free slots; and the totals, with the arena-table slots
- * the pool's slabs hold and the slabs the table refused.  Takes the pool lock,
- * so the lines are consistent with each other.  Printed to stderr at cleanup
- * when ARTS_REGPOOL_REPORT is set in the environment, and before the fatal
- * error of an allocation the pool could not satisfy. */
+ * the pool's slabs hold, the slabs the table refused, and the binds since
+ * init that found an arena with no free slice for the calling thread's part
+ * of its heap (theap_refusals; that thread was then served elsewhere).  Takes
+ * the pool lock, so the lines are consistent with each other.  Printed to
+ * stderr at teardown when ARTS_REGPOOL_REPORT is set in the environment (by
+ * cleanup, or by arts_regpool_report_if_requested), and before the fatal error
+ * of an allocation the pool could not satisfy. */
 void arts_regpool_report(FILE *out);
 
 #ifdef __cplusplus

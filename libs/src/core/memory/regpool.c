@@ -145,6 +145,7 @@ size_t arts_regpool_parse_node_avail(FILE *f) {
 
 #include <ctype.h>
 #include <dirent.h>
+#include <execinfo.h> /* backtrace for the allocator's error report */
 #include <mimalloc.h>
 #include <mimalloc/types.h> /* arena geometry the slab sizes mirror */
 #include <pthread.h>
@@ -284,8 +285,9 @@ static pthread_cond_t g_grow_cv = PTHREAD_COND_INITIALIZER;
 static bool g_inited;
 /* g_domain, g_ep, g_slab_bytes and g_numa_nodes are read WITHOUT g_lock by
  * the mapping and allocation paths: they are written at init before any
- * allocation, and at unregister/cleanup, which are single-threaded by
- * contract (see the header). */
+ * allocation, and at unregister and cleanup, while no thread allocates from
+ * the pool or reads a slab's registration (see the header).  A free may run
+ * concurrently with unregister: the free path reads none of them. */
 static struct fid_domain *g_domain;
 /* Non-NULL selects the endpoint-bound registration discipline
  * (FI_MR_ENDPOINT): every MR is bound to this endpoint and enabled after
@@ -430,7 +432,7 @@ static void regpool_store_forced_full_locked(uint64_t mask) {
 }
 #endif
 
-/* Read at init: print the pool's shape at cleanup. */
+/* Read at init: print the pool's shape at teardown. */
 static bool g_report_enabled;
 
 /* Kernels predating the populate advice report EINVAL; there a slab is
@@ -476,6 +478,121 @@ typedef struct {
 } regpool_theap_slot_t;
 static __thread regpool_theap_slot_t t_heap_cache[REGPOOL_THREAD_HEAP_SLOTS];
 static __thread unsigned t_heap_cache_count;
+
+/* Binds that found the arena with no room for the thread's part of its heap,
+ * since this pool's init (cleanup resets it, as it does the spill counts).
+ * Diagnostic only, for the report: only its own value. */
+static _Atomic(unsigned) g_theap_refusals;
+
+/* ------------------------------------------------------------------------- */
+/* allocator error report                                                      */
+/* ------------------------------------------------------------------------- */
+
+/* Creating the calling thread's part of a heap bound to an exclusive arena
+ * (the allocator's theap) takes a slice of that arena.  With no slice free
+ * the allocator raises exactly one ENOMEM and then one EFAULT and leaves the
+ * part uncreated, and nothing between the two can detect corruption: that
+ * pair is the arena having no room for this thread, which is legal.  The
+ * allocator dependency is exactly that sentence, re-audited whenever the
+ * allocator changes.  A bind opens this window around the creation alone; the
+ * error report accepts an EFAULT only inside it and only after its ENOMEM,
+ * and the bind treats any state but OPEN as no room.  Written only by its own
+ * thread. */
+#define REGPOOL_WINDOW_CLOSED 0u
+#define REGPOOL_WINDOW_OPEN 1u
+#define REGPOOL_WINDOW_OOM 2u
+#define REGPOOL_WINDOW_REFUSED 3u
+static __thread uint8_t t_theap_window;
+
+static size_t regpool_put_str(char *b, size_t n, size_t cap, const char *s) {
+  while (*s != '\0' && n < cap)
+    b[n++] = *s++;
+  return n;
+}
+
+static size_t regpool_put_uint(char *b, size_t n, size_t cap, unsigned v) {
+  char d[12];
+  int k = 0;
+  do {
+    d[k++] = (char)('0' + v % 10u);
+    v /= 10u;
+  } while (v != 0u && k < (int)sizeof d);
+  while (k > 0 && n < cap)
+    b[n++] = d[--k];
+  return n;
+}
+
+/* Runs on, and prints the backtrace of, the thread that detected the error,
+ * which is not always the thread whose call caused it: a double free is often
+ * found by the owner's later collection.  It runs inside the allocator,
+ * possibly with the allocator's locks held and its metadata corrupt, so it
+ * allocates nothing from that allocator and takes no allocator or stdio lock:
+ * write, a backtrace warmed up at installation, abort. */
+_Noreturn static void regpool_allocator_abort(int err) {
+  /* write is a cancellation point, and a thread that missed the shutdown's
+   * join deadline is cancelled: the report must reach abort. */
+  int old_state;
+  (void)pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &old_state);
+  const char *what = err == EAGAIN   ? "double free"
+                     : err == EINVAL ? "invalid pointer or argument"
+                     : err == EFAULT ? "heap metadata corrupted or unobtainable"
+                                     : "unexpected error";
+  char b[160];
+  size_t n = 0;
+  n = regpool_put_str(b, n, sizeof b, "[ARTS] allocator error: ");
+  n = regpool_put_str(b, n, sizeof b, what);
+  n = regpool_put_str(b, n, sizeof b, " (code ");
+  n = regpool_put_uint(b, n, sizeof b, (unsigned)err);
+  n = regpool_put_str(b, n, sizeof b, ", rank ");
+  n = regpool_put_uint(b, n, sizeof b, arts_global_rank_id);
+  /* thread_id is unique within the rank; a thread the runtime did not
+   * create reads 0 and "worker", and only its backtrace tells it apart. */
+  n = regpool_put_str(b, n, sizeof b, ", thread ");
+  n = regpool_put_uint(b, n, sizeof b, arts_thread_info.thread_id);
+  n = regpool_put_str(b, n, sizeof b,
+                      arts_thread_info.role == ARTS_ROLE_PROGRESS ? " (progress "
+                                                                  : " (worker ");
+  n = regpool_put_uint(b, n, sizeof b, arts_thread_info.group_pos);
+  n = regpool_put_str(b, n, sizeof b, "))\n");
+  (void)!write(STDERR_FILENO, b, n);
+  void *frames[32];
+  backtrace_symbols_fd(frames, backtrace(frames, 32), STDERR_FILENO);
+  abort();
+}
+
+static void regpool_allocator_error(int err, void *arg) {
+  (void)arg;
+  if (err == ENOMEM || err == EOVERFLOW) {
+    /* A refused request: NULL goes back to its caller, which owns it. */
+    if (err == ENOMEM && t_theap_window == REGPOOL_WINDOW_OPEN)
+      t_theap_window = REGPOOL_WINDOW_OOM;
+    return;
+  }
+  if (err == EFAULT && t_theap_window == REGPOOL_WINDOW_OOM) {
+    t_theap_window = REGPOOL_WINDOW_REFUSED;
+    return;
+  }
+  regpool_allocator_abort(err);
+}
+
+/* Before any allocation, every error the allocator detects reaches the report
+ * above, and the allocator prints nothing itself: the pool's exhaustion is a
+ * NULL return it would print as an error.  What reaches the report is what the
+ * allocator detects.  A release build of it detects a cross-thread double free
+ * only when both frees come from threads other than the block's owner, the
+ * owner did not collect the page between them and the page is not full, plus
+ * a double or invalid free of a whole arena block.  A debug build adds a
+ * same-thread or owner-involved double free, an invalid or unaligned free and
+ * a write into a block's padding.  Neither sees a double free into a full
+ * page, nor one of a block allocated again between the two frees. */
+__attribute__((constructor)) static void regpool_install_error_report(void) {
+  /* The first backtrace loads the unwinder, which allocates: not inside the
+   * report. */
+  void *warm[1];
+  (void)backtrace(warm, 1);
+  mi_option_disable(mi_option_show_errors);
+  mi_register_error(regpool_allocator_error, NULL);
+}
 
 /* ------------------------------------------------------------------------- */
 /* helpers                                                                     */
@@ -1572,10 +1689,20 @@ static void *regpool_alloc_direct(size_t size, size_t align, int node) {
   return base;
 }
 
+typedef enum {
+  REGPOOL_BOUND,        /* t_heap now draws from the arena */
+  REGPOOL_BIND_NO_ROOM, /* the arena has no room for this thread's part of
+                         * its heap; the binding is unchanged */
+  REGPOOL_BIND_FAILED,  /* no heap could be made at all */
+} regpool_bind_t;
+
 /* Re-bind the calling thread's heap to `arena` via the per-thread heap
  * cache: switch to the arena's cached heap, creating it on first use.  See
- * the cache's comment for why heaps are never deleted mid-run. */
-static bool regpool_thread_bind(mi_arena_id_t arena, int node) {
+ * the cache's comment for why heaps are never deleted mid-run.  The heap's
+ * part for this thread is made here, inside the error report's window, and
+ * t_heap names only a heap whose part exists, so no allocation ever makes
+ * one. */
+static regpool_bind_t regpool_thread_bind(mi_arena_id_t arena, int node) {
   mi_heap_t *h = NULL;
   for (unsigned i = 0; i < t_heap_cache_count; i++) {
     if (t_heap_cache[i].arena == arena) {
@@ -1586,7 +1713,7 @@ static bool regpool_thread_bind(mi_arena_id_t arena, int node) {
   if (h == NULL) {
     h = mi_heap_new_in_arena(arena);
     if (h == NULL)
-      return false;
+      return REGPOOL_BIND_FAILED;
     if (t_heap_cache_count < REGPOOL_THREAD_HEAP_SLOTS) {
       t_heap_cache[t_heap_cache_count].arena = arena;
       t_heap_cache[t_heap_cache_count].heap = h;
@@ -1595,10 +1722,18 @@ static bool regpool_thread_bind(mi_arena_id_t arena, int node) {
     /* Cache overflow leaves the heap uncached but live: correctness is
      * unaffected, a re-bind simply creates another heap. */
   }
+  t_theap_window = REGPOOL_WINDOW_OPEN;
+  (void)mi_heap_theap(h);
+  bool refused = t_theap_window != REGPOOL_WINDOW_OPEN;
+  t_theap_window = REGPOOL_WINDOW_CLOSED;
+  if (refused) {
+    atomic_fetch_add_explicit(&g_theap_refusals, 1, memory_order_relaxed);
+    return REGPOOL_BIND_NO_ROOM;
+  }
   t_heap = h;
   t_arena = arena;
   t_node = node;
-  return true;
+  return REGPOOL_BOUND;
 }
 
 /* Sweep the existing arena slabs made for `owner` newest-first (the newest
@@ -1623,8 +1758,11 @@ static void *regpool_sweep_arenas(size_t size, size_t align, int owner,
       continue;
     if (s->owner != owner)
       continue;
-    if (!regpool_thread_bind(s->arena, (int)s->mr.numa_node))
+    regpool_bind_t b = regpool_thread_bind(s->arena, (int)s->mr.numa_node);
+    if (b == REGPOOL_BIND_FAILED)
       return NULL;
+    if (b == REGPOOL_BIND_NO_ROOM)
+      continue;
     void *p = mi_heap_malloc_aligned(t_heap, size, align);
     if (p != NULL) {
       if (out_served != NULL)
@@ -1694,7 +1832,7 @@ static void *regpool_serve_elsewhere(size_t size, size_t align, int node,
 /* One more attempt on the arena that refused this request (NULL: none). */
 static void *regpool_retry_refused(size_t size, size_t align, int node,
                                    mi_arena_id_t refused) {
-  if (refused == NULL || !regpool_thread_bind(refused, node))
+  if (refused == NULL || regpool_thread_bind(refused, node) != REGPOOL_BOUND)
     return NULL;
   return mi_heap_malloc_aligned(t_heap, size, align);
 }
@@ -1745,10 +1883,13 @@ static void *regpool_alloc_arena_slow(size_t size, size_t align, int node,
          * Re-enter the cascade; the fresh slab is found by the sweeps. */
         continue;
       }
-      if (!regpool_thread_bind(cur, node)) {
+      regpool_bind_t b = regpool_thread_bind(cur, node);
+      if (b == REGPOOL_BIND_FAILED) {
         ARTS_WARN("regpool: heap re-bind failed for node %d", node);
         return NULL;
       }
+      if (b == REGPOOL_BIND_NO_ROOM)
+        continue; /* the fresh slab was taken whole by others */
       p = mi_heap_malloc_aligned(t_heap, size, align);
       if (p != NULL)
         return p;
@@ -1849,8 +1990,11 @@ static void *regpool_alloc_arena(size_t size, size_t align, int node) {
   if (cur == NULL)
     return regpool_alloc_arena_slow(size, align, node, NULL);
   if (t_heap == NULL || t_arena != cur || t_node != node) {
-    if (!regpool_thread_bind(cur, node))
+    regpool_bind_t b = regpool_thread_bind(cur, node);
+    if (b == REGPOOL_BIND_FAILED)
       return NULL;
+    if (b == REGPOOL_BIND_NO_ROOM)
+      return regpool_alloc_arena_slow(size, align, node, cur);
   }
 
   void *p = mi_heap_malloc_aligned(t_heap, size, align);
@@ -1871,16 +2015,6 @@ bool arts_regpool_init(struct fid_domain *domain_or_null,
     pthread_mutex_unlock(&g_lock);
     return false;
   }
-
-  /* The pool drives arena growth off NULL returns from exhausted exclusive
-   * arenas — an intended control-flow signal, not a failure.  The allocator
-   * would otherwise print each exhaustion as an "out of memory" diagnostic.
-   * This option gates the allocator's diagnostic messages generally (error
-   * and warning prints in debug builds), not just the exhaustion one;
-   * disabling it silences all of them, but it is purely a print gate — it
-   * does not affect the allocator's safety aborts on genuine metadata
-   * corruption, which are unconditional. */
-  mi_option_disable(mi_option_show_errors);
 
   /* An explicit argument wins (a test naming its own topology), then what
    * the caller discovered, then what the pool can count for itself. */
@@ -2108,9 +2242,10 @@ static void regpool_report_locked(FILE *out) {
   }
   fprintf(out,
           "[REGPOOL] total: slabs=%zu/%u mapped=%zu unplaced=%zu base=%zu "
-          "arena_slots=%u/%u table_refusals=%u\n",
+          "arena_slots=%u/%u table_refusals=%u theap_refusals=%u\n",
           n, REGPOOL_MAX_SLABS, total >> 20, unplaced >> 20, g_slab_bytes >> 20,
-          g_pool_slots, (unsigned)MI_MAX_ARENAS, g_table_refusals);
+          g_pool_slots, (unsigned)MI_MAX_ARENAS, g_table_refusals,
+          atomic_load_explicit(&g_theap_refusals, memory_order_relaxed));
 }
 
 void arts_regpool_report(FILE *out) {
@@ -2213,6 +2348,7 @@ void arts_regpool_cleanup(void) {
     g_node_growing[i] = false;
   }
   g_unplaced_growing = false;
+  atomic_store_explicit(&g_theap_refusals, 0, memory_order_relaxed);
   /* The table-slot count and the refusal latch are not reset: arena slabs
    * outlive the pool and keep their slots, so both describe the process's
    * arena table, which no cleanup gives back. */
@@ -2230,6 +2366,16 @@ void arts_regpool_cleanup(void) {
   g_distance_known = false;
   g_distance_nodes = 0;
   g_inited = false;
+  pthread_mutex_unlock(&g_lock);
+}
+
+/* The teardown's report when ARTS_REGPOOL_REPORT was set at init, for a
+ * teardown that leaves the pool to the process exit instead of cleaning it up
+ * (cleanup prints the same report itself). */
+void arts_regpool_report_if_requested(void) {
+  pthread_mutex_lock(&g_lock);
+  if (g_report_enabled)
+    regpool_report_locked(stderr);
   pthread_mutex_unlock(&g_lock);
 }
 
@@ -2287,6 +2433,8 @@ void *arts_regpool_alloc_aligned(size_t size, size_t align) {
     return NULL; /* pool not initialized */
   if (align < REGPOOL_ALIGN_FLOOR)
     align = REGPOOL_ALIGN_FLOOR;
+  if ((align & (align - 1)) != 0)
+    ARTS_ERROR("regpool: alignment %zu is not a power of two", align);
 
   int node = regpool_current_node();
   if ((unsigned)node >= g_numa_nodes)
@@ -2327,35 +2475,40 @@ void arts_regpool_free(void *p) {
   if (p == NULL)
     return;
   const arts_regpool_mr_t *m = arts_regpool_lookup(p);
-  if (m == NULL)
-    return; /* not ours (or already reclaimed) */
+  if (m == NULL) {
+    /* A miss is a foreign pointer, a free after cleanup, or a second free of
+     * an oversize block, whose first free stopped it resolving: only a
+     * pointer the pool returned may be freed, once, before cleanup. */
+    ARTS_ERROR("regpool: free of %p, which no live slab holds", p);
+  }
   regpool_slab_t *s =
       (regpool_slab_t *)((char *)m - offsetof(regpool_slab_t, mr));
   if (!s->is_direct) {
     mi_free(p);
     return;
   }
-  if (p != s->mr.base) {
-    /* A direct mapping backs exactly one allocation, handed out at the
-     * mapping's base; an interior pointer is not something this pool ever
-     * returned, and retiring on it would retire another owner's block. */
-    ARTS_ERROR("regpool: free of %p, an interior pointer of the direct "
-               "mapping at %p", p, s->mr.base);
-  }
-
   /* Oversize direct slab: its mapping backs exactly this one allocation, so
    * this free leaves the mapping owned by nobody (the same
    * uses-complete-and-transport-quiesced precondition an arena free already
    * relies on).  Retire it rather than unmap it: it stays mapped, placed,
    * populated and registered for the next request of the same shape, and
-   * the freed pointer stops resolving because the slot is no longer live. */
+   * the freed pointer stops resolving because the slot is no longer live.
+   * The slot is judged again under the lock: another free of the same block
+   * may have retired it since the lookup, and only a live slot whose mapping
+   * starts at p is this block. */
   pthread_mutex_lock(&g_lock);
-  if (atomic_load_explicit(&s->state, memory_order_relaxed) ==
-      REGPOOL_SLOT_LIVE) {
+  bool mine = atomic_load_explicit(&s->state, memory_order_relaxed) ==
+                  REGPOOL_SLOT_LIVE &&
+              s->mr.base == p;
+  if (mine) {
     atomic_store_explicit(&s->state, REGPOOL_SLOT_RETIRED,
                           memory_order_release);
   }
   pthread_mutex_unlock(&g_lock);
+  if (!mine) {
+    ARTS_ERROR("regpool: free of %p, which is not a live oversize block's "
+               "start (freed twice, or an interior pointer)", p);
+  }
 }
 
 const arts_regpool_mr_t *arts_regpool_lookup(const void *p) {
@@ -2403,6 +2556,7 @@ bool arts_regpool_init(struct fid_domain *domain_or_null,
 }
 void arts_regpool_cleanup(void) {}
 void arts_regpool_unregister(void) {}
+void arts_regpool_report_if_requested(void) {}
 void arts_regpool_report(FILE *out) {
   /* No slabs, no nodes, no direct mappings to describe — say so rather than
    * print a shape this build does not have. */

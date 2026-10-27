@@ -39,6 +39,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/resource.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -166,7 +167,14 @@ int main(void) {
   {
     pid_t pid = fork();
     if (pid == 0) {
-      /* child: silence stderr noise, then trigger the abort path */
+      /* child: no core file for an abort it provokes on purpose (only the
+       * soft limit drops, so the process stays dumpable), silence stderr
+       * noise, then trigger the abort path */
+      struct rlimit core;
+      if (getrlimit(RLIMIT_CORE, &core) == 0) {
+        core.rlim_cur = 0;
+        (void)setrlimit(RLIMIT_CORE, &core);
+      }
       (void)freopen("/dev/null", "w", stderr);
       void *bad = arts_malloc_aligned(64, 8); /* align 8 < 16 -> ARTS_ERROR */
       /* should never reach here */

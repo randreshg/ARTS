@@ -159,7 +159,8 @@ All options are set with ``-D<NAME>=<VALUE>`` on the cmake line.
      - mimalloc
      - General allocator — ``mimalloc`` (default; vendored static, the
        only multinode-capable choice) or ``system`` (libc malloc;
-       single-node / sanitizer builds only).
+       single-node / sanitizer builds only).  Under ``mimalloc`` a detected
+       allocator error aborts; see :ref:`allocator_errors`.
    * - ``ARTS_USE_CXL``
      - OFF
      - This tree's own library keeps every data block's payload in CXL
@@ -275,6 +276,67 @@ All options are set with ``-D<NAME>=<VALUE>`` on the cmake line.
 To pick a faster linker, use CMake's own ``-DCMAKE_LINKER_TYPE=MOLD`` (cmake ≥ 3.29).
 
 See :ref:`coherence_protocols` for the normative definition of the protocols and their contracts.
+
+.. _allocator_errors:
+
+Allocator errors
+~~~~~~~~~~~~~~~~
+
+A ``mimalloc`` build reports every error mimalloc detects other than a
+refused request (out of memory, a request too large, or an arena with no room
+for a thread): it prints one line and a backtrace to stderr, then aborts with
+``SIGABRT``.  The line is
+
+.. code-block:: text
+
+   [ARTS] allocator error: <class> (code N, rank R, thread T (worker|progress P))
+
+where ``<class>`` is ``double free``, ``invalid pointer or argument``,
+``heap metadata corrupted or unobtainable`` or ``unexpected error``, the
+usual meaning of the code, which is always printed.  ``T`` is the thread's
+index within its rank and ``P`` its position among the threads of its role;
+a thread the runtime did not create reads ``thread 0 (worker 0)``.  Legal
+exhaustion never aborts: an arena that has no room for a thread is an
+ordinary refusal, served from another arena or a fresh slab.
+
+What the report can see is what mimalloc detects:
+
+- a Release build detects a cross-thread double free only when both frees
+  come from threads other than the block's owner, the owner did not collect
+  that page between them and the page is not full, plus a double or invalid
+  free of a whole arena block;
+- a Debug build adds a same-thread double free, an owner-involved
+  cross-thread double free (reported as heap metadata corruption, through
+  mimalloc's free-list entry and padding checks), an invalid or unaligned
+  free and a write into a block's padding;
+- neither sees a double free into a full page, nor one of a block allocated
+  again between the two frees.
+
+Not covered by the report:
+
+- a mimalloc Debug assertion prints ``mimalloc: assertion failed`` and
+  aborts with no marker and no backtrace (an interior-pointer free is one);
+- an oversize block is the registered pool's own mapping, which only the
+  pool's own checks see: freeing one twice, by an interior pointer, or a
+  pointer the pool does not hold, is the pool's fatal error;
+- a CXL slot is outside every allocator.
+
+The backtrace is the detecting thread's, which is not always the thread
+that freed twice: a cross-thread double free is often found by the owner's
+later allocation, sweep or exit.  To decode it:
+
+- every ARTS program is non-PIE, so ``addr2line -f -e <program>`` decodes
+  each address; a frame inside ``libarts.so`` is decoded with
+  ``addr2line -f -e libarts.so <+offset>``;
+- mimalloc's own text comes from a rerun with ``MIMALLOC_VERBOSE=1``.  It
+  carries a block address and size for some classes only, and it changes the
+  timing that produced the error.
+
+The pool's report counts the binds that found an arena with no room for the
+thread (``theap_refusals``; see :doc:`../configuration/counters_cfg`).  It is
+printed at every rank's teardown when ``ARTS_REGPOOL_REPORT`` is set: at the
+pool's cleanup, or, when a thread was left unjoined, by the teardown that
+leaves the pool open.
 
 GPU Build
 ~~~~~~~~~
