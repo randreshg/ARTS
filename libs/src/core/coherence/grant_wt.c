@@ -34,7 +34,6 @@
 #include "arts/coherence/buffer.h"
 #include "arts/coherence/census.h"
 #include "arts/coherence/coherence.h"
-#include "arts/coherence/directory.h"
 #include "arts/coherence/handlers.h"
 #include "arts/db.h"
 #include "arts/gas/route_table.h"
@@ -42,64 +41,10 @@
 #include "arts/runtime_state.h"
 #include "arts/runtime_types.h"
 #include "arts/system/print.h"
-#include "arts/system/schedfuzz.h"
 #include "arts/system/threads.h"
 #include "arts/transport/net.h"
 #include "arts/transport/protocol.h"
 #include "arts/utils/malloc.h"
-#include "arts/counter/Preamble.h"
-
-/* ===== Ownership-round seams (called from coherence/grant.c) ==
- * family→protocol: the ownership-family GRANT_REQUEST handler
- * delegates the WT/WB-divergent steps here.  Only the revoking release policy
- * opens a round. */
-
-#ifndef ARTS_RELEASE_PURGE
-void arts_db_start_grant_round(struct arts_db_cache_s *cache,
-                                   struct arts_db_s *db,
-                                   unsigned int requester) {
-  (void)requester;
-  /* Pop the OLDEST requester (FIFO) to be the transfer target, record it in
-   * pending_install_owner, and INVALIDATE the current holder carrying the new
-   * owner so the holder ships the owner→owner GRANT_RESPONSE directly.
-   * Structurally identical to the WB start round; the WT / WB divergence is
-   * only the drain point in the response/confirm handlers. */
-  unsigned int next_owner;
-  struct arts_rdzv_landing_s next_rdzv;
-  while (!arts_home_grantreq_queue_pop(&db->pending_rw, &next_owner,
-                                       &next_rdzv, NULL)) {
-    /* Empty despite our own push: an earlier round already served it (rounds
-     * can complete between the push and this claim).  Release the baton with
-     * the SAME re-check discipline as the round close: a requester that
-     * pushed and lost the baton race while we held it would otherwise stay
-     * queued forever with no baton holder to serve it. */
-    arts_sched_fuzz_point(); /* widen the pop-empty<->release window */
-    atomic_store_explicit(&db->invalidate_in_flight, 0u, memory_order_release);
-    /* seq_cst fence: store->load pair with arts_handler_db_grant_request,
-     * which pushes onto this FIFO and passes a fence before its baton
-     * check.  Of the two fences in S the later one's side sees the other's
-     * store: either the probe below finds that request, or that handler's
-     * baton CAS reads this release. */
-    atomic_thread_fence(memory_order_seq_cst);
-    if (!arts_home_grantreq_queue_pending(&db->pending_rw)) {
-      return;
-    }
-    unsigned int expected = 0u;
-    if (!atomic_compare_exchange_strong_explicit(
-            &db->invalidate_in_flight, &expected, 1u, memory_order_acq_rel,
-            memory_order_acquire)) {
-      return; /* another claimant owns the queue now */
-    }
-    INCREMENT_NUM_GRANT_BATON_RECLAIM_BY(1);
-  }
-  atomic_store_explicit(&db->pending_install_owner, next_owner,
-                        memory_order_relaxed);
-  unsigned int current_owner =
-      atomic_load_explicit(&db->rw_holder, memory_order_acquire);
-  arts_send_db_grant_invalidate(current_owner, cache->db_guid, next_owner,
-                                    &next_rdzv, ARTS_GRANT_VERSION_NONE);
-}
-#endif /* !ARTS_RELEASE_PURGE */
 
 /* ===== WT GRANT_RESPONSE handler (new owner C) ================ */
 
@@ -304,8 +249,11 @@ void arts_handler_db_grant_confirm(void *item_v, void *args_v) {
   atomic_store_explicit(&db->rw_holder, new_owner, memory_order_release);
 
   /* Advance the queue by revoking the new owner again, or put the baton
-   * down. */
-  arts_db_grant_round_close(cache, db);
+   * down.  This handler inherits the hold, so it reads the claim count before
+   * it looks (the argument is evaluated before the call). */
+  arts_db_grant_advance(
+      cache, db, false,
+      atomic_load_explicit(&db->grant_baton, memory_order_acquire));
 }
 
 /* ===== WT GRANT_INVALIDATE handler (pure body) =================== */
@@ -332,8 +280,8 @@ void arts_handler_db_grant_invalidate(void *item_v, void *args_v) {
   cache->incoming_new_owner_rdzv = a->new_owner_rdzv;
   cache->incoming_new_owner_have = a->new_owner_have;
   cache->incoming_new_owner = a->new_owner_rank;
-  /* Sentinel withdrawal (writer_count -= 1).  Home's invalidate_in_flight gate
-   * sends AT MOST ONE GRANT_INVALIDATE to this rank per transfer round, after
+  /* Sentinel withdrawal (writer_count -= 1).  The home's baton sends AT MOST
+   * ONE GRANT_INVALIDATE to this rank per transfer round, after
    * rw_holder has been advanced to a rank that already holds the sentinel (+1).
    * The decrement that drives writer_count to 0 is the unique actor that
    * performs the ownership transfer; while local writers are still active

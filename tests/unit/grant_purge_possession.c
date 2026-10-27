@@ -50,7 +50,7 @@ static void flag_path(char *buf, size_t n, uint64_t token, uint64_t turn) {
 struct home_view {
   int found;
   unsigned int word;
-  unsigned int baton;
+  uint64_t baton;
   unsigned int latch;
 };
 
@@ -64,8 +64,7 @@ static struct home_view read_home(arts_guid_t db) {
   if (d != NULL && d->home_initialized) {
     v.found = 1;
     for (int i = 0; i < 1000; i++) {
-      v.baton =
-          atomic_load_explicit(&d->invalidate_in_flight, memory_order_acquire);
+      v.baton = atomic_load_explicit(&d->grant_baton, memory_order_acquire);
       if (v.baton == 0u) {
         break;
       }
@@ -87,14 +86,15 @@ static void fail(const char *what, uint64_t turn) {
 
 /* A check of the home's grant plane, printed with all three of its words. */
 static void expect(int ok, const char *what, uint64_t turn, unsigned int word,
-                   unsigned int baton, unsigned int latch) {
+                   uint64_t baton, unsigned int latch) {
   if (ok) {
     return;
   }
   arts_test_fail();
-  arts_printf("FAIL grant_purge_possession turn %llu: %s (word=0x%x baton=%u "
+  arts_printf("FAIL grant_purge_possession turn %llu: %s (word=0x%x baton=%llu "
               "latch=%u)\n",
-              (unsigned long long)turn, what, word, baton, latch);
+              (unsigned long long)turn, what, word, (unsigned long long)baton,
+              latch);
 }
 
 /* Rank 0, while rank 1 is inside turn paramv[2]. */

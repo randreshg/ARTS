@@ -1686,8 +1686,8 @@ void arts_db_debug_quiescence_check(void) {
          * itself.  Home fields only — a cache-only stub does not carry
          * them. */
         if (db->home_initialized) {
-          bool baton = atomic_load_explicit(&db->invalidate_in_flight,
-                                            memory_order_relaxed) != 0;
+          bool baton = atomic_load_explicit(&db->grant_baton,
+                                            memory_order_relaxed) != 0u;
 #ifdef ARTS_RELEASE_PURGE
           unsigned int hw =
               atomic_load_explicit(&c->writer_count, memory_order_relaxed);
@@ -1703,9 +1703,9 @@ void arts_db_debug_quiescence_check(void) {
             viol++;
           }
           /* A hand-back parked in the latch is taken by its own arrival or by
-           * the thread inside the tail on its way out, so one still parked
-           * with the baton down has no consumer left, and the right it
-           * carries never comes home. */
+           * the baton holder whose put-down its claim makes fail, so one
+           * still parked with the baton down has no consumer left, and the
+           * right it carries never comes home. */
           bool named = ARTS_GRANT_OWN_OF(hw);
           if (!baton && atomic_load_explicit(&db->pending_return_from,
                                              memory_order_relaxed) !=

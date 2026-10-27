@@ -19,19 +19,20 @@
  *
  * That leaves the home with two things to arbitrate and one place to do it.
  * The two are the request FIFO and a single-slot return latch; the one place
- * is THE TAIL below, entered under the transfer baton from three points — a
- * return accepted, a request arriving at a home that holds the right, and the
- * home's own last writer finishing.  The tail serves AT MOST ONE grant to
- * another rank and then puts the baton down: the grant clears possession, so a
- * second serve finds nothing to give until the hand-back has been accepted,
- * and the latch exists only for a hand-back that arrives while another
- * thread is inside the tail.
+ * is THE TAIL below, entered under the serving baton from three points — a
+ * return arrived, a request arriving at a home that holds the right, and the
+ * home's own last writer finishing with a request queued.  The tail serves AT
+ * MOST ONE grant to another rank before it tries to put the baton down: the
+ * grant clears possession, so a second serve finds nothing to give until the
+ * hand-back has been accepted, and the latch exists only for a hand-back that
+ * arrives while another thread holds the baton.
  *
- * Everything hands off by CAS or by ending in that tail.  Nothing here
- * publishes a fact and assumes a consumer: a queued request re-checked after
- * a baton release, a parked return consumed from either side, and the word's
- * own possession edge are each somebody's obligation, discharged exactly
- * once.
+ * Everything hands off by an RMW or by ending in that tail.  Nothing here
+ * publishes a fact and assumes a consumer: every claimant publishes before it
+ * claims the baton, and the holder puts the baton down only from the claim
+ * count it last looked behind (directory.h), so a queued request, a parked
+ * return and the word's own possession edge are each somebody's obligation,
+ * discharged exactly once.
  */
 #include <assert.h>
 #include <stdbool.h>
@@ -119,10 +120,9 @@ static void send_grant_return(struct arts_db_cache_s *cache) {
 /* ===== THE TAIL ========================================================== */
 
 enum grant_tail_entry_e {
-  GRANT_TAIL_SERVE,   /* the baton was just won with the home idle */
-  GRANT_TAIL_RECHECK, /* the baton is held with nothing to apply; put it down
-                         and look again */
-  GRANT_TAIL_ACCEPT,  /* a return was latched and consumed by this caller */
+  GRANT_TAIL_SERVE,    /* the baton was just won with the home possessing */
+  GRANT_TAIL_ACCEPT,   /* a return was latched and consumed by this caller */
+  GRANT_TAIL_PUT_DOWN, /* the baton was won with nothing of its own to apply */
 };
 
 /* Whether the write right is at the home.  Once the descriptor is visible
@@ -134,33 +134,22 @@ static bool grant_home_holds(struct arts_db_cache_s *cache) {
       atomic_load_explicit(&cache->writer_count, memory_order_acquire));
 }
 
-/* Try to become the server.  Only a won baton may enter the tail: entering
- * unconditionally puts two consumers on a single-consumer FIFO, and on a loss
- * the current holder's own re-check picks the newly published state up. */
-static void grant_tail(struct arts_db_s *db, enum grant_tail_entry_e entry,
-                       unsigned int returner);
-
-static void grant_tail_try_serve(struct arts_db_s *db) {
-  unsigned int expected = 0u;
-  if (atomic_compare_exchange_strong_explicit(&db->invalidate_in_flight,
-                                              &expected, 1u,
-                                              memory_order_acq_rel,
-                                              memory_order_acquire)) {
-    grant_tail(db, GRANT_TAIL_SERVE, ARTS_GRANT_NO_RETURNER);
-  }
-}
-
+/* Entered only with the baton won: two holders would put two consumers on a
+ * single-consumer FIFO.  `seen` is the claim count this holder has looked
+ * behind; every way out puts the baton down by a CAS from it (directory.h),
+ * so a claim made after a look always makes the holder look again. */
 static void grant_tail(struct arts_db_s *db, enum grant_tail_entry_e entry,
                        unsigned int returner) {
   struct arts_db_cache_s *cache = &db->cache;
   const unsigned int home = arts_global_rank_id;
+  uint64_t seen = 1u; /* the winning claim wrote 1 */
   unsigned int latched = returner;
 
   if (entry == GRANT_TAIL_ACCEPT) {
     goto accept;
   }
-  if (entry == GRANT_TAIL_RECHECK) {
-    goto release_recheck;
+  if (entry == GRANT_TAIL_PUT_DOWN) {
+    goto put_down;
   }
 
 serve: {
@@ -169,17 +158,22 @@ serve: {
   /* The front's RANK is read before any claim: a self front must never see
    * possession transiently cleared, because every concurrent home-local
    * acquirer would read that window as "no grant" and open its own request.
-   * The peek is stable — popping is the baton holder's alone. */
-  if (arts_home_grantreq_queue_peek(&db->pending_rw, &front, &front_rdzv,
-                                    NULL) &&
+   * The peek is stable — popping is the baton holder's alone.  A front whose
+   * producer has not linked it yet is not waited for: a producer that read
+   * possession set claims after its link, so the put-down below fails and
+   * the tail looks again, or its claim finds the baton free and it serves
+   * itself; one that read possession clear claims nothing, and the accept
+   * that sets possession again looks behind it. */
+  if (arts_home_grantreq_queue_peek_linked(&db->pending_rw, &front, &front_rdzv,
+                                           NULL) &&
       grant_home_holds(cache)) {
     if (front == home) {
       /* Nothing travels and nothing installs: the home already holds both the
        * right and the bytes, so the round completes here, synchronously. */
       unsigned int self_rank;
       struct arts_rdzv_landing_s self_rdzv;
-      (void)arts_home_grantreq_queue_pop(&db->pending_rw, &self_rank,
-                                         &self_rdzv, NULL);
+      (void)arts_home_grantreq_queue_pop_linked(&db->pending_rw, &self_rank,
+                                                &self_rdzv, NULL);
       if (self_rdzv.cookie != 0) {
         arts_db_buf_landing_return(
             (struct arts_db_buffer_s *)(uintptr_t)self_rdzv.cookie);
@@ -187,11 +181,14 @@ serve: {
       /* The drain takes the waiters, then releases the coalescing flag.  A
        * waiter pushed after the take re-requests from inside that drain: the
        * request reaches this very tail through the engine, finds the baton
-       * held, and stays queued for the re-check below. */
+       * held, and its claim is counted. */
       uint8_t census = arts_db_census_serving(false);
       arts_db_drain_pending_rw_after_grant(cache);
       arts_db_census_served(census);
-      goto release_recheck;
+      /* Look again rather than put the baton down: whatever queued behind
+       * the self front is served now, or left to the drained writers' idle
+       * edge by the give-up below. */
+      goto serve;
     }
     /* Remote front: claim the right away from the home in ONE CAS.  It is
      * what separates "the home can grant" from "home writers are live", where
@@ -203,8 +200,8 @@ serve: {
       unsigned int target;
       struct arts_rdzv_landing_s target_rdzv;
       uint64_t target_has = ARTS_GRANT_VERSION_NONE;
-      (void)arts_home_grantreq_queue_pop(&db->pending_rw, &target,
-                                         &target_rdzv, &target_has);
+      (void)arts_home_grantreq_queue_pop_linked(&db->pending_rw, &target,
+                                                &target_rdzv, &target_has);
       /* Judge the requester's copy against the canonical axis, and read that
        * axis AFTER the claim above.  The claim is what holds it still: the
        * home may only serve while it possesses the right, which the previous
@@ -222,79 +219,71 @@ serve: {
       /* The home now holds nothing and is owed nothing but the hand-back, so
        * the baton goes down at once: a request arriving meanwhile finds no
        * possession and waits on the FIFO for that hand-back's acceptance, and
-       * a hand-back that lands while this thread is still here is parked and
-       * taken by the re-check below. */
-      arts_sched_fuzz_point(); /* widen the grant<->baton-release window */
-      goto release_recheck;
+       * a hand-back that lands while this thread still holds the baton is
+       * parked, and its claim makes the put-down fail. */
+      arts_sched_fuzz_point(); /* widen the grant<->put-down window */
+      goto put_down;
     }
-    /* Home writers are live.  Put the baton down and stop — re-arming here
+    /* Home writers are live.  Put the baton down and stop — holding on here
      * spins until they finish and, on a progress thread, spins against the
-     * very round a writer's release is waiting on.  One re-check closes the
-     * window where the last of them reached its idle edge just before our
-     * release made the baton available. */
-    atomic_store_explicit(&db->invalidate_in_flight, 0u, memory_order_release);
-    /* seq_cst fence: store->load pair with grant_commit_count_edge, whose
-     * idle-edge commit is followed by a fence and a baton CAS: either this
-     * load reads that edge, or that CAS sees this release. */
+     * very round a writer's release is waiting on.  The last of them serves
+     * the front at its idle edge (grant_commit_count_edge). */
+    if (!atomic_compare_exchange_strong_explicit(&db->grant_baton, &seen, 0u,
+                                                 memory_order_acq_rel,
+                                                 memory_order_acquire)) {
+      INCREMENT_NUM_GRANT_BATON_RECLAIM_BY(1);
+      goto reexamine;
+    }
+    /* seq_cst fence: store->load pair with grant_commit_count_edge (idle
+     * edge, fence, a look at this FIFO): either that look finds the front
+     * left queued here, or this load reads the idle edge and re-claims. */
     atomic_thread_fence(memory_order_seq_cst);
-    arts_sched_fuzz_point(); /* widen the release<->re-check window */
+    arts_sched_fuzz_point(); /* widen the put-down<->re-read window */
     if (atomic_load_explicit(&cache->writer_count, memory_order_acquire) ==
-        ARTS_GRANT_SEED_IDLE) {
-      unsigned int expected = 0u;
-      if (atomic_compare_exchange_strong_explicit(
-              &db->invalidate_in_flight, &expected, 1u, memory_order_acq_rel,
-              memory_order_acquire)) {
-        INCREMENT_NUM_GRANT_BATON_RECLAIM_BY(1);
-        goto serve;
-      }
+            ARTS_GRANT_SEED_IDLE &&
+        atomic_fetch_add_explicit(&db->grant_baton, 1u, memory_order_acq_rel) ==
+            0u) {
+      INCREMENT_NUM_GRANT_BATON_RECLAIM_BY(1);
+      seen = 1u;
+      goto serve;
     }
     return;
   }
 }
 
-release_recheck:
-  atomic_store_explicit(&db->invalidate_in_flight, 0u, memory_order_release);
-  /* seq_cst fence: store->load pair with arts_handler_db_grant_request
-   * (push, fence, possession check and baton CAS) and with
-   * arts_db_grant_return_arrived (latch CAS, fence, baton CAS).  Of two
-   * fences in S the later one's side sees the other's store: either the
-   * probes below find that request or that return, or the other side's
-   * baton CAS sees this release. */
-  atomic_thread_fence(memory_order_seq_cst);
-  arts_sched_fuzz_point(); /* widen the release<->re-check window */
-  {
-    unsigned int expected = 0u;
-    if (arts_home_grantreq_queue_pending(&db->pending_rw) &&
-        grant_home_holds(cache) &&
-        atomic_compare_exchange_strong_explicit(
-            &db->invalidate_in_flight, &expected, 1u, memory_order_acq_rel,
-            memory_order_acquire)) {
-      INCREMENT_NUM_GRANT_BATON_RECLAIM_BY(1);
-      goto serve;
-    }
+put_down:
+  arts_sched_fuzz_point(); /* widen the look<->put-down window */
+  /* Same-word pairing with every claim (arts_db_grant_request_arrived,
+   * arts_db_grant_return_arrived, grant_commit_count_edge): a claim made
+   * since `seen` makes this CAS fail, and its acquire failure order takes
+   * that claimant's publication for the re-examination. */
+  if (atomic_compare_exchange_strong_explicit(&db->grant_baton, &seen, 0u,
+                                              memory_order_acq_rel,
+                                              memory_order_acquire)) {
+    return;
   }
-  {
-    unsigned int parked =
-        atomic_load_explicit(&db->pending_return_from, memory_order_acquire);
-    unsigned int expected = 0u;
-    if (parked != ARTS_GRANT_NO_RETURNER &&
-        atomic_compare_exchange_strong_explicit(
-            &db->invalidate_in_flight, &expected, 1u, memory_order_acq_rel,
-            memory_order_acquire)) {
-      INCREMENT_NUM_GRANT_BATON_RECLAIM_BY(1);
-      unsigned int want = parked;
-      if (atomic_compare_exchange_strong_explicit(
-              &db->pending_return_from, &want, ARTS_GRANT_NO_RETURNER,
-              memory_order_acq_rel, memory_order_acquire)) {
-        latched = parked;
-        goto accept;
-      }
-      /* The returner's own handler took the slot.  Never leave holding the
-       * baton: go round again so it is released and re-examined. */
-      goto release_recheck;
+  INCREMENT_NUM_GRANT_BATON_RECLAIM_BY(1);
+
+reexamine: {
+  unsigned int parked =
+      atomic_load_explicit(&db->pending_return_from, memory_order_acquire);
+  if (parked != ARTS_GRANT_NO_RETURNER) {
+    /* Only a baton holder consumes the latch — a return's own arrival only
+     * after its claim found the baton free — so it cannot change under this
+     * one. */
+    unsigned int want = parked;
+    if (!atomic_compare_exchange_strong_explicit(
+            &db->pending_return_from, &want, ARTS_GRANT_NO_RETURNER,
+            memory_order_acq_rel, memory_order_acquire)) {
+      ARTS_ERROR("grant: guid %lu: a parked hand-back changed under the "
+                 "serving baton",
+                 (unsigned long)cache->db_guid);
     }
+    latched = parked;
+    goto accept;
   }
-  return;
+  goto serve;
+}
 
 accept: {
   /* The latch's one consumer owns the returner's reply: it was written before
@@ -326,6 +315,12 @@ accept: {
          "a returned write right lands on a home that holds nothing");
   (void)accepted;
   INCREMENT_NUM_GRANT_PURGE_ACCEPT_BY(1);
+  /* seq_cst fence: store->load pair with arts_db_grant_request_arrived
+   * (push, fence, possession load): either every look ordered after this
+   * fence -- the serve below, a later holder's, an idle edge's -- finds that
+   * request, or that load reads the possession set here and the requester
+   * claims. */
+  atomic_thread_fence(memory_order_seq_cst);
   /* A release that hands the right back completes only once the home has
    * APPLIED it — possession is back — so every message of that grant is
    * retired before the releasing task can complete, and nothing the program
@@ -345,10 +340,10 @@ accept: {
 
 /* Cat-B pure body (OoO g_ooo_table[OOO_DB_GRANT_RETURN]): the engine has
  * acquired the home db_s and pinned a ref across this call.  A return is
- * never rejected — it is accepted now, or parked for the thread already
- * inside the tail, which takes it on its way out — so the slot is handled
- * publish-then-check on both sides and consumed by CAS: exactly one of the
- * two actors takes any given return. */
+ * never rejected — it is accepted now, or parked for the thread that holds
+ * the baton, whose put-down meets this arrival's claim — so the slot is
+ * published before the claim and consumed by CAS: exactly one baton holder
+ * takes any given return. */
 void arts_db_grant_return_arrived(
     struct arts_db_s *db, unsigned int returner,
     const struct arts_db_grant_return_reply_s *reply) {
@@ -379,33 +374,32 @@ void arts_db_grant_return_arrived(
       memory_order_relaxed);
   assert(latched && "one write right yields one outstanding hand-back");
   (void)latched;
-  /* seq_cst fence: store->load pair with grant_tail's release-recheck exit,
-   * which stores the baton 0, passes a fence and reads this latch.  Either
-   * that read finds this return, or the baton CAS below sees the release.
-   * Its give-up exit (home writers live) reads no latch and needs none: it
-   * runs only while the home holds possession, and a hand-back lands only
-   * on a home that holds nothing. */
-  atomic_thread_fence(memory_order_seq_cst);
-  unsigned int expected = 0u;
-  if (atomic_compare_exchange_strong_explicit(
-          &db->invalidate_in_flight, &expected, 1u, memory_order_acq_rel,
-          memory_order_acquire)) {
-    unsigned int want = returner;
-    if (atomic_compare_exchange_strong_explicit(
-            &db->pending_return_from, &want, ARTS_GRANT_NO_RETURNER,
-            memory_order_acq_rel, memory_order_acquire)) {
-      grant_tail(db, GRANT_TAIL_ACCEPT, returner);
-      return;
-    }
-    /* A tail's re-check took it first; we hold the baton and must not keep
-     * it — hand it back through the same re-check every exit uses. */
-    grant_tail(db, GRANT_TAIL_RECHECK, ARTS_GRANT_NO_RETURNER);
+  arts_sched_fuzz_point(); /* widen the latch<->claim window */
+  /* Same-word pairing with every put-down of the baton (grant_tail): this
+   * claim follows the latch CAS, so a holder whose put-down meets it finds
+   * the hand-back parked. */
+  if (atomic_fetch_add_explicit(&db->grant_baton, 1u, memory_order_acq_rel) !=
+      0u) {
+    /* Parked: the holder's put-down fails on this claim and it re-examines
+     * the latch.  Losing the baton race is not a failure — it is the
+     * hand-off. */
+    INCREMENT_NUM_GRANT_PURGE_LATCHED_BY(1);
     return;
   }
-  /* Parked: the baton holder's tail re-examines the slot after it puts the
-   * baton down.  Losing the baton race is not a failure — it is the
-   * hand-off. */
-  INCREMENT_NUM_GRANT_PURGE_LATCHED_BY(1);
+  /* The consume names the returner's rank, so it can also take a LATER
+   * hand-back of the same rank: a holder took this one before the claim
+   * above, granted the rank again, and the rank handed back into the empty
+   * latch.  That hand-back is then accepted here, once — its reply rode its
+   * own latch CAS — and its own arrival finds the latch empty. */
+  unsigned int want = returner;
+  if (atomic_compare_exchange_strong_explicit(
+          &db->pending_return_from, &want, ARTS_GRANT_NO_RETURNER,
+          memory_order_acq_rel, memory_order_acquire)) {
+    grant_tail(db, GRANT_TAIL_ACCEPT, returner);
+    return;
+  }
+  /* A holder took it before this claim: put the baton down. */
+  grant_tail(db, GRANT_TAIL_PUT_DOWN, ARTS_GRANT_NO_RETURNER);
 }
 
 /* The standalone vehicle's arrival.  A hand-back that rode a publish reaches
@@ -426,15 +420,22 @@ void arts_db_grant_request_arrived(struct arts_db_cache_s *cache,
                                    struct arts_db_s *db,
                                    unsigned int requester) {
   (void)requester;
-  /* Publish-then-check: the requester is already on the FIFO, and the
-   * caller's seq_cst fence (arts_handler_db_grant_request) orders that push
-   * against this load, so a home that reads its possession clear is a home
-   * whose pending hand-back's acceptance will find the request.  There is no
-   * notice to the holder — it hands the right back on its own. */
+  /* seq_cst fence: store->load pair with grant_tail's accept (possession
+   * set, fence, the serve's look at this FIFO): either that look finds this
+   * request, or the load below reads the possession the accept set and the
+   * claim hands the request to the baton.  A home that reads its possession
+   * clear is one whose pending hand-back's acceptance will find the request;
+   * there is no notice to the holder — it hands the right back on its own. */
+  atomic_thread_fence(memory_order_seq_cst);
   if (!grant_home_holds(cache)) {
     return;
   }
-  grant_tail_try_serve(db);
+  /* Same-word pairing with every put-down of the baton (grant_tail): this
+   * claim follows the caller's push. */
+  if (atomic_fetch_add_explicit(&db->grant_baton, 1u, memory_order_acq_rel) ==
+      0u) {
+    grant_tail(db, GRANT_TAIL_SERVE, ARTS_GRANT_NO_RETURNER);
+  }
 }
 
 bool arts_db_grant_release_skip(struct arts_db_cache_s *cache) {
@@ -474,13 +475,21 @@ static void grant_commit_count_edge(struct arts_db_cache_s *cache) {
     return;
   }
   if (act == ARTS_GRANT_ACT_TAIL) {
-    /* seq_cst fence: store->load pair with grant_tail's give-up path, which
-     * stores the baton 0, passes a fence and reads this word.  Of the two
-     * fences in S the later one's side sees the other's store: either the
-     * tail reads this idle edge and serves, or the baton CAS below sees the
-     * tail's release. */
+    struct arts_db_s *db = arts_db_of_cache(cache);
+    /* seq_cst fence: store->load pair with grant_tail's give-up exit (baton
+     * put down, fence, possession load): either the probe below finds the
+     * request that exit left queued, or that load reads this idle edge and
+     * re-claims.  The claim below follows this idle edge (same-word pairing
+     * with every put-down).  An empty FIFO leaves the baton untouched: no
+     * hand-back can be outstanding while the home's own writers hold the
+     * right. */
     atomic_thread_fence(memory_order_seq_cst);
-    grant_tail_try_serve(arts_db_of_cache(cache));
+    arts_sched_fuzz_point(); /* widen the fence<->probe window */
+    if (arts_home_grantreq_queue_pending(&db->pending_rw) &&
+        atomic_fetch_add_explicit(&db->grant_baton, 1u, memory_order_acq_rel) ==
+            0u) {
+      grant_tail(db, GRANT_TAIL_SERVE, ARTS_GRANT_NO_RETURNER);
+    }
   }
 }
 

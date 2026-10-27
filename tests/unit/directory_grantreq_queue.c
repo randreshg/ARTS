@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * arts_home_grantreq_queue_{init,push,pop,peek,empty,destroy} (the home
- * OWNERSHIP-REQUEST FIFO; a Vyukov MPSC, drain-one).
+ * arts_home_grantreq_queue_{init,push,pop,peek,pop_linked,peek_linked,
+ * empty,pending,destroy} (the home OWNERSHIP-REQUEST FIFO; a Vyukov MPSC,
+ * drain-one).
  *
  * One body (coherence/grantreq_queue.c) serves VAL, EXCL and INV.  The test
  * links it into a standalone TU (no ARTS runtime) and runs under each of those
@@ -16,7 +17,13 @@
  *   3. Concurrent N producers + 1 consumer: no loss, no dup, and per-producer
  *      FIFO preserved (each producer pushes a strictly increasing sequence;
  *      the consumer must observe each producer's values in increasing order).
- *      This also exercises the transient-NULL mid-link wait in pop().
+ *      This also exercises the transient-NULL mid-link wait in pop(); the
+ *      loop runs again with pop_linked(), whose false returns the consumer
+ *      retries.
+ *   4. A producer stopped between its exchange and its link store: pop() and
+ *      peek() would wait for it; pop_linked() and peek_linked() report no
+ *      front at once, as for every node behind it, while pending() counts
+ *      it; once it links they return it, and the node behind it.
  *
  * Build: the build's own protocol defines, with -DARTS_UNIT_STANDALONE_SHIMS
  * for the libc alloc shims.
@@ -161,7 +168,7 @@ static void *producer(void *arg) {
   return NULL;
 }
 
-static int part3_mpsc(void) {
+static int part3_mpsc(int linked) {
   arts_home_grantreq_queue_init(&g_q);
   atomic_store_explicit(&g_start, 0, memory_order_release);
   atomic_store_explicit(&g_produced, 0, memory_order_release);
@@ -186,8 +193,11 @@ static int part3_mpsc(void) {
    * mid-link wait while producers are still mid-push. */
   while (consumed < total) {
     unsigned int v;
-    if (!arts_home_grantreq_queue_pop(&g_q, &v, NULL, NULL)) {
-      /* Truly empty (producers between pushes) — retry. */
+    bool got = linked
+                   ? arts_home_grantreq_queue_pop_linked(&g_q, &v, NULL, NULL)
+                   : arts_home_grantreq_queue_pop(&g_q, &v, NULL, NULL);
+    if (!got) {
+      /* Empty, or (pop_linked) a front not linked yet — retry. */
       continue;
     }
     unsigned int prod = v / PER_PROD;
@@ -231,6 +241,79 @@ static int part3_mpsc(void) {
   return rc;
 }
 
+/* ---- Part 4: the non-waiting consumer against a stalled producer ---- */
+static struct arts_home_grantreq_queue_s g_q4;
+static _Atomic(int) g_q4_exchanged;
+static _Atomic(int) g_q4_link;
+
+/* arts_home_grantreq_queue_push, in its two halves with a stop between them:
+ * the exchange, then the link store once the consumer has looked. */
+static void *stalled_producer(void *arg) {
+  (void)arg;
+  struct arts_home_grantreq_node_s *n =
+      (struct arts_home_grantreq_node_s *)malloc(sizeof(*n));
+  n->rank = 41u;
+  n->have_version = ARTS_GRANT_VERSION_NONE;
+  n->rdzv = (struct arts_rdzv_landing_s){0, 0, 0, 0};
+  atomic_store_explicit(&n->next, (struct arts_home_grantreq_node_s *)NULL,
+                        memory_order_relaxed);
+  struct arts_home_grantreq_node_s *prev =
+      atomic_exchange_explicit(&g_q4.tail, n, memory_order_acq_rel);
+  atomic_store_explicit(&g_q4_exchanged, 1, memory_order_release);
+  while (!atomic_load_explicit(&g_q4_link, memory_order_acquire)) {
+  }
+  atomic_store_explicit(&prev->next, n, memory_order_release);
+  return NULL;
+}
+
+static int part4_stalled_producer(void) {
+  int rc = 0;
+  unsigned int r = 0;
+  arts_home_grantreq_queue_init(&g_q4);
+  atomic_store_explicit(&g_q4_exchanged, 0, memory_order_relaxed);
+  atomic_store_explicit(&g_q4_link, 0, memory_order_relaxed);
+  /* One linked node ahead, so the stalled one is behind a front. */
+  arts_home_grantreq_queue_push(&g_q4, 40u, NULL, ARTS_GRANT_VERSION_NONE);
+  pthread_t th;
+  pthread_create(&th, NULL, stalled_producer, NULL);
+  while (!atomic_load_explicit(&g_q4_exchanged, memory_order_acquire)) {
+  }
+  if (!arts_home_grantreq_queue_pop_linked(&g_q4, &r, NULL, NULL) || r != 40u) {
+    (void)fprintf(stderr, "FAIL: pop_linked missed the linked front\n");
+    rc = 1;
+  }
+  /* The stalled node is now the front; a node pushed behind it is linked to
+   * it and still unreachable. */
+  arts_home_grantreq_queue_push(&g_q4, 42u, NULL, ARTS_GRANT_VERSION_NONE);
+  if (arts_home_grantreq_queue_peek_linked(&g_q4, &r, NULL, NULL) ||
+      arts_home_grantreq_queue_pop_linked(&g_q4, &r, NULL, NULL)) {
+    (void)fprintf(stderr, "FAIL: peek_linked/pop_linked returned a front whose "
+                          "producer has not linked it\n");
+    rc = 1;
+  }
+  if (!arts_home_grantreq_queue_pending(&g_q4)) {
+    (void)fprintf(stderr, "FAIL: pending does not count an unlinked front\n");
+    rc = 1;
+  }
+  atomic_store_explicit(&g_q4_link, 1, memory_order_release);
+  pthread_join(th, NULL);
+  if (!arts_home_grantreq_queue_peek_linked(&g_q4, &r, NULL, NULL) ||
+      r != 41u || !arts_home_grantreq_queue_pop_linked(&g_q4, &r, NULL, NULL) ||
+      r != 41u || !arts_home_grantreq_queue_pop_linked(&g_q4, &r, NULL, NULL) ||
+      r != 42u) {
+    (void)fprintf(stderr, "FAIL: the linked fronts did not come back in "
+                          "order\n");
+    rc = 1;
+  }
+  if (arts_home_grantreq_queue_pending(&g_q4) ||
+      !arts_home_grantreq_queue_empty(&g_q4)) {
+    (void)fprintf(stderr, "FAIL: queue not empty after the stalled part\n");
+    rc = 1;
+  }
+  arts_home_grantreq_queue_destroy(&g_q4);
+  return rc;
+}
+
 int main(void) {
   pthread_t wd;
   pthread_create(&wd, NULL, watchdog, NULL);
@@ -242,11 +325,16 @@ int main(void) {
   if (part2_stub_reuse() != 0) {
     return 1;
   }
-  if (part3_mpsc() != 0) {
+  if (part3_mpsc(0) != 0 || part3_mpsc(1) != 0) {
+    return 1;
+  }
+  if (part4_stalled_producer() != 0) {
     return 1;
   }
   printf("PASS directory_grantreq_queue: FIFO + peek-nondestructive + empty + "
-         "stub-reuse + %d-producer MPSC per-producer-FIFO (%d each)\n",
+         "stub-reuse + %d-producer MPSC per-producer-FIFO (%d each, waiting "
+         "and non-waiting pop) + non-waiting pop/peek past a stalled "
+         "producer\n",
          NPROD, PER_PROD);
   return 0;
 }
@@ -256,4 +344,7 @@ int main(void) {
 #ifdef ARTS_UNIT_STANDALONE_SHIMS
 void arts_free(void *ptr) { free(ptr); }
 void *arts_malloc(size_t size) { return malloc(size); }
+#ifdef ARTS_DEBUG_INJECTION
+void arts_sched_fuzz_point(void) {}
+#endif
 #endif

@@ -11,7 +11,7 @@
  *     _Atomic(uint64_t) accessed via atomic load/store and CAS-loop
  * monotonic-max for advance.  No cross-slot invariant.
  *   - rw_holder and pending_install_owner (where the home revokes),
- *     invalidate_in_flight: _Atomic.
+ *     grant_baton: _Atomic.
  *     Their protocols are stated below, with the grant plane's home words.
  */
 
@@ -37,10 +37,16 @@ extern "C" {
  *
  * Progress.  A producer is wait-free: the node is allocated and filled before
  * its one exchange, so the window between the exchange and the link store
- * holds no allocation or syscall.  The consumer is not lock-free: a pop or
- * peek that finds head->next NULL with head != tail waits out exactly one
- * producer's window between its exchange and its link store, and makes no
- * progress until that producer is scheduled.
+ * holds no allocation or syscall.  pop and peek (EXCL's consumer) are not
+ * lock-free: one that finds head->next NULL with head != tail waits out
+ * exactly one producer's window between its exchange and its link store, and
+ * makes no progress until that producer is scheduled.  pop_linked and
+ * peek_linked (the grant plane's consumer) never wait: they report no front,
+ * and since the grant plane's producers claim the baton only after their
+ * link store, the holder's put-down either meets that claim and looks again,
+ * or the producer's own claim finds the baton free; under PURGE a producer
+ * that read possession clear claims nothing, and the accept that sets
+ * possession again looks behind it.
  *
  * Orders:
  *   tail  producers exchange it acq_rel: the release publishes the node's
@@ -81,14 +87,24 @@ bool arts_home_grantreq_queue_peek(const struct arts_home_grantreq_queue_s *q,
                                   unsigned int *out_rank,
                                   struct arts_rdzv_landing_s *out_rdzv,
                                   uint64_t *out_have);
+/* pop and peek of a front whose producer has linked it; false, at once, when
+ * there is none, including a front caught between its producer's exchange and
+ * link store (and every node behind it).  Single consumer, as above. */
+bool arts_home_grantreq_queue_pop_linked(struct arts_home_grantreq_queue_s *q,
+                                         unsigned int *out_rank,
+                                         struct arts_rdzv_landing_s *out_rdzv,
+                                         uint64_t *out_have);
+bool arts_home_grantreq_queue_peek_linked(
+    const struct arts_home_grantreq_queue_s *q, unsigned int *out_rank,
+    struct arts_rdzv_landing_s *out_rdzv, uint64_t *out_have);
 bool arts_home_grantreq_queue_empty(const struct arts_home_grantreq_queue_s *q);
-/* Conservative "is anything queued" probe, safe to call WITHOUT the consumer
- * baton — two field loads, no node dereference.  A push linearizes on the tail
- * exchange, so head != tail already implies a queued requester even while its
- * forward link is still in flight; head == tail is exact emptiness.  The
- * dereferencing tests above read head->next, which a concurrent pop may have
- * freed, so they belong to the baton holder alone; this one is what a baton
- * RELEASE re-checks with. */
+/* "Is anything queued", safe without the consumer turn: two field loads, no
+ * node dereference.  head != tail names a queued requester even before its
+ * link store.  head == tail can also be read across a pop and a reuse of the
+ * popped node's address; its one caller, the PURGE home's idle edge, is
+ * unaffected: a pop that frees the node the head load named serves the node
+ * after it, and a producer that reuses the address either claims the baton or
+ * is covered by an accept (coherence/grant_purge.c). */
 bool arts_home_grantreq_queue_pending(
     const struct arts_home_grantreq_queue_s *q);
 
@@ -118,16 +134,24 @@ bool arts_rank_u64_map_advance(struct arts_rank_to_u64_map_s *m,
 /*--- home-directory lifecycle (inlined in arts_db_s) --------------------*/
 
 /* The grant plane's home words, declared by each arm that has them:
- *   invalidate_in_flight  the home's serving baton.  Claimed 0 -> 1 by an
- *     acq_rel CAS.  Released by a release store, then a seq_cst fence and a
- *     re-probe of what a claimant may have left: the request FIFO, and
- *     where grants come back unasked also the home's possession and the
- *     return latch.  The fence pairs with the one each claimant passes
- *     between its publication (a FIFO push, a latched return, a home
- *     writer's idle edge) and its baton CAS.  The release carries the
- *     holder's directory writes (pending_install_owner, rw_holder) to the
- *     next claimant.  Loads outside the baton (the destroy, the quiescence
- *     walk) carry only its value.
+ *   grant_baton  the home's serving baton, a claim counter: 0 is free, and
+ *     k >= 1 is held with k - 1 claims made since the hold began.  Every
+ *     write after init is an acq_rel RMW.  A claimant publishes first (its
+ *     FIFO push, its latched return, the home's idle edge) and then claims
+ *     with fetch_add; the one that reads 0 holds the baton.  The holder puts
+ *     it down only by a CAS from the count it last looked behind: 1 for the
+ *     claim that won, the value an acquire load returned before the look for
+ *     a holder that inherits the baton through a round's messages, the value
+ *     a failed put-down returned otherwise.  A CAS that fails hands it the
+ *     newer count, with the publication of every claim in it (acquire failure
+ *     order), and it looks again still holding.  So a claim and a put-down
+ *     are same-word paired: the later of the two in the baton's modification
+ *     order reads the earlier, and the baton is never put down over a claim
+ *     nobody looked behind.  The release half carries the holder's writes
+ *     (the FIFO's head, pending_install_owner, rw_holder) to the next holder,
+ *     and the hold passes through a round's messages where the home revokes.
+ *     64 bits: a hold lasts as long as claims keep arriving.  Loads outside
+ *     the baton (the quiescence walk) carry only its value.
  *   rw_holder  the write holder a revocation targets.  Stored with release
  *     under the baton, by the confirm that flips it; loaded with acquire
  *     under the baton.  Loads outside it (a read redirect, the destroy, the
@@ -136,9 +160,9 @@ bool arts_rank_u64_map_advance(struct arts_rank_to_u64_map_s *m,
  *     grant to.  Stored by the baton holder when it pops that requester,
  *     loaded by the confirm that ends the round.  Both relaxed, ordered by
  *     the baton: within a round its messages carry the store to the
- *     confirm, and the baton's release and claim order one round's accesses
- *     before the next round's.  The destroy's load outside the baton
- *     carries only its value: it names one more rank to tell. */
+ *     confirm, and the baton's put-down and the next winning claim order one
+ *     hold's accesses before the next hold's.  The destroy's load outside the
+ *     baton carries only its value: it names one more rank to tell. */
 
 /* Initialize the home-directory fields inlined in struct arts_db_s (no separate
  * allocation).  rw_holder is the block's initial holder, chosen by the caller

@@ -5,13 +5,14 @@
  * An unasked holder keeps the grant forever.  Every hand-over is therefore
  * demand-driven and home-initiated: a queued request opens a revocation round,
  * the round's INVALIDATE names the next owner, the holder ships owner->owner,
- * and the round closes at the home's CONFIRM by either revoking again for the
- * next queued requester or putting the baton down.  Nothing a holder does at
+ * and at the home's CONFIRM the baton holder either revokes again for the
+ * next queued requester or puts the baton down.  Nothing a holder does at
  * its own idle edge is visible to the home — its release only decrements, and
  * ships only where a round has already named a target.
  *
- * Both write policies link this TU; the one place they differ is the message
- * that carries a round's start, which is why the round close is split below.
+ * Both write policies link this TU.  A round starts, advances and ends in one
+ * function: under write-back the CONFIRM first tries to name the next target
+ * on its CONFIRM_ACK, and comes here only when it found none.
  */
 #include <stdbool.h>
 #include <stdint.h>
@@ -31,118 +32,50 @@
 void arts_db_grant_request_arrived(struct arts_db_cache_s *cache,
                                    struct arts_db_s *db,
                                    unsigned int requester) {
-  /* Active-directory invariant: AT MOST ONE GRANT_INVALIDATE in flight
-   * to the current rw_holder per ownership-transfer round.  CAS 0->1
-   * gates the dispatch — only the thread that flips the bit sends.
-   * Concurrent GRANT_REQUESTs whose CAS loses simply piggyback on the
-   * outstanding round; their requester is queued in pending_rw and is served by
-   * the next CONFIRM-driven round.  The baton is held across the INVALIDATE →
-   * owner→owner transfer → CONFIRM round-trip and cleared in the CONFIRM
-   * handler once the queue drains. */
-  unsigned int iif_zero = 0;
-  if (!atomic_compare_exchange_strong_explicit(
-          &db->invalidate_in_flight, &iif_zero, 1u, memory_order_acq_rel,
-          memory_order_acquire)) {
-    return; /* another round is in flight; requester stays queued */
+  (void)requester;
+  /* Same-word pairing with the holder's put-down (arts_db_grant_advance):
+   * this claim follows the caller's push, so a holder whose put-down meets it
+   * looks at the FIFO again, and a claim that reads 0 serves itself. */
+  if (atomic_fetch_add_explicit(&db->grant_baton, 1u, memory_order_acq_rel) ==
+      0u) {
+    arts_db_grant_advance(cache, db, false, 1u);
   }
-  /* Baton won: the WT write policy INVALIDATEs the current rw_holder; the WB
-   * write policy pops the FIFO transfer target, records it in
-   * pending_install_owner, and starts the invalidate round. */
-  arts_db_start_grant_round(cache, db, requester);
 }
 
-/* ===== Home: a round closed ============================================ */
+/* ===== Home: the baton holder serves or puts the baton down ============= */
 
-#ifdef ARTS_WRITE_POLICY_WT
-void arts_db_grant_round_close(struct arts_db_cache_s *cache,
-                               struct arts_db_s *db) {
-  /* Drain-or-release retry loop: start the next transfer round if there are
-   * pending_rw requests, otherwise release the baton (same loop as WB, minus
-   * the CONFIRM_ACK send). */
-  while (1) {
-    unsigned int next_owner;
-    struct arts_rdzv_landing_s next_rdzv;
-    uint64_t next_have = ARTS_GRANT_VERSION_NONE;
-    if (arts_home_grantreq_queue_pop(&db->pending_rw, &next_owner, &next_rdzv,
-                                    &next_have)) {
-      atomic_store_explicit(&db->pending_install_owner, next_owner,
-                            memory_order_relaxed);
-      unsigned int current =
-          atomic_load_explicit(&db->rw_holder, memory_order_acquire);
-      arts_send_db_grant_invalidate(current, cache->db_guid, next_owner,
-                                        &next_rdzv, next_have);
-      return;
-    }
-    arts_sched_fuzz_point(); /* widen the pop-empty<->release window */
-    atomic_store_explicit(&db->invalidate_in_flight, 0u, memory_order_release);
-    /* seq_cst fence: store->load pair with arts_handler_db_grant_request,
-     * which pushes onto this FIFO and passes a fence before its baton
-     * check.  Of the two fences in S the later one's side sees the other's
-     * store: either the probe below finds that request, or that handler's
-     * baton CAS reads this release. */
-    atomic_thread_fence(memory_order_seq_cst);
-    if (!arts_home_grantreq_queue_pending(&db->pending_rw)) {
-      return;
-    }
-    unsigned int expected = 0u;
-    if (!atomic_compare_exchange_strong_explicit(
-            &db->invalidate_in_flight, &expected, 1u, memory_order_acq_rel,
-            memory_order_acquire)) {
+void arts_db_grant_advance(struct arts_db_cache_s *cache, struct arts_db_s *db,
+                           bool looked, uint64_t seen) {
+  unsigned int next_owner;
+  struct arts_rdzv_landing_s next_rdzv;
+  uint64_t next_have = ARTS_GRANT_VERSION_NONE;
+  bool got = !looked &&
+             arts_home_grantreq_queue_pop_linked(&db->pending_rw, &next_owner,
+                                                 &next_rdzv, &next_have);
+  while (!got) {
+    arts_sched_fuzz_point(); /* widen the look<->put-down window */
+    /* Same-word pairing with every claim (arts_db_grant_request_arrived):
+     * a claim made since `seen` makes this CAS fail, and its acquire failure
+     * order takes that claimant's push for the next look. */
+    if (atomic_compare_exchange_strong_explicit(&db->grant_baton, &seen, 0u,
+                                                memory_order_acq_rel,
+                                                memory_order_acquire)) {
       return;
     }
     INCREMENT_NUM_GRANT_BATON_RECLAIM_BY(1);
+    got = arts_home_grantreq_queue_pop_linked(&db->pending_rw, &next_owner,
+                                              &next_rdzv, &next_have);
   }
+  atomic_store_explicit(&db->pending_install_owner, next_owner,
+                        memory_order_relaxed);
+  /* The INVALIDATE target is rw_holder, which the home names only after that
+   * rank's install (the creator at DB_CREATE, a new owner at its CONFIRM), so
+   * the target's cache is installed when the INVALIDATE arrives and it is
+   * never deferred. */
+  arts_send_db_grant_invalidate(
+      atomic_load_explicit(&db->rw_holder, memory_order_acquire),
+      cache->db_guid, next_owner, &next_rdzv, next_have);
 }
-#else
-void arts_db_grant_round_close(struct arts_db_cache_s *cache,
-                               struct arts_db_s *db) {
-  /* Release the baton with the freshly-enqueued-racer recheck retry loop.  The
-   * caller has already tried to advance the round by piggybacking the next
-   * target on the CONFIRM_ACK, so this runs only with nothing queued. */
-  while (1) {
-    /* Release the baton. */
-    atomic_store_explicit(&db->invalidate_in_flight, 0u, memory_order_release);
-    /* seq_cst fence: store->load pair with arts_handler_db_grant_request,
-     * which pushes onto this FIFO and passes a fence before its baton
-     * check.  Of the two fences in S the later one's side sees the other's
-     * store: either the probe below finds that request, or that handler's
-     * baton CAS reads this release. */
-    atomic_thread_fence(memory_order_seq_cst);
-    /* Re-check for a freshly-enqueued requester that raced the baton
-     * release.  If the queue is still empty, we're done. */
-    if (!arts_home_grantreq_queue_pending(&db->pending_rw)) {
-      return;
-    }
-    /* There is a new requester; try to re-acquire the baton. */
-    unsigned int expected = 0u;
-    if (!atomic_compare_exchange_strong_explicit(
-            &db->invalidate_in_flight, &expected, 1u, memory_order_acq_rel,
-            memory_order_acquire)) {
-      /* Another GRANT_REQUEST handler already picked up the baton (race);
-       * that thread will drain the queue. */
-      return;
-    }
-    INCREMENT_NUM_GRANT_BATON_RECLAIM_BY(1);
-    /* Re-acquired the baton: pop the racer and start a fresh round.  This path
-     * starts AFTER the just-confirmed owner is already running (no in-flight
-     * CONFIRM_ACK to piggyback on), so it issues a STANDALONE INVALIDATE to the
-     * current rw_holder, exactly like the first-round request-handler path. */
-    unsigned int next_owner;
-    struct arts_rdzv_landing_s next_rdzv;
-    uint64_t next_have = ARTS_GRANT_VERSION_NONE;
-    if (arts_home_grantreq_queue_pop(&db->pending_rw, &next_owner,
-                                    &next_rdzv, &next_have)) {
-      atomic_store_explicit(&db->pending_install_owner, next_owner,
-                            memory_order_relaxed);
-      arts_db_owner_start_invalidate_round(cache, next_owner, &next_rdzv,
-                                           next_have);
-      return;
-    }
-    /* The racer was already consumed by whoever we contended with; loop to
-     * release and recheck. */
-  }
-}
-#endif /* ARTS_WRITE_POLICY_WT */
 
 /* A grant is never handed back unasked here, so there is no obligation to
  * arm, to carry, or to settle: every release takes the ordinary

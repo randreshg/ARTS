@@ -39,7 +39,7 @@ void arts_db_home_init(struct arts_db_s *db, unsigned int rw_holder,
   atomic_store_explicit(&db->rw_holder, rw_holder, memory_order_relaxed);
 #endif
   arts_home_grantreq_queue_init(&db->pending_rw);
-  atomic_store_explicit(&db->invalidate_in_flight, 0u, memory_order_relaxed);
+  atomic_store_explicit(&db->grant_baton, 0u, memory_order_relaxed);
 #ifndef ARTS_RELEASE_PURGE
   atomic_store_explicit(&db->pending_install_owner, 0u, memory_order_relaxed);
 #endif

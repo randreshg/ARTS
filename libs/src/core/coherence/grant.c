@@ -8,7 +8,7 @@
  * A grant therefore OUTLIVES the writer that opened it (sticky), and
  * consecutive local writers cost no wire traffic at all.  The home is a pure
  * directory: it queues requesters (pending_rw, Vyukov MPSC), admits one
- * transfer round at a time (invalidate_in_flight baton), and under RETAIN
+ * transfer round at a time (grant_baton), and under RETAIN
  * names the holder a revocation targets (rw_holder).  Under RETAIN the
  * payload itself never routes through the home on a transfer — the
  * INVALIDATE carries the next owner, and whichever actor drives writer_count
@@ -25,10 +25,10 @@
  * to move: its programs keep a block's write acquisitions exclusive.
  *
  * Write-policy-divergent steps are delegated to seams the write policy
- * defines (coherence/grant_wt.c, coherence/grant_wb.c):
- * arts_db_start_grant_round and the GRANT_INVALIDATE, GRANT_RESPONSE and
- * CONFIRM handlers, where WT drains immediately and WB gates on CONFIRM_ACK
- * (the round start, INVALIDATE and CONFIRM exist only under RETAIN).
+ * defines (coherence/grant_wt.c, coherence/grant_wb.c): the
+ * GRANT_INVALIDATE, GRANT_RESPONSE and CONFIRM handlers, where WT drains
+ * immediately and WB gates on CONFIRM_ACK (INVALIDATE and CONFIRM exist only
+ * under RETAIN).
  * Four write-policy guards remain here.  Under WB the ship credits the
  * ex-owner in the dedup ledger (which only VAL WB keeps) and moves no bytes
  * to a new owner that already holds this version; under WT the home
@@ -480,11 +480,10 @@ void arts_db_grant_ship_pending(struct arts_db_cache_s *cache) {
 
 /* ===== Home-side ownership handlers (VAL, INV) =======================
  * GRANT_REQUEST exists only in the arms that link this TU.  The
- * home-directory machinery these handlers touch (pending_rw and
- * invalidate_in_flight, and under RETAIN rw_holder) is shared by both write
- * policies; where they diverge is delegated to the seams in
- * coherence/grant_wt.c / grant_wb.c and coherence/grant_retain.c /
- * grant_purge.c. */
+ * home-directory machinery these handlers touch (pending_rw and grant_baton,
+ * and under RETAIN rw_holder) is shared by both write policies; where they
+ * diverge is delegated to the seams in coherence/grant_wt.c / grant_wb.c and
+ * coherence/grant_retain.c / grant_purge.c. */
 
 /* Cat-B pure body (OoO g_ooo_table[OOO_DB_GRANT_REQUEST]): the OoO engine
  * has already acquired the home db_s for db_guid and pinned a ref across this
@@ -546,18 +545,11 @@ void arts_handler_db_grant_request(void *item_v, void *args_v) {
   }
   arts_home_grantreq_queue_push(&db->pending_rw, requester, &a->rdzv,
                                 a->have_version);
-  arts_sched_fuzz_point(); /* widen the push<->baton-CAS window */
-  /* seq_cst fence: store->load pair with every baton release (the round
-   * start's and the round close's under RETAIN, the serving tail's exits
-   * under PURGE), each a store of 0 followed by a fence and a probe of this
-   * FIFO or of the home's possession.  Of the two fences in S the later
-   * one's side sees the other's store: either the releaser's probe finds this
-   * request, or the release policy's check below (the baton CAS, or the
-   * home's possession) sees the release. */
-  atomic_thread_fence(memory_order_seq_cst);
+  arts_sched_fuzz_point(); /* widen the push<->claim window */
 
   /* The requester is queued; what the home does about it is the release
-   * policy's answer (coherence/grant_retain.c / grant_purge.c). */
+   * policy's answer (coherence/grant_retain.c / grant_purge.c).  Its claim
+   * of the baton, if it makes one, follows the push. */
   arts_db_grant_request_arrived(cache, db, requester);
 }
 

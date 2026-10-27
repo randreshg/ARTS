@@ -288,7 +288,7 @@ counters:
   NUM_GRANT_BATON_RECLAIM:
     group: 'Write grant'
     unit: count
-    help: 'Post-release re-check found queued work and re-claimed the baton'
+    help: 'Baton put-down met a newer claim and looked again, or a give-up re-claimed'
 
   NUM_GRANT_HOME_DATALESS:
     group: 'Write grant'

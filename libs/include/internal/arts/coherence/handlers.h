@@ -266,7 +266,7 @@ void arts_handler_db_snapshot_redirect(void *item_v, void *args_v);
  * db->pending_install_owner).  NOT OoO-deferrable — the
  * dispatcher looks the cache up with a held ref and, on a MISS (DB destroyed),
  * SILENTLY DROPS.  Records the new rw_holder, then starts the next transfer
- * round or releases the invalidate_in_flight baton.  WB additionally replies
+ * round or puts the baton down.  WB additionally replies
  * with CONFIRM_ACK; WT does not (the new owner already drained at
  * GRANT_RESPONSE). */
 void arts_handler_db_grant_confirm(void *item_v, void *args_v);
@@ -399,12 +399,6 @@ void arts_send_db_grant_confirm_ack(
  * MISS (DB destroyed), SILENTLY DROPS: the gated waiters are acquires the
  * destroy contract excludes, freed with the cache and never resumed. */
 void arts_handler_db_grant_confirm_ack(void *item_v, void *args_v);
-
-/* Kick a new GRANT_INVALIDATE round: read rw_holder, send notice to
- * holder carrying new_owner as the GRANT_RESPONSE target. */
-void arts_db_owner_start_invalidate_round(
-    struct arts_db_cache_s *cache, unsigned int new_owner,
-    const struct arts_rdzv_landing_s *new_owner_rdzv, uint64_t new_owner_have);
 #endif /* (VAL or INV) x WB */
 
 #if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)

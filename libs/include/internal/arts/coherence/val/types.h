@@ -141,7 +141,7 @@ uint64_t arts_val_req_compute_next(uint64_t cur, int op, uint32_t idx,
  *                  (WT) Treiber stack of reads the home parked before the
  *                  block's first publication; drained whole once published.
  *
- * The home-directory fields (pending_rw, invalidate_in_flight, rw_holder,
+ * The home-directory fields (pending_rw, grant_baton, rw_holder,
  * cached_ranks, cached_version, ...) are NOT here — they are inlined
  * directly in the wrapping struct arts_db_s, after this cache + db_type, and
  * reached via arts_db_of_cache(cache).  Non-home ranks allocate a cache-only
@@ -338,9 +338,8 @@ struct arts_db_s {
    * redirect, the destroy, the walk) carry only its value (directory.h). */
   _Atomic(unsigned int) rw_holder;
   struct arts_home_grantreq_queue_s pending_rw; /* embedded Vyukov MPSC */
-  /* The serving baton: claimed by an acq_rel CAS, given up by a release
-   * store, a seq_cst fence and a re-probe (directory.h). */
-  _Atomic(unsigned int) invalidate_in_flight;
+  /* The serving baton, a claim counter (directory.h). */
+  _Atomic(uint64_t) grant_baton;
   /* destroy fan-out roster: creator, readers, writers */
   struct arts_rank_bitset_s cached_ranks;
   /* The declared-arrival state: per requester rank the parity of its last
@@ -364,9 +363,8 @@ struct arts_db_s {
   _Atomic(unsigned int) rw_holder;
 #endif
   struct arts_home_grantreq_queue_s pending_rw; /* embedded Vyukov MPSC */
-  /* The serving baton: claimed by an acq_rel CAS, given up by a release
-   * store, a seq_cst fence and a re-probe (directory.h). */
-  _Atomic(unsigned int) invalidate_in_flight;
+  /* The serving baton, a claim counter (directory.h). */
+  _Atomic(uint64_t) grant_baton;
   /* The RO dedup watermark (SNAPSHOT_REQUEST reply).  Not the destroy
    * roster: a rank can hold a cache the ledger never credits (a version-0
    * reply, a holder with no buffer). */

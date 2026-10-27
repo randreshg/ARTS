@@ -1029,21 +1029,41 @@ register_pure_unit_test(grant_purge_word_model TIMEOUT 30)
 set_tests_properties(grant_purge_word_model PROPERTIES
     PASS_REGULAR_EXPRESSION "PASS grant_purge_word_model")
 endif()
-# The PURGE home's return-latch hand-off, driven on one thread through the
-# real serving tail (the test TU #includes coherence/grant_purge.c and stubs
-# its callees, so it links no runtime).
-if(ARTS_RELEASE_POLICY STREQUAL "PURGE" AND NOT ARTS_COHERENCE_ARM STREQUAL "EXCL")
-    add_executable(grant_purge_latch_handoff unit/grant_purge_latch_handoff.c)
-    target_include_directories(grant_purge_latch_handoff PRIVATE
+# The grant plane's home logic driven through the real code: each test TU
+# #includes the coherence sources it exercises and stubs their other callees,
+# so it links no runtime.  With the wire stubbed a release policy's half
+# compiles the same logic in every VAL or INV tree of that policy, so each
+# registers in one cell.
+function(arts_grant_home_unit name timeout)
+    add_executable(${name} unit/${name}.c)
+    target_include_directories(${name} PRIVATE
         ${ARTS_PUBLIC_INCLUDE_DIR} ${ARTS_INTERNAL_INCLUDE_DIR}
         ${ARTS_BUILD_INTERNAL_INCLUDE_DIR}
         ${CMAKE_SOURCE_DIR}/libs/src/core)
-    arts_apply_protocol(grant_purge_latch_handoff ${ARTS_COHERENCE_ARM}
+    arts_apply_protocol(${name} ${ARTS_COHERENCE_ARM}
                         ${ARTS_WRITE_POLICY} ${ARTS_RELEASE_POLICY})
-    target_link_libraries(grant_purge_latch_handoff PRIVATE Threads::Threads)
-    register_pure_unit_test(grant_purge_latch_handoff TIMEOUT 30)
-    set_tests_properties(grant_purge_latch_handoff PROPERTIES
-        PASS_REGULAR_EXPRESSION "PASS grant_purge_latch_handoff")
+    target_link_libraries(${name} PRIVATE Threads::Threads)
+    register_pure_unit_test(${name} TIMEOUT ${timeout})
+    set_tests_properties(${name} PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS ${name}")
+endfunction()
+# The PURGE home's serving tail through the schedules a run meets rarely (a
+# hand-back or a request inside the serve's send, a request behind a self
+# front, an idle edge with nothing queued, a hand-back whose own consume
+# fails or takes a later hand-back of its rank), and the hub under
+# concurrent requests, hand-backs and home writers.
+if(ARTS_COHERENCE_ARM STREQUAL "VAL" AND ARTS_WRITE_POLICY STREQUAL "WT" AND
+   ARTS_RELEASE_POLICY STREQUAL "PURGE")
+    arts_grant_home_unit(grant_purge_latch_handoff 30)
+    arts_grant_home_unit(grant_purge_hub_stress 120)
+endif()
+# The RETAIN home's baton as a claim counter against concurrent requests and
+# a stalled producer, in both write policies' CONFIRM shapes; and the
+# write-back owner's absorption of an INVALIDATE that overtakes its
+# CONFIRM_ACK.  The reference tree is a RETAIN x WB cell.
+if(ARTS_TEST_REFERENCE_TREE)
+    arts_grant_home_unit(grant_retain_baton 120)
+    arts_grant_home_unit(grant_wb_invalidate_overtakes_ack 30)
 endif()
 
 # --- OoO defer/replay engine (ooo.c) ---
@@ -1629,10 +1649,10 @@ register_single_node_test(grant_purge_handback_regrant TIMEOUT 60)
 register_multinode_test(grant_purge_handback_regrant TIMEOUT 120)
 endif()
 # Where the right is handed back unasked, a hand-back can reach the home while
-# another thread still holds its serving baton, and only that thread's re-check
-# of the return latch accepts it.  The schedule fuzz can delay a serve between
-# its grant and its baton release, so the two-progress-thread shape meets that
-# window in most runs.
+# another thread still holds its serving baton; its claim makes that thread's
+# put-down fail, and that thread's re-examination of the return latch accepts
+# it.  The schedule fuzz can delay a serve between its grant and its put-down,
+# so the two-progress-thread shape meets that window in most runs.
 if(ARTS_DEBUG_INJECTION AND ARTS_COHERENCE_ARM MATCHES "^(VAL|INV)$" AND
    ARTS_RELEASE_POLICY STREQUAL "PURGE")
     arts_test_cfg(_cfg 2n_8w_2p)

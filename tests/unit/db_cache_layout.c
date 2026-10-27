@@ -269,7 +269,7 @@ static void print_fingerprint(void) {
   MEMBER(db_t, pending_return_credit);
 #endif
   MEMBER(db_t, pending_rw);
-  MEMBER(db_t, invalidate_in_flight);
+  MEMBER(db_t, grant_baton);
   MEMBER(db_t, cached_ranks);
   MEMBER(db_t, ro_parity);
   MEMBER(db_t, cover_gate);

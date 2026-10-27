@@ -541,23 +541,13 @@ arts_db_acquire_result_t
 arts_db_acquire_remote_rw(struct arts_db_cache_s *cache, struct arts_edt_s *edt,
                           unsigned int slot);
 
-#ifndef ARTS_RELEASE_PURGE
-/* Per-write-policy ownership-round seams (defined in coherence/grant_wt.c and
- * coherence/grant_wb.c, called from the revoking release policy's request
- * arrival).  start: the WT write policy INVALIDATEs the current holder; the
- * WB write policy pops the FIFO target + starts the invalidate round. */
-void arts_db_start_grant_round(struct arts_db_cache_s *cache,
-                                   struct arts_db_s *db,
-                                   unsigned int requester);
-#endif
-
 /* ===== Release-policy seams (coherence/grant_purge.c / grant_retain.c) =====
  * WHO initiates the grant's return is the release policy's whole question, and
  * these points are where the two answers differ.  Under RETAIN the home
  * drives every hand-over (it revokes the current holder and the holder ships
  * onward), so the request arrival starts a round, the new owner's CONFIRM
- * names it as the holder the next revocation targets, the round close
- * advances or releases the baton, and the count-dropping edges only ship when
+ * names it as the holder the next revocation targets, the baton holder
+ * advances or puts the baton down, and the count-dropping edges only ship when
  * a round has already named a target.  Under PURGE the holder gives the right
  * back at its own idle edge and the home hands it out from there, so the
  * request arrival only queues unless the home holds the right, the home's
@@ -566,8 +556,13 @@ void arts_db_start_grant_round(struct arts_db_cache_s *cache,
  * count-dropping edges are the return itself.
  *
  * arrived:      home-side GRANT_REQUEST tail, with the requester queued.
- * round_close:  home-side CONFIRM tail, with rw_holder already flipped
- *               (RETAIN only).
+ * advance:      the baton holder's next step (RETAIN only): revoke the
+ *               current holder for the next linked requester, or put the
+ *               baton down.  `seen` is the claim count the caller looked
+ *               behind: 1 for the claim that won it, and for a CONFIRM, which
+ *               inherits the hold through the round's messages, a value it
+ *               loaded with acquire before its own look; `looked` says the
+ *               caller has just found no linked requester.
  * release_skip: release_rw's defensive entry guard (true = nothing to drop).
  * release_commit: the count-dropping edge of a writer's own release; the
  *               install's own hold is closed by commit_drain / commit_finish
@@ -578,8 +573,8 @@ void arts_db_grant_request_arrived(struct arts_db_cache_s *cache,
                                    struct arts_db_s *db,
                                    unsigned int requester);
 #ifndef ARTS_RELEASE_PURGE
-void arts_db_grant_round_close(struct arts_db_cache_s *cache,
-                               struct arts_db_s *db);
+void arts_db_grant_advance(struct arts_db_cache_s *cache, struct arts_db_s *db,
+                           bool looked, uint64_t seen);
 #endif
 bool arts_db_grant_release_skip(struct arts_db_cache_s *cache);
 void arts_db_grant_release_commit(struct arts_db_cache_s *cache);

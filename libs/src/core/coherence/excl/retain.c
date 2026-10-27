@@ -264,19 +264,15 @@ bool arts_db_create_take_hold(struct arts_db_cache_s *cache, uint8_t *owed) {
  *
  * The release path decides its own 0-edge inside one CAS; this routine exists
  * for the case where the FORWARD lands when there is no live holder left to
- * release, so nothing else would re-evaluate the pending action. */
-static void owner_try_execute(struct arts_db_cache_s *cache) {
-  /* Store->load pair, closed by this one fence because both sides pass it.
-   * The FORWARD(serve) arm of arts_handler_db_excl_forward pushes onto
-   * ro_serve and then loads cache_state for the serve gate; the callers that
-   * move cache_state first (the zero-edge releases arts_db_release_rw and
-   * arts_db_release_ro, lock_deliver_commit, the forward's other arms) CAS
-   * it and then probe ro_serve.  Without a fence each side's load may be
-   * satisfied before its own store is visible to the other, and both miss:
-   * the reader strands and the read-only phase never completes.  It covers
-   * only the transitions made before the call, not this routine's own CASes
-   * below, which close the gate. */
-  atomic_thread_fence(memory_order_seq_cst);
+ * release, so nothing else would re-evaluate the pending action.
+ *
+ * `word` is a value of cache_state the caller read no earlier than its own
+ * acq_rel RMW of it (that RMW's result, or a load sequenced after it).  Every
+ * caller makes such an RMW first, the FORWARD that pushed onto ro_serve
+ * included, so the serve gate below and a push onto ro_serve are same-word
+ * paired: of a push's RMW and a gate-opening transition's, the later in
+ * cache_state's modification order reads the earlier. */
+static void owner_try_execute(struct arts_db_cache_s *cache, uint64_t word) {
   /* (1) A pending migrate_target ships the buffer, in one of two shapes.
    *
    * target != self is a real migration: the bytes leave, so it waits for no live
@@ -294,9 +290,8 @@ static void owner_try_execute(struct arts_db_cache_s *cache) {
    * the phase.  Here wc is the writer cohort BEING granted, not a blocker, so
    * this shape must NOT wait for wc==0 — that writer's own count can never reach
    * zero on its own, and waiting would deadlock. */
+  uint64_t cur = word;
   for (;;) {
-    uint64_t cur =
-        atomic_load_explicit(&cache->cache_state, memory_order_acquire);
     uint32_t mt = CACHE_MIGRATE_TARGET(cur);
     /* The standalone-RO clause is the reader guard for the self-migration shape,
      * which has no wc/rc gate of its own: a self-grant must not overwrite a
@@ -342,7 +337,7 @@ static void owner_try_execute(struct arts_db_cache_s *cache) {
                                   cache->db_guid);
         break;
       }
-      continue; /* CAS lost — re-snapshot. */
+      continue; /* CAS lost: cur holds the word it met. */
     }
     /* Real migration to another rank: the buffer LEAVES this rank by one-sided
      * PUT.  Its safety rests on global-lock exclusion — NO local holder may be
@@ -409,7 +404,7 @@ static void owner_try_execute(struct arts_db_cache_s *cache) {
                                 /*tag=*/0u, &mt_rdzv, buf_h, ds);
       break;
     }
-    /* CAS lost — re-snapshot. */
+    /* CAS lost: cur holds the word it met. */
   }
 
   /* (2) Ship an RO copy to each reader the home asked this rank to serve.
@@ -432,10 +427,9 @@ static void owner_try_execute(struct arts_db_cache_s *cache) {
    *     ACQ_RW open a SECOND request, double-counting the home's w.
    *   - ro_granted preserved: CACHE_MAKE_FULL zeroes it, and losing that token
    *     strands the home's r.
-   * The emptiness probe is a relaxed load and MUST stay below this function's
-   * seq_cst fence — hoisting it recreates the store-load pair that fence
-   * closes, and the reader would strand with the writer behind it. */
-  uint64_t cur;
+   * The emptiness probe is a relaxed load: every caller reaches it after its
+   * own acq_rel RMW of cache_state, the FORWARD that pushed included, and
+   * that same-word pairing is what orders a push against the probe. */
   for (;;) {
     cur = atomic_load_explicit(&cache->cache_state, memory_order_acquire);
     if (CACHE_OWNER(cur) != 1u ||
@@ -1017,10 +1011,10 @@ void arts_handler_db_excl_forward(void *item_v) {
     } while (!atomic_compare_exchange_weak_explicit(&cache->cache_state, &cur,
                                                     next, memory_order_acq_rel,
                                                     memory_order_acquire));
+    owner_try_execute(cache, next);
   } else {
     /* Push the reader rank onto ro_serve, THEN owner_try_execute — push-then-
-     * recheck (owner_try_execute re-reads wc==0) so a reader pushed just after
-     * a drain is not stranded. */
+     * recheck, so a reader pushed just after a drain is not stranded. */
     if (p->target == arts_global_rank_id) {
       /* A rank sends a read request only while it does not hold the bytes,
        * and becomes the owner only through its own write request, which
@@ -1043,9 +1037,16 @@ void arts_handler_db_excl_forward(void *item_v) {
     rn->rdzv.txid = p->rdzv.txid;
     rn->rdzv.cookie = p->rdzv.cookie;
     arts_lf_stack_push(&cache->ro_serve, &rn->link);
+    /* Same-word pairing with every transition that opens the serve gate (the
+     * zero-edge releases, the write DELIVER): of this RMW and theirs, the
+     * later in cache_state's modification order reads the earlier, so either
+     * that transition's probe of ro_serve sees this push or the gate load in
+     * owner_try_execute sees the gate open.  acq_rel, and its value used: an
+     * idempotent RMW whose result is unused can be compiled to no
+     * instruction (x86 below seq_cst). */
+    owner_try_execute(cache, atomic_fetch_or_explicit(&cache->cache_state, 0u,
+                                                      memory_order_acq_rel));
   }
-
-  owner_try_execute(cache);
   arts_shared_release(&db_h);
 }
 
@@ -1191,7 +1192,7 @@ static void lock_deliver_commit(arts_shared_ptr_t db_h, arts_guid_t db_guid,
     arts_send_db_excl_confirm(arts_guid_get_rank(db_guid), db_guid);
     /* A migrate_target / ro_serve may already be pending (home chained the next
      * action); drive it. */
-    owner_try_execute(cache);
+    owner_try_execute(cache, next);
   } else {
     /* RO grant: a borrower receives a read-only copy from the owner, another
      * rank (the home never forwards a rank its own read).  The one-sided
@@ -1328,7 +1329,7 @@ void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload) {
      * remain the owner.  Drive any RO readers the home queued via
      * FORWARD(serve) during the write phase: they sit in ro_serve until the last
      * writer leaves.  No-op on a single node, where ro_serve is always empty. */
-    owner_try_execute(cache);
+    owner_try_execute(cache, next);
   }
 }
 
@@ -1363,7 +1364,7 @@ void arts_db_release_ro(struct arts_db_cache_s *cache) {
     uint64_t now =
         atomic_load_explicit(&cache->cache_state, memory_order_acquire);
     if (CACHE_OWNER(now) == 1u) {
-      owner_try_execute(cache);
+      owner_try_execute(cache, now);
     }
   }
 }

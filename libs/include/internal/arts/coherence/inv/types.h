@@ -153,9 +153,9 @@ extern "C" {
  *   acks       = outstanding INVALIDATE_ACKs of the open round.
  *
  * Who holds the write grant, who is queued for it, and whether a transfer is
- * in flight are NOT here: they are the grant plane's pending_rw /
- * invalidate_in_flight (and rw_holder where the home revokes), shared with
- * every other migrating-grant arm.
+ * in flight are NOT here: they are the grant plane's pending_rw / grant_baton
+ * (and rw_holder where the home revokes), shared with every other
+ * migrating-grant arm.
  */
 #define INV_DIR_ACKS_BITS 14
 #define INV_DIR_FLAG_BITS 1
@@ -347,7 +347,7 @@ struct arts_db_cache_s {
  *  invalidation round's.
  *
  *  The home directory is two independent planes that share no word:
- *    - the migrating write grant (pending_rw / invalidate_in_flight, plus
+ *    - the migrating write grant (pending_rw / grant_baton, plus
  *      rw_holder / pending_install_owner where the home revokes and the return
  *      latch where it does not), identical to every other grant-bearing arm
  *      and driven by coherence/grant.c;
@@ -369,9 +369,8 @@ struct arts_db_s {
   _Atomic(unsigned int) rw_holder;
 #endif
   struct arts_home_grantreq_queue_s pending_rw; /* Vyukov MPSC, pop-one */
-  /* The transfer-round baton: claimed by an acq_rel CAS, given up by a
-   * release store, a seq_cst fence and a re-probe (directory.h). */
-  _Atomic(unsigned int) invalidate_in_flight;
+  /* The serving baton, a claim counter (directory.h). */
+  _Atomic(uint64_t) grant_baton;
 #ifndef ARTS_RELEASE_PURGE
   /* The requester the round in flight transfers the grant to: relaxed,
    * ordered by the baton (directory.h). */

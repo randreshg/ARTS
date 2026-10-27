@@ -52,29 +52,6 @@ struct owner_response_landed_ctx_s {
 static void owner_response_commit(arts_shared_ptr_t db_h, arts_guid_t db_guid);
 static void owner_response_landed_cb(void *arg);
 
-/* ===== start the transfer round =======================================
- * The INVALIDATE target is always rw_holder, which the home names only after
- * that rank's cache install (the creator at DB_CREATE, a new owner at
- * CONFIRM).  The target's cache is therefore provably installed by the time
- * the INVALIDATE arrives, so it is never deferred: the dispatcher and the
- * self-send call the handler body directly. */
-void arts_db_owner_start_invalidate_round(
-    struct arts_db_cache_s *cache, unsigned int new_owner,
-    const struct arts_rdzv_landing_s *new_owner_rdzv, uint64_t new_owner_have) {
-  struct arts_db_s *db = arts_db_of_cache(cache);
-  unsigned int current_owner =
-      atomic_load_explicit(&db->rw_holder, memory_order_acquire);
-  /* INVALIDATE target is always rw_holder, which home publishes only after that
-   * rank's cache install (creator at DB_CREATE, or the new owner at
-   * CONFIRM).  So the target's cache is provably already installed when the
-   * INVALIDATE arrives — the WB write policy never defers INVALIDATE; do not
-   * route it through dispatch_or_defer (the dispatcher / self-send call the
-   * handler body directly, guarded by assert(cache != NULL)). */
-  arts_send_db_grant_invalidate(current_owner, cache->db_guid, new_owner,
-                                    new_owner_rdzv, new_owner_have);
-}
-
-
 void arts_handler_db_grant_response(void *payload, size_t size) {
   struct arts_msg_grant_response_packet_s *hdr =
       (struct arts_msg_grant_response_packet_s *)payload;
@@ -283,20 +260,23 @@ void arts_handler_db_grant_confirm(void *item_v, void *args_v) {
   arts_db_grant_note_ex_holder(db, prev_holder);
 
   /* The directory now names the new owner: tell it to run its gated RW EDTs.
-   * If a next requester is queued, the round advances in the SAME message —
+   * If a next requester is linked, the round advances in the SAME message —
    * the CONFIRM_ACK piggybacks the next transfer target, and the new owner's
    * handler applies the INVALIDATE effect (publish incoming_new_owner +
-   * withdraw the sentinel) itself.  One message rather than a CONFIRM_ACK
-   * and a separate INVALIDATE, so the two can never reach the new owner
-   * reordered.  With no pending requester the ack carries
-   * ARTS_NO_PENDING_OWNER and the baton is released below. */
+   * withdraw the sentinel) itself.  With none the ack carries
+   * ARTS_NO_PENDING_OWNER and the baton holder's step below decides; a
+   * requester that claims after this look gets a standalone INVALIDATE,
+   * which can overtake the ack and is absorbed by the unconfirmed marker
+   * (arts_handler_db_grant_invalidate).  This handler inherits the hold, so
+   * it reads the claim count before it looks. */
+  uint64_t seen = atomic_load_explicit(&db->grant_baton, memory_order_acquire);
   unsigned int piggyback = ARTS_NO_PENDING_OWNER;
   struct arts_rdzv_landing_s piggyback_rdzv = {0, 0, 0, 0};
   uint64_t piggyback_have = ARTS_GRANT_VERSION_NONE;
   {
     unsigned int next_owner;
-    if (arts_home_grantreq_queue_pop(&db->pending_rw, &next_owner,
-                                    &piggyback_rdzv, &piggyback_have)) {
+    if (arts_home_grantreq_queue_pop_linked(&db->pending_rw, &next_owner,
+                                            &piggyback_rdzv, &piggyback_have)) {
       atomic_store_explicit(&db->pending_install_owner, next_owner,
                             memory_order_relaxed);
       piggyback = next_owner;
@@ -318,8 +298,7 @@ void arts_handler_db_grant_confirm(void *item_v, void *args_v) {
     return;
   }
 
-  /* No pending requester — what the home does next is the release policy's. */
-  arts_db_grant_round_close(cache, db);
+  arts_db_grant_advance(cache, db, true, seen);
 }
 
 /* ===== WB CONFIRM_ACK handler (new owner C) ==================== */
@@ -343,9 +322,11 @@ static bool install_was_remote(const struct arts_db_cache_s *cache) {
  *
  * args_v is the CONFIRM_ACK packet: its new_owner_rank carries the next
  * transfer target when the round advanced, or ARTS_NO_PENDING_OWNER for a
- * plain ack.  Merging the INVALIDATE into this message removes the former
- * CONFIRM_ACK↔INVALIDATE reorder window: both effects now happen here, in a
- * fixed order, under the drain guard.
+ * plain ack.  Merging the INVALIDATE into this message removes the reorder
+ * for a round that advances at the CONFIRM: both effects happen here, in a
+ * fixed order, under the drain guard.  A standalone INVALIDATE sent after a
+ * plain ack can still overtake it, and the unconfirmed marker absorbs it
+ * (arts_handler_db_grant_invalidate).
  */
 void arts_handler_db_grant_confirm_ack(void *item_v, void *args_v) {
   struct arts_db_cache_s *cache = &((struct arts_db_s *)item_v)->cache;
@@ -404,54 +385,6 @@ void arts_handler_db_grant_confirm_ack(void *item_v, void *args_v) {
  * has already acquired the home db_s and pinned a ref across this call (cache
  * is its FIRST member), so there is no lookup / NULL-check / defer here. */
 
-/* ===== Ownership-round seams (called from coherence/grant.c) ==
- * family→protocol: the ownership-family GRANT_REQUEST handler
- * delegates the WT/WB-divergent steps here. */
-
-void arts_db_start_grant_round(struct arts_db_cache_s *cache,
-                                   struct arts_db_s *db,
-                                   unsigned int requester) {
-  (void)requester;
-  /* WB: pop the OLDEST requester (FIFO) to be the transfer target and
-   * embed its rank in the GRANT_INVALIDATE so the current holder ships
-   * GRANT_RESPONSE directly, without a home round-trip. */
-  unsigned int next_owner;
-  struct arts_rdzv_landing_s next_rdzv;
-  uint64_t next_have = ARTS_GRANT_VERSION_NONE;
-  while (!arts_home_grantreq_queue_pop(&db->pending_rw, &next_owner,
-                                       &next_rdzv, &next_have)) {
-    /* Empty despite our own push: an earlier round already served it (rounds
-     * can complete between the push and this claim).  Release the baton with
-     * the SAME re-check discipline as the round close: a requester that
-     * pushed and lost the baton race while we held it would otherwise stay
-     * queued forever with no baton holder to serve it. */
-    atomic_store_explicit(&db->invalidate_in_flight, 0u, memory_order_release);
-    /* seq_cst fence: store->load pair with arts_handler_db_grant_request,
-     * which pushes onto this FIFO and passes a fence before its baton
-     * check.  Of the two fences in S the later one's side sees the other's
-     * store: either the probe below finds that request, or that handler's
-     * baton CAS reads this release. */
-    atomic_thread_fence(memory_order_seq_cst);
-    if (!arts_home_grantreq_queue_pending(&db->pending_rw)) {
-      return;
-    }
-    unsigned int expected = 0u;
-    if (!atomic_compare_exchange_strong_explicit(
-            &db->invalidate_in_flight, &expected, 1u, memory_order_acq_rel,
-            memory_order_acquire)) {
-      return; /* another claimant owns the queue now */
-    }
-    INCREMENT_NUM_GRANT_BATON_RECLAIM_BY(1);
-  }
-  atomic_store_explicit(&db->pending_install_owner, next_owner,
-                        memory_order_relaxed);
-  arts_db_owner_start_invalidate_round(cache, next_owner, &next_rdzv,
-                                       next_have);
-  /* The next owner's waiters are not woken at round start: they wake at that
-   * owner's CONFIRM_ACK, after the grant the current owner ships at its
-   * 0-edge (arts_db_send_grant_response) has reached it. */
-}
-
 /* ===== WB GRANT_INVALIDATE handler (pure body, DIRECT-call) ====== */
 
 /* Pure (item, args) body.  The WB write policy does NOT route INVALIDATE through
@@ -464,21 +397,24 @@ void arts_db_start_grant_round(struct arts_db_cache_s *cache,
  * handed in IS the cache.
  *
  * When this INVALIDATE arrives the ownership sentinel (+1) is already
- * installed and CONFIRMED: the post-install rw_holder flip is CONFIRM-driven,
- * so home names a rank as holder only after its GRANT install, and targets it
- * only after that — GRANT(+sentinel) precedes INVALIDATE(-1), they never
- * reorder.  The count is therefore a positive one here, and the decrement that
- * drives it from positive to EXACTLY 0 ships the owner->owner transfer.
+ * installed: the post-install rw_holder flip is CONFIRM-driven, so home names
+ * a rank as holder only after its GRANT install, and targets it only after
+ * that — GRANT(+sentinel) precedes INVALIDATE(-1), they never reorder.  Once
+ * confirmed, the decrement that drives the count from positive to EXACTLY 0
+ * ships the owner->owner transfer.
  *
- * Should this ever land inside the unconfirmed window instead, the marker
- * makes the word negative and the -1 cannot produce 0, so no transfer is
- * shipped early; the guard removal at CONFIRM_ACK owns the edge either way. */
+ * It can land inside the unconfirmed window, though: a requester that claims
+ * the home's baton after the CONFIRM's look gets a standalone INVALIDATE,
+ * which nothing orders after the CONFIRM_ACK.  The marker then makes the word
+ * negative and the -1 cannot produce 0, so no transfer is shipped early; the
+ * guard removal at CONFIRM_ACK owns the edge and reads the target published
+ * here, before this decrement. */
 void arts_handler_db_grant_invalidate(void *item_v, void *args_v) {
   struct arts_db_cache_s *cache = &((struct arts_db_s *)item_v)->cache;
   struct arts_ooo_args_db_grant_invalidate_s *a =
       (struct arts_ooo_args_db_grant_invalidate_s *)args_v;
-  /* Sentinel withdrawal (writer_count -= 1).  Home's invalidate_in_flight gate
-   * sends AT MOST ONE GRANT_INVALIDATE to this rank per transfer round, after
+  /* Sentinel withdrawal (writer_count -= 1).  The home's baton sends AT MOST
+   * ONE GRANT_INVALIDATE to this rank per transfer round, after
    * rw_holder has been advanced to a rank that already holds the sentinel (+1).
    * The decrement that drives writer_count to 0 is the unique actor that
    * performs the ownership transfer; while local writers are still active

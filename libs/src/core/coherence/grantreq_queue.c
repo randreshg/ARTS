@@ -4,7 +4,8 @@
  * keeps one.  Declarations, orders and the progress guarantee:
  * coherence/directory.h.
  *
- * Defines: arts_home_grantreq_queue_{init,push,pop,peek,empty,pending,destroy}.
+ * Defines: arts_home_grantreq_queue_{init,push,pop,peek,pop_linked,
+ * peek_linked,empty,pending,destroy}.
  *
  * Compiled for ARTS_COHERENCE_PROTOCOL = VAL, INV and EXCL.
  */
@@ -17,6 +18,7 @@
 #include <stdint.h>
 
 #include "arts/coherence/coherence.h"
+#include "arts/system/schedfuzz.h"
 #include "arts/utils/malloc.h"
 
 void arts_home_grantreq_queue_init(struct arts_home_grantreq_queue_s *q) {
@@ -83,9 +85,9 @@ bool arts_home_grantreq_queue_peek(const struct arts_home_grantreq_queue_s *q,
                                   unsigned int *out_rank,
                                   struct arts_rdzv_landing_s *out_rdzv,
                                   uint64_t *out_have) {
-  /* Same mid-link disambiguation as pop: returning "no front" while head !=
-   * tail would contradict the dereference-free pending probe, which counts
-   * that producer. */
+  /* Waits out a mid-link producer as pop does: EXCL's producers claim nothing
+   * after their link store, so a front reported missing would be left to
+   * nobody (the grant plane's producers do claim, and it uses peek_linked). */
   for (;;) {
     struct arts_home_grantreq_node_s *head =
         atomic_load_explicit(&q->head, memory_order_acquire);
@@ -110,6 +112,51 @@ bool arts_home_grantreq_queue_peek(const struct arts_home_grantreq_queue_s *q,
   }
 }
 
+bool arts_home_grantreq_queue_pop_linked(struct arts_home_grantreq_queue_s *q,
+                                         unsigned int *out_rank,
+                                         struct arts_rdzv_landing_s *out_rdzv,
+                                         uint64_t *out_have) {
+  struct arts_home_grantreq_node_s *head =
+      atomic_load_explicit(&q->head, memory_order_acquire);
+  struct arts_home_grantreq_node_s *next =
+      atomic_load_explicit(&head->next, memory_order_acquire);
+  if (next == NULL) {
+    return false;
+  }
+  *out_rank = next->rank;
+  if (out_rdzv != NULL) {
+    *out_rdzv = next->rdzv;
+  }
+  if (out_have != NULL) {
+    *out_have = next->have_version;
+  }
+  atomic_store_explicit(&q->head, next, memory_order_release);
+  if (head != &q->stub) {
+    arts_free(head);
+  }
+  return true;
+}
+
+bool arts_home_grantreq_queue_peek_linked(
+    const struct arts_home_grantreq_queue_s *q, unsigned int *out_rank,
+    struct arts_rdzv_landing_s *out_rdzv, uint64_t *out_have) {
+  struct arts_home_grantreq_node_s *head =
+      atomic_load_explicit(&q->head, memory_order_acquire);
+  struct arts_home_grantreq_node_s *next =
+      atomic_load_explicit(&head->next, memory_order_acquire);
+  if (next == NULL) {
+    return false;
+  }
+  *out_rank = next->rank;
+  if (out_rdzv != NULL) {
+    *out_rdzv = next->rdzv;
+  }
+  if (out_have != NULL) {
+    *out_have = next->have_version;
+  }
+  return true;
+}
+
 bool arts_home_grantreq_queue_empty(const struct arts_home_grantreq_queue_s *q) {
   struct arts_home_grantreq_node_s *head =
       atomic_load_explicit(&q->head, memory_order_acquire);
@@ -125,12 +172,10 @@ bool arts_home_grantreq_queue_empty(const struct arts_home_grantreq_queue_s *q) 
 
 bool arts_home_grantreq_queue_pending(
     const struct arts_home_grantreq_queue_s *q) {
-  /* Both loads may name freed nodes; that is harmless because the serving
-   * turn's releases order them: the last release's probe can have no pop
-   * between its two loads, since any such pop belongs to a later holder who
-   * must release again. */
+  /* Both loads may name freed nodes: only the addresses are compared. */
   struct arts_home_grantreq_node_s *head =
       atomic_load_explicit(&q->head, memory_order_acquire);
+  arts_sched_fuzz_point(); /* widen the window a pop and a reuse fit in */
   struct arts_home_grantreq_node_s *tail =
       atomic_load_explicit(&q->tail, memory_order_acquire);
   return head != tail;

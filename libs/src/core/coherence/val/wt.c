@@ -258,7 +258,7 @@ void arts_db_home_init(struct arts_db_s *db, unsigned int rw_holder,
   atomic_store_explicit(&db->rw_holder, rw_holder, memory_order_relaxed);
 #endif
   arts_home_grantreq_queue_init(&db->pending_rw);
-  atomic_store_explicit(&db->invalidate_in_flight, 0, memory_order_relaxed);
+  atomic_store_explicit(&db->grant_baton, 0u, memory_order_relaxed);
   db->cached_version = arts_rank_u64_map_create(nranks);
   arts_rank_bitset_init(&db->cached_ranks, nranks);
   arts_db_cover_home_init(db, nranks);

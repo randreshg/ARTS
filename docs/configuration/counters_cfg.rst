@@ -548,10 +548,11 @@ Grant Plane Rare Paths
    * - Counter
      - Description
    * - ``NUM_GRANT_BATON_RECLAIM``
-     - A releasing claimant's post-release re-check found queued work (a
-       request, or under the voluntary-return policy a parked hand-back)
-       and re-claimed the baton: the lost-wake window the re-check loop
-       exists to close.
+     - A home's baton holder tried to put the baton down and met a claim
+       made since it last looked (a request, or under the voluntary-return
+       policy a parked hand-back or the home writers' idle edge), so it kept
+       the baton and looked again; or a holder that gave up for live home
+       writers re-claimed the baton at their idle edge.
    * - ``NUM_GRANT_HOME_DATALESS``
      - Write requests the write-through home sent its own directory,
        asking for the permission alone (it already holds the newest

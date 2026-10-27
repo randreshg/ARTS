@@ -180,11 +180,12 @@ extern "C" {
   X(NUM_PUB_FLIGHT_JOIN)                                                       \
   X(NUM_PUB_FLIGHT_TRAILING)                                                   \
   X(NUM_PUB_CTS_FALLBACK)                                                      \
-  /* Num: grant plane rare paths.  BATON_RECLAIM = a releasing claimant      \
-   * found the queue non-empty on its post-release re-check and re-claimed   \
-   * (the lost-wake window the re-check loop exists to close); HOME_DATALESS \
-   * = a write request the write-through home sends its own directory,         \
-   * asking for the permission alone (it already holds the newest bytes). */   \
+  /* Num: grant plane rare paths.  BATON_RECLAIM = a baton holder's            \
+   * put-down met a claim made since it last looked and kept the baton to      \
+   * look again, or a holder that gave up for live home writers re-claimed     \
+   * the baton at their idle edge; HOME_DATALESS = a write request the         \
+   * write-through home sends its own directory, asking for the permission     \
+   * alone (it already holds the newest bytes). */                             \
   X(NUM_GRANT_BATON_RECLAIM)                                                   \
   X(NUM_GRANT_HOME_DATALESS)                                                   \
   /* Num: the voluntary-return release policy.  RETURN = write rights handed \
