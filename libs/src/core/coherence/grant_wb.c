@@ -189,9 +189,10 @@ static void owner_response_commit(arts_shared_ptr_t db_h, arts_guid_t db_guid) {
    * The jump also never passes through a value a racing INVALIDATE(-1) could
    * catch at 0: with the marker set the word cannot be exactly 0 at all, and
    * after CONFIRM_ACK clears it the guard still holds the count off the zero
-   * edge across the per-waiter +1 drain, so the transfer cannot ship before
-   * this rank's parked writers are counted and scheduled.  An absolute swap
-   * would clobber such a decrement and lose the transfer (distributed hang). */
+   * edge across the drain, which counts every parked writer before waking
+   * any, so the transfer cannot ship before they are counted and scheduled.
+   * An absolute swap would clobber such a decrement and lose the transfer
+   * (distributed hang). */
   atomic_fetch_add_explicit(&cache->writer_count, 2u + ARTS_GRANT_UNCONFIRMED,
                             memory_order_acq_rel);
 #if ARTS_DB_CENSUS

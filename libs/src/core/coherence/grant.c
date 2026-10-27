@@ -198,20 +198,12 @@ arts_db_acquire_remote_rw(struct arts_db_cache_s *cache, struct arts_edt_s *edt,
 
 /* ===== GRANT drain (called where a write grant commits on this rank) ===== */
 
-/* Drain callback context for the walk over a taken pending-RW chain. */
-struct rw_drain_ctx_s {
-  struct arts_db_cache_s *cache;
-};
-
-static void rw_drain_cb(const struct arts_db_rw_waiter_s *w, void *vctx) {
-  struct rw_drain_ctx_s *ctx = (struct rw_drain_ctx_s *)vctx;
-  /* Each woken waiter claims exactly one writer_count slot. */
-  atomic_fetch_add_explicit(&ctx->cache->writer_count, 1u,
-                            memory_order_acq_rel);
-  /* A waiter woken here is being handed the write turn, so it must find
-   * storage of the DB's declared size; the one buffer-less case is a
-   * zero-sized (sentinel) block, whose defined value is the NULL pointer this
-   * wake stamps (still accounting the dep, still advancing the walk). */
+/* A waiter woken here is being handed the write turn, so it must find
+ * storage of the DB's declared size; the one buffer-less case is a zero-sized
+ * (sentinel) block, whose defined value is the NULL pointer this wake stamps
+ * (still accounting the dep, still advancing the walk). */
+static void rw_wake_cb(const struct arts_db_rw_waiter_s *w, void *vctx) {
+  (void)vctx;
   ARTS_DEP_WAITER_CHECK(w->edt, w->edt_guid, w->slot);
   arts_db_resolve_slot_cached(w->edt, w->slot);
 }
@@ -252,23 +244,31 @@ arts_lf_link_t *arts_db_grant_take_waiters(struct arts_db_cache_s *cache) {
   return chain;
 }
 
-static void claim_wake_cb(const struct arts_db_rw_waiter_s *w, void *vctx) {
-  struct arts_db_cache_s *cache = (struct arts_db_cache_s *)vctx;
-  /* Each writer the create's hold serves takes a hold of its own under it. */
-  atomic_fetch_add_explicit(&cache->writer_count, 1u, memory_order_acq_rel);
-  ARTS_DEP_WAITER_CHECK(w->edt, w->edt_guid, w->slot);
-  arts_db_resolve_slot_cached(w->edt, w->slot);
-}
-
+/* Each writer the create's hold serves takes a hold of its own under it, all
+ * of them in one RMW before any is woken: no waiter is runnable before its
+ * hold exists, and the creator's hold keeps the count off the zero edge. */
 void arts_db_grant_claim_writers(struct arts_db_cache_s *cache) {
-  arts_pending_rw_chain_wake(arts_pending_rw_queue_take(&cache->pending_rw),
-                             claim_wake_cb, cache);
+  arts_lf_link_t *chain = arts_pending_rw_queue_take(&cache->pending_rw);
+  unsigned int n = arts_pending_rw_chain_count(chain);
+  if (n != 0u) {
+    atomic_fetch_add_explicit(&cache->writer_count, n, memory_order_acq_rel);
+    arts_pending_rw_chain_wake(chain, rw_wake_cb, NULL);
+  }
 }
 
+/* Each waiter the grant serves takes one hold, all of them in one RMW before
+ * any is woken: no waiter is runnable before its hold exists, and the caller
+ * keeps a hold of its own across the walk (a commit's, the install guard, or
+ * the home's possession), so no concurrent decrement reaches the zero edge
+ * meanwhile. */
 void arts_db_drain_pending_rw_after_grant(struct arts_db_cache_s *cache) {
-  struct rw_drain_ctx_s ctx = {.cache = cache};
-  arts_pending_rw_chain_wake(arts_db_grant_take_waiters(cache), rw_drain_cb,
-                             &ctx);
+  arts_lf_link_t *chain = arts_db_grant_take_waiters(cache);
+  unsigned int n = arts_pending_rw_chain_count(chain);
+  if (n != 0u) {
+    atomic_fetch_add_explicit(&cache->writer_count, n, memory_order_acq_rel);
+    arts_sched_fuzz_point(); /* widen the add<->first-wake window */
+    arts_pending_rw_chain_wake(chain, rw_wake_cb, NULL);
+  }
 }
 
 /* ===== Shared owner→owner transfer ship (WT + WB) =============

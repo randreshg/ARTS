@@ -142,7 +142,7 @@ unsigned int arts_db_grant_commit_drain(struct arts_db_cache_s *cache) {
   /* The commit's own hold stays on the word for the whole walk here: a
    * revocation can arrive at any moment and decrement it, and the hold is what
    * stops that decrement reaching the edge while waiters are still being
-   * counted in.  Each waiter takes its hold as it is woken. */
+   * counted in.  Every waiter's hold is added before any of them is woken. */
   arts_db_drain_pending_rw_after_grant(cache);
   return 0u;
 }

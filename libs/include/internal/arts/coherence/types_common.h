@@ -145,7 +145,7 @@ extern "C" {
  * The load-bearing encoding invariant is `own == 0 ⟹ count == 0`: possession
  * is only ever cleared by a transition whose resulting count is zero.  It is
  * what makes `(int)word > 0` mean exactly `own == 1` under both policies, so
- * the fast path and the per-waiter drain are one shared body.
+ * the fast path and the drain (one hold per woken waiter) are one shared body.
  *
  * An arm with no migrating write right carries the same word as a pure
  * reference count and reaches only the seeds below, whose values are the

@@ -670,10 +670,11 @@ bool arts_db_acquire_rw_local_fast(struct arts_db_cache_s *cache,
 #endif /* shared grant plane */
 
 #if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
-/* GRANT drain: install the granted waiters — pops every pending_rw waiter
- * (bump writer_count per waiter).  Called where a write grant commits on this
- * rank: the WB CONFIRM_ACK handler, RETAIN's commit drain, and a PURGE home
- * that serves its own request from the head of its grant queue. */
+/* GRANT drain: install the granted waiters — takes every pending_rw waiter
+ * and adds their holds to writer_count in one step before waking any of them.
+ * Called where a write grant commits on this rank: the WB CONFIRM_ACK
+ * handler, RETAIN's commit drain, and a PURGE home that serves its own request
+ * from the head of its grant queue. */
 void arts_db_drain_pending_rw_after_grant(struct arts_db_cache_s *cache);
 #endif /* shared grant plane */
 

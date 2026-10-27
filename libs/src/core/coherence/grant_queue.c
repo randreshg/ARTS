@@ -24,10 +24,11 @@
  *               worker or a progress thread), any number at once; push
  *               prepends to the head with an acq_rel CAS.
  *   Consumers — each take moves the whole chain out with one atomic
- *               exchange: a grant's drain (arts_db_grant_take_waiters —
- *               arts_db_drain_pending_rw_after_grant wakes it, and under
- *               PURGE arts_db_grant_commit_drain counts it before waking it)
- *               and a create's claim (arts_db_grant_claim_writers); teardown
+ *               exchange: a grant's drain (arts_db_grant_take_waiters, then
+ *               arts_db_drain_pending_rw_after_grant, or under PURGE
+ *               arts_db_grant_commit_drain) and a create's claim
+ *               (arts_db_grant_claim_writers), each of which counts the chain
+ *               and adds the waiters' holds before waking any; teardown
  *               destroys what is left.
  *
  * Memory: heap-allocated waiters (one malloc per producer).  chain_wake /
