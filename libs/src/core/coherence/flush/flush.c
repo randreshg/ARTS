@@ -129,18 +129,28 @@ static bool is_home(const struct arts_db_cache_s *cache) {
   return arts_guid_get_rank(cache->db_guid) == arts_global_rank_id;
 }
 
+/* The parked slot a fetch resolves: its EDT's address, which the home echoes
+ * as a cookie, and under ARTS_DEBUG_WAKE_GUID the EDT's GUID beside it. */
+struct fetch_waiter_s {
+  struct arts_edt_s *edt;
+#ifdef ARTS_DEBUG_WAKE_GUID
+  arts_guid_t edt_guid;
+#endif
+  uint32_t slot;
+};
+
 /* One request per parked EDT: the private copy is allocated here and
  * advertised as the landing, so the home's PUT lands straight in it.  A
  * block whose size this rank cannot bound sends no landing and is answered
  * size-only; the re-request then carries one. */
-static void fetch_send(struct arts_db_cache_s *cache, arts_guid_t edt_guid,
-                       uint32_t slot) {
+static void fetch_send(struct arts_db_cache_s *cache, struct fetch_waiter_s w) {
   struct arts_msg_fetch_request_packet_s p;
   arts_fill_packet_header(&p.header, sizeof(p), MSG_DB_FETCH_REQUEST);
   p.header.rank = arts_global_rank_id;
   p.db_guid = cache->db_guid;
-  p.edt_guid = edt_guid;
-  p.slot = slot;
+  p.edt_cookie = (uint64_t)(uintptr_t)w.edt;
+  ARTS_DEP_WAITER_COPY(&p, &w);
+  p.slot = w.slot;
   memset(p.pad, 0, sizeof(p.pad));
   p.rdzv.addr = 0;
   p.rdzv.key = 0;
@@ -189,7 +199,9 @@ void arts_handler_db_acquire(void *item, void *args) {
     arts_db_acquire_resolved(edt, slot);
     return;
   }
-  fetch_send(cache, edt->guid, slot); /* parks; the response resumes it */
+  struct fetch_waiter_s w = {.edt = edt, .slot = slot};
+  ARTS_DEP_WAITER_SET(&w, edt);
+  fetch_send(cache, w); /* parks; the response resumes it */
 }
 
 /* ===== the home serves a fetch =========================================== */
@@ -203,7 +215,8 @@ void arts_handler_db_fetch_request(void *item_v, void *args_v) {
   arts_fill_packet_header(&p.header, sizeof(p), MSG_DB_FETCH_RESPONSE);
   p.header.rank = arts_global_rank_id;
   p.db_guid = cache->db_guid;
-  p.edt_guid = a->edt_guid;
+  p.edt_cookie = a->edt_cookie;
+  ARTS_DEP_WAITER_COPY(&p, a);
   p.slot = a->slot;
   p.db_size = atomic_load_explicit(&cache->db_size, memory_order_relaxed);
   p.rdzv_txid = 0;
@@ -279,7 +292,10 @@ void arts_db_flush_discard_landing(uint64_t txid, uint64_t len,
 
 struct fetch_landed_ctx_s {
   struct arts_db_buffer_s *copy;
+  struct arts_edt_s *edt;
+#ifdef ARTS_DEBUG_WAKE_GUID
   arts_guid_t edt_guid;
+#endif
   uint32_t slot;
 };
 
@@ -287,9 +303,10 @@ static void fetch_landed_cb(void *arg) {
   struct fetch_landed_ctx_s *ctx = (struct fetch_landed_ctx_s *)arg;
   /* A one-sided payload comes from another rank. */
   uint8_t census = arts_db_census_serving(true);
+  ARTS_DEP_WAITER_CHECK(ctx->edt, ctx->edt_guid, ctx->slot);
   /* The copy's ref becomes the EDT's hold; the slot's own pin keeps the
    * block's descriptor for its release. */
-  arts_db_resume_parked(ctx->edt_guid, ctx->slot, ctx->copy->cb);
+  arts_db_resolve_slot(ctx->edt, ctx->slot, ctx->copy->cb);
   arts_db_census_served(census);
   arts_free(ctx);
 }
@@ -315,23 +332,30 @@ void arts_handler_db_fetch_response(void *item_v, void *args_v) {
   arts_db_cache_learn_size(cache, a->db_size);
   learn_line(cache, a->line_addr, a->line_rkey, a->flush_txid);
   struct arts_db_buffer_s *copy = (struct arts_db_buffer_s *)(uintptr_t)a->rdzv_cookie;
+  struct arts_edt_s *edt = (struct arts_edt_s *)(uintptr_t)a->edt_cookie;
   if (a->kind == 2) {
     copy_drop(copy);
-    fetch_send(cache, a->edt_guid, a->slot);
+    /* The re-request carries the same waiter, copied from the echo: nothing
+     * is read through the cookie before the slot's resolution. */
+    struct fetch_waiter_s w = {.edt = edt, .slot = a->slot};
+    ARTS_DEP_WAITER_COPY(&w, a);
+    fetch_send(cache, w);
     return;
   }
   if (a->kind == 0) {
     copy_drop(copy);
     /* Only a rank other than the home fetches. */
     uint8_t census = arts_db_census_serving(true);
-    arts_db_resume_parked(a->edt_guid, a->slot, NULL);
+    ARTS_DEP_WAITER_CHECK(edt, a->edt_guid, a->slot);
+    arts_db_resolve_slot(edt, a->slot, NULL);
     arts_db_census_served(census);
     return;
   }
   struct fetch_landed_ctx_s *ctx =
       (struct fetch_landed_ctx_s *)arts_malloc(sizeof(*ctx));
   ctx->copy = copy;
-  ctx->edt_guid = a->edt_guid;
+  ctx->edt = edt;
+  ARTS_DEP_WAITER_COPY(ctx, a);
   ctx->slot = a->slot;
   arts_net_rdzv_expect(a->rdzv_txid, a->db_size, fetch_landed_cb, ctx);
 }

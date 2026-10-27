@@ -1812,6 +1812,20 @@ if(ARTS_DEBUG_DB_QUARANTINE AND ARTS_TEST_REFERENCE_TREE)
         FAIL_REGULAR_EXPRESSION "FAIL")
 endif()
 
+# The waiter GUID (ARTS_DEBUG_WAKE_GUID): a wake through an entry naming an
+# address that no longer holds its EDT stops the run before the resolver reads
+# the slot, at a real wake site too; one after the EDT's acquire phase ended
+# stops it at the phase check, and a second resolution at the duplicate check.
+# Single-thread forked cases, so every arm is chosen; the checks run before
+# any cell-dependent code.
+if(ARTS_DEBUG_WAKE_GUID AND ARTS_TEST_REFERENCE_TREE)
+    add_arts_test(dep_slot_resolved_late)
+    register_pure_unit_test(dep_slot_resolved_late TIMEOUT 60)
+    set_tests_properties(dep_slot_resolved_late PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS dep_slot_resolved_late"
+        FAIL_REGULAR_EXPRESSION "FAIL")
+endif()
+
 # Large-payload cross-rank coherence transfer: a ladder of DBs from 256 KiB to
 # 8 MiB, each stamped by a home-rank writer and then read by RO readers on other
 # ranks, so every hop moves the whole payload across ranks.  Each reader checks

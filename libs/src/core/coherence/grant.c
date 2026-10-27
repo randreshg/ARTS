@@ -123,7 +123,7 @@ bool arts_db_acquire_rw_local_fast(struct arts_db_cache_s *cache,
 /* ===== Case 4/8: remote-RW path ==================================== */
 
 arts_db_acquire_result_t
-arts_db_acquire_remote_rw(struct arts_db_cache_s *cache, arts_guid_t edt_guid,
+arts_db_acquire_remote_rw(struct arts_db_cache_s *cache, struct arts_edt_s *edt,
                           unsigned int slot) {
   /* No destroy precheck: a destroy retires the block's route slot, taking the
    * slot's value to NULL, before anything frees the block, so an acquire
@@ -137,7 +137,8 @@ arts_db_acquire_remote_rw(struct arts_db_cache_s *cache, arts_guid_t edt_guid,
    * is immaterial, since every waiter is woken. */
   struct arts_db_rw_waiter_s *w =
       (struct arts_db_rw_waiter_s *)arts_malloc(sizeof(*w));
-  w->edt_guid = edt_guid;
+  w->edt = edt;
+  ARTS_DEP_WAITER_SET(w, edt);
   w->slot = slot;
   ARTS_DB_CENSUS_SET_HELD(w, arts_db_census_take_held());
   arts_pending_rw_queue_push(&cache->pending_rw, w);
@@ -202,7 +203,7 @@ struct rw_drain_ctx_s {
   struct arts_db_cache_s *cache;
 };
 
-static void rw_drain_cb(arts_guid_t edt_guid, unsigned int slot, void *vctx) {
+static void rw_drain_cb(const struct arts_db_rw_waiter_s *w, void *vctx) {
   struct rw_drain_ctx_s *ctx = (struct rw_drain_ctx_s *)vctx;
   /* Each woken waiter claims exactly one writer_count slot. */
   atomic_fetch_add_explicit(&ctx->cache->writer_count, 1u,
@@ -211,7 +212,8 @@ static void rw_drain_cb(arts_guid_t edt_guid, unsigned int slot, void *vctx) {
    * storage of the DB's declared size; the one buffer-less case is a
    * zero-sized (sentinel) block, whose defined value is the NULL pointer this
    * wake stamps (still accounting the dep, still advancing the walk). */
-  mark_edt_ready_by_guid(edt_guid, slot);
+  ARTS_DEP_WAITER_CHECK(w->edt, w->edt_guid, w->slot);
+  arts_db_resolve_slot_cached(w->edt, w->slot);
 }
 
 /* The coalescing flag's consumer half.  The chain is TAKEN before the flag
@@ -250,12 +252,12 @@ arts_lf_link_t *arts_db_grant_take_waiters(struct arts_db_cache_s *cache) {
   return chain;
 }
 
-static void claim_wake_cb(arts_guid_t edt_guid, unsigned int slot,
-                          void *vctx) {
+static void claim_wake_cb(const struct arts_db_rw_waiter_s *w, void *vctx) {
   struct arts_db_cache_s *cache = (struct arts_db_cache_s *)vctx;
   /* Each writer the create's hold serves takes a hold of its own under it. */
   atomic_fetch_add_explicit(&cache->writer_count, 1u, memory_order_acq_rel);
-  mark_edt_ready_by_guid(edt_guid, slot);
+  ARTS_DEP_WAITER_CHECK(w->edt, w->edt_guid, w->slot);
+  arts_db_resolve_slot_cached(w->edt, w->slot);
 }
 
 void arts_db_grant_claim_writers(struct arts_db_cache_s *cache) {

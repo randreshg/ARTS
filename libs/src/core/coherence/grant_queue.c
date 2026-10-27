@@ -69,8 +69,8 @@ unsigned int arts_pending_rw_chain_count(arts_lf_link_t *chain) {
 }
 
 void arts_pending_rw_chain_wake(arts_lf_link_t *chain,
-                                void (*cb)(arts_guid_t edt_guid,
-                                           unsigned int slot, void *ctx),
+                                void (*cb)(const struct arts_db_rw_waiter_s *w,
+                                           void *ctx),
                                 void *ctx) {
   while (chain != NULL) {
     arts_lf_link_t *next =
@@ -78,7 +78,7 @@ void arts_pending_rw_chain_wake(arts_lf_link_t *chain,
     struct arts_db_rw_waiter_s *w =
         ARTS_CONTAINER_OF(chain, struct arts_db_rw_waiter_s, link);
     uint8_t census = arts_db_census_serving_waiter(ARTS_DB_CENSUS_HELD(w));
-    cb(w->edt_guid, w->slot, ctx);
+    cb(w, ctx);
     arts_db_census_served(census);
     arts_free(w);
     chain = next;

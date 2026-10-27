@@ -65,7 +65,8 @@ unsigned int arts_pending_rw_chain_count(arts_lf_link_t *ch) {
   return 0u;
 }
 void arts_pending_rw_chain_wake(arts_lf_link_t *ch,
-                                void (*cb)(arts_guid_t, unsigned int, void *),
+                                void (*cb)(const struct arts_db_rw_waiter_s *,
+                                           void *),
                                 void *ctx) {
   (void)ch;
   (void)cb;
@@ -78,10 +79,18 @@ void arts_transport_send_async(int r, char *m, unsigned int n) {
   (void)n;
   abort();
 }
-void mark_edt_ready_by_guid(arts_guid_t g, unsigned int s) {
+void arts_db_resolve_slot_cached(struct arts_edt_s *e, unsigned int s) {
+  (void)e;
+  (void)s;
+}
+#ifdef ARTS_DEBUG_WAKE_GUID
+void arts_dep_waiter_check(const struct arts_edt_s *e, arts_guid_t g,
+                           unsigned int s) {
+  (void)e;
   (void)g;
   (void)s;
 }
+#endif
 #if ARTS_DB_CENSUS
 ARTS_THREAD_LOCAL uint8_t arts_db_census_serve;
 #endif

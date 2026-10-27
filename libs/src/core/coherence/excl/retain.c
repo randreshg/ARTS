@@ -202,7 +202,8 @@ static void lock_drain_pending(arts_lf_stack_t *q, uint32_t expected) {
           atomic_load_explicit(&node->next, memory_order_relaxed);
       struct arts_db_excl_waiter_s *w =
           ARTS_CONTAINER_OF(node, struct arts_db_excl_waiter_s, link);
-      mark_edt_ready_by_guid(w->edt_guid, w->slot);
+      ARTS_DEP_WAITER_CHECK(w->edt, w->edt_guid, w->slot);
+      arts_db_resolve_slot_cached(w->edt, w->slot);
       arts_free(w);
       served++;
       node = nx;
@@ -958,7 +959,8 @@ void arts_handler_db_acquire(void *item, void *args) {
          act == CACHE_ACT_SEND_RO);
   struct arts_db_excl_waiter_s *w =
       (struct arts_db_excl_waiter_s *)arts_malloc(sizeof(*w));
-  w->edt_guid = edt->guid;
+  w->edt = edt;
+  ARTS_DEP_WAITER_SET(w, edt);
   w->slot = slot;
   arts_sched_fuzz_point();
   arts_lf_stack_push(q, &w->link);

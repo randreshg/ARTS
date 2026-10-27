@@ -95,7 +95,8 @@ void arts_handler_db_acquire(void *item, void *args) {
          * (db_size == 0 is the sentinel DB: NULL is its defined value.) */
         struct arts_db_read_waiter_s *w =
             (struct arts_db_read_waiter_s *)arts_malloc(sizeof(*w));
-        w->edt_guid = edt->guid;
+        w->edt = edt;
+        ARTS_DEP_WAITER_SET(w, edt);
         w->slot = slot;
         w->cover = 0u;
         w->serve = NULL;
@@ -125,7 +126,7 @@ void arts_handler_db_acquire(void *item, void *args) {
       arts_db_acquire_resolved(edt, slot);
       return;
     }
-    arts_db_acquire_remote_ro(cache, edt->guid, slot); /* parks (SNAPSHOT) */
+    arts_db_acquire_remote_ro(cache, edt, slot); /* parks (SNAPSHOT) */
     return;
   }
   /* RW */
@@ -133,8 +134,7 @@ void arts_handler_db_acquire(void *item, void *args) {
     arts_db_acquire_resolved(edt, slot); /* data here, writer_count bumped */
     return;
   }
-  arts_db_acquire_remote_rw(cache, edt->guid,
-                            slot); /* parks (GRANT_REQUEST) */
+  arts_db_acquire_remote_rw(cache, edt, slot); /* parks (GRANT_REQUEST) */
 }
 
 bool arts_db_acquire_is_serialized(arts_db_access_mode_t mode) {
@@ -425,7 +425,7 @@ void arts_handler_db_snapshot_request(void *item_v, void *args_v) {
     if (db_size > 0) {
       struct arts_db_read_waiter_s *w =
           (struct arts_db_read_waiter_s *)arts_malloc(sizeof(*w));
-      w->edt_guid = NULL_GUID;
+      w->edt = NULL;
       w->slot = 0u;
       w->cover = cover;
       w->serve = home_serve_deferred_read;

@@ -69,7 +69,7 @@ void arts_handler_db_acquire(void *item, void *args) {
       arts_db_acquire_resolved(edt, slot);
       return;
     }
-    arts_db_acquire_remote_rw(cache, edt->guid, slot); /* parks */
+    arts_db_acquire_remote_rw(cache, edt, slot); /* parks */
     return;
   }
 
@@ -97,7 +97,8 @@ void arts_handler_db_acquire(void *item, void *args) {
       if (!published) {
         struct arts_db_read_waiter_s *w =
             (struct arts_db_read_waiter_s *)arts_malloc(sizeof(*w));
-        w->edt_guid = edt->guid;
+        w->edt = edt;
+        ARTS_DEP_WAITER_SET(w, edt);
         w->slot = slot;
         w->serve = NULL; /* local waiter: the drain resumes the EDT */
         w->requester = arts_global_rank_id;
@@ -149,7 +150,8 @@ void arts_handler_db_acquire(void *item, void *args) {
   uint32_t idx = arts_db_reader_alloc(&cache->reader_pool);
   struct arts_db_reader_node_s *node =
       arts_db_reader_node(&cache->reader_pool, idx);
-  node->edt_guid = edt->guid;
+  node->edt = edt;
+  ARTS_DEP_WAITER_SET(node, edt);
   node->slot = slot;
   ARTS_DB_CENSUS_SET_HELD(node, false);
 
@@ -338,7 +340,7 @@ void arts_handler_db_inv_request(void *item_v, void *args_v) {
          * acquire's parker above. */
         struct arts_db_read_waiter_s *w =
             (struct arts_db_read_waiter_s *)arts_malloc(sizeof(*w));
-        w->edt_guid = NULL_GUID;
+        w->edt = NULL;
         w->slot = 0;
         w->serve = home_serve_deferred_read;
         w->requester = a->requester;

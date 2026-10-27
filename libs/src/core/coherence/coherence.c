@@ -281,21 +281,6 @@ void arts_db_resolve_slot(struct arts_edt_s *edt, unsigned int slot,
   arts_dep_acq_resolve_once(edt, slot);
   resolve_slot_body(edt, slot, buf_h);
 }
-
-/* An EDT that is no longer there has nothing left to resolve. */
-void arts_db_resume_parked(arts_guid_t edt_guid, unsigned int slot,
-                           arts_shared_ptr_t buf_h) {
-  arts_shared_ptr_t edt_h = arts_route_table_lookup_edt(edt_guid);
-  struct arts_edt_s *edt = (struct arts_edt_s *)arts_shared_get(edt_h);
-  if (edt == NULL) {
-    ARTS_INFO("coherence: edt_guid %lu not found at trigger time", edt_guid);
-    arts_shared_release(&edt_h);
-    arts_db_buf_release(&buf_h);
-    return;
-  }
-  arts_db_resolve_slot(edt, slot, buf_h);
-  arts_shared_release(&edt_h);
-}
 #endif
 
 #if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV) ||               \
@@ -310,21 +295,6 @@ void arts_db_resolve_slot_cached(struct arts_edt_s *edt, unsigned int slot) {
   struct arts_db_s *db =
       (struct arts_db_s *)arts_shared_get(edt->dep_acq[slot].pin);
   resolve_slot_body(edt, slot, arts_db_buf_acquire(&db->cache));
-}
-
-void mark_edt_ready_by_guid(arts_guid_t edt_guid, unsigned int slot) {
-  if (edt_guid == NULL_GUID) {
-    return;
-  }
-  arts_shared_ptr_t edt_h = arts_route_table_lookup_edt(edt_guid);
-  struct arts_edt_s *edt = (struct arts_edt_s *)arts_shared_get(edt_h);
-  if (edt == NULL) {
-    ARTS_INFO("coherence: edt_guid %lu not found at trigger time", edt_guid);
-    arts_shared_release(&edt_h);
-    return;
-  }
-  arts_db_resolve_slot_cached(edt, slot);
-  arts_shared_release(&edt_h);
 }
 #endif /* arms whose readers resume on the rank's own cache */
 
@@ -476,14 +446,15 @@ static void val_send_window(struct arts_db_cache_s *cache, uint64_t post) {
 }
 
 arts_db_acquire_result_t
-arts_db_acquire_remote_ro(struct arts_db_cache_s *cache, arts_guid_t edt_guid,
+arts_db_acquire_remote_ro(struct arts_db_cache_s *cache, struct arts_edt_s *edt,
                           unsigned int slot) {
   assert(arts_global_rank_count > 1 &&
          "a rank alone homes every block and reads it locally");
   uint32_t idx = arts_db_reader_alloc(&cache->reader_pool);
   struct arts_db_reader_node_s *w =
       arts_db_reader_node(&cache->reader_pool, idx);
-  w->edt_guid = edt_guid;
+  w->edt = edt;
+  ARTS_DEP_WAITER_SET(w, edt);
   w->slot = slot;
   ARTS_DB_CENSUS_SET_HELD(w, false);
   uint64_t post;
@@ -682,12 +653,14 @@ void arts_db_drain_publication_waiters(struct arts_db_cache_s *cache) {
       w->serve(cache, w);
       arts_free(w);
     } else {
-      arts_guid_t edt_local = w->edt_guid;
+      struct arts_edt_s *edt_local = w->edt;
       unsigned int slot_local = w->slot;
+      /* Checked while w is live; the free touches no EDT. */
+      ARTS_DEP_WAITER_CHECK(w->edt, w->edt_guid, w->slot);
       arts_free(w);
       /* Resolved after the free: the slot reads the (now-installed) cache
        * buffer. */
-      mark_edt_ready_by_guid(edt_local, slot_local);
+      arts_db_resolve_slot_cached(edt_local, slot_local);
     }
     node = next;
   }

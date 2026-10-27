@@ -9,9 +9,8 @@
  *      carries the newest index whole.  The transitions that serve the
  *      chains take them, and a walk finds every reader once, with the
  *      fields it wrote.
- *   2. Each served chain goes back to the pool through the runtime's serve
- *      (one push after its wakes), and the next allocations take exactly
- *      those nodes before any fresh index.
+ *   2. Each taken chain goes back to the pool whole (one push), and the next
+ *      allocations take exactly those nodes before any fresh index.
  *   3. Threads allocating, chaining and returning nodes at once never hold
  *      one index together, and afterwards the free list holds every index
  *      ever handed out, once.
@@ -55,8 +54,12 @@ static int g_fail;
     }                                                                          \
   } while (0)
 
-static arts_guid_t guid_of(uint32_t idx) {
-  return (arts_guid_t)(0x5A00000000000000ULL | idx);
+/* A node's EDT identity: never dereferenced, only written and compared. */
+static struct arts_edt_s *edt_of(uint64_t id) {
+  return (struct arts_edt_s *)(uintptr_t)id;
+}
+static struct arts_edt_s *ident_of(uint32_t idx) {
+  return edt_of(0x5A00000000000000ULL | idx);
 }
 static unsigned int slot_of(uint32_t idx) { return idx ^ 0x2B5u; }
 
@@ -111,7 +114,7 @@ static uint64_t step(struct arts_db_cache_s *c, int op, uint32_t arg,
 static uint32_t park(struct arts_db_cache_s *c) {
   uint32_t idx = arts_db_reader_alloc(&c->reader_pool);
   struct arts_db_reader_node_s *n = arts_db_reader_node(&c->reader_pool, idx);
-  n->edt_guid = guid_of(idx);
+  n->edt = ident_of(idx);
   n->slot = slot_of(idx);
   uint64_t cur = atomic_load_explicit(WORD(c), memory_order_acquire);
   uint32_t act;
@@ -140,7 +143,7 @@ static uint32_t walk(struct arts_db_reader_pool_s *p, uint32_t head,
     }
     seen[i] = 1u;
     struct arts_db_reader_node_s *r = arts_db_reader_node(p, i);
-    CHECK(r->edt_guid == guid_of(i) && r->slot == slot_of(i),
+    CHECK(r->edt == ident_of(i) && r->slot == slot_of(i),
           "node %u lost its fields", i);
     *tail = i;
     n++;
@@ -149,8 +152,8 @@ static uint32_t walk(struct arts_db_reader_pool_s *p, uint32_t head,
   return n;
 }
 
-/* Check a taken chain, then serve it through the runtime's own serve: with
- * no EDT named, each wake returns at once, and the chain goes back whole. */
+/* Check a taken chain, then return it whole, as a serve does after its
+ * wakes; its nodes name no EDT that could be resolved. */
 static void take_back(struct arts_db_reader_pool_s *p, uint32_t head,
                       uint8_t *seen, uint32_t *served) {
   if (head == 0u) {
@@ -158,12 +161,7 @@ static void take_back(struct arts_db_reader_pool_s *p, uint32_t head,
   }
   uint32_t tail = head;
   *served += walk(p, head, seen, NPARK, &tail);
-  for (uint32_t i = head; i != 0u;) {
-    struct arts_db_reader_node_s *r = arts_db_reader_node(p, i);
-    r->edt_guid = NULL_GUID;
-    i = atomic_load_explicit(&r->next, memory_order_relaxed);
-  }
-  arts_db_reader_serve_chain(p, head);
+  arts_db_reader_free_chain(p, head, tail);
 }
 
 /* ---- 1 + 2: a wide chain on the cell's word ----------------------------- */
@@ -264,7 +262,7 @@ static void *stress_worker(void *v) {
         return NULL;
       }
       struct arts_db_reader_node_s *n = arts_db_reader_node(&s->pool, idx);
-      n->edt_guid = (arts_guid_t)(((uint64_t)me << 32) | idx);
+      n->edt = edt_of(((uint64_t)me << 32) | idx);
       n->slot = it;
       atomic_store_explicit(&n->next, j ? held[j - 1] : 0u,
                             memory_order_relaxed);
@@ -274,8 +272,7 @@ static void *stress_worker(void *v) {
     uint32_t i = held[k - 1];
     for (uint32_t j = k; j-- > 0;) {
       struct arts_db_reader_node_s *n = arts_db_reader_node(&s->pool, i);
-      if (i != held[j] ||
-          n->edt_guid != (arts_guid_t)(((uint64_t)me << 32) | i) ||
+      if (i != held[j] || n->edt != edt_of(((uint64_t)me << 32) | i) ||
           n->slot != it) {
         atomic_store_explicit(&s->bad, 1, memory_order_relaxed);
         return NULL;

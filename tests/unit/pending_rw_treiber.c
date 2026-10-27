@@ -21,8 +21,9 @@
  *      K, each once (counted via a per-waiter id seen-array; ASan/LSan catch a
  *      missed free or double-free).  A take on the emptied stack detaches
  *      nothing.
- *   2. container_of: each woken cb receives the (edt_guid, slot) the producer
- *      pushed — proves link-is-first ARTS_CONTAINER_OF recovery.
+ *   2. container_of: each woken cb receives the waiter the producer pushed,
+ *      with its (edt, slot) — proves link-is-first ARTS_CONTAINER_OF recovery.
+ *      The edt is an id cast to a pointer: the queue never dereferences it.
  *   3. concurrency: N producers push concurrently with repeated takes; a push
  *      racing a take forms a fresh stack picked up by the NEXT take — so the
  *      union over all takes wakes EXACTLY the pushed set, no loss, no dup.
@@ -55,9 +56,11 @@ static void *watchdog(void *arg) {
   return NULL;
 }
 
-/* Build a GUID-shaped value that round-trips through the cb without
- * interpretation — the queue only stores/forwards it. */
-static arts_guid_t mk_guid(uint64_t v) { return (arts_guid_t)v; }
+/* An id carried in the waiter's EDT pointer, round-tripping through the cb
+ * without interpretation — the queue only stores/forwards it. */
+static struct arts_edt_s *mk_edt(uint64_t v) {
+  return (struct arts_edt_s *)(uintptr_t)v;
+}
 
 /* ---- wake cb: records (guid,slot) per woken waiter ---- */
 struct wake_ctx {
@@ -68,11 +71,12 @@ struct wake_ctx {
   int oob;      /* out-of-range ids */
 };
 
-/* We encode id into BOTH guid (id) and slot (id ^ 0x5555) so the cb can verify
- * the (guid,slot) pair was delivered together (container_of integrity). */
-static void wake_cb(arts_guid_t edt_guid, unsigned int slot, void *ctxv) {
+/* We encode id into BOTH edt (id) and slot (id ^ 0x5555) so the cb can verify
+ * the (edt,slot) pair was delivered together (container_of integrity). */
+static void wake_cb(const struct arts_db_rw_waiter_s *w, void *ctxv) {
   struct wake_ctx *c = (struct wake_ctx *)ctxv;
-  long id = (long)(uint64_t)edt_guid;
+  long id = (long)(uintptr_t)w->edt;
+  unsigned int slot = w->slot;
   if (id < 0 || id >= c->cap) {
     c->oob++;
     return;
@@ -87,7 +91,7 @@ static void wake_cb(arts_guid_t edt_guid, unsigned int slot, void *ctxv) {
 static struct arts_db_rw_waiter_s *mk_waiter(long id) {
   struct arts_db_rw_waiter_s *w =
       (struct arts_db_rw_waiter_s *)malloc(sizeof(*w));
-  w->edt_guid = mk_guid((uint64_t)id);
+  w->edt = mk_edt((uint64_t)id);
   w->slot = (unsigned int)(id ^ 0x5555);
   ARTS_DB_CENSUS_SET_HELD(w, false);
   return w;
@@ -95,7 +99,8 @@ static struct arts_db_rw_waiter_s *mk_waiter(long id) {
 
 /* Detaches the chain, then wakes + frees it; returns how many it counted. */
 static unsigned int take_and_wake(arts_lf_stack_t *q,
-                                  void (*cb)(arts_guid_t, unsigned int, void *),
+                                  void (*cb)(const struct arts_db_rw_waiter_s *,
+                                             void *),
                                   void *ctx) {
   arts_lf_link_t *chain = arts_pending_rw_queue_take(q);
   unsigned int n = arts_pending_rw_chain_count(chain);
@@ -153,10 +158,9 @@ static _Atomic(int) g_prod_done;
 static _Atomic(int) g_seen[TOTAL];
 static _Atomic(long) g_woken;
 
-static void conc_cb(arts_guid_t edt_guid, unsigned int slot, void *ctxv) {
-  (void)slot;
+static void conc_cb(const struct arts_db_rw_waiter_s *w, void *ctxv) {
   (void)ctxv;
-  long id = (long)(uint64_t)edt_guid;
+  long id = (long)(uintptr_t)w->edt;
   if (id >= 0 && id < TOTAL) {
     atomic_fetch_add_explicit(&g_seen[id], 1, memory_order_relaxed);
     atomic_fetch_add_explicit(&g_woken, 1, memory_order_relaxed);
@@ -171,7 +175,7 @@ static void *conc_producer(void *arg) {
     long id = base + s;
     struct arts_db_rw_waiter_s *w =
         (struct arts_db_rw_waiter_s *)malloc(sizeof(*w));
-    w->edt_guid = mk_guid((uint64_t)id);
+    w->edt = mk_edt((uint64_t)id);
     w->slot = (unsigned int)id;
     ARTS_DB_CENSUS_SET_HELD(w, false);
     arts_pending_rw_queue_push(&g_q, w);

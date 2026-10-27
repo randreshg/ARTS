@@ -333,7 +333,10 @@ struct arts_ooo_args_db_snapshot_request_s {
 struct arts_ooo_args_db_fetch_request_s {
   unsigned int requester;
   arts_guid_t db_guid;
+  uint64_t edt_cookie; /* echoed uninterpreted (protocol.h) */
+#ifdef ARTS_DEBUG_WAKE_GUID
   arts_guid_t edt_guid;
+#endif
   uint32_t slot;
   struct arts_rdzv_landing_s rdzv; /* the requester's private copy, advertised */
 };

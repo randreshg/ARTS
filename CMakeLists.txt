@@ -450,9 +450,14 @@ option(ARTS_DEBUG_DB_QUARANTINE
 # wait for every landing it caused to end.
 option(ARTS_DEBUG_LANDING_BALANCE
     "Count each rank's rendezvous landings drawn and not yet ended (returned, adopted or installed); a leaked landing pins its cache's descriptor" OFF)
+# One field per waiting entry and per FLUSH fetch packet, one store per park
+# and one compare per wake.  It changes those layouts, so every unit of the
+# tree sees it through the definition below, never through NDEBUG.
+option(ARTS_DEBUG_WAKE_GUID
+    "Keep the parked EDT's GUID beside each waiting entry's pointer to it (and in the FLUSH fetch round) and check it at every wake through the entry, so a wake through an entry that outlived its EDT stops the run; each entry and each FLUSH fetch packet grows by 8 bytes" OFF)
 
 set(ARTS_DEBUG_FACILITIES ARTS_DEBUG_INJECTION ARTS_DEBUG_DB_QUARANTINE
-    ARTS_DEBUG_LANDING_BALANCE)
+    ARTS_DEBUG_LANDING_BALANCE ARTS_DEBUG_WAKE_GUID)
 if(CMAKE_BUILD_TYPE STREQUAL "Release")
     # INFO and DEBUG messages, and the teardown walk that only DEBUG compiles,
     # are a Debug build's own emission.  Every refusal is named at once.

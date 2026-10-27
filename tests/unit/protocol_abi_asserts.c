@@ -23,9 +23,11 @@
  * presence, never in the shared ordinals/offsets/sizes: the ARTS_PROTOCOL_EXCL
  * block, the ARTS_RELEASE_RETAIN subset nested inside it, the
  * ARTS_PROTOCOL_INV block and the ARTS_PROTOCOL_FLUSH block, each frozen
- * inside its own guard).  This TU is meant to be COMPILED ONCE PER
- * -DARTS_PROTOCOL_* config; the `_Static_assert`s catch any config that drifts
- * from the golden table at compile time.
+ * inside its own guard).  The FLUSH block's two fetch packets also follow
+ * ARTS_DEBUG_WAKE_GUID, which every rank of one run shares as it shares the
+ * cell.  This TU is meant to be COMPILED ONCE PER -DARTS_PROTOCOL_* config;
+ * the `_Static_assert`s catch any config that drifts from the golden table at
+ * compile time.
  *
  * Runtime portion — the 8-byte payload-alignment INVARIANT
  * ---------------------------------------------------------------------------
@@ -239,10 +241,18 @@ _Static_assert(sizeof(struct arts_msg_excl_confirm_packet_s) == 24,
 #endif /* ARTS_RELEASE_RETAIN */
 #endif
 #ifdef ARTS_PROTOCOL_FLUSH
+/* The fetch round carries the waiter GUID under ARTS_DEBUG_WAKE_GUID. */
+#ifdef ARTS_DEBUG_WAKE_GUID
+_Static_assert(sizeof(struct arts_msg_fetch_request_packet_s) == 80,
+               "fetch_request sizeof drifted");
+_Static_assert(sizeof(struct arts_msg_fetch_response_packet_s) == 96,
+               "fetch_response sizeof drifted");
+#else
 _Static_assert(sizeof(struct arts_msg_fetch_request_packet_s) == 72,
                "fetch_request sizeof drifted");
 _Static_assert(sizeof(struct arts_msg_fetch_response_packet_s) == 88,
                "fetch_response sizeof drifted");
+#endif
 _Static_assert(sizeof(struct arts_msg_flush_commit_packet_s) == 40,
                "flush_commit sizeof drifted");
 _Static_assert(sizeof(struct arts_msg_flush_ack_packet_s) == 40,

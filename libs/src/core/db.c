@@ -992,6 +992,19 @@ void arts_dep_acq_resolve_once(struct arts_edt_s *edt, uint32_t slot) {
 }
 #endif
 
+#ifdef ARTS_DEBUG_WAKE_GUID
+/* edt->guid has one writer, the create, before the EDT can be made ready, so
+ * every wake through a live entry is ordered after it. */
+void arts_dep_waiter_check(const struct arts_edt_s *edt, arts_guid_t edt_guid,
+                           unsigned int slot) {
+  if (edt->guid != edt_guid) {
+    ARTS_ERROR("db: a waiter for slot %u of EDT[Guid:%lu] points at %p, "
+               "which no longer holds that EDT",
+               slot, (unsigned long)edt_guid, (const void *)edt);
+  }
+}
+#endif
+
 /* acquire_one_dep — attempt the single DB dependency depv[i].
  *
  * On a synchronous resolve it writes the slot's acquire record (NULL is a

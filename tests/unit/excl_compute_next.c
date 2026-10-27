@@ -700,10 +700,6 @@ void *arts_malloc(size_t size) { return malloc(size); }
 #include "arts/coherence/buffer.h"
 #include "arts/utils/shared.h"
 unsigned int arts_global_rank_id = 0;
-void mark_edt_ready_by_guid(arts_guid_t edt_guid, unsigned int slot) {
-  (void)edt_guid;
-  (void)slot;
-}
 void arts_transport_send_async(int rank, char *message, unsigned int length) {
   (void)rank;
   (void)message;

@@ -267,6 +267,17 @@ All options are set with ``-D<NAME>=<VALUE>`` on the cmake line.
        wait for every home to be torn down also wait for every rank's count
        to reach zero, and the teardown walk prints a non-zero count as
        information.
+   * - ``ARTS_DEBUG_WAKE_GUID``
+     - OFF
+     - Debug builds only: keep the parked EDT's GUID beside each waiting
+       entry's pointer to it (every parked read and write acquisition, and
+       FLUSH's fetch round) and compare it with the GUID the pointer holds at
+       every wake through the entry, before anything else of the EDT is
+       read, so a wake through an entry that outlived its EDT stops the run
+       however late it lands.  Each entry and each FLUSH fetch packet grows
+       by 8 bytes; every unit of a tree sees the option, and every rank of a
+       run is one build.  The validation trees and their sanitizer twins turn
+       it on.
    * - ``ARTS_COUNTER_CONFIG``
      - configs/counters_off.cfg
      - Counter configuration file parsed into introspection macros. The

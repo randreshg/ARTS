@@ -47,7 +47,7 @@ extern "C" {
  * that piggyback on an in-flight ownership round. */
 #if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
 void arts_pending_rw_queue_init(arts_lf_stack_t *q);
-/* Push a waiter (multi-producer).  Caller fills edt_guid/slot before
+/* Push a waiter (multi-producer).  Caller fills edt/slot before
  * calling.  Waiter must be heap-allocated; the stack takes ownership, and the
  * chain wake or destroy frees it. */
 void arts_pending_rw_queue_push(arts_lf_stack_t *q,
@@ -276,12 +276,12 @@ void arts_db_debug_quiescence_check(void);
  * installed).  Used by the per-protocol acquire bodies. */
 void *arts_db_acquire_local(struct arts_db_cache_s *cache);
 
-/* PARK the (edt_guid, slot) read on the cache's combining window, which
- * sends at most one SNAPSHOT_REQUEST per cache at a time.  Used by the VAL
- * acquire bodies. */
+/* PARK the (edt, slot) read on the cache's combining window, which sends at
+ * most one SNAPSHOT_REQUEST per cache at a time.  Used by the VAL acquire
+ * bodies. */
 #if defined(ARTS_PROTOCOL_VAL)
 arts_db_acquire_result_t
-arts_db_acquire_remote_ro(struct arts_db_cache_s *cache, arts_guid_t edt_guid,
+arts_db_acquire_remote_ro(struct arts_db_cache_s *cache, struct arts_edt_s *edt,
                           unsigned int slot);
 #endif
 
@@ -293,17 +293,15 @@ arts_db_acquire_remote_ro(struct arts_db_cache_s *cache, arts_guid_t edt_guid,
  * the account that may schedule the EDT — and any other slot leaves the walk
  * where it stands.  The slot's descriptor pin, stored before the arm's handler
  * ran, keeps the descriptor alive.  A Debug build aborts on a second
- * resolution of the slot or one after the EDT's acquire phase ended.
+ * resolution of the slot or one after the EDT's acquire phase ended; a wake
+ * through a waiting entry runs the entry's ARTS_DEP_WAITER_CHECK first.
  *
  * arts_db_resolve_slot resolves to buf_h, which it CONSUMES (it becomes the
  * slot's hold; NULL resolves a block with no bytes): an arm that gives every
- * EDT a private copy passes that copy.  arts_db_resume_parked is its form for
- * a parked slot named by (edt_guid, slot). */
+ * EDT a private copy passes that copy. */
 #ifdef ARTS_PROTOCOL_FLUSH
 void arts_db_resolve_slot(struct arts_edt_s *edt, unsigned int slot,
                           arts_shared_ptr_t buf_h);
-void arts_db_resume_parked(arts_guid_t edt_guid, unsigned int slot,
-                           arts_shared_ptr_t buf_h);
 #endif
 
 #if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV) ||               \
@@ -311,10 +309,8 @@ void arts_db_resume_parked(arts_guid_t edt_guid, unsigned int slot,
 /* The cache-slot form of the resolution: the buffer is whatever this rank's
  * cache holds for the block, read through the descriptor the slot pins.  Used
  * by the in-frame serves, the drain paths and the response handlers of every
- * arm whose readers share the rank's own copy; mark_edt_ready_by_guid is its
- * form for a parked slot named by (edt_guid, slot). */
+ * arm whose readers share the rank's own copy. */
 void arts_db_resolve_slot_cached(struct arts_edt_s *edt, unsigned int slot);
-void mark_edt_ready_by_guid(arts_guid_t edt_guid, unsigned int slot);
 #endif
 
 #if (defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)) &&              \
@@ -542,7 +538,7 @@ void arts_db_create_retract_creator_copy(struct arts_db_s *db);
  * pending_rw waiter and kicks a GRANT_REQUEST if none is in flight —
  * returns PARK. */
 arts_db_acquire_result_t
-arts_db_acquire_remote_rw(struct arts_db_cache_s *cache, arts_guid_t edt_guid,
+arts_db_acquire_remote_rw(struct arts_db_cache_s *cache, struct arts_edt_s *edt,
                           unsigned int slot);
 
 #ifndef ARTS_RELEASE_PURGE
@@ -607,9 +603,11 @@ unsigned int arts_pending_rw_chain_count(arts_lf_link_t *chain);
  * flag, opening a request for any waiter pushed after the take.  The caller
  * counts and wakes the returned chain. */
 arts_lf_link_t *arts_db_grant_take_waiters(struct arts_db_cache_s *cache);
+/* Hand every waiter of a taken chain to cb, then free it.  cb gets the waiter
+ * itself, live for the call, and reads its EDT; this walk reads none. */
 void arts_pending_rw_chain_wake(arts_lf_link_t *chain,
-                                void (*cb)(arts_guid_t edt_guid,
-                                           unsigned int slot, void *ctx),
+                                void (*cb)(const struct arts_db_rw_waiter_s *w,
+                                           void *ctx),
                                 void *ctx);
 /* ===== The hand-back as a rider on the release's own publish =============
  * A write-through release already sends the home its payload, and the home is

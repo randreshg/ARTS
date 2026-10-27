@@ -87,7 +87,7 @@ void arts_handler_db_acquire(void *item, void *args) {
       arts_db_acquire_resolved(edt, slot);
       return;
     }
-    arts_db_acquire_remote_rw(cache, edt->guid, slot); /* parks */
+    arts_db_acquire_remote_rw(cache, edt, slot); /* parks */
     return;
   }
 
@@ -131,7 +131,8 @@ void arts_handler_db_acquire(void *item, void *args) {
   uint32_t idx = arts_db_reader_alloc(&cache->reader_pool);
   struct arts_db_reader_node_s *node =
       arts_db_reader_node(&cache->reader_pool, idx);
-  node->edt_guid = edt->guid;
+  node->edt = edt;
+  ARTS_DEP_WAITER_SET(node, edt);
   node->slot = slot;
   /* Nonzero here is an install whose confirmation is still out: the right
    * that covers this read is already on this rank. */

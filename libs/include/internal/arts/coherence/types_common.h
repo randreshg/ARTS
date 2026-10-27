@@ -92,6 +92,7 @@ extern "C" {
 #ifdef ARTS_GPU_LAYOUT
 #include <pthread.h> /* pthread_rwlock_t (GPU staging lock) */
 #endif
+#include <assert.h> /* static_assert, in C and in C++ alike */
 #include <stdbool.h>
 #include <stddef.h> /* offsetof — container_of(cache, arts_db_s, cache) */
 #include <stdint.h>
@@ -320,6 +321,20 @@ struct arts_db_buffer_s {
 };
 
 struct arts_db_cache_s;
+struct arts_edt_s;
+
+/* A waiting entry names its parked EDT by address (`edt`), which stays valid
+ * while the entry is linked: the EDT cannot run before the entry's resolver
+ * accounts its slot.  Under ARTS_DEBUG_WAKE_GUID `edt_guid`, right after
+ * `edt`, keeps the EDT's GUID for the wake's check (db.h). */
+#ifdef ARTS_DEBUG_WAKE_GUID
+#define ARTS_DEP_WAITER_LAYOUT(T)                                              \
+  static_assert(offsetof(T, edt_guid) == offsetof(T, edt) + sizeof(void *),    \
+                "the waiter GUID sits right after the EDT pointer")
+#else
+#define ARTS_DEP_WAITER_LAYOUT(T)                                              \
+  static_assert(sizeof(((T *)0)->edt) == sizeof(void *), "an EDT pointer")
+#endif
 
 /* A parked read on a write-through home's publication waiters
  * (cache.publication_waiters): a home-local RO acquire, or a remote read whose
@@ -328,8 +343,11 @@ struct arts_db_cache_s;
  * A VAL or INV requester's parked readers are not these: they are the reader
  * pool's nodes below, chained in its request word. */
 struct arts_db_read_waiter_s {
-  arts_lf_link_t link; /* FIRST — required by arts_lf_stack_t */
+  arts_lf_link_t link;    /* FIRST — required by arts_lf_stack_t */
+  struct arts_edt_s *edt; /* NULL on the deferred-serve arm */
+#ifdef ARTS_DEBUG_WAKE_GUID
   arts_guid_t edt_guid;
+#endif
   unsigned int slot;
   /* Deferred-serve arm: NULL = local waiter (the drain resolves the parked
    * slot on the installed buffer).  Non-NULL = deferred remote serve; the
@@ -340,6 +358,9 @@ struct arts_db_read_waiter_s {
   unsigned int requester;
   struct arts_rdzv_landing_s rdzv;
 };
+static_assert(offsetof(struct arts_db_read_waiter_s, link) == 0,
+              "a stack's link is its node's first member");
+ARTS_DEP_WAITER_LAYOUT(struct arts_db_read_waiter_s);
 #if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
 /*--- Parked readers ------------------------------------------------------
  * The readers a rank parks on its cache are nodes of a per-cache pool,
@@ -364,12 +385,16 @@ struct arts_db_reader_node_s {
    * node's next owner rewrites it; the pop's tagged CAS then fails and the
    * value is discarded: relaxed. */
   _Atomic(uint32_t) next;
-  unsigned int slot;    /* dep slot of the parked acquire */
-  arts_guid_t edt_guid; /* the parked EDT */
+  unsigned int slot;      /* dep slot of the parked acquire */
+  struct arts_edt_s *edt; /* the parked EDT */
+#ifdef ARTS_DEBUG_WAKE_GUID
+  arts_guid_t edt_guid;
+#endif
 #if ARTS_DB_CENSUS
   bool census_held; /* its park found the right it waits for held here */
 #endif
 };
+ARTS_DEP_WAITER_LAYOUT(struct arts_db_reader_node_s);
 
 struct arts_db_reader_pool_s {
   /* The chunk directory, and each chunk in it, installed once by a CAS whose
@@ -387,7 +412,7 @@ struct arts_db_reader_pool_s {
 #endif
 
 /*--- Pending RW waiters --------------------------------------------------
- * edt_guid + slot together identify the parked EDT's dep slot to fill on
+ * edt + slot together identify the parked EDT's dep slot to fill on
  * trigger.  The RW waiter chain is a Treiber stack (cache.pending_rw,
  * arts_lf_stack_t): the embedded link is owned by the stack (push prepends, a
  * take atomic-exchanges the whole chain out).  Producers are foreign-rank
@@ -397,12 +422,18 @@ struct arts_db_reader_pool_s {
  * grantreq queue, which stays Vyukov MPSC). */
 struct arts_db_rw_waiter_s {
   arts_lf_link_t link; /* FIRST — required by arts_lf_stack_t */
+  struct arts_edt_s *edt;
+#ifdef ARTS_DEBUG_WAKE_GUID
   arts_guid_t edt_guid;
+#endif
   unsigned int slot;
 #if ARTS_DB_CENSUS
   bool census_held; /* its park found the write right held here */
 #endif
 };
+static_assert(offsetof(struct arts_db_rw_waiter_s, link) == 0,
+              "a stack's link is its node's first member");
+ARTS_DEP_WAITER_LAYOUT(struct arts_db_rw_waiter_s);
 
 /* Forward decl; sparse rank-keyed u64 map (owner-side dedup; protocol arms). */
 struct arts_rank_to_u64_map_s;

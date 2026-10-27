@@ -15,6 +15,7 @@
 #include <stdint.h>
 
 #include "arts/coherence/coherence.h"
+#include "arts/db.h"           /* ARTS_DEP_WAITER_CHECK */
 #include "arts/system/print.h" /* ARTS_ERROR */
 #include "arts/utils/malloc.h"
 #include "arts/utils/stdatomic_compat.h"
@@ -145,7 +146,8 @@ void arts_db_reader_serve_chain(struct arts_db_reader_pool_s *p,
     tail = i;
     i = atomic_load_explicit(&r->next, memory_order_relaxed);
     uint8_t census = arts_db_census_serving_waiter(ARTS_DB_CENSUS_HELD(r));
-    mark_edt_ready_by_guid(r->edt_guid, r->slot);
+    ARTS_DEP_WAITER_CHECK(r->edt, r->edt_guid, r->slot);
+    arts_db_resolve_slot_cached(r->edt, r->slot);
     arts_db_census_served(census);
   } while (i != 0u);
   arts_db_reader_free_chain(p, head, tail);

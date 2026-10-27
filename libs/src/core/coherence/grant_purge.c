@@ -579,10 +579,10 @@ void arts_db_grant_release_settle(struct arts_db_cache_s *cache,
 
 /* Wake a drained waiter WITHOUT adding a hold for it: its hold was installed
  * before the walk began, together with everyone else's. */
-static void commit_wake_cb(arts_guid_t edt_guid, unsigned int slot,
-                           void *vctx) {
+static void commit_wake_cb(const struct arts_db_rw_waiter_s *w, void *vctx) {
   (void)vctx;
-  mark_edt_ready_by_guid(edt_guid, slot);
+  ARTS_DEP_WAITER_CHECK(w->edt, w->edt_guid, w->slot);
+  arts_db_resolve_slot_cached(w->edt, w->slot);
 }
 
 unsigned int arts_db_grant_commit_drain(struct arts_db_cache_s *cache) {

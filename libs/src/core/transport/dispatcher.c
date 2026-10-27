@@ -414,11 +414,12 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
     struct arts_ooo_args_db_fetch_request_s args = {
         .requester = pack->header.rank,
         .db_guid = pack->db_guid,
-        .edt_guid = pack->edt_guid,
+        .edt_cookie = pack->edt_cookie,
         .slot = pack->slot,
         .rdzv = {.addr = pack->rdzv.addr, .key = pack->rdzv.key,
                  .txid = pack->rdzv.txid, .cookie = pack->rdzv.cookie},
     };
+    ARTS_DEP_WAITER_COPY(&args, pack);
     arts_ooo_dispatch_or_defer_guid(pack->db_guid, OOO_DB_FETCH_REQUEST, &args,
                                     sizeof(args));
     break;
@@ -427,10 +428,11 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
     struct arts_msg_fetch_response_packet_s *pack =
         (struct arts_msg_fetch_response_packet_s *)(packet);
     struct arts_db_fetch_response_args_s args = {
-        .edt_guid = pack->edt_guid, .slot = pack->slot, .kind = pack->kind,
+        .edt_cookie = pack->edt_cookie, .slot = pack->slot, .kind = pack->kind,
         .db_size = pack->db_size, .rdzv_txid = pack->rdzv_txid,
         .rdzv_cookie = pack->rdzv_cookie, .line_addr = pack->line_addr,
         .line_rkey = pack->line_rkey, .flush_txid = pack->flush_txid};
+    ARTS_DEP_WAITER_COPY(&args, pack);
     arts_shared_ptr_t h = arts_route_table_lookup_db(pack->db_guid);
     struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(h);
     if (db != NULL) {

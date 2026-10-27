@@ -150,6 +150,29 @@ static inline void arts_dep_acq_resolve_once(struct arts_edt_s *edt,
 }
 #endif
 
+/* A waiting entry (a parked reader, a pending writer, an EXCL waiter, a
+ * publication waiter, FLUSH's fetch round) names its EDT by address, which
+ * stays valid while the entry is linked: the EDT cannot run before the
+ * entry's resolver accounts its slot.  Under ARTS_DEBUG_WAKE_GUID the entry
+ * also keeps the EDT's GUID, set from the parking frame's own EDT and copied,
+ * never re-derived, by whatever rebuilds an entry from another; every wake
+ * through the entry compares it with the GUID its pointer now holds before
+ * anything else of the EDT is read, so an entry that outlived its EDT stops
+ * the run.  Without the facility the field does not exist and the macros
+ * expand to nothing. */
+#ifdef ARTS_DEBUG_WAKE_GUID
+void arts_dep_waiter_check(const struct arts_edt_s *edt, arts_guid_t edt_guid,
+                           unsigned int slot);
+#define ARTS_DEP_WAITER_SET(w, e) ((w)->edt_guid = (e)->guid)
+#define ARTS_DEP_WAITER_COPY(dst, src) ((dst)->edt_guid = (src)->edt_guid)
+#define ARTS_DEP_WAITER_CHECK(e, g, slot)                                      \
+  arts_dep_waiter_check((e), (g), (slot))
+#else
+#define ARTS_DEP_WAITER_SET(w, e) ((void)0)
+#define ARTS_DEP_WAITER_COPY(dst, src) ((void)0)
+#define ARTS_DEP_WAITER_CHECK(e, g, slot) ((void)0)
+#endif
+
 /* A dependence that the frame which fired it resolved on the spot (a local
  * hit).  Such a slot never parked, so this frame is its one resolver. */
 static inline void arts_db_acquire_local_hit(struct arts_edt_s *edt,

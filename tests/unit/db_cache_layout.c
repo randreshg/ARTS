@@ -116,6 +116,7 @@ typedef struct arts_db_reader_node_s reader_node_t;
 #endif
 #ifdef ARTS_PROTOCOL_EXCL
 typedef struct arts_lock_ro_node_s lock_ro_node_t;
+typedef struct arts_db_excl_waiter_s excl_waiter_t;
 #endif
 
 /* Every member of the cell's DB structs, so the sibling compilation can be
@@ -138,7 +139,10 @@ static void print_fingerprint(void) {
   OFFSET(buffer_t, data);
   TYPE(read_waiter_t);
   MEMBER(read_waiter_t, link);
+  MEMBER(read_waiter_t, edt);
+#ifdef ARTS_DEBUG_WAKE_GUID
   MEMBER(read_waiter_t, edt_guid);
+#endif
   MEMBER(read_waiter_t, slot);
   MEMBER(read_waiter_t, cover);
   MEMBER(read_waiter_t, serve);
@@ -146,7 +150,10 @@ static void print_fingerprint(void) {
   MEMBER(read_waiter_t, rdzv);
   TYPE(rw_waiter_t);
   MEMBER(rw_waiter_t, link);
+  MEMBER(rw_waiter_t, edt);
+#ifdef ARTS_DEBUG_WAKE_GUID
   MEMBER(rw_waiter_t, edt_guid);
+#endif
   MEMBER(rw_waiter_t, slot);
 #ifndef ARTS_PROTOCOL_FLUSH
   TYPE(grantreq_node_t);
@@ -207,13 +214,23 @@ static void print_fingerprint(void) {
   TYPE(reader_node_t);
   MEMBER(reader_node_t, next);
   MEMBER(reader_node_t, slot);
+  MEMBER(reader_node_t, edt);
+#ifdef ARTS_DEBUG_WAKE_GUID
   MEMBER(reader_node_t, edt_guid);
+#endif
 #endif
 #ifdef ARTS_PROTOCOL_EXCL
   TYPE(lock_ro_node_t);
   MEMBER(lock_ro_node_t, link);
   MEMBER(lock_ro_node_t, rank);
   MEMBER(lock_ro_node_t, rdzv);
+  TYPE(excl_waiter_t);
+  MEMBER(excl_waiter_t, link);
+  MEMBER(excl_waiter_t, edt);
+#ifdef ARTS_DEBUG_WAKE_GUID
+  MEMBER(excl_waiter_t, edt_guid);
+#endif
+  MEMBER(excl_waiter_t, slot);
   MEMBER(cache_t, ro_pending);
   MEMBER(cache_t, rw_pending);
 #if defined(ARTS_RELEASE_RETAIN)

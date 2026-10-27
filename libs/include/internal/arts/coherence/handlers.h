@@ -91,7 +91,10 @@ struct arts_db_publish_ack_args_s {
 
 #ifdef ARTS_PROTOCOL_FLUSH
 struct arts_db_fetch_response_args_s {
+  uint64_t edt_cookie; /* the parked EDT's address on this rank */
+#ifdef ARTS_DEBUG_WAKE_GUID
   arts_guid_t edt_guid;
+#endif
   uint32_t slot;
   uint32_t kind;
   uint64_t db_size;

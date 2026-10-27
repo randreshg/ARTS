@@ -66,7 +66,7 @@ void arts_handler_db_acquire(void *item, void *args) {
       arts_db_acquire_resolved(edt, slot);
       return;
     }
-    arts_db_acquire_remote_ro(cache, edt->guid, slot); /* parks (SNAPSHOT) */
+    arts_db_acquire_remote_ro(cache, edt, slot); /* parks (SNAPSHOT) */
     return;
   }
   /* RW: the fast path's CAS is the whole test.  It takes a turn only against a
@@ -81,8 +81,7 @@ void arts_handler_db_acquire(void *item, void *args) {
     arts_db_acquire_resolved(edt, slot); /* data here, writer_count bumped */
     return;
   }
-  arts_db_acquire_remote_rw(cache, edt->guid,
-                            slot); /* parks (GRANT_REQUEST) */
+  arts_db_acquire_remote_rw(cache, edt, slot); /* parks (GRANT_REQUEST) */
 }
 
 bool arts_db_acquire_is_serialized(arts_db_access_mode_t mode) {

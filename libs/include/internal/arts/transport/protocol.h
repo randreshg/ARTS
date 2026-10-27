@@ -43,6 +43,8 @@ extern "C" {
 #endif
 #include "arts/runtime_types.h"
 
+#include <assert.h> /* static_assert, in C and in C++ alike */
+
 enum arts_msg_type {
   MSG_SHUTDOWN,
   MSG_EDT_SATISFY_SLOT,
@@ -447,9 +449,9 @@ struct ARTS_PACKED arts_msg_snapshot_request_packet_s {
 };
 
 /* SNAPSHOT_RESPONSE — the snapshot payload does NOT ride the wire; it is PUT
- * into the landing the requester advertised.  Echoes the parked EDT (edt_guid +
- * slot) back so the requester's response handler resumes it directly — no
- * acquire-time list registration.
+ * into the landing the requester advertised.  It names no EDT: the request is
+ * the rank's, and its answer serves the readers the requester's request word
+ * parked for the request whose parity `cover` echoes.
  * data_present values:
  *   0 = no payload moved (requester's version is current, or nothing
  *       published yet).  A nonzero rdzv_cookie echoes the unused landing for
@@ -667,10 +669,18 @@ struct ARTS_PACKED arts_msg_excl_confirm_packet_s {
  * Sent only between ranks compiled with ARTS_COHERENCE_PROTOCOL=FLUSH.
  * Members unconditional; structs guarded so they share the FLUSH types. */
 #ifdef ARTS_PROTOCOL_FLUSH
+/* edt_cookie is the parked EDT's address on the requester rank, which the
+ * home echoes uninterpreted, as it echoes the landing; under
+ * ARTS_DEBUG_WAKE_GUID edt_guid, the EDT's GUID, rides beside it for the
+ * requester's waiter check.  Every rank of a run is one build, so both ends
+ * agree on which layout is on the wire. */
 struct ARTS_PACKED arts_msg_fetch_request_packet_s {
   struct arts_msg_header_s header;
   arts_guid_t db_guid;
-  arts_guid_t edt_guid; /* parked EDT to resume on the requester rank */
+  uint64_t edt_cookie; /* parked EDT to resume on the requester rank */
+#ifdef ARTS_DEBUG_WAKE_GUID
+  arts_guid_t edt_guid;
+#endif
   uint32_t slot;
   uint8_t pad[4];
   /* txid == 0: the requester could not size a landing (sentinel GUID, size
@@ -680,7 +690,10 @@ struct ARTS_PACKED arts_msg_fetch_request_packet_s {
 struct ARTS_PACKED arts_msg_fetch_response_packet_s {
   struct arts_msg_header_s header;
   arts_guid_t db_guid;
+  uint64_t edt_cookie;
+#ifdef ARTS_DEBUG_WAKE_GUID
   arts_guid_t edt_guid;
+#endif
   uint32_t slot;
   uint32_t kind; /* 0 = zero-size block (NULL payload), 1 = payload PUT, 2 = size only */
   uint64_t db_size;
@@ -690,6 +703,19 @@ struct ARTS_PACKED arts_msg_fetch_response_packet_s {
   uint64_t line_rkey;
   uint64_t flush_txid;  /* a credit for the requester's next flush (0 = none) */
 };
+static_assert(sizeof(uint64_t) >= sizeof(void *),
+              "the fetch round's cookie holds the requester's EDT address");
+#ifdef ARTS_DEBUG_WAKE_GUID
+static_assert(sizeof(struct arts_msg_fetch_request_packet_s) == 80,
+              "fetch_request carries the waiter GUID");
+static_assert(sizeof(struct arts_msg_fetch_response_packet_s) == 96,
+              "fetch_response carries the waiter GUID");
+#else
+static_assert(sizeof(struct arts_msg_fetch_request_packet_s) == 72,
+              "fetch_request sizeof drifted");
+static_assert(sizeof(struct arts_msg_fetch_response_packet_s) == 88,
+              "fetch_response sizeof drifted");
+#endif
 struct ARTS_PACKED arts_msg_flush_commit_packet_s {
   struct arts_msg_header_s header;
   arts_guid_t db_guid;

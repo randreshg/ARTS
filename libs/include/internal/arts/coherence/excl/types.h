@@ -25,6 +25,8 @@ extern "C" {
 #endif
 #include "arts/rank_bitset.h"
 #include "arts/utils/stdatomic_compat.h"
+#include <assert.h> /* static_assert, in C and in C++ alike */
+#include <stddef.h>
 #include <stdint.h>
 
 /* ── PURGE cache_state ────────────────────────────────────────────────────
@@ -462,9 +464,15 @@ uint64_t cache_owner_compute_next(uint64_t cur, int op, uint32_t *out_action);
  * Same shape as VAL's RW waiter for consistency. */
 struct arts_db_excl_waiter_s {
   arts_lf_link_t link; /* FIRST — required by arts_lf_stack_t */
+  struct arts_edt_s *edt;
+#ifdef ARTS_DEBUG_WAKE_GUID
   arts_guid_t edt_guid;
+#endif
   unsigned int slot;
 };
+static_assert(offsetof(struct arts_db_excl_waiter_s, link) == 0,
+              "a stack's link is its node's first member");
+ARTS_DEP_WAITER_LAYOUT(struct arts_db_excl_waiter_s);
 
 /* A read request queued on the home's ro_waiters.  Written before the push
  * that publishes it, read and freed by the frame whose drain took it (or by
