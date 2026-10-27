@@ -213,7 +213,9 @@ Each test sets its own `ARTS_CONFIG` to point at the matching cfg under
 `configs/local/test/`, so no config files are copied into the build directory.
 A test that needs a debug facility registers only in a tree that turns it on
 (`-DARTS_DEBUG_INJECTION=ON`, `-DARTS_DEBUG_DB_QUARANTINE=ON`,
-`-DARTS_DEBUG_LANDING_BALANCE=ON`).
+`-DARTS_DEBUG_LANDING_BALANCE=ON`), and a test that reads a counter back only
+where the tree's counter config captures it
+(`-DARTS_COUNTER_CONFIG=$PWD/configs/counters_validation.cfg`).
 
 Configuration
 =============

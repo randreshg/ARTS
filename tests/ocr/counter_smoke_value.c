@@ -86,6 +86,8 @@ static bool read_counter_value(const char *json, const char *name,
 }
 
 int main(int argc, char **argv) {
+  /* A file an earlier run left must not stand in for this run's. */
+  (void)remove("./counters/n0.json");
   if (arts_rt(argc, argv) != 0) {
     printf("FAIL counter_smoke_value: the runtime run failed\n");
     return 1;

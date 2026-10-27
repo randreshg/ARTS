@@ -159,6 +159,8 @@ int main(int argc, char **argv) {
       g_reads = true;
     }
   }
+  /* A file an earlier run left must not stand in for this run's. */
+  (void)remove("./counters/n0.json");
   if (arts_rt(argc, argv) != 0) {
     printf("FAIL: db_size_round_once: the runtime run failed\n");
     return 1;

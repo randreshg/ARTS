@@ -268,7 +268,9 @@ All options are set with ``-D<NAME>=<VALUE>`` on the cmake line.
      - configs/counters_off.cfg
      - Counter configuration file parsed into introspection macros. The
        default is the all-OFF file; ``configs/counters.cfg`` is the
-       profiling example, not the default.
+       profiling example, not the default, and the validation trees pass
+       ``configs/counters_validation.cfg``, which captures only the counters
+       a test reads back.
 
 To pick a faster linker, use CMake's own ``-DCMAKE_LINKER_TYPE=MOLD`` (cmake ≥ 3.29).
 

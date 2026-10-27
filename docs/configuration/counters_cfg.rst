@@ -11,10 +11,13 @@ EDT execution, DataBlock usage, memory footprint, and network traffic.
 File Format
 -----------
 
-``counters.cfg`` lives in the source tree (default ``configs/counters.cfg``,
-overridable via the ``ARTS_COUNTER_CONFIG`` CMake cache variable) and is
-processed at CMake configure time.  After editing, re-run ``cmake`` to
-regenerate counter code.
+A counter configuration lives in the source tree and is processed at CMake
+configure time; the ``ARTS_COUNTER_CONFIG`` CMake cache variable names it.
+The default, ``configs/counters_off.cfg``, turns every counter off;
+``configs/counters.cfg`` is the profiling example a campaign opts into, and
+``configs/counters_validation.cfg`` is the validation trees' set, which
+captures only the counters a test reads back.  After editing, re-run
+``cmake`` to regenerate counter code.
 
 Each line follows the format:
 

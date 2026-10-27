@@ -48,7 +48,7 @@ def test_the_catalog_mirrors_the_runtime_declaration_list():
 
 
 def test_the_shipped_default_cfg_mirrors_the_runtime_declaration_list():
-    # configs/counters.cfg is the build's own default counter config. The
+    # configs/counters.cfg is the profiling example a campaign opts into. The
     # CMake parser silently defaults a name it has never seen to OFF with no
     # diagnostic, so a counter.h addition that never made it into this file
     # is unlistable from the stock cfg and nothing here says so.
@@ -446,6 +446,25 @@ def test_the_shipped_off_cfg_turns_every_declared_counter_off():
     settings = dict(re.findall(r"^([A-Z][A-Z0-9_]*)=(\S+)$", cfg, re.MULTILINE))
     assert set(settings) == declared
     assert set(settings.values()) == {"OFF"}
+
+
+def test_the_validation_cfg_states_every_counter_and_captures_once():
+    # The tests that read a counter back register only where the tree's
+    # config captures it, so a renamed counter the file still names under its
+    # old name would drop them silently.  ONCE needs no capture thread.
+    header = (repo_root() /
+              "libs/include/internal/arts/counter/counter.h").read_text()
+    body = header.split("ARTS_COUNTER_LIST", 1)[1].split("// Generate enum")[0]
+    declared = set(re.findall(r"X\(([A-Z0-9_]+)\)", body))
+
+    cfg = (repo_root() / "configs/counters_validation.cfg").read_text()
+    settings = dict(re.findall(r"^([A-Z][A-Z0-9_]*)=(\S+)$", cfg, re.MULTILINE))
+    assert set(settings) == declared
+    captured = {k for k, v in settings.items() if v != "OFF"}
+    assert captured == {"NUM_EDT_CREATE", "NUM_SNAPSHOT_SIZE_CTS",
+                        "NUM_GRANT_SIZE_CTS", "NUM_EXCL_SIZE_CTS",
+                        "NUM_INV_SIZE_CTS"}
+    assert {settings[k] for k in captured} == {"ONCE,NODE"}
 
 
 def test_the_build_defaults_to_the_all_off_counter_file():
