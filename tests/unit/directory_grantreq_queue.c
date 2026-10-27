@@ -3,11 +3,9 @@
  * arts_home_grantreq_queue_{init,push,pop,peek,empty,destroy} (the home
  * OWNERSHIP-REQUEST FIFO; a Vyukov MPSC, drain-one).
  *
- * Each of the val/, excl/ and inv/ directory.c defines this queue with the
- * same contract; whichever directory.c the build configures supplies the
- * bodies.  The test #includes the matching protocol's directory.c into a
- * standalone TU (no ARTS runtime) and runs under each of those three
- * protocols; FLUSH has no such queue and does not build the test.
+ * One body (coherence/grantreq_queue.c) serves VAL, EXCL and INV.  The test
+ * links it into a standalone TU (no ARTS runtime) and runs under each of those
+ * three protocols; FLUSH has no such queue and does not build the test.
  *
  * Properties exercised:
  *   1. Functional single-thread: empty on init, peek/pop false on empty,
@@ -18,7 +16,7 @@
  *   3. Concurrent N producers + 1 consumer: no loss, no dup, and per-producer
  *      FIFO preserved (each producer pushes a strictly increasing sequence;
  *      the consumer must observe each producer's values in increasing order).
- *      This also exercises the transient-NULL mid-link spin retry in pop().
+ *      This also exercises the transient-NULL mid-link wait in pop().
  *
  * Build: the build's own protocol defines, with -DARTS_UNIT_STANDALONE_SHIMS
  * for the libc alloc shims.
@@ -36,8 +34,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* The pop() transient-NULL retry is lock-free but unbounded under a stalled
- * producer; a hung consumer would otherwise wedge ctest, so arm a watchdog. */
+/* pop() waits out a producer between its exchange and its link store, without
+ * bound under a stalled producer; a hung consumer would otherwise wedge ctest,
+ * so arm a watchdog. */
 #include <unistd.h>
 static void *watchdog(void *arg) {
   (void)arg;
@@ -184,7 +183,7 @@ static int part3_mpsc(void) {
   atomic_store_explicit(&g_start, 1, memory_order_release);
 
   /* Single consumer drains until it has seen every value.  pop() exercises the
-   * transient-NULL mid-link spin while producers are still mid-push. */
+   * mid-link wait while producers are still mid-push. */
   while (consumed < total) {
     unsigned int v;
     if (!arts_home_grantreq_queue_pop(&g_q, &v, NULL, NULL)) {
@@ -252,91 +251,9 @@ int main(void) {
   return 0;
 }
 
-/* libc-backed alloc shims (the directory.c bodies only use bare malloc/free for the
- * queue nodes; the rank bit-set the home lifecycle sizes, linked beside, uses
- * arts_calloc/arts_free).  Provided only in the standalone build. */
+/* libc-backed alloc shims for the queue nodes.  Provided only in the
+ * standalone build. */
 #ifdef ARTS_UNIT_STANDALONE_SHIMS
-#include "counter_stubs.h"
-void *arts_calloc(size_t nmemb, size_t size) { return calloc(nmemb, size); }
 void arts_free(void *ptr) { free(ptr); }
 void *arts_malloc(size_t size) { return malloc(size); }
-
-/* EXCL's directory.c is monolithic: the same TU that defines the queue bodies
- * we test also defines the EXCL request/release/destroy HANDLERS, which
- * reference the broader runtime (transport, route table, buffer cb, identity).
- * The test never invokes any of those — it only drives the queue API — so
- * satisfy the linker with inert stubs.  None are reachable from the test's
- * call graph.
- */
-#if defined(ARTS_PROTOCOL_EXCL)
-#include "arts/coherence/buffer.h"
-#include "arts/utils/shared.h"
-unsigned int arts_global_rank_id = 0;
-void mark_edt_ready_by_guid(arts_guid_t edt_guid, unsigned int slot) {
-  (void)edt_guid;
-  (void)slot;
-}
-void arts_transport_send_async(int rank, char *message, unsigned int length) {
-  (void)rank;
-  (void)message;
-  (void)length;
-}
-void arts_handler_db_excl_grant(void *payload, size_t size) {
-  (void)payload;
-  (void)size;
-}
-arts_shared_ptr_t arts_db_buf_acquire(struct arts_db_cache_s *cache) {
-  (void)cache;
-  return NULL;
-}
-void arts_db_buf_release(arts_shared_ptr_t *h) { (void)h; }
-struct arts_db_buffer_s *arts_db_buf_install(struct arts_db_cache_s *cache,
-                                             uint64_t new_version,
-                                             const void *data_payload,
-                                             uint64_t db_size) {
-  (void)cache;
-  (void)new_version;
-  (void)data_payload;
-  (void)db_size;
-  return NULL;
-}
-void arts_db_buf_write_inplace(struct arts_db_cache_s *cache, const void *data,
-                               uint64_t db_size) {
-  (void)cache;
-  (void)data;
-  (void)db_size;
-}
-void *arts_shared_get(arts_shared_ptr_t p) {
-  (void)p;
-  return NULL;
-}
-void arts_send_db_cache_destroy(unsigned int sharer_rank, arts_guid_t db_guid) {
-  (void)sharer_rank;
-  (void)db_guid;
-}
-bool arts_ooo_retire_item(arts_guid_t key, const void *item) {
-  (void)key;
-  (void)item;
-  return false;
-}
-#endif /* ARTS_PROTOCOL_EXCL */
-/* The cover gate's home state, which the directory TUs touch at init and
- * seed; never driven by this test. */
-#if defined(ARTS_PROTOCOL_INV)
-void arts_db_cover_home_init(struct arts_db_s *db, unsigned int nranks) {
-  (void)db;
-  (void)nranks;
-}
-void arts_db_cover_home_teardown(struct arts_db_s *db) { (void)db; }
-#endif
-#endif
-
-/* Pull in the protocol's directory.c (defines the queue bodies).  Done at the end so
- * the test's own includes/decls are in scope first. */
-#if defined(ARTS_PROTOCOL_VAL)
-#include "core/coherence/val/directory.c"
-#elif defined(ARTS_PROTOCOL_EXCL)
-#include "core/coherence/excl/directory.c"
-#elif defined(ARTS_PROTOCOL_INV)
-#include "core/coherence/inv/directory.c"
 #endif

@@ -221,22 +221,6 @@ struct arts_db_inv_pub_s {
   struct arts_rdzv_landing_s rdzv; /* addr != 0: bytes landed (WT only) */
 };
 
-/* Home request queue: same Vyukov MPSC shape as the other arms so the shared
- * directory.h declarations apply (producers = request handlers, single
- * consumer = the grant-claim holder).  Orders: the queue's declaration in
- * coherence/directory.h. */
-struct arts_home_grantreq_node_s {
-  _Atomic(struct arts_home_grantreq_node_s *) next;
-  unsigned int rank;
-  uint64_t have_version; /* version the requester already holds */
-  struct arts_rdzv_landing_s rdzv;
-};
-struct arts_home_grantreq_queue_s {
-  _Atomic(struct arts_home_grantreq_node_s *) tail;
-  _Atomic(struct arts_home_grantreq_node_s *) head;
-  struct arts_home_grantreq_node_s stub;
-};
-
 /* ── per-rank DB cache ──────────────────────────────────────────────────── */
 /* The reader plane lives in cache_state (durable copies, one in-flight fetch,
  * one parked chain).  The writer plane is the migrating sentinel grant, held in

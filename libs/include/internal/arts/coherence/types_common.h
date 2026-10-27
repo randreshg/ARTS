@@ -234,6 +234,23 @@ struct arts_rdzv_landing_s {
   uint64_t cookie;
 };
 
+/* The home's ownership-request FIFO: one queued requester per node.  Producers
+ * are request handlers on any thread; the single consumer is the holder of the
+ * arm's serving turn.  The stub is the permanent sentinel, embedded and never
+ * freed separately.  FLUSH's home keeps no such queue and embeds none.  Operations and orders: coherence/directory.h. */
+struct arts_home_grantreq_node_s {
+  _Atomic(struct arts_home_grantreq_node_s *) next;
+  unsigned int rank;
+  uint64_t have_version; /* version the requester already holds */
+  struct arts_rdzv_landing_s rdzv; /* the requester's transfer landing */
+};
+
+struct arts_home_grantreq_queue_s {
+  _Atomic(struct arts_home_grantreq_node_s *) tail; /* producer end */
+  _Atomic(struct arts_home_grantreq_node_s *) head; /* consumer end */
+  struct arts_home_grantreq_node_s stub;            /* permanent sentinel */
+};
+
 /* Arms that install a fresh buffer for every version a rank fetches (VAL's
  * snapshots, INV's reader copies) keep a per-DB free-list of buffers to draw
  * the next one from.  Every other arm draws too rarely for a list to pay: one

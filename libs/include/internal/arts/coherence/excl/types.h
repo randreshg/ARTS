@@ -476,26 +476,6 @@ struct arts_lock_ro_node_s {
   struct arts_rdzv_landing_s rdzv; /* the requester's grant/serve landing */
 };
 
-/* Each arm that runs a home request queue defines its own
- * arts_home_grantreq_node_s and arts_home_grantreq_queue_s; this is EXCL's,
- * in the same Vyukov MPSC shape, so the same directory.h declarations apply.
- * Producers are the request handlers; the single consumer is the holder of
- * the queue's turn: the committer of the lock_state transition whose action
- * pops or peeks it, or, under RETAIN, the CONFIRM that ends a forwarded
- * migrate.  Orders: the queue's declaration in coherence/directory.h. */
-struct arts_home_grantreq_node_s {
-  _Atomic(struct arts_home_grantreq_node_s *) next;
-  unsigned int rank;
-  uint64_t have_version; /* version the requester already holds */
-  struct arts_rdzv_landing_s rdzv; /* requester's grant/deliver landing */
-};
-
-struct arts_home_grantreq_queue_s {
-  _Atomic(struct arts_home_grantreq_node_s *) tail; /* producer end */
-  _Atomic(struct arts_home_grantreq_node_s *) head; /* consumer end */
-  struct arts_home_grantreq_node_s stub;            /* permanent sentinel */
-};
-
 /* Per-rank DB cache for the EXCL protocol.
  * The layout is shared between PURGE and RETAIN; RETAIN adds ro_serve (the list
  * of reader ranks the owner must serve during the RO phase).  PURGE omits it

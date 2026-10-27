@@ -61,6 +61,7 @@ endfunction()
 # Sets ${out} (caller scope) to the coherence model TU paths for one (arm,
 # write policy, release policy), RELATIVE to libs/src/core/; the main library
 # (libs/src/core/CMakeLists.txt) and every benchmark variant select through it.
+# The home request FIFO is linked by every arm that keeps one (all but FLUSH).
 # The dense per-rank version map is the ownership plane's ledger, so it is
 # linked by the arms that HAVE one; an arm with no versions carries no ledger
 # and must not compile the TU that keeps it.  The rank bit-set is linked by
@@ -71,23 +72,23 @@ function(arts_coherence_model_tus out arm write_policy release_policy)
         set(tus coherence/flush/flush.c)
     elseif(arm STREQUAL "INV")
         if(write_policy STREQUAL "WB")
-            set(tus coherence/inv/directory.c coherence/inv/engine.c coherence/inv/wb.c coherence/grant.c coherence/grant_queue.c coherence/reader_pool.c coherence/grant_wb.c coherence/rank_u64_map.c coherence/rank_bitset.c)
+            set(tus coherence/inv/directory.c coherence/grantreq_queue.c coherence/inv/engine.c coherence/inv/wb.c coherence/grant.c coherence/grant_queue.c coherence/reader_pool.c coherence/grant_wb.c coherence/rank_u64_map.c coherence/rank_bitset.c)
         else()
-            set(tus coherence/inv/directory.c coherence/inv/engine.c coherence/inv/wt.c coherence/grant.c coherence/grant_queue.c coherence/reader_pool.c coherence/grant_wt.c coherence/rank_u64_map.c coherence/rank_bitset.c)
+            set(tus coherence/inv/directory.c coherence/grantreq_queue.c coherence/inv/engine.c coherence/inv/wt.c coherence/grant.c coherence/grant_queue.c coherence/reader_pool.c coherence/grant_wt.c coherence/rank_u64_map.c coherence/rank_bitset.c)
         endif()
         arts_grant_release_tu(rel "${write_policy}" "${release_policy}")
         list(APPEND tus ${rel})
     elseif(arm STREQUAL "EXCL")
         if(release_policy STREQUAL "RETAIN")
-            set(tus coherence/excl/directory.c coherence/excl/retain.c coherence/rank_bitset.c)
+            set(tus coherence/excl/directory.c coherence/grantreq_queue.c coherence/excl/retain.c coherence/rank_bitset.c)
         else()
-            set(tus coherence/excl/directory.c coherence/excl/purge.c coherence/rank_bitset.c)
+            set(tus coherence/excl/directory.c coherence/grantreq_queue.c coherence/excl/purge.c coherence/rank_bitset.c)
         endif()
     elseif(arm STREQUAL "VAL")
         if(write_policy STREQUAL "WT")
-            set(tus coherence/val/wt.c coherence/grant.c coherence/grant_queue.c coherence/reader_pool.c coherence/grant_wt.c coherence/val/directory.c coherence/rank_u64_map.c coherence/rank_bitset.c)
+            set(tus coherence/val/wt.c coherence/grant.c coherence/grant_queue.c coherence/reader_pool.c coherence/grant_wt.c coherence/grantreq_queue.c coherence/rank_u64_map.c coherence/rank_bitset.c)
         else()
-            set(tus coherence/val/wb.c coherence/grant.c coherence/grant_queue.c coherence/reader_pool.c coherence/grant_wb.c coherence/val/directory.c coherence/rank_u64_map.c coherence/rank_bitset.c)
+            set(tus coherence/val/wb.c coherence/grant.c coherence/grant_queue.c coherence/reader_pool.c coherence/grant_wb.c coherence/grantreq_queue.c coherence/rank_u64_map.c coherence/rank_bitset.c)
         endif()
         arts_grant_release_tu(rel "${write_policy}" "${release_policy}")
         list(APPEND tus ${rel})

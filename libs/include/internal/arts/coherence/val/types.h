@@ -50,32 +50,6 @@ extern "C" {
 
 /* ========================================================================= */
 
-/*--- Per-DB home metadata ------------------------------------------------
- * Lives only on the rank that hosts a given DB (GUID home decides).  Holds
- * the directory state needed for ownership transfer and dedup.  The MPSC
- * queues are defined inline below (needed for struct embedding in arts_db_s).
- *
- * Vyukov MPSC queue node carrying a requester rank (home GRANT_REQUEST
- * queue). The embedded `next` pointer is owned by the queue (push/pop manage
- * it). Producers are foreign-rank GRANT_REQUEST handlers; the single
- * consumer is the home-side dispatcher holding the invalidate_in_flight baton.
- * Orders: the queue's declaration in coherence/directory.h.
- */
-struct arts_home_grantreq_node_s {
-  _Atomic(struct arts_home_grantreq_node_s *) next;
-  unsigned int rank;
-  uint64_t have_version; /* version the requester already holds */
-  struct arts_rdzv_landing_s rdzv; /* requester's transfer landing */
-};
-
-struct arts_home_grantreq_queue_s {
-  _Atomic(struct arts_home_grantreq_node_s *)
-      tail; /* producer end (push exchanges here) */
-  _Atomic(struct arts_home_grantreq_node_s *)
-      head;                             /* consumer end (pop advances here) */
-  struct arts_home_grantreq_node_s stub; /* permanent sentinel */
-};
-
 /*--- The request word ---------------------------------------------------
  * One 64-bit word per cache holds both axes' request state and the chains of
  * readers parked on them, so every decision that couples the axes is one CAS:

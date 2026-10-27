@@ -63,7 +63,7 @@ target_compile_definitions(arts_compute PRIVATE ARTS_NOHINT_EDT_ROUNDROBIN=${_AR
 
 # DB coherence TU selection: each arm compiles its live-axis TU (wt.c/wb.c,
 # or purge.c/retain.c for EXCL) plus its shared directory infrastructure
-# (directory.c).  Arms whose ownership is a migrating sentinel grant (VAL,
+# (directory.c) and home request FIFO (grantreq_queue.c).  Arms whose ownership is a migrating sentinel grant (VAL,
 # INV) also link the protocol-independent grant plane (coherence/grant.c).
 # FLUSH compiles flush.c alone (no grant plane, no directory, no version
 # ledger).  Each TU defines its arts_handler_db_* / arts_db_* bodies directly;

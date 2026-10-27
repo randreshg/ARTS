@@ -1084,11 +1084,11 @@ endif()
 # and registered only in the trees whose cell compiles the code they test.
 # ============================================================================
 
-# directory_grantreq_queue: VAL/EXCL/INV (the .c #if-guards select the
-# protocol's directory.c); FLUSH has no home request queue.
+# directory_grantreq_queue: VAL/EXCL/INV link the one queue body; FLUSH has no
+# home request queue.
 if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
 add_pure_unit_src(directory_grantreq_queue
-    SOURCES ${CMAKE_SOURCE_DIR}/libs/src/core/coherence/rank_bitset.c
+    SOURCES ${CMAKE_SOURCE_DIR}/libs/src/core/coherence/grantreq_queue.c
     DEFINES ARTS_UNIT_STANDALONE_SHIMS PASS_REGEX "PASS directory_grantreq_queue:" TIMEOUT 60)
 endif()
 

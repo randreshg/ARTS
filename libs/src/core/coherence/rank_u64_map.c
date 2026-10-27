@@ -2,9 +2,8 @@
  *
  * cached_version dense map — owner-side per-rank dedup of the version each
  * rank last received.  Shared by every arm that keeps versions (the ownership
- * protocols use it for SNAPSHOT_RESPONSE dedup), so it lives in its own TU
- * rather than the ownership-only val/directory.c (the home GRANT_REQUEST
- * FIFO); an arm with no versions links neither.
+ * protocols use it for SNAPSHOT_RESPONSE dedup), so it lives in its own TU,
+ * which an arm with no versions does not link.
  *
  * Concurrency: each rank slot is an independent _Atomic(uint64_t) accessed via
  * atomic load/store and a CAS-loop monotonic-max for advance.  No cross-slot

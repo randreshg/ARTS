@@ -1,51 +1,23 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * VAL home grant-request queue.  See directory.h.
+ * The home's ownership-request FIFO (Vyukov MPSC), shared by every arm that
+ * keeps one.  Declarations, orders and the progress guarantee:
+ * coherence/directory.h.
  *
  * Defines: arts_home_grantreq_queue_{init,push,pop,peek,empty,pending,destroy}.
  *
- * The grantreq queue is this arm's own copy of the home's Vyukov MPSC request
- * FIFO, over the struct val/types.h defines.  The home-directory lifecycle
- * lives in the write-policy TU (wt.c or wb.c), the cached_version dense map in
- * rank_u64_map.c and the rank bit-set in rank_bitset.c.
- *
- * Compiled only for ARTS_COHERENCE_PROTOCOL=VAL.
+ * Compiled for ARTS_COHERENCE_PROTOCOL = VAL, INV and EXCL.
  */
 
 #include "arts/coherence/directory.h"
 
 #include "arts/utils/stdatomic_compat.h"
-#include <sched.h>
+#include <stdbool.h>
 #include <stddef.h>
-#include <stdlib.h>
+#include <stdint.h>
 
 #include "arts/coherence/coherence.h"
 #include "arts/utils/malloc.h"
-
-/*--- pending_rw home FIFO (Vyukov MPSC) ---------------------------------
- *
- * Standard Vyukov MPSC FIFO storing an unsigned int requester rank.  The
- * cache-side RW waiter chain (arts_pending_rw_queue_*, in grant_queue.c) is
- * a separate Treiber stack; this home queue stays Vyukov because the baton
- * holder pops exactly one requester at a time (the next ownership target) —
- * an ordering a LIFO stack cannot provide.  The embedded stub sentinel in
- * arts_home_grantreq_queue_s is the permanent queue sentinel; it is never
- * malloc'd or free'd separately.
- *
- * Field convention (standard Vyukov MPSC naming):
- *   tail — producer end; push() swaps the new node in here (acq_rel).
- *   head — consumer end; pop() reads head->next and advances head.
- *
- * Memory ordering:
- *   push  — acq_rel on the tail exchange (linearization point), then
- *            release on prev->next store (makes payload visible to
- *            consumer after the tail swap).
- *   pop   — acquire on head->next load (pairs with push's release store);
- *            acquire on head load (defensive: guards against future
- *            weakening of the single-consumer baton invariant).
- *   empty — acquire on head load + acquire on next load (conservative
- *            snapshot; safe for a single consumer).
- */
 
 void arts_home_grantreq_queue_init(struct arts_home_grantreq_queue_s *q) {
   atomic_store_explicit(&q->stub.next, (struct arts_home_grantreq_node_s *)NULL,
@@ -70,9 +42,6 @@ void arts_home_grantreq_queue_push(struct arts_home_grantreq_queue_s *q,
   }
   atomic_store_explicit(&n->next, (struct arts_home_grantreq_node_s *)NULL,
                         memory_order_relaxed);
-  /* Swap n onto the tail (producer end).  The previous tail becomes our
-   * predecessor; link it forward to n so the consumer can reach n once
-   * it advances past the predecessor. */
   struct arts_home_grantreq_node_s *prev =
       atomic_exchange_explicit(&q->tail, n, memory_order_acq_rel);
   atomic_store_explicit(&prev->next, n, memory_order_release);
@@ -83,33 +52,18 @@ bool arts_home_grantreq_queue_pop(struct arts_home_grantreq_queue_s *q,
                                  struct arts_rdzv_landing_s *out_rdzv,
                                  uint64_t *out_have) {
   for (;;) {
-    /* Acquire on head load: defensive barrier so a new baton holder sees
-     * all prior consumer writes to head, even if the baton CAS ordering
-     * ever weakens. */
     struct arts_home_grantreq_node_s *head =
         atomic_load_explicit(&q->head, memory_order_acquire);
     struct arts_home_grantreq_node_s *next =
         atomic_load_explicit(&head->next, memory_order_acquire);
-
     if (next == NULL) {
-      /* Either truly empty, or a producer is mid-push between its
-       * atomic_exchange on tail and its store_release on prev->next.
-       * Check if tail == head to distinguish. */
       struct arts_home_grantreq_node_s *tail =
           atomic_load_explicit(&q->tail, memory_order_acquire);
       if (head == tail) {
-        return false; /* truly empty */
+        return false;
       }
-      /* Producer mid-link: tight retry until the in-flight
-       * store_release(prev->next) lands (single consumer, ns window).
-       * Lock-free — no scheduler yield. */
       continue;
     }
-
-    /* Copy the payload from `next` (the node that will become the new
-     * head sentinel after we advance).  Advance head to `next`, then
-     * free `head` — unless head IS the stub sentinel, which is embedded
-     * in the queue struct and must never be freed. */
     *out_rank = next->rank;
     if (out_rdzv != NULL) {
       *out_rdzv = next->rdzv;
@@ -129,13 +83,9 @@ bool arts_home_grantreq_queue_peek(const struct arts_home_grantreq_queue_s *q,
                                   unsigned int *out_rank,
                                   struct arts_rdzv_landing_s *out_rdzv,
                                   uint64_t *out_have) {
-  /* Same mid-link disambiguation as pop: a null forward link means empty only
-   * when head == tail; otherwise a producer is between its tail exchange and
-   * its link store and the front exists but is not yet reachable.  Returning
-   * "no front" there would contradict the deref-free pending probe, which
-   * counts that producer, and leave a caller alternating between the two.
-   * The queue is not mutated (no head advance, no node free); single
-   * consumer (the baton holder). */
+  /* Same mid-link disambiguation as pop: returning "no front" while head !=
+   * tail would contradict the dereference-free pending probe, which counts
+   * that producer. */
   for (;;) {
     struct arts_home_grantreq_node_s *head =
         atomic_load_explicit(&q->head, memory_order_acquire);
@@ -145,9 +95,9 @@ bool arts_home_grantreq_queue_peek(const struct arts_home_grantreq_queue_s *q,
       struct arts_home_grantreq_node_s *tail =
           atomic_load_explicit(&q->tail, memory_order_acquire);
       if (head == tail) {
-        return false; /* truly empty */
+        return false;
       }
-      continue; /* producer mid-link: tight retry (single consumer, ns) */
+      continue;
     }
     *out_rank = next->rank;
     if (out_rdzv != NULL) {
@@ -175,14 +125,10 @@ bool arts_home_grantreq_queue_empty(const struct arts_home_grantreq_queue_s *q) 
 
 bool arts_home_grantreq_queue_pending(
     const struct arts_home_grantreq_queue_s *q) {
-  /* Deref-free: a push linearizes on the tail exchange, so head != tail
-   * already names a queued requester even while its forward link is still in
-   * flight.  Reading head->next instead would follow a pointer a concurrent
-   * pop is free to have released, which is why the baton-release re-checks
-   * use this and not the dereferencing test above.  Both loads may name freed
-   * nodes; that is harmless because baton RELEASES order them — the last
-   * release's probe can have no pop between its two loads, since any such pop
-   * belongs to a later holder who must release again. */
+  /* Both loads may name freed nodes; that is harmless because the serving
+   * turn's releases order them: the last release's probe can have no pop
+   * between its two loads, since any such pop belongs to a later holder who
+   * must release again. */
   struct arts_home_grantreq_node_s *head =
       atomic_load_explicit(&q->head, memory_order_acquire);
   struct arts_home_grantreq_node_s *tail =
@@ -191,8 +137,6 @@ bool arts_home_grantreq_queue_pending(
 }
 
 void arts_home_grantreq_queue_destroy(struct arts_home_grantreq_queue_s *q) {
-  /* Single-threaded at destroy: walk the head chain freeing every node
-   * except the embedded stub sentinel. */
   struct arts_home_grantreq_node_s *cur =
       atomic_load_explicit(&q->head, memory_order_relaxed);
   while (cur != NULL) {
@@ -203,10 +147,8 @@ void arts_home_grantreq_queue_destroy(struct arts_home_grantreq_queue_s *q) {
     }
     cur = nxt;
   }
-  /* Poison the pointers to catch use-after-destroy. */
   atomic_store_explicit(&q->tail, (struct arts_home_grantreq_node_s *)NULL,
                         memory_order_relaxed);
   atomic_store_explicit(&q->head, (struct arts_home_grantreq_node_s *)NULL,
                         memory_order_relaxed);
 }
-

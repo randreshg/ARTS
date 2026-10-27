@@ -11,9 +11,9 @@
  * FIFO.
  *
  * Defined in coherence/grant_queue.c, which this TU #includes standalone (as
- * directory_grantreq_queue does with directory.c).  One body serves every arm
- * that keeps the grant's cache-side queue (VAL, INV), so the test runs in the
- * reference tree.
+ * directory_grantreq_queue compiles grantreq_queue.c into its own binary).
+ * One body serves every arm that keeps the grant's cache-side queue (VAL,
+ * INV), so the test runs in the reference tree.
  *
  * Properties exercised:
  *   1. conservation: push K waiters; one take detaches a chain that counts K

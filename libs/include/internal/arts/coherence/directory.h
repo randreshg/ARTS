@@ -4,9 +4,9 @@
  *
  * Concurrency model:
  *   - pending_rw queue: Vyukov MPSC.  Multi-producer (any handler thread
- * enqueues on GRANT_REQUEST); single-consumer in time (the unique actor
- * holding the invalidate_in_flight = 1 baton).  Lock-free queue ops; the
- * orders are stated at the queue's declaration below.
+ * enqueues on GRANT_REQUEST); single-consumer in time (the unique holder of
+ * the arm's serving turn).  Progress and orders are stated at the queue's
+ * declaration below.
  *   - cached_version map: per-slot atomic.  Each rank slot is an independent
  *     _Atomic(uint64_t) accessed via atomic load/store and CAS-loop
  * monotonic-max for advance.  No cross-slot invariant.
@@ -31,13 +31,18 @@ extern "C" {
  * header use. */
 #include "arts/rank_bitset.h"
 
-/* Declared, not defined, here: only the protocol arms that run a home request
- * queue define the struct (arts_db_s embeds it) before including this header,
- * and only they call these entry points.  Without the declaration the tag
- * would be scoped to each parameter list below, never matching the real
- * definition.
+/* The home's ownership-request FIFO (struct arts_home_grantreq_queue_s, in
+ * coherence/types_common.h; the operations are linked by every arm but FLUSH,
+ * whose home keeps none).  A Vyukov MPSC queue over an embedded permanent stub.
  *
- * Orders (every arm's definition has these members and refers here):
+ * Progress.  A producer is wait-free: the node is allocated and filled before
+ * its one exchange, so the window between the exchange and the link store
+ * holds no allocation or syscall.  The consumer is not lock-free: a pop or
+ * peek that finds head->next NULL with head != tail waits out exactly one
+ * producer's window between its exchange and its link store, and makes no
+ * progress until that producer is scheduled.
+ *
+ * Orders:
  *   tail  producers exchange it acq_rel: the release publishes the node's
  *         own NULL link, and the acquire orders the previous node's NULL
  *         link before this producer's store into it.  The consumer and the
@@ -52,8 +57,6 @@ extern "C" {
  *         successive consumers; the pair repeats that order, so a consumer
  *         frees a node only after the previous one's reads of it.
  * Init and teardown run with no other user and are relaxed. */
-struct arts_home_grantreq_queue_s;
-
 void arts_home_grantreq_queue_init(struct arts_home_grantreq_queue_s *q);
 void arts_home_grantreq_queue_destroy(struct arts_home_grantreq_queue_s *q);
 /* Push a requester with its transfer landing (NULL rdzv = zero landing —
@@ -65,14 +68,15 @@ void arts_home_grantreq_queue_push(struct arts_home_grantreq_queue_s *q,
                                   const struct arts_rdzv_landing_s *rdzv,
                                   uint64_t have_version);
 /* Pop the front requester (single consumer).  Returns true and sets *out_rank
- * (+ *out_rdzv / *out_have when non-NULL) on success; false when empty. */
+ * (+ *out_rdzv / *out_have when non-NULL) on success; false when empty.  Waits
+ * out a producer caught between its exchange and its link store. */
 bool arts_home_grantreq_queue_pop(struct arts_home_grantreq_queue_s *q,
                                  unsigned int *out_rank,
                                  struct arts_rdzv_landing_s *out_rdzv,
                                  uint64_t *out_have);
 /* Peek the front (oldest) requester without popping. Single consumer (the
- * baton holder). Returns true + sets *out_rank (+ *out_rdzv / *out_have when
- * non-NULL) when non-empty. */
+ * turn holder). Returns true + sets *out_rank (+ *out_rdzv / *out_have when
+ * non-NULL) when non-empty; waits as pop does. */
 bool arts_home_grantreq_queue_peek(const struct arts_home_grantreq_queue_s *q,
                                   unsigned int *out_rank,
                                   struct arts_rdzv_landing_s *out_rdzv,

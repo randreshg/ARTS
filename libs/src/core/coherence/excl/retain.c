@@ -1534,10 +1534,10 @@ void arts_handler_db_destroy(void *item_v, void *args_v) {
  * The home directory arbiter + action dispatch.  Each handler runs the single-
  * word lock_state CAS via lock_owner_compute_next, then dispatches the returned
  * FORWARD action to the current owner (LOCK_OWNER() of the freshly-CAS'd word),
- * resolving the migrate target / served reader(s) from the lock-free queues.
+ * resolving the migrate target / served reader(s) from the home's queues.
  *
  * They run CONCURRENTLY across progress threads with no mutex; correctness
- * rests entirely on the single-word CAS plus the lock-free queues.  The
+ * rests entirely on the single-word CAS plus the home's queues.  The
  * protocol tolerates message reorder because the transport guarantees no
  * per-peer FIFO: r counts OUTSTANDING RO grants, so it may transiently exceed
  * the rank count, and the write flip is gated on r reaching zero rather than on
