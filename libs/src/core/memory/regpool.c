@@ -80,23 +80,19 @@
  * depends on both:
  *
  *   - Only a free slot's fields may be rewritten, and the slot is published
- *     live only once every field is written (release-store of the state); a
- *     retired slot keeps exactly the fields published when its mapping was
- *     created, so retirement and reuse change nothing but the state.
- *   - A reader that observed a slot's state must know that the fields it
- *     then reads belong to the same generation of that slot.  State and
- *     fields are separate loads, so a slot rewritten between them would hand
- *     back a torn range — one generation's base with another's length — and
- *     resolve a pointer into the wrong registration.  A per-entry generation
- *     word is the gate: only a rewrite touches it, leaving it odd while the
- *     fields are in flux.  An ODD generation is a slot being published for a
- *     mapping nobody holds a pointer to yet, so a reader skips it; a
- *     generation that CHANGED across the read means the fields read may be a
- *     torn pair, so the reader reads the entry again.
+ *     live only once every field is written (release-store of its state
+ *     word); a retired slot keeps exactly the fields published when its
+ *     mapping was created, so retirement and reuse change nothing but the
+ *     state.
+ *   - A lock-free reader takes an entry's state and range in one load: a
+ *     single-copy-atomic word (arts/memory/regpool_entry.h) cannot pair one
+ *     rewrite's base with another's length, so a range a reader reads always
+ *     belongs to the state it read with it.
  */
 
 #include "arts/memory/regpool.h"
 
+#include "arts/memory/regpool_entry.h"
 #include "arts/utils/stdatomic_compat.h"
 #include <errno.h> /* mmap failure diagnostics */
 #include <stdbool.h>
@@ -179,6 +175,10 @@ size_t arts_regpool_parse_node_avail(FILE *f) {
 /* Base alignment for every mapping: >= the allocator's arena slice alignment
  * (so a slab is used in full) and huge-page friendly. */
 #define REGPOOL_BASE_ALIGN ((size_t)2 * 1024 * 1024)
+_Static_assert(REGPOOL_BASE_ALIGN == (size_t)1
+                                         << ARTS_REGPOOL_ENTRY_GRANULE_SHIFT,
+               "every mapping's base and length must be whole granules of an "
+               "entry word");
 /* Allocator arena minimum; smaller slabs are rejected by the arena manager. */
 #define REGPOOL_MIN_SLAB ((size_t)32 * 1024 * 1024)
 /* Slab-size granule and ceiling, mirroring the vendored allocator's arena
@@ -257,22 +257,6 @@ typedef struct regpool_slab_s {
                            * placement, or the node it was made for when the
                            * kernel placed it; -1 for a direct slab        */
   size_t align;           /* alignment the mapping was created with           */
-  /* REGPOOL_SLOT_*.  Every transition is a release store under g_lock; the
-   * store of LIVE publishes the entry's fields, which a lock-free reader
-   * acquires.  Only a FREE slot's fields are ever rewritten. */
-  _Atomic(uint8_t) state;
-  /* Sequence word over the range mirrors below, odd while a rewrite is in
-   * flux; bumped ONLY by a rewrite, under g_lock.  Stored even with release
-   * once the rewrite is done, and acquired by a lock-free reader, which
-   * re-reads it after the mirrors: a change means the range it read may be
-   * torn. */
-  _Atomic(uint32_t) gen;
-  /* mr.base and mr.len as the lock-free range check reads them.  Stored with
-   * release after the odd generation, so a reader that loads one from a later
-   * rewrite (acquire) also sees that rewrite's generation bump when it
-   * re-reads `gen`. */
-  _Atomic(uintptr_t) range_base;
-  _Atomic(size_t) range_len;
 } regpool_slab_t;
 
 /* --- module state (guarded by g_lock except where marked atomic) --------- */
@@ -323,6 +307,18 @@ static uint64_t g_req_node_set;
 static unsigned g_req_node_count;
 
 static regpool_slab_t g_slabs[REGPOOL_MAX_SLABS];
+/* Entry i's state and range (arts/memory/regpool_entry.h; REGPOOL_SLOT_* in
+ * the state field), dense beside the records so a scan touches one line per
+ * eight entries and no line a rewrite writes.  Every write is a store under
+ * g_lock: a release store of the LIVE word, after the record's fields are
+ * written, publishes them to a lock-free reader's acquire load; a transition
+ * between LIVE and RETIRED keeps the range, and an eviction stores 0 (FREE).
+ * Only a FREE entry's record is rewritten, and a range given back is
+ * reusable only after the munmap that follows its FREE store, so a mapping
+ * that reuses it is published after that store in g_lock's order and its
+ * owner's lookups read the old entry FREE or later.  Loads under g_lock are
+ * relaxed. */
+static _Atomic(uint64_t) g_slab_word[REGPOOL_MAX_SLABS];
 /* Published length of g_slabs.  An append, under g_lock, stores it with
  * release after writing the entry; a lock-free lookup or sweep acquires it
  * before reading the entries below it. */
@@ -949,48 +945,15 @@ static bool regpool_map_slab(int node, uint64_t set, size_t len, size_t align,
   return true;
 }
 
-/* Read one entry's range without the lock: true, with *out_base / *out_len,
- * when the entry is live.  The generation word is what makes the answer
- * whole — see the module header's second publication rule.
- *
- * An odd generation means the entry is being rewritten for a mapping whose
- * base has not been handed to anyone yet, so it can own no address a caller
- * could be asking about: skip it rather than wait on a writer that may be
- * descheduled mid-rewrite.  A generation that CHANGED across the read is a
- * rewrite that completed under it, which says nothing about the entry's
- * current contents — re-read those. */
-static bool regpool_slot_live_range(const regpool_slab_t *s,
-                                    const char **out_base, size_t *out_len) {
-  for (;;) {
-    uint32_t g1 = atomic_load_explicit(&s->gen, memory_order_acquire);
-    if ((g1 & 1u) != 0)
-      return false;
-    if (atomic_load_explicit(&s->state, memory_order_acquire) !=
-        REGPOOL_SLOT_LIVE)
-      return false;
-    const char *base = (const char *)atomic_load_explicit(
-        &s->range_base, memory_order_acquire);
-    size_t len = atomic_load_explicit(&s->range_len, memory_order_acquire);
-    if (atomic_load_explicit(&s->gen, memory_order_relaxed) != g1)
-      continue; /* rewritten under us: the pair above may be torn */
-    *out_base = base;
-    *out_len = len;
-    return true;
-  }
-}
-
 /* Write an entry's per-mapping fields and publish it live.  Caller holds
  * g_lock and the slot must be unreachable to readers — either past the
- * published count, or REGPOOL_SLOT_FREE.  The generation bump around the
- * range is what a lock-free reader validates it against. */
+ * published count, or REGPOOL_SLOT_FREE.  A range the entry word cannot name
+ * is refused before anything is written. */
 static void regpool_write_slot_locked(regpool_slab_t *s, void *base, size_t len,
                                       struct fid_mr *mr, uint64_t rkey,
                                       int node, bool interleaved,
                                       size_t align) {
-  uint32_t g = atomic_load_explicit(&s->gen, memory_order_relaxed);
-  atomic_store_explicit(&s->gen, g + 1, memory_order_relaxed);
-  atomic_store_explicit(&s->range_base, (uintptr_t)base, memory_order_release);
-  atomic_store_explicit(&s->range_len, len, memory_order_release);
+  uint64_t w = arts_regpool_entry_word(REGPOOL_SLOT_LIVE, base, len);
   s->mr.base = base;
   s->mr.len = len;
   s->mr.mr = mr;
@@ -998,8 +961,7 @@ static void regpool_write_slot_locked(regpool_slab_t *s, void *base, size_t len,
   s->mr.numa_node = node;
   s->interleaved = interleaved;
   s->align = align;
-  atomic_store_explicit(&s->gen, g + 2, memory_order_release);
-  atomic_store_explicit(&s->state, REGPOOL_SLOT_LIVE, memory_order_release);
+  atomic_store_explicit(&g_slab_word[s - g_slabs], w, memory_order_release);
 }
 
 /* Append a fully-formed slab record and publish it.  Caller holds g_lock.
@@ -1012,7 +974,6 @@ static regpool_slab_t *regpool_append(void *base, size_t len, struct fid_mr *mr,
   if (idx >= REGPOOL_MAX_SLABS)
     return NULL;
   regpool_slab_t *s = &g_slabs[idx];
-  atomic_store_explicit(&s->gen, 0, memory_order_relaxed);
   s->is_direct = is_direct;
   s->arena = arena;
   s->owner = owner;
@@ -1036,8 +997,8 @@ static regpool_slab_t *regpool_publish_direct_locked(void *base, size_t len,
   size_t n = atomic_load_explicit(&g_slab_count, memory_order_relaxed);
   for (size_t i = 0; i < n; i++) {
     regpool_slab_t *s = &g_slabs[i];
-    if (atomic_load_explicit(&s->state, memory_order_relaxed) !=
-        REGPOOL_SLOT_FREE)
+    if (arts_regpool_entry_state(atomic_load_explicit(
+            &g_slab_word[i], memory_order_relaxed)) != REGPOOL_SLOT_FREE)
       continue;
     regpool_write_slot_locked(s, base, len, mr, rkey, node, interleaved,
                               align);
@@ -1058,8 +1019,8 @@ static regpool_slab_t *regpool_claim_retired_locked(size_t len, size_t align,
   regpool_slab_t *hit = NULL;
   for (size_t i = 0; i < n; i++) {
     regpool_slab_t *s = &g_slabs[i];
-    if (atomic_load_explicit(&s->state, memory_order_relaxed) !=
-        REGPOOL_SLOT_RETIRED)
+    if (arts_regpool_entry_state(atomic_load_explicit(
+            &g_slab_word[i], memory_order_relaxed)) != REGPOOL_SLOT_RETIRED)
       continue;
     if (s->mr.len != len || s->align < align)
       continue;
@@ -1067,9 +1028,15 @@ static regpool_slab_t *regpool_claim_retired_locked(size_t len, size_t align,
     if (s->mr.numa_node == node)
       break;
   }
-  if (hit != NULL)
-    atomic_store_explicit(&hit->state, REGPOOL_SLOT_LIVE,
-                          memory_order_release);
+  if (hit != NULL) {
+    size_t i = (size_t)(hit - g_slabs);
+    atomic_store_explicit(
+        &g_slab_word[i],
+        arts_regpool_entry_with_state(
+            atomic_load_explicit(&g_slab_word[i], memory_order_relaxed),
+            REGPOOL_SLOT_LIVE),
+        memory_order_release);
+  }
   return hit;
 }
 
@@ -1083,14 +1050,14 @@ static size_t regpool_evict_retired_locked(size_t need) {
   size_t n = atomic_load_explicit(&g_slab_count, memory_order_relaxed);
   for (size_t i = 0; i < n && freed < need; i++) {
     regpool_slab_t *s = &g_slabs[i];
-    if (atomic_load_explicit(&s->state, memory_order_relaxed) !=
-        REGPOOL_SLOT_RETIRED)
+    if (arts_regpool_entry_state(atomic_load_explicit(
+            &g_slab_word[i], memory_order_relaxed)) != REGPOOL_SLOT_RETIRED)
       continue;
     if (s->mr.mr != NULL)
       fi_close(&s->mr.mr->fid);
     munmap(s->mr.base, s->mr.len);
     freed += s->mr.len;
-    atomic_store_explicit(&s->state, REGPOOL_SLOT_FREE, memory_order_release);
+    atomic_store_explicit(&g_slab_word[i], 0, memory_order_release);
   }
   return freed;
 }
@@ -1110,13 +1077,13 @@ static size_t regpool_evict_retired(size_t need) {
   size_t n = atomic_load_explicit(&g_slab_count, memory_order_relaxed);
   for (size_t i = 0; i < n && freed < need; i++) {
     regpool_slab_t *s = &g_slabs[i];
-    if (atomic_load_explicit(&s->state, memory_order_relaxed) !=
-        REGPOOL_SLOT_RETIRED)
+    if (arts_regpool_entry_state(atomic_load_explicit(
+            &g_slab_word[i], memory_order_relaxed)) != REGPOOL_SLOT_RETIRED)
       continue;
     void *base = s->mr.base;
     size_t len = s->mr.len;
     struct fid_mr *mr = s->mr.mr;
-    atomic_store_explicit(&s->state, REGPOOL_SLOT_FREE, memory_order_release);
+    atomic_store_explicit(&g_slab_word[i], 0, memory_order_release);
     g_evicting++;
     pthread_mutex_unlock(&g_lock);
     if (mr != NULL)
@@ -1796,8 +1763,8 @@ static void *regpool_sweep_arenas(size_t size, size_t align, int owner,
     regpool_slab_t *s = &g_slabs[i];
     /* An arena entry is written once and never rewritten, so the state
      * check alone makes its fields safe to read. */
-    if (atomic_load_explicit(&s->state, memory_order_acquire) !=
-        REGPOOL_SLOT_LIVE)
+    if (arts_regpool_entry_state(atomic_load_explicit(
+            &g_slab_word[i], memory_order_acquire)) != REGPOOL_SLOT_LIVE)
       continue;
     if (s->is_direct)
       continue;
@@ -2278,8 +2245,8 @@ static void regpool_report_locked(FILE *out) {
     size_t mapped = 0;
     for (size_t i = 0; i < n; i++) {
       const regpool_slab_t *s = &g_slabs[i];
-      if (atomic_load_explicit(&s->state, memory_order_relaxed) !=
-          REGPOOL_SLOT_LIVE)
+      if (arts_regpool_entry_state(atomic_load_explicit(
+              &g_slab_word[i], memory_order_relaxed)) != REGPOOL_SLOT_LIVE)
         continue;
       if (s->is_direct || s->mr.numa_node != (int)node)
         continue;
@@ -2314,7 +2281,8 @@ static void regpool_report_locked(FILE *out) {
   unsigned direct_ileave_count = 0;
   for (size_t i = 0; i < n; i++) {
     const regpool_slab_t *s = &g_slabs[i];
-    uint8_t st = atomic_load_explicit(&s->state, memory_order_relaxed);
+    unsigned st = arts_regpool_entry_state(
+        atomic_load_explicit(&g_slab_word[i], memory_order_relaxed));
     if (st == REGPOOL_SLOT_FREE) {
       free_slots++;
       continue;
@@ -2444,8 +2412,8 @@ void arts_regpool_cleanup(void) {
     /* A free slot was already closed and unmapped by the eviction that
      * released it; its mr/base/len are stale and must not be touched
      * again.  A retired one is still mapped and registered. */
-    if (atomic_load_explicit(&s->state, memory_order_relaxed) ==
-        REGPOOL_SLOT_FREE)
+    if (arts_regpool_entry_state(atomic_load_explicit(
+            &g_slab_word[i], memory_order_relaxed)) == REGPOOL_SLOT_FREE)
       continue;
     if (s->mr.mr != NULL)
       fi_close(&s->mr.mr->fid);
@@ -2456,7 +2424,7 @@ void arts_regpool_cleanup(void) {
      * pool's lifetime is the process lifetime. */
     if (s->is_direct)
       munmap(s->mr.base, s->mr.len);
-    atomic_store_explicit(&s->state, REGPOOL_SLOT_FREE, memory_order_release);
+    atomic_store_explicit(&g_slab_word[i], 0, memory_order_release);
   }
   atomic_store_explicit(&g_slab_count, 0, memory_order_release);
   for (unsigned i = 0; i < REGPOOL_MAX_NODES; i++) {
@@ -2513,8 +2481,8 @@ void arts_regpool_unregister(void) {
     regpool_slab_t *s = &g_slabs[i];
     /* A retired mapping is still registered — only a free slot has nothing
      * left to close. */
-    if (atomic_load_explicit(&s->state, memory_order_relaxed) ==
-        REGPOOL_SLOT_FREE) {
+    if (arts_regpool_entry_state(atomic_load_explicit(
+            &g_slab_word[i], memory_order_relaxed)) == REGPOOL_SLOT_FREE) {
       continue;
     }
     if (s->mr.mr != NULL) {
@@ -2623,12 +2591,14 @@ void arts_regpool_free(void *p) {
    * may have retired it since the lookup, and only a live slot whose mapping
    * starts at p is this block. */
   pthread_mutex_lock(&g_lock);
-  bool mine = atomic_load_explicit(&s->state, memory_order_relaxed) ==
-                  REGPOOL_SLOT_LIVE &&
-              s->mr.base == p;
+  size_t i = (size_t)(s - g_slabs);
+  uint64_t w = atomic_load_explicit(&g_slab_word[i], memory_order_relaxed);
+  bool mine =
+      arts_regpool_entry_state(w) == REGPOOL_SLOT_LIVE && s->mr.base == p;
   if (mine) {
-    atomic_store_explicit(&s->state, REGPOOL_SLOT_RETIRED,
-                          memory_order_release);
+    atomic_store_explicit(
+        &g_slab_word[i], arts_regpool_entry_with_state(w, REGPOOL_SLOT_RETIRED),
+        memory_order_release);
   }
   pthread_mutex_unlock(&g_lock);
   if (!mine) {
@@ -2639,15 +2609,12 @@ void arts_regpool_free(void *p) {
 
 const arts_regpool_mr_t *arts_regpool_lookup(const void *p) {
   size_t n = atomic_load_explicit(&g_slab_count, memory_order_acquire);
-  const char *cp = (const char *)p;
   for (size_t i = 0; i < n; i++) {
-    const regpool_slab_t *s = &g_slabs[i];
-    const char *base;
-    size_t len;
-    if (!regpool_slot_live_range(s, &base, &len))
+    uint64_t w = atomic_load_explicit(&g_slab_word[i], memory_order_acquire);
+    if (arts_regpool_entry_state(w) != REGPOOL_SLOT_LIVE)
       continue;
-    if (cp >= base && cp < base + len)
-      return &s->mr;
+    if ((uintptr_t)p - arts_regpool_entry_base(w) < arts_regpool_entry_len(w))
+      return &g_slabs[i].mr;
   }
   return NULL;
 }

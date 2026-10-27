@@ -1288,6 +1288,18 @@ if(ARTS_MALLOC STREQUAL "mimalloc")
 endif()
 # The availability parser is allocator-independent (pure over a stream).
 register_pure_unit_test(regpool_node_avail TIMEOUT 30)
+# The table entry word a lock-free lookup reads: pack and unpack at its
+# limits, and the fatal refusal of a range it cannot name, one forked child
+# per refusal.  Header-only: no pool, no runtime.
+add_executable(regpool_entry_word unit/regpool_entry_word.c)
+target_include_directories(regpool_entry_word PRIVATE
+    ${ARTS_PUBLIC_INCLUDE_DIR} ${ARTS_INTERNAL_INCLUDE_DIR}
+    ${ARTS_BUILD_INTERNAL_INCLUDE_DIR})
+arts_apply_protocol(regpool_entry_word ${ARTS_COHERENCE_ARM} ${ARTS_WRITE_POLICY} ${ARTS_RELEASE_POLICY})
+target_link_libraries(regpool_entry_word PRIVATE Threads::Threads)
+register_pure_unit_test(regpool_entry_word TIMEOUT 30)
+set_tests_properties(regpool_entry_word PROPERTIES
+    PASS_REGULAR_EXPRESSION "PASS regpool_entry_word")
 
 # net_selfsend — whitebox self-send exercise for the libfabric transport core
 # (transport/net.c).  It #includes net.c directly (statics under test) with a
