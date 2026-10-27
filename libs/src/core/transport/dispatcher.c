@@ -394,8 +394,8 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
     struct arts_msg_cache_destroy_packet_s *pack =
         (struct arts_msg_cache_destroy_packet_s *)(packet);
     /* Cat-C lookup-acquire-or-drop: HIT retires this rank's cache (parked
-     * acquirers are freed with it, never resumed); MISS (already torn down on
-     * this rank) silently drops (idempotent). */
+     * acquirers are freed with it, never resumed); MISS (a reused GUID whose
+     * other lifetime's notice already retired it) silently drops. */
     struct arts_db_cache_destroy_args_s args = {.db_guid = pack->db_guid};
     arts_shared_ptr_t h = arts_route_table_lookup_db(pack->db_guid);
     struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(h);
@@ -645,9 +645,10 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
      * cache-independent pointer-identity sem-post (the heap rendezvous of a
      * grant return sent on its own); a torn-down cache must NOT drop that ACK
      * or the blocked returner hangs.  cv == 0 is flight completion, which needs
-     * the live releaser-side cache — the body tolerates a MISS (destroy while a
-     * publish is outstanding is an ordering violation by the program; the
-     * escaped waiters unblock through the shutdown path). */
+     * the live releaser-side cache — the body tolerates a MISS (a destroy while
+     * a publish is outstanding: an ordering violation by the program, or a
+     * destroy that a shutdown escape let follow the release; a waiter still
+     * blocked unblocks through the shutdown path). */
     struct arts_db_publish_ack_args_s args = {.cv = pack->cv,
                                               .version = pack->version,
                                               .credit_addr = pack->credit_addr,

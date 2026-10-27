@@ -506,20 +506,11 @@ void arts_handler_db_grant_invalidate(void *item_v, void *args_v) {
   arts_db_grant_ship_pending(cache);
 }
 
-/* ===== WB SNAPSHOT_REDIRECT handler (owner side) ======================== */
-
-/* Cat-C pure body (SNAPSHOT_REDIRECT, owner side).  The wire dispatcher / self-send
- * shortcut has already looked the owner-side db_s up with a held ref and passes
- * it as item_v (cache is its FIRST member, offset 0).  No lookup/NULL-check
- * here — the dispatcher's MISS branch (a destroy issued while the read was
- * pending, which the destroy contract excludes) sends CACHE_DESTROY to the
- * requester, retiring its cache: the parked RO waiter is freed with it, never
- * resumed. */
-
 /* ===== WB wire senders =================================================
  * The GRANT_RESPONSE wire sender, the owner→owner ship and the CONFIRM
- * sender are shared (coherence/grant.c); only the WB-only CONFIRM_ACK +
- * SNAPSHOT_REDIRECT senders are here. */
+ * sender are shared (coherence/grant.c); only the WB-only CONFIRM_ACK sender
+ * is here.  The versioned-snapshot redirect, handler and sender, is VAL's
+ * (coherence/val/wb.c). */
 
 void arts_send_db_grant_confirm_ack(
     unsigned int new_owner_rank, arts_guid_t db_guid,

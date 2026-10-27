@@ -243,14 +243,6 @@ void arts_db_publish_sync(struct arts_db_cache_s *cache, uint64_t version);
  * then drops the rest of its round records the waits it never began. */
 bool arts_db_await_ack(sem_t *cv);
 
-/* Wake every waiter parked on the cache's publish flight (destroy paths and
- * teardown: the cache-keyed ACK completion cannot reach a withdrawn slot's
- * stack, and a parked waiter's pin keeps the descriptor alive, so no
- * destructor can do it).  Publishing arms only. */
-#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
-void arts_db_pub_flight_abandon(struct arts_db_cache_s *cache);
-#endif
-
 /* Debug-only one-shot teardown-time invariant check over every live DB (see
  * the definition): once all runtime threads have joined, prints
  * QUIESCENCE-DEBUG markers for states the protocol can never leave behind
@@ -471,6 +463,8 @@ void arts_db_grant_rearm(struct arts_db_cache_s *cache);
 int arts_db_cover_request(struct arts_db_s *db, unsigned int requester,
                           bool write, uint32_t cover, bool *teardown);
 void arts_db_cover_destroy(struct arts_db_s *db);
+/* Whether the block's destroy has marked the home's gate (an acquire load). */
+bool arts_db_cover_marked(struct arts_db_s *db);
 void arts_db_home_destroy_now(struct arts_db_s *db);
 void arts_db_cover_home_init(struct arts_db_s *db, unsigned int nranks);
 void arts_db_cover_home_teardown(struct arts_db_s *db);
@@ -621,8 +615,6 @@ void arts_pending_rw_chain_wake(arts_lf_link_t *chain,
  *         publish had stamped the home.  Two CAS sites on one word, each
  *         naming what it discharges: exactly one hand-back, never none,
  *         never two.
- * abandoned: the flight owner's discharge when no further leg will leave —
- *         whatever is armed converts to the standalone message.
  * arrived: the home side of a hand-back, however it travelled.  `reply` is
  *         what the returner waits on — the standalone form's rendezvous, or
  *         the carried form's publish acknowledgement — and is sent by
@@ -632,7 +624,6 @@ uint64_t arts_db_grant_release_claim(struct arts_db_cache_s *cache,
 bool arts_db_grant_return_claim_leg(struct arts_db_cache_s *cache);
 void arts_db_grant_release_settle(struct arts_db_cache_s *cache,
                                   uint64_t token);
-void arts_db_grant_return_flight_abandoned(struct arts_db_cache_s *cache);
 struct arts_db_grant_return_reply_s {
   uint64_t cv;      /* echoed verbatim */
   uint64_t version; /* the covering version of a carried publish, else 0 */

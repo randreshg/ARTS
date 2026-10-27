@@ -290,11 +290,6 @@ counters:
     unit: count
     help: 'Credit-less announce legs (credit teachers not covering)'
 
-  NUM_PUB_FLIGHT_ABANDON:
-    group: 'Publish flight'
-    unit: count
-    help: 'Parked publish waiters woken by destroy/teardown, not an ACK'
-
   NUM_GRANT_BATON_RECLAIM:
     group: 'Write grant'
     unit: count

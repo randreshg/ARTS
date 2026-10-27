@@ -577,19 +577,6 @@ void arts_db_grant_release_settle(struct arts_db_cache_s *cache,
   send_grant_return(cache);
 }
 
-void arts_db_grant_return_flight_abandoned(struct arts_db_cache_s *cache) {
-  uint64_t armed =
-      atomic_load_explicit(&cache->pending_grant_return, memory_order_acquire);
-  /* Discharged, not sent: the directory died with the block or the run is
-   * ending, and a return with no home to accept it would park on an empty
-   * slot. */
-  if ((armed & 1u) != 0u) {
-    (void)atomic_compare_exchange_strong_explicit(
-        &cache->pending_grant_return, &armed, 0u, memory_order_acq_rel,
-        memory_order_relaxed);
-  }
-}
-
 /* Wake a drained waiter WITHOUT adding a hold for it: its hold was installed
  * before the walk began, together with everyone else's. */
 static void commit_wake_cb(arts_guid_t edt_guid, unsigned int slot,

@@ -176,13 +176,11 @@ extern "C" {
    * open flight (the write-combining win); TRAILING = relaunches for        \
    * waiters the ACK left uncovered; CTS_FALLBACK = credit-less announce     \
    * legs (steady nonzero = the credit teachers are not covering a           \
-   * workload); ABANDON = parked publish waiters an abandon woke instead of  \
-   * an ACK. */                                                              \
+   * workload). */                                                           \
   X(NUM_PUB_FLIGHT)                                                            \
   X(NUM_PUB_FLIGHT_JOIN)                                                       \
   X(NUM_PUB_FLIGHT_TRAILING)                                                   \
   X(NUM_PUB_CTS_FALLBACK)                                                      \
-  X(NUM_PUB_FLIGHT_ABANDON)                                                    \
   /* Num: grant plane rare paths.  BATON_RECLAIM = a releasing claimant      \
    * found the queue non-empty on its post-release re-check and re-claimed   \
    * (the lost-wake window the re-check loop exists to close); HOME_DATALESS \

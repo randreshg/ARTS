@@ -540,9 +540,6 @@ healthy path.
    * - ``NUM_PUB_CTS_FALLBACK``
      - Credit-less announce legs (steady nonzero = the credit teachers are
        not covering a workload).
-   * - ``NUM_PUB_FLIGHT_ABANDON``
-     - Parked publish waiters an abandon woke instead of an ACK (the
-       destroy or teardown of a block whose flight was open).
 
 Grant Plane Rare Paths
 ~~~~~~~~~~~~~~~~~~~~~~

@@ -165,10 +165,6 @@ void arts_db_grant_release_settle(struct arts_db_cache_s *cache,
   (void)token;
 }
 
-void arts_db_grant_return_flight_abandoned(struct arts_db_cache_s *cache) {
-  (void)cache;
-}
-
 /* The shared publish paths ask the home to accept a hand-back that rode a
  * release.  No release here carries one, so the flag they unwrap is never
  * set and this is the arm's answer to a question it never gets asked. */

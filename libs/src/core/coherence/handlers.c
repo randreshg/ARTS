@@ -18,7 +18,7 @@
  *     GRANT_CONFIRM / GRANT_CONFIRM_ACK): the wire dispatcher (and the
  *     matching self-send shortcut) does the ref-pinned lookup-acquire; on a
  *     HIT it calls the pure (item, args) body, and on a MISS it applies that
- *     handler's exact miss-action (silent drop, CACHE_DESTROY reply, or the
+ *     handler's exact miss-action (silent drop, a dismiss reply, or the
  *     PUBLISH_ACK sem-post — see each body).
  * Either way an (item, args) body operates on the already-acquired,
  * ref-pinned cache (the FIRST member of the db_s the caller hands it) and
@@ -475,31 +475,23 @@ void arts_handler_db_snapshot_response(void *item_v, void *args_v) {
 
 /* Cat-C pure body (CACHE_DESTROY).  The wire dispatcher / self-send shortcut
  * has already looked the cache up with a held ref and passes the db_s as item_v
- * (cache is its FIRST member, offset 0).  No lookup/NULL-check here — the
- * dispatcher's MISS branch SILENTLY DROPS (already torn down on this rank;
- * cb-NULL = idempotent, a second CACHE_DESTROY is a no-op).
+ * (cache is its FIRST member, offset 0).  No lookup/NULL-check here.  A block
+ * is destroyed once and its home tells each rank on its roster once; every
+ * such rank installed its cache before the request that put it there, and
+ * nothing else retires it, so the lookup misses only when a GUID is reused:
+ * another lifetime's notice already retired this rank's cache.  The
+ * dispatcher drops that notice.
  *
  * Destroy is just the route-slot detach of the object the message was
  * dispatched on (CAS value→NULL + drop the install ref); the cb deleter
  * (arts_db_cache_destructor) runs at refcount 0 and does the cleanup (free
  * the parked-waiter nodes).  A parked EDT is an acquire the destroy contract
- * excludes (a destroy follows the release of every hold), so no wake is
- * attempted. */
+ * excludes, and so is a release still waiting for its publish (a destroy
+ * follows the release of every hold), so no wake is attempted. */
 void arts_handler_db_cache_destroy(void *item_v, void *args_v) {
   struct arts_db_cache_destroy_args_s *a =
       (struct arts_db_cache_destroy_args_s *)args_v;
   (void)arts_ooo_retire_item(a->db_guid, item_v);
-#if (defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)) &&             \
-    (!defined(ARTS_WRITE_POLICY_WB) || defined(ARTS_PROTOCOL_INV))
-  /* AFTER the slot withdrawal, so a releaser registering concurrently either
-   * lands in this drain or sees the NULL slot on its own recheck.  The
-   * dispatcher's held ref keeps the cache alive across the drain. */
-  if (item_v != NULL) {
-    arts_db_pub_flight_abandon(&((struct arts_db_s *)item_v)->cache);
-  }
-#else
-  (void)item_v;
-#endif
 }
 
 /* The WB SNAPSHOT_REDIRECT handler arts_handler_db_snapshot_redirect lives in

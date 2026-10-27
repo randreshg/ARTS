@@ -351,8 +351,6 @@ void arts_db_home_destroy_now(struct arts_db_s *db) {
     }
   }
   (void)arts_ooo_retire_item(guid, db);
-  /* After the slot withdrawal — see arts_db_pub_flight_abandon. */
-  arts_db_pub_flight_abandon(cache);
 }
 
 /* ===== the invalidation round ===========================================

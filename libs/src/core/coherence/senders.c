@@ -145,13 +145,17 @@ void arts_send_db_publish_ack(unsigned int releaser_rank, arts_guid_t db_guid,
    * pairing on arrival — so an unused credit is only a burned counter value.
    * A self-rank releaser never PUTs to itself: no credit.  A home with no
    * buffer yet simply teaches no credit, and the releaser's next flight
-   * takes the announce leg — this path never has to materialize one. */
+   * takes the announce leg — this path never has to materialize one.  Nor
+   * does a home its destroy has marked, as the create's credit is refused
+   * once the block is gone: its stable buffer goes back to the pool when the
+   * last reference drops, and the releaser's next flight would land in it. */
   uint64_t home_size =
       home_cache != NULL
           ? atomic_load_explicit(&home_cache->db_size, memory_order_relaxed)
           : 0u;
   if (home_size > 0 && releaser_rank != arts_global_rank_id &&
-      arts_global_rank_count > 1) {
+      arts_global_rank_count > 1 &&
+      !arts_db_cover_marked(arts_db_of_cache(home_cache))) {
     arts_shared_ptr_t mh = arts_db_buf_acquire(home_cache);
     struct arts_db_buffer_s *master =
         (struct arts_db_buffer_s *)arts_shared_get(mh);
