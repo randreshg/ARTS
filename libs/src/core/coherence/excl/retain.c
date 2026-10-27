@@ -182,13 +182,14 @@ void arts_db_create_install_home_buffer(struct arts_db_cache_s *cache,
  * caller's CAS observed (cache_owner_parked_rw / cache_owner_parked_ro of its
  * pre-image).  That CAS is the one that starts serving the axis, so every
  * later arrival serves itself and never pushes: the counted population is the
- * whole stack, and the caller is its sole drainer.  A counted waiter whose
- * push has not landed yet — the instruction window between its acquire CAS
- * and its push — is awaited by re-draining.  Serving = claim the slot's
- * acquire record with the installed buffer + position-idempotent cursor
- * advance (which is what fires the next serialized dep) + account (may hand
- * the payload to depv and schedule the EDT when acquire_remaining reaches 0).
- * It does NOT touch the count, which the waiter's acquire CAS carried. */
+ * whole stack, and the caller is its sole drainer.  A counted waiter may not
+ * have pushed yet: between the CAS that counted it and its push it only
+ * allocates and fills its small node (no lock, no wait), and the drain waits
+ * for that by re-draining.  Serving = claim the slot's acquire record with the
+ * installed buffer + position-idempotent cursor advance (which is what fires
+ * the next serialized dep) + account (may hand the payload to depv and
+ * schedule the EDT when acquire_remaining reaches 0).  It does NOT touch the
+ * count, which the waiter's acquire CAS carried. */
 static void lock_drain_pending(arts_lf_stack_t *q, uint32_t expected) {
   uint32_t served = 0;
   while (served < expected) {
@@ -896,7 +897,8 @@ void arts_send_db_excl_roret(unsigned int home_rank, arts_guid_t db_guid) {
  * load-bearing).  The action decides where this acquire is served:
  *   SELF_SERVE  a write grant, a read grant or the resident copy serves the
  *               dep directly.  It never touches the pend stacks, which keeps
- *               the parked population equal to what a later grant's CAS reads.
+ *               the parked population equal to what a later grant's CAS
+ *               reads, and allocates no node.
  *   SEND_*      this acquire opened the request: park the waiter FIRST, then
  *               send — by the time any answer to the request can exist, the
  *               opener's node is already drainable.
@@ -914,6 +916,8 @@ void arts_handler_db_acquire(void *item, void *args) {
   arts_db_access_mode_t mode = depv[slot].mode;
 
   int op = (mode == DB_MODE_RW) ? CACHE_OP_ACQ_RW : CACHE_OP_ACQ_RO;
+  arts_lf_stack_t *q =
+      (mode == DB_MODE_RW) ? &cache->rw_pending : &cache->ro_pending;
   uint32_t act;
   uint64_t cur, next;
   do {
@@ -945,13 +949,19 @@ void arts_handler_db_acquire(void *item, void *args) {
   }
 
   /* SEND_* / PARK: park the waiter.  Push BEFORE any send so the node is
-   * drainable before an answer to the request can arrive. */
+   * drainable before an answer to the request can arrive.  This waiter is
+   * counted already, so a drainer may be waiting for the push: only the
+   * node's small allocation and fill lie before it.  From the push on the
+   * node is the drainer's, which may already have served the slot: neither
+   * the node nor the slot is touched again here. */
+  assert(act == CACHE_ACT_PARK || act == CACHE_ACT_SEND_RW ||
+         act == CACHE_ACT_SEND_RO);
   struct arts_db_excl_waiter_s *w =
       (struct arts_db_excl_waiter_s *)arts_malloc(sizeof(*w));
   w->edt_guid = edt->guid;
   w->slot = slot;
-  arts_lf_stack_push(
-      (mode == DB_MODE_RW) ? &cache->rw_pending : &cache->ro_pending, &w->link);
+  arts_sched_fuzz_point();
+  arts_lf_stack_push(q, &w->link);
 
   if (act == CACHE_ACT_SEND_RW) {
     arts_send_db_excl_request(cache, DB_MODE_RW, excl_rw_cover(cur));

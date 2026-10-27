@@ -943,17 +943,19 @@ void arts_handler_db_excl_cts(void *item_v, void *args_v) {
   }
 }
 
-/* Serve exactly `expected` waiters from `q` — the parked population the
- * caller's GRANT CAS observed in the counts, which is exact: counts return to
- * zero at every 0-edge, arrivals under a held grant self-serve (never push),
- * so everything counted at the grant is parked (or about to be).  The grant
- * committer is the SOLE drainer; each whole-stack atomic-exchange batch is
- * consumed once (exactly-once serve).  A counted waiter whose push has not
- * landed yet — the instruction window between its acquire CAS and its push —
- * is awaited by re-draining, the same bounded-window retry discipline as the
- * home queue's mid-push pop.  Serving = resolve + cursor-advance + account, in
- * that order; it does NOT touch the count (the count was carried by the
- * waiter's acquire CAS — "counted ⟹ will park"). */
+/* Serve exactly `expected` waiters from `q` — the parked population observed
+ * in the counts by the caller's CAS, the one that starts serving the axis (a
+ * grant's commit or a create's hold), which is exact: counts return to zero
+ * at every 0-edge, arrivals under a held grant self-serve (never push), so
+ * everything counted at that CAS is parked (or about to be).  Its committer
+ * is the SOLE drainer; each whole-stack atomic-exchange batch is consumed
+ * once (exactly-once serve).  A counted waiter may not have pushed yet:
+ * between the CAS that counted it and its push it only allocates and fills
+ * its small node (no lock, no wait), and the drain waits for that by
+ * re-draining.
+ * Serving = resolve + cursor-advance + account, in that order; it does NOT
+ * touch the count (the count was carried by the waiter's acquire CAS —
+ * "counted ⟹ will park"). */
 static void lock_drain_pending(arts_lf_stack_t *q, uint32_t expected) {
   uint32_t served = 0;
   while (served < expected) {
@@ -1190,13 +1192,15 @@ static void cxl_purge_body(struct arts_db_cache_s *cache,
  * The action decides where this acquire is served:
  *   SELF_SERVE  a covering grant is held — serve the dep directly.  It never
  *               touches the pend stacks, which keeps the parked population
- *               equal to the counts a later grant CAS reads.
+ *               equal to the counts a later grant CAS reads, and allocates no
+ *               node.
  *   SEND_*      this acquire opened the round's request: park the waiter
  *               FIRST, then send — by the time any grant for the request can
  *               exist, the opener's node is already drainable.
- *   PARK        covered by the in-flight request: park.  The grant committer
- *               serves exactly the population counted at its grant CAS, so a
- *               node whose push trails the grant is awaited, never lost. */
+ *   PARK        covered by the in-flight request: park.  The transition that
+ *               serves it (a grant's commit or a create's hold) serves exactly
+ *               the population its CAS counted, so a node whose push trails
+ *               that CAS is awaited, never lost. */
 void arts_handler_db_acquire(void *item, void *args) {
   struct arts_db_s *db = (struct arts_db_s *)item;
   struct arts_ooo_args_db_acquire_s *a =
@@ -1225,6 +1229,8 @@ void arts_handler_db_acquire(void *item, void *args) {
 #endif /* ARTS_USE_CXL */
 
   int op = (mode == DB_MODE_RW) ? CACHE_OP_ACQ_RW : CACHE_OP_ACQ_RO;
+  arts_lf_stack_t *q =
+      (mode == DB_MODE_RW) ? &cache->rw_pending : &cache->ro_pending;
   uint32_t act;
   uint64_t cur, next;
   do {
@@ -1250,13 +1256,19 @@ void arts_handler_db_acquire(void *item, void *args) {
   }
 
   /* SEND_* / PARK: park the waiter.  Push BEFORE any send so the node is
-   * drainable before a grant for this round can arrive. */
+   * drainable before a grant for this round can arrive.  This waiter is
+   * counted already, so a drainer may be waiting for the push: only the
+   * node's small allocation and fill lie before it.  From the push on the
+   * node is the drainer's, which may already have served the slot: neither
+   * the node nor the slot is touched again here. */
+  assert(act == CACHE_ACT_PARK || act == CACHE_ACT_SEND_RW ||
+         act == CACHE_ACT_SEND_RO);
   struct arts_db_excl_waiter_s *w =
       (struct arts_db_excl_waiter_s *)arts_malloc(sizeof(*w));
   w->edt_guid = edt->guid;
   w->slot = slot;
-  arts_lf_stack_push(
-      (mode == DB_MODE_RW) ? &cache->rw_pending : &cache->ro_pending, &w->link);
+  arts_sched_fuzz_point();
+  arts_lf_stack_push(q, &w->link);
 
   if (act == CACHE_ACT_SEND_RW) {
     arts_send_db_excl_request(cache, DB_MODE_RW, excl_rw_cover(cur));
@@ -1277,7 +1289,8 @@ void arts_handler_db_acquire(void *item, void *args) {
  *   (4) Run the action after the CAS commits (mirrors the home grant path:
  *       compute decides, the pop/drain/send runs after).
  *
- * The grant committer is the SOLE drainer of the pend stacks: the counts its
+ * The grant committer is the SOLE drainer of its round's pend stacks (a
+ * create's hold drains only a round that no grant serves): the counts its
  * CAS observed are exactly the parked population (arrivals under the held
  * grant self-serve and never park), and lock_drain_pending consumes exactly
  * that many nodes — serving is exactly-once with no other drain path that
