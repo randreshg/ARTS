@@ -8,7 +8,7 @@
  *
  * Coverage:
  *   1. txid allocation: never 0 (0 is the "no landing advertised" sentinel),
- *      rank bits in the top 16.
+ *      and no rank bits: it fits a 4-byte immediate.
  *   2. landing advertisement: arts_net_rdzv_local resolves a regpool pointer
  *      to the {raddr, rkey} the provider's negotiated mr_mode requires.
  *   3. order A (data before expect): PUT 8 MiB, wait for the remote-write

@@ -1969,6 +1969,18 @@ set_tests_properties(db_destroy_roster_4n_4w_1p PROPERTIES
     PASS_REGULAR_EXPRESSION "PASS: db_destroy_roster"
     FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
 
+# db_destroy_reaches_cachers: every rank that held a block's descriptor, the
+# write right, a read copy or nothing, has it retired by the block's destroy;
+# each rank polls its own route table for the blocks it held, so a missed
+# destroy shows whatever the descriptor kept, with no label reused.
+add_arts_test(db_destroy_reaches_cachers)
+register_multinode_test(db_destroy_reaches_cachers TIMEOUT 90)
+foreach(_v IN LISTS ARTS_TEST_MULTINODE_VARIANTS)
+    set_tests_properties(db_destroy_reaches_cachers_${_v} PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS: db_destroy_reaches_cachers 8 rounds x 24 blocks"
+        FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
+endforeach()
+
 # db_destroy_untouched_rank: a block homed on the first rank is destroyed by a
 # task on the last rank that never acquired it, and the home then creates the
 # label again; a destroy that never left the last rank would leave the second
