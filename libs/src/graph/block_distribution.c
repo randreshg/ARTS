@@ -40,44 +40,46 @@
 
 #include <assert.h>
 #include <inttypes.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "arts.h"
+#include "arts/gas/guid.h"
 #include "arts/system/print.h"
-#include "arts/utils/malloc.h"
 
-void arts_block_dist_internal_init(arts_block_dist_t *dist, arts_graph_sz_t n,
-                                   arts_graph_sz_t m, unsigned int num_blocks) {
-  dist->num_vertices = n;
-  dist->num_edges = m;
-  dist->num_blocks = num_blocks;
-  dist->block_sz = (num_blocks > 0) ? ((n + num_blocks - 1) / num_blocks) : 0;
-}
-
-arts_block_dist_t *arts_block_dist_init(arts_graph_sz_t n, arts_graph_sz_t m,
-                                        unsigned int num_blocks,
-                                        arts_guid_kind_t db_type) {
-  arts_block_dist_t *dist = (arts_block_dist_t *)arts_malloc(
-      sizeof(arts_block_dist_t) + (sizeof(arts_guid_t) * num_blocks));
-  unsigned int blocks_per_node = num_blocks / arts_get_total_ranks();
-  unsigned int mod = num_blocks % arts_get_total_ranks();
-  unsigned int current = 0;
-  for (unsigned int i = 0; i < arts_get_total_ranks(); i++) {
-    for (unsigned int j = 0; j < blocks_per_node; j++) {
-      dist->graphGuid[current++] = arts_guid_reserve(db_type, i);
-    }
-    if (mod) {
-      dist->graphGuid[current++] = arts_guid_reserve(db_type, i);
-      mod--;
-    }
+arts_block_dist_t arts_block_dist_create(arts_graph_sz_t n, arts_graph_sz_t m,
+                                         unsigned int num_blocks,
+                                         arts_guid_kind_t kind) {
+  if (kind <= ARTS_GUID_RESERVED || kind >= ARTS_GUID_LAST) {
+    ARTS_ERROR("arts_block_dist_create: %u is not a GUID kind",
+               (unsigned int)kind);
   }
-
-  arts_block_dist_internal_init(dist, n, m, num_blocks);
+  unsigned int nrank = arts_get_total_ranks();
+  /* Partition p is member k(p) * nrank + h(p) of one round-robin range, so
+   * the range holds ceil(num_blocks / nrank) members per home. */
+  uint64_t per_home = num_blocks / nrank + (num_blocks % nrank != 0);
+  uint64_t size = per_home * nrank;
+  if (size > UINT_MAX) {
+    ARTS_ERROR("a distribution of %u blocks over %u ranks needs %lu names; "
+               "one range holds at most %u",
+               num_blocks, nrank, (unsigned long)size, UINT_MAX);
+  }
+  arts_block_dist_t dist;
+  dist.num_vertices = n;
+  dist.num_edges = m;
+  dist.num_blocks = num_blocks;
+  dist.block_sz =
+      (num_blocks > 0) ? (n / num_blocks + (n % num_blocks != 0)) : 0;
+  dist.range = (num_blocks > 0)
+                   ? arts_guid_reserve_range(kind, (unsigned int)size,
+                                             ARTS_HINT_ROUND_ROBIN)
+                   : NULL_GUID;
   return dist;
 }
 
-arts_block_dist_t *arts_block_dist_init_from_args(int argc, char **argv) {
+int arts_block_dist_init_from_args(arts_block_dist_t *out, int argc,
+                                   const char *const *argv) {
   uint64_t n = 0;
   uint64_t m = 0;
   for (int i = 0; i < argc; ++i) {
@@ -93,20 +95,39 @@ arts_block_dist_t *arts_block_dist_init_from_args(int argc, char **argv) {
   }
 
   if (n && m) {
-    unsigned int num_blocks = arts_get_total_ranks();
-    arts_block_dist_t *dist = (arts_block_dist_t *)arts_malloc(
-        sizeof(arts_block_dist_t) + (sizeof(arts_guid_t) * num_blocks));
-    for (unsigned int i = 0; i < num_blocks; i++) {
-      dist->graphGuid[i] = arts_guid_reserve(ARTS_GUID_DB, i);
-    }
-    arts_block_dist_internal_init(dist, n, m, num_blocks);
-    return dist;
+    *out = arts_block_dist_create(n, m, arts_get_total_ranks(), ARTS_GUID_DB);
+    return 0;
   }
   ARTS_INFO("Must set --num-vertices and --num-edges");
-  return NULL;
+  return -1;
 }
 
-void arts_block_dist_free(arts_block_dist_t *dist) { arts_free(dist); }
+void arts_block_dist_to_params(const arts_block_dist_t *dist,
+                               uint64_t *paramv) {
+  paramv[0] = dist->num_vertices;
+  paramv[1] = dist->num_edges;
+  paramv[2] = dist->block_sz;
+  paramv[3] = dist->num_blocks;
+  paramv[4] = dist->range;
+}
+
+arts_block_dist_t arts_block_dist_from_params(const uint64_t *paramv) {
+  arts_block_dist_t dist;
+  dist.num_vertices = paramv[0];
+  dist.num_edges = paramv[1];
+  dist.block_sz = paramv[2];
+  dist.num_blocks = (unsigned int)paramv[3];
+  dist.range = (arts_guid_t)paramv[4];
+  if (paramv[3] > UINT_MAX ||
+      (dist.num_blocks == 0) != (dist.range == NULL_GUID) ||
+      (dist.num_blocks > 0 &&
+       ARTS_GUID_GET_RANK(dist.range) != ARTS_DISTRIBUTED_RANK)) {
+    ARTS_ERROR("arts_block_dist_from_params: the words are not a "
+               "distribution (%lu blocks, range %lu)",
+               (unsigned long)paramv[3], (unsigned long)dist.range);
+  }
+  return dist;
+}
 
 arts_graph_sz_t
 arts_block_dist_block_size(unsigned int index,
@@ -164,13 +185,34 @@ arts_block_dist_get_local_index(arts_vertex_t v,
 arts_guid_t
 arts_block_dist_guid_for_vertex(arts_vertex_t v,
                                 const arts_block_dist_t *const dist) {
-  unsigned int owner = arts_block_dist_get_owner(v, dist);
-  assert(owner < dist->num_blocks);
-  return dist->graphGuid[owner];
+  return arts_block_dist_guid_for_partition(dist,
+                                            arts_block_dist_get_owner(v, dist));
 }
 
 arts_guid_t
 arts_block_dist_guid_for_partition(const arts_block_dist_t *const dist,
                                    arts_partition_t index) {
-  return dist->graphGuid[index];
+  /* A past-end index would derive a member the range does not hold, which
+   * can alias a later mint of the reserving rank. */
+  if (index >= dist->num_blocks) {
+    ARTS_ERROR("arts_block_dist_guid_for_partition: partition %u of a "
+               "distribution of %u",
+               index, dist->num_blocks);
+  }
+  /* Rank h holds num_blocks / nrank consecutive partitions, plus one for the
+   * first num_blocks % nrank ranks; its k-th is member k * nrank + h. */
+  unsigned int nrank = arts_get_total_ranks();
+  unsigned int per = dist->num_blocks / nrank;
+  unsigned int mod = dist->num_blocks % nrank;
+  unsigned int split = mod * (per + 1);
+  unsigned int home;
+  unsigned int ordinal;
+  if (index < split) {
+    home = index / (per + 1);
+    ordinal = index % (per + 1);
+  } else {
+    home = mod + (index - split) / per;
+    ordinal = (index - split) % per;
+  }
+  return arts_guid_from_index(dist->range, (ordinal * nrank) + home);
 }

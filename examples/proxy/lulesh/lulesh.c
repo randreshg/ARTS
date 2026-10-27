@@ -52,9 +52,10 @@
  *
  * All synchronization via explicit LATCH(N)+DECR-only events
  * (distributed-safe).
- * g_init's GUIDs and g_iter are rank-0 state shared by launch_iteration and
- * reduce_dt_edt, ordered by the iteration chain.  Every other EDT body
- * accesses data exclusively through depv[].
+ * g_init and g_iter are rank-0 state: main_edt fills g_init before it creates
+ * any EDT, and launch_iteration and reduce_dt_edt share both, ordered by the
+ * iteration chain.  Every other EDT body accesses data exclusively through
+ * its parameters and depv[].
  */
 
 #include "arts.h"
@@ -1058,7 +1059,8 @@ static void launch_iteration(int iter, double dt, double elapsed);
 /*  init_tile_edt                                                            */
 /*  paramv: [tid, N, T, tpd, max_iter,                                      */
 /*           const_guid, posvel_guid, estate_guid, grad_guid,                */
-/*           force_guid, dt_result_guid, init_done_guid]                     */
+/*           force_guid, dt_result_guid, init_done_guid,                     */
+/*           num_face_nbrs, num_all_nbrs, face_nbr_dir[0..5]]                */
 /*  depv: none (depc=0)                                                      */
 /* ========================================================================= */
 
@@ -1119,10 +1121,10 @@ void init_tile_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   ch->global_edge_elems = N;
   ch->tiles_per_dim = tpd;
   ch->max_iterations = max_iter;
-  ch->num_face_nbrs = g_init.num_face_nbrs[tid];
-  ch->num_all_nbrs = g_init.num_all_nbrs[tid];
+  ch->num_face_nbrs = (int)paramv[12];
+  ch->num_all_nbrs = (int)paramv[13];
   for (int i = 0; i < 6; i++)
-    ch->face_nbr_dir[i] = g_init.face_nbr_dir[tid][i];
+    ch->face_nbr_dir[i] = (int)paramv[14 + i];
   ch->hgcoef = 3.0;
   ch->ss4o3 = 4.0 / 3.0;
   ch->qstop = 1.e12;
@@ -2117,10 +2119,10 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_add_dependence(g_init.const_guids[0], post_init, 1, DB_MODE_RO);
   arts_add_dependence(g_init.elem_state_guids[0], post_init, 2, DB_MODE_RO);
 
-  /* Create init_tile_edts with GUIDs in paramv */
+  /* Create init_tile_edts with their tile's GUIDs and neighbours in paramv */
   for (int t = 0; t < nt; t++) {
     unsigned o = g_init.tile_owner[t];
-    uint64_t p[12] = {(uint64_t)t,
+    uint64_t p[20] = {(uint64_t)t,
                       (uint64_t)N,
                       (uint64_t)T,
                       (uint64_t)tpd,
@@ -2131,36 +2133,13 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                       (uint64_t)g_init.grad_guids[t],
                       (uint64_t)g_init.force_guids[t],
                       (uint64_t)g_init.dt_result_guids[t],
-                      (uint64_t)init_done};
-    arts_edt_create(init_tile_edt, 12, p, 0, &(arts_edt_hint_t){.rank = o});
+                      (uint64_t)init_done,
+                      (uint64_t)g_init.num_face_nbrs[t],
+                      (uint64_t)g_init.num_all_nbrs[t]};
+    for (int i = 0; i < 6; i++)
+      p[14 + i] = (uint64_t)g_init.face_nbr_dir[t][i];
+    arts_edt_create(init_tile_edt, 20, p, 0, &(arts_edt_hint_t){.rank = o});
   }
-}
-
-/* Called on EVERY node before main_edt -- ensures g_init is available
- * everywhere */
-void init_per_node(unsigned int node_id, int argc, char **argv) {
-  (void)node_id;
-  int N = 30, T = 0;
-  for (int i = 1; i < argc; i++) {
-    if (!strcmp(argv[i], "-s") && i + 1 < argc)
-      N = atoi(argv[++i]);
-    else if (!strcmp(argv[i], "-t") && i + 1 < argc)
-      T = atoi(argv[++i]);
-  }
-  unsigned nn = arts_get_total_ranks();
-  if (N <= 0)
-    return;
-  if (T <= 0)
-    T = compute_tile_elems(N, (int)nn);
-  if (N % T)
-    {
-      arts_printf("N is not divisible by T. Exiting...\n");
-      return;
-    }
-  int tpd = N / T;
-  if (tpd > MAX_TILES || tpd * tpd * tpd > MAX_TILES)
-    return;
-  build_topo(N, T, (int)nn);
 }
 
 int main(int argc, char *argv[]) { return arts_rt(argc, argv); }

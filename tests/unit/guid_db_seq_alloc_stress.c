@@ -57,6 +57,7 @@ struct interval_s {
 };
 
 struct minter_out_s {
+  unsigned int thread_id; /* the minter's runtime thread id */
   uint64_t *seqs[NRANK];
   unsigned count[NRANK];
 };
@@ -68,6 +69,7 @@ struct reserver_out_s {
 
 static void *minter(void *arg) {
   struct minter_out_s *out = (struct minter_out_s *)arg;
+  arts_thread_info.thread_id = out->thread_id;
   for (unsigned r = 0; r < NRANK; r++) {
     out->seqs[r] =
         (uint64_t *)malloc(sizeof(uint64_t) * (MINTS_PER_THREAD / NRANK + 1));
@@ -78,10 +80,6 @@ static void *minter(void *arg) {
     arts_guid_t g = arts_guid_create_for_rank(r, ARTS_GUID_DB);
     out->seqs[r][out->count[r]++] = ARTS_GUID_DB_GET_SEQ(ARTS_GUID_GET_KEY(g));
   }
-  /* The whitebox harness has no cursor registry (guid.c's runtime cleanup
-   * hook), so each thread frees its own lazily-allocated cursor array. */
-  free(t_db_cursor);
-  t_db_cursor = NULL;
   return NULL;
 }
 
@@ -104,7 +102,7 @@ static void *reserver(void *arg) {
     }
     for (unsigned i = 0; i < RR_SIZE; i++) {
       arts_guid_t m = arts_guid_from_index(dist, i);
-      if (arts_guid_index_from(dist, m) != (int)i) {
+      if (arts_guid_index_from(dist, m) != (int64_t)i) {
         out->fail = 1;
       }
     }
@@ -134,21 +132,19 @@ static int cmp_iv(const void *a, const void *b) {
   } while (0)
 
 int main(void) {
-  arts_thread_info.thread_id = 0;
-  arts_node_info.total_thread_count = 1;
-  arts_db_seq_budget =
-      ((ARTS_GUID_DB_SEQ_MASK + 1) - ARTS_GUID_STARTUP_RESERVE) / NRANK;
-  db_seq_creator_base = arts_db_seq_budget * arts_global_rank_id;
-  db_seq_next = (_Atomic(uint64_t) *)malloc(sizeof(*db_seq_next) * NRANK);
-  for (unsigned r = 0; r < NRANK; r++) {
-    atomic_init(&db_seq_next[r], db_seq_creator_base + 1);
-  }
-  global_guid_on = 0;
+  /* Node init as the runtime runs it, with one runtime thread per minter:
+   * each minter's chunk cursor is then the registry's to free.  The
+   * reservers claim straight from the shared counters and hold no cursor. */
+  arts_global_rank_id = 0;
+  arts_global_rank_count = NRANK;
+  arts_node_info.total_thread_count = MINTERS;
+  arts_guid_node_geometry_init();
 
   pthread_t mt[MINTERS], rt[RESERVERS];
   static struct minter_out_s mo[MINTERS];
   static struct reserver_out_s ro[RESERVERS];
   for (int i = 0; i < MINTERS; i++) {
+    mo[i].thread_id = (unsigned int)i;
     pthread_create(&mt[i], NULL, minter, &mo[i]);
   }
   for (int i = 0; i < RESERVERS; i++) {
@@ -230,7 +226,7 @@ int main(void) {
       free(ro[i].iv[r]);
     }
   }
-  free((void *)db_seq_next);
+  arts_guid_generator_cleanup();
 
   printf("PASS guid_db_seq_alloc_stress: %u mints x %u threads + %u "
          "concurrent reserves per thread — unique, disjoint, non-intersecting\n",

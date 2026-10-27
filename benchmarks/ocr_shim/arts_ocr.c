@@ -26,6 +26,7 @@
  */
 
 #include <inttypes.h>
+#include <limits.h>
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -1002,7 +1003,8 @@ static arts_guid_kind_t kindToArtsType(ocrGuidUserKind kind) {
 
 u8 ocrGuidRangeCreate(ocrGuid_t *rangeGuid, u64 numberGuid,
                       ocrGuidUserKind kind) {
-  if (!rangeGuid || numberGuid == 0) {
+  /* A range holds at most UINT_MAX members. */
+  if (!rangeGuid || numberGuid == 0 || numberGuid > UINT_MAX) {
     return 1;
   }
   arts_guid_kind_t artsType = kindToArtsType(kind);
@@ -1013,6 +1015,9 @@ u8 ocrGuidRangeCreate(ocrGuid_t *rangeGuid, u64 numberGuid,
    * ocrGuidFromIndex(range, idx) gives the same GUID on every rank. */
   arts_guid_t range = arts_guid_reserve_range(
       artsType, (unsigned int)numberGuid, ARTS_HINT_ROUND_ROBIN);
+  if (range == NULL_GUID) {
+    return 1;
+  }
   rangeGuid->guid = range;
   return 0;
 }
@@ -1029,7 +1034,7 @@ u8 ocrGuidMapDestroy(ocrGuid_t mapGuid) {
 }
 
 u8 ocrGuidFromIndex(ocrGuid_t *outGuid, ocrGuid_t rangeGuid, u64 idx) {
-  if (!outGuid) {
+  if (!outGuid || idx > UINT_MAX) {
     return 1;
   }
   outGuid->guid = arts_guid_from_index(rangeGuid.guid, (unsigned int)idx);

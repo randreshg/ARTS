@@ -48,12 +48,10 @@
 #include "arts.h"
 #include "arts/graph.h"
 
-// Built in init_per_node, identically on every rank, from the rank's own
-// arguments, which init_node reads again to load its partition; max_reducer's
-// GUID is reserved there too, so every rank names the same EDT.
-arts_block_dist_t *distribution;
-int saved_argc;
-char **saved_argv;
+// This rank's copies of main_edt's distribution and max_reducer's GUID,
+// written only by the rank's init_node; every reader runs after the loaders'
+// finish scope.
+arts_block_dist_t distribution;
 char *file = NULL;
 arts_guid_t max_reducer_guid = NULL_GUID;
 
@@ -109,8 +107,8 @@ void max_reducer(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   end_time = arts_get_time_stamp();
   arts_printf("Total execution time: %f s \n",
               (double)(end_time - start_time) / 1000000000.0);
-  for (arts_partition_t p = 0; p < distribution->num_blocks; ++p) {
-    arts_db_destroy(arts_block_dist_guid_for_partition(distribution, p));
+  for (arts_partition_t p = 0; p < distribution.num_blocks; ++p) {
+    arts_db_destroy(arts_block_dist_guid_for_partition(&distribution, p));
   }
   arts_shutdown();
 }
@@ -164,7 +162,7 @@ void visit_one_hop_neighbor_on_rank(uint32_t paramc, const uint64_t *paramv,
   std::vector<arts_vertex_t> local_intersection;
   for (unsigned int i = 0; i < src_info->num_neighbors; i++) {
     arts_vertex_t current_neighbor = src_info->neighbors[i];
-    if (arts_block_dist_get_owner(current_neighbor, distribution) ==
+    if (arts_block_dist_get_owner(current_neighbor, &distribution) ==
         arts_get_current_rank()) {
       // std::cout << "Source " << src_info->source << " Current_neighbor: " <<
       // current_neighbor << std::endl;
@@ -246,7 +244,7 @@ void visit_source(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       arts_guid_t visit_one_hop_neighbor_guid = arts_edt_create(
           visit_one_hop_neighbor_on_rank, 0, NULL, 2, &hop_hint);
       arts_add_dependence(db_guid, visit_one_hop_neighbor_guid, 0, DB_MODE_RO);
-      arts_add_dependence(arts_block_dist_guid_for_partition(distribution, i),
+      arts_add_dependence(arts_block_dist_guid_for_partition(&distribution, i),
                           visit_one_hop_neighbor_guid, 1, DB_MODE_RO);
     }
   } else {
@@ -265,16 +263,29 @@ void visit_source(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
 }
 
+// paramv: main_edt's distribution (ARTS_BLOCK_DIST_PARAMC words), max_reducer's
+// GUID, then main_edt's arguments as an argument block.
 extern "C" void init_node(uint32_t paramc, const uint64_t *paramv,
                           uint32_t depc, arts_edt_dep_t depv[]) {
-  (void)paramc;
-  (void)paramv;
   (void)depc;
   (void)depv;
   unsigned int node_id = arts_get_current_rank();
 
-  arts_printf("Node %u argc %u\n", node_id, saved_argc);
-  if (arts_csr_load_from_args(distribution, saved_argc, saved_argv) != 0) {
+  distribution = arts_block_dist_from_params(paramv);
+  max_reducer_guid = (arts_guid_t)paramv[ARTS_BLOCK_DIST_PARAMC];
+  const uint64_t *arg_words = paramv + ARTS_BLOCK_DIST_PARAMC + 1;
+  uint32_t arg_paramc = paramc - (ARTS_BLOCK_DIST_PARAMC + 1);
+  int rc = -1;
+  int argc = arts_argv_count(arg_words, arg_paramc);
+  arts_printf("Node %u argc %d\n", node_id, argc);
+  if (argc >= 0) {
+    std::vector<const char *> argv((size_t)argc + 1);
+    if (arts_argv_from_params(arg_words, arg_paramc, argv.data(), argc + 1) ==
+        argc) {
+      rc = arts_csr_load_from_args(&distribution, argc, argv.data());
+    }
+  }
+  if (rc != 0) {
     arts_printf("Failed to load the graph on rank %u\n", node_id);
     arts_shutdown();
   }
@@ -292,19 +303,19 @@ void main_continue(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   // Create max reducer EDT
   arts_edt_hint_t reducer_hint = {};
   reducer_hint.guid = max_reducer_guid;
-  arts_edt_create(max_reducer, 0, NULL, distribution->num_vertices,
+  arts_edt_create(max_reducer, 0, NULL, distribution.num_vertices,
                   &reducer_hint);
   start_time = arts_get_time_stamp();
-  for (uint64_t i = 0; i < distribution->num_vertices; ++i) {
+  for (uint64_t i = 0; i < distribution.num_vertices; ++i) {
     uint64_t source = i;
-    arts_partition_t rank = arts_block_dist_get_owner(source, distribution);
+    arts_partition_t rank = arts_block_dist_get_owner(source, &distribution);
     uint64_t packed_values[1] = {source};
     arts_edt_hint_t rank_hint = {};
     rank_hint.rank = rank;
     arts_guid_t visit_source_guid = arts_edt_create(
         visit_source, 1, (uint64_t *)&packed_values, 2, &rank_hint);
     arts_edt_satisfy_slot(visit_source_guid, 0, 0, DB_MODE_NULL);
-    arts_add_dependence(arts_block_dist_guid_for_partition(distribution, rank),
+    arts_add_dependence(arts_block_dist_guid_for_partition(&distribution, rank),
                         visit_source_guid, 1, DB_MODE_RO);
   }
 }
@@ -313,15 +324,30 @@ extern "C" void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                          arts_edt_dep_t depv[]) {
   (void)depc;
   (void)depv;
-  if (distribution == NULL) {
+  int argc = (int)paramv[0];
+  const char *const *argv = (const char *const *)paramv[1];
+  arts_block_dist_t dist;
+  if (arts_block_dist_init_from_args(&dist, argc, argv) != 0) {
     arts_printf("Usage: %s --file <graph> --num-vertices <n> --num-edges <m> "
                 "[--flip] [--keep-self-loops] [--csr-format]\n",
-                ((char **)paramv[1])[0]);
+                argv[0]);
     arts_shutdown();
     return;
   }
+  uint32_t arg_paramc = arts_argv_paramc(argc, argv);
+  if (arg_paramc == 0) {
+    arts_printf("%s: the arguments do not fit in EDT parameters\n", argv[0]);
+    arts_shutdown();
+    return;
+  }
+  arts_guid_t reducer_guid = arts_guid_reserve(ARTS_GUID_EDT, 0);
 
   // Initialize graph data on every node
+  std::vector<uint64_t> init_paramv(ARTS_BLOCK_DIST_PARAMC + 1 + arg_paramc);
+  arts_block_dist_to_params(&dist, init_paramv.data());
+  init_paramv[ARTS_BLOCK_DIST_PARAMC] = reducer_guid;
+  arts_argv_to_params(argc, argv,
+                      init_paramv.data() + ARTS_BLOCK_DIST_PARAMC + 1);
   arts_event_hint_t finish_hint = {};
   finish_hint.rank = ARTS_HINT_CURRENT_RANK;
   finish_hint.finish = true;
@@ -330,21 +356,14 @@ extern "C" void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_edt_hint_t node_hint = {};
     node_hint.rank = i;
     node_hint.finish_event = init_done;
-    arts_edt_create(init_node, 0, NULL, 0, &node_hint);
+    arts_edt_create(init_node, (uint32_t)init_paramv.size(), init_paramv.data(),
+                    0, &node_hint);
   }
   arts_edt_hint_t cont_hint = {};
   cont_hint.rank = 0;
   arts_guid_t cont =
       arts_edt_create(main_continue, paramc, paramv, 1, &cont_hint);
   arts_add_dependence(init_done, cont, 0, DB_MODE_NULL);
-}
-
-extern "C" void init_per_node(unsigned int node_id, int argc, char **argv) {
-  (void)node_id;
-  saved_argc = argc;
-  saved_argv = argv;
-  distribution = arts_block_dist_init_from_args(argc, argv);
-  max_reducer_guid = arts_guid_reserve(ARTS_GUID_EDT, 0);
 }
 
 int main(int argc, char **argv) { return arts_rt(argc, argv); }

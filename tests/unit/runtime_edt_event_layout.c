@@ -272,7 +272,6 @@ static void print_fingerprint(void) {
   MEMBER(runtime_shared_t, db_rr_route);
   MEMBER(runtime_shared_t, edt_rr_route);
   MEMBER(runtime_shared_t, keys);
-  MEMBER(runtime_shared_t, global_guid_thread_id);
   MEMBER(runtime_shared_t, counter_capture_interval);
   TYPE(runtime_private_t);
   MEMBER(runtime_private_t, my_deque);

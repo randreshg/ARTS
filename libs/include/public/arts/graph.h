@@ -81,29 +81,43 @@ void arts_edge_vector_sort_by_source_and_target(arts_edge_vector_t *v);
 /* === Block distribution ===
  *
  * A distribution splits the vertex range [0, num_vertices) into num_blocks
- * partitions of at most block_sz consecutive vertices and reserves one GUID
- * of the given kind per partition (ARTS_GUID_DB for a CSR graph), homed on the
- * rank that owns the partition.
- * Every rank must hold the same GUIDs, so every rank builds the distribution
- * identically in init_per_node, before parallel start: a GUID reserved after
- * start differs per rank, and a distribution built then names partitions
- * other ranks never create.  arts_block_dist_init_from_args reads
- * --num-vertices and --num-edges from the rank's own argv and makes one
- * partition per rank. */
+ * partitions of at most block_sz consecutive vertices and names them by one
+ * round-robin range of GUIDs of the given kind (ARTS_GUID_DB for a CSR graph):
+ * rank i owns num_blocks / N consecutive partitions, plus one for the first
+ * num_blocks % N ranks, and a partition's GUID is homed on its owner.
+ * A distribution is a value.  Create it once, in one EDT, and pass the value
+ * on in parameters (arts_block_dist_to_params / arts_block_dist_from_params,
+ * ARTS_BLOCK_DIST_PARAMC words): every rank then derives the same partition
+ * GUIDs.  Two creates reserve two different ranges. */
 
 typedef struct {
   arts_graph_sz_t num_vertices;
   arts_graph_sz_t num_edges;
   arts_graph_sz_t block_sz;
   unsigned int num_blocks;
-  arts_guid_t graphGuid[];
+  /* The round-robin range naming the partitions; NULL_GUID iff
+   * num_blocks == 0. */
+  arts_guid_t range;
 } arts_block_dist_t;
 
-arts_block_dist_t *arts_block_dist_init(arts_graph_sz_t n, arts_graph_sz_t m,
-                                        unsigned int num_blocks,
-                                        arts_guid_kind_t db_type);
-arts_block_dist_t *arts_block_dist_init_from_args(int argc, char **argv);
-void arts_block_dist_free(arts_block_dist_t *dist);
+/* The parameter words a distribution takes. */
+#define ARTS_BLOCK_DIST_PARAMC 5u
+
+/* Makes a distribution and reserves its partitions' names (one round-robin
+ * range of N * ceil(num_blocks / N) GUIDs of `kind`).  Call once, in one EDT,
+ * and pass the value on: a value is made only here or by
+ * arts_block_dist_from_params. */
+arts_block_dist_t arts_block_dist_create(arts_graph_sz_t n, arts_graph_sz_t m,
+                                         unsigned int num_blocks,
+                                         arts_guid_kind_t kind);
+/* --num-vertices / --num-edges, one ARTS_GUID_DB partition per rank; calls
+ * arts_block_dist_create.  Returns 0, or -1 (nothing reserved) when a count is
+ * missing. */
+int arts_block_dist_init_from_args(arts_block_dist_t *out, int argc,
+                                   const char *const *argv);
+void arts_block_dist_to_params(const arts_block_dist_t *dist, uint64_t *paramv);
+/* Reads exactly ARTS_BLOCK_DIST_PARAMC words at paramv. */
+arts_block_dist_t arts_block_dist_from_params(const uint64_t *paramv);
 
 arts_graph_sz_t arts_block_dist_block_size(arts_partition_t index,
                                            const arts_block_dist_t *dist);
@@ -117,6 +131,7 @@ arts_vertex_t arts_block_dist_partition_end(arts_partition_t index,
 arts_local_index_t
 arts_block_dist_get_local_index(arts_vertex_t v, const arts_block_dist_t *dist);
 
+/* A partition index at or past num_blocks is fatal. */
 arts_guid_t arts_block_dist_guid_for_vertex(arts_vertex_t v,
                                             const arts_block_dist_t *dist);
 arts_guid_t arts_block_dist_guid_for_partition(const arts_block_dist_t *dist,
@@ -174,14 +189,17 @@ typedef struct {
  * creator's writable image; NULL when block_guid is homed on another rank. */
 arts_csr_graph_t *arts_csr_init(arts_partition_t part_index,
                                 arts_graph_sz_t localv, arts_graph_sz_t locale,
-                                arts_block_dist_t *dist,
+                                const arts_block_dist_t *dist,
                                 arts_edge_vector_t *edges, bool sorted_by_src,
                                 arts_guid_t block_guid);
-int arts_csr_load_no_weight(const char *file_path, arts_block_dist_t *dist,
-                            bool flip, bool ignore_self_loops);
-int arts_csr_load_no_weight_csr(const char *file_path, arts_block_dist_t *dist,
-                                bool flip, bool ignore_self_loops);
-int arts_csr_load_from_args(arts_block_dist_t *dist, int argc, char **argv);
+int arts_csr_load_no_weight(const char *file_path,
+                            const arts_block_dist_t *dist, bool flip,
+                            bool ignore_self_loops);
+int arts_csr_load_no_weight_csr(const char *file_path,
+                                const arts_block_dist_t *dist, bool flip,
+                                bool ignore_self_loops);
+int arts_csr_load_from_args(const arts_block_dist_t *dist, int argc,
+                            const char *const *argv);
 void arts_csr_free(arts_csr_graph_t *csr);
 void arts_csr_print(arts_csr_graph_t *csr);
 void arts_csr_get_neighbors(arts_csr_graph_t *csr, arts_vertex_t v,

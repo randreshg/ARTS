@@ -77,11 +77,10 @@ acquisitions are ordered.
 
 ## Flow
 
-`init_per_node` on rank 0, before the runtime starts its workers, reads the
-tile size, creates the tiles (filled with their indices) and the zeroed
-frontier, releases each once it is filled, and reserves the GUIDs of the
-first `random_driver` and of `sync_edt`. `init_per_worker` on rank 0's first
-worker takes the start time, refuses a bad tile size, creates the first
+`main_edt` on rank 0 reads the tile size, creates the tiles (filled with
+their indices) and the zeroed frontier, releases each once it is filled, and
+reserves the GUIDs of the first `random_driver` and of `sync_edt`. It then
+takes the start time, refuses a bad tile size, creates the first
 `random_driver` and `sync_edt` and wires them. Each `random_driver` creates
 the next one, the step's `update_driver` and its `hpcc_starts_tiled` EDTs;
 the one that finds no update left satisfies `sync_edt`. `sync_edt` checks

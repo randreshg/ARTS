@@ -71,44 +71,29 @@ static void test_deleter(void *p) {
   free(o);
 }
 
+/* ---- the race ---------------------------------------------------------- */
+#define ROUNDS 20000
+#define CHURN_THREADS 6
+#define DEAD_RING 64
+
+/* Node init of a rank whose minting threads are main (thread 0) and the
+ * churners (threads 1..CHURN_THREADS), as the runtime runs it; DB GUIDs only,
+ * so no key counters.  Every local table is the one small table, so every key
+ * shares its slots. */
 static void rt_init(unsigned size, unsigned shift) {
   arts_thread_info.thread_id = 0;
-  arts_node_info.total_thread_count = 1;
-  arts_node_info.gpu = 0;
-  arts_node_info.keys = (uint64_t **)calloc(1, sizeof(uint64_t *));
-  arts_node_info.keys[0] = (uint64_t *)calloc(
-      (size_t)ARTS_GUID_LAST * arts_global_rank_count, sizeof(uint64_t));
-  for (unsigned i = 0; i < ARTS_GUID_LAST * arts_global_rank_count; i++) {
-    arts_node_info.keys[0][i] = 1;
+  arts_node_info.total_thread_count = 1 + CHURN_THREADS;
+  arts_guid_node_geometry_init();
+  arts_route_table_t *table = arts_new_route_table(size, shift);
+  arts_node_info.route_table = (arts_route_table_t **)calloc(
+      arts_node_info.total_thread_count, sizeof(arts_route_table_t *));
+  for (unsigned t = 0; t < arts_node_info.total_thread_count; t++) {
+    arts_node_info.route_table[t] = table;
   }
-  arts_node_info.global_guid_thread_id = (uint64_t *)calloc(1, sizeof(uint64_t));
-  num_tables = 1;
-  min_global_guid_thread = 0;
-  max_global_guid_thread = 1;
-  keys_per_thread = 1u << 20;
-  global_guid_on = 0;
-  arts_db_seq_budget =
-      ((ARTS_GUID_DB_SEQ_MASK + 1) - ARTS_GUID_STARTUP_RESERVE) /
-      arts_global_rank_count;
-  db_seq_creator_base = arts_db_seq_budget * arts_global_rank_id;
-  if (db_seq_next) { free((void *)db_seq_next); }
-  db_seq_next = (_Atomic(uint64_t) *)malloc(sizeof(*db_seq_next) *
-                                            arts_global_rank_count);
-  for (unsigned r = 0; r < arts_global_rank_count; r++) {
-    atomic_init(&db_seq_next[r], db_seq_creator_base + 1);
-  }
-  free(t_db_cursor); t_db_cursor = NULL;
-  arts_node_info.route_table = (arts_route_table_t **)calloc(1, sizeof(arts_route_table_t *));
-  arts_node_info.route_table[0] = arts_new_route_table(size, shift);
   for (int s = 0; s < ARTS_REMOTE_ROUTE_SHARDS; s++) {
     arts_node_info.remote_route_table[s] = arts_new_route_table(64, 6);
   }
 }
-
-/* ---- the race ---------------------------------------------------------- */
-#define ROUNDS   20000
-#define CHURN_THREADS 6
-#define DEAD_RING 64
 
 static pthread_barrier_t bar;
 static _Atomic(arts_guid_t) g_victim; /* the GUID both destroyers tear down */
@@ -189,7 +174,7 @@ static void *destroyer(void *vp) {
  * own object, then destroy it.  These are the "unrelated objects" whose slots
  * the duplicate destroy can land on. */
 static void *churn(void *vp) {
-  (void)vp;
+  arts_thread_info.thread_id = (unsigned int)(uintptr_t)vp;
   for (int r = 0; r < ROUNDS; r++) {
     pthread_barrier_wait(&bar);
     for (int k = 0; k < 4; k++) {
@@ -220,10 +205,6 @@ static void *churn(void *vp) {
     }
     pthread_barrier_wait(&bar);
   }
-  /* This thread's DB seq cursor: the runtime frees one per runtime thread at
-   * teardown, and these threads are not runtime threads. */
-  free(t_db_cursor);
-  t_db_cursor = NULL;
   return NULL;
 }
 
@@ -234,7 +215,9 @@ int main(void) {
   pthread_t d[2], c[CHURN_THREADS], lm, rd[2];
   pthread_barrier_init(&bar, NULL, 2 + CHURN_THREADS + 1);
   for (int i = 0; i < 2; i++) { pthread_create(&d[i], NULL, destroyer, NULL); }
-  for (int i = 0; i < CHURN_THREADS; i++) { pthread_create(&c[i], NULL, churn, NULL); }
+  for (int i = 0; i < CHURN_THREADS; i++) {
+    pthread_create(&c[i], NULL, churn, (void *)(uintptr_t)(1 + i));
+  }
   pthread_create(&lm, NULL, late_messenger, NULL);
   for (int i = 0; i < 2; i++) { pthread_create(&rd[i], NULL, reader, NULL); }
 
@@ -262,13 +245,14 @@ int main(void) {
   long p = atomic_load_explicit(&v_premature_free, memory_order_relaxed);
   long o2 = atomic_load_explicit(&v_orphaned, memory_order_relaxed);
   long x = atomic_load_explicit(&v_crossguid, memory_order_relaxed);
+  arts_guid_generator_cleanup();
   printf("installs=%ld  O1 premature_free=%ld  O2 orphaned_install=%ld  "
          "O3 crossguid=%ld\n",
          atomic_load_explicit(&n_installs, memory_order_relaxed), p, o2, x);
   if (p || o2 || x) {
-    printf("FAIL rt_reclaim_dupdestroy\n");
+    printf("FAIL route_table_reclaim_dupdestroy\n");
     return 1;
   }
-  printf("PASS rt_reclaim_dupdestroy\n");
+  printf("PASS route_table_reclaim_dupdestroy\n");
   return 0;
 }

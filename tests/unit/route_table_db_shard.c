@@ -1,24 +1,27 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * route_table_db_shard — the DB-kind route-table shard decision is a pure
- * function of (kind, seq), agreed on by install and lookup for EVERY DB key
- * source, and stable across the parallel-start flip:
+ * route_table_db_shard — the route-table shard decision is a pure function
+ * of the key and of the rank's geometry, agreed on by install and lookup for
+ * EVERY key source:
  *
- *   1. Pre-flip (arts_db_seq_budget == 0): every DB key resolves to the
- *      shared remote shard table (legacy gate is also still closed).
- *   2. Startup-countdown keys (the top reserve) resolve to the SAME remote
- *      shard before and after the flip — a flat-kind one too, seen from the
- *      last rank, whose thread slots are the top of the flat partition.
- *   3. Post-flip self-created keys resolve to the local per-thread table at
+ *   1. Before node init (geometry 0) every key, DB or flat, resolves to a
+ *      remote shard.
+ *   2. Self-created DB keys resolve to the local per-thread table at
  *      (seq >> CHUNK_BITS) % num_tables — chunk-mates share a table.
- *   4. Foreign-creator keys resolve to the remote shard; the SAME key viewed
- *      from the creating rank's identity resolves local (today's
- *      local/remote split semantics, recovered arithmetically).
- *   5. Distributed-range members and single-rank reserved members follow the
- *      same arithmetic (creator slice), sentinel szhint notwithstanding.
- *   6. Flat kinds (EDT/EVENT) keep the legacy keys_per_thread partition.
+ *   3. A foreign creator's DB key resolves to a remote shard; the SAME key
+ *      seen on its creating rank resolves local (the local/remote split,
+ *      recovered arithmetically).
+ *   4. A reserved DB member (of a single-rank and of a round-robin range)
+ *      resolves to route_table[(seq >> CHUNK_BITS) % num_tables] on the rank
+ *      whose creator slice holds its seq, and to a remote shard on every
+ *      other rank, sentinel szhint notwithstanding.
+ *   5. A reserved flat GUID (arts_guid_reserve, an explicit-rank range's
+ *      members, a round-robin range's members) resolves to its reserving
+ *      thread's table on the reserving rank and to a remote shard on every
+ *      other rank.
  *
  * No runtime: route_table.c + guid.c + shared.c #include'd; OoO drain no-op.
+ * node_init runs the runtime's node init for one simulated rank.
  */
 
 #include "arts/utils/stdatomic_compat.h"
@@ -61,27 +64,10 @@ ARTS_THREAD_LOCAL struct arts_runtime_private_s arts_thread_info;
     return 1;                                                                  \
   } while (0)
 
+#define NRANK 4u
 #define NTABLES 3u
 
 static void rt_init(void) {
-  arts_thread_info.thread_id = 0;
-  arts_node_info.total_thread_count = NTABLES;
-  arts_node_info.gpu = 0;
-  arts_node_info.keys =
-      (uint64_t **)calloc(NTABLES, sizeof(uint64_t *));
-  arts_node_info.keys[0] = (uint64_t *)calloc(
-      (size_t)ARTS_GUID_LAST * arts_global_rank_count, sizeof(uint64_t));
-  for (unsigned i = 0; i < ARTS_GUID_LAST * arts_global_rank_count; i++) {
-    arts_node_info.keys[0][i] = 1;
-  }
-  arts_node_info.global_guid_thread_id =
-      (uint64_t *)calloc(NTABLES, sizeof(uint64_t));
-  num_tables = NTABLES;
-  min_global_guid_thread = 0;
-  max_global_guid_thread = NTABLES;
-  keys_per_thread = 0; /* pre-flip */
-  global_guid_on = 0;
-  arts_db_seq_budget = 0; /* pre-flip */
   arts_node_info.route_table =
       (arts_route_table_t **)calloc(NTABLES, sizeof(arts_route_table_t *));
   for (unsigned t = 0; t < NTABLES; t++) {
@@ -92,112 +78,161 @@ static void rt_init(void) {
   }
 }
 
-static void flip_on(void) {
-  arts_db_seq_budget =
-      ((ARTS_GUID_DB_SEQ_MASK + 1) - ARTS_GUID_STARTUP_RESERVE) /
-      arts_global_rank_count;
-  db_seq_creator_base = arts_db_seq_budget * arts_global_rank_id;
-  db_seq_next = (_Atomic(uint64_t) *)malloc(sizeof(*db_seq_next) *
-                                            arts_global_rank_count);
-  for (unsigned r = 0; r < arts_global_rank_count; r++) {
-    atomic_init(&db_seq_next[r], db_seq_creator_base + 1);
+static void node_fini(void) {
+  if (arts_node_info.keys != NULL) {
+    for (unsigned t = 0; t < arts_node_info.total_thread_count; t++) {
+      free(arts_node_info.keys[t]);
+    }
+    free(arts_node_info.keys);
+    arts_node_info.keys = NULL;
   }
-  keys_per_thread =
-      (((uint64_t)1 << ARTS_GUID_KEY_BITS) - ARTS_GUID_STARTUP_RESERVE) /
-      ((uint64_t)NTABLES * arts_global_rank_count);
+  arts_guid_generator_cleanup();
 }
+
+/* The runtime's node init for rank `rank` of NRANK with NTABLES threads: the
+ * geometry, then each thread's key counters.  Leaves thread 0 current. */
+static void node_init(unsigned int rank) {
+  node_fini();
+  arts_global_rank_id = rank;
+  arts_global_rank_count = NRANK;
+  arts_node_info.total_thread_count = NTABLES;
+  arts_node_info.keys = (uint64_t **)calloc(NTABLES, sizeof(uint64_t *));
+  arts_guid_node_geometry_init();
+  for (unsigned t = 0; t < NTABLES; t++) {
+    arts_thread_info.thread_id = t;
+    arts_guid_key_generator_init();
+  }
+  arts_thread_info.thread_id = 0;
+}
+
+/* The local table the classifier picks for `g`, -1 for the remote shard its
+ * key's low bits name, -2 for anything else. */
+static int table_of(arts_guid_t g) {
+  arts_route_table_t *t = arts_get_route_table(g);
+  for (unsigned i = 0; i < NTABLES; i++) {
+    if (t == arts_node_info.route_table[i]) {
+      return (int)i;
+    }
+  }
+  uint64_t key = ARTS_GUID_GET_KEY(g);
+  return t == arts_node_info
+                     .remote_route_table[key & (ARTS_REMOTE_ROUTE_SHARDS - 1)]
+             ? -1
+             : -2;
+}
+
+/* The local table of a DB key on the rank whose creator slice holds it. */
+static int db_table(arts_guid_t g) {
+  uint64_t seq = ARTS_GUID_DB_GET_SEQ(ARTS_GUID_GET_KEY(g));
+  return (int)((seq >> ARTS_GUID_DB_CHUNK_BITS) % NTABLES);
+}
+
+#define MEMBERS 8u
 
 int main(void) {
   rt_init();
 
-  /* ---- 1+2. pre-flip: startup-countdown key -> remote; stable across flip. */
-  global_guid_on = ((uint64_t)1) << ARTS_GUID_KEY_BITS;
-  arts_guid_t startup_db = arts_guid_create_for_rank(0, ARTS_GUID_DB);
-  arts_guid_t startup_ev = arts_guid_create_for_rank(0, ARTS_GUID_EVENT);
-  global_guid_on = 0;
-  arts_route_table_t *pre = arts_get_route_table(startup_db);
-  int is_remote = 0;
-  for (int s = 0; s < ARTS_REMOTE_ROUTE_SHARDS; s++) {
-    if (pre == arts_node_info.remote_route_table[s]) {
-      is_remote = 1;
-    }
-  }
-  if (!is_remote) {
-    FAIL("pre-flip startup DB key did not resolve to a remote shard\n");
-  }
-  arts_route_table_t *pre_ev = arts_get_route_table(startup_ev);
-  flip_on();
-  if (arts_get_route_table(startup_db) != pre) {
-    FAIL("startup DB key changed tables across the flip\n");
-  }
-  arts_global_rank_id = arts_global_rank_count - 1;
-  min_global_guid_thread = (uint64_t)NTABLES * arts_global_rank_id;
-  max_global_guid_thread = min_global_guid_thread + NTABLES;
-  arts_route_table_t *post_ev = arts_get_route_table(startup_ev);
-  arts_global_rank_id = 0;
-  min_global_guid_thread = 0;
-  max_global_guid_thread = NTABLES;
-  if (post_ev != pre_ev) {
-    FAIL("startup flat-kind key changed tables across the flip on the last "
-         "rank\n");
+  /* ---- 1. before node init: every key -> remote. ---- */
+  if (table_of(ARTS_GUID_MAKE(ARTS_GUID_DB, 0,
+                              ARTS_GUID_DB_KEY(ARTS_GUID_DB_SZHINT_NONE, 5))) !=
+          -1 ||
+      table_of(ARTS_GUID_MAKE(ARTS_GUID_EVENT, 0, 5)) != -1) {
+    FAIL("a key took a local table before node init\n");
   }
 
-  /* ---- 3. self-created keys: local table, chunk-granular agreement. ---- */
+  /* ---- 2. self-created keys: local table, chunk-granular agreement. ---- */
+  node_init(0);
   arts_guid_t a = arts_guid_create_for_rank(1, ARTS_GUID_DB);
   arts_guid_t b = arts_guid_create_for_rank(1, ARTS_GUID_DB);
-  uint64_t seq_a = ARTS_GUID_DB_GET_SEQ(ARTS_GUID_GET_KEY(a));
-  arts_route_table_t *ta = arts_get_route_table(a);
-  if (ta != arts_node_info
-                .route_table[(seq_a >> ARTS_GUID_DB_CHUNK_BITS) % NTABLES]) {
+  if (table_of(a) != db_table(a)) {
     FAIL("self key not at (seq>>CHUNK)%%tables\n");
   }
-  if (arts_get_route_table(b) != ta) {
+  if (table_of(b) != table_of(a)) {
     FAIL("chunk-mates split across tables\n");
   }
 
-  /* ---- 4. foreign-creator key: remote here, local at the creator. ---- */
+  /* ---- 3. foreign-creator key: remote here, local at the creator. ---- */
   uint64_t foreign_seq = arts_db_seq_budget * 2 + 5; /* rank 2's slice */
   arts_guid_t foreign = ARTS_GUID_MAKE(
       ARTS_GUID_DB, 0, ARTS_GUID_DB_KEY(ARTS_GUID_DB_SZHINT_NONE, foreign_seq));
-  arts_route_table_t *ft = arts_get_route_table(foreign);
-  is_remote = 0;
-  for (int s = 0; s < ARTS_REMOTE_ROUTE_SHARDS; s++) {
-    if (ft == arts_node_info.remote_route_table[s]) {
-      is_remote = 1;
-    }
-  }
-  if (!is_remote) {
+  if (table_of(foreign) != -1) {
     FAIL("foreign-creator DB key did not resolve remote\n");
   }
-  arts_global_rank_id = 2; /* view the same key as its creator */
-  db_seq_creator_base = arts_db_seq_budget * 2;
-  arts_route_table_t *at_creator = arts_get_route_table(foreign);
-  if (at_creator !=
-      arts_node_info
-          .route_table[(foreign_seq >> ARTS_GUID_DB_CHUNK_BITS) % NTABLES]) {
+  node_init(2);
+  if (table_of(foreign) != db_table(foreign)) {
     FAIL("creator's view of its own key is not local\n");
   }
-  arts_global_rank_id = 0;
-  db_seq_creator_base = 0;
 
-  /* ---- 5. reserved members follow the same arithmetic. ---- */
-  arts_guid_t range = arts_guid_reserve_range(ARTS_GUID_DB, 8, 3);
-  arts_guid_t member = arts_guid_from_index(range, 3);
-  uint64_t mseq = ARTS_GUID_DB_GET_SEQ(ARTS_GUID_GET_KEY(member));
-  if (arts_get_route_table(member) !=
-      arts_node_info
-          .route_table[(mseq >> ARTS_GUID_DB_CHUNK_BITS) % NTABLES]) {
-    FAIL("reserved member not in the creator-slice local table\n");
+  /* ---- 4. reserved DB members: local at the reserving rank only. ---- */
+  node_init(1);
+  arts_guid_t db_member[2 * MEMBERS];
+  arts_guid_t single = arts_guid_reserve_range(ARTS_GUID_DB, MEMBERS, 3);
+  arts_guid_t rr =
+      arts_guid_reserve_range(ARTS_GUID_DB, MEMBERS, ARTS_HINT_ROUND_ROBIN);
+  for (unsigned i = 0; i < MEMBERS; i++) {
+    db_member[i] = arts_guid_from_index(single, i);
+    db_member[MEMBERS + i] = arts_guid_from_index(rr, i);
+  }
+  for (unsigned i = 0; i < 2 * MEMBERS; i++) {
+    if (table_of(db_member[i]) != db_table(db_member[i])) {
+      FAIL("reserved DB member %u not in the creator-slice local table\n", i);
+    }
+  }
+  for (unsigned r = 0; r < NRANK; r++) {
+    if (r == 1) {
+      continue;
+    }
+    node_init(r);
+    for (unsigned i = 0; i < 2 * MEMBERS; i++) {
+      if (table_of(db_member[i]) != -1) {
+        FAIL("reserved DB member %u took a local table on rank %u\n", i, r);
+      }
+    }
   }
 
-  /* ---- 6. flat kinds keep the legacy partition. ---- */
-  arts_guid_t edt =
-      ARTS_GUID_MAKE(ARTS_GUID_EDT, 0, keys_per_thread + 1); /* thread 1 */
-  if (arts_get_route_table(edt) != arts_node_info.route_table[1]) {
-    FAIL("flat-kind key left the keys_per_thread partition\n");
+  /* ---- 5. reserved flat GUIDs: the reserver's table there, remote
+   * elsewhere. ---- */
+  enum { PER_THREAD = 1 + 4 + MEMBERS };
+  arts_guid_t flat[NTABLES][PER_THREAD];
+  node_init(2);
+  for (unsigned t = 0; t < NTABLES; t++) {
+    arts_thread_info.thread_id = t;
+    unsigned n = 0;
+    flat[t][n++] = arts_guid_reserve(ARTS_GUID_EVENT, 3);
+    arts_guid_t er = arts_guid_reserve_range(ARTS_GUID_EDT, 4, 0);
+    for (unsigned i = 0; i < 4; i++) {
+      flat[t][n++] = arts_guid_from_index(er, i);
+    }
+    arts_guid_t frr = arts_guid_reserve_range(ARTS_GUID_EVENT, MEMBERS,
+                                              ARTS_HINT_ROUND_ROBIN);
+    for (unsigned i = 0; i < MEMBERS; i++) {
+      flat[t][n++] = arts_guid_from_index(frr, i);
+    }
+    for (unsigned i = 0; i < PER_THREAD; i++) {
+      if (table_of(flat[t][i]) != (int)t) {
+        FAIL("flat GUID %u reserved by thread %u left its table\n", i, t);
+      }
+    }
+  }
+  arts_thread_info.thread_id = 0;
+  for (unsigned r = 0; r < NRANK; r++) {
+    if (r == 2) {
+      continue;
+    }
+    node_init(r);
+    for (unsigned t = 0; t < NTABLES; t++) {
+      for (unsigned i = 0; i < PER_THREAD; i++) {
+        if (table_of(flat[t][i]) != -1) {
+          FAIL("flat GUID %u of thread %u took a local table on rank %u\n", i,
+               t, r);
+        }
+      }
+    }
   }
 
-  printf("PASS route_table_db_shard: pre/post-flip stability, chunk-granular "
-         "locals, arithmetic creator recovery, flat kinds untouched\n");
+  node_fini();
+  printf("PASS route_table_db_shard: remote before node init, chunk-granular "
+         "locals, arithmetic creator recovery, reserved DB and flat GUIDs "
+         "local at the reserver only\n");
   return 0;
 }

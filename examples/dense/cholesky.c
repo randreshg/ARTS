@@ -440,11 +440,5 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 #undef EV
 }
 
-void init_per_node(unsigned int node_id, int argc, char **argv) {
-  (void)node_id;
-  (void)argc;
-  (void)argv;
-}
-
 int main(int argc, char *argv[]) { return arts_rt(argc, argv); }
 

@@ -71,14 +71,14 @@ Event Creation Hint
    :members:
 
 
-User Callbacks
---------------
+Program entry
+-------------
 
-Optional weak-symbol callbacks (``main_edt``, ``init_per_node``,
-``init_per_worker``) an application defines to hook into the runtime
-lifecycle.
+``main_edt``, the program's one entry, which every program defines: the
+runtime creates it on rank 0, and everything else starts from EDTs it
+creates.
 
-.. doxygengroup:: user_callbacks
+.. doxygengroup:: program_entry
    :content-only:
    :members:
 

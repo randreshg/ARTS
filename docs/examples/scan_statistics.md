@@ -76,18 +76,20 @@ before the satisfy that leads to it: `visit_source` once it has copied the
 source's row for every rank (at once for a vertex with no neighbour),
 `visit_one_hop_neighbor_on_rank` once its intersections are done. The
 loaders are members of the one finish scope, on which `main_continue` waits
-through its control slot. `max_reducer` is created under a GUID that every
-rank reserves identically before parallel start, so an EDT on any rank names
-it.
+through its control slot. `max_reducer` is created under a GUID that
+`main_edt` reserves and every `init_node` copies into its rank's memory, so an
+EDT on any rank names it.
 
 ## Flow
 
-`init_per_node`, on every rank before the runtime starts its workers, saves
-the rank's arguments, builds the distribution from them and reserves
-`max_reducer`'s GUID. `main_edt` on rank 0 refuses missing counts, then
-creates the scope, one `init_node` per rank and `main_continue`. Each
-`init_node` loads the partition homed on its rank, which it holds until it
-ends, and, if the load failed, prints its message and shuts down.
+`main_edt` on rank 0 refuses missing counts; otherwise it builds the
+distribution from its arguments, reserving the partitions' GUIDs once,
+reserves `max_reducer`'s GUID and creates the scope, one `init_node` per
+rank, each given the distribution, `max_reducer`'s GUID and `main_edt`'s
+arguments as parameters, and `main_continue`. Each `init_node` writes its
+rank's copies of the distribution and `max_reducer`'s GUID, which every later
+EDT on the rank reads, loads the partition homed on its rank, which it holds
+until it ends, and, if the load failed, prints its message and shuts down.
 `main_continue` on rank 0 creates `max_reducer`, records the start time and
 creates every vertex's `visit_source`. `max_reducer` scans the statistics in
 vertex order, prints the maximum and the time, destroys every partition and

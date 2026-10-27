@@ -20,18 +20,17 @@ void remote_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_shutdown();
 }
 
-void init_per_worker(unsigned int node_id, unsigned int worker_id, int argc,
-                     char **argv) {
-  (void)argc;
-  (void)argv;
-  /* Only spawn from rank 0 worker 0 to avoid 2*2 spawns in 2-node. */
-  if (node_id != 0 || worker_id != 0) {
-    return;
-  }
+void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+              arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)paramv;
+  (void)depc;
+  (void)depv;
   /* Spawn the sentinel EDT on rank 1 if nodes >= 2, else rank 0. */
   unsigned int target = (arts_get_total_ranks() > 1) ? 1u : 0u;
-  uint64_t paramv[1] = {42};
-  arts_edt_create(remote_edt, 1, paramv, 0, &(arts_edt_hint_t){.rank = target});
+  uint64_t sentinel[1] = {42};
+  arts_edt_create(remote_edt, 1, sentinel, 0,
+                  &(arts_edt_hint_t){.rank = target});
 }
 
 int main(int argc, char **argv) {

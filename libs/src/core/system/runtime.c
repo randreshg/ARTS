@@ -77,31 +77,6 @@
 #include "arts/cxl/arena.h"
 #endif
 
-static int arts_runtime_argc = 0;
-static char **arts_runtime_argv = NULL;
-
-ARTS_WEAK void init_per_node(unsigned int node_id, int argc, char **argv) {
-  (void)node_id;
-  (void)argc;
-  (void)argv;
-}
-
-ARTS_WEAK void init_per_worker(unsigned int node_id, unsigned int worker_id,
-                               int argc, char **argv) {
-  (void)node_id;
-  (void)worker_id;
-  (void)argc;
-  (void)argv;
-}
-
-ARTS_WEAK void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
-                        arts_edt_dep_t depv[]) {
-  (void)paramc;
-  (void)paramv;
-  (void)depc;
-  (void)depv;
-}
-
 struct arts_runtime_shared_s arts_node_info;
 
 void arts_runtime_node_init(struct arts_config_s *config) {
@@ -316,8 +291,6 @@ void arts_runtime_node_init(struct arts_config_s *config) {
 
   /* GUID generation */
   arts_node_info.keys = (uint64_t **)arts_calloc(tc, sizeof(uint64_t *));
-  arts_node_info.global_guid_thread_id =
-      (uint64_t *)arts_calloc(tc, sizeof(uint64_t));
   arts_guid_node_geometry_init();
 
   /* Performance counters */
@@ -471,7 +444,6 @@ void arts_runtime_global_cleanup() {
     arts_free(arts_node_info.keys[i]);
   }
   arts_free(arts_node_info.keys);
-  arts_free(arts_node_info.global_guid_thread_id);
   arts_guid_generator_cleanup();
 
   /* Socket server global arrays (safe to call even for single-node) */
@@ -537,47 +509,35 @@ static void arts_runtime_barrier(_Atomic(unsigned int) *remaining) {
 /*
  * arts_thread_zero_node_start — Thread 0 (master) startup sequence.
  *
- * After all threads have registered (ready_to_push barrier), thread 0:
- *   1. Enables global GUID generation.
- *   2. Schedules main_edt on rank 0 (if defined by the application).
- *   3. Waits for all threads through a series of barriers before entering
- *      the main scheduler loop.
+ * After all threads have registered (ready_to_push barrier), thread 0 passes
+ * the parallel-start barrier, creates the program's entry EDT on rank 0, and
+ * passes the last startup barrier before entering the main scheduler loop.
  */
-void arts_thread_zero_node_start(int argc, char **argv) {
+void arts_thread_zero_node_start(int argc, char **argv, arts_edt_t entry) {
   ARTS_INFO("Thread 0: starting node initialization");
-  arts_runtime_argc = argc;
-  arts_runtime_argv = argv;
-  set_global_guid_on();
 
   // PERIODIC counter capture starts AFTER the barriers below (see
   // arts_counter_capture_start), when progress threads are running.
   //
   // End-to-end marker (rank 0): take the start stamp here — initialization is
-  // complete and the application is about to run (init_per_node /
-  // init_per_worker, then the main EDT), so the whole application span is
-  // bracketed.  This is a self-contained, env-gated wall-clock marker that
-  // matches the reference runtimes' span definition for a fair comparison.
+  // complete and the application, the main EDT, is about to run — so the
+  // whole application span is bracketed.  This is a self-contained, env-gated
+  // wall-clock marker that matches the reference runtimes' span definition
+  // for a fair comparison.
   if (!arts_global_rank_id && arts_node_info.e2e_marker_enabled) {
     arts_node_info.e2e_start_stamp = arts_get_time_stamp();
   }
 
-  init_per_node(arts_global_rank_id, argc, argv);
-
 #ifdef ARTS_USE_GPU
   arts_init_per_gpu_wrapper(argc, argv);
 #endif
-  set_guid_generator_after_parallel_start();
 
   arts_runtime_barrier(&arts_node_info.ready_to_parallel_start);
-  if (arts_thread_info.role == ARTS_ROLE_WORKER) {
-    init_per_worker(arts_global_rank_id, arts_thread_info.group_pos, argc,
-                    argv);
-  }
   if (!arts_global_rank_id) {
     ARTS_INFO("Thread 0: scheduling main_edt on rank 0 (argc=%d)", argc);
     uint64_t main_args[2] = {(uint64_t)argc, (uint64_t)argv};
     arts_edt_hint_t main_hint = ARTS_EDT_HINT_DEFAULTS;
-    arts_edt_create(main_edt, 2, main_args, 0, &main_hint);
+    arts_edt_create(entry, 2, main_args, 0, &main_hint);
   }
 
   arts_owned_finish_cleanup();
@@ -651,13 +611,6 @@ void arts_runtime_private_init(struct thread_mask_s *thread,
   arts_runtime_barrier(&arts_node_info.ready_to_push);
   if (thread->id) {
     arts_runtime_barrier(&arts_node_info.ready_to_parallel_start);
-
-    if (arts_thread_info.role == ARTS_ROLE_WORKER) {
-      init_per_worker(arts_global_rank_id, arts_thread_info.group_pos,
-                      arts_runtime_argc, arts_runtime_argv);
-      arts_owned_finish_cleanup();
-    }
-
     arts_runtime_barrier(&arts_node_info.ready_to_inspect);
   }
   arts_thread_random_init(arts_global_rank_id, thread->id);

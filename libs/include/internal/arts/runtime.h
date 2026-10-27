@@ -44,6 +44,8 @@ extern "C" {
 
 #include <stdbool.h>
 
+#include "arts.h"
+
 /* Forward declarations of the types referenced (by pointer) in the runtime
  * function signatures below.  The concrete struct layouts live in
  * arts/runtime_state.h; the runtime prototypes only ever take/return pointers
@@ -69,7 +71,7 @@ void arts_run_edt(struct arts_edt_s *edt);
  * work-stealing deque; the caller must own one.  Reached when the sequential
  * acquire walk in arts_db_acquire_all completes (rw_cursor == depc). */
 void arts_schedule_ready_edt(struct arts_edt_s *edt);
-void arts_thread_zero_node_start(int argc, char **argv);
+void arts_thread_zero_node_start(int argc, char **argv, arts_edt_t entry);
 void arts_runtime_private_init(struct thread_mask_s *thread,
                                struct arts_config_s *config);
 int arts_runtime_loop();

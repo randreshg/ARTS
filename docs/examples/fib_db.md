@@ -24,10 +24,9 @@ coherence protocol. A block is destroyed by the EDT that reads it last, which
 runs after every other holder's release: a leaf fork releases the block it
 holds read-only before it forwards it to the join that destroys it.
 
-The program starts from `init_per_worker`, not `main_edt`: rank 0's worker 0
-creates `fib_done`, the input block and the root fork before its scheduler
-runs, and releases the input block once it is filled, since no EDT epilogue
-would release a hold taken outside an EDT.
+`main_edt` on rank 0 creates `fib_done`, the input block and the root fork,
+and releases the input block once it is filled, before it hands the block to
+the root fork, by the first rule.
 
 This is a row of the ARTS-examples section: the ARTS entries run the native
 program (`fib_db_example_arts_<variant>`), and no reference runtime has a
@@ -70,13 +69,13 @@ then.
 
 ## Flow
 
-Every rank prints `Using default DBs` from `init_per_node`, and every process
-prints `Starting ArtsRT with DB-based Fibonacci` before the runtime starts.
-On rank 0, worker 0 reads `n`, creates `fib_done` on rank 0, creates, fills
-and releases the input block, takes the start time, creates the root fork on
-rank 0 and hands it the input block. The forks then unfold the call tree and
-the joins fold it back up, all concurrently; the order in which subtrees
-finish is the schedule's and does not change the result. `fib_done` prints
+Every process prints `Starting ArtsRT with DB-based Fibonacci` before the
+runtime starts. `main_edt` on rank 0 prints `Using default DBs`, reads `n`,
+creates `fib_done` on rank 0, creates, fills and releases the input block,
+takes the start time, creates the root fork on rank 0 and hands it the input
+block. The forks then unfold the call tree and the joins fold it back up, all
+concurrently; the order in which subtrees finish is the schedule's and does
+not change the result. `fib_done` prints
 
 ```
 Fib <n>: <fib(n)> time: <elapsed> nodes: <ranks> workers: <workers>

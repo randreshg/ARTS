@@ -128,39 +128,14 @@ static void test_deleter(void *obj) {
     return 1;                                                                  \
   } while (0)
 
+/* Node init of a one-thread rank as the runtime runs it (the geometry, then
+ * thread 0's key counters), and its route tables. */
 static void rt_init(void) {
   arts_thread_info.thread_id = 0;
   arts_node_info.total_thread_count = 1;
-  arts_node_info.gpu = 0;
   arts_node_info.keys = (uint64_t **)calloc(1, sizeof(uint64_t *));
-  arts_node_info.keys[0] = (uint64_t *)calloc(
-      (size_t)ARTS_GUID_LAST * arts_global_rank_count, sizeof(uint64_t));
-  for (unsigned i = 0; i < ARTS_GUID_LAST * arts_global_rank_count; i++) {
-    arts_node_info.keys[0][i] = 1;
-  }
-  arts_node_info.global_guid_thread_id =
-      (uint64_t *)calloc(1, sizeof(uint64_t));
-  num_tables = 1;
-  min_global_guid_thread = 0;
-  max_global_guid_thread = 1;
-  keys_per_thread = 1u << 20;
-  global_guid_on = 0;
-
-  /* DB seq allocator (mirrors set_guid_generator_after_parallel_start). */
-  arts_db_seq_budget =
-      ((ARTS_GUID_DB_SEQ_MASK + 1) - ARTS_GUID_STARTUP_RESERVE) /
-      arts_global_rank_count;
-  db_seq_creator_base = arts_db_seq_budget * arts_global_rank_id;
-  if (db_seq_next) {
-    free((void *)db_seq_next);
-  }
-  db_seq_next = (_Atomic(uint64_t) *)malloc(sizeof(*db_seq_next) *
-                                            arts_global_rank_count);
-  for (unsigned r = 0; r < arts_global_rank_count; r++) {
-    atomic_init(&db_seq_next[r], db_seq_creator_base + 1);
-  }
-  free(t_db_cursor);
-  t_db_cursor = NULL;
+  arts_guid_node_geometry_init();
+  arts_guid_key_generator_init();
   arts_node_info.route_table =
       (arts_route_table_t **)calloc(1, sizeof(arts_route_table_t *));
   arts_node_info.route_table[0] = arts_new_route_table(1024, 10);
@@ -714,6 +689,11 @@ int main(void) {
   if (run_fg(true) != 0 || run_fg(false) != 0 || run_h() != 0 || run_i() != 0) {
     return 1;
   }
+
+  free(arts_node_info.keys[0]);
+  free(arts_node_info.keys);
+  arts_node_info.keys = NULL;
+  arts_guid_generator_cleanup();
 
   printf("PASS route_table_install_if_absent: single install winner, abandon "
          "keeps loser objects, retire single-flight and bound to the object "

@@ -125,11 +125,8 @@ static inline arts_route_table_t *arts_get_route_table(arts_guid_t guid) {
      * lookup alike.  Self-created keys (reserved-range members included:
      * both reserve paths claim from this rank's own slice) spread
      * chunk-granular over the local per-thread tables; foreign creators and
-     * the startup top region sit outside the slice and take the shared
-     * remote shards.  While arts_db_seq_budget is still 0 (the pre-parallel
-     * window) every DB key falls through to the flat-key partition below,
-     * whose keys_per_thread gate is also still 0 — same remote-shard
-     * answer, so the decision for any key is stable across the flip. */
+     * the never-minted seqs above the last slice sit outside the slice and
+     * take the shared remote shards. */
     uint64_t seq = key & ARTS_GUID_DB_SEQ_MASK;
     if (seq / arts_db_seq_budget == arts_global_rank_id) {
       return arts_node_info
@@ -138,12 +135,13 @@ static inline arts_route_table_t *arts_get_route_table(arts_guid_t guid) {
     return arts_node_info
         .remote_route_table[key & (ARTS_REMOTE_ROUTE_SHARDS - 1)];
   }
-  if (keys_per_thread) {
-    uint64_t global_thread = (key / keys_per_thread);
-    if (min_global_guid_thread <= global_thread &&
-        global_thread < max_global_guid_thread) {
-      return arts_node_info.route_table[global_thread - min_global_guid_thread];
-    }
+  /* A flat key minted on this rank lies in its threads' blocks; any other key
+   * (another rank's, the never-minted rest of this rank's slice, or one below
+   * the base, which wraps above the span) takes a remote shard and never
+   * indexes past route_table[].  A span of 0 sends every key remote. */
+  uint64_t off = key - arts_guid_flat_base;
+  if (off < arts_guid_flat_span) {
+    return arts_node_info.route_table[off / keys_per_thread];
   }
   return arts_node_info
       .remote_route_table[key & (ARTS_REMOTE_ROUTE_SHARDS - 1)];

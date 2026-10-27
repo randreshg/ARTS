@@ -373,8 +373,22 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
 #endif /* model dispatch for MSG_DB_SNAPSHOT_REQUEST and _RESPONSE */
   case MSG_DB_CREATE: {
     ARTS_DEBUG("Coh DB_CREATE_COHERENT Received");
-    arts_db_create_announce_enter(
-        (struct arts_msg_db_create_coherent_packet_s *)(packet));
+    struct arts_msg_db_create_coherent_packet_s *pack =
+        (struct arts_msg_db_create_coherent_packet_s *)(packet);
+#ifndef NDEBUG
+    /* Only a create mints a DB GUID with a real size hint, and only its
+     * creator announces it, so the seq lies in the announcer's slice. */
+    if (ARTS_GUID_DB_GET_SZHINT(pack->db_guid) != ARTS_GUID_DB_SZHINT_NONE &&
+        ARTS_GUID_DB_GET_SEQ(pack->db_guid) / arts_db_seq_budget !=
+            pack->header.rank) {
+      ARTS_ERROR("DB GUID %lu minted by rank %lu arrived from rank %u",
+                 (unsigned long)pack->db_guid,
+                 (unsigned long)(ARTS_GUID_DB_GET_SEQ(pack->db_guid) /
+                                 arts_db_seq_budget),
+                 pack->header.rank);
+    }
+#endif
+    arts_db_create_announce_enter(pack);
     break;
   }
   case MSG_DB_DESTROY: {

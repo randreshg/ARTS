@@ -62,7 +62,7 @@
  *  @code struct ARTS_PACKED foo { ... }; @endcode */
 #define ARTS_PACKED ARTS_ATTRIBUTE(__packed__)
 
-/** Weak symbol — allows user programs to override default implementations. */
+/** Weak symbol — backs @c ARTS_WEAK_IMPORT. */
 #define ARTS_WEAK ARTS_ATTRIBUTE(__weak__)
 
 /** Weak-import attribute — uses @c __weak_import__ on macOS, @c __weak__

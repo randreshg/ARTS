@@ -144,41 +144,39 @@ void fib_done(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_shutdown();
 }
 
-void init_per_node(unsigned int node_id, int argc, char **argv) {
-  // Nothing to do here
+void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+              arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)depc;
+  (void)depv;
+  int argc = (int)paramv[0];
+  char **argv = (char **)paramv[1];
   printf("Using default DBs\n");
-}
-
-void init_per_worker(unsigned int node_id, unsigned int worker_id, int argc,
-                     char **argv) {
-  if (!node_id && !worker_id) {
-    if (argc < 2) {
-      arts_printf("Usage: %s <n>\n", argv[0]);
-      arts_shutdown();
-      return;
-    }
-    uint64_t num = atoll(argv[1]);
-
-    // Create the done EDT that will receive the final result
-    arts_guid_t done_guid =
-        arts_edt_create(fib_done, 1, &num, 1, &(arts_edt_hint_t){.rank = 0});
-
-    // Create a DB for the input number
-    int *num_ptr;
-    arts_guid_t num_guid =
-        arts_db_create((void **)&num_ptr, sizeof(unsigned int), ARTS_DB,
-                       ARTS_DB_PROP_NONE, NULL);
-    assert(num_ptr && "init_per_worker num_ptr not NULL");
-    *num_ptr = num;
-    arts_db_release(num_guid, DB_MODE_RW);
-
-    // Start the computation
-    uint64_t args[2] = {done_guid, 0}; // the done EDT and its slot
-    start = arts_get_time_stamp();
-    arts_guid_t fib_guid =
-        arts_edt_create(fib_fork, 2, args, 1, &(arts_edt_hint_t){.rank = 0});
-    arts_add_dependence(num_guid, fib_guid, 0, DB_MODE_RO);
+  if (argc < 2) {
+    arts_printf("Usage: %s <n>\n", argv[0]);
+    arts_shutdown();
+    return;
   }
+  uint64_t num = atoll(argv[1]);
+
+  // Create the done EDT that will receive the final result
+  arts_guid_t done_guid =
+      arts_edt_create(fib_done, 1, &num, 1, &(arts_edt_hint_t){.rank = 0});
+
+  // Create a DB for the input number
+  int *num_ptr;
+  arts_guid_t num_guid = arts_db_create((void **)&num_ptr, sizeof(unsigned int),
+                                        ARTS_DB, ARTS_DB_PROP_NONE, NULL);
+  assert(num_ptr && "main_edt num_ptr not NULL");
+  *num_ptr = num;
+  arts_db_release(num_guid, DB_MODE_RW);
+
+  // Start the computation
+  uint64_t args[2] = {done_guid, 0}; // the done EDT and its slot
+  start = arts_get_time_stamp();
+  arts_guid_t fib_guid =
+      arts_edt_create(fib_fork, 2, args, 1, &(arts_edt_hint_t){.rank = 0});
+  arts_add_dependence(num_guid, fib_guid, 0, DB_MODE_RO);
 }
 
 int main(int argc, char **argv) {

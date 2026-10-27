@@ -40,10 +40,9 @@ also prints the time rank 0 spends launching iterations; it is not a test.
 | `-t T` | elements per tile edge | absent or non-positive: `T = N / tpd` for the smallest `tpd` that divides `N` and is at least 5 (at least `⌈∛ranks⌉` when that is larger); one tile when `N` is below that |
 
 `N` must be divisible by `T` and the tile count `tpd³` at most 1 000;
-otherwise the program prints an error and shuts down. The arguments are read
-twice, by `init_per_node` on every rank (`-s`, `-t`, for the topology table)
-and by `main_edt` (`-s`, `-i`, `-t`), with the same result. The smoke test
-runs `-s 10 -i 10`: 125 tiles of 8 elements for ten iterations.
+otherwise the program prints an error and shuts down. `main_edt` reads the
+arguments on rank 0. The smoke test runs `-s 10 -i 10`: 125 tiles of 8
+elements for ten iterations.
 
 ## Structure
 
@@ -76,11 +75,12 @@ hold's release.
 
 ## Flow
 
-`init_per_node` builds the tile topology on every rank. `main_edt` checks the
-arguments, prints the decomposition, reserves the six block GUIDs of every
-tile on the tile's owner, creates `init_done` and `post_init_edt` and an
-`init_tile_edt` per tile. An `init_tile_edt` creates and fills its tile's
-blocks under the reserved GUIDs, releases them and decrements `init_done`.
+`main_edt` checks the arguments, prints the decomposition, builds the tile
+topology on rank 0, reserves the six block GUIDs of every tile on the tile's
+owner, creates `init_done` and `post_init_edt` and an `init_tile_edt` per
+tile, which takes its tile's GUIDs, neighbour counts and face directions as
+parameters. An `init_tile_edt` creates and fills its tile's blocks under the
+reserved GUIDs, releases them and decrements `init_done`.
 The mass of each of its nodes is an eighth of the volume of every element
 around the node, its neighbouring tiles' elements included: every tile
 computes them from the initial mesh, as the reference does on its global

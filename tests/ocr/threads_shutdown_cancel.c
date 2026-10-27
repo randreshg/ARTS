@@ -13,7 +13,7 @@
 /// alive=false until the EDT returns, so a deliberately slow EDT forces the
 /// timed-join to expire and the cancel escalation to fire.  The property under
 /// test is liveness: the process must still terminate within the join+cancel
-/// budget and free mask/node_thread_list (no hang).
+/// budget and free arts_thread_masks/arts_thread_handles (no hang).
 ///
 /// We request shutdown, then busy-spin one worker EDT past the join deadline.
 /// The spin is BOUNDED (a wall-clock budget, not an infinite loop), comfortably
@@ -74,7 +74,8 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 int main(int argc, char **argv) {
   arts_rt(argc, argv);
   /* arts_rt returned => join (and possibly cancel) completed and the process is
-   * exiting cleanly; mask/node_thread_list were freed in global cleanup. */
+   * exiting cleanly; arts_thread_masks/arts_thread_handles were freed in
+   * global cleanup. */
   arts_printf("SHUTDOWN_CANCEL_DONE\n");
   return 0;
 }

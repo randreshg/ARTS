@@ -47,11 +47,9 @@
 #include "arts.h"
 #include "arts/graph.h"
 
-/* Built in init_per_node, identically on every rank, from the rank's own
- * arguments, which init_node reads again to load its partition. */
-arts_block_dist_t *distribution;
-int saved_argc;
-char **saved_argv;
+/* This rank's copy of main_edt's distribution, written only by the rank's
+ * init_node; every reader runs after the loaders' finish scope. */
+arts_block_dist_t distribution;
 
 /* The levels of this rank's vertices: relax EDTs on the rank lower them
  * concurrently, each by CAS, and exit_program reads rank 0's once the search's
@@ -61,7 +59,7 @@ _Atomic(uint64_t) *level;
 void bfs_output() {
   arts_printf("Printing vertex levels....\n");
   uint64_t num_local_vertices =
-      arts_block_dist_block_size(arts_get_current_rank(), distribution);
+      arts_block_dist_block_size(arts_get_current_rank(), &distribution);
   uint64_t i;
   for (i = 0; i < num_local_vertices; ++i) {
     arts_printf("Local vertex : %" PRIu64 ", Level : %" PRIu64 "\n", i,
@@ -77,8 +75,8 @@ void exit_program(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)paramv;
   bfs_output();
   free((void *)level);
-  for (arts_partition_t p = 0; p < distribution->num_blocks; ++p) {
-    arts_db_destroy(arts_block_dist_guid_for_partition(distribution, p));
+  for (arts_partition_t p = 0; p < distribution.num_blocks; ++p) {
+    arts_db_destroy(arts_block_dist_guid_for_partition(&distribution, p));
   }
   arts_shutdown();
 }
@@ -96,7 +94,7 @@ void relax(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   uint64_t vlevel = paramv[1];
   arts_csr_graph_t *graph = (arts_csr_graph_t *)depv[0].ptr;
 
-  arts_local_index_t indexv = arts_block_dist_get_local_index(v, distribution);
+  arts_local_index_t indexv = arts_block_dist_get_local_index(v, &distribution);
   assert(indexv < graph->num_local_vertices);
 
   uint64_t oldlevel =
@@ -131,7 +129,7 @@ void relax(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 void bfs_send(arts_vertex_t u, uint64_t ulevel) {
-  arts_guid_t neighb_dbguid = arts_block_dist_guid_for_vertex(u, distribution);
+  arts_guid_t neighb_dbguid = arts_block_dist_guid_for_vertex(u, &distribution);
   uint64_t send[2];
   send[0] = u;
   send[1] = ulevel;
@@ -151,18 +149,28 @@ void kickoff_termination(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   bfs_send(source, 0);
 }
 
+/* paramv: main_edt's distribution (ARTS_BLOCK_DIST_PARAMC words), then
+ * main_edt's arguments as an argument block. */
 void init_node(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                arts_edt_dep_t depv[]) {
-  (void)paramc;
-  (void)paramv;
   (void)depc;
   (void)depv;
   unsigned int node_id = arts_get_current_rank();
 
-  int rc = arts_csr_load_from_args(distribution, saved_argc, saved_argv);
+  distribution = arts_block_dist_from_params(paramv);
+  const uint64_t *arg_words = paramv + ARTS_BLOCK_DIST_PARAMC;
+  uint32_t arg_paramc = paramc - ARTS_BLOCK_DIST_PARAMC;
+  int rc = -1;
+  int argc = arts_argv_count(arg_words, arg_paramc);
+  if (argc >= 0) {
+    const char *argv[(size_t)argc + 1];
+    if (arts_argv_from_params(arg_words, arg_paramc, argv, argc + 1) == argc) {
+      rc = arts_csr_load_from_args(&distribution, argc, argv);
+    }
+  }
 
   uint64_t num_local_vertices =
-      arts_block_dist_block_size(node_id, distribution);
+      arts_block_dist_block_size(node_id, &distribution);
   level = (_Atomic(uint64_t) *)malloc(num_local_vertices * sizeof(*level));
   for (uint64_t i = 0; i < num_local_vertices; ++i) {
     atomic_init(&level[i], UINT64_MAX);
@@ -192,7 +200,7 @@ void main_continue(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     }
   }
 
-  if (source >= distribution->num_vertices) {
+  if (source >= distribution.num_vertices) {
     arts_printf("Usage: %s --file <graph> --num-vertices <n> --num-edges <m> "
                 "[--source <vertex below n>] [--flip] [--keep-self-loops] "
                 "[--csr-format]\n",
@@ -213,31 +221,39 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
               arts_edt_dep_t depv[]) {
   (void)depc;
   (void)depv;
-  if (distribution == NULL) {
+  int argc = (int)paramv[0];
+  const char *const *argv = (const char *const *)paramv[1];
+  arts_block_dist_t dist;
+  if (arts_block_dist_init_from_args(&dist, argc, argv) != 0) {
     arts_printf("Usage: %s --file <graph> --num-vertices <n> --num-edges <m> "
                 "[--source <vertex below n>] [--flip] [--keep-self-loops] "
                 "[--csr-format]\n",
-                ((char **)paramv[1])[0]);
+                argv[0]);
+    arts_shutdown();
+    return;
+  }
+
+  uint32_t arg_paramc = arts_argv_paramc(argc, argv);
+  if (arg_paramc == 0) {
+    arts_printf("%s: the arguments do not fit in EDT parameters\n", argv[0]);
     arts_shutdown();
     return;
   }
 
   // Initialize graph data on every node
+  uint32_t init_paramc = ARTS_BLOCK_DIST_PARAMC + arg_paramc;
+  uint64_t *init_paramv = malloc(init_paramc * sizeof(uint64_t));
+  arts_block_dist_to_params(&dist, init_paramv);
+  arts_argv_to_params(argc, argv, init_paramv + ARTS_BLOCK_DIST_PARAMC);
   arts_guid_t init_done = arts_event_create(&ARTS_EVENT_HINT_FINISH);
   for (unsigned int i = 0; i < arts_get_total_ranks(); i++) {
-    arts_edt_create(init_node, 0, NULL, 0,
+    arts_edt_create(init_node, init_paramc, init_paramv, 0,
                     &(arts_edt_hint_t){.rank = i, .finish_event = init_done});
   }
+  free(init_paramv);
   arts_guid_t cont = arts_edt_create(main_continue, paramc, paramv, 1,
                                      &(arts_edt_hint_t){.rank = 0});
   arts_add_dependence(init_done, cont, 0, DB_MODE_NULL);
-}
-
-void init_per_node(unsigned int node_id, int argc, char **argv) {
-  (void)node_id;
-  saved_argc = argc;
-  saved_argv = argv;
-  distribution = arts_block_dist_init_from_args(argc, argv);
 }
 
 int main(int argc, char **argv) { return arts_rt(argc, argv); }

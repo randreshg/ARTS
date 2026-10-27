@@ -80,18 +80,18 @@ compare-and-swap loop (a level is a value and orders nothing), and read by
 
 ## Flow
 
-`init_per_node`, on every rank before the runtime starts its workers, saves
-the rank's arguments and builds the distribution from them, so every rank
-reserves the same partition GUIDs. `main_edt` on rank 0 refuses missing
-counts, then creates the first scope, one `init_node` per rank and
-`main_continue`. Each `init_node` loads the partition homed on its rank,
-which it holds until it ends, so its completion publishes the partition
-before the scope fires; it allocates its rank's level array and, if the load
-failed, prints its message and shuts down. `main_continue` reads `--source`
-from `main_edt`'s arguments, refuses an out-of-range source, and starts the
+`main_edt` on rank 0 refuses missing counts; otherwise it builds the
+distribution from its arguments, reserving the partitions' GUIDs once, and
+creates the first scope, one `init_node` per rank, each given the
+distribution and `main_edt`'s arguments as parameters, and `main_continue`.
+Each `init_node` writes its rank's copy of the distribution, which every
+later EDT on the rank reads, and loads the partition homed on its rank, which
+it holds until it ends, so its completion publishes the partition before the
+scope fires; it allocates its rank's level array and, if the load failed,
+prints its message and shuts down. `main_continue` reads `--source` from
+`main_edt`'s arguments, refuses an out-of-range source, and starts the
 search. `exit_program` prints rank 0's levels, frees rank 0's array, destroys
-every partition, whose readers have all finished, and shuts the runtime
-down.
+every partition, whose readers have all finished, and shuts the runtime down.
 
 ## Placement
 

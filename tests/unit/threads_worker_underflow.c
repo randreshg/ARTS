@@ -158,15 +158,15 @@ static unsigned int run_derivation(unsigned int rank_count,
    * stubbed loop's threads finish, then free the globals arts_thread_init
    * allocated (normally freed by arts_thread_main_join, which we do not call).
    * This keeps the test leak-clean under LSan; any leak reported is then a
-   * RUNTIME leak, not a test-harness artifact.  node_thread_list / mask are
-   * file-globals in the included threads.c. */
+   * RUNTIME leak, not a test-harness artifact.  arts_thread_handles /
+   * arts_thread_masks are globals of the included threads.c. */
   for (unsigned int i = 1; i < thread_count; i++) {
-    pthread_join(node_thread_list[i], NULL);
+    pthread_join(arts_thread_handles[i], NULL);
   }
-  arts_free(mask);
-  arts_free(node_thread_list);
-  mask = NULL;
-  node_thread_list = NULL;
+  arts_free(arts_thread_masks);
+  arts_free(arts_thread_handles);
+  arts_thread_masks = NULL;
+  arts_thread_handles = NULL;
 
   for (unsigned int i = 0; i < thread_count; i++) {
     free(arts_node_info.saved_counters[i]);

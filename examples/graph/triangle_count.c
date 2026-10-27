@@ -41,18 +41,16 @@
 #include <inttypes.h>
 #include <stdatomic.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "arts.h"
 #include "arts/graph.h"
 
-/* Built in init_per_node, identically on every rank, from the rank's own
- * arguments, which init_node reads again to load its partition; the reducers'
- * GUIDs are reserved there too, so every rank names the same EDTs. */
-arts_block_dist_t *distribution;
-int saved_argc;
-char **saved_argv;
-
+/* This rank's copies of main_edt's distribution and reducer GUIDs, written
+ * only by the rank's init_node; every reader runs after the loaders' finish
+ * scope. */
+arts_block_dist_t distribution;
 arts_guid_t start_reduce_guid = NULL_GUID;
 arts_guid_t final_reduce_guid = NULL_GUID;
 
@@ -101,8 +99,8 @@ void final_reduce(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
   timer = arts_get_time_stamp() - timer;
   arts_printf("Triangle Count: %lu Time: %lu\n", count, timer);
-  for (arts_partition_t p = 0; p < distribution->num_blocks; ++p) {
-    arts_db_destroy(arts_block_dist_guid_for_partition(distribution, p));
+  for (arts_partition_t p = 0; p < distribution.num_blocks; ++p) {
+    arts_db_destroy(arts_block_dist_guid_for_partition(&distribution, p));
   }
   arts_shutdown();
 }
@@ -184,8 +182,9 @@ static inline uint64_t process_vertex(arts_csr_graph_t *graph, arts_vertex_t i,
   for (uint64_t next_pred = first_pred + 1; next_pred < last_pred;
        next_pred++) {
     arts_vertex_t j = neighbors[next_pred];
-    unsigned int owner = arts_block_dist_get_owner(j, distribution);
-    if (arts_block_dist_get_owner(j, distribution) == arts_get_current_rank()) {
+    unsigned int owner = arts_block_dist_get_owner(j, &distribution);
+    if (arts_block_dist_get_owner(j, &distribution) ==
+        arts_get_current_rank()) {
       arts_vertex_t *j_neighbors = NULL;
       uint64_t j_neighbor_count = 0;
       arts_csr_get_neighbors(graph, j, &j_neighbors, &j_neighbor_count);
@@ -211,7 +210,7 @@ static inline uint64_t process_vertex(arts_csr_graph_t *graph, arts_vertex_t i,
       arts_db_release(copy_guid, DB_MODE_RW);
       arts_add_dependence(copy_guid, guid, 0, DB_MODE_RO);
       arts_add_dependence(
-          arts_block_dist_guid_for_partition(distribution, owner), guid, 1,
+          arts_block_dist_guid_for_partition(&distribution, owner), guid, 1,
           DB_MODE_RO);
       (*proc_remote)++;
     }
@@ -267,20 +266,33 @@ void visit_vertex(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   //    arts_printf("%lu : %lu\n", start, local_count);
 }
 
+/* paramv: main_edt's distribution (ARTS_BLOCK_DIST_PARAMC words),
+ * start_reduce's and final_reduce's GUIDs, then main_edt's arguments as an
+ * argument block. */
 void init_node(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                arts_edt_dep_t depv[]) {
-  (void)paramc;
-  (void)paramv;
   (void)depc;
   (void)depv;
   unsigned int node_id = arts_get_current_rank();
 
-  int rc = arts_csr_load_from_args(distribution, saved_argc, saved_argv);
+  distribution = arts_block_dist_from_params(paramv);
+  start_reduce_guid = (arts_guid_t)paramv[ARTS_BLOCK_DIST_PARAMC];
+  final_reduce_guid = (arts_guid_t)paramv[ARTS_BLOCK_DIST_PARAMC + 1];
+  const uint64_t *arg_words = paramv + ARTS_BLOCK_DIST_PARAMC + 2;
+  uint32_t arg_paramc = paramc - (ARTS_BLOCK_DIST_PARAMC + 2);
+  int rc = -1;
+  int argc = arts_argv_count(arg_words, arg_paramc);
+  if (argc >= 0) {
+    const char *argv[(size_t)argc + 1];
+    if (arts_argv_from_params(arg_words, arg_paramc, argv, argc + 1) == argc) {
+      rc = arts_csr_load_from_args(&distribution, argc, argv);
+    }
+  }
 
-  dist_start = arts_block_dist_partition_start(node_id, distribution);
-  dist_end = dist_start + arts_block_dist_block_size(node_id, distribution);
-  block_size = (arts_block_dist_partition_end(node_id, distribution) -
-                arts_block_dist_partition_start(node_id, distribution)) /
+  dist_start = arts_block_dist_partition_start(node_id, &distribution);
+  dist_end = dist_start + arts_block_dist_block_size(node_id, &distribution);
+  block_size = (arts_block_dist_partition_end(node_id, &distribution) -
+                arts_block_dist_partition_start(node_id, &distribution)) /
                (arts_get_total_workers() * over_sub);
   if (!block_size) {
     block_size = 1;
@@ -300,7 +312,7 @@ void start_work(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depv;
   unsigned int node_id = arts_get_current_rank();
   arts_guid_t partition =
-      arts_block_dist_guid_for_partition(distribution, node_id);
+      arts_block_dist_guid_for_partition(&distribution, node_id);
 
   uint64_t args[2];
   for (arts_vertex_t i = dist_start; i < dist_end; i += block_size) {
@@ -340,10 +352,13 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
               arts_edt_dep_t depv[]) {
   (void)depc;
   (void)depv;
-  if (distribution == NULL) {
+  int argc = (int)paramv[0];
+  const char *const *argv = (const char *const *)paramv[1];
+  arts_block_dist_t dist;
+  if (arts_block_dist_init_from_args(&dist, argc, argv) != 0) {
     arts_printf("Usage: %s --file <graph> --num-vertices <n> --num-edges <m> "
                 "[--flip] [--keep-self-loops] [--csr-format]\n",
-                ((char **)paramv[1])[0]);
+                argv[0]);
     arts_shutdown();
     return;
   }
@@ -354,24 +369,32 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     return;
   }
 
+  uint32_t arg_paramc = arts_argv_paramc(argc, argv);
+  if (arg_paramc == 0) {
+    arts_printf("%s: the arguments do not fit in EDT parameters\n", argv[0]);
+    arts_shutdown();
+    return;
+  }
+
+  arts_guid_t start_guid = arts_guid_reserve(ARTS_GUID_EDT, 0);
+  arts_guid_t final_guid = arts_guid_reserve(ARTS_GUID_EDT, 0);
+
   // Initialize graph data on every node
+  uint32_t init_paramc = ARTS_BLOCK_DIST_PARAMC + 2 + arg_paramc;
+  uint64_t *init_paramv = malloc(init_paramc * sizeof(uint64_t));
+  arts_block_dist_to_params(&dist, init_paramv);
+  init_paramv[ARTS_BLOCK_DIST_PARAMC] = start_guid;
+  init_paramv[ARTS_BLOCK_DIST_PARAMC + 1] = final_guid;
+  arts_argv_to_params(argc, argv, init_paramv + ARTS_BLOCK_DIST_PARAMC + 2);
   arts_guid_t init_done = arts_event_create(&ARTS_EVENT_HINT_FINISH);
   for (unsigned int i = 0; i < arts_get_total_ranks(); i++) {
-    arts_edt_create(init_node, 0, NULL, 0,
+    arts_edt_create(init_node, init_paramc, init_paramv, 0,
                     &(arts_edt_hint_t){.rank = i, .finish_event = init_done});
   }
+  free(init_paramv);
   arts_guid_t cont = arts_edt_create(main_continue, paramc, paramv, 1,
                                      &(arts_edt_hint_t){.rank = 0});
   arts_add_dependence(init_done, cont, 0, DB_MODE_NULL);
-}
-
-void init_per_node(unsigned int node_id, int argc, char **argv) {
-  (void)node_id;
-  saved_argc = argc;
-  saved_argv = argv;
-  distribution = arts_block_dist_init_from_args(argc, argv);
-  start_reduce_guid = arts_guid_reserve(ARTS_GUID_EDT, 0);
-  final_reduce_guid = arts_guid_reserve(ARTS_GUID_EDT, 0);
 }
 
 int main(int argc, char **argv) { return arts_rt(argc, argv); }

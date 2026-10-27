@@ -119,11 +119,12 @@ static arts_route_table_t *held_new_route_table(unsigned int size,
 
 /* ── keys ──────────────────────────────────────────────────────────────── */
 
-/* NKEYS GUIDs of `kind` (keys below `limit`) sharing the root's window 0. */
-static int collect_keys(arts_guid_kind_t kind, uint64_t limit,
+/* NKEYS GUIDs of `kind` (keys in [first, first + count)) sharing the root's
+ * window 0. */
+static int collect_keys(arts_guid_kind_t kind, uint64_t first, uint64_t count,
                         arts_guid_t *out) {
   int found = 0;
-  for (uint64_t k = 1; k < limit && found < NKEYS; k++) {
+  for (uint64_t k = first; k < first + count && found < NKEYS; k++) {
     arts_guid_t g = ARTS_GUID_MAKE(kind, 0, k);
     if (get_route_table_key((uint64_t)g, ROOT_SHIFT) == 0) {
       out[found++] = g;
@@ -307,7 +308,7 @@ static int link_is_growing(arts_route_table_t *t) {
 
 static void phase_a(void) {
   arts_guid_t keys[NKEYS];
-  if (collect_keys(ARTS_GUID_DB, 1ull << 30, keys) < NKEYS) {
+  if (collect_keys(ARTS_GUID_DB, 1, 1ull << 30, keys) < NKEYS) {
     CHECK(0, "A: not enough colliding keys\n");
     return;
   }
@@ -375,15 +376,15 @@ static void phase_a(void) {
 
 /* ── phase B: reserve_or_lookup through the key's table ────────────────── */
 
+/* Node init of a one-thread rank as the runtime runs it, with `root` its
+ * route table.  Rank 1 of 2: its flat keys start at 2^47, so only a key taken
+ * from the geometry lands in `root`. */
 static void rt_init(arts_route_table_t *root) {
+  arts_global_rank_id = 1;
+  arts_global_rank_count = 2;
   arts_thread_info.thread_id = 0;
   arts_node_info.total_thread_count = 1;
-  arts_node_info.gpu = 0;
-  num_tables = 1;
-  min_global_guid_thread = 0;
-  max_global_guid_thread = 1;
-  keys_per_thread = 1ull << 40;
-  global_guid_on = 0;
+  arts_guid_node_geometry_init();
   arts_node_info.route_table =
       (arts_route_table_t **)calloc(1, sizeof(arts_route_table_t *));
   arts_node_info.route_table[0] = root;
@@ -398,6 +399,16 @@ static void rt_fini(void) {
     arts_delete_route_table(arts_node_info.remote_route_table[s]);
   }
   free(arts_node_info.route_table);
+  arts_guid_generator_cleanup();
+}
+
+static int all_in_root(const arts_guid_t *keys, int n) {
+  for (int i = 0; i < n; i++) {
+    if (arts_get_route_table(keys[i]) != arts_node_info.route_table[0]) {
+      return 0;
+    }
+  }
+  return 1;
 }
 
 /* Every walker, run while the builder holds the chain's end. */
@@ -428,12 +439,16 @@ static void walk_while_building(const arts_guid_t *keys) {
 
 static void phase_b(void) {
   arts_guid_t keys[NKEYS];
-  if (collect_keys(ARTS_GUID_EVENT, 1ull << 30, keys) < NKEYS) {
-    CHECK(0, "B: not enough colliding keys\n");
-    return;
-  }
   arts_route_table_t *root = arts_new_route_table(ROOT_SIZE, ROOT_SHIFT);
   rt_init(root);
+  /* Keys of thread 0's block, from the first one it mints. */
+  if (collect_keys(ARTS_GUID_EVENT, thread_block_base() + 1, 1ull << 30, keys) <
+      NKEYS) {
+    CHECK(0, "B: not enough colliding keys\n");
+    rt_fini();
+    return;
+  }
+  CHECK(all_in_root(keys, NKEYS), "B: a key does not classify to the root\n");
   root->newFunc = held_new_route_table;
   for (int i = 0; i < COLLISION_RESOLVES; i++) {
     arts_route_item_t *s = NULL;
@@ -485,7 +500,11 @@ static void phase_c(void) {
   arts_guid_t fill[COLLISION_RESOLVES];
   arts_guid_t key = 0;
   int found = 0;
-  for (uint64_t k = 1; found <= COLLISION_RESOLVES && k < (1ull << 30); k++) {
+  arts_route_table_t *root = arts_new_route_table(C_SIZE, C_SHIFT);
+  rt_init(root);
+  uint64_t first = thread_block_base() + 1;
+  for (uint64_t k = first;
+       found <= COLLISION_RESOLVES && k < first + (1ull << 30); k++) {
     arts_guid_t g = ARTS_GUID_MAKE(ARTS_GUID_EVENT, 0, k);
     if (get_route_table_key((uint64_t)g, C_SHIFT) == 0) {
       if (found < COLLISION_RESOLVES) {
@@ -498,10 +517,11 @@ static void phase_c(void) {
   }
   if (found <= COLLISION_RESOLVES) {
     CHECK(0, "C: not enough colliding keys\n");
+    rt_fini();
     return;
   }
-  arts_route_table_t *root = arts_new_route_table(C_SIZE, C_SHIFT);
-  rt_init(root);
+  CHECK(all_in_root(fill, COLLISION_RESOLVES) && all_in_root(&key, 1),
+        "C: a key does not classify to the root\n");
   for (int i = 0; i < COLLISION_RESOLVES; i++) {
     arts_route_item_t *s = NULL;
     arts_route_table_reserve_or_lookup(fill[i], &s);

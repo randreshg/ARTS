@@ -138,7 +138,6 @@ struct arts_runtime_shared_s {
   bool delete_zeros_gpu_gc;
   bool gpu_buff_on;
   uint64_t **keys;
-  uint64_t *global_guid_thread_id;
   const char *counter_folder;
   /* [thread_id] -> that thread's counters, stored before the thread's first
    * barrier arrival; the capture thread starts after the last startup

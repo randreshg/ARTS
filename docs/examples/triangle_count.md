@@ -74,26 +74,29 @@ first finish scope and the `start_work` EDTs of the second; every
 count has finished, and `start_reduce`'s control slot is wired on it.
 `start_reduce` creates one `local_reduce` per rank, each of which sends its
 rank's count to `final_reduce`'s slot of that rank as a slot value.
-`start_reduce` and `final_reduce` are created under GUIDs that every rank
-reserves identically before parallel start, so a `local_reduce` on any rank
-names `final_reduce`. The counters are C11 atomic words in each rank's
-memory, added to with relaxed adds by that rank's `visit_vertex` EDTs and
-read by its `local_reduce` after the second scope has fired.
+`start_reduce` and `final_reduce` are created under GUIDs that `main_edt`
+reserves and every `init_node` copies into its rank's memory, so a
+`local_reduce` on any rank names `final_reduce`. The counters are C11 atomic
+words in each rank's memory, added to with relaxed adds by that rank's
+`visit_vertex` EDTs and read by its `local_reduce` after the second scope
+has fired.
 
 ## Flow
 
-`init_per_node`, on every rank before the runtime starts its workers, saves
-the rank's arguments, builds the distribution from them and reserves the two
-reducers' GUIDs. `main_edt` on rank 0 refuses missing counts, then creates
-the first scope, one `init_node` per rank and `main_continue`. Each
-`init_node` loads the partition homed on its rank, which it holds until it
-ends, sets its rank's vertex range and chunk size and, if the load failed,
-prints its message and shuts down. `main_continue` on rank 0 starts the
-timer, creates the two reducers, the second scope with one `start_work` per
-rank in it, and wires `start_reduce`. Each `start_work` creates its rank's
-local `visit_vertex` EDTs over the whole of its block. `final_reduce` sums
-the counts, prints the result, destroys every partition, whose readers have
-all finished, and shuts the runtime down.
+`main_edt` on rank 0 refuses missing counts; otherwise it builds the
+distribution from its arguments, reserving the partitions' GUIDs once,
+reserves the two reducers' GUIDs and creates the first scope, one `init_node`
+per rank, each given the distribution, the reducers' GUIDs and `main_edt`'s
+arguments as parameters, and `main_continue`. Each `init_node` writes its
+rank's copies of the distribution and the reducers' GUIDs, which every later
+EDT on the rank reads, loads the partition homed on its rank, which it holds
+until it ends, sets its rank's vertex range and chunk size and, if the load
+failed, prints its message and shuts down. `main_continue` on rank 0 starts
+the timer, creates the two reducers, the second scope with one `start_work`
+per rank in it, and wires `start_reduce`. Each `start_work` creates its
+rank's local `visit_vertex` EDTs over the whole of its block. `final_reduce`
+sums the counts, prints the result, destroys every partition, whose readers
+have all finished, and shuts the runtime down.
 
 ## Placement
 

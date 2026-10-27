@@ -489,14 +489,16 @@ endif()
 
 # --- route-table / GUID determinism ---
 if(ARTS_TEST_REFERENCE_TREE)
-# Reservations minted on workers concurrently; the key generator and the
-# route table agree on every rank.  Its reservers record into one block with
-# no order among them.
+# Reservations minted on workers concurrently, for every home: no two of all
+# the ranks' GUIDs collide.  Its reservers record into one block with no order
+# among them.
 add_arts_test(guid_keygen_table_coupling)
-register_multinode_test(guid_keygen_table_coupling TIMEOUT 120 VARIANTS 2n_9w_1p)
+register_multinode_test(guid_keygen_table_coupling TIMEOUT 120
+                        VARIANTS 2n_9w_1p 4n_4w_1p)
 
-# Every rank computes the same home for the same create, round-robin over the
-# ranks, and the GUID encodes it; four ranks are where the rotation shows.
+# Every rank derives the same members of a round-robin range, DBs and events
+# alike, and each is created and lives at the home its GUID encodes; four ranks
+# are where the rotation shows.
 add_arts_test(round_robin_home_distribution)
 register_multinode_test(round_robin_home_distribution TIMEOUT 120
                         VARIANTS 2n_9w_1p 4n_4w_1p)
@@ -662,9 +664,14 @@ register_single_node_test(counter_timer_balance TIMEOUT 30)
 set_tests_properties(counter_timer_balance PROPERTIES PASS_REGULAR_EXPRESSION "PASS counter_timer_balance")
 
 # --- public-API surface ---
-add_arts_test(api_init_per_node_worker)
-register_single_node_test(api_init_per_node_worker TIMEOUT 10)
-set_tests_properties(api_init_per_node_worker PROPERTIES PASS_REGULAR_EXPRESSION "PASS api_init_per_node_worker")
+# An argument vector packed into parameters reads back the same on the last
+# rank, and every malformed block is refused without a read past it.
+add_arts_test(argv_params)
+register_single_node_test(argv_params TIMEOUT 30)
+register_multinode_test(argv_params TIMEOUT 60 VARIANTS 2n_9w_1p)
+set_tests_properties(argv_params argv_params_2n_9w_1p PROPERTIES
+    PASS_REGULAR_EXPRESSION "PASS argv_params"
+    FAIL_REGULAR_EXPRESSION "FAIL")
 
 add_arts_test(api_current_finish_event_null)
 register_single_node_test(api_current_finish_event_null TIMEOUT 10)

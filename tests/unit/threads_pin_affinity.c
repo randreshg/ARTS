@@ -7,21 +7,19 @@
 ///        worker thread's effective affinity matches its assigned pu_id.
 ///
 /// When config->pin_threads is on (non-Apple), arts_thread_init builds a
-/// cpu_set_t with mask[i].pu_id for each spawned thread via
+/// cpu_set_t with arts_thread_masks[i].pu_id for each spawned thread via
 /// pthread_attr_setaffinity_np (and pins thread 0 via pthread_setaffinity_np).
 /// The observable invariant: each worker thread, queried with
 /// pthread_getaffinity_np, is bound to exactly the single PU recorded in its
-/// arts_thread_info.pu_id.  We assert this in the per-worker startup hook
-/// init_per_worker, which the runtime calls on each worker thread after
-/// affinity has been applied and before scheduler execution.
+/// entry of the thread table.  main_edt walks the table: for every worker
+/// entry it queries the thread through its handle in arts_thread_handles.
 ///
 /// The expectation follows the run's own config (its `pin`
 /// key, read before the runtime starts).  With pin on, a worker that is not
 /// bound to exactly its pu_id FAILS, whatever the host; with pin off there is
 /// nothing to bind and each worker reports a SKIP for its check (the test
 /// still passes).  On Apple (__APPLE__) there is no pthread_getaffinity_np and
-/// pinning is a no-op -> the whole hook self-skips.  Uses only the public
-/// init_per_worker hook + arts_thread_info white-box pu_id read.
+/// pinning is a no-op -> the walk self-skips.
 ///
 /// Single-node, every configuration (protocol-agnostic; affinity behavior is
 /// config).
@@ -30,10 +28,10 @@
 #define _GNU_SOURCE
 #endif
 #include "arts.h"
-#include "arts/runtime_state.h"
 #include "arts/system/config.h"
+#include "arts/system/threads.h"
+#include "arts/system/topology.h"
 
-#include "arts/utils/stdatomic_compat.h"
 #include <stdbool.h>
 
 #if !defined(__APPLE__)
@@ -45,48 +43,6 @@
 
 /// The run's `pin` setting, read from its config before the runtime starts.
 static bool g_pin_requested;
-/// Workers whose hook ran, and those of them found bound to their own PU.
-static _Atomic(unsigned int) g_hooked;
-static _Atomic(unsigned int) g_bound;
-
-/// Per-worker hook: runs on each worker thread after affinity is applied.
-/// Asserts the thread is bound to exactly its assigned pu_id when pinned.
-void init_per_worker(unsigned int node_id, unsigned int worker_id, int argc,
-                     char **argv) {
-  (void)node_id;
-  (void)worker_id;
-  (void)argc;
-  (void)argv;
-#if defined(__APPLE__)
-  arts_printf("  SKIP pin affinity: Apple (no pthread_getaffinity_np)\n");
-#else
-  cpu_set_t set;
-  CPU_ZERO(&set);
-  unsigned int my_pu = arts_thread_info.pu_id;
-  if (pthread_getaffinity_np(pthread_self(), sizeof(set), &set) != 0) {
-    arts_printf("  FAIL pin affinity: getaffinity failed (worker pu_id=%u)\n",
-                my_pu);
-    arts_test_fail();
-    return;
-  }
-  atomic_fetch_add_explicit(&g_hooked, 1u, memory_order_relaxed);
-  int ncpus = CPU_COUNT(&set);
-  if (!g_pin_requested) {
-    arts_printf("  SKIP pin affinity: pin off in this config (worker "
-                "pu_id=%u, %d CPUs in affinity)\n",
-                my_pu, ncpus);
-  } else if (ncpus == 1 && CPU_ISSET((int)my_pu, &set)) {
-    atomic_fetch_add_explicit(&g_bound, 1u, memory_order_relaxed);
-    arts_printf("  PASS pin affinity: worker bound to pu_id=%u\n", my_pu);
-  } else {
-    arts_printf("  FAIL pin affinity: pin on, but worker pu_id=%u is bound "
-                "to %d CPUs%s\n",
-                my_pu, ncpus,
-                CPU_ISSET((int)my_pu, &set) ? "" : ", its own not among them");
-    arts_test_fail();
-  }
-#endif
-}
 
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
               arts_edt_dep_t depv[]) {
@@ -96,14 +52,46 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depv;
   arts_printf("=== threads_pin_affinity ===\n");
 #if !defined(__APPLE__)
-  /* Every worker runs its hook before any EDT runs, so the counts are final
-   * here: one check per worker of this rank, each bound when pin is on. */
+  /* The startup barriers order the thread table's writes before any EDT, and
+   * every thread it names runs until shutdown. */
   unsigned int workers = arts_get_workers_per_rank();
-  unsigned int hooked = atomic_load_explicit(&g_hooked, memory_order_relaxed);
-  unsigned int bound = atomic_load_explicit(&g_bound, memory_order_relaxed);
-  if (workers == 0 || hooked != workers) {
-    arts_printf("FAIL threads_pin_affinity: %u of %u workers checked\n", hooked,
-                workers);
+  unsigned int checked = 0;
+  unsigned int bound = 0;
+  for (unsigned int i = 0; i < arts_thread_config->thread_count; i++) {
+    const struct thread_mask_s *m = &arts_thread_masks[i];
+    if (m->role != ARTS_ROLE_WORKER) {
+      continue;
+    }
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    if (pthread_getaffinity_np(arts_thread_handles[i], sizeof(set), &set) !=
+        0) {
+      arts_printf("  FAIL pin affinity: getaffinity failed (worker pu_id=%u)\n",
+                  m->pu_id);
+      arts_test_fail();
+      continue;
+    }
+    checked++;
+    int ncpus = CPU_COUNT(&set);
+    if (!g_pin_requested) {
+      arts_printf("  SKIP pin affinity: pin off in this config (worker "
+                  "pu_id=%u, %d CPUs in affinity)\n",
+                  m->pu_id, ncpus);
+    } else if (ncpus == 1 && CPU_ISSET((int)m->pu_id, &set)) {
+      bound++;
+      arts_printf("  PASS pin affinity: worker bound to pu_id=%u\n", m->pu_id);
+    } else {
+      arts_printf("  FAIL pin affinity: pin on, but worker pu_id=%u is bound "
+                  "to %d CPUs%s\n",
+                  m->pu_id, ncpus,
+                  CPU_ISSET((int)m->pu_id, &set) ? ""
+                                                 : ", its own not among them");
+      arts_test_fail();
+    }
+  }
+  if (workers == 0 || checked != workers) {
+    arts_printf("FAIL threads_pin_affinity: %u of %u workers checked\n",
+                checked, workers);
     arts_test_fail();
   } else if (g_pin_requested && bound != workers) {
     arts_printf("FAIL threads_pin_affinity: %u of %u workers bound\n", bound,
@@ -112,11 +100,11 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   } else {
     arts_printf("PASS threads_pin_affinity: %u of %u workers checked, %u "
                 "bound (pin %s)\n",
-                hooked, workers, bound, g_pin_requested ? "on" : "off");
+                checked, workers, bound, g_pin_requested ? "on" : "off");
   }
 #else
-  arts_printf(
-      "PASS threads_pin_affinity: per-worker affinity hook installed\n");
+  arts_printf("  SKIP pin affinity: Apple (no pthread_getaffinity_np)\n");
+  arts_printf("PASS threads_pin_affinity: nothing to check on Apple\n");
 #endif
   arts_shutdown();
 }

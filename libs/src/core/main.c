@@ -53,7 +53,11 @@
 
 #include <stdlib.h>
 
-int arts_rt(int argc, char **argv) {
+int arts_rt_start(int argc, char **argv, arts_edt_t entry) {
+  if (entry == NULL) {
+    ARTS_ERROR("arts_rt_start: no entry EDT (a program calls arts_rt, which "
+               "passes its main_edt)");
+  }
   struct arts_config_s config;
   arts_config_load(&config);
 
@@ -107,7 +111,7 @@ int arts_rt(int argc, char **argv) {
   }
 
   arts_thread_init(&config);
-  arts_thread_zero_node_start(argc, argv);
+  arts_thread_zero_node_start(argc, argv, entry);
 
   arts_thread_main_join();
 

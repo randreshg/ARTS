@@ -57,7 +57,7 @@ arts_vertex_t *arts_csr_col_ptr(arts_csr_graph_t *csr) {
 
 arts_csr_graph_t *arts_csr_init(arts_partition_t part_index,
                                 arts_graph_sz_t localv, arts_graph_sz_t locale,
-                                arts_block_dist_t *dist,
+                                const arts_block_dist_t *dist,
                                 arts_edge_vector_t *edges, bool sorted_by_src,
                                 arts_guid_t block_guid) {
   // TODO: what will happen if partition does not have any vertex??
@@ -229,11 +229,12 @@ void arts_csr_get_neighbors(arts_csr_graph_t *csr, arts_vertex_t v,
   (*neighborcount) = (end - start);
 }
 
-int arts_csr_load_from_args(arts_block_dist_t *dist, int argc, char **argv) {
+int arts_csr_load_from_args(const arts_block_dist_t *dist, int argc,
+                            const char *const *argv) {
   bool flip = false;
   bool keep_self_loops = false;
   bool csr_format = false;
-  char *file = NULL;
+  const char *file = NULL;
 
   for (int i = 0; i < argc; ++i) {
     // A value-bearing flag consumes the following token; only read it when one
@@ -265,8 +266,9 @@ int arts_csr_load_from_args(arts_block_dist_t *dist, int argc, char **argv) {
 }
 
 // If we want to read the graph as an undirected graph set flip = True
-int arts_csr_load_no_weight(const char *file_path, arts_block_dist_t *dist,
-                            bool flip, bool ignore_self_loops) {
+int arts_csr_load_no_weight(const char *file_path,
+                            const arts_block_dist_t *dist, bool flip,
+                            bool ignore_self_loops) {
   if (file_path == NULL) {
     ARTS_WARN("csr: no file path given");
     return -1;
@@ -401,7 +403,7 @@ int arts_csr_load_no_weight(const char *file_path, arts_block_dist_t *dist,
       arts_csr_init(part_index[k],
                     arts_block_dist_block_size(part_index[k], dist),
                     vedges[k].used, dist, &vedges[k], true,
-                    dist->graphGuid[part_index[k]]);
+                    arts_block_dist_guid_for_partition(dist, part_index[k]));
     }
     arts_edge_vector_free(&vedges[k]);
   }
@@ -410,8 +412,9 @@ int arts_csr_load_no_weight(const char *file_path, arts_block_dist_t *dist,
   return rc;
 }
 
-int arts_csr_load_no_weight_csr(const char *file_path, arts_block_dist_t *dist,
-                                bool flip, bool ignore_self_loops) {
+int arts_csr_load_no_weight_csr(const char *file_path,
+                                const arts_block_dist_t *dist, bool flip,
+                                bool ignore_self_loops) {
   if (file_path == NULL) {
     ARTS_WARN("csr: no file path given");
     return -1;
@@ -545,7 +548,7 @@ int arts_csr_load_no_weight_csr(const char *file_path, arts_block_dist_t *dist,
       arts_csr_init(part_index[k],
                     arts_block_dist_block_size(part_index[k], dist),
                     vedges[k].used, dist, &vedges[k], true,
-                    dist->graphGuid[part_index[k]]);
+                    arts_block_dist_guid_for_partition(dist, part_index[k]));
       arts_edge_vector_free(&vedges[k]);
     }
   } else {

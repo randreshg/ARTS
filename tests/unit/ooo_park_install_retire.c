@@ -293,32 +293,12 @@ static unsigned int parked_anywhere(void) {
   return n;
 }
 
+/* Node init of a one-thread rank as the runtime runs it (only the main
+ * thread mints, DB GUIDs only, so no key counters), and its route tables. */
 static void rt_init(void) {
   arts_thread_info.thread_id = 0;
   arts_node_info.total_thread_count = 1;
-  arts_node_info.gpu = 0;
-  arts_node_info.keys = (uint64_t **)calloc(1, sizeof(uint64_t *));
-  arts_node_info.keys[0] = (uint64_t *)calloc(
-      (size_t)ARTS_GUID_LAST * arts_global_rank_count, sizeof(uint64_t));
-  for (unsigned i = 0; i < ARTS_GUID_LAST * arts_global_rank_count; i++) {
-    arts_node_info.keys[0][i] = 1;
-  }
-  arts_node_info.global_guid_thread_id =
-      (uint64_t *)calloc(1, sizeof(uint64_t));
-  num_tables = 1;
-  min_global_guid_thread = 0;
-  max_global_guid_thread = 1;
-  keys_per_thread = 1u << 20;
-  global_guid_on = 0;
-  arts_db_seq_budget =
-      ((ARTS_GUID_DB_SEQ_MASK + 1) - ARTS_GUID_STARTUP_RESERVE) /
-      arts_global_rank_count;
-  db_seq_creator_base = arts_db_seq_budget * arts_global_rank_id;
-  db_seq_next = (_Atomic(uint64_t) *)malloc(sizeof(*db_seq_next) *
-                                            arts_global_rank_count);
-  for (unsigned r = 0; r < arts_global_rank_count; r++) {
-    atomic_init(&db_seq_next[r], db_seq_creator_base + 1);
-  }
+  arts_guid_node_geometry_init();
   arts_node_info.route_table =
       (arts_route_table_t **)calloc(1, sizeof(arts_route_table_t *));
   arts_node_info.route_table[0] = arts_new_route_table(1024, 10);
@@ -430,6 +410,7 @@ int main(void) {
   for (int i = 0; i < WORKERS; i++) {
     pthread_join(tid[i], NULL);
   }
+  arts_guid_generator_cleanup();
   printf("PASS ooo_park_install_retire: A %" PRIu64 " parks (%" PRIu64
          " by the install's drain, %" PRIu64 " by a rescue), B %" PRIu64
          " (%" PRIu64 " by the retire's re-drive, %" PRIu64

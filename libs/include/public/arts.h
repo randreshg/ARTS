@@ -323,62 +323,28 @@ typedef void (*arts_edt_t)(uint32_t paramc, const uint64_t *paramv,
 /** @} */ /* end dep_types */
 
 /* ========================================================================= */
-/** @defgroup user_callbacks User Callbacks
- *  Optional weak-symbol callbacks invoked by the runtime.
- *  Define any of these in your application to hook into the lifecycle.
+/** @defgroup program_entry Program entry
  *  @{ */
 
 /**
- * @brief Main entry-point EDT, scheduled on rank 0 after runtime init.
+ * @brief The program's one entry, which a program must define.
  *
- * If defined, the runtime creates this EDT on node 0 with:
- *   - @c paramv[0] = @c argc (cast to @c uint64_t)
- *   - @c paramv[1] = @c argv (cast to @c uint64_t)
+ * The runtime creates it on rank 0 once rank 0's threads are up, with
+ * @c paramv[0] = @c argc and @c paramv[1] = @c argv (rank 0's process
+ * arguments, a pointer valid on rank 0 only).  Everything else, on every
+ * rank, starts from EDTs it creates (see "Program Structure" in
+ * @c docs/getting_started/quickstart.rst).  A program that calls @c arts_rt
+ * without defining it does not link.
  *
- * The EDT can call blocking operations like arts_event_wait().
- *
- * @param paramc Number of static parameters (2 when called by the runtime).
+ * @param paramc Number of static parameters (2).
  * @param paramv Parameter array: paramv[0]=argc, paramv[1]=(uint64_t)argv.
- * @param depc   Number of dependency slots (0 when called by the runtime).
- * @param depv   Dependency array (empty when called by the runtime).
+ * @param depc   Number of dependency slots (0).
+ * @param depv   Dependency array (empty).
  */
 extern void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                      arts_edt_dep_t depv[]);
 
-/**
- * @brief Optional per-node startup callback invoked before worker parallel
- * startup.
- *
- * When defined by the application, ARTS calls this once per node on thread 0
- * after basic runtime initialization and before the parallel-start barrier.
- * CARTS uses this hook for distributed DB GUID reservation.
- *
- * Before parallel start a rank mints every GUID from one startup reserve of
- * 2^26 keys, all kinds together; minting more there is a fatal error.
- *
- * @param node_id Rank of the current node.
- * @param argc    Original process argument count.
- * @param argv    Original process argument vector.
- */
-extern void init_per_node(unsigned int node_id, int argc, char **argv);
-
-/**
- * @brief Optional per-worker startup callback invoked after the parallel-start
- * barrier.
- *
- * When defined by the application, ARTS calls this on each worker thread
- * after the startup barrier and before normal scheduler execution. CARTS uses
- * this hook for owner-local distributed DB materialization.
- *
- * @param node_id   Rank of the current node.
- * @param worker_id Local worker index on the current node.
- * @param argc      Original process argument count.
- * @param argv      Original process argument vector.
- */
-extern void init_per_worker(unsigned int node_id, unsigned int worker_id,
-                            int argc, char **argv);
-
-/** @} */ /* end user_callbacks */
+/** @} */ /* end program_entry */
 
 /* ========================================================================= */
 /** @defgroup event_slots Event Slot Types
@@ -503,19 +469,23 @@ int arts_printf(const char *format, ...);
 /** @defgroup runtime Runtime Lifecycle
  *  @{ */
 
+/** The entry @c arts_rt calls; a program calls @c arts_rt. */
+int arts_rt_start(int argc, char **argv, arts_edt_t entry);
+
 /**
  * @brief Entry point to the ARTS runtime.
  *
  * Reads @c arts.cfg, initializes threading and networking, schedules
- * main_edt() on rank 0 (if defined), and blocks until
- * arts_shutdown() is called.
+ * main_edt() on rank 0, and blocks until arts_shutdown() is called.
  *
  * @param argc Argument count from main().
  * @param argv Argument vector from main().
  * @return 0 on success.
  * @see arts_shutdown
  */
-int arts_rt(int argc, char **argv);
+static inline int arts_rt(int argc, char **argv) {
+  return arts_rt_start(argc, argv, main_edt);
+}
 
 /**
  * @brief Shut down the ARTS runtime.
@@ -557,6 +527,10 @@ void arts_abort(uint8_t error_code);
 /**
  * @brief Reserve a GUID of the given @p kind on node @p rank.
  *
+ * A reserved GUID is private to the reserving EDT and is shared only by
+ * passing it on (see "Names shared across ranks" in
+ * @c docs/programming_model/guids.rst).
+ *
  * @param kind  Kind tag for the GUID (e.g. @c ARTS_GUID_EDT, @c ARTS_GUID_DB).
  * @param rank  Target node rank.
  * @return A new GUID.
@@ -591,7 +565,9 @@ arts_guid_kind_t arts_guid_get_kind(arts_guid_t guid);
  * @brief Reserve a contiguous range of @p size GUIDs on node @p route.
  *
  * Returns the start GUID of the range.  Use @c arts_guid_from_index() to
- * access individual GUIDs within the range.
+ * access individual GUIDs within the range.  A reserved range is private to
+ * the reserving EDT and is shared only by passing it on (see "Names shared
+ * across ranks" in @c docs/programming_model/guids.rst).
  *
  * @param kind  Kind tag for every GUID in the range.
  * @param size  Number of GUIDs to allocate.
@@ -631,7 +607,7 @@ arts_guid_t arts_guid_from_index(arts_guid_t range_guid, unsigned int idx);
  * @param guid       The GUID to look up.
  * @return Zero-based index, or -1 on mismatch.
  */
-int arts_guid_index_from(arts_guid_t range_guid, arts_guid_t guid);
+int64_t arts_guid_index_from(arts_guid_t range_guid, arts_guid_t guid);
 
 /** @} */ /* end guid */
 
@@ -666,6 +642,35 @@ int arts_guid_index_from(arts_guid_t range_guid, arts_guid_t guid);
 arts_guid_t arts_edt_create(arts_edt_t func_ptr, uint32_t paramc,
                             const uint64_t *paramv, uint32_t depc,
                             const arts_edt_hint_t *hint);
+
+/**
+ * @name Process arguments as EDT parameters
+ * The parameter words that carry an argument vector:
+ * @c [argc][len_0][bytes_0 ...][len_1][bytes_1 ...]..., each argument's bytes
+ * NUL-terminated and padded to a word; @c len_i counts the bytes without the
+ * NUL.  Parameters are copied with the EDT, so a block packed on one rank
+ * reads the same on every rank.
+ * @{ */
+
+/** Words the block takes, or 0 when argc is negative or the block would not
+ *  fit in a uint32_t (a valid block always takes at least one word). */
+uint32_t arts_argv_paramc(int argc, const char *const *argv);
+
+/** Packs @p argv into @p paramv, which holds arts_argv_paramc(argc, argv)
+ *  words. */
+void arts_argv_to_params(int argc, const char *const *argv, uint64_t *paramv);
+
+/** argc of the block in paramv[0, paramc), or -1 when it is malformed or runs
+ *  past @p paramc. */
+int arts_argv_count(const uint64_t *paramv, uint32_t paramc);
+
+/** Fills argv[0..argc) with pointers into @p paramv (read-only, valid for the
+ *  EDT body) and argv[argc] = NULL.  Returns argc, or -1 (argv untouched) when
+ *  the block is malformed or runs past @p paramc, or when argc >= @p max. */
+int arts_argv_from_params(const uint64_t *paramv, uint32_t paramc,
+                          const char **argv, int max);
+
+/** @} */
 
 /**
  * @brief Register the calling EDT's output-event payload.

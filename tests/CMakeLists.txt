@@ -1745,6 +1745,64 @@ if(ARTS_TEST_REFERENCE_TREE)
         FAIL_REGULAR_EXPRESSION "FAIL cxl_arm64_refusal")
 endif()
 
+# A program must define main_edt: one without it does not link, one whose
+# main_edt sits in a static archive member or that is built with hidden
+# visibility does, and the runtime libraries name no main_edt.  The programs
+# are built against this tree's libraries, as an installed consumer links
+# them, with the tree's flags and link options (a sanitizer tree's included).
+# No cell changes the entry: the reference tree runs it.
+if(ARTS_TEST_REFERENCE_TREE)
+    set(_system_libs -lpthread)
+    foreach(_l IN LISTS CMAKE_DL_LIBS)
+        list(APPEND _system_libs -l${_l})
+    endforeach()
+    if(NOT APPLE)
+        list(APPEND _system_libs -lrt -lm)
+    endif()
+    if(IS_ABSOLUTE "${ARTS_ATOMIC_LINK}")
+        list(APPEND _system_libs "${ARTS_ATOMIC_LINK}")
+    elseif(ARTS_ATOMIC_LINK)
+        list(APPEND _system_libs -l${ARTS_ATOMIC_LINK})
+    endif()
+    string(TOUPPER "${CMAKE_BUILD_TYPE}" _config)
+    separate_arguments(_c_flags NATIVE_COMMAND
+        "${CMAKE_C_FLAGS} ${CMAKE_C_FLAGS_${_config}}")
+    separate_arguments(_exe_flags NATIVE_COMMAND
+        "${CMAKE_EXE_LINKER_FLAGS} ${CMAKE_EXE_LINKER_FLAGS_${_config}}")
+    if(CMAKE_LINKER_TYPE)
+        list(APPEND _exe_flags ${CMAKE_C_USING_LINKER_${CMAKE_LINKER_TYPE}})
+    endif()
+    get_directory_property(_link_options LINK_OPTIONS)
+    set(_shared_lib "")
+    if(TARGET arts_shared)
+        set(_shared_lib "$<TARGET_FILE:arts_shared>")
+    endif()
+    set(_work ${CMAKE_CURRENT_BINARY_DIR}/main_edt_required)
+    file(GENERATE OUTPUT ${_work}.inputs.cmake CONTENT
+        "set(C_COMPILER [[${CMAKE_C_COMPILER}]])
+set(NM [[${CMAKE_NM}]])
+set(AR [[${CMAKE_AR}]])
+set(STATIC_LIB [[$<TARGET_FILE:arts_static>]])
+set(SHARED_LIB [[${_shared_lib}]])
+set(INCLUDE_DIR [[${ARTS_PUBLIC_INCLUDE_DIR}]])
+set(C_FLAGS [[${_c_flags}]])
+set(LINK_OPTIONS [[${_link_options}]])
+set(EXE_LINKER_FLAGS [[${_exe_flags}]])
+set(NON_PIE_COMPILE_OPTIONS [[${ARTS_NON_PIE_COMPILE_OPTIONS}]])
+set(NON_PIE_LINK_OPTIONS [[${ARTS_NON_PIE_LINK_OPTIONS}]])
+set(SYSTEM_LIBS [[${_system_libs}]])
+set(WORK_DIR [[${_work}]])
+")
+    add_test(NAME main_edt_required
+             COMMAND ${CMAKE_COMMAND} -DINPUTS=${_work}.inputs.cmake
+                     -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/main_edt_required.cmake)
+    set_tests_properties(main_edt_required PROPERTIES
+        LABELS "single_node"
+        TIMEOUT 120
+        PASS_REGULAR_EXPRESSION "PASS main_edt_required"
+        FAIL_REGULAR_EXPRESSION "FAIL main_edt_required")
+endif()
+
 # Every access to an _Atomic object names its memory order.  clang-tidy judges
 # every C unit of this tree's runtime, shim, tests and examples with the tree's
 # own compile commands, so each cell's conditional code is judged in the tree

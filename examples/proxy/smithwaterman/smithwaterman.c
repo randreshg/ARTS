@@ -81,7 +81,7 @@ static inline int char_map(char c) {
 }
 
 /* ========================================================================= */
-/*  Global state (built on every node by init_per_node)                      */
+/*  Global state (set by main_edt on rank 0)                                 */
 /* ========================================================================= */
 
 typedef struct {
@@ -602,17 +602,6 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_event_satisfy_slot(ev_bcorner[i * (n_tiles_w + 1) + 0], g_bcor,
                             ARTS_EVENT_LATCH_DECR_SLOT);
   }
-}
-
-void init_per_node(unsigned int node_id, int argc, char **argv) {
-  (void)node_id;
-  /* Parse same args so g_topo is populated on each node for sw_tile_edt. */
-  if (argc < 3)
-    return;
-  g_topo.tile_w = atoi(argv[1]);
-  g_topo.tile_h = atoi(argv[2]);
-  /* Other fields are carried via paramv/depv deps (params DB); g_topo
-   * isn't strictly needed on non-rank-0 nodes for sw_tile_edt. */
 }
 
 int main(int argc, char *argv[]) { return arts_rt(argc, argv); }

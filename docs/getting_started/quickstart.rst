@@ -13,8 +13,13 @@ Program Structure
 Every ARTS program consists of three parts:
 
 1. **EDT functions** — the async work units.
-2. ``main_edt()`` — entry-point EDT, scheduled on rank 0 after runtime init.
-3. ``main()`` — calls :c:func:`arts_rt` to start the runtime.
+2. ``main_edt()`` — the program's one entry, which every program defines.
+   The runtime creates it on rank 0 once rank 0's threads are up, with
+   ``paramv[0] = argc`` and ``paramv[1] = argv`` (rank 0's process
+   arguments, a pointer valid on rank 0 only).  Everything else, on every
+   rank, starts from EDTs it creates.
+3. ``main()`` — calls :c:func:`arts_rt` to start the runtime.  A program
+   that calls ``arts_rt`` without defining ``main_edt`` does not link.
 
 .. code-block:: c
 
@@ -42,6 +47,75 @@ Every ARTS program consists of three parts:
        arts_rt(argc, argv);   /* blocks until arts_shutdown() */
        return 0;
    }
+
+Three idioms follow from the one entry.
+
+**Arguments reach EDTs as parameters.**  ``main_edt`` parses scalars and
+passes them as single parameter words.  Strings travel as a packed argument
+block: :c:func:`arts_argv_paramc`, :c:func:`arts_argv_to_params` and, in the
+receiving EDT, :c:func:`arts_argv_from_params`.  Parameters are copied with
+the EDT, so the block reads the same on every rank.
+
+.. code-block:: c
+
+   /* in main_edt */
+   int argc = (int)paramv[0];
+   const char *const *argv = (const char *const *)paramv[1];
+   uint32_t n = arts_argv_paramc(argc, argv);
+   if (n == 0) { /* the block would not fit in a uint32_t */
+       arts_shutdown();
+       return;
+   }
+   uint64_t *words = malloc(n * sizeof(uint64_t));
+   arts_argv_to_params(argc, argv, words);
+   arts_edt_create(worker, n, words, 0,
+                   &(arts_edt_hint_t){.rank = arts_get_total_ranks() - 1});
+   free(words);
+
+   /* in worker */
+   const char *args[16];
+   int count = arts_argv_from_params(paramv, paramc, args, 16);
+   if (count < 0) { /* malformed, or more than 15 arguments */
+       return;
+   }
+
+**Work on every rank is one EDT per rank.**  ``main_edt`` creates one EDT
+per rank as members of a finish scope, and wires the scope to a continuation
+on rank 0.  A per-rank EDT may leave state in its rank's memory for later
+EDTs on that rank; each such word has one writer, that rank's EDT, and the
+scope and message delivery order every later reader after it.  What other
+ranks need travels as parameters or data blocks.
+
+.. code-block:: c
+
+   arts_guid_t done = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+   for (unsigned int r = 0; r < arts_get_total_ranks(); r++) {
+       arts_edt_create(init_rank, n, words, 0,
+                       &(arts_edt_hint_t){.rank = r, .finish_event = done});
+   }
+   arts_guid_t cont = arts_edt_create(after_init, 0, NULL, 1,
+                                      &(arts_edt_hint_t){.rank = 0});
+   arts_add_dependence(done, cont, 0, DB_MODE_NULL);
+
+**Names shared across ranks come from a range that one EDT reserves.**
+``main_edt`` (or any one EDT) reserves a range and passes the range GUID on;
+every EDT on every rank derives the same member GUIDs from it (see
+:ref:`names-shared-across-ranks`).
+
+.. code-block:: c
+
+   /* in main_edt: one block per rank, member i homed on rank i % N */
+   arts_guid_t range = arts_guid_reserve_range(ARTS_GUID_DB,
+                                               arts_get_total_ranks(),
+                                               ARTS_HINT_ROUND_ROBIN);
+   uint64_t p[1] = {range};
+   /* ... pass p to the per-rank EDTs ... */
+
+   /* in the EDT on rank r: create its own member; any EDT derives the rest */
+   arts_guid_t mine = arts_guid_from_index((arts_guid_t)paramv[0],
+                                           arts_get_current_rank());
+   void *ptr = arts_db_create_with_guid(mine, size, ARTS_DB,
+                                        ARTS_DB_PROP_NONE, NULL);
 
 Configuration File
 ------------------

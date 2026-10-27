@@ -19,9 +19,17 @@
  *   3. DB range members inherit the range's exact szhint bits (the sentinel),
  *      and index_from round-trips every member.
  *
- * No runtime: guid.c is #include'd with libc-backed shims.
+ *   4. The round-robin stride is ceil(size / nrank) for every size: at
+ *      nrank = 3 a range of UINT_MAX GUIDs advances every home's counter by
+ *      1,431,655,765, for a DB range (the per-home claim) and for a flat one
+ *      (the thread's per-home counters) alike, and a later reserve on every
+ *      home lies above the range's last member there.
+ *
+ * No runtime: guid.c is #include'd with libc-backed shims; node_init runs
+ * the runtime's node init for one simulated rank.
  */
 
+#include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -54,64 +62,92 @@ ARTS_THREAD_LOCAL struct arts_runtime_private_s arts_thread_info;
     return 1;                                                                  \
   } while (0)
 
-static void generator_reset(uint64_t key_budget) {
-  arts_thread_info.thread_id = 0;
-  arts_node_info.total_thread_count = 1;
-  arts_node_info.gpu = 0;
-  if (arts_node_info.keys) {
-    free(arts_node_info.keys[0]);
-    free(arts_node_info.keys);
-  }
-  free(arts_node_info.global_guid_thread_id);
-  arts_node_info.keys = (uint64_t **)calloc(1, sizeof(uint64_t *));
-  arts_node_info.keys[0] = (uint64_t *)calloc(
-      (size_t)ARTS_GUID_LAST * arts_global_rank_count, sizeof(uint64_t));
-  for (unsigned i = 0; i < ARTS_GUID_LAST * arts_global_rank_count; i++) {
-    arts_node_info.keys[0][i] = 1;
-  }
-  arts_node_info.global_guid_thread_id =
-      (uint64_t *)calloc(1, sizeof(uint64_t));
-  arts_node_info.global_guid_thread_id[0] = 0;
-  num_tables = 1;
-  min_global_guid_thread = 0;
-  max_global_guid_thread = 1;
-  keys_per_thread = key_budget;
-  global_guid_on = 0;
-
-  /* DB seq allocator (mirrors set_guid_generator_after_parallel_start). */
-  arts_db_seq_budget =
-      ((ARTS_GUID_DB_SEQ_MASK + 1) - ARTS_GUID_STARTUP_RESERVE) /
-      arts_global_rank_count;
-  db_seq_creator_base = arts_db_seq_budget * arts_global_rank_id;
-  if (db_seq_next) {
-    free((void *)db_seq_next);
-  }
-  db_seq_next = (_Atomic(uint64_t) *)malloc(sizeof(*db_seq_next) *
-                                            arts_global_rank_count);
-  for (unsigned r = 0; r < arts_global_rank_count; r++) {
-    atomic_init(&db_seq_next[r], db_seq_creator_base + 1);
-  }
-  free(t_db_cursor);
-  t_db_cursor = NULL;
-}
-
-static void generator_free(void) {
-  if (arts_node_info.keys) {
-    free(arts_node_info.keys[0]);
+static void node_fini(void) {
+  if (arts_node_info.keys != NULL) {
+    for (unsigned t = 0; t < arts_node_info.total_thread_count; t++) {
+      free(arts_node_info.keys[t]);
+    }
     free(arts_node_info.keys);
     arts_node_info.keys = NULL;
   }
-  free(arts_node_info.global_guid_thread_id);
-  arts_node_info.global_guid_thread_id = NULL;
-  free((void *)db_seq_next);
-  db_seq_next = NULL;
-  free(t_db_cursor);
-  t_db_cursor = NULL;
+  arts_guid_generator_cleanup();
+}
+
+/* The runtime's node init for rank `rank` of `nrank` with one thread: the
+ * geometry, then the thread's key counters. */
+static void node_init(unsigned int rank, unsigned int nrank) {
+  node_fini();
+  arts_global_rank_id = rank;
+  arts_global_rank_count = nrank;
+  arts_node_info.total_thread_count = 1;
+  arts_node_info.keys = (uint64_t **)calloc(1, sizeof(uint64_t *));
+  arts_guid_node_geometry_init();
+  arts_thread_info.thread_id = 0;
+  arts_guid_key_generator_init();
+}
+
+/* Home h's counter of the arm that serves `kind`. */
+static uint64_t home_counter(arts_guid_kind_t kind, unsigned int h) {
+  return kind == ARTS_GUID_DB
+             ? atomic_load_explicit(&db_seq_next[h], memory_order_relaxed)
+             : *arts_guid_generator_get_key(h, (unsigned int)kind);
+}
+
+/* The key offset that orders two GUIDs of one home within its arm. */
+static uint64_t arm_key(arts_guid_kind_t kind, arts_guid_t g) {
+  uint64_t key = ARTS_GUID_GET_KEY(g);
+  return kind == ARTS_GUID_DB ? ARTS_GUID_DB_GET_SEQ(key) : key;
+}
+
+/* Property 4 for `kind`; 0 when it holds. */
+static int check_stride(arts_guid_kind_t kind) {
+  const unsigned int nrank = 3;
+  const uint64_t stride = 1431655765u; /* ceil(UINT_MAX / 3) */
+  node_init(0, nrank);
+  uint64_t before[3];
+  for (unsigned int h = 0; h < nrank; h++) {
+    before[h] = home_counter(kind, h);
+  }
+  arts_guid_t range =
+      arts_guid_reserve_range(kind, UINT_MAX, ARTS_HINT_ROUND_ROBIN);
+  if (range == NULL_GUID) {
+    FAIL("kind %u: a round-robin range of UINT_MAX returned NULL_GUID\n",
+         (unsigned)kind);
+  }
+  for (unsigned int h = 0; h < nrank; h++) {
+    uint64_t advance = home_counter(kind, h) - before[h];
+    if (advance != stride) {
+      FAIL("kind %u: a range of UINT_MAX advanced home %u's counter by "
+           "%lu, not %lu\n",
+           (unsigned)kind, h, (unsigned long)advance, (unsigned long)stride);
+    }
+  }
+  arts_guid_t next =
+      arts_guid_reserve_range(kind, nrank, ARTS_HINT_ROUND_ROBIN);
+  for (unsigned int h = 0; h < nrank; h++) {
+    /* Home h's last member is the one of ordinal stride - 1. */
+    arts_guid_t last =
+        arts_guid_from_index(range, (unsigned int)((stride - 1) * nrank + h));
+    arts_guid_t single = arts_guid_reserve(kind, h);
+    arts_guid_t later = arts_guid_from_index(next, h);
+    if (arts_guid_get_rank(last) != h ||
+        arts_guid_index_from(range, last) !=
+            (int64_t)((stride - 1) * nrank + h)) {
+      FAIL("kind %u: home %u's last member does not round-trip\n",
+           (unsigned)kind, h);
+    }
+    if (arm_key(kind, single) <= arm_key(kind, last) ||
+        arm_key(kind, later) <= arm_key(kind, last)) {
+      FAIL("kind %u: a later reserve on home %u lies inside the range\n",
+           (unsigned)kind, h);
+    }
+  }
+  return 0;
 }
 
 int main(void) {
   /* ---- 1. labeled-vs-auto collision avoidance. ---- */
-  generator_reset(1u << 20);
+  node_init(0, 4);
   const unsigned RSIZE = 40; /* spans several keys per rank (stride=10) */
   arts_guid_t dist =
       arts_guid_reserve_range(ARTS_GUID_DB, RSIZE, ARTS_HINT_ROUND_ROBIN);
@@ -141,7 +177,7 @@ int main(void) {
   }
 
   /* ---- 2. single-rank range: contiguous, exclusive. ---- */
-  generator_reset(1u << 20);
+  node_init(0, 4);
   const unsigned NEED = 8;
   arts_guid_t rstart = arts_guid_reserve_range(ARTS_GUID_DB, NEED, 2);
   if (rstart == NULL_GUID) {
@@ -167,13 +203,19 @@ int main(void) {
         ARTS_GUID_DB_SZHINT_NONE) {
       FAIL("range member %u lost the sentinel szhint\n", i);
     }
-    if (arts_guid_index_from(rstart, g) != (int)i) {
+    if (arts_guid_index_from(rstart, g) != (int64_t)i) {
       FAIL("index_from round-trip broke at %u\n", i);
     }
   }
 
-  generator_free();
+  /* ---- 4. the round-robin stride, both arms. ---- */
+  if (check_stride(ARTS_GUID_DB) != 0 || check_stride(ARTS_GUID_EVENT) != 0) {
+    return 1;
+  }
+
+  node_fini();
   printf("PASS guid_reserve_range: labeled-vs-auto collision-free, "
-         "contiguous single-rank claim, sentinel inheritance + round-trip\n");
+         "contiguous single-rank claim, sentinel inheritance + round-trip, "
+         "round-robin stride of a UINT_MAX range on both arms\n");
   return 0;
 }

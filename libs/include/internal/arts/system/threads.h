@@ -43,9 +43,20 @@
 extern "C" {
 #endif
 
+#include <pthread.h>
 #include <stdbool.h>
 
 #include "arts/system/config.h"
+
+struct thread_mask_s;
+
+/* The rank's thread table: the configuration, each thread's placement and
+ * each thread's handle ([0] is the main thread's), indexed by thread id.
+ * arts_thread_init writes them before the startup barriers, which order every
+ * later read. */
+extern struct arts_config_s *arts_thread_config;
+extern struct thread_mask_s *arts_thread_masks;
+extern pthread_t *arts_thread_handles;
 
 void arts_thread_init(struct arts_config_s *config);
 void arts_thread_main_join(void);

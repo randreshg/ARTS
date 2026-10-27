@@ -54,7 +54,7 @@ extern "C" {
  * | type  (2)  | rank (14)  | key  (48)  |
  *
  * - **type** — @ref arts_guid_kind_t tag identifying the object kind.
- * - **rank** — Node rank that owns the object (up to 16 384 nodes).
+ * - **rank** — Node rank that owns the object (up to 16 382 nodes).
  * - **key**  — Node-local key.  EDT/EVENT keys are flat 48-bit counters;
  *   DB keys are further framed (see "DB-kind key framing" below).
  *
@@ -138,11 +138,9 @@ extern "C" {
  * @c seq / arts_db_seq_budget recovers the creator arithmetically.  Within
  * one creating rank the slice is served by shared per-home counters from
  * which threads lease fixed-size chunks — cross-node agreement stays static
- * (zero wire traffic), intra-node agreement is rank-local atomics.  The top
- * of every seq space above @c nrank*budget belongs to the pre-parallel
- * startup allocator and classifies as "no creator" on every rank.  (That
- * startup countdown serves EVERY kind from one counter, so its reserve
- * bounds the pre-parallel mint total of all kinds, not DB mints alone.)
+ * (zero wire traffic), intra-node agreement is rank-local atomics.  The seqs
+ * of every seq space above @c nrank*budget are never minted and classify as
+ * "no creator" on every rank.
  */
 
 #define ARTS_GUID_DB_SEQ_BITS 38
@@ -174,9 +172,10 @@ extern "C" {
  *  so install and lookup agree by pure arithmetic on the key. */
 #define ARTS_GUID_DB_CHUNK_BITS 14
 
-/** Width of one creating rank's slice of every home's seq space (single-
- *  writer init at parallel start; 0 during the pre-parallel window, where
- *  every DB key classifies to the shared remote route table). */
+/** Width of one creating rank's slice of every home's seq space, 2^38 / N
+ *  (written once by arts_guid_node_geometry_init, before the runtime threads
+ *  are created; 0 until then, when every DB key classifies to the shared
+ *  remote route table). */
 extern uint64_t arts_db_seq_budget;
 
 /** Encode a byte size into the 10-bit szhint field (ceil — the decoded
@@ -217,34 +216,30 @@ arts_guid_t arts_db_guid_stamp_szhint(arts_guid_t guid, uint64_t size_bytes);
  */
 arts_guid_t arts_guid_create_for_rank(unsigned int rank, unsigned int type);
 
-/* The GUID-to-route-table geometry.  num_tables (one route table per local
- * thread) and this rank's global thread slots [min_global_guid_thread,
- * max_global_guid_thread) are written once by arts_guid_node_geometry_init,
- * before the runtime threads are created; keys_per_thread is written by
- * thread 0 before the parallel-start barrier.  Every other thread only reads
- * them, after the thread creation or the barrier that publishes them. */
+/* The GUID geometry, written once by arts_guid_node_geometry_init before the
+ * runtime threads are created; every thread only reads it, after the thread
+ * creation that publishes it.  num_tables is one route table per local
+ * thread.  This rank's flat keys are [arts_guid_flat_base,
+ * arts_guid_flat_base + 2^48 / N), of which thread t mints from the block of
+ * keys_per_thread keys at arts_guid_flat_base + t * keys_per_thread; the
+ * blocks cover [arts_guid_flat_base, arts_guid_flat_base +
+ * arts_guid_flat_span), and a key in the rest of the slice is never minted. */
 extern uint64_t num_tables;
 extern uint64_t keys_per_thread;
-extern uint64_t min_global_guid_thread;
-extern uint64_t max_global_guid_thread;
+extern uint64_t arts_guid_flat_base;
+extern uint64_t arts_guid_flat_span;
 
-/** Set num_tables and this rank's global thread-slot range, once, before the
- *  runtime threads are created. */
+/** Set the GUID geometry and open the DB seq counters, once, before the
+ *  runtime threads are created.  Reads arts_global_rank_id,
+ *  arts_global_rank_count and arts_node_info.total_thread_count. */
 void arts_guid_node_geometry_init(void);
 
-/** Initialize the calling thread's GUID key generator: its global thread id
- *  and its key counters. */
+/** Initialize the calling thread's GUID key counters. */
 void arts_guid_key_generator_init();
 
 /** Free the DB seq allocator's shared counters and every thread's parked
  *  chunk cursor (global cleanup, after worker threads joined). */
 void arts_guid_generator_cleanup();
-
-/** Enable the global (post-init) GUID allocation path. */
-void set_global_guid_on();
-
-/** Switch GUID generator to the post-parallel-start mode. */
-void set_guid_generator_after_parallel_start();
 
 /**
  * @brief Extract the 48-bit key portion of a GUID.

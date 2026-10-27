@@ -4,8 +4,8 @@
  * Used by the VAL, INV and EXCL homes (the destroy fan-out roster, INV's copy
  * roster, EXCL's read retainers); FLUSH keeps its own sharer bitmap.
  *
- * Each word covers 64 ranks.  At ARTS_GUID_RANK_BITS = 14 (max 16384
- * ranks), max size is (16384 + 63) / 64 = 256 words = 2 KiB per DB.
+ * Each word covers 64 ranks.  At ARTS_GUID_RANK_BITS = 14 (at most 16382
+ * ranks), max size is (16382 + 63) / 64 = 256 words = 2 KiB per DB.
  * At experiment scale (<=32 ranks), 1 word = 8 B.
  *
  * The header that lays out the embedding DB descriptor (which embeds

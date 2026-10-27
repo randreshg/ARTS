@@ -73,9 +73,16 @@ bool arts_guid_is_local(arts_guid_t guid) {
 }
 unsigned int arts_get_current_rank(void) { return 0; }
 unsigned int arts_get_total_ranks(void) { return 1; }
-arts_guid_t arts_guid_reserve(arts_guid_kind_t kind, unsigned int rank) {
+arts_guid_t arts_guid_reserve_range(arts_guid_kind_t kind, unsigned int size,
+                                    unsigned int rank) {
   (void)kind;
+  (void)size;
   (void)rank;
+  return 0;
+}
+arts_guid_t arts_guid_from_index(arts_guid_t range_guid, unsigned int idx) {
+  (void)range_guid;
+  (void)idx;
   return 0;
 }
 

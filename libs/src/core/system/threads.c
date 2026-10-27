@@ -63,14 +63,14 @@ unsigned int arts_global_rank_id;
 unsigned int arts_global_rank_count;
 unsigned int arts_global_master_rank_id;
 
-struct arts_config_s *g_config;
+struct arts_config_s *arts_thread_config;
 
-struct thread_mask_s *mask;
-pthread_t *node_thread_list;
+struct thread_mask_s *arts_thread_masks;
+pthread_t *arts_thread_handles;
 
 void *arts_thread_loop(void *data) {
   struct thread_mask_s *thread = (struct thread_mask_s *)data;
-  arts_runtime_private_init(thread, g_config);
+  arts_runtime_private_init(thread, arts_thread_config);
   arts_runtime_loop();
   arts_runtime_private_cleanup();
 
@@ -160,21 +160,21 @@ void arts_thread_main_join() {
         deadline.tv_nsec -= 1000000000L;
         deadline.tv_sec += 1;
       }
-      int rc = pthread_timedjoin_np(node_thread_list[i], NULL, &deadline);
+      int rc = pthread_timedjoin_np(arts_thread_handles[i], NULL, &deadline);
       if (rc == 0) {
         continue;
       }
       ARTS_WARN("arts_thread_main_join: thread %u did not join within "
                 "%ld ms (rc=%d), cancelling",
                 i, join_deadline_ns / 1000000L, rc);
-      pthread_cancel(node_thread_list[i]);
+      pthread_cancel(arts_thread_handles[i]);
       (void)clock_gettime(CLOCK_REALTIME, &deadline);
       deadline.tv_nsec += cancel_deadline_ns;
       while (deadline.tv_nsec >= 1000000000L) {
         deadline.tv_nsec -= 1000000000L;
         deadline.tv_sec += 1;
       }
-      rc = pthread_timedjoin_np(node_thread_list[i], NULL, &deadline);
+      rc = pthread_timedjoin_np(arts_thread_handles[i], NULL, &deadline);
       if (rc != 0) {
         ARTS_WARN("arts_thread_main_join: thread %u did not join after "
                   "cancel (rc=%d); leaking and continuing",
@@ -194,15 +194,15 @@ void arts_thread_main_join() {
   /* A thread never joined reads its own entry after the teardown barrier, so
    * the table is left to the process exit. */
   if (arts_shutdown_abandon.unjoined == NULL) {
-    arts_free(mask);
+    arts_free(arts_thread_masks);
   }
   arts_free(arts_shutdown_abandon.unjoined);
   arts_shutdown_abandon.unjoined = NULL;
-  arts_free(node_thread_list);
+  arts_free(arts_thread_handles);
 }
 
 void arts_thread_init(struct arts_config_s *config) {
-  g_config = config;
+  arts_thread_config = config;
 
   /* Adjust the progress-thread count now that rank_count is known: a
    * single-node run has no progress thread.  Progress threads own no
@@ -214,8 +214,8 @@ void arts_thread_init(struct arts_config_s *config) {
   config->worker_thread_count =
       config->thread_count - config->progress_thread_count;
 
-  mask =
-      (struct thread_mask_s *)arts_malloc(sizeof(*mask) * config->thread_count);
+  arts_thread_masks = (struct thread_mask_s *)arts_malloc(
+      sizeof(*arts_thread_masks) * config->thread_count);
   /* The placement is computed BEFORE the node init that carves the memory
    * pool, so the pool can be told which NUMA nodes this rank's threads
    * actually sit on and how far apart the machine's nodes are — facts it
@@ -224,16 +224,17 @@ void arts_thread_init(struct arts_config_s *config) {
   {
     struct arts_numa_facts_s *facts =
         (struct arts_numa_facts_s *)arts_malloc(sizeof(*facts));
-    get_thread_mask(config, mask, facts);
+    get_thread_mask(config, arts_thread_masks, facts);
     arts_regpool_set_topology(facts->node_count, facts->rank_nodes,
                               facts->distance_known ? facts->distance : NULL);
     arts_free(facts);
   }
   arts_runtime_node_init(config);
-  print_mask(mask, config->thread_count);
+  print_mask(arts_thread_masks, config->thread_count);
 
-  node_thread_list =
+  arts_thread_handles =
       (pthread_t *)arts_malloc(sizeof(pthread_t) * config->thread_count);
+  arts_thread_handles[0] = pthread_self();
   unsigned int thread_count = config->thread_count;
 
   /* Compute page-aligned stack size (0 = use default). */
@@ -256,16 +257,15 @@ void arts_thread_init(struct arts_config_s *config) {
     if (config->pin_threads) {
       cpu_set_t set;
       CPU_ZERO(&set);
-      CPU_SET(mask[i].pu_id, &set);
+      CPU_SET(arts_thread_masks[i].pu_id, &set);
       pthread_attr_setaffinity_np(&attr, sizeof(cpu_set_t), &set);
     }
 #endif
     /* A worker slot that was never created is fatal, not degraded service:
      * the slot is joined at shutdown and its share of the placement is
      * silently missing from the run. */
-    int rc =
-        pthread_create(&node_thread_list[i], &attr, &arts_thread_loop,
-                       &mask[i]);
+    int rc = pthread_create(&arts_thread_handles[i], &attr, &arts_thread_loop,
+                            &arts_thread_masks[i]);
     if (rc != 0) {
       ARTS_ERROR("thread %u: pthread_create failed: %s", i, strerror(rc));
     }
@@ -277,13 +277,13 @@ void arts_thread_init(struct arts_config_s *config) {
   if (config->pin_threads) {
     cpu_set_t set;
     CPU_ZERO(&set);
-    CPU_SET(mask[0].pu_id, &set);
+    CPU_SET(arts_thread_masks[0].pu_id, &set);
     int rc = pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &set);
     if (rc != 0) {
-      ARTS_ERROR("thread 0: pinning to pu %u failed: %s", mask[0].pu_id,
-                 strerror(rc));
+      ARTS_ERROR("thread 0: pinning to pu %u failed: %s",
+                 arts_thread_masks[0].pu_id, strerror(rc));
     }
   }
 #endif
-  arts_runtime_private_init(&mask[0], config);
+  arts_runtime_private_init(&arts_thread_masks[0], config);
 }

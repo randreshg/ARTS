@@ -396,68 +396,81 @@ void sync_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_shutdown();
 }
 
-void init_per_node(unsigned int node_id, int argc, char **argv) {
-  if (!node_id) {
-    if (argc > 1)
-      tile_size = (unsigned int)atoi(argv[1]);
-    // num_tiles stays 0 for a refused tile size; init_per_worker acts on it.
-    if (!tile_size || tile_size > TABLESIZE || TABLESIZE % tile_size)
-      return;
-    num_tiles = TABLESIZE / tile_size;
-    arts_printf("Random Access Table Size: %lu Tile Size: %u Number of Tiles: %u\n",
-           TABLESIZE, tile_size, num_tiles);
+static void create_table(int argc, char **argv) {
+  if (argc > 1)
+    tile_size = (unsigned int)atoi(argv[1]);
+  // num_tiles stays 0 for a refused tile size; start_updates acts on it.
+  if (!tile_size || tile_size > TABLESIZE || TABLESIZE % tile_size)
+    return;
+  num_tiles = TABLESIZE / tile_size;
+  arts_printf(
+      "Random Access Table Size: %lu Tile Size: %u Number of Tiles: %u\n",
+      TABLESIZE, tile_size, num_tiles);
 
-    // Create tiled table
-    tile_guids = (arts_guid_t*)calloc(num_tiles, sizeof(arts_guid_t));
-    tile = (uint64_t **)calloc(num_tiles, sizeof(uint64_t *));
-    uint64_t counter = 0;
+  // Create tiled table
+  tile_guids = (arts_guid_t *)calloc(num_tiles, sizeof(arts_guid_t));
+  tile = (uint64_t **)calloc(num_tiles, sizeof(uint64_t *));
+  uint64_t counter = 0;
 
-    for (unsigned int i = 0; i < num_tiles; i++) {
+  for (unsigned int i = 0; i < num_tiles; i++) {
 
-      tile_guids[i] = arts_db_create((void**)&(tile[i]), (tile_size + 1)*sizeof(uint64_t),
-                                 ARTS_DB, 0, NULL);
+    tile_guids[i] =
+        arts_db_create((void **)&(tile[i]), (tile_size + 1) * sizeof(uint64_t),
+                       ARTS_DB, 0, NULL);
 
-      for (unsigned int j = 0; j < tile_size; j++)
-        tile[i][j] = counter++;
-      tile[i][tile_size] = 0;
-      arts_db_release(tile_guids[i], DB_MODE_RW);
-    }
+    for (unsigned int j = 0; j < tile_size; j++)
+      tile[i][j] = counter++;
+    tile[i][tile_size] = 0;
+    arts_db_release(tile_guids[i], DB_MODE_RW);
+  }
 
-    // Create update frontiers.  The number of updates a frontier can hold is 1024
-    // per thread
-    unsigned int elems_per_frontier = num_tiles + MAX_TOTAL_PENDING_UPDATES;
-    uint64_t *update_frontier;
-    update_frontier_guid = arts_db_create((void**)&update_frontier, elems_per_frontier*sizeof(uint64_t), ARTS_DB, 0, NULL);
-    for (unsigned int j = 0; j < elems_per_frontier; j++)
-      update_frontier[j] = 0;
-    arts_db_release(update_frontier_guid, DB_MODE_RW);
+  // Create update frontiers.  The number of updates a frontier can hold is 1024
+  // per thread
+  unsigned int elems_per_frontier = num_tiles + MAX_TOTAL_PENDING_UPDATES;
+  uint64_t *update_frontier;
+  update_frontier_guid =
+      arts_db_create((void **)&update_frontier,
+                     elems_per_frontier * sizeof(uint64_t), ARTS_DB, 0, NULL);
+  for (unsigned int j = 0; j < elems_per_frontier; j++)
+    update_frontier[j] = 0;
+  arts_db_release(update_frontier_guid, DB_MODE_RW);
 
-    // Create a LC sync edt for all partitions
-    done_guid = arts_guid_reserve(ARTS_GUID_EDT, 0);
-    update_guid = arts_guid_reserve(ARTS_GUID_EDT, 0);
+  // Create a LC sync edt for all partitions
+  done_guid = arts_guid_reserve(ARTS_GUID_EDT, 0);
+  update_guid = arts_guid_reserve(ARTS_GUID_EDT, 0);
+}
+
+static void start_updates(char **argv) {
+  start = arts_get_time_stamp();
+  if (!num_tiles) {
+    arts_printf("Usage: %s [tile size]: the tile size must be a non-zero "
+                "divisor of the table size %lu\n",
+                argv[0], TABLESIZE);
+    arts_shutdown();
+    return;
+  }
+  arts_printf("Num updates: %lu\n", NUPDATE);
+  uint64_t args[] = {NUPDATE, 0, 0, num_tiles};
+  arts_edt_create(random_driver, 4, args, 1,
+                  &(arts_edt_hint_t){.guid = update_guid});
+  arts_add_dependence(update_frontier_guid, update_guid, 0, DB_MODE_RO);
+
+  arts_edt_create(sync_edt, 0, NULL, 1 + num_tiles,
+                  &(arts_edt_hint_t){.guid = done_guid});
+  for (unsigned int i = 0; i < num_tiles; i++) {
+    arts_add_dependence(tile_guids[i], done_guid, i, DB_MODE_RW);
   }
 }
 
-void init_per_worker(unsigned int node_id, unsigned int worker_id,
-                              int argc, char **argv) {
-  if (!node_id && !worker_id) {
-    start = arts_get_time_stamp();
-    if (!num_tiles) {
-      arts_printf("Usage: %s [tile size]: the tile size must be a non-zero "
-                  "divisor of the table size %lu\n", argv[0], TABLESIZE);
-      arts_shutdown();
-      return;
-    }
-    arts_printf("Num updates: %lu\n", NUPDATE);
-    uint64_t args[] = {NUPDATE, 0, 0, num_tiles};
-    arts_edt_create(random_driver, 4, args, 1, &(arts_edt_hint_t){.guid = update_guid});
-    arts_add_dependence(update_frontier_guid, update_guid, 0, DB_MODE_RO);
-
-    arts_edt_create(sync_edt, 0, NULL, 1 + num_tiles, &(arts_edt_hint_t){.guid = done_guid});
-    for (unsigned int i = 0; i < num_tiles; i++) {
-      arts_add_dependence(tile_guids[i], done_guid, i, DB_MODE_RW);
-    }
-  }
+void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+              arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)depc;
+  (void)depv;
+  int argc = (int)paramv[0];
+  char **argv = (char **)paramv[1];
+  create_table(argc, argv);
+  start_updates(argv);
 }
 
 int main(int argc, char **argv) { return arts_rt(argc, argv); }
