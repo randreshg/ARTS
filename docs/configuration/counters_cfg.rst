@@ -619,8 +619,10 @@ hand-back and do not overlap: their sum is every hand-back, and
    already in flight, or the process-wide turn of a kernel-placed grow — the
    cost an exhausted node charges the threads that reach it behind the
    mapping of its next slab or another node's kernel-placed one — and
-   ``spills``, the times its allocations were moved onto another node's
-   arena because the node could not grow), ``[REGPOOL] direct:`` for the
+   ``spills``, the allocations of its threads that the exhaustion cascade
+   served from another node's arena because the node could not grow, and
+   ``cascades``, the allocations of its threads that left the fast path for
+   that cascade), ``[REGPOOL] direct:`` for the
    oversize mappings (live, retired, free table slots),
    ``[REGPOOL] direct placement:`` (how many of them, and how many MiB, are
    ``interleaved`` across the rank's node set,

@@ -128,6 +128,7 @@ set(ARTS_REFERENCE_TREE_PROGRAMS
     regpool_spill_target
     regpool_direct_oversize
     regpool_theap_no_room
+    regpool_room_per_thread
 )
 
 # Pins an assertion of the runtime (edt.c's remote finish-scope guard), which
@@ -1084,10 +1085,11 @@ set_tests_properties(port_block_relocation PROPERTIES
     PASS_REGULAR_EXPRESSION "PASS port_block_relocation")
 
 # Programs including unit/regpool_numa_sim.h find the C library's own
-# syscall and fopen at run time.
+# sched_getcpu, syscall and fopen at run time.
 set(_regpool_sim_tests regpool_basic regpool_lazy_carve
     regpool_ladder regpool_fallback_order regpool_spill_cycle
-    regpool_spill_target regpool_direct_oversize regpool_theap_no_room)
+    regpool_spill_target regpool_direct_oversize regpool_theap_no_room
+    regpool_room_per_thread)
 if(ARTS_DEBUG_INJECTION)
     list(APPEND _regpool_sim_tests ${ARTS_REGPOOL_INJECTION_TESTS})
 endif()
@@ -1146,6 +1148,28 @@ if(ARTS_MALLOC STREQUAL "mimalloc")
     register_pure_unit_test(regpool_theap_no_room TIMEOUT 60)
     set_tests_properties(regpool_theap_no_room PROPERTIES
         PASS_REGULAR_EXPRESSION "PASS regpool_theap_no_room")
+    # Room in an arena is per thread and per request class: a refused class
+    # moves alone, and its node's other threads and classes stay where they
+    # have room.
+    register_pure_unit_test(regpool_room_per_thread TIMEOUT 60)
+    set_tests_properties(regpool_room_per_thread PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS regpool_room_per_thread")
+    # The allocator serves or refuses two requests of one class alike.  It
+    # links the allocator directly, with neither the pool nor the runtime.
+    add_executable(regpool_request_classes unit/regpool_request_classes.c)
+    target_include_directories(regpool_request_classes PRIVATE
+        ${ARTS_INTERNAL_INCLUDE_DIR})
+    target_link_libraries(regpool_request_classes PRIVATE mimalloc-static
+        Threads::Threads)
+    register_pure_unit_test(regpool_request_classes TIMEOUT 60)
+    set_tests_properties(regpool_request_classes PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS regpool_request_classes")
+    # Each request makes and tears down a heap of its own, which
+    # ThreadSanitizer instruments throughout, so a THREAD tree budgets for
+    # that cost.
+    if(ARTS_DEBUG_SANITIZER STREQUAL "THREAD")
+        set_tests_properties(regpool_request_classes PROPERTIES TIMEOUT 300)
+    endif()
     # Every corruption or misuse the allocator detects ends in the allocator
     # error report, and every pool misuse the pool sees in its fatal error, one
     # forked child per mode.  It links the pool's object and the allocator
@@ -1177,7 +1201,7 @@ if(ARTS_MALLOC STREQUAL "mimalloc")
     set(_regpool_numa_tests regpool_basic regpool_lazy_carve
         regpool_ladder regpool_fallback_order regpool_spill_cycle
         regpool_spill_target regpool_direct_oversize regpool_theap_no_room
-        ${_allocator_error_tests})
+        regpool_room_per_thread ${_allocator_error_tests})
     if(ARTS_DEBUG_INJECTION)
         # Eviction of retired mappings and the unplaced fallback behind it,
         # driven by the force-full override on one node and on two.

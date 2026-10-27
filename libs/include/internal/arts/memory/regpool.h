@@ -84,9 +84,11 @@ extern "C" {
  * arenas, nearest first, then a slab placed on the nearest node that can
  * take one (the caller's set before any other), then the memory retired
  * oversize mappings hold, and only when none of these serves does the
- * kernel place a slab.  An oversize mapping the set cannot absorb goes to
- * the nearest single node that can, and failing all of them is placed by
- * the kernel.
+ * kernel place a slab.  Room in an arena is per thread and per request class
+ * (its free slices are shared, its pages are not), so a thread takes these
+ * steps for one class at a time, and one class moved elsewhere moves no
+ * other.  An oversize mapping the set cannot absorb goes to the nearest
+ * single node that can, and failing all of them is placed by the kernel.
  *
  * Reach: every arena slab holds one slot of the allocator's process-wide
  * arena table, which never gives a slot back.  Once the table refuses a
@@ -205,7 +207,9 @@ void arts_regpool_unregister(void);
  * NUMA placement is a preference throughout: a request is never refused for
  * want of memory on one node.  The returned pointer is guaranteed to resolve
  * through arts_regpool_lookup; a pointer that escaped the registered slabs is
- * a fatal error. */
+ * a fatal error.  Not callable from a thread-exit destructor: once the
+ * allocator's own exit hook has run, the thread's heaps cannot serve; after
+ * the pool's own, the call is refused as a fatal error. */
 void *arts_regpool_alloc_aligned(size_t size, size_t align);
 
 /* Return a pointer previously obtained from arts_regpool_alloc_aligned.  The
@@ -273,17 +277,19 @@ void arts_regpool_set_forced_full(uint64_t node_mask);
  * mapped MiB (of the arena slabs placed on it), grow count (of the slabs grown
  * for it, wherever they landed), the milliseconds its grows spent mapping, the
  * number and milliseconds of waits for a grow in flight (on the node, or for
- * the process-wide turn of a kernel-placed grow) and spills (times its
- * allocations were moved onto another node's arena because it could not grow);
- * the direct mappings live, retired, where they landed (per node, interleaved,
- * or unplaced) and the free slots; and the totals, with the arena-table slots
- * the pool's slabs hold, the slabs the table refused, and the binds since
- * init that found an arena with no free slice for the calling thread's part
- * of its heap (theap_refusals; that thread was then served elsewhere).  Takes
- * the pool lock, so the lines are consistent with each other.  Printed to
- * stderr at teardown when ARTS_REGPOOL_REPORT is set in the environment (by
- * cleanup, or by arts_regpool_report_if_requested), and before the fatal error
- * of an allocation the pool could not satisfy. */
+ * the process-wide turn of a kernel-placed grow), spills (allocations of its
+ * threads that the exhaustion cascade served from another node's arena
+ * because it could not grow) and cascades (allocations of its threads that
+ * left the fast path for that cascade); the direct mappings live, retired,
+ * where they landed (per node, interleaved, or unplaced) and the free slots;
+ * and the totals, with the arena-table slots the pool's slabs hold, the slabs
+ * the table refused, and the binds since init that found an arena with no
+ * free slice for the calling thread's part of its heap (theap_refusals; that
+ * thread was then served elsewhere).  Takes the pool lock, so the lines are
+ * consistent with each other.  Printed to stderr at teardown when
+ * ARTS_REGPOOL_REPORT is set in the environment (by cleanup, or by
+ * arts_regpool_report_if_requested), and before the fatal error of an
+ * allocation the pool could not satisfy. */
 void arts_regpool_report(FILE *out);
 
 #ifdef __cplusplus

@@ -148,9 +148,11 @@ size_t arts_regpool_parse_node_avail(FILE *f) {
 #include <execinfo.h> /* backtrace for the allocator's error report */
 #include <mimalloc.h>
 #include <mimalloc/types.h> /* arena geometry the slab sizes mirror */
+#include "arts/memory/regpool_class.h"
+#include "arts/utils/malloc.h" /* the request classes' table */
 #include <pthread.h>
 #include <time.h>
-#include <sched.h> /* CPU affinity mask — the node set's fallback source */
+#include <sched.h> /* CPU affinity mask, and the calling thread's CPU and node */
 #include <sys/mman.h>
 #include <sys/syscall.h>
 #include <unistd.h>
@@ -334,15 +336,19 @@ static _Atomic(size_t) g_slab_count;
  * correct for either negotiation.  A ticket: only its own value. */
 static _Atomic(uint_least64_t) g_mr_key_next;
 
-/* Current arena a node's allocations draw from.  A grow publishes a fresh
- * arena here; per-thread heaps notice the change and re-bind.  A node that
- * cannot grow points here at the other node's arena that last served it, so
- * its threads stay on the fast path until that arena fails them; the node's
- * own arenas take it back as soon as one serves it again.  Every value ever
- * stored names a live exclusive arena of this pool: arenas are never
- * unloaded.  A grow's release store publishes the arena it built, and a
- * reader that binds a heap to it acquires; a fallback CAS re-publishes, with
- * release, an arena its caller acquired. */
+/* The arena a node's threads draw from first.  Room in an exclusive arena is
+ * per thread -- its free slices are shared, but a heap's pages serve only the
+ * thread that owns the heap -- so a refusal is a fact about one thread and
+ * never moves this word: only node-wide facts do.  Its writers: a grow of the
+ * node, which publishes the arena it built with a release store; the first
+ * cascade that serves a node with no arena from another node's, which names
+ * that arena with a release CAS from NULL (re-publishing an arena its caller
+ * acquired); and init and cleanup, which reset it to NULL.  So within a pool
+ * lifetime the word is NULL at most until its first value and then takes
+ * only arenas grown since, and an arena id is its arena's address, never
+ * reused because arenas are never unloaded: no value recurs, within a
+ * lifetime or across lifetimes, other than NULL.  A reader that binds a heap
+ * to the value acquires. */
 static _Atomic(mi_arena_id_t) g_node_arena[REGPOOL_MAX_NODES];
 
 /* Per-node grow count, for the report (guarded by g_lock). */
@@ -369,10 +375,14 @@ static uint64_t regpool_now_ns(void) {
  * the next rung is derived from (0 = none yet).  Guarded by g_lock. */
 static size_t g_node_last_slab[REGPOOL_MAX_NODES];
 
-/* Times a node's allocations were moved onto another node's arena because
- * the node could not grow.  Diagnostic only, for the report: only its own
- * value. */
+/* Allocations of a node's threads that a cascade served from another node's
+ * arena because the node could not grow.  Diagnostic only, for the report:
+ * only its own value. */
 static _Atomic(unsigned) g_node_spills[REGPOOL_MAX_NODES];
+
+/* Allocations of a node's threads that left the fast path for the exhaustion
+ * cascade.  Diagnostic only, for the report: only its own value. */
+static _Atomic(unsigned) g_node_cascades[REGPOOL_MAX_NODES];
 
 /* Whether a node's memory has been carved yet.  A node is carved when a
  * thread on it first allocates (or another node's demand grows it), so an
@@ -455,12 +465,36 @@ static unsigned g_table_refusals;
  * Guarded by g_lock. */
 static unsigned g_pool_slots;
 
-/* Per-thread allocator heap, bound to one exclusive arena at a time.  The
- * binding moves on exhaustion (see regpool_thread_bind); a superseded heap
- * stays in the per-thread cache below, never deleted. */
-static __thread mi_heap_t *t_heap;
-static __thread mi_arena_id_t t_arena;
-static __thread int t_node = -1;
+/* A heap of the calling thread and the exclusive arena it draws from. */
+typedef struct {
+  mi_heap_t *heap;
+  mi_arena_id_t arena;
+} regpool_binding_t;
+
+/* A request class's binding on the calling thread, and the memo value it
+ * answers for: g_node_arena[memo_node] held memo_seen when this thread last
+ * bound that value for the class or was refused by it.  The binding is the
+ * memo itself, or the arena that served the class instead after the memo
+ * refused it.  Never a NULL memo value, which recurs across lifetimes: -1
+ * then.  Room in an exclusive arena is per thread and per class (a page
+ * serves one block size of one thread's heap; only free slices are shared),
+ * so one class's refusal moves only that class's binding. */
+typedef struct {
+  uint64_t key; /* 0: an empty slot */
+  int memo_node;
+  mi_arena_id_t memo_seen;
+  regpool_binding_t bound;
+} regpool_class_t;
+
+/* The calling thread's classes, an open-addressed table that only grows:
+ * its keys are bounded by the allocator's block sizes times the alignments,
+ * so it never needs to forget one.  From the runtime's general allocator,
+ * never from this pool, and freed when the thread exits. */
+typedef struct {
+  unsigned cap, used; /* cap a power of two */
+  regpool_class_t slot[];
+} regpool_classes_t;
+static __thread regpool_classes_t *t_classes;
 
 /* Per-(thread, arena) heap cache.  A heap, once created for an arena, is
  * never deleted while the runtime runs: mi_heap_delete migrates live pages
@@ -618,12 +652,27 @@ static unsigned regpool_detect_nodes(void) {
   return n ? n : 1;
 }
 
-/* NUMA node the calling thread currently runs on; fall back to node 0. */
+/* The CPU the calling thread last asked its node for, and that node: the
+ * node is asked for again only when the thread runs on another CPU.  An
+ * online CPU keeps its node; a CPU number removed and added again may come
+ * back on another node, which costs locality until the thread moves.  Written
+ * only by its own thread. */
+static __thread int t_cpu = -1;
+static __thread int t_cpu_node;
+
+/* NUMA node the calling thread currently runs on; fall back to node 0.  The
+ * CPU number is a load from the thread's restartable-sequence area where the
+ * C library registered one; the node is a system call. */
 static int regpool_current_node(void) {
-  unsigned cpu = 0, node = 0;
-  if (syscall(SYS_getcpu, &cpu, &node, NULL) == 0)
-    return (int)node;
-  return 0;
+  int cpu = sched_getcpu();
+  if (cpu >= 0 && cpu == t_cpu)
+    return t_cpu_node;
+  unsigned c = 0, n = 0;
+  if (syscall(SYS_getcpu, &c, &n, NULL) != 0)
+    return 0;
+  t_cpu = (int)c;
+  t_cpu_node = (int)n;
+  return (int)n;
 }
 
 /* Best-effort NUMA placement, as a preference in both of its shapes.  A
@@ -1690,19 +1739,19 @@ static void *regpool_alloc_direct(size_t size, size_t align, int node) {
 }
 
 typedef enum {
-  REGPOOL_BOUND,        /* t_heap now draws from the arena */
+  REGPOOL_BOUND,        /* *out now draws from the arena */
   REGPOOL_BIND_NO_ROOM, /* the arena has no room for this thread's part of
-                         * its heap; the binding is unchanged */
+                         * its heap; *out is unchanged */
   REGPOOL_BIND_FAILED,  /* no heap could be made at all */
 } regpool_bind_t;
 
-/* Re-bind the calling thread's heap to `arena` via the per-thread heap
- * cache: switch to the arena's cached heap, creating it on first use.  See
- * the cache's comment for why heaps are never deleted mid-run.  The heap's
- * part for this thread is made here, inside the error report's window, and
- * t_heap names only a heap whose part exists, so no allocation ever makes
- * one. */
-static regpool_bind_t regpool_thread_bind(mi_arena_id_t arena, int node) {
+/* Bind *out to the calling thread's heap for `arena` via the per-thread heap
+ * cache: the arena's cached heap, created on first use.  See the cache's
+ * comment for why heaps are never deleted mid-run.  The heap's part for this
+ * thread is made here, inside the error report's window, and a binding names
+ * only a heap whose part exists, so no allocation ever makes one. */
+static regpool_bind_t regpool_thread_bind(mi_arena_id_t arena,
+                                          regpool_binding_t *out) {
   mi_heap_t *h = NULL;
   for (unsigned i = 0; i < t_heap_cache_count; i++) {
     if (t_heap_cache[i].arena == arena) {
@@ -1730,20 +1779,18 @@ static regpool_bind_t regpool_thread_bind(mi_arena_id_t arena, int node) {
     atomic_fetch_add_explicit(&g_theap_refusals, 1, memory_order_relaxed);
     return REGPOOL_BIND_NO_ROOM;
   }
-  t_heap = h;
-  t_arena = arena;
-  t_node = node;
+  out->heap = h;
+  out->arena = arena;
   return REGPOOL_BOUND;
 }
 
 /* Sweep the existing arena slabs made for `owner` newest-first (the newest
- * is the least likely to be fully consumed), re-binding the thread's heap to
+ * is the least likely to be fully consumed), binding the thread's heap for
  * each candidate and attempting the allocation.  Skips the arena that
- * already refused this request.  On success *out_served (when given) names
- * the arena that served. */
+ * already refused this request.  On success *w is the binding that served. */
 static void *regpool_sweep_arenas(size_t size, size_t align, int owner,
                                   mi_arena_id_t refused,
-                                  mi_arena_id_t *out_served) {
+                                  regpool_binding_t *w) {
   size_t n = atomic_load_explicit(&g_slab_count, memory_order_acquire);
   for (size_t i = n; i-- > 0;) {
     regpool_slab_t *s = &g_slabs[i];
@@ -1758,17 +1805,14 @@ static void *regpool_sweep_arenas(size_t size, size_t align, int owner,
       continue;
     if (s->owner != owner)
       continue;
-    regpool_bind_t b = regpool_thread_bind(s->arena, (int)s->mr.numa_node);
+    regpool_bind_t b = regpool_thread_bind(s->arena, w);
     if (b == REGPOOL_BIND_FAILED)
       return NULL;
     if (b == REGPOOL_BIND_NO_ROOM)
       continue;
-    void *p = mi_heap_malloc_aligned(t_heap, size, align);
-    if (p != NULL) {
-      if (out_served != NULL)
-        *out_served = s->arena;
+    void *p = mi_heap_malloc_aligned(w->heap, size, align);
+    if (p != NULL)
       return p;
-    }
   }
   return NULL;
 }
@@ -1782,13 +1826,13 @@ static void *regpool_sweep_arenas(size_t size, size_t align, int owner,
  * reason to refuse memory that exists. */
 static void *regpool_sweep_other_nodes(size_t size, size_t align, int node,
                                        mi_arena_id_t refused,
-                                       mi_arena_id_t *out_served) {
+                                       regpool_binding_t *w) {
   int order[REGPOOL_MAX_NODES];
   unsigned cnt = arts_regpool_node_order(node, order, REGPOOL_MAX_NODES);
   for (unsigned o = 0; o < cnt; o++) {
     if (order[o] == node)
       continue; /* swept by the caller just before */
-    void *p = regpool_sweep_arenas(size, align, order[o], refused, out_served);
+    void *p = regpool_sweep_arenas(size, align, order[o], refused, w);
     if (p != NULL)
       return p;
   }
@@ -1796,45 +1840,37 @@ static void *regpool_sweep_other_nodes(size_t size, size_t align, int node,
 }
 
 /* The cascade's first resort: the node's own arenas, placed on it or by the
- * kernel for it.  One that serves becomes the node's current arena in place
- * of the one that refused — another node's it had been moved onto, or an
- * own arena spent for this size while an older one has room again. */
+ * kernel for it. */
 static void *regpool_serve_own(size_t size, size_t align, int node,
-                               mi_arena_id_t refused) {
-  mi_arena_id_t served = NULL;
-  void *p = regpool_sweep_arenas(size, align, node, refused, &served);
-  if (p != NULL && refused != NULL) {
-    mi_arena_id_t expect = refused;
+                               mi_arena_id_t refused, regpool_binding_t *w) {
+  return regpool_sweep_arenas(size, align, node, refused, w);
+}
+
+/* The cascade's locality fallback: another node's arena serves the request,
+ * counted as a spill.  A node with no arena of its own takes that arena as
+ * its memo, the first time only; a CAS that finds the memo set leaves it. */
+static void *regpool_serve_elsewhere(size_t size, size_t align, int node,
+                                     mi_arena_id_t refused,
+                                     regpool_binding_t *w) {
+  void *p = regpool_sweep_other_nodes(size, align, node, refused, w);
+  if (p != NULL) {
+    atomic_fetch_add_explicit(&g_node_spills[node], 1, memory_order_relaxed);
+    mi_arena_id_t expect = NULL;
     (void)atomic_compare_exchange_strong_explicit(&g_node_arena[node], &expect,
-                                                  served, memory_order_release,
+                                                  w->arena,
+                                                  memory_order_release,
                                                   memory_order_relaxed);
   }
   return p;
 }
 
-/* The cascade's locality fallback: another node's arena serves the request
- * and becomes this node's current arena in place of the one it found
- * exhausted — counted as a spill when this request is the one that moved it. */
-static void *regpool_serve_elsewhere(size_t size, size_t align, int node,
-                                     mi_arena_id_t refused) {
-  mi_arena_id_t served = NULL;
-  void *p = regpool_sweep_other_nodes(size, align, node, refused, &served);
-  if (p != NULL) {
-    mi_arena_id_t expect = refused;
-    if (atomic_compare_exchange_strong_explicit(&g_node_arena[node], &expect,
-                                                served, memory_order_release,
-                                                memory_order_relaxed))
-      atomic_fetch_add_explicit(&g_node_spills[node], 1, memory_order_relaxed);
-  }
-  return p;
-}
-
 /* One more attempt on the arena that refused this request (NULL: none). */
-static void *regpool_retry_refused(size_t size, size_t align, int node,
-                                   mi_arena_id_t refused) {
-  if (refused == NULL || regpool_thread_bind(refused, node) != REGPOOL_BOUND)
+static void *regpool_retry_refused(size_t size, size_t align,
+                                   mi_arena_id_t refused,
+                                   regpool_binding_t *w) {
+  if (refused == NULL || regpool_thread_bind(refused, w) != REGPOOL_BOUND)
     return NULL;
-  return mi_heap_malloc_aligned(t_heap, size, align);
+  return mi_heap_malloc_aligned(w->heap, size, align);
 }
 
 /* Exhaustion slow path.  A heap can only draw from the single arena it is
@@ -1851,24 +1887,22 @@ static void *regpool_retry_refused(size_t size, size_t align, int node,
  * whatever the machine's state.  Loops until the allocation succeeds or
  * nothing can be mapped; only that is genuine exhaustion.  A transient miss
  * (a peer raced away a fresh slab) re-enters the cascade.  `refused` names
- * the one arena that already failed this request — the node's current
- * arena, or NULL when the node has none — so the sweeps skip exactly the
- * arena known to be exhausted and no other.
+ * the one arena that already failed this request for this thread — the
+ * thread's binding, or NULL when the node has no arena — so the sweeps skip
+ * exactly that arena and no other.
  *
- * An arena that serves a node which cannot grow becomes the node's current
- * arena until it fails a request, so the node's later allocations take the
- * fast path instead of re-entering this cascade.  The memo replaces only
- * the arena this request found exhausted: a fresh slab a concurrent grow
- * published for the node is the node's own memory and is never displaced by
- * another node's.  A miss proves an arena exhausted only for requests of its
- * size, so a node moved off its own memory returns to it the first time its
- * own arenas serve it again. */
-static void *regpool_alloc_arena_slow(size_t size, size_t align, int node,
-                                      mi_arena_id_t refused) {
+ * The arena that serves becomes the calling thread's binding and nobody
+ * else's: other threads of the node may still have room where this one has
+ * none, so only a grow moves them.  A miss proves an arena exhausted only for
+ * this thread and for requests of its size, so a thread moved off its node's
+ * memory goes back to it the next time this cascade runs for it, the node's
+ * own arenas first. */
+static void *regpool_cascade(size_t size, size_t align, int node,
+                             mi_arena_id_t refused, regpool_binding_t *w) {
   bool evicted = false;
   for (;;) {
     size_t seen = atomic_load_explicit(&g_slab_count, memory_order_acquire);
-    void *p = regpool_serve_own(size, align, node, refused);
+    void *p = regpool_serve_own(size, align, node, refused, w);
     if (p != NULL)
       return p;
 
@@ -1883,20 +1917,20 @@ static void *regpool_alloc_arena_slow(size_t size, size_t align, int node,
          * Re-enter the cascade; the fresh slab is found by the sweeps. */
         continue;
       }
-      regpool_bind_t b = regpool_thread_bind(cur, node);
+      regpool_bind_t b = regpool_thread_bind(cur, w);
       if (b == REGPOOL_BIND_FAILED) {
         ARTS_WARN("regpool: heap re-bind failed for node %d", node);
         return NULL;
       }
       if (b == REGPOOL_BIND_NO_ROOM)
         continue; /* the fresh slab was taken whole by others */
-      p = mi_heap_malloc_aligned(t_heap, size, align);
+      p = mi_heap_malloc_aligned(w->heap, size, align);
       if (p != NULL)
         return p;
       continue; /* raced away — re-enter the cascade */
     }
 
-    p = regpool_serve_elsewhere(size, align, node, refused);
+    p = regpool_serve_elsewhere(size, align, node, refused, w);
     if (p != NULL)
       return p;
     bool grew = false;
@@ -1920,9 +1954,9 @@ static void *regpool_alloc_arena_slow(size_t size, size_t align, int node,
       /* Whatever appeared, every node's arenas are swept at once, this
        * node's first, before this node's own grow, which declined a moment
        * ago, is asked again. */
-      p = regpool_serve_own(size, align, node, refused);
+      p = regpool_serve_own(size, align, node, refused, w);
       if (p == NULL)
-        p = regpool_serve_elsewhere(size, align, node, refused);
+        p = regpool_serve_elsewhere(size, align, node, refused, w);
       if (p != NULL)
         return p;
       continue; /* raced away — re-enter the cascade */
@@ -1950,7 +1984,7 @@ static void *regpool_alloc_arena_slow(size_t size, size_t align, int node,
     /* Every sweep skips the arena that refused this request, and frees
      * since may have refilled it: it is tried once more before the kernel
      * places a slab, and before the request is given up. */
-    p = regpool_retry_refused(size, align, node, refused);
+    p = regpool_retry_refused(size, align, refused, w);
     if (p != NULL)
       return p;
     /* Every arena and every other node declined: the kernel places this
@@ -1958,7 +1992,7 @@ static void *regpool_alloc_arena_slow(size_t size, size_t align, int node,
      * the machine has nothing left to give, the arena table refused, the
      * slab table is full, or the mapping itself failed. */
     if (!regpool_grow_node(node, seen, /*carve=*/false, REGPOOL_GROW_LAST)) {
-      p = regpool_retry_refused(size, align, node, refused);
+      p = regpool_retry_refused(size, align, refused, w);
       if (p != NULL)
         return p;
       ARTS_WARN("regpool: no node can grow (%zu-byte alloc, node %d)", size,
@@ -1969,11 +2003,95 @@ static void *regpool_alloc_arena_slow(size_t size, size_t align, int node,
   }
 }
 
-/* Arena path: allocate from the arena the node currently draws from (one
- * of its own slabs, or the arena that last served it while it could not
- * grow); on exhaustion enter the re-binding cascade above, which re-probes
- * the node's own growth first, so a node that has room again takes its
- * threads back.  A node whose memory has not been carved yet carves it
+static pthread_once_t g_classes_once = PTHREAD_ONCE_INIT;
+/* Frees a thread's classes when it exits; made once per process. */
+static pthread_key_t g_classes_key;
+
+/* What t_classes holds once the thread's exit hook has freed its table. */
+static regpool_classes_t g_classes_gone;
+
+/* Runs on the exiting thread, after the hooks of keys made before the pool's,
+ * the allocator's own among them: past it the thread's heaps cannot serve, so
+ * an allocation a later hook makes is refused by name. */
+static void regpool_classes_free(void *t) {
+  t_classes = &g_classes_gone;
+  arts_free(t);
+}
+
+static void regpool_classes_key_make(void) {
+  if (pthread_key_create(&g_classes_key, regpool_classes_free) != 0)
+    ARTS_ERROR("regpool: no thread-exit hook for the request classes");
+}
+
+static regpool_class_t *regpool_class_slot(regpool_classes_t *t, uint64_t key) {
+  unsigned i = (unsigned)((key * 0x9E3779B97F4A7C15ull) >> 40) & (t->cap - 1);
+  while (t->slot[i].key != 0 && t->slot[i].key != key)
+    i = (i + 1) & (t->cap - 1);
+  return &t->slot[i];
+}
+
+/* The calling thread's entry for the class of (size, align), made on the
+ * class's first request with no binding. */
+static regpool_class_t *regpool_class_of(size_t size, size_t align) {
+  uint64_t key = arts_regpool_class_key(size, align);
+  regpool_classes_t *t = t_classes;
+  if (t == &g_classes_gone)
+    ARTS_ERROR("regpool: allocation on a thread whose exit hooks have run");
+  if (t != NULL) {
+    regpool_class_t *c = regpool_class_slot(t, key);
+    if (c->key == key)
+      return c;
+  }
+  if (t == NULL || 4 * (t->used + 1) > 3 * t->cap) {
+    unsigned cap = t == NULL ? 64u : 2 * t->cap;
+    regpool_classes_t *n = arts_calloc(1, sizeof *n + cap * sizeof n->slot[0]);
+    n->cap = cap;
+    if (t != NULL) {
+      for (unsigned i = 0; i < t->cap; i++) {
+        if (t->slot[i].key != 0)
+          *regpool_class_slot(n, t->slot[i].key) = t->slot[i];
+      }
+      n->used = t->used;
+      arts_free(t);
+    }
+    (void)pthread_once(&g_classes_once, regpool_classes_key_make);
+    if (pthread_setspecific(g_classes_key, n) != 0)
+      ARTS_ERROR("regpool: no thread-exit hook for the request classes");
+    t_classes = t = n;
+  }
+  regpool_class_t *c = regpool_class_slot(t, key);
+  c->key = key;
+  c->memo_node = -1;
+  c->memo_seen = NULL;
+  c->bound.heap = NULL;
+  c->bound.arena = NULL;
+  t->used++;
+  return c;
+}
+
+/* The cascade for a request of class `c` that the memo value `seen` (NULL:
+ * the node had none) or the class's binding refused.  The arena that serves
+ * becomes the class's binding, answering `seen`: the class draws from it
+ * until the memo moves past `seen` or the arena refuses the class in turn. */
+static void *regpool_alloc_arena_slow(size_t size, size_t align, int node,
+                                      regpool_class_t *c,
+                                      mi_arena_id_t refused,
+                                      mi_arena_id_t seen) {
+  atomic_fetch_add_explicit(&g_node_cascades[node], 1, memory_order_relaxed);
+  regpool_binding_t w = {NULL, NULL};
+  void *p = regpool_cascade(size, align, node, refused, &w);
+  if (p != NULL) {
+    c->bound = w;
+    c->memo_node = seen != NULL ? node : -1;
+    c->memo_seen = seen;
+  }
+  return p;
+}
+
+/* Arena path: allocate from the node's memo, or from the arena that served
+ * the request's class on this thread when that memo value refused it; on
+ * exhaustion enter the re-binding cascade above, which re-probes the node's
+ * own growth first.  A node whose memory has not been carved yet carves it
  * here, on its first allocation. */
 static void *regpool_alloc_arena(size_t size, size_t align, int node) {
   mi_arena_id_t cur =
@@ -1987,20 +2105,25 @@ static void *regpool_alloc_arena(size_t size, size_t align, int node) {
       cur = atomic_load_explicit(&g_node_arena[node], memory_order_acquire);
     }
   }
+  regpool_class_t *c = regpool_class_of(size, align);
   if (cur == NULL)
-    return regpool_alloc_arena_slow(size, align, node, NULL);
-  if (t_heap == NULL || t_arena != cur || t_node != node) {
-    regpool_bind_t b = regpool_thread_bind(cur, node);
+    return regpool_alloc_arena_slow(size, align, node, c, NULL, NULL);
+  if (c->memo_node != node || c->memo_seen != cur) {
+    regpool_binding_t w;
+    regpool_bind_t b = regpool_thread_bind(cur, &w);
     if (b == REGPOOL_BIND_FAILED)
       return NULL;
     if (b == REGPOOL_BIND_NO_ROOM)
-      return regpool_alloc_arena_slow(size, align, node, cur);
+      return regpool_alloc_arena_slow(size, align, node, c, cur, cur);
+    c->bound = w;
+    c->memo_node = node;
+    c->memo_seen = cur;
   }
 
-  void *p = mi_heap_malloc_aligned(t_heap, size, align);
+  void *p = mi_heap_malloc_aligned(c->bound.heap, size, align);
   if (p != NULL)
     return p;
-  return regpool_alloc_arena_slow(size, align, node, cur);
+  return regpool_alloc_arena_slow(size, align, node, c, c->bound.arena, cur);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -2058,6 +2181,7 @@ bool arts_regpool_init(struct fid_domain *domain_or_null,
     atomic_store_explicit(&g_node_state[i], REGPOOL_NODE_UNTRIED,
                           memory_order_relaxed);
     atomic_store_explicit(&g_node_spills[i], 0, memory_order_relaxed);
+    atomic_store_explicit(&g_node_cascades[i], 0, memory_order_relaxed);
     g_node_last_slab[i] = 0;
     g_node_grow_count[i] = 0;
     g_node_grow_ns[i] = 0;
@@ -2166,7 +2290,7 @@ static void regpool_report_locked(FILE *out) {
                                       memory_order_relaxed);
     fprintf(out,
             "[REGPOOL] node %u: state=%s arenas=%u mapped=%zu grows=%u "
-            "grow_ms=%llu waits=%u wait_ms=%llu spills=%u\n",
+            "grow_ms=%llu waits=%u wait_ms=%llu spills=%u cascades=%u\n",
             node,
             st == REGPOOL_NODE_CARVED
                 ? "carved"
@@ -2175,7 +2299,8 @@ static void regpool_report_locked(FILE *out) {
             (unsigned long long)(g_node_grow_ns[node] / 1000000ull),
             g_node_wait_count[node],
             (unsigned long long)(g_node_wait_ns[node] / 1000000ull),
-            atomic_load_explicit(&g_node_spills[node], memory_order_relaxed));
+            atomic_load_explicit(&g_node_spills[node], memory_order_relaxed),
+            atomic_load_explicit(&g_node_cascades[node], memory_order_relaxed));
   }
 
   size_t unplaced = 0;
@@ -2339,6 +2464,7 @@ void arts_regpool_cleanup(void) {
     atomic_store_explicit(&g_node_state[i], REGPOOL_NODE_UNTRIED,
                           memory_order_release);
     atomic_store_explicit(&g_node_spills[i], 0, memory_order_relaxed);
+    atomic_store_explicit(&g_node_cascades[i], 0, memory_order_relaxed);
     g_node_last_slab[i] = 0;
     g_node_grow_count[i] = 0;
     g_node_grow_ns[i] = 0;

@@ -2,10 +2,11 @@
  * runs on, so the pool's placement and sizing decisions can be driven and
  * observed identically on any host.
  *
- * Including this header DEFINES the process's `syscall` and `fopen`, which
- * the pool calls for every fact it takes from the machine but the process's
- * CPU affinity: the node a thread runs on (getcpu), the node a range is
- * placed on (mbind), what the machine can still give (/proc/meminfo's
+ * Including this header DEFINES the process's `sched_getcpu`, `syscall` and
+ * `fopen`, which the pool calls for every fact it takes from the machine but
+ * the process's CPU affinity: the CPU a thread runs on (sched_getcpu) and
+ * its node (getcpu, through syscall), the node a range is placed on (mbind,
+ * through syscall), what the machine can still give (/proc/meminfo's
  * MemAvailable), a node's free pages (its sysfs meminfo) and a node's CPUs
  * (its sysfs cpulist).  Include it in
  * exactly one translation unit of a test program, and link the dynamic
@@ -14,9 +15,15 @@
  * unchanged.
  *
  * Once a machine of n nodes is declared:
- *   - getcpu reports the node set for the calling thread (node 0 unless
- *     regpool_sim_set_thread_node said otherwise since the declaration; a
- *     thread created later starts on node 0);
+ *   - getcpu reports the node set for the calling thread: node 0 unless
+ *     regpool_sim_set_thread_node said otherwise.  A declaration sets the
+ *     declaring thread back to node 0; any other live thread keeps the node
+ *     it set, and a thread created later starts on node 0.  As the CPU,
+ *     getcpu reports a number that stands for that node in this declaration
+ *     and is no real CPU's, and sched_getcpu reports the same number: a
+ *     caller that keeps the node it read for a CPU reads it again once the
+ *     thread is moved or the machine declared again, and never takes a real
+ *     CPU it saw before for a declared one;
  *   - mbind is recorded and reported successful without reaching the
  *     kernel, so a policy naming a node the host lacks is still observable
  *     (regpool_sim_mbind_at);
@@ -81,6 +88,7 @@
 #include <dlfcn.h>
 #include <errno.h>
 #include <pthread.h>
+#include <sched.h>
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -109,6 +117,8 @@ typedef struct {
 } regpool_sim_mbind_t;
 
 #define REGPOOL_SIM_MAX_NODES 64
+/* Above every real CPU number (the kernel's limit is 8192). */
+#define REGPOOL_SIM_CPU_BASE (1 << 20)
 #define REGPOOL_SIM_MAX_MBINDS 1024
 #define REGPOOL_SIM_MPOL_PREFERRED 1
 #define REGPOOL_SIM_MPOL_INTERLEAVE 3
@@ -116,6 +126,7 @@ typedef struct {
 #define REGPOOL_SIM_SELF_FULL_OTHER ((size_t)1 << 40)
 
 static int regpool_sim_nodes; /* 0: not declared, the real machine answers */
+static unsigned regpool_sim_declarations; /* one per regpool_sim_declare */
 static regpool_sim_avail_t regpool_sim_avail[REGPOOL_SIM_MAX_NODES];
 static size_t regpool_sim_machine_avail;
 static size_t regpool_sim_node_free[REGPOOL_SIM_MAX_NODES];
@@ -140,6 +151,7 @@ static inline void regpool_sim_declare(int nodes, regpool_sim_avail_t avail) {
   if (nodes < 1 || nodes > REGPOOL_SIM_MAX_NODES)
     abort();
   regpool_sim_nodes = nodes;
+  regpool_sim_declarations++;
   for (int i = 0; i < REGPOOL_SIM_MAX_NODES; i++)
     regpool_sim_avail[i] = avail;
   regpool_sim_after_machine_read = false;
@@ -250,6 +262,17 @@ static inline void regpool_sim_probe_range(uintptr_t base, unsigned long len,
   }
 }
 
+static inline int regpool_sim_node_of_thread(void) {
+  return regpool_sim_thread_node >= 0 ? regpool_sim_thread_node : 0;
+}
+
+/* The CPU that stands for the calling thread's node in this declaration. */
+static inline int regpool_sim_cpu_of_thread(void) {
+  return REGPOOL_SIM_CPU_BASE +
+         (int)regpool_sim_declarations * REGPOOL_SIM_MAX_NODES +
+         regpool_sim_node_of_thread();
+}
+
 long syscall(long nr, ...) {
   va_list ap;
   va_start(ap, nr);
@@ -262,11 +285,9 @@ long syscall(long nr, ...) {
                                 memory_order_relaxed);
       unsigned *cpu = (unsigned *)a0, *node = (unsigned *)a1;
       if (cpu != NULL)
-        *cpu = 0;
+        *cpu = (unsigned)regpool_sim_cpu_of_thread();
       if (node != NULL)
-        *node =
-            (unsigned)(regpool_sim_thread_node >= 0 ? regpool_sim_thread_node
-                                                    : 0);
+        *node = (unsigned)regpool_sim_node_of_thread();
       return 0;
     }
     if (nr == SYS_mbind) {
@@ -297,6 +318,20 @@ long syscall(long nr, ...) {
     atomic_store_explicit(&real, fn, memory_order_relaxed);
   }
   return fn(nr, a0, a1, a2, a3, a4, a5);
+}
+
+int sched_getcpu(void) {
+  if (regpool_sim_nodes > 0)
+    return regpool_sim_cpu_of_thread();
+  /* Resolved as in syscall above. */
+  typedef int (*sched_getcpu_fn)(void);
+  static _Atomic(sched_getcpu_fn) real;
+  sched_getcpu_fn fn = atomic_load_explicit(&real, memory_order_relaxed);
+  if (fn == NULL) {
+    fn = (sched_getcpu_fn)dlsym(RTLD_NEXT, "sched_getcpu");
+    atomic_store_explicit(&real, fn, memory_order_relaxed);
+  }
+  return fn();
 }
 
 /* A read-only stream over `text`, which must outlive the stream. */

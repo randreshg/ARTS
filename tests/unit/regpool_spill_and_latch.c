@@ -44,9 +44,11 @@
 #include "arts/system/identity.h"
 #include "regpool_numa_sim.h"
 
-/* What the pool's log and fatal paths reference. */
+/* What the pool's log and fatal paths and its per-thread tables reference. */
 unsigned int arts_global_rank_id = 0;
 ARTS_THREAD_LOCAL struct arts_runtime_private_s arts_thread_info;
+void *arts_calloc(size_t nmemb, size_t size) { return mi_calloc(nmemb, size); }
+void arts_free(void *ptr) { mi_free(ptr); }
 #define FATAL_STATUS 3
 /* The fatal path also reports how many placement policies the process set,
  * so a process that dies on it can still be checked for maps it made. */
@@ -247,7 +249,7 @@ int main(void) {
 
   /* (iii) Node a, its room back, allocates: its own grow is the table's to
    * refuse, so an unlatched pool would map again on its behalf.  40 blocks
-   * overrun the first serving arena (32 MiB) into the second, so the node
+   * overrun the first serving arena (32 MiB) into the second, so its thread
    * moves exactly once more and is otherwise served on the fast path. */
   unsigned spills0 = na.spills;
   alloc_on(40, b, "after the refusal");

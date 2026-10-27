@@ -10,10 +10,10 @@
  *
  *   first  F fills the first arena until the pool grows a second, frees one
  *          first-arena block and allocates until the sweep serves a block
- *          there again, which makes the first arena the node's current one
- *          once more.  A new thread's first allocation then finds the
- *          current arena with no room, and the sweep the second arena too:
- *          a third slab serves it, after two refused binds.
+ *          there again, so neither arena has a free slice.  A new thread's
+ *          first allocation then finds the node's current arena, the
+ *          second, with no room, and the sweep the first arena too: a
+ *          third slab serves it, after two refused binds.
  *   sweep  F fills the first arena until the pool grows a second and stays
  *          alive.  A thread started later fills the second arena; its sweep
  *          finds the first arena with no room for it, and a third slab
