@@ -587,8 +587,8 @@ void arts_send_db_excl_request(struct arts_db_cache_s *cache,
   p.rdzv.txid = rdzv.txid;
   p.rdzv.cookie = rdzv.cookie;
   if (!arts_net_send_held((int)home_rank, (char *)&p, sizeof(p),
-                          mode == DB_MODE_RO ? ARTS_HELD_READ
-                                             : ARTS_HELD_WRITE)) {
+                          mode == DB_MODE_RO ? ARTS_HELD_READ : ARTS_HELD_WRITE,
+                          db_guid)) {
     arts_transport_send_async((int)home_rank, (char *)&p, sizeof(p));
   }
 }
@@ -708,7 +708,7 @@ void arts_send_db_excl_forward(unsigned int owner_rank, arts_guid_t db_guid,
     return;
   }
   if (!arts_net_send_held((int)owner_rank, (char *)&p, sizeof(p),
-                          ARTS_HELD_HOP)) {
+                          ARTS_HELD_HOP, db_guid)) {
     arts_transport_send_async((int)owner_rank, (char *)&p, sizeof(p));
   }
 }

@@ -450,7 +450,7 @@ void arts_send_db_snapshot_redirect(unsigned int owner_rank,
     return;
   }
   if (!arts_net_send_held((int)owner_rank, (char *)&p, sizeof(p),
-                          ARTS_HELD_HOP)) {
+                          ARTS_HELD_HOP, db_guid)) {
     arts_transport_send_async((int)owner_rank, (char *)&p, sizeof(p));
   }
 }

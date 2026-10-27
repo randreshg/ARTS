@@ -13,17 +13,20 @@
  * on rank C (C, D, H distinct) that acquires g three times: reader R1 (C's
  * read request leaves), writer W (C's write request leaves at once and waits
  * behind D's turn) and reader R2 (it parks on C behind W).  Run with
- * ARTS_REQUEST_DELAY_MS=<n>:ro, n below the hold, and the argument `strict`:
- * the read request reaches H after W declared it and while D still holds the
- * turn, H dismisses it, the dismiss reaches C before the grant, and R1 and R2
- * ride W, so every reader must see a value a writer stored (9 by D, 11 by W),
- * never the creator's 7.  Without the hook R1's request reaches H first and
- * is served as a read; R1 and R2 are unordered with D's writer, and where a
- * read answer serves every reader parked on the rank R2 can be served by it,
- * so 7 is legal for both.  The verdict: exit status, PASS line, no FAIL line
- * and no QUIESCENCE-DEBUG marker.
+ * ARTS_REQUEST_DELAY_MS=<n>:trail and the argument `strict`: the read request
+ * leaves right behind W's write request from the same thread, so H, whose one
+ * progress thread dispatches one sender's messages in send order, takes it
+ * in after W declared it and while D still holds the turn; H dismisses it,
+ * the dismiss reaches C before the grant, and R1 and R2 ride W, so every
+ * reader must see a value a writer stored (9 by D, 11 by W), never the
+ * creator's 7.  Without the hook R1's request can reach H first and be served
+ * as a read; R1 and R2 are unordered with D's writer, and where a read answer
+ * serves every reader parked on the rank R2 can be served by it, so 7 is
+ * legal for both.  The verdict: exit status, PASS line, no FAIL line and no
+ * QUIESCENCE-DEBUG marker.
  *
- * Arguments: [strict] [blocks] (8).  Needs three ranks.
+ * Arguments: [strict] [blocks] (8).  Needs three ranks, each with one
+ * progress thread.
  */
 
 #include <stdatomic.h>

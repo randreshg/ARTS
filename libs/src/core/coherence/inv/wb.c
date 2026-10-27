@@ -333,7 +333,7 @@ void arts_send_db_inv_redirect(unsigned int holder_rank, arts_guid_t db_guid,
     return;
   }
   if (!arts_net_send_held((int)holder_rank, (char *)&p, sizeof(p),
-                          ARTS_HELD_HOP)) {
+                          ARTS_HELD_HOP, db_guid)) {
     arts_transport_send_async((int)holder_rank, (char *)&p, sizeof(p));
   }
 }
@@ -376,7 +376,7 @@ void arts_send_db_inv_request_for(arts_guid_t db_guid, unsigned int requester,
     return;
   }
   if (!arts_net_send_held((int)home_rank, (char *)&p, sizeof(p),
-                          ARTS_HELD_HOP)) {
+                          ARTS_HELD_HOP, db_guid)) {
     arts_transport_send_async((int)home_rank, (char *)&p, sizeof(p));
   }
 }

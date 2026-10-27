@@ -243,10 +243,12 @@ All options are set with ``-D<NAME>=<VALUE>`` on the cmake line.
        local completion for a random 0..n ms),
        ``ARTS_NET_MAX_MSG=<bytes>`` (lower the provider's one-sided ceiling),
        ``ARTS_REGPOOL_FORCE_FULL_NODES=<n,...>`` (treat NUMA nodes as full),
-       ``ARTS_REQUEST_DELAY_MS=<n>[:ro|:hop]`` (hold each coherence request
-       a rank sends another rank for a random 0..n ms; ``:ro`` holds only
-       read requests and ``:hop`` only a home's redirect or forward of a
-       request it took in, each exactly n ms).
+       ``ARTS_REQUEST_DELAY_MS=<n>[:ro|:hop|:trail]`` (hold each coherence
+       request a rank sends another rank for a random 0..n ms; ``:ro`` holds
+       only read requests and ``:hop`` only a home's redirect or forward of a
+       request it took in, each exactly n ms; ``:trail`` sends each read
+       request right behind its rank's write request for the same block, or
+       after n ms when none follows).
        The tests that need a hook register only where this is on.
    * - ``ARTS_DEBUG_DB_QUARANTINE``
      - OFF

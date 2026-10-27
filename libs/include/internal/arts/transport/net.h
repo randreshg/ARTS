@@ -102,16 +102,17 @@ void arts_transport_send_async(int rank, char *message, unsigned int length);
  * bound for another rank is handed here instead of to the transport; it is
  * copied, held and then sent by a progress thread.  `kind` is what it is:
  * a write request, a read request, or a hop (a home's redirect or forward of
- * a request it took in, or a holder's bounce of one).  Returns false (and
- * takes nothing) when the hook holds nothing of its kind. */
+ * a request it took in, or a holder's bounce of one); `guid` is the block it
+ * is about.  Returns false (and takes nothing) when the hook holds nothing of
+ * its kind. */
 #define ARTS_HELD_WRITE 0
 #define ARTS_HELD_READ 1
 #define ARTS_HELD_HOP 2
 #ifdef ARTS_DEBUG_INJECTION
 bool arts_net_send_held(int rank, const char *message, unsigned int length,
-                        int kind);
+                        int kind, arts_guid_t guid);
 #else
-#define arts_net_send_held(rank, message, length, kind) false
+#define arts_net_send_held(rank, message, length, kind, guid) false
 #endif
 void arts_transport_send_payload_async_free(int rank, char *message,
                                             unsigned int length, char *payload,

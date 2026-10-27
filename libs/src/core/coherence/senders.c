@@ -274,7 +274,7 @@ void arts_send_db_snapshot_request(struct arts_db_cache_s *cache,
     return;
   }
   if (!arts_net_send_held((int)home_rank, (char *)&p, sizeof(p),
-                          ARTS_HELD_READ)) {
+                          ARTS_HELD_READ, db_guid)) {
     arts_transport_send_async((int)home_rank, (char *)&p, sizeof(p));
   }
 }

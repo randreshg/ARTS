@@ -1071,8 +1071,8 @@ void arts_send_db_inv_request(struct arts_db_cache_s *cache,
   p.rdzv.txid = rdzv.txid;
   p.rdzv.cookie = rdzv.cookie;
   if (!arts_net_send_held((int)home_rank, (char *)&p, sizeof(p),
-                          mode == DB_MODE_RO ? ARTS_HELD_READ
-                                             : ARTS_HELD_WRITE)) {
+                          mode == DB_MODE_RO ? ARTS_HELD_READ : ARTS_HELD_WRITE,
+                          db_guid)) {
     arts_transport_send_async((int)home_rank, (char *)&p, sizeof(p));
   }
 }

@@ -2120,8 +2120,9 @@ if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
     # db_read_dismissed_before_grant: the requester, the write turn's holder
     # and the home are three distinct ranks.  Without the hook a
     # reader may legally see the creator's value; with every read request
-    # held 100 ms the dismiss overtakes the grant and the readers ride the
-    # write request, so the strict oracle applies.
+    # sent right behind its rank's write request the home takes the write
+    # request in first, the dismiss overtakes the grant and the readers ride
+    # the write request, so the strict oracle applies.
     add_arts_test(db_read_dismissed_before_grant)
     arts_cover_test(db_read_dismissed_before_grant
                     db_read_dismissed_before_grant VARIANTS 4n_4w_1p
@@ -2163,7 +2164,8 @@ if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
                         PASS "PASS: db_read_rides_write 16 blocks")
         arts_cover_test(db_read_dismissed_before_grant_strict
                         db_read_dismissed_before_grant ARGS strict
-                        VARIANTS 4n_4w_1p HOOK "ARTS_REQUEST_DELAY_MS=100:ro"
+                        VARIANTS 4n_4w_1p
+                        HOOK "ARTS_REQUEST_DELAY_MS=60000:trail"
                         PASS "PASS: db_read_dismissed_before_grant 8 blocks")
         arts_cover_test(db_destroy_cover_settles_t2_delay
                         db_destroy_cover_settles ARGS t2

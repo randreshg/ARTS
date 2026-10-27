@@ -1198,7 +1198,13 @@ static void net_quiesce_held_writes(void) {
  * home in either order and a request can trail everything its rank sends
  * after it.  ARTS_REQUEST_DELAY_MS=<n>:ro holds only read requests, each for
  * exactly n ms, so a write turn always answers first; <n>:hop holds only
- * hops, each for exactly n ms, so a hop can cross the block's teardown.
+ * hops, each for exactly n ms, so a hop can cross the block's teardown;
+ * <n>:trail holds each read request until its rank's write request for the
+ * same block to the same rank leaves, and sends it right behind that one
+ * from the same thread, so a target that dispatches with one progress thread
+ * takes the write request in first whatever the timing, given the
+ * send-after-send order the provider grants (a read request that no write
+ * request follows leaves after n ms).
  * Producers (any thread, a progress thread in dispatch included) only copy
  * and push; a progress thread that wins the try-lock moves the
  * pushed packets onto the not-yet-due list, detaches what is due, drops the
@@ -1211,7 +1217,9 @@ struct net_held_msg_s {
   _Atomic(struct net_held_msg_s *) next; /* the producers' stack */
   struct net_held_msg_s *wnext; /* the wait and due lists: the lock's own */
   uint64_t due_ns;
+  arts_guid_t guid;
   int rank;
+  int kind;
   unsigned int len;
   char data[];
 };
@@ -1224,8 +1232,10 @@ static struct net_held_msg_s *g_held_wait;
 static _Atomic(unsigned int) g_held_lock;
 /* Set before any thread exists to send; 0 = off. */
 static int64_t g_req_delay_ns;
-/* Which kind is held: every request (randomly), or one kind exactly. */
+/* Which kind is held: every request (randomly) or one kind exactly; or, with
+ * the trail form, read requests until their write request leaves. */
 static int g_req_delay_mode = -1;
+static bool g_req_delay_trail;
 static ARTS_THREAD_LOCAL uint64_t t_req_delay_rng;
 
 static void net_req_delay_init(void) {
@@ -1240,10 +1250,13 @@ static void net_req_delay_init(void) {
     } else if (end != env && strcmp(end, ":hop") == 0) {
       g_req_delay_mode = ARTS_HELD_HOP;
       end += 4;
+    } else if (end != env && strcmp(end, ":trail") == 0) {
+      g_req_delay_trail = true;
+      end += 6;
     }
     if (end == env || *end != '\0' || ms < 0 || ms > 60000) {
       ARTS_ERROR("arts_net: ARTS_REQUEST_DELAY_MS=\"%s\" is not a delay of "
-                 "0-60000 ms, optionally followed by :ro or :hop",
+                 "0-60000 ms, optionally followed by :ro, :hop or :trail",
                  env);
     }
   }
@@ -1251,7 +1264,8 @@ static void net_req_delay_init(void) {
 }
 
 bool arts_net_send_held(int rank, const char *message, unsigned int length,
-                        int kind) {
+                        int kind, arts_guid_t guid) {
+  bool trail = g_req_delay_trail;
   bool exact = g_req_delay_mode >= 0;
   if (g_req_delay_ns == 0 || (exact && kind != g_req_delay_mode) ||
       (!exact && kind == ARTS_HELD_HOP)) {
@@ -1260,7 +1274,9 @@ bool arts_net_send_held(int rank, const char *message, unsigned int length,
   struct net_held_msg_s *h =
       (struct net_held_msg_s *)arts_malloc(sizeof(*h) + length);
   memcpy(h->data, message, length);
+  h->guid = guid;
   h->rank = rank;
+  h->kind = kind;
   h->len = length;
   if (t_req_delay_rng == 0) {
     t_req_delay_rng = (net_now_ns() ^ ((uint64_t)(uintptr_t)&h)) | 1u;
@@ -1268,10 +1284,13 @@ bool arts_net_send_held(int rank, const char *message, unsigned int length,
   t_req_delay_rng ^= t_req_delay_rng << 13;
   t_req_delay_rng ^= t_req_delay_rng >> 7;
   t_req_delay_rng ^= t_req_delay_rng << 17;
-  h->due_ns = net_now_ns() + (exact
-                                  ? (uint64_t)g_req_delay_ns
-                                  : t_req_delay_rng %
-                                        (uint64_t)(g_req_delay_ns + 1));
+  uint64_t hold = (uint64_t)g_req_delay_ns;
+  if (trail) {
+    hold = kind == ARTS_HELD_WRITE ? 0u : hold;
+  } else if (!exact) {
+    hold = t_req_delay_rng % (hold + 1u);
+  }
+  h->due_ns = net_now_ns() + hold;
   struct net_held_msg_s *top =
       atomic_load_explicit(&g_held_push, memory_order_relaxed);
   do {
@@ -1312,6 +1331,27 @@ static void net_release_held(void) {
     *pp = h->wnext;
     h->wnext = due;
     due = h;
+  }
+  if (g_req_delay_trail) {
+    /* A read request was pushed before its rank's write request, so by the
+     * time the write request is taken the read request is on the wait list. */
+    for (struct net_held_msg_s *w = due; w != NULL; w = w->wnext) {
+      if (w->kind != ARTS_HELD_WRITE) {
+        continue;
+      }
+      for (struct net_held_msg_s **pp = &g_held_wait; *pp != NULL;) {
+        struct net_held_msg_s *h = *pp;
+        if (h->kind != ARTS_HELD_READ || h->guid != w->guid ||
+            h->rank != w->rank) {
+          pp = &h->wnext;
+          continue;
+        }
+        *pp = h->wnext;
+        h->wnext = w->wnext;
+        w->wnext = h;
+        w = h;
+      }
+    }
   }
   atomic_store_explicit(&g_held_lock, 0u, memory_order_release);
   while (due != NULL) {
