@@ -1,10 +1,10 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * INV arts_inv_cache_compute_next / inv_dir_compute_next — the PURE transition
- * functions over the packed reader word [ro|inflight|head_ro] and the packed
- * directory word [round_open|acks].
+ * INV arts_inv_cache_compute_next / inv_round_submit_next — the PURE
+ * decisions over the packed reader word [ro|inflight|head_ro] and the round
+ * word [entries|OPEN].
  *
- * Both arbiters are identical under either write policy (the write policy
+ * Both deciders are identical under either write policy (the write policy
  * decides where bytes come FROM, never what a word does), so this one truth
  * table covers the whole protocol.  Expected values are hand-derived, not
  * produced by an oracle that re-implements the functions.  Covered:
@@ -24,10 +24,14 @@
  *   - the chain head carries the reader pool's full index width, and a head
  *     with every bit set leaves the request bits beside it untouched;
  *
- *   dir (invalidation round):
- *   - round claim mutual exclusion;
- *   - ack arming, decrement, and the unique 0-edge close;
- *   - close drops the claim and nothing else.
+ *   round word (invalidation round):
+ *   - a release that reads an idle word claims it (OPEN, and it runs its own
+ *     entry);
+ *   - one that reads a held word, with or without entries waiting, pushes
+ *     (e|OPEN), so a push never lands on an idle word and only a claim
+ *     enters one;
+ *   - the hold is bit 0 (an entry's address leaves it clear: arts_malloc's
+ *     alignment, asserted at run time where a release submits its entry).
  *
  * There is deliberately NO writer coverage: write ownership is the migrating
  * sentinel grant, which lives in plain counters (coherence/grant.c), not in
@@ -52,8 +56,7 @@ _Static_assert(INV_CACHE_RO_SHIFT + INV_CACHE_ST_BITS == 64,
 _Static_assert(INV_CACHE_HEAD_RO_SHIFT == 0 && INV_CACHE_INFLIGHT_SHIFT == 61 &&
                    INV_CACHE_RO_SHIFT == 62,
                "cache word field shifts drifted");
-_Static_assert(INV_DIR_ROUND_SHIFT == 63 && INV_DIR_ACKS_SHIFT == 49,
-               "dir word field shifts drifted");
+_Static_assert(INV_ROUND_OPEN == 1u, "the round's hold is bit 0");
 _Static_assert(INV_CACHE_HEAD_BITS == 29 &&
                    INV_CACHE_HEAD_BITS == ARTS_DB_READER_IDX_BITS &&
                    ARTS_DB_READER_IDX_MAX <= INV_CACHE_HEAD_MASK,
@@ -93,16 +96,16 @@ static void expect_req(const char *what, uint64_t cur, int op, uint32_t idx,
   }
 }
 
-static void expect_dir(const char *what, uint64_t cur, int op, unsigned int arg,
-                       uint64_t want_next, uint32_t want_act) {
-  uint32_t act = 0xFFFFFFFFu;
-  uint64_t next = inv_dir_compute_next(cur, op, arg, &act);
-  if (next != want_next || act != want_act) {
+static void expect_submit(const char *what, uintptr_t cur, uintptr_t e,
+                          uintptr_t want_next, bool want_claim) {
+  bool claim = !want_claim;
+  uintptr_t next = inv_round_submit_next(cur, e, &claim);
+  if (next != want_next || claim != want_claim) {
     (void)fprintf(stderr,
-                  "FAIL inv_compute_next: %s — got word %016llx act %u, "
-                  "want word %016llx act %u\n",
-                  what, (unsigned long long)next, act,
-                  (unsigned long long)want_next, want_act);
+                  "FAIL inv_compute_next: %s — got word %llx claim %d, "
+                  "want word %llx claim %d\n",
+                  what, (unsigned long long)next, (int)claim,
+                  (unsigned long long)want_next, (int)want_claim);
     g_fail = 1;
   }
 }
@@ -173,21 +176,17 @@ int main(void) {
 
   /* ---- invalidation round ---------------------------------------------- */
 
-  expect_dir("an idle directory admits a round", INV_DIR_MAKE(0u, 0u),
-             INV_DIR_OP_ROUND_CLAIM, 0u, INV_DIR_MAKE(1u, 0u),
-             INV_DIR_ACT_CLAIMED);
-  expect_dir("a busy directory refuses a second round", INV_DIR_MAKE(1u, 3u),
-             INV_DIR_OP_ROUND_CLAIM, 0u, INV_DIR_MAKE(1u, 3u),
-             INV_DIR_ACT_NONE);
-  expect_dir("arming sets the snapshot size", INV_DIR_MAKE(1u, 0u),
-             INV_DIR_OP_ACKS_ARM, 5u, INV_DIR_MAKE(1u, 5u), INV_DIR_ACT_NONE);
-  expect_dir("a non-final ack just decrements", INV_DIR_MAKE(1u, 5u),
-             INV_DIR_OP_ACK_DEC, 0u, INV_DIR_MAKE(1u, 4u), INV_DIR_ACT_NONE);
-  expect_dir("the last ack closes, and only it", INV_DIR_MAKE(1u, 1u),
-             INV_DIR_OP_ACK_DEC, 0u, INV_DIR_MAKE(1u, 0u), INV_DIR_ACT_CLOSE);
-  expect_dir("close drops the claim and nothing else", INV_DIR_MAKE(1u, 0u),
-             INV_DIR_OP_ROUND_CLOSE, 0u, INV_DIR_MAKE(0u, 0u),
-             INV_DIR_ACT_NONE);
+  {
+    /* Entry addresses as arts_malloc returns them: bit 0 clear. */
+    const uintptr_t e1 = (uintptr_t)0x7f0012345670u;
+    const uintptr_t e2 = (uintptr_t)0x7f00abcdef10u;
+    expect_submit("an idle word is claimed", (uintptr_t)0, e1, INV_ROUND_OPEN,
+                  true);
+    expect_submit("a held word with nothing waiting takes a push",
+                  INV_ROUND_OPEN, e1, e1 | INV_ROUND_OPEN, false);
+    expect_submit("a held word with entries waiting takes a push",
+                  e1 | INV_ROUND_OPEN, e2, e2 | INV_ROUND_OPEN, false);
+  }
 
   /* The request axes. */
   {

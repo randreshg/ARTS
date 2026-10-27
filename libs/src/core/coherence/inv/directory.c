@@ -19,6 +19,7 @@
 #include "arts/coherence/inv/types.h"
 
 #include "arts/utils/stdatomic_compat.h"
+#include <assert.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdlib.h>
@@ -48,13 +49,16 @@ void arts_db_home_init(struct arts_db_s *db, unsigned int rw_holder,
                         memory_order_relaxed);
 #endif
 
-  /* Round plane: no round open, no acks outstanding. */
-  atomic_store_explicit(&db->dir_state, INV_DIR_MAKE(0u, 0u),
-                        memory_order_relaxed);
+  /* Round plane: no round held, no ack outstanding. */
+  atomic_store_explicit(&db->round_queue, (uintptr_t)0, memory_order_relaxed);
+  atomic_store_explicit(&db->round_acks, 0u, memory_order_relaxed);
+#ifdef ARTS_WRITE_POLICY_WT
   atomic_store_explicit(&db->hver, 1u, memory_order_relaxed);
-  arts_lf_stack_init(&db->pub_queue);
+#endif
   db->round_entries = NULL;
   arts_rank_bitset_init(&db->roster, nranks);
+  assert(db->roster.nwords <= INV_ROUND_MAX_WORDS &&
+         "a round keeps one target mask per roster word on its stack");
   arts_rank_bitset_init(&db->cached_ranks, nranks);
   arts_db_cover_home_init(db, nranks);
   /* A creator on another rank holds a cache of the block from the moment it
@@ -71,14 +75,28 @@ void arts_db_home_teardown(struct arts_db_s *db) {
     return;
   }
   arts_home_grantreq_queue_destroy(&db->pending_rw);
-  /* Drain + free anything still queued.  Single-threaded at teardown: the
-   * route slot is already absent, so no concurrent push can land. */
-  arts_lf_link_t *node = arts_lf_stack_drain(&db->pub_queue);
-  while (node != NULL) {
-    arts_lf_link_t *nx = atomic_load_explicit(&node->next, memory_order_relaxed);
-    arts_free(ARTS_CONTAINER_OF(node, struct arts_db_inv_pub_s, link));
-    node = nx;
+  /* Free the releases still queued and an armed round's batch.  Under the
+   * destroy contract both are empty; outside it a round can still be armed
+   * here (its acks lost to the destroy), while a held, unarmed one cannot:
+   * its running holder pins the descriptor.  Relaxed: the descriptor's
+   * last-reference decrement orders this after every pusher, each of which
+   * pushed under a reference it released after. */
+  struct arts_db_inv_pub_s *e =
+      (struct arts_db_inv_pub_s *)(atomic_exchange_explicit(
+                                       &db->round_queue, (uintptr_t)0,
+                                       memory_order_relaxed) &
+                                   ~INV_ROUND_OPEN);
+  while (e != NULL) {
+    struct arts_db_inv_pub_s *nx = e->next;
+    arts_free(e);
+    e = nx;
   }
+  for (e = db->round_entries; e != NULL;) {
+    struct arts_db_inv_pub_s *nx = e->next;
+    arts_free(e);
+    e = nx;
+  }
+  db->round_entries = NULL;
   arts_rank_bitset_destroy(&db->roster);
   arts_rank_bitset_destroy(&db->cached_ranks);
   arts_db_cover_home_teardown(db);

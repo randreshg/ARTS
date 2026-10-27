@@ -10,16 +10,18 @@
  * (writer_count and the grant fields below; coherence/grant.c).
  *
  * The home adds the invalidation round, which is what makes this arm INV:
- * one directory word (dir_state, INV_DIR_*) that admits one round at a time
- * and counts its outstanding acks, the queue of releases awaiting a round,
- * and the copy roster a round snapshots.  A release returns only after the
- * round that covers it has an ack from every copy it retired.
+ * one word (round_queue) that is both the hold admitting one round at a time
+ * and the queue of releases awaiting the next round, the armed round's
+ * outstanding acks (round_acks), and the copy roster a round snapshots.  A
+ * release returns only after the round that covers it has an ack from every
+ * copy it retired.
  *
  * The write policy decides only where the canonical bytes live.  Under WT a
  * release's publish carries its payload into the home's stable buffer and
- * the home serves reads from it; under WB the bytes stay with the grant's
- * holder, the publish carries control only, and the home redirects reads to
- * the holder.  The round is the same under both.
+ * the home serves reads from it, stamped with the home's publication axis;
+ * under WB the bytes stay with the grant's holder, the publish carries
+ * control only, and the home redirects reads to the holder.  The round is
+ * the same under both, but for WT's stamp.
  *
  * Invariants of the reader word (the arbiters keep them):
  *   - a fetch is open (inflight) exactly while ro is REQ or REQ_KILL, so at
@@ -144,40 +146,25 @@ extern "C" {
    (((uint64_t)(inflight) & INV_CACHE_FLAG_MASK) << INV_CACHE_INFLIGHT_SHIFT) |\
    (((uint64_t)(hro) & INV_CACHE_HEAD_MASK) << INV_CACHE_HEAD_RO_SHIFT))
 
-/* ── directory word: the invalidation round, and only the round ──────────
+/* ── round word: the invalidation round's hold and its queue ─────────────
  * Identical under both write policies.
  *
- *   [ round_open:1 (63) | acks:14 (62..49) | spare:49 ]
+ *   round_queue = [ entries awaiting the next round | OPEN (bit 0) ]
  *
- *   round_open = at most one invalidation round is open at a time.
- *   acks       = outstanding INVALIDATE_ACKs of the open round.
- *
- * Who holds the write grant, who is queued for it, and whether a transfer is
- * in flight are NOT here: they are the grant plane's pending_rw / grant_baton
- * (and rw_holder where the home revokes), shared with every other
- * migrating-grant arm.
+ * An entry is arts_malloc'd, so bit 0 of its address is free to carry the
+ * hold: 0 = no round, OPEN = a round is held with nothing waiting, and
+ * entries imply OPEN.  Who holds the write grant, who is queued for it, and
+ * whether a transfer is in flight are NOT here: they are the grant plane's
+ * pending_rw / grant_baton (and rw_holder where the home revokes), shared
+ * with every other migrating-grant arm.
  */
-#define INV_DIR_ACKS_BITS 14
-#define INV_DIR_FLAG_BITS 1
-
-#define INV_DIR_ACKS_SHIFT 49
-#define INV_DIR_ROUND_SHIFT (INV_DIR_ACKS_SHIFT + INV_DIR_ACKS_BITS)
-
-#define INV_DIR_ACKS_MASK ((uint64_t)((1ULL << INV_DIR_ACKS_BITS) - 1))
-#define INV_DIR_FLAG_MASK ((uint64_t)0x1ULL)
-
-#define INV_DIR_ROUND_OPEN(s)                                                  \
-  ((uint32_t)(((s) >> INV_DIR_ROUND_SHIFT) & INV_DIR_FLAG_MASK))
-#define INV_DIR_ACKS(s)                                                        \
-  ((uint32_t)(((s) >> INV_DIR_ACKS_SHIFT) & INV_DIR_ACKS_MASK))
-#define INV_DIR_MAKE(open, acks)                                               \
-  ((((uint64_t)(open) & INV_DIR_FLAG_MASK) << INV_DIR_ROUND_SHIFT) |           \
-   (((uint64_t)(acks) & INV_DIR_ACKS_MASK) << INV_DIR_ACKS_SHIFT))
+#define INV_ROUND_OPEN ((uintptr_t)1)
+/* Roster words of the whole rank space: a round keeps one target mask per
+ * word on its stack. */
+#define INV_ROUND_MAX_WORDS ((unsigned int)((ARTS_GUID_RANK_MASK + 64u) / 64u))
 
 static_assert(INV_CACHE_RO_SHIFT + INV_CACHE_ST_BITS == 64,
               "cache word must pack to exactly 64 bits");
-static_assert(INV_DIR_ROUND_SHIFT + INV_DIR_FLAG_BITS == 64,
-              "directory word must pack to exactly 64 bits");
 static_assert(INV_RO_VALID <= INV_CACHE_ST_MASK,
               "reader state encodings must fit the 2-bit field");
 static_assert(INV_CACHE_HEAD_RO_SHIFT + INV_CACHE_HEAD_BITS <=
@@ -194,31 +181,32 @@ static_assert(INV_CACHE_RO(INV_CACHE_PIN_) == INV_RO_REQ_KILL &&
                   INV_CACHE_HEAD_RO(INV_CACHE_PIN_) == 0x15A5A5A5u,
               "cache word field round-trip");
 #undef INV_CACHE_PIN_
-#define INV_DIR_PIN_ INV_DIR_MAKE(1u, 0x2AAAu)
-static_assert(INV_DIR_ROUND_OPEN(INV_DIR_PIN_) == 1u &&
-                  INV_DIR_ACKS(INV_DIR_PIN_) == 0x2AAAu,
-              "directory word field round-trip");
-#undef INV_DIR_PIN_
+static_assert(INV_ROUND_OPEN == 1u, "the hold is bit 0 of round_queue");
 
-/* ── publish-queue entry (Treiber, whole-chain drain) ───────────────────── */
-/* One entry per RW release awaiting its invalidation round at the home.  Both
- * write policies use it; only `rdzv` differs — under WT a nonzero address
- * marks an entry whose payload has already landed in place in the stable
- * buffer (the commit leg's pairing gates the queue), WB leaves it zero
- * because the canonical copy never travels to the home.  A batch is drained
- * whole and is order-insensitive: at most one version stamp (the entry that
- * carries data) and a set of commuting ack wakes. */
+/* ── publish-queue entry ─────────────────────────────────────────────────── */
+/* One per RW release awaiting its invalidation round at the home.  A batch is
+ * every entry a round's holder took at once; it is order-insensitive (at most
+ * one entry carries data).  Every field is written by the producer before
+ * the round_queue CAS that publishes the entry (or before the claim, when the
+ * producer runs the entry itself) and read by the holder that took it: plain.
+ */
 struct arts_db_inv_pub_s {
-  arts_lf_link_t link; /* FIRST — required by arts_lf_stack_t */
+  /* The next entry of the batch: written by the producer before the
+   * round_queue CAS that publishes the entry, read by the holder after the
+   * RMW that took it. */
+  struct arts_db_inv_pub_s *next;
   uint64_t vnew;
   unsigned int releaser_rank;
-  /* The releaser handed the write right back with this release.  The round
-   * close is where it is accepted: not before, because the home may not hand
-   * the block on while a stale copy of it still stands. */
+  /* The releaser handed the write right back with this release.  The round's
+   * finish accepts it, after the batch's acks: not before, because the home
+   * may not hand the block on while a stale copy of it still stands. */
   unsigned int returns_grant;
-  uint64_t cv; /* the publish's cv: 0, since an announce is answered by the
-                * PUBLISH_CTS and never queued; the ACK completes the flight */
-  struct arts_rdzv_landing_s rdzv; /* addr != 0: bytes landed (WT only) */
+#ifdef ARTS_WRITE_POLICY_WT
+  /* The payload has landed in place in the stable buffer (the commit leg
+   * submits the entry only once its PUT has completed); the round bumps the
+   * buffer's version.  A same-rank release moves no bytes. */
+  bool landed;
+#endif
 };
 
 /* ── per-rank DB cache ──────────────────────────────────────────────────── */
@@ -322,14 +310,17 @@ struct arts_db_cache_s {
 
   /* Publish write-combining — the write-side twin of VAL's RO combining
    * window.  The flight word, its waiter stack, the parked uncovered
-   * waiters and the publish credit follow the VAL write-through layout's
-   * protocol exactly (see coherence/val/types.h). */
+   * waiters and, under WT, the publish credit follow the VAL write-through
+   * layout's protocol exactly (see coherence/val/types.h).  A write-back
+   * release carries no payload, so its home mints no credit. */
   _Atomic(unsigned int) pub_flight;
   arts_lf_stack_t pub_waiters;
   _Atomic(arts_lf_link_t *) pub_parked;
+#ifdef ARTS_WRITE_POLICY_WT
   _Atomic(uint64_t) home_pub_addr;
   _Atomic(uint64_t) home_pub_rkey;
   _Atomic(uint64_t) home_pub_txid;
+#endif
 #ifdef ARTS_RELEASE_PURGE
   /* The hand-back obligation and the install count it names, as in the VAL
    * write-through layout (see coherence/val/types.h). */
@@ -342,7 +333,7 @@ struct arts_db_cache_s {
  *
  *  The per-rank coherence cache is embedded by value as the FIRST member.
  *  Non-home ranks allocate a cache-only footprint
- *  (arts_db_cache_stub_size() = offsetof(dir_state)) that includes
+ *  (arts_db_cache_stub_size() = offsetof(round_queue)) that includes
  *  home_initialized and the grant plane's home fields but omits the
  *  invalidation round's.
  *
@@ -351,10 +342,10 @@ struct arts_db_cache_s {
  *      rw_holder / pending_install_owner where the home revokes and the return
  *      latch where it does not), identical to every other grant-bearing arm
  *      and driven by coherence/grant.c;
- *    - the invalidation round (dir_state / roster / pub_queue), which is what
- *      makes this arm INV.
- *  Both write policies carry exactly these fields; the write policy decides
- *  only whether a release's publish entry carries payload. */
+ *    - the invalidation round (round_queue / round_acks / roster), which is
+ *      what makes this arm INV.
+ *  Both write policies carry these fields; WT adds the publication axis its
+ *  serves stamp (hver). */
 struct arts_db_s {
   struct arts_db_cache_s cache; /**< FIRST — coherence state. */
   arts_db_types_t db_type;
@@ -393,14 +384,27 @@ struct arts_db_s {
 #endif
 
   /* ---- invalidation round (home side; INV's own) ---- */
-  /* round_open + acks (INV_DIR_*).  Every modification is an acq_rel CAS
-   * from an acquire load, so each one reads the whole chain before it: the
-   * ARM carries round_entries and the claim holder's round to the ack that
-   * closes it, and the CLOSE carries the closer's clearing of round_entries
-   * to the next CLAIM.  A producer's queue push and the closer's CLOSE are
-   * each followed by a seq_cst fence before the other's word is read
-   * (arts_inv_home_round_try_open, inv_home_round_close). */
-  _Atomic(uint64_t) dir_state;
+  /* [releases awaiting the next round | INV_ROUND_OPEN]: 0 = no round, OPEN =
+   * a round is held with nothing waiting, and entries imply OPEN.  The hold
+   * lasts from a claim to an end: it belongs to whoever runs a round (the
+   * release that claimed it, or a finisher that took more), to the acks
+   * while a round is armed, and to whoever finishes it.  Every write after
+   * init is an RMW: a release claims an idle word (CAS 0 -> OPEN, acquire:
+   * the previous holder's end; it runs its own entry) or pushes onto a held
+   * one (CAS h -> e|OPEN, release: the entry); the holder ends the round (CAS
+   * OPEN -> 0, release: what it wrote under the hold, to the next claim) or
+   * takes what arrived (exchange -> OPEN, acquire: every entry pushed since).
+   * Of a push and an end, the later reads the other, so no release is left
+   * behind and no store->load pair exists. */
+  _Atomic(uintptr_t) round_queue;
+  /* Outstanding INVALIDATE_ACKs of the armed round.  The holder arms it with
+   * a release store before the first INVALIDATE leaves, so every ack (caused
+   * by one of those messages) follows the ARM and no write races it; each
+   * ack is an acq_rel fetch_sub, and the one that returns 1 finishes the
+   * round, acquiring the ARM's writes (round_entries) and every earlier ack.
+   * A round that retires no copy is never armed. */
+  _Atomic(uint32_t) round_acks;
+#ifdef ARTS_WRITE_POLICY_WT
   /* The home's canonical publication axis, advanced to each round's highest
    * published version.  It is NOT the installed buffer's version, and must not
    * be: a home-resident owner writes THROUGH the home buffer in place, so its
@@ -409,25 +413,23 @@ struct arts_db_s {
    * lane hands two different rounds the same stamp, and the receiver's
    * version-conditional install then rejects the newer copy while its state
    * machine still marks it valid: a reader left on bytes from a write window
-   * that has already closed.  Advanced only under the round claim, with a
-   * release store made after the batch's bytes are in place; a serve loads
-   * it with acquire at any time, so the bytes it then sends are at least the
-   * ones the stamp names.  (Under WB the home holds no bytes and no serve
-   * reads the field — the round still advances it — because there the
-   * served buffer's own version IS the axis: ownership migration carries
-   * it.) */
+   * that has already closed.  Written only by the round's holder (its own
+   * load is relaxed, the hold orders it), with a release store made after the
+   * batch's bytes are in place; a serve loads it with acquire at any time, so
+   * the bytes it then sends are at least the ones the stamp names. */
   _Atomic(uint64_t) hver;
-  arts_lf_stack_t pub_queue; /* releases awaiting a round */
-  /* The open round's drained batch.  Written by the claim holder before its
-   * ARM and by whichever actor closes the round (the ack whose ACK_DEC
-   * reached zero, or the claim holder itself when the round has no target),
-   * so every access is ordered by the dir_state chain or by program order:
-   * plain. */
+#endif
+  /* The armed round's batch: written by the holder before the ARM, read and
+   * cleared by the ack that finishes the round, so round_acks orders every
+   * access (and round_queue between holders): plain.  The teardown reads it
+   * after the last reference, the quiescence walk after the joins. */
   struct arts_db_inv_pub_s *round_entries;
   /* Copy roster (the round's targets).  A read serve's fetch_or and the
    * round's snapshot exchange pair on the word itself: the later of the two
    * reads the other, so either the round names the reader or the serve is
-   * ordered after the snapshot and the stamp made before it. */
+   * ordered after the snapshot and the stamp made before it.  The exchange
+   * writes the batch's releasers back in: they are sharers from their
+   * release on. */
   struct arts_rank_bitset_s roster;
   struct arts_rank_bitset_s cached_ranks; /* destroy fan-out roster */
   /* The declared-arrival state: per requester rank the parity of its last
@@ -454,12 +456,14 @@ struct arts_db_s {
 #endif
 } ARTS_ALIGNED_MAX;
 
-/* ── pure arbiters (CAS-retry loop bodies; see arbiters.c) ──────────────── */
-/* Both arbiters are pure functions of one word, run inside a CAS-retry loop,
- * and are identical under both write policies: the reader word decides fetch /
- * park / publish / invalidate, and the directory word decides round mutual
- * exclusion and ack accounting.  Neither knows anything about ownership —
- * that is the grant plane's, and it does not live in a word. */
+/* ── pure arbiters (see arbiters.c) ─────────────────────────────────────── */
+/* Pure functions, identical under both write policies: the reader word's
+ * decider (fetch / park / publish / invalidate, a CAS-retry loop body), and
+ * the round's own deciders, which only engine.c runs (it includes
+ * arbiters.c): a release's decision on round_queue (a CAS-retry loop body)
+ * and the two per-word helpers of the roster snapshot.  None knows anything
+ * about ownership — that is the grant plane's, and it does not live in a
+ * word. */
 
 /* arg: ACQ_RO takes the parking node's pool index; the rest ignore it. */
 #define INV_CACHE_OP_ACQ_RO 0
@@ -501,24 +505,6 @@ struct arts_db_s {
 uint32_t arts_inv_read_cover(uint64_t s);
 uint64_t arts_inv_cache_compute_next(uint64_t cur, int op, uint32_t self_idx,
                                      uint32_t *out_action);
-
-#define INV_DIR_OP_ROUND_CLAIM 0 /* open an invalidation round */
-#define INV_DIR_OP_ACKS_ARM 1    /* under the claim: arm the ack count */
-#define INV_DIR_OP_ACK_DEC 2
-#define INV_DIR_OP_ROUND_CLOSE 3
-
-#define INV_DIR_ACT_NONE 0
-#define INV_DIR_ACT_CLAIMED 1
-#define INV_DIR_ACT_CLOSE 2 /* acks reached 0 with the round open */
-
-/* The round's two other deciders, inv_dir_compute_next and
- * inv_round_snapshot_word, are the engine's own (arbiters.c, which engine.c
- * includes). */
-
-/* ── shared machinery the write-policy TUs call (inv/engine.c) ───────────── */
-/* Drive the invalidation round: called by every producer (a publish push, a
- * close re-arm).  A claim that raced past the work it saw closes empty. */
-void arts_inv_home_round_try_open(struct arts_db_s *db);
 
 #ifdef __cplusplus
 }

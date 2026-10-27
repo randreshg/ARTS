@@ -3,10 +3,11 @@
  * The INV engine — everything both write policies run identically.
  *
  * The reader plane (fetch install and the transitions that take its chain)
- * and the invalidation round (claim, roster snapshot, multicast, ack accounting,
- * close) live here, along with the cache lifecycle and the wire senders.  What
- * is left to the write-policy TUs is exactly three decisions, because those are
- * the only three that "where do the canonical bytes live" actually changes:
+ * and the invalidation round (the hold and its queue, roster snapshot,
+ * multicast, ack accounting, finish) live here, along with the cache
+ * lifecycle and the wire senders.  What is left to the write-policy TUs is
+ * exactly three decisions, because those are the only three that "where do
+ * the canonical bytes live" actually changes:
  *
  *   - an RO acquire: served locally (WT, at the home rank) or redirected to
  *     the current grant holder (WB);
@@ -24,7 +25,6 @@
 
 #include "arts/utils/stdatomic_compat.h"
 #include <assert.h>
-#include <limits.h>
 #include <semaphore.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -46,6 +46,7 @@
 #include "arts/runtime_state.h"
 #include "arts/system/identity.h"
 #include "arts/system/print.h" /* ARTS_ERROR */
+#include "arts/system/schedfuzz.h"
 #include "arts/transport/net.h"
 #include "arts/transport/protocol.h"
 #include "arts/utils/malloc.h"
@@ -352,289 +353,268 @@ void arts_db_home_destroy_now(struct arts_db_s *db) {
  * INV's whole identity, and the only thing this arm adds to the shared grant.
  *
  * A release does not return until every copy of the data block it just wrote
- * is dead.  The home serializes that with one claim bit: claim -> drain the
- * queued releases -> stamp the version of the payload that landed in place
- * -> snapshot the roster -> arm the ack count -> multicast INVALIDATE ->
- * close on the ack that reaches zero.  The closer is unique, so it is the
- * actor that wakes the releasers and re-opens for whatever queued up
- * meanwhile.
+ * is dead.  The home runs one round at a time, held through round_queue (its
+ * declaration states the protocol): a release that finds the word idle claims
+ * it and runs its own entry, one that finds it held pushes its entry and
+ * leaves it to the holder.  A round stamps the version of the payload that
+ * landed in place (WT), snapshots the roster and, only when the snapshot
+ * names a copy to retire, arms the ack count and multicasts INVALIDATE.  It is
+ * finished by the thread that ran it when it retired nothing (the release
+ * that claimed the round, or a finisher that took the batch), or by the ack
+ * whose decrement reaches zero.  The finisher wakes the batch's releasers,
+ * then ends the hold or takes what arrived meanwhile and runs it, in a loop.
  *
  * A batch is order-insensitive: at most one version stamp (the entry that
  * carries data) and a set of commuting wakes.  The roster snapshot is a
- * per-word XCHG, so a rank registered during the round lands in the NEXT
+ * per-word exchange, so a rank registered during the round lands in the NEXT
  * one — which is correct, because it will be served the bytes this round
- * published — and the batch's releasers are handed back to it, because a
- * releaser's copy is a sharer's copy from then on and only a later round
- * may retire it.  Every producer (a publish push, a close re-arm) calls try_open;
- * a claim that raced past the work it saw simply closes empty.  The engine is
- * a while-trampoline: a close that finds more work loops instead of recursing.
+ * published — and the exchange writes the batch's releasers back in, because
+ * a releaser's copy is a sharer's copy from then on and only a later round
+ * may retire it.
  */
 
-static void inv_home_round_close(struct arts_db_s *db,
-                                 struct arts_db_inv_pub_s *entries) {
+/* Under the hold.  Returns the batch when no copy needs retiring (the caller
+ * finishes it), NULL when the round is armed (its last ack finishes it). */
+static struct arts_db_inv_pub_s *
+inv_round_run(struct arts_db_s *db, struct arts_db_inv_pub_s *batch) {
   struct arts_db_cache_s *cache = &db->cache;
-  /* Wake every releaser this round covered, then drop the claim.  The wakes
-   * commute and must land BEFORE the claim drops: the next round can open the
-   * instant round_open clears. */
-  /* At most one entry in a batch can hand the write right back: only its
-   * holder can, and there is exactly one. */
-  unsigned int returner = ARTS_GRANT_NO_RETURNER;
-  struct arts_db_inv_pub_s *returning = NULL;
-  while (entries != NULL) {
-    struct arts_db_inv_pub_s *e = entries;
-    entries = (struct arts_db_inv_pub_s *)(uintptr_t)atomic_load_explicit(
-        &e->link.next, memory_order_relaxed);
-    if (e->returns_grant != 0u) {
-      assert(returner == ARTS_GRANT_NO_RETURNER &&
-             "one batch cannot carry two hand-backs of one write right");
-      returner = e->releaser_rank;
-      /* Its acknowledgement rides the hand-back and leaves once the home
-       * has applied it. */
-      returning = e;
+  INCREMENT_NUM_INVALIDATE_ROUND_BY(1);
+#ifdef ARTS_WRITE_POLICY_WT
+  /* Single publication point: a landed entry's bytes are already IN PLACE in
+   * the stable buffer (the commit-leg pairing gates the queue), so publishing
+   * is the version stamp alone.  At most one entry of a batch carries data —
+   * payload publishes are globally serialized (one flight per rank, the
+   * releaser blocks on this round's ACK, and the write right migrates only
+   * after) — which the stamp's monotonicity check enforces loudly. */
+  uint64_t maxv = 0;
+  for (struct arts_db_inv_pub_s *e = batch; e != NULL; e = e->next) {
+    if (e->vnew > maxv) {
+      maxv = e->vnew;
+    }
+    if (e->landed) {
+      arts_db_buf_bump_inplace(cache, e->vnew);
+    }
+  }
+  /* Advance the publication axis over the WHOLE batch, data-less entries
+   * included: a same-rank release moves no bytes (the home buffer IS the
+   * owner's working buffer) but its round still retires every remote copy,
+   * so it is a publication and readers served after it must be given a
+   * stamp that says so. */
+  if (maxv > atomic_load_explicit(&db->hver, memory_order_relaxed)) {
+    atomic_store_explicit(&db->hver, maxv, memory_order_release);
+  }
+  /* First publication wakes the pre-publication read holds (readers
+   * event-ordered after the creator's writes must see released bytes,
+   * never the never-published version-0 state).  Published = an installed
+   * buffer whose version has been bumped past the create-time zero.  The
+   * drain pairs with each parker's push on the stack itself (see
+   * arts_handler_db_acquire): stamp, then drain. */
+  {
+    arts_shared_ptr_t pub_h = arts_db_buf_acquire(cache);
+    struct arts_db_buffer_s *pb =
+        (struct arts_db_buffer_s *)arts_shared_get(pub_h);
+    bool pub = (pb != NULL &&
+                atomic_load_explicit(&pb->version, memory_order_acquire) > 0);
+    arts_db_buf_release(&pub_h);
+    if (pub) {
+      arts_db_drain_publication_waiters(cache);
+    }
+  }
+  /* The home rank is exempt outright ONLY where the home's own buffer is the
+   * canonical copy: under WT it is, and this round just stamped it; under WB
+   * the home holds no canonical bytes, so a reader copy that happens to live
+   * on the home rank is as stale as any other and is retired like one. */
+  const unsigned int exempt = arts_global_rank_id;
+#else
+  const unsigned int exempt = (unsigned int)-1; /* no rank is exempt */
+#endif
+  /* Self-exclusion names the ranks that actually WROTE this round — the
+   * batch's releasers — not whatever the directory currently points at.
+   * The justification for skipping a rank is "its copy is the newest by
+   * definition", and that is true of a releaser.  Where the home
+   * revokes, `rw_holder` may still name the previous generation, because
+   * the home flips it only at the CONFIRM, well after the new owner has
+   * installed and (under WT, which has no confirm gate) already run and
+   * released, so excluding by `rw_holder` would skip exactly the
+   * ex-holder that this round exists to retire; where grants come back
+   * unasked, the home names no holder at all. */
+  unsigned int writers[8];
+  unsigned int nwriters = 0;
+  for (struct arts_db_inv_pub_s *e = batch; e != NULL; e = e->next) {
+    bool seen = false;
+    for (unsigned int k = 0; k < nwriters; k++) {
+      if (writers[k] == e->releaser_rank) {
+        seen = true;
+        break;
+      }
+    }
+    if (seen) {
       continue;
     }
-    /* Unconditional: a flight-plane entry carries cv 0 and completes through
-     * the releaser cache's waiter drain. */
+    /* A batch holds releases of the one rank that holds the write
+     * right, which leaves it only at a commit after that rank's round
+     * finished, so it names one releaser; a releaser dropped here would be
+     * a target of its own round and lose its sharer bit. */
+    if (nwriters == (unsigned int)(sizeof(writers) / sizeof(writers[0]))) {
+      ARTS_ERROR("inv: guid %lu round batch names more than %u releasers",
+                 (unsigned long)cache->db_guid, nwriters);
+    }
+    writers[nwriters++] = e->releaser_rank;
+  }
+  /* Roster snapshot: per word, the targets are the copies the exchange took
+   * out, and the batch's releasers are what it writes in (inv_round_keep_word;
+   * a releaser's copy is a sharer's copy from its release on, durable until a
+   * later round retires it).  That is what lets the next owner's first
+   * release find the ex-holder however that owner's CONFIRM is timed where
+   * the home revokes; a snapshot that dropped the writer left its copy live
+   * and uninvalidated whenever that round beat the CONFIRM. */
+  struct arts_rank_bitset_s *bs = &db->roster;
+  const unsigned int nwords = bs->nwords; /* <= INV_ROUND_MAX_WORDS (init) */
+  uint64_t tmask[INV_ROUND_MAX_WORDS];
+  uint32_t ntargets = 0;
+  for (unsigned int wi = 0; wi < nwords; wi++) {
+    uint64_t keep = inv_round_keep_word(wi * 64u, writers, nwriters, exempt);
+    /* Same-word pairing with a read serve's fetch_or of this word
+     * (arts_handler_db_inv_request): the later of the two reads the other,
+     * so the serve is a target here or follows the stamp above. */
+    uint64_t snap =
+        atomic_exchange_explicit(&bs->words[wi], keep, memory_order_acq_rel);
+    tmask[wi] = inv_round_targets_word(snap, keep, wi * 64u, exempt);
+    ntargets += (uint32_t)__builtin_popcountll(tmask[wi]);
+  }
+  if (ntargets == 0u) {
+    return batch;
+  }
+  const arts_guid_t guid = cache->db_guid;
+  db->round_entries = batch;
+  /* ARM, before the first INVALIDATE leaves.  From here on only locals: the
+   * last ack can finish this round, and start the next, before this loop
+   * returns (under WB the home's own ack runs inline inside it). */
+  atomic_store_explicit(&db->round_acks, ntargets, memory_order_release);
+  for (unsigned int wi = 0; wi < nwords; wi++) {
+    for (uint64_t m = tmask[wi]; m != 0u; m &= m - 1u) {
+      arts_send_db_inv_invalidate(wi * 64u + (unsigned int)__builtin_ctzll(m),
+                                  guid);
+    }
+  }
+  return NULL;
+}
+
+/* The batch's round is over.  Wake its releasers, accept a hand-back, then
+ * end the hold — or keep it for what arrived meanwhile and run that. */
+static void inv_round_finish(struct arts_db_s *db,
+                             struct arts_db_inv_pub_s *batch) {
+  for (;;) {
+    /* At most one entry in a batch can hand the write right back: only its
+     * holder can, and there is exactly one. */
+    struct arts_db_inv_pub_s *returning = NULL;
+    while (batch != NULL) {
+      struct arts_db_inv_pub_s *e = batch;
+      batch = e->next;
+      if (e->returns_grant != 0u) {
+        assert(returning == NULL &&
+               "one batch cannot carry two hand-backs of one write right");
+        returning = e;
+        continue;
+      }
 #ifdef ARTS_WRITE_POLICY_WT
-    /* Write-through commits land in the stable buffer, so the ACK refills
-     * the releaser's in-place credit. */
-    arts_send_db_publish_ack(e->releaser_rank, cache->db_guid, e->cv, e->vnew,
-                               cache);
+      /* Write-through commits land in the stable buffer, so the ACK refills
+       * the releaser's in-place credit. */
+      arts_send_db_publish_ack(e->releaser_rank, db->cache.db_guid, 0u, e->vnew,
+                               &db->cache);
 #else
-    /* Write-back releases carry no payload — nothing to credit. */
-    arts_send_db_publish_ack(e->releaser_rank, cache->db_guid, e->cv, e->vnew,
+      /* Write-back releases carry no payload — nothing to credit. */
+      arts_send_db_publish_ack(e->releaser_rank, db->cache.db_guid, 0u, e->vnew,
                                /*home_cache=*/NULL);
 #endif
-    arts_free(e);
-  }
-  uint32_t act;
-  uint64_t cur, next;
-  do {
-    cur = atomic_load_explicit(&db->dir_state, memory_order_acquire);
-    next = inv_dir_compute_next(cur, INV_DIR_OP_ROUND_CLOSE, 0u, &act);
-  } while (!atomic_compare_exchange_weak_explicit(&db->dir_state, &cur, next,
-                                                  memory_order_acq_rel,
-                                                  memory_order_acquire));
-  /* seq_cst fence: store->load pair with a producer, which pushes onto
-   * pub_queue and passes the fence at the head of arts_inv_home_round_try_open
-   * before it reads this word.  Of the two fences in S the later one's side
-   * sees the other's store: either the queue probe that follows every close
-   * reads the push or a later value of the head (a drain that already took
-   * the entry into a round), or the producer's claim reads this CLOSE or a
-   * later value (a later round, whose closer's probe this same argument
-   * covers). */
-  atomic_thread_fence(memory_order_seq_cst);
-  if (returner != ARTS_GRANT_NO_RETURNER) {
-    /* Accepted only now: the round it rode has retired every stale copy and
-     * stamped the publication axis, so a block handed straight on from here
-     * carries no copy this release has already invalidated.  After the claim
-     * drops, too, so the acceptance may open a round of its own. */
-    struct arts_db_grant_return_reply_s reply = {
-        .cv = returning->cv,
-        .version = returning->vnew,
-        .ack = true,
+      arts_free(e);
+    }
+    if (returning != NULL) {
+      /* Accepted only now, after the acks of the round it rode: that round
+       * has retired every stale copy (and stamped the publication axis), so a
+       * block handed straight on from here carries no copy this release has
+       * already invalidated.  Accepted under the hold, which is safe only
+       * because the acceptance never waits on anything the round gates; its
+       * acknowledgement rides the hand-back and leaves once the home has
+       * applied it. */
+      struct arts_db_grant_return_reply_s reply = {
+          .cv = 0u,
+          .version = returning->vnew,
+          .ack = true,
 #ifdef ARTS_WRITE_POLICY_WT
-        .credit = true,
+          .credit = true,
 #else
-        .credit = false,
+          .credit = false,
 #endif
-    };
-    arts_free(returning);
-    arts_db_grant_return_arrived(db, returner, &reply);
+      };
+      unsigned int returner = returning->releaser_rank;
+      arts_free(returning);
+      arts_db_grant_return_arrived(db, returner, &reply);
+    }
+    arts_sched_fuzz_point(); /* widen the window for a release to reach the
+                                held round */
+    /* Same-word pairing with inv_round_submit's push: of the push and this
+     * end, the later reads the other -- the end fails and the take below
+     * gets the entry, or the push reads 0 and claims the next round. */
+    uintptr_t want = INV_ROUND_OPEN;
+    if (atomic_compare_exchange_strong_explicit(
+            &db->round_queue, &want, (uintptr_t)0, memory_order_release,
+            memory_order_relaxed)) {
+      return;
+    }
+    /* The end failed, so entries arrived: only the holder ends or empties
+     * the word, and a push only adds.  Take them all and run them. */
+    batch = (struct arts_db_inv_pub_s *)(atomic_exchange_explicit(
+                                             &db->round_queue, INV_ROUND_OPEN,
+                                             memory_order_acquire) &
+                                         ~INV_ROUND_OPEN);
+    assert(batch != NULL && "a failed end leaves entries to take");
+    batch = inv_round_run(db, batch);
+    if (batch == NULL) {
+      return; /* armed: its last ack finishes it */
+    }
   }
 }
 
-void arts_inv_home_round_try_open(struct arts_db_s *db) {
-  struct arts_db_cache_s *cache = &db->cache;
-  /* seq_cst fence: store->load pair with inv_home_round_close, which CASes
-   * the round closed and passes a fence before its queue probe.  A producer
-   * pushed onto pub_queue before calling here; either its claim below reads
-   * that CLOSE or a later value (a later round, whose closer's probe this
-   * same argument covers), or that closer's probe reads the push or a later
-   * value of the head (a drain that already took the entry into a round). */
-  atomic_thread_fence(memory_order_seq_cst);
+/* Every release's entry point (the publish handler, the commit leg's pairing
+ * continuation): claim an idle round and run it, or queue behind the held
+ * one for its holder to take. */
+static void inv_round_submit(struct arts_db_s *db,
+                             struct arts_db_inv_pub_s *e) {
+  assert(((uintptr_t)e & INV_ROUND_OPEN) == 0u &&
+         "an entry's address leaves bit 0 for the hold");
+  uintptr_t h = atomic_load_explicit(&db->round_queue, memory_order_relaxed);
+  bool claim;
   for (;;) {
-    uint32_t act;
-    uint64_t cur, next;
-    do {
-      cur = atomic_load_explicit(&db->dir_state, memory_order_acquire);
-      next = inv_dir_compute_next(cur, INV_DIR_OP_ROUND_CLAIM, 0u, &act);
-      if (next == cur) {
-        return; /* a round is already open; its closer re-arms */
-      }
-    } while (!atomic_compare_exchange_weak_explicit(&db->dir_state, &cur, next,
-                                                    memory_order_acq_rel,
-                                                    memory_order_acquire));
-    /* Claim held.  Take the whole queued batch (Treiber head XCHG). */
-    arts_lf_link_t *chain = arts_lf_stack_drain(&db->pub_queue);
-    struct arts_db_inv_pub_s *entries = (struct arts_db_inv_pub_s *)chain;
-    if (entries == NULL) {
-      /* Empty round: the claim raced past work another opener consumed. */
-      inv_home_round_close(db, NULL);
-    } else {
-      INCREMENT_NUM_INVALIDATE_ROUND_BY(1);
-      /* Single publication point: a data entry's bytes already landed IN
-       * PLACE in the stable buffer (the commit-leg pairing gates the queue),
-       * so publishing is the version stamp alone.  At most one data entry
-       * can be in a batch — payload publishes are globally serialized (one
-       * flight per rank, the releaser blocks on this round's ACK, and the
-       * write right migrates only after) — which the stamp's monotonicity
-       * check enforces loudly.  Under WB no entry carries data
-       * and the round is pure control, which is the only difference between
-       * the two write policies' releases. */
-      uint64_t maxv = 0;
-      for (struct arts_db_inv_pub_s *e = entries; e != NULL;
-           e = (struct arts_db_inv_pub_s *)(uintptr_t)atomic_load_explicit(
-               &e->link.next, memory_order_relaxed)) {
-        if (e->vnew > maxv) {
-          maxv = e->vnew;
-        }
-        if (e->rdzv.addr == 0) {
-          continue; /* data-less entry (same-rank release / WB) */
-        }
-        arts_db_buf_bump_inplace(cache, e->vnew);
-        e->rdzv.addr = 0; /* consumed */
-      }
-      /* Advance the publication axis over the WHOLE batch, data-less entries
-       * included: a same-rank release moves no bytes (the home buffer IS the
-       * owner's working buffer) but its round still retires every remote copy,
-       * so it is a publication and readers served after it must be given a
-       * stamp that says so. */
-      if (maxv > atomic_load_explicit(&db->hver, memory_order_acquire)) {
-        atomic_store_explicit(&db->hver, maxv, memory_order_release);
-      }
-#ifdef ARTS_WRITE_POLICY_WT
-      /* First publication wakes the pre-publication read holds (readers
-       * event-ordered after the creator's writes must see released bytes,
-       * never the never-published version-0 state).  Published = an installed
-       * buffer whose version has been bumped past the create-time zero.  The
-       * drain pairs with each parker's push on the stack itself (see
-       * arts_handler_db_acquire): stamp, then drain. */
-      {
-        arts_shared_ptr_t pub_h = arts_db_buf_acquire(cache);
-        struct arts_db_buffer_s *pb =
-            (struct arts_db_buffer_s *)arts_shared_get(pub_h);
-        bool pub = (pb != NULL && atomic_load_explicit(
-                                      &pb->version, memory_order_acquire) > 0);
-        arts_db_buf_release(&pub_h);
-        if (pub) {
-          arts_db_drain_publication_waiters(cache);
-        }
-      }
-#endif
-      /* Roster snapshot (per-word XCHG) with the writers excluded from the
-       * TARGETS — their copies are the newest by definition — but not from
-       * the roster: a releaser's copy is a sharer's copy from its release on,
-       * durable until a later round retires it, so the snapshot registers
-       * every releaser, found in it or not (inv_round_snapshot_word; a
-       * creator's seeded copy was never served).  That is what lets the next
-       * owner's first release find the ex-holder however that owner's CONFIRM
-       * is timed where the home revokes; a snapshot that dropped the writer
-       * left its copy live and uninvalidated whenever that round beat the
-       * CONFIRM.  The home rank is
-       * excluded outright ONLY where the home's own buffer is the canonical
-       * copy: under WT it is, and this round just installed into it; under WB
-       * the home holds no canonical bytes, so a reader copy that happens to
-       * live on the home rank is as stale as any other and must be
-       * invalidated like one.  Arm the count BEFORE the multicast. */
-      /* Self-exclusion names the ranks that actually WROTE this round — the
-       * batch's releasers — not whatever the directory currently points at.
-       * The justification for skipping a rank is "its copy is the newest by
-       * definition", and that is true of a releaser.  Where the home
-       * revokes, `rw_holder` may still name the previous generation, because
-       * the home flips it only at the CONFIRM, well after the new owner has
-       * installed and (under WT, which has no confirm gate) already run and
-       * released, so excluding by `rw_holder` would skip exactly the
-       * ex-holder that this round exists to retire; where grants come back
-       * unasked, the home names no holder at all. */
-      unsigned int writers[8];
-      unsigned int nwriters = 0;
-      for (struct arts_db_inv_pub_s *e = entries; e != NULL;
-           e = (struct arts_db_inv_pub_s *)(uintptr_t)atomic_load_explicit(
-               &e->link.next, memory_order_relaxed)) {
-        bool seen = false;
-        for (unsigned int k = 0; k < nwriters; k++) {
-          if (writers[k] == e->releaser_rank) {
-            seen = true;
-            break;
-          }
-        }
-        if (seen) {
-          continue;
-        }
-        /* A batch holds releases of the one rank that holds the write
-         * right, which leaves it only at a commit after that rank's round
-         * closed, so it names one releaser; a releaser dropped here would be
-         * a target of its own round and lose its sharer bit. */
-        if (nwriters == (unsigned int)(sizeof(writers) / sizeof(writers[0]))) {
-          ARTS_ERROR("inv: guid %lu round batch names more than %u releasers",
-                     (unsigned long)cache->db_guid, nwriters);
-        }
-        writers[nwriters++] = e->releaser_rank;
-      }
-#ifdef ARTS_WRITE_POLICY_WT
-      unsigned int self = arts_global_rank_id;
-#else
-      unsigned int self = (unsigned int)-1; /* no rank is exempt */
-#endif
-      unsigned int targets[64];
-      unsigned int ntargets = 0;
-      struct arts_rank_bitset_s *bs = &db->roster;
-      for (unsigned int wi = 0; wi < bs->nwords; wi++) {
-        /* Same-word pairing with a read serve's fetch_or of this word
-         * (arts_handler_db_inv_request): the later of the two reads the
-         * other, so the serve is a target here or follows the stamp above. */
-        uint64_t snap = atomic_exchange_explicit(&bs->words[wi], 0u,
-                                                 memory_order_acq_rel);
-        uint64_t keep = 0u;
-        ntargets = inv_round_snapshot_word(
-            snap, wi * 64u, writers, nwriters, self, targets,
-            (unsigned int)(sizeof(targets) / sizeof(targets[0])), ntargets,
-            &keep);
-        if (ntargets == UINT_MAX) {
-          /* Rank counts beyond the stack window would need a heap list; the
-           * rank field is 14-bit but deployments here are far smaller — fail
-           * loudly rather than silently truncate a round. */
-          ARTS_ERROR("inv: round target overflow");
-        }
-        if (keep != 0u) {
-          /* The releasers are sharers.  Their bits go in before the count is
-           * armed: the next round can only claim after this one closes, so
-           * it takes its snapshot with them in. */
-          (void)atomic_fetch_or_explicit(&bs->words[wi], keep,
-                                         memory_order_acq_rel);
-        }
-      }
-      /* The open round's batch, for the ack that closes it: stored before
-       * the ARM, whose release the closing ACK_DEC acquires. */
-      db->round_entries = entries;
-      uint32_t aact;
-      do {
-        cur = atomic_load_explicit(&db->dir_state, memory_order_acquire);
-        next = inv_dir_compute_next(cur, INV_DIR_OP_ACKS_ARM, ntargets, &aact);
-      } while (!atomic_compare_exchange_weak_explicit(
-          &db->dir_state, &cur, next, memory_order_acq_rel,
-          memory_order_acquire));
-      for (unsigned int t = 0; t < ntargets; t++) {
-        arts_send_db_inv_invalidate(targets[t], cache->db_guid);
-      }
-      if (ntargets > 0u) {
-        return; /* the ack 0-edge committer closes (and re-arms) */
-      }
-      db->round_entries = NULL;
-      inv_home_round_close(db, entries);
+    uintptr_t next = inv_round_submit_next(h, (uintptr_t)e, &claim);
+    e->next = claim ? NULL : (struct arts_db_inv_pub_s *)(h & ~INV_ROUND_OPEN);
+    arts_sched_fuzz_point(); /* widen the load<->CAS window */
+    /* Same-word pairing with inv_round_finish's end (see there).  A claim
+     * acquires the previous holder's end; a push releases its entry. */
+    if (claim
+            ? atomic_compare_exchange_weak_explicit(&db->round_queue, &h, next,
+                                                    memory_order_acquire,
+                                                    memory_order_relaxed)
+            : atomic_compare_exchange_weak_explicit(&db->round_queue, &h, next,
+                                                    memory_order_release,
+                                                    memory_order_relaxed)) {
+      break;
     }
-    /* Re-arm: work that arrived while we were closing. */
-    if (arts_lf_stack_empty(&db->pub_queue)) {
-      return;
-    }
+  }
+  if (!claim) {
+    return; /* the holder takes it */
+  }
+  struct arts_db_inv_pub_s *b = inv_round_run(db, e);
+  if (b != NULL) {
+    inv_round_finish(db, b); /* nothing to retire: finish it here */
   }
 }
 
 /* ===== wire handler bodies (OoO Cat-B) ================================== */
 
+#ifdef ARTS_WRITE_POLICY_WT
 /* Commit-leg pairing continuation: the dirty bytes are in the home landing;
- * queue the entry and drive the round. */
+ * submit the entry to the round. */
 struct inv_pub_landed_ctx_s {
   arts_shared_ptr_t db_h;
   arts_guid_t db_guid;
@@ -649,23 +629,26 @@ static void inv_pub_landed_cb(void *arg) {
      * stable buffer, which died with the cache) — never strand the blocked
      * releaser. */
     struct arts_db_inv_pub_s *e = ctx->entry;
-    arts_send_db_publish_ack(e->releaser_rank, ctx->db_guid, e->cv, e->vnew,
-                               /*home_cache=*/NULL);
+    arts_send_db_publish_ack(e->releaser_rank, ctx->db_guid, 0u, e->vnew,
+                             /*home_cache=*/NULL);
     arts_free(e);
     arts_shared_release(&ctx->db_h);
     arts_free(ctx);
     return;
   }
-  arts_lf_stack_push(&db->pub_queue, &ctx->entry->link);
-  arts_inv_home_round_try_open(db);
+  inv_round_submit(db, ctx->entry);
   arts_shared_release(&ctx->db_h);
   arts_free(ctx);
 }
+#endif
 
 void arts_handler_db_publish(void *item_v, void *args_v) {
   struct arts_db_s *db = (struct arts_db_s *)item_v;
   struct arts_ooo_args_db_publish_s *a =
       (struct arts_ooo_args_db_publish_s *)args_v;
+  assert((a->returns_grant == 0u || a->rdzv_txid != 0u) &&
+         "a hand-back rides a payload commit leg only");
+#ifdef ARTS_WRITE_POLICY_WT
   struct arts_db_cache_s *cache = &db->cache;
   if (a->data_size != 0 && a->rdzv_txid == 0) {
     /* Announce leg: advertise the STABLE buffer as the landing (the PUT
@@ -701,20 +684,27 @@ void arts_handler_db_publish(void *item_v, void *args_v) {
     arts_send_db_publish_cts(a->releaser, a->db_guid, &landing, a->cv);
     return;
   }
+#else
+  if (a->data_size != 0 || a->rdzv_txid != 0) {
+    ARTS_ERROR("inv: DB[Guid:%lu] got a payload publish from rank %u — a "
+               "write-back release publishes control only",
+               (unsigned long)a->db_guid, a->releaser);
+  }
+#endif
   struct arts_db_inv_pub_s *e =
       (struct arts_db_inv_pub_s *)arts_malloc(sizeof(*e));
   e->vnew = a->version;
   e->releaser_rank = a->releaser;
   e->returns_grant = a->returns_grant;
-  e->cv = a->cv;
-  e->rdzv = (struct arts_rdzv_landing_s){0, 0, 0, 0};
+#ifdef ARTS_WRITE_POLICY_WT
+  e->landed = false;
   if (a->rdzv_txid != 0) {
     /* Commit leg: the entry may only queue once the one-sided payload has
      * fully landed in place — pair {commit, PUT completion} (either arrival
-     * order) and enqueue from the pairing continuation.  Queueing on the
+     * order) and submit from the pairing continuation.  Submitting on the
      * control packet alone would let the round stamp a torn landing as
      * published. */
-    e->rdzv.addr = 1u; /* data marker: this entry's round bumps the stamp */
+    e->landed = true;
     struct inv_pub_landed_ctx_s *ctx =
         (struct inv_pub_landed_ctx_s *)arts_malloc(sizeof(*ctx));
     ctx->db_h = arts_route_table_lookup_db(a->db_guid);
@@ -723,8 +713,8 @@ void arts_handler_db_publish(void *item_v, void *args_v) {
     arts_net_rdzv_expect(a->rdzv_txid, a->data_size, inv_pub_landed_cb, ctx);
     return;
   }
-  arts_lf_stack_push(&db->pub_queue, &e->link);
-  arts_inv_home_round_try_open(db);
+#endif
+  inv_round_submit(db, e);
 }
 
 /* ===== Cat-C handler bodies ============================================= */
@@ -760,7 +750,7 @@ void arts_handler_db_inv_cts(struct arts_db_s *db,
  * install-lane version; a stale install retreats and recycles), then ONE
  * word CAS takes {REQ->VALID, chain head -> 0} together.  The kill-marked
  * variant serves its cohort once, then executes the reserved purge and the
- * owed ack — the ack LAST, so the round that killed this fetch cannot close
+ * owed ack — the ack LAST, so the round that killed this fetch cannot finish
  * (and nothing newer can complete) until the doomed serve is done. */
 static void inv_deliver_commit(arts_shared_ptr_t db_h, uint64_t version,
                                struct arts_db_buffer_s *landing,
@@ -791,7 +781,7 @@ static void inv_deliver_commit(arts_shared_ptr_t db_h, uint64_t version,
     uint32_t pact;
     do {
       cur = atomic_load_explicit(&cache->cache_state, memory_order_acquire);
-      /* The owed ack blocks the round chain, so nothing can retire the
+      /* The owed ack keeps the round armed, so nothing can retire the
        * transient valid copy before this purge. */
       if (INV_CACHE_RO(cur) != INV_RO_VALID) {
         ARTS_ERROR("inv: reserved purge found ro=%u (drifted)",
@@ -917,33 +907,21 @@ void arts_handler_db_inv_invalidate_ack(struct arts_db_s *db,
                                         unsigned int sharer_rank) {
   (void)sharer_rank;
   INCREMENT_NUM_INVALIDATE_ACK_BY(1);
-  uint32_t act;
-  uint64_t cur, next;
-  do {
-    cur = atomic_load_explicit(&db->dir_state, memory_order_acquire);
-    /* Every ack answers an INVALIDATE of the open round, which closes only on
-     * its last ack: an ack that finds no round open or no ack outstanding
-     * breaks the protocol, and decrementing would wrap the count and leave
-     * the round open forever. */
-    if (INV_DIR_ROUND_OPEN(cur) == 0u || INV_DIR_ACKS(cur) == 0u) {
-      ARTS_ERROR("inv: invalidate ack for DB[Guid:%lu] with no outstanding "
-                 "ack (round_open=%u acks=%u)",
-                 (unsigned long)db->cache.db_guid, INV_DIR_ROUND_OPEN(cur),
-                 INV_DIR_ACKS(cur));
-    }
-    next = inv_dir_compute_next(cur, INV_DIR_OP_ACK_DEC, 0u, &act);
-  } while (!atomic_compare_exchange_weak_explicit(&db->dir_state, &cur, next,
-                                                  memory_order_acq_rel,
-                                                  memory_order_acquire));
-  if (act == INV_DIR_ACT_CLOSE) {
-    struct arts_db_inv_pub_s *entries = db->round_entries;
-    db->round_entries = NULL;
-    inv_home_round_close(db, entries);
-    /* Re-arm work that queued while the round was in flight. */
-    if (!arts_lf_stack_empty(&db->pub_queue)) {
-      arts_inv_home_round_try_open(db);
-    }
+  uint32_t prev =
+      atomic_fetch_sub_explicit(&db->round_acks, 1u, memory_order_acq_rel);
+  if (prev == 0u) {
+    /* Every ack answers an INVALIDATE of the armed round, which stays armed
+     * until its last ack: an ack that finds none outstanding breaks the
+     * protocol. */
+    ARTS_ERROR("inv: invalidate ack for DB[Guid:%lu] with no outstanding ack",
+               (unsigned long)db->cache.db_guid);
   }
+  if (prev != 1u) {
+    return;
+  }
+  struct arts_db_inv_pub_s *batch = db->round_entries;
+  db->round_entries = NULL;
+  inv_round_finish(db, batch);
 }
 
 /* ===== senders ========================================================== */
@@ -1007,7 +985,7 @@ void arts_send_db_inv_invalidate_ack(unsigned int home_rank,
                                      arts_guid_t db_guid) {
   if (home_rank == arts_global_rank_id) {
     /* Local hit: account the ack inline.  A MISS drops — the round's other
-     * acks still close it, and a destroyed DB has no round to close. */
+     * acks still finish it, and a destroyed DB has no round to finish. */
     arts_shared_ptr_t h = arts_route_table_lookup_db(db_guid);
     struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(h);
     if (db != NULL) {

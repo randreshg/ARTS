@@ -1,19 +1,22 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * INV pure state-transition arbiters: arts_inv_cache_compute_next (reader
- * plane) and inv_dir_compute_next (invalidation round).
+ * INV pure deciders: arts_inv_cache_compute_next (reader plane) and the
+ * invalidation round's own three, inv_round_submit_next (a release's decision
+ * on round_queue), inv_round_keep_word and inv_round_targets_word (one roster
+ * word of the round's snapshot).
  *
- * Two pure functions of one packed 64-bit word each, both run inside a
- * CAS-retry loop by their callers.  Purity is the point: every decision a
- * transition implies is derived from (current word, op) alone, so the
- * committing CAS and the decision it acts on can never disagree — the classic
- * split-decision race (decide on one population, act on another) is
- * unrepresentable.
+ * The two word deciders run inside a CAS-retry loop by their callers.  Purity
+ * is the point: every decision a transition implies is derived from (current
+ * word, op) alone, so the committing CAS and the decision it acts on can never
+ * disagree — the classic split-decision race (decide on one population, act
+ * on another) is unrepresentable.  The snapshot helpers decide a word's keep
+ * before the exchange that writes it and its targets from the value that
+ * exchange returned.
  *
- * Both are identical under either write policy.  Neither knows about ownership:
+ * All are identical under either write policy.  None knows about ownership:
  * write ownership is the migrating sentinel grant (coherence/grant.c), which
- * lives in its own counter rather than in either word, so neither arbiter
- * carries rw state or a writer count.
+ * lives in its own counter rather than in either word, so no decider carries
+ * rw state or a writer count.
  *
  * engine.c #includes this file: the round's deciders are its own, and the
  * reader-plane decider is the one the write-policy units call too.  The
@@ -24,7 +27,6 @@
 
 #include "arts/coherence/inv/types.h"
 
-#include <limits.h>
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -238,99 +240,60 @@ uint64_t arts_inv_cache_compute_next(uint64_t cur, int op, uint32_t self_idx,
   return INV_CACHE_WITH_REQ(INV_CACHE_MAKE(ro, inflight, hro), rw, par, stub);
 }
 
-/* ===== inv_dir_compute_next ============================================
+/* ===== inv_round_submit_next ===========================================
  *
- * The invalidation round: one round at a time (the round_open claim) and one
- * outstanding-ack count for it.  A round is opened by a release, armed with the
- * size of its roster snapshot, and closed by the ack that drives the count to
- * zero.  That closer is unique, which is what makes it safe for it to wake the
- * releaser and re-open for whatever queued up meanwhile.
- *
- * arg: only ACKS_ARM reads it (the target count).
+ * A release's decision on round_queue, from the word it read (`h`) and its
+ * entry's address (`e`, bit 0 clear): an idle word is claimed (OPEN: the
+ * release now holds the round and runs its own entry), a held one gets the
+ * entry pushed onto it (e|OPEN: the entry links behind the old head and the
+ * holder takes it).  A push never lands on 0, so only a claim enters an idle
+ * word.  The caller links the entry and CASes the result.
  */
-static uint64_t inv_dir_compute_next(uint64_t cur, int op, unsigned int arg,
-                                     uint32_t *out_action) {
-  uint32_t open = INV_DIR_ROUND_OPEN(cur);
-  uint32_t acks = INV_DIR_ACKS(cur);
-  uint32_t act = INV_DIR_ACT_NONE;
-
-  switch (op) {
-  case INV_DIR_OP_ROUND_CLAIM:
-    if (open == 0u) {
-      open = 1u;
-      act = INV_DIR_ACT_CLAIMED;
-    } /* else: a round is already in flight; its closer re-arms (act NONE) */
-    break;
-
-  case INV_DIR_OP_ACKS_ARM:
-    /* Under the claim, before the multicast: arm the outstanding-ack count for
-     * this round's snapshot.  A CAS rather than a store because the word is
-     * live — acks from this very round can already be arriving. */
-    acks = (uint32_t)arg;
-    break;
-
-  case INV_DIR_OP_ACK_DEC:
-    /* Precondition, checked by the caller, which fails loudly otherwise: the
-     * round is open and acks > 0. */
-    acks -= 1u;
-    if (acks == 0u) {
-      act = INV_DIR_ACT_CLOSE; /* this committer closes the round */
-    }
-    break;
-
-  case INV_DIR_OP_ROUND_CLOSE:
-    open = 0u;
-    break;
-
-  default:
-    break;
+static uintptr_t inv_round_submit_next(uintptr_t h, uintptr_t e, bool *claim) {
+  if (h == 0u) {
+    *claim = true;
+    return INV_ROUND_OPEN;
   }
-  *out_action = act;
-  return INV_DIR_MAKE(open, acks);
+  *claim = false;
+  return e | INV_ROUND_OPEN;
 }
 
-/* ===== inv_round_snapshot_word ==========================================
+/* ===== inv_round_keep_word / inv_round_targets_word =======================
  *
- * One word of the round's roster snapshot, decided purely.  `snap` is the
- * word the round took (rank `base` at bit 0).  Every rank in it is a target
- * of this round except two kinds: `exempt` (the write-through home, whose
- * buffer is the canonical copy) and the batch's releasers, whose bytes are
- * what this round publishes.  A releaser is a sharer from its release on —
- * its copy is durable and nothing but a later round's INVALIDATE retires it
- * — so every releaser of this word goes into the roster through *keep,
- * whether or not the snapshot found it: a creator's seeded copy was never
- * served, so nothing else ever registered it.  That is where the next
+ * One word of the round's roster snapshot (rank `base` at bit 0), decided
+ * purely.  Every rank the snapshot found is a target of the round except two
+ * kinds: `exempt` (the write-through home, whose buffer is the canonical
+ * copy) and the batch's releasers, whose bytes are what the round publishes.
+ * A releaser is a sharer from its release on — its copy is durable and
+ * nothing but a later round's INVALIDATE retires it — so the keep, which the
+ * snapshot's exchange writes into the word, holds every releaser of this
+ * word, whether or not the snapshot finds it: a creator's seeded copy was
+ * never served, so nothing else ever registered it.  That is where the next
  * owner's first round finds the ex-holder, whether or not the home has
  * recorded that owner yet (a revoking home records it only at its CONFIRM).
- * Targets are appended after `ntargets`; the return is the new
- * count, or UINT_MAX when a target did not fit below `cap` (the caller
- * fails loudly).
+ * The keep depends on the batch alone, never on the word, which is why it
+ * can be the value the exchange writes.
  */
-static unsigned int inv_round_snapshot_word(
-    uint64_t snap, unsigned int base, const unsigned int *writers,
-    unsigned int nwriters, unsigned int exempt, unsigned int *targets,
-    unsigned int cap, unsigned int ntargets, uint64_t *keep) {
-  uint64_t kept = 0u;
+static uint64_t inv_round_keep_word(unsigned int base,
+                                    const unsigned int *writers,
+                                    unsigned int nwriters,
+                                    unsigned int exempt) {
+  uint64_t keep = 0u;
   for (unsigned int k = 0; k < nwriters; k++) {
     unsigned int w = writers[k];
     if (w != exempt && w >= base && w < base + 64u) {
-      kept |= 1ull << (w - base);
+      keep |= 1ull << (w - base);
     }
   }
-  *keep = kept;
-  snap &= ~kept;
-  while (snap != 0u) {
-    unsigned int b = (unsigned int)__builtin_ctzll(snap);
-    unsigned int rank = base + b;
-    snap &= snap - 1u;
-    if (rank == exempt) {
-      continue;
-    }
-    if (ntargets >= cap) {
-      return UINT_MAX;
-    }
-    targets[ntargets++] = rank;
+  return keep;
+}
+
+static uint64_t inv_round_targets_word(uint64_t snap, uint64_t keep,
+                                       unsigned int base, unsigned int exempt) {
+  uint64_t targets = snap & ~keep;
+  if (exempt >= base && exempt < base + 64u) {
+    targets &= ~(1ull << (exempt - base));
   }
-  return ntargets;
+  return targets;
 }
 #endif /* ARTS_PROTOCOL_INV */

@@ -168,6 +168,8 @@ void arts_thread_main_join() {
                 "%ld ms (rc=%d), cancelling",
                 i, join_deadline_ns / 1000000L, rc);
       pthread_cancel(arts_thread_handles[i]);
+      atomic_fetch_add_explicit(&arts_shutdown_abandon.cancelled_threads, 1u,
+                                memory_order_relaxed);
       (void)clock_gettime(CLOCK_REALTIME, &deadline);
       deadline.tv_nsec += cancel_deadline_ns;
       while (deadline.tv_nsec >= 1000000000L) {

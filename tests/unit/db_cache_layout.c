@@ -58,7 +58,7 @@
 #if defined(ARTS_PROTOCOL_EXCL)
 #define FIRST_HOME_ARM_OFF offsetof(struct arts_db_s, lock_state)
 #elif defined(ARTS_PROTOCOL_INV)
-#define FIRST_HOME_ARM_OFF offsetof(struct arts_db_s, dir_state)
+#define FIRST_HOME_ARM_OFF offsetof(struct arts_db_s, round_queue)
 #elif defined(ARTS_PROTOCOL_FLUSH)
 #define FIRST_HOME_ARM_OFF offsetof(struct arts_db_s, sharers)
 #elif defined(ARTS_PROTOCOL_VAL) && defined(ARTS_RELEASE_PURGE)
@@ -196,9 +196,11 @@ static void print_fingerprint(void) {
   MEMBER(cache_t, pub_flight);
   MEMBER(cache_t, pub_waiters);
   MEMBER(cache_t, pub_parked);
+#ifdef ARTS_WRITE_POLICY_WT
   MEMBER(cache_t, home_pub_addr);
   MEMBER(cache_t, home_pub_rkey);
   MEMBER(cache_t, home_pub_txid);
+#endif
 #endif
 #ifdef ARTS_RELEASE_PURGE
   MEMBER(cache_t, pending_grant_return);
@@ -279,9 +281,11 @@ static void print_fingerprint(void) {
   MEMBER(db_t, cached_version);
 #endif
 #ifdef ARTS_PROTOCOL_INV
-  MEMBER(db_t, dir_state);
+  MEMBER(db_t, round_queue);
+  MEMBER(db_t, round_acks);
+#ifdef ARTS_WRITE_POLICY_WT
   MEMBER(db_t, hver);
-  MEMBER(db_t, pub_queue);
+#endif
   MEMBER(db_t, round_entries);
   MEMBER(db_t, roster);
 #endif

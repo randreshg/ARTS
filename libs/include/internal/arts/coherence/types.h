@@ -130,7 +130,7 @@ static inline uint64_t arts_db_cache_stub_size(void) {
 #if defined(ARTS_PROTOCOL_EXCL)
   return offsetof(struct arts_db_s, lock_state);
 #elif defined(ARTS_PROTOCOL_INV)
-  return offsetof(struct arts_db_s, dir_state);
+  return offsetof(struct arts_db_s, round_queue);
 #elif defined(ARTS_PROTOCOL_FLUSH)
   return offsetof(struct arts_db_s, sharers);
 #elif defined(ARTS_PROTOCOL_VAL) && defined(ARTS_RELEASE_PURGE)

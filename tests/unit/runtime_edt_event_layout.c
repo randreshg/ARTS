@@ -283,6 +283,7 @@ static void print_fingerprint(void) {
   MEMBER(shutdown_abandon_t, queued_edts);
   MEMBER(shutdown_abandon_t, waits);
   MEMBER(shutdown_abandon_t, unjoined_threads);
+  MEMBER(shutdown_abandon_t, cancelled_threads);
   TYPE(arts_counter_t);
   MEMBER(arts_counter_t, count);
   MEMBER(arts_counter_t, start);

@@ -254,10 +254,10 @@ void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload) {
   }
 }
 
-/* The home's publication axis, advanced by each round close.  Deliberately
- * NOT the installed buffer's version: a home-resident owner writes through
- * that buffer in place, so its lane stands still while round after round
- * moves the data on. */
+/* The home's publication axis, advanced by each round's run before any of its
+ * INVALIDATEs leaves.  Deliberately NOT the installed buffer's version: a
+ * home-resident owner writes through that buffer in place, so its lane stands
+ * still while round after round moves the data on. */
 uint64_t arts_db_grant_serve_version(struct arts_db_s *db) {
   return atomic_load_explicit(&db->hver, memory_order_acquire);
 }
@@ -360,10 +360,10 @@ void arts_handler_db_inv_request(void *item_v, void *args_v) {
     }
     /* Read serve: roster bit BEFORE the send — a serve whose copy departs
      * must already be a target of the next round.  The fetch_or and the
-     * round's snapshot exchange (arts_inv_home_round_try_open) are acq_rel RMWs
-     * of one word, so the later reads the other: either that round names
-     * this reader, or this serve's stamp load sees the round's hver store,
-     * which precedes the exchange. */
+     * round's snapshot exchange (inv_round_run) are acq_rel RMWs of one
+     * word, so the later reads the other: either that round names this
+     * reader, or this serve's stamp load sees the round's hver store, which
+     * precedes the exchange. */
     (void)arts_rank_bitset_set(&db->roster, a->requester);
     arts_send_db_inv_deliver(a->requester, db, &a->rdzv);
     return;

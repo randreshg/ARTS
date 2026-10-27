@@ -741,10 +741,16 @@ struct arts_db_pub_waiter_s {
   sem_t sem;
 };
 
-/* Does this rank's publish carry payload?  Write-through owners ship bytes; a
- * home-resident releaser's buffer IS the canonical copy (its publish is the
- * ordering round alone), and the write-back invalidation arm publishes
- * control only. */
+/* The write-back invalidation arm publishes control only: none of its
+ * flights carries payload, so none consumes a credit or leaves a payload leg
+ * that could carry a hand-back. */
+#if defined(ARTS_PROTOCOL_INV) && defined(ARTS_WRITE_POLICY_WB)
+#define ARTS_PUB_CONTROL_ONLY 1
+#else
+#define ARTS_PUB_CONTROL_ONLY 0
+#endif
+
+#if !ARTS_PUB_CONTROL_ONLY
 /* Does a payload commit leg leaving now owe the home a hand-back of the write
  * right?  Only an arm whose write right migrates can owe one. */
 static inline bool pub_leg_takes_grant_return(struct arts_db_cache_s *cache) {
@@ -755,7 +761,12 @@ static inline bool pub_leg_takes_grant_return(struct arts_db_cache_s *cache) {
   return false;
 #endif
 }
+#endif
 
+/* Does this rank's publish carry payload?  Write-through owners ship bytes; a
+ * home-resident releaser's buffer IS the canonical copy (its publish is the
+ * ordering round alone), and the write-back invalidation arm publishes
+ * control only. */
 static bool pub_flight_carries_payload(struct arts_db_cache_s *cache) {
 #if defined(ARTS_PROTOCOL_INV) && defined(ARTS_WRITE_POLICY_WB)
   (void)cache;
@@ -786,8 +797,10 @@ pub_flight_drive(struct arts_db_cache_s *cache, bool may_block,
   uint64_t version =
       (buf != NULL) ? atomic_load_explicit(&buf->version, memory_order_acquire)
                     : fallback_version;
+#if !ARTS_PUB_CONTROL_ONLY
   uint64_t db_size =
       atomic_load_explicit(&cache->db_size, memory_order_relaxed);
+#endif
   unsigned int home_rank = arts_guid_get_rank(cache->db_guid);
   /* A claiming releaser gates on ITS OWN flight, not merely on a covering
    * ACK: a claim won after the claimer's registered waiter was already
@@ -817,6 +830,9 @@ pub_flight_drive(struct arts_db_cache_s *cache, bool may_block,
                          /*return_grant=*/false);
     return gate;
   }
+#if ARTS_PUB_CONTROL_ONLY
+  return gate; /* not reached: every flight of this arm is control-only */
+#else
   /* Payload flight: consume the credit.  The acquire exchange pairs with the
    * refill's release-store; addr/rkey are stable across refills (one DB has
    * one stable buffer), so reading them after the exchange is safe.  The
@@ -890,6 +906,7 @@ pub_flight_drive(struct arts_db_cache_s *cache, bool may_block,
   sem_destroy(&wr->sem);
   arts_free(wr);
   return gate;
+#endif
 }
 
 void arts_db_publish_sync(struct arts_db_cache_s *cache, uint64_t version) {
@@ -980,6 +997,11 @@ void arts_handler_db_publish_ack(void *item_v, void *args_v) {
   }
   struct arts_db_cache_s *cache = &db->cache;
   if (a->credit_txid != 0) {
+#if ARTS_PUB_CONTROL_ONLY
+    ARTS_ERROR("coherence: guid %lu got a publish credit — this arm's homes "
+               "mint none; binary mode mismatch?",
+               (unsigned long)cache->db_guid);
+#else
     /* Relaxed stores: two teachers (ACK refill, CREATE_RETURN) may overlap,
      * but every teacher writes the same {addr, rkey} — one DB has ONE stable
      * buffer — so the only ordering that matters is the txid release-store
@@ -990,6 +1012,7 @@ void arts_handler_db_publish_ack(void *item_v, void *args_v) {
                           memory_order_relaxed);
     atomic_store_explicit(&cache->home_pub_txid, a->credit_txid,
                           memory_order_release);
+#endif
   }
   for (;;) {
     /* Waiters parked by the previous completion first, then everything that
@@ -1377,13 +1400,17 @@ void arts_db_debug_quiescence_check(void) {
 #if ARTS_LOG_LEVEL >= 3
   /* Every read below assumes the runtime's threads are gone: the joins order
    * every write before it, so each load is relaxed.  A thread the shutdown
-   * gave up joining may still be mid transition, so the walk cannot judge
-   * and says so instead. */
+   * gave up joining may still be mid transition, and one it had to cancel
+   * may have stopped mid transition, so the walk cannot judge and says so
+   * instead. */
   unsigned int unjoined = atomic_load_explicit(
       &arts_shutdown_abandon.unjoined_threads, memory_order_relaxed);
-  if (unjoined != 0) {
-    ARTS_DEBUG("quiescence check skipped: %u thread(s) never joined",
-               unjoined);
+  unsigned int cancelled = atomic_load_explicit(
+      &arts_shutdown_abandon.cancelled_threads, memory_order_relaxed);
+  if (unjoined != 0 || cancelled != 0) {
+    ARTS_DEBUG("quiescence check skipped: %u thread(s) never joined, %u "
+               "cancelled",
+               unjoined, cancelled);
     return;
   }
 #ifdef ARTS_DEBUG_LANDING_BALANCE
@@ -1679,6 +1706,32 @@ void arts_db_debug_quiescence_check(void) {
             marked_owed++;
           }
         }
+#ifdef ARTS_PROTOCOL_INV
+        if (db->home_initialized) {
+          /* The invalidation round.  Unarmed, it is held only by a thread
+           * running or finishing it, so once every thread has joined a held
+           * round or a batch left with no ack to finish it has lost its
+           * holder, and every later release queues behind it for ever.  An
+           * armed round is not reported by itself: its acks may still be in
+           * flight when the network stopped. */
+          uintptr_t rq =
+              atomic_load_explicit(&db->round_queue, memory_order_relaxed);
+          uint32_t ra =
+              atomic_load_explicit(&db->round_acks, memory_order_relaxed);
+          if (ra == 0u && (rq != 0u || db->round_entries != NULL)) {
+            ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu round held with no thread "
+                       "to end it (queue=%llx)",
+                       (unsigned long)c->db_guid, (unsigned long long)rq);
+            viol++;
+          }
+          if (ra != 0u && rq == 0u) {
+            ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu round armed with %u acks "
+                       "but not held",
+                       (unsigned long)c->db_guid, ra);
+            viol++;
+          }
+        }
+#endif
         /* The home directory.  A remote holder that has not yet handed the
          * right back, the requests queued behind it and, where the home
          * revokes, an open round (the baton) are each explained by a message

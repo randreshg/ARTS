@@ -251,10 +251,10 @@ void arts_handler_db_inv_request(void *item_v, void *args_v) {
     return;
   }
   /* Roster bit BEFORE the serve/redirect departs.  Same-word pairing with
-   * the round's snapshot exchange (arts_inv_home_round_try_open): either that
-   * round names this reader, or this serve is ordered after the snapshot.
-   * A reader still sent to the previous holder is one unordered with that
-   * round's write, and may read the older version. */
+   * the round's snapshot exchange (inv_round_run): either that round names
+   * this reader, or this serve is ordered after the snapshot.  A reader
+   * still sent to the previous holder is one unordered with that round's
+   * write, and may read the older version. */
   (void)arts_rank_bitset_set(&db->roster, a->requester);
   unsigned int holder =
       atomic_load_explicit(&db->rw_holder, memory_order_acquire);

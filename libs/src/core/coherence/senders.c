@@ -100,9 +100,10 @@ void arts_send_db_publish(unsigned int home_rank, arts_guid_t db_guid,
  * place, as the landing for an announced dirty publish (a WT payload publish
  * under VAL or INV) or for EXCL PURGE's landing-less release.
  * Never a self-send (a same-rank publish is an ordering round alone).
- * Compiled for every protocol with a synchronous publish leg. */
-#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV) ||               \
-    defined(ARTS_PROTOCOL_EXCL)
+ * Compiled for exactly the cells whose dispatcher accepts the message. */
+#if ((defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)) &&             \
+     defined(ARTS_WRITE_POLICY_WT)) ||                                         \
+    (defined(ARTS_PROTOCOL_EXCL) && defined(ARTS_RELEASE_PURGE))
 void arts_send_db_publish_cts(unsigned int releaser_rank, arts_guid_t db_guid,
                                 const struct arts_rdzv_landing_s *landing,
                                 uint64_t cv) {
@@ -117,7 +118,7 @@ void arts_send_db_publish_cts(unsigned int releaser_rank, arts_guid_t db_guid,
   p.cv = cv;
   arts_transport_send_async((int)releaser_rank, (char *)&p, sizeof(p));
 }
-#endif /* arms with a synchronous publish leg */
+#endif /* cells that accept PUBLISH_CTS */
 
 /* PUBLISH_ACK answers a publish flight — the WT write policy's payload
  * publish, and INV WB's control-only request for its invalidation round —
