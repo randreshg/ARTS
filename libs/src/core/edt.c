@@ -52,6 +52,7 @@
 #include "arts/runtime_state.h"
 #include "arts/runtime_types.h"
 #include "arts/system/print.h"
+#include "arts/system/schedfuzz.h"
 #include "arts/system/threads.h"
 #include "arts/transport/net.h"   /* outbound send helpers */
 #include "arts/transport/protocol.h" /* wire packet structs */
@@ -612,15 +613,14 @@ void (*arts_edt_installed_hook)(struct arts_edt_s *edt) = NULL;
  * empty (`item_v` is NULL).  A local create hands over the EDT it built, which
  * is installed as is; a received blob is copied into a fresh object.  Every
  * field another thread may read once the EDT is installed is final before
- * the install: a destroy dispatched on another thread can act on the EDT from
- * that point on.  The sentinel (+1 on depc_needed) holds the EDT unrunnable
- * from the install until it is removed below, so the satisfies the install's
- * drain replays, and any that land concurrently, cannot fire it before the
- * create body is done with it; exactly one party then observes the 0
- * transition.  A lost install CAS means another create filled the slot after
- * the engine saw it empty, so this one re-enters the engine and parks behind
- * it with the object it built, ready as it is.  A parked create keeps open the
- * finish-scope INCR its creating rank emitted until it installs. */
+ * the install, self_cb included: a satisfy or destroy dispatched on another
+ * thread, or replayed by the install's own drain, can act on the EDT from
+ * that point on, and the satisfy whose decrement reads 1 readies it there.
+ * An EDT with no dependence has no satisfier, so the body readies it.  A lost
+ * install CAS means another create filled the slot after the engine saw it
+ * empty, so this one re-enters the engine and parks behind it with the object
+ * it built, ready as it is.  A parked create keeps open the finish-scope INCR
+ * its creating rank emitted until it installs. */
 void arts_handler_edt_create(void *item_v, void *args_v) {
   (void)item_v;
   const struct arts_ooo_args_create_blob_s *a =
@@ -663,37 +663,33 @@ void arts_handler_edt_create(void *item_v, void *args_v) {
                         DB_MODE_NULL);
     edt->finish_event = proxy;
   }
-  atomic_fetch_add_explicit(&edt->depc_needed, 1u, memory_order_relaxed);
-  arts_shared_ptr_t pin = arts_route_table_install_if_absent(edt, guid);
-  if (pin == NULL) {
-    atomic_fetch_sub_explicit(&edt->depc_needed, 1u, memory_order_relaxed);
+  /* self_cb is a non-owning alias of the cb this body installs, armed from
+   * the handle itself (a lookup could return a later generation's cb) before
+   * the install's release publishes the EDT, since a satisfier that readies
+   * it takes the runnable-phase ref from self_cb.  `pin` keeps the EDT alive
+   * from the install to the end of this body, even when it is readied, run
+   * and retired meanwhile, or a destroy the drain replays retires it. */
+  arts_shared_ptr_t cb = arts_route_table_make_handle(edt, guid);
+  edt->self_cb = cb;
+  arts_shared_ptr_t pin = arts_shared_copy(cb);
+  if (!arts_route_table_install_handle_if_absent(cb, guid)) {
+    arts_shared_release(&pin);
+    arts_shared_abandon(&cb);
+    edt->self_cb = NULL;
     struct arts_ooo_args_create_local_s l = {
         .size = ARTS_OOO_CREATE_ADOPT, .guid = guid, .descriptor = edt};
     arts_ooo_dispatch_or_defer_guid(guid, OOO_EDT_CREATE, &l, sizeof(l));
     return;
   }
+  arts_sched_fuzz_point(); /* widen the install<->readiness window */
 #ifdef ARTS_DEBUG_INJECTION
   if (arts_edt_installed_hook != NULL) {
     arts_edt_installed_hook(edt);
   }
 #endif
-  /* `pin` keeps the EDT alive from the install to the end of this body, even
-   * when the install's drain replays a destroy that retires it.  self_cb is a
-   * non-owning alias of the installed cb, armed from the handle itself (a
-   * lookup could return a later generation's cb); it is read only once the
-   * sentinel's removal below has let the EDT become ready. */
-  edt->self_cb = pin;
-  /* arts_handle_ready_edt takes the runnable-phase ref from self_cb, which is
-   * sound only while `pin` is held; nothing touches the EDT after the
-   * release. */
-  unsigned int old =
-      atomic_fetch_sub_explicit(&edt->depc_needed, 1u, memory_order_acq_rel);
-  if (old == 0u) {
-    ARTS_ERROR("satisfies beyond its %u dependence(s) reached EDT[Guid:%lu] "
-               "before its create completed",
-               edt->depc, (unsigned long)edt->guid);
-  }
-  if (old == 1u) {
+  /* Keyed on the immutable depc: depc_needed of an EDT with dependences may
+   * already have reached 0 on a satisfier's thread. */
+  if (edt->depc == 0u) {
     arts_handle_ready_edt(edt);
   }
   arts_shared_release(&pin);

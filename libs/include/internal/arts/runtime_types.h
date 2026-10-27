@@ -98,11 +98,12 @@ struct arts_edt_s {
                                           arts_edt_set_result (NULL_GUID if
                                           none); payload of output_event. */
   arts_edt_types_t edt_type;         /**< EDT subtype (DEFAULT=CPU, GPU). */
-  /** Dependences not yet satisfied, plus one while the create body that
-   * installs the EDT runs.  Every satisfier writes its slot, then decrements
-   * acq_rel: the release publishes the slot (and the create body's writes),
-   * the decrement that reaches 0 acquires all of them before the acquire
-   * phase.  Other reads carry only the value. */
+  /** Dependences not yet satisfied.  Every satisfier writes its slot, then
+   * decrements acq_rel: the release publishes the slot, the decrement that
+   * reaches 0 acquires all of them before the acquire phase (the create
+   * body's writes precede the install that publishes the EDT to every
+   * satisfier).  An EDT with no dependence is readied by its create body and
+   * never touches it.  Other reads carry only the value. */
   _Atomic(unsigned int) depc_needed;
   uint32_t rw_cursor;  /**< Index into rw_sorted up to which the EDT's
                             serialized deps have been *secured*: resolved
@@ -148,16 +149,17 @@ struct arts_edt_s {
                                       wrapper EDT: set while it is private,
                                       cleared after its host function, which
                                       the stream orders after every read. */
-  /* Non-owning alias to this EDT's own route-table control block, armed once
-   * the EDT is installed (before it can become runnable).  An EDT is dispatched
-   * by raw pointer through the lock-free deques and is held by raw pointer
-   * across asynchronous coherence park/resume, so nothing on those paths can
-   * recover a control block to ref-count.  This alias lets the runnable-phase
-   * code take an owning ref (arts_shared_copy at the ready transition, released
-   * at run completion) that keeps the EDT alive even after a concurrent destroy
-   * has CAS-detached the route slot.  It holds NO strong count itself (that
-   * would be a self-cycle that never frees); the cb pool guarantees the pointer
-   * stays valid, and copies are only ever taken while another ref is held. */
+  /* Non-owning alias to this EDT's own route-table control block, armed
+   * before the install publishes the EDT, so before it can become runnable.
+   * An EDT is dispatched by raw pointer through the lock-free deques and is
+   * held by raw pointer across asynchronous coherence park/resume, so nothing
+   * on those paths can recover a control block to ref-count.  This alias lets
+   * the runnable-phase code take an owning ref (arts_shared_copy at the ready
+   * transition, released at run completion) that keeps the EDT alive even
+   * after a concurrent destroy has CAS-detached the route slot.  It holds NO
+   * strong count itself (that would be a self-cycle that never frees); the cb
+   * pool guarantees the pointer stays valid, and copies are only ever taken
+   * while another ref is held. */
   arts_shared_ptr_t self_cb;
 } ARTS_ALIGNED_MAX;
 

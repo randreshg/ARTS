@@ -17,6 +17,10 @@
 #ifndef ARTS_SYSTEM_SCHEDFUZZ_H
 #define ARTS_SYSTEM_SCHEDFUZZ_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #ifdef ARTS_DEBUG_INJECTION
 /* Read ARTS_SCHED_FUZZ, refusing a value that is not a percentage.  Called at
  * a rank's initialization, before any thread that reaches a fuzz point. */
@@ -27,6 +31,10 @@ void arts_sched_fuzz_init(void);
 void arts_sched_fuzz_point(void);
 #else
 #define arts_sched_fuzz_point() ((void)0)
+#endif
+
+#ifdef __cplusplus
+}
 #endif
 
 #endif /* ARTS_SYSTEM_SCHEDFUZZ_H */

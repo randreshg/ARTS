@@ -1,27 +1,28 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * EDT pre-reserved-GUID sentinel single-fire protocol.
+ * EDT create single-fire protocol.
  *
  * Property under test
  * -------------------
- * The EDT create body sets depc_needed = depc + 1 (the sentinel) BEFORE
- * installing the EDT, replays any out-of-order satisfies queued against the
- * still-RESERVED GUID, then removes the sentinel (-1).  The
- * invariant is: exactly ONE party observes the depc_needed==0 transition and
- * fires the EDT — never zero (lost wakeup) and never two (double dispatch).
+ * The EDT create body arms the EDT fully, then installs it; the install's
+ * drain replays any out-of-order satisfies queued against the still-RESERVED
+ * GUID, and the satisfy whose decrement of depc_needed reads 1 readies the
+ * EDT, whether the drain replays it or it lands afterwards.  The invariant is:
+ * exactly ONE party observes the depc_needed==0 transition and fires the EDT
+ * — never zero (lost wakeup) and never two (double dispatch).
  *
  * Three scenarios per run, each driving a distinct branch of the protocol:
  *
  *   A) fresh GUID, its one slot satisfied after create: fires exactly once.
  *
  *   B) pre-reserved GUID, all deps satisfied BEFORE create: the satisfies are
- *      queued on the RESERVED slot (OoO).  The sentinel keeps depc_needed >= 1
- *      across the install+replay, so the sentinel-removal at the end of create
- *      observes 0 and fires.  Must fire exactly once.
+ *      queued on the RESERVED slot (OoO).  The install's drain replays them
+ *      on the creating thread, and the last replayed decrement observes 0 and
+ *      fires.  Must fire exactly once.
  *
- *   C) pre-reserved GUID, last real satisfy lands AFTER create: create's
- *      sentinel removal sees depc_needed > 0 (does not fire); the trailing
- *      satisfy drives it to 0 and fires.  Must fire exactly once.
+ *   C) pre-reserved GUID, last real satisfy lands AFTER create: the drain's
+ *      replay leaves depc_needed > 0 (does not fire); the trailing satisfy
+ *      drives it to 0 and fires.  Must fire exactly once.
  *
  * Each fired EDT increments its own per-scenario atomic counter.  A collector
  * EDT (gated on a finish event that all scenarios join) verifies every counter
@@ -91,11 +92,11 @@ void collector(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   unsigned int a = atomic_load_explicit(&c->fired_a, memory_order_relaxed);
   unsigned int b = atomic_load_explicit(&c->fired_b, memory_order_relaxed);
   unsigned int cc = atomic_load_explicit(&c->fired_c, memory_order_relaxed);
-  arts_printf("edt_sentinel_single_fire: A=%u B=%u C=%u\n", a, b, cc);
+  arts_printf("edt_create_single_fire: A=%u B=%u C=%u\n", a, b, cc);
   if (a == 1u && b == 1u && cc == 1u) {
-    arts_printf("PASS edt_sentinel_single_fire\n");
+    arts_printf("PASS edt_create_single_fire\n");
   } else {
-    arts_printf("FAIL edt_sentinel_single_fire: A-C must each fire exactly "
+    arts_printf("FAIL edt_create_single_fire: A-C must each fire exactly "
                 "once\n");
     arts_abort(1);
   }
@@ -109,7 +110,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depc;
   (void)depv;
 
-  arts_printf("=== edt_sentinel_single_fire ===\n");
+  arts_printf("=== edt_create_single_fire ===\n");
 
   void *cptr = NULL;
   arts_guid_t ctr =
@@ -137,8 +138,8 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   /* --- Scenario B: pre-reserved GUID with all real deps satisfied BEFORE the
    * EDT is created, so they queue on the RESERVED slot (OoO). depc = 3 (the
    * counters RW + two VAL slots). We satisfy the two VAL slots and the RW dep
-   * first, then create the EDT — its sentinel-removal must be the sole firer.
-   * --- */
+   * first, then create the EDT — the install's replay of the last of them
+   * must be the sole firer. --- */
   {
     arts_guid_t b = arts_guid_reserve(ARTS_GUID_EDT, 0);
     /* Pre-queue the two VAL satisfies and the RW dep against the RESERVED b. */
@@ -152,15 +153,14 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   /* --- Scenario C: pre-reserved GUID where the LAST real satisfy lands after
    * create. We pre-queue only the RW dep, create the EDT (depc=2), then deliver
-   * the trailing VAL satisfy. Create's sentinel removal must see depc_needed>0;
-   * the trailing satisfy fires it. --- */
+   * the trailing VAL satisfy. The install's replay leaves depc_needed>0; the
+   * trailing satisfy fires it. --- */
   {
     arts_guid_t cg = arts_guid_reserve(ARTS_GUID_EDT, 0);
     arts_add_dependence(ctr, cg, 0, DB_MODE_RW);
     arts_edt_create(fire_c, 1, pv, 2,
                     &(arts_edt_hint_t){.guid = cg, .finish_event = fe});
-    /* Trailing satisfy that drives readiness to 0 after the sentinel removal.
-     */
+    /* Trailing satisfy that drives readiness to 0 after the install. */
     arts_edt_satisfy_slot(cg, 1, NULL_GUID, DB_MODE_NULL);
   }
 

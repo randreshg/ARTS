@@ -2761,7 +2761,7 @@ set(_arts_fail_token_tests
     ctx_crossrank_proxy_finish ctx_owned_finish_cleanup db_acquire_all_bias
     db_create_claims_first_touch_stub db_create_with_data_bytes
     dbcreate_matrix dep_slot_resolved_once edt_create_basic
-    edt_sentinel_single_fire event_chain
+    edt_create_single_fire event_chain
     event_channel_fifo event_channel_lifetime event_channel_transient_null
     event_destroy_before_create excl_multiconsumer_queue excl_purge_grant_d6_d7
     excl_request_coalesce excl_samerank_rw_grant_race finish_event_stress

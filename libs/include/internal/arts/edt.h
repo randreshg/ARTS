@@ -81,8 +81,11 @@ void arts_send_object_blob(unsigned int rank, arts_guid_t guid, void *ptr,
  * GUID. */
 void arts_handler_edt_create(void *item, void *args);
 #ifdef ARTS_DEBUG_INJECTION
-/* Called by the create body right after it installs an EDT, before it lets
- * the EDT become ready; NULL unless a test sets it, before the runtime
+/* Called by the create body right after it installs an EDT and replays the
+ * messages parked for it, and before the body readies an EDT with no
+ * dependence (the only readiness the body performs); an EDT with dependences
+ * may already be ready, running or retired by then, and the create's pin
+ * keeps its memory valid.  NULL unless a test sets it, before the runtime
  * starts, to act on an installed EDT from another thread in that window. */
 extern void (*arts_edt_installed_hook)(struct arts_edt_s *edt);
 #endif

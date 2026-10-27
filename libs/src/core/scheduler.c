@@ -120,13 +120,13 @@ void arts_schedule_ready_edt(struct arts_edt_s *edt) {
 /*
  * arts_handle_ready_edt — Transition an EDT from "all deps signaled" to DB
  * acquisition.  Called when depc_needed reaches 0 (the satisfy phase
- * completes).  Seeds the cursor (rw_cursor = 0) and enters
- * arts_db_acquire_all, which sets the readiness counter acquire_remaining to
- * its bias plus the acquisitions, fires all non-serialized (RO) deps at once
- * and walks the serialized (RW) deps by GUID-ordered cursor.  The EDT is
- * scheduled (via arts_schedule_ready_edt) when acquire_remaining reaches 0 —
- * i.e. when every DB dep's data has resolved at this rank — or at once when it
- * acquires nothing.
+ * completes), or by the create body of an EDT with no dependence.  Seeds the
+ * cursor (rw_cursor = 0) and enters arts_db_acquire_all, which sets the
+ * readiness counter acquire_remaining to its bias plus the acquisitions, fires
+ * all non-serialized (RO) deps at once and walks the serialized (RW) deps by
+ * GUID-ordered cursor.  The EDT is scheduled (via arts_schedule_ready_edt)
+ * when acquire_remaining reaches 0 — i.e. when every DB dep's data has
+ * resolved at this rank — or at once when it acquires nothing.
  */
 void arts_handle_ready_edt(struct arts_edt_s *edt) {
   ARTS_INFO("EDT[Guid:%lu] ready — entering sequential DB acquire (depc=%u)",

@@ -1109,9 +1109,9 @@ endif()
 # --- EDT semantics ---
 # Its writers are unordered, which DB-WRF does not admit.
 if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
-add_arts_test(edt_sentinel_single_fire)
-register_single_node_test(edt_sentinel_single_fire TIMEOUT 30)
-set_tests_properties(edt_sentinel_single_fire PROPERTIES PASS_REGULAR_EXPRESSION "PASS edt_sentinel_single_fire")
+add_arts_test(edt_create_single_fire)
+register_single_node_test(edt_create_single_fire TIMEOUT 30)
+set_tests_properties(edt_create_single_fire PROPERTIES PASS_REGULAR_EXPRESSION "PASS edt_create_single_fire")
 endif()
 
 # edt_output_event: the consumer sits on rank 1 when there is one, and the
