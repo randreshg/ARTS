@@ -2280,7 +2280,7 @@ register_multinode_test(coherence_writer_ro_overlap TIMEOUT 180)
 if(ARTS_DEBUG_SANITIZER STREQUAL "THREAD")
     foreach(_v IN LISTS ARTS_TEST_MULTINODE_VARIANTS)
         set_tests_properties(coherence_writer_ro_overlap_${_v} PROPERTIES
-            TIMEOUT 330)
+            TIMEOUT 480)
     endforeach()
 endif()
 set(_writer_ro_cases
