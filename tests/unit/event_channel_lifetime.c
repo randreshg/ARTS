@@ -6,7 +6,9 @@
 /// @file event_channel_lifetime.c
 /// @brief Verifies that CHANNEL events do NOT auto-destroy regardless of
 ///        the number of fire generations.  Only explicit arts_event_destroy
-///        tears the event down.
+///        tears the event down, and a channel destroyed while it still
+///        queues unpaired satisfies, or unpaired dependences, frees them
+///        (a Debug build checks that its count matches what it frees).
 
 #include "arts.h"
 #include "arts/gas/route_table.h"
@@ -17,6 +19,8 @@
 #include "../test_failure_status.h"
 
 #define N_GENS 100
+#define N_PAIRED 3
+#define N_UNPAIRED 5
 
 static void noop_dep(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                      arts_edt_dep_t depv[]) {
@@ -80,9 +84,49 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
   arts_shared_release(&h);
 
+  /* One channel left holding satisfies past its pairs, one holding
+   * dependences.  The dependents are an event nobody fires, so nothing waits
+   * on the pairs that never come. */
+  arts_guid_t ch_sat = arts_event_create(&hint);
+  for (int i = 0; i < N_PAIRED; i++) {
+    arts_guid_t edt =
+        arts_edt_create(noop_dep, 0, NULL, 1,
+                        &(arts_edt_hint_t){.rank = 0, .finish_event = fe});
+    arts_add_dependence(ch_sat, edt, 0, DB_MODE_RW);
+  }
+  for (int i = 0; i < N_PAIRED + N_UNPAIRED; i++) {
+    arts_event_satisfy_slot(ch_sat, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
+  }
+  arts_event_hint_t sink_hint = ARTS_EVENT_HINT_LATCH(1);
+  arts_guid_t sink = arts_event_create(&sink_hint);
+  arts_guid_t ch_dep = arts_event_create(&hint);
+  for (int i = 0; i < N_UNPAIRED; i++) {
+    arts_add_dependence(ch_dep, sink, ARTS_EVENT_LATCH_DECR_SLOT, DB_MODE_NULL);
+  }
+  usleep(50000);
+  arts_event_destroy(ch_sat);
+  arts_event_destroy(ch_dep);
+  arts_event_destroy(sink);
+  usleep(50000);
+  const arts_guid_t held[2] = {ch_sat, ch_dep};
+  for (int i = 0; i < 2; i++) {
+    h = arts_route_table_lookup_event(held[i]);
+    e = (struct arts_event_s *)arts_shared_get(h);
+    arts_shared_release(&h);
+    if (e) {
+      arts_printf("FAIL: CHANNEL holding unpaired %s still alive after "
+                  "explicit destroy\n",
+                  i == 0 ? "satisfies" : "dependences");
+      arts_test_fail();
+      arts_shutdown();
+      return;
+    }
+  }
+
   arts_printf(
-      "  PASS: CHANNEL persistent across %d fires; destroyed explicitly\n",
-      N_GENS);
+      "  PASS: CHANNEL persistent across %d fires; destroyed explicitly, "
+      "also with %d unpaired satisfies or dependences queued\n",
+      N_GENS, N_UNPAIRED);
   arts_event_wait(fe);
   arts_shutdown();
 }

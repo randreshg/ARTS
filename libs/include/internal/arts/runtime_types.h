@@ -183,8 +183,10 @@ struct arts_event_dep_s;
  *      is silently absorbed.
  *
  *  CHANNEL semantics (`is_channel == 1`):
- *    - `nb_sat` increments per satisfy; `nb_deps` increments per add_dep.
- *    - Drainer pops one from each queue, decrements both counters, signals.
+ *    - One packed word counts the unpaired satisfies and dependences; a
+ *      pairable word (both counts non-zero) is a drain in progress.
+ *    - The drainer pops one node from each queue per pair, signals, and
+ *      subtracts the pairs it served.
  *    - No auto-destroy; only explicit `arts_event_destroy`. */
 struct arts_event_s {
   uint8_t is_channel; /* discriminator: 0=simple, 1=channel */
@@ -211,18 +213,19 @@ struct arts_event_s {
       arts_lf_stack_t deps_stack; /* Treiber stack of pending consumers */
     } simple;
     struct {
-      /* nb_sat / nb_deps: a producer increments one (acq_rel) after pushing
-       * its node on the matching queue; the drainer decrements both (acq_rel)
-       * after popping a pair.  The gate's loads are acquire, and the seq_cst
-       * fence at the head of the drain loop closes the pair between a
-       * producer's increment and a drainer's clear of `draining`. */
-      _Atomic(uint32_t) nb_sat;  /* incremented per satisfy */
-      _Atomic(uint32_t) nb_deps; /* incremented per add_dep */
-      arts_mpsc_t data_queue;    /* satisfy FIFO */
-      arts_mpsc_t dep_queue;     /* dep FIFO */
-      /* Single-flight drainer gate: taken by CAS 0->1 (acq_rel / acquire),
-       * returned by a release store. */
-      _Atomic(uint8_t) draining;
+      /* [deps:32 | sat:32]: the unpaired dependences and satisfies, each
+       * counted after its node is pushed.  While the event is live only
+       * acq_rel RMWs touch it: a producer's fetch_add claims the drain when
+       * its result makes the word pairable (both fields non-zero); the
+       * drainer's fetch_sub of the pairs it served keeps the drain iff its
+       * result is still pairable.  So a pairable word is exactly a drain in
+       * progress, and this RMW chain orders every counted node's push, and
+       * the queues' consumer-owned tails, before the next drainer's pops.
+       * The deleter's Debug check reads it relaxed, at strong == 0, ordered
+       * after every handler by the reference count. */
+      _Atomic(uint64_t) state;
+      arts_mpsc_t data_queue; /* satisfy FIFO */
+      arts_mpsc_t dep_queue;  /* dependence FIFO */
     } channel;
   };
 } ARTS_ALIGNED_MAX;

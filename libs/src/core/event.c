@@ -51,11 +51,13 @@
  *     absorbed while the event lingers; once it is reclaimed, a late satisfy
  *     is a destroy-contract violation (ordering incomplete) and is lossy.
  *
- *   - channel (CHANNEL only): nb_sat / nb_deps monotonic counters +
- *     two mpsc FIFO queues (data_queue, dep_queue) + single-flight
- *     drainer sentinel.  Each satisfy push + nb_sat++; each addDep
- *     push + nb_deps++.  Drainer pops one from each queue per
- *     generation, decrements both counters.  No auto-destroy.
+ *   - channel (CHANNEL only): one packed word [deps:32 | sat:32] + two
+ *     mpsc FIFO queues (data_queue, dep_queue).  A satisfy pushes its node
+ *     and adds to sat, an addDep pushes and adds to deps; the add that makes
+ *     both fields non-zero claims the drain, which pairs the queues' fronts
+ *     one generation at a time and subtracts the pairs it served, keeping the
+ *     drain while the word stays pairable (event_channel.c).  No
+ *     auto-destroy.
  */
 
 #include "arts/event.h"
@@ -97,8 +99,42 @@ static inline arts_event_hint_t hint_or_defaults(const arts_event_hint_t *h) {
 
 /* Free a single mpsc node; every node is its own arts_malloc allocation.
  * CHANNEL queue payload is intrusive: the node IS arts_event_dep_s for both
- * data and dep entries (data uses target=guid, kind=ARTS_NULL marker). */
+ * data and dep entries (data uses target=guid, kind=ARTS_GUID_LAST marker). */
 static inline void event_node_free(arts_lf_link_t *node) { arts_free(node); }
+
+/* Free a NULL-terminated chain of nodes; returns how many it freed. */
+static uint64_t event_free_chain(arts_lf_link_t *chain) {
+  uint64_t n = 0;
+  while (chain) {
+    arts_lf_link_t *next =
+        atomic_load_explicit(&chain->next, memory_order_relaxed);
+    event_node_free(chain);
+    chain = next;
+    n++;
+  }
+  return n;
+}
+
+/* ── Signal one queued dep ─────────────────────────────────────────────
+ * For CHANNEL the data argument comes from the matching data_queue pop;
+ * for non-CHANNEL it is e->simple.data. */
+static void event_signal_one(struct arts_event_dep_s *d, arts_guid_t data) {
+  if (d->kind == ARTS_GUID_EDT) {
+    arts_edt_satisfy_slot(d->target, d->slot, data, d->mode);
+  } else if (d->kind == ARTS_GUID_EVENT) {
+    arts_event_satisfy_slot(d->target, data, d->slot);
+  }
+}
+
+/* The channel gate's hooks.  Its fuzz sites are scheduling-fuzz points, inert
+ * outside an injection tree; the link site lies inside the push's window,
+ * which an injection tree widens on purpose. */
+#define EVENT_CHANNEL_FUZZ(site) ((void)(site), arts_sched_fuzz_point())
+#define EVENT_CHANNEL_LIMIT(cur)                                               \
+  ARTS_ERROR("CHANNEL: 2^31 unpaired satisfies or dependences (sat %u, "       \
+             "deps %u)",                                                       \
+             CH_SAT(cur), CH_DEPS(cur))
+#include "event_channel.c" /* channel_produce — the channel arm's gate */
 
 /* --- cb deleter (route_table deleter-by-kind for ARTS_GUID_EVENT) --------- */
 
@@ -110,28 +146,13 @@ void arts_event_deleter(void *p) {
    * strong == 0 by precondition: no producer can push after this point
    * (every producer must hold a lookup ref while pushing). */
   if (e->is_channel) {
-    arts_lf_link_t *chain = arts_mpsc_drain_remaining(&e->channel.data_queue);
-    while (chain) {
-      arts_lf_link_t *next =
-          atomic_load_explicit(&chain->next, memory_order_relaxed);
-      event_node_free(chain);
-      chain = next;
-    }
-    chain = arts_mpsc_drain_remaining(&e->channel.dep_queue);
-    while (chain) {
-      arts_lf_link_t *next =
-          atomic_load_explicit(&chain->next, memory_order_relaxed);
-      event_node_free(chain);
-      chain = next;
-    }
+    uint64_t ndata =
+        event_free_chain(arts_mpsc_drain_remaining(&e->channel.data_queue));
+    uint64_t ndeps =
+        event_free_chain(arts_mpsc_drain_remaining(&e->channel.dep_queue));
+    assert(channel_quiescent(e, ndata, ndeps));
   } else {
-    arts_lf_link_t *chain = arts_lf_stack_drain(&e->simple.deps_stack);
-    while (chain) {
-      arts_lf_link_t *next =
-          atomic_load_explicit(&chain->next, memory_order_relaxed);
-      event_node_free(chain);
-      chain = next;
-    }
+    event_free_chain(arts_lf_stack_drain(&e->simple.deps_stack));
   }
   arts_free(e);
 }
@@ -153,11 +174,9 @@ static void event_init(struct arts_event_s *e, const arts_event_hint_t *h) {
   e->is_channel = h->channel ? 1 : 0;
 
   if (e->is_channel) {
-    atomic_init(&e->channel.nb_sat, 0u);
-    atomic_init(&e->channel.nb_deps, 0u);
+    atomic_init(&e->channel.state, 0u);
     arts_mpsc_init(&e->channel.data_queue);
     arts_mpsc_init(&e->channel.dep_queue);
-    atomic_init(&e->channel.draining, (uint8_t)0);
   } else {
     /* auto_destroy promises every consumer bound before the fire; counted
      * promises exactly nb_deps of them will.  They are contradictory, so a
@@ -290,17 +309,6 @@ void arts_event_destroy(arts_guid_t guid) {
   arts_ooo_dispatch_or_defer_guid(guid, OOO_EVENT_DESTROY, &a, sizeof(a));
 }
 
-/* ── Signal one queued dep ─────────────────────────────────────────────
- * For CHANNEL the data argument comes from the matching data_queue pop;
- * for non-CHANNEL it is e->simple.data. */
-static void event_signal_one(struct arts_event_dep_s *d, arts_guid_t data) {
-  if (d->kind == ARTS_GUID_EDT) {
-    arts_edt_satisfy_slot(d->target, d->slot, data, d->mode);
-  } else if (d->kind == ARTS_GUID_EVENT) {
-    arts_event_satisfy_slot(d->target, data, d->slot);
-  }
-}
-
 /* Allocate (one arts_malloc per node) and populate an mpsc node. */
 static struct arts_event_dep_s *event_node_alloc(arts_guid_kind_t kind,
                                                  arts_guid_t target,
@@ -354,72 +362,6 @@ static void drain_simple_chain(struct arts_event_s *e, arts_guid_t event_guid) {
   }
 }
 
-/* ── CHANNEL drain (lock-free, single-flight via `draining` sentinel) ── */
-
-static void try_drain_channel(struct arts_event_s *e, arts_guid_t event_guid) {
-  (void)event_guid; /* CHANNEL never auto-destroys */
-  /* Outer rescue loop: re-check the fire condition after we release
-   * `draining` because a concurrent push may have arrived in the
-   * window between our last queue-pop and the sentinel-clear. */
-  for (;;) {
-    /* Every caller's store meets the gate's loads here: a producer's counter
-     * increment (arts_handler_event_satisfy_slot, the CHANNEL arm of
-     * arts_handler_event_add_dependence) on entry, and a drainer's clear of
-     * `draining` on each later pass.  Each side stores and then loads what
-     * the other stores, so with a seq_cst fence between the two on every
-     * side at least one sees the other: a committed node is never left with
-     * nobody draining it. */
-    atomic_thread_fence(memory_order_seq_cst);
-    uint32_t nb_sat =
-        atomic_load_explicit(&e->channel.nb_sat, memory_order_acquire);
-    uint32_t nb_deps =
-        atomic_load_explicit(&e->channel.nb_deps, memory_order_acquire);
-    if (nb_sat == 0 || nb_deps == 0) {
-      return; /* condition not met */
-    }
-    if (atomic_load_explicit(&e->channel.draining, memory_order_acquire) == 1) {
-      return; /* another thread already drains */
-    }
-    uint8_t expected = 0;
-    if (!atomic_compare_exchange_strong_explicit(
-            &e->channel.draining, &expected, (uint8_t)1, memory_order_acq_rel,
-            memory_order_acquire)) {
-      return; /* lost the CAS race */
-    }
-    /* Inner fire loop: keep firing while both counters > 0. */
-    while (atomic_load_explicit(&e->channel.nb_sat, memory_order_acquire) > 0 &&
-           atomic_load_explicit(&e->channel.nb_deps, memory_order_acquire) >
-               0) {
-      /* Both counters > 0 ⇒ a producer has fully committed one node to each
-       * queue (the push links the node before its counter bump).  A *different*
-       * concurrent producer that has swapped the queue head but not yet stored
-       * its predecessor's next pointer makes the MPSC pop transiently return
-       * NULL even though the committed node is present — the queue contract is
-       * "retry later".  Spin on each pop until the in-flight link resolves;
-       * never drop the already-popped partner (doing so desyncs the
-       * counter/queue pair and strands the consumer EDT forever). */
-      arts_lf_link_t *data_node;
-      while ((data_node = arts_mpsc_pop(&e->channel.data_queue)) == NULL) {
-      }
-      arts_lf_link_t *dep_node;
-      while ((dep_node = arts_mpsc_pop(&e->channel.dep_queue)) == NULL) {
-      }
-      /* Data node carries the satisfy data in `target` (kind == ARTS_NULL
-       * marker). */
-      arts_guid_t data = ((struct arts_event_dep_s *)data_node)->target;
-      struct arts_event_dep_s *dep = (struct arts_event_dep_s *)dep_node;
-      event_signal_one(dep, data);
-      event_node_free(data_node);
-      event_node_free(dep_node);
-      atomic_fetch_sub_explicit(&e->channel.nb_sat, 1u, memory_order_acq_rel);
-      atomic_fetch_sub_explicit(&e->channel.nb_deps, 1u, memory_order_acq_rel);
-    }
-    atomic_store_explicit(&e->channel.draining, 0, memory_order_release);
-    /* The loop head's fence orders this clear before the re-check of the
-     * fire condition, which catches a push the clear raced. */
-  }
-}
-
 /* ── arts_event_satisfy_slot ───────────────────────────────────────── */
 
 /* Home-routed handler (OOO_EVENT_SATISFY_SLOT): item is the installed event,
@@ -433,15 +375,12 @@ void arts_handler_event_satisfy_slot(void *item, void *vargs) {
   uint32_t slot = a->slot;
 
   if (event->is_channel) {
-    /* CHANNEL path: push data, increment nb_sat, drain. */
     if (slot != ARTS_EVENT_LATCH_DECR_SLOT) {
       ARTS_ERROR("CHANNEL: only DECR (slot 0) satisfy supported");
     }
     struct arts_event_dep_s *node =
         event_node_alloc(ARTS_GUID_LAST, data_guid, 0, DB_MODE_NULL);
-    arts_mpsc_push(&event->channel.data_queue, &node->link);
-    atomic_fetch_add_explicit(&event->channel.nb_sat, 1u, memory_order_acq_rel);
-    try_drain_channel(event, event_guid);
+    channel_produce(event, &event->channel.data_queue, node, CH_SAT_ONE);
     return;
   }
 
@@ -555,13 +494,9 @@ void arts_handler_event_add_dependence(void *item, void *vargs) {
   arts_guid_kind_t dest_type = arts_guid_get_kind(destination);
 
   if (event->is_channel) {
-    /* CHANNEL path: push dep, increment nb_deps, drain. */
     struct arts_event_dep_s *node =
         event_node_alloc(dest_type, destination, slot, access_mode);
-    arts_mpsc_push(&event->channel.dep_queue, &node->link);
-    atomic_fetch_add_explicit(&event->channel.nb_deps, 1u,
-                              memory_order_acq_rel);
-    try_drain_channel(event, source);
+    channel_produce(event, &event->channel.dep_queue, node, CH_DEP_ONE);
     return;
   }
 
@@ -728,11 +663,9 @@ void arts_handler_event_create(void *item_v, void *args_v) {
       (struct arts_event_s *)arts_malloc_aligned(size, ARTS_CACHE_LINE_SIZE);
   memcpy(e, image, size);
   if (e->is_channel) {
+    atomic_init(&e->channel.state, 0u);
     arts_mpsc_init(&e->channel.data_queue);
     arts_mpsc_init(&e->channel.dep_queue);
-    atomic_init(&e->channel.nb_sat, 0u);
-    atomic_init(&e->channel.nb_deps, 0u);
-    atomic_init(&e->channel.draining, (uint8_t)0);
   } else {
     uint64_t state;
     memcpy(&state, image + offsetof(struct arts_event_s, simple.state),

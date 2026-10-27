@@ -13,7 +13,10 @@
  * without its node wraps and spins the drainer.
  *
  * Two storms on channel events, all satisfies and dependences issued by EDTs
- * with no dependences, so the workers run them concurrently:
+ * with no dependences, so the workers run them concurrently.  Each kind's EDTs
+ * are spread over the ranks by their index within the kind, so on several
+ * ranks both queues of a channel take satisfies and dependences from the
+ * home's own workers and, as messages, from every other rank:
  *  (1) M_ITERS events, each with K_PAIRS single-satisfy EDTs (each its own
  *      data block) and K_PAIRS single-dependence EDTs;
  *  (2) one event with P_SAT EDTs each issuing BURST satisfies of one data
@@ -23,6 +26,9 @@
  * satisfied, counts itself, and decrements a LATCH over every pairing; the
  * verifier runs when the LATCH fires and requires the exact count.  A dropped
  * node leaves the LATCH unfired (the run times out).
+ *
+ * Its checks are a membership set and exact counts, never one sender's issue
+ * order, which the transport does not keep across several progress threads.
  *
  * The counting EDTs increment one block with no order among them, which DB-WRF
  * does not admit.
@@ -113,6 +119,13 @@ static void depper_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
 }
 
+/* The k-th EDT of its kind runs on rank k mod the rank count. */
+static arts_edt_hint_t spread_hint(uint64_t k) {
+  arts_edt_hint_t h = ARTS_EDT_HINT_DEFAULTS;
+  h.rank = (unsigned int)(k % arts_get_total_ranks());
+  return h;
+}
+
 static void verify_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                        arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -176,11 +189,12 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                                                 ARTS_DB_PROP_NONE, NULL);
     }
     for (int g = 0; g < K_PAIRS; g++) {
+      arts_edt_hint_t hint = spread_hint((uint64_t)g);
       uint64_t spv[3] = {(uint64_t)ev, state[off + g], 1};
-      arts_edt_create(satisfier_edt, 3, spv, 0, NULL);
+      arts_edt_create(satisfier_edt, 3, spv, 0, &hint);
       uint64_t dpv[6] = {(uint64_t)ev,    1,   (uint64_t)state_db,
                          (uint64_t)latch, off, K_PAIRS};
-      arts_edt_create(depper_edt, 6, dpv, 0, NULL);
+      arts_edt_create(depper_edt, 6, dpv, 0, &hint);
     }
   }
 
@@ -192,13 +206,15 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
         &dbp, sizeof(uint64_t), ARTS_DB, ARTS_DB_PROP_NONE, NULL);
   }
   for (int p = 0; p < P_SAT; p++) {
+    arts_edt_hint_t hint = spread_hint((uint64_t)p);
     uint64_t spv[3] = {(uint64_t)evb, state[ST_BURST_OFF + p], BURST};
-    arts_edt_create(satisfier_edt, 3, spv, 0, NULL);
+    arts_edt_create(satisfier_edt, 3, spv, 0, &hint);
   }
   for (int p = 0; p < P_DEP; p++) {
+    arts_edt_hint_t hint = spread_hint((uint64_t)p);
     uint64_t dpv[6] = {(uint64_t)evb,   BURST,        (uint64_t)state_db,
                        (uint64_t)latch, ST_BURST_OFF, P_SAT};
-    arts_edt_create(depper_edt, 6, dpv, 0, NULL);
+    arts_edt_create(depper_edt, 6, dpv, 0, &hint);
   }
 
   /* The counting EDTs acquire the state block once this creator hold ends. */

@@ -78,6 +78,11 @@ add_pure_unit_src(lf_pool_batch PASS_REGEX "PASS lf_pool_batch" TIMEOUT 60)
 add_pure_unit_src(mpsc_drain_remaining PASS_REGEX "PASS mpsc_drain_remaining" TIMEOUT 60)
 add_pure_unit_src(mpsc_rethread_stub PASS_REGEX "PASS mpsc_rethread_stub" TIMEOUT 60)
 add_pure_unit_src(mpsc_transient_empty PASS_REGEX "PASS mpsc_transient_empty" TIMEOUT 60)
+# The channel event's gate, compiled with its hooks replaced: a producer held
+# inside its push's link window, a nested satisfy, a threaded storm whose
+# drain-owned bookkeeping ThreadSanitizer judges, the word's counts at rest
+# and its field limit.
+add_pure_unit_src(event_channel_gate PASS_REGEX "PASS event_channel_gate" TIMEOUT 60)
 add_pure_unit_src(shared_compare_exchange SOURCES ${CMAKE_SOURCE_DIR}/libs/src/core/utils/shared.c PASS_REGEX "PASS shared_compare_exchange" TIMEOUT 60)
 add_pure_unit_src(shared_lifecycle_race SOURCES ${CMAKE_SOURCE_DIR}/libs/src/core/utils/shared.c PASS_REGEX "PASS shared_lifecycle_race" TIMEOUT 60)
 add_pure_unit_src(route_table_install_if_absent PASS_REGEX "PASS route_table_install_if_absent" TIMEOUT 60)
@@ -231,6 +236,14 @@ add_arts_test(event_channel_transient_null)
 add_arts_test(event_satisfy_adddep_window)
 add_arts_test(event_finish_latch_rearm)
 register_single_node_test(event_channel_transient_null TIMEOUT 60)
+# On several ranks its satisfies and dependences also reach the channel's home
+# as messages, dispatched by one progress thread or two, which can then hold
+# the drain.  No cell changes the channel gate, so the shapes register in the
+# reference tree; the program's own block traffic is what changes per cell,
+# and the coherence tests check that in every tree.
+if(ARTS_TEST_REFERENCE_TREE)
+register_multinode_test(event_channel_transient_null TIMEOUT 60)
+endif()
 register_single_node_test(event_satisfy_adddep_window TIMEOUT 60)
 set_tests_properties(event_satisfy_adddep_window PROPERTIES PASS_REGULAR_EXPRESSION "event_satisfy_adddep_window:.*PASS")
 register_single_node_test(event_finish_latch_rearm TIMEOUT 60)

@@ -239,11 +239,9 @@ static void print_fingerprint(void) {
   MEMBER(event_t, simple.data);
   MEMBER(event_t, simple.deps_stack);
   MEMBER(event_t, channel);
-  MEMBER(event_t, channel.nb_sat);
-  MEMBER(event_t, channel.nb_deps);
+  MEMBER(event_t, channel.state);
   MEMBER(event_t, channel.data_queue);
   MEMBER(event_t, channel.dep_queue);
-  MEMBER(event_t, channel.draining);
   TYPE(event_dep_t);
   MEMBER(event_dep_t, link);
   MEMBER(event_dep_t, target);

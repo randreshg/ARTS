@@ -125,6 +125,8 @@ multi-fire: it pairs each satisfy with exactly one
 satisfy delivers its data GUID to the *g*-th registered dependent — one
 consumer per generation.  Producer and consumer sides may run ahead of
 each other in either direction; the runtime queues the unmatched side.
+A channel event holds at most 2,147,483,647 (2\ :sup:`31` − 1) unmatched
+satisfies and as many unmatched dependences; one more is a fatal error.
 
 .. code-block:: c
 

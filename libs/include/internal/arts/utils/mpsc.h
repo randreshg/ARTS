@@ -2,12 +2,18 @@
  *
  * arts_mpsc_t — Vyukov intrusive multi-producer / single-consumer queue.
  *
- * Producers append with a single atomic_exchange on the head (wait-free);
- * the linking store that follows is what a concurrent consumer may briefly
- * observe as "inconsistent" (a producer has claimed the tail slot but not
- * yet linked it) — pop reports empty in that window and the next attempt
- * succeeds.  Exactly one consumer may run pop at a time: which thread that
+ * A producer appends with one atomic_exchange of the head and then stores
+ * the link from the previous node to its own.  Between the two, the consumer
+ * can take neither the previous node nor any node behind it: pop returns NULL
+ * although nodes are queued, and succeeds only once that link store is
+ * visible.  Exactly one consumer may run pop at a time: which thread that
  * is, is the owning structure's discipline, not the queue's.
+ *
+ * Progress.  A producer is wait-free.  The consumer is not lock-free: one that
+ * knows a node is queued (its caller counted the push) and retries a NULL pop
+ * waits out a producer between its exchange and its link store, and makes no
+ * progress until that producer is scheduled.  The window holds that one store
+ * and nothing else (arts_mpsc_push_begin / arts_mpsc_push_end).
  *
  * Node type: the queue rides the common intrusive link `arts_lf_link_t`
  * (a single atomic `next` cell, also used by arts_lf_stack_t).  Embed
@@ -56,24 +62,37 @@ static inline void arts_mpsc_init(arts_mpsc_t *q) {
   q->tail = &q->stub;
 }
 
-/* Lock-free; any number of producers may run concurrently. */
-static inline void arts_mpsc_push(arts_mpsc_t *q, arts_lf_link_t *n) {
+/* A push in its two halves: push_begin clears the node's link and exchanges
+ * it in as the head, returning the previous head; push_end links that
+ * previous node to it.  The span between them is the window a consumer that
+ * knows a node is queued waits out, so nothing but a test seam may run there:
+ * any work placed between the two lengthens every such wait. */
+static inline arts_lf_link_t *arts_mpsc_push_begin(arts_mpsc_t *q,
+                                                   arts_lf_link_t *n) {
   atomic_store_explicit(&n->next, NULL, memory_order_relaxed);
-  arts_lf_link_t *prev =
-      atomic_exchange_explicit(&q->head, n, memory_order_acq_rel);
+  return atomic_exchange_explicit(&q->head, n, memory_order_acq_rel);
+}
+
+static inline void arts_mpsc_push_end(arts_lf_link_t *prev, arts_lf_link_t *n) {
   atomic_store_explicit(&prev->next, n, memory_order_release);
 }
 
+/* Wait-free; any number of producers may run concurrently. */
+static inline void arts_mpsc_push(arts_mpsc_t *q, arts_lf_link_t *n) {
+  arts_mpsc_push_end(arts_mpsc_push_begin(q, n), n);
+}
+
 /* Single-consumer pop; the caller MUST be the queue's only consumer.  Returns
- * NULL when the queue is empty or transiently inconsistent (a producer is
- * mid-link). */
+ * NULL when the queue is empty, or while a producer that has exchanged has not
+ * yet stored the link the pop needs; a caller that knows a node is queued
+ * retries, and that retry waits out the producer's window. */
 static inline arts_lf_link_t *arts_mpsc_pop(arts_mpsc_t *q) {
   arts_lf_link_t *tail = q->tail;
   arts_lf_link_t *next =
       atomic_load_explicit(&tail->next, memory_order_acquire);
   if (tail == &q->stub) {
     if (!next) {
-      return NULL; /* empty */
+      return NULL; /* empty, or the push behind the stub is not linked yet */
     }
     q->tail = next;
     tail = next;
@@ -85,7 +104,7 @@ static inline arts_lf_link_t *arts_mpsc_pop(arts_mpsc_t *q) {
   }
   arts_lf_link_t *head = atomic_load_explicit(&q->head, memory_order_acquire);
   if (tail != head) {
-    return NULL; /* producer mid-link — retry later */
+    return NULL; /* a producer between its exchange and its link store */
   }
   /* Re-thread the stub to make the single remaining node poppable. */
   arts_mpsc_push(q, &q->stub);
