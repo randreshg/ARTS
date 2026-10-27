@@ -764,71 +764,315 @@ static struct net_pending_s *g_pending_tail; /* FIFO tail (newest)              
 /* A rendezvous transfer is TWO independent arrivals with no inter-message
  * ordering assumed: the metadata packet (fi_send, dispatched to a handler that
  * registers an expectation) and the payload write completion (imm == txid).
- * Whichever lands first parks in this table; the second one fires the
- * expectation callback.  Keyed by txid.  A txid is allocated by the rank
- * whose table pairs it — the receiver advertises the landing buffer and the
- * txid together — so uniqueness is a local property, and a 32-bit value
- * suffices: it must only be unique among this rank's in-flight transfers,
- * and it fits the narrowest immediate a real fabric grants (InfiniBand
- * write-with-imm carries 4 bytes).
+ * Whichever comes first parks a record; the second takes it and fires the
+ * expectation's callback on its own thread.  A txid is allocated by the rank
+ * that pairs it — the receiver advertises the landing buffer and the txid
+ * together — so uniqueness is a local property, and a 32-bit value suffices:
+ * it must only be unique among this rank's in-flight transfers, and it fits
+ * the narrowest immediate a real fabric grants (InfiniBand write-with-imm
+ * carries 4 bytes).
  *
- * An entry is either an EXPECTATION (cb != NULL; metadata arrived first) or an
- * ARRIVAL MARKER (cb == NULL; data arrived first).  Entries are short-lived:
- * exactly one insert and one remove per transfer.
+ * A record lives in a slot of a chain of levels, at an index a per-level
+ * multiplicative hash of the txid picks, and the slot's word is its whole
+ * state:
  *
- * Locking: a plain mutex.  Both sides run on the dispatch path of a progress
- * thread (never under the CQ token), but io configs run TWO progress threads,
- * so the table must tolerate concurrent expect/arrival — the mutex covers the
- * find-and-remove; the callback always runs OUTSIDE the lock. */
-struct net_rdzv_ent_s {
-  struct net_rdzv_ent_s *next;
-  uint64_t txid;
-  uint64_t len; /* an expectation's payload length; 0 in a marker */
-  void (*cb)(void *);
-  void *arg;
+ *   [txid:32 | state:3 | pass:20 | gen:9]
+ *
+ * EMPTY; XP (an expectation claimed the slot and is writing its fields); XPA
+ * (XP, and the arrival came meanwhile: the expectation's thread fires); X (an
+ * expectation, ready); A (an arrival marker).  `pass` counts records whose
+ * chain passes the slot and that are parked deeper; `gen` changes at every
+ * claim and every take.  Both events of a txid walk the same slots, and every
+ * decision about a slot is one RMW of its word (net_rdzv_decide): an event
+ * takes its partner's record, marks an XP, claims an EMPTY slot no record
+ * passes, or else descends a level and adds its pass.  So the two events meet
+ * in one slot without a lock or a fence: an event that claims at a level
+ * finds, at every level above, either its partner's descend already counted
+ * (a pass, which only the pair's own fix-up removes) or a slot its partner
+ * descended past.  A take subtracts the pair's two passes from each level
+ * above it.  The claim, mark, publish and take CASes are acq_rel: they carry
+ * the fields (written by the XP claimant before its publish, read by the
+ * arrival after an acquire load of the X it then takes) and order each pass
+ * before the fix-up that removes it; a descend carries nothing and is
+ * relaxed.  Nothing on the pairing path waits, and it allocates only to add a
+ * level, which happens only when every slot of a txid's chain so far is busy.
+ *
+ * Both sides run on the dispatch path of a progress thread or on a worker
+ * replaying a parked handler, never under the CQ token. */
+#ifndef ARTS_NET_RDZV_LEVEL0_LOG2
+#define ARTS_NET_RDZV_LEVEL0_LOG2 10 /* slots at level 0, log2 */
+#endif
+#ifndef ARTS_NET_RDZV_LEVEL_LOG2
+#define ARTS_NET_RDZV_LEVEL_LOG2 10 /* slots at every deeper level, log2 */
+#endif
+
+#define NET_RDZV_GEN_BITS 9
+#define NET_RDZV_PASS_SHIFT NET_RDZV_GEN_BITS
+#define NET_RDZV_PASS_BITS 20
+#define NET_RDZV_STATE_SHIFT (NET_RDZV_PASS_SHIFT + NET_RDZV_PASS_BITS)
+#define NET_RDZV_TXID_SHIFT 32
+#define NET_RDZV_GEN_MASK ((UINT64_C(1) << NET_RDZV_GEN_BITS) - 1)
+#define NET_RDZV_PASS_MAX ((UINT64_C(1) << NET_RDZV_PASS_BITS) - 1)
+#define NET_RDZV_PASS_ONE (UINT64_C(1) << NET_RDZV_PASS_SHIFT)
+#define NET_RDZV_STATE_MASK (UINT64_C(7) << NET_RDZV_STATE_SHIFT)
+
+enum net_rdzv_state {
+  NET_RDZV_EMPTY,
+  NET_RDZV_XP,
+  NET_RDZV_XPA,
+  NET_RDZV_X,
+  NET_RDZV_A,
 };
 
-#define ARTS_NET_RDZV_BUCKETS 256u
-static struct net_rdzv_ent_s *g_rdzv_tab[ARTS_NET_RDZV_BUCKETS];
-static pthread_mutex_t g_rdzv_lock = PTHREAD_MUTEX_INITIALIZER;
+static inline uint32_t net_rdzv_word_txid(uint64_t w) {
+  return (uint32_t)(w >> NET_RDZV_TXID_SHIFT);
+}
+static inline unsigned net_rdzv_word_state(uint64_t w) {
+  return (unsigned)((w & NET_RDZV_STATE_MASK) >> NET_RDZV_STATE_SHIFT);
+}
+static inline uint64_t net_rdzv_word_pass(uint64_t w) {
+  return (w >> NET_RDZV_PASS_SHIFT) & NET_RDZV_PASS_MAX;
+}
+/* The word holding `txid` in `state`, with w's pass and the next gen. */
+static inline uint64_t net_rdzv_word_claimed(uint64_t w, uint32_t txid,
+                                             unsigned state) {
+  return (uint64_t)txid << NET_RDZV_TXID_SHIFT |
+         (uint64_t)state << NET_RDZV_STATE_SHIFT |
+         (w & (NET_RDZV_PASS_MAX << NET_RDZV_PASS_SHIFT)) |
+         ((w + 1) & NET_RDZV_GEN_MASK);
+}
+/* w taken back to EMPTY: its pass kept, the next gen. */
+static inline uint64_t net_rdzv_word_taken(uint64_t w) {
+  return (w & (NET_RDZV_PASS_MAX << NET_RDZV_PASS_SHIFT)) |
+         ((w + 1) & NET_RDZV_GEN_MASK);
+}
+
+/* One slot.  `word` decides; cb, arg and len are an expectation's, written by
+ * its XP claimant before the publish CAS releases them and read by the
+ * arrival after an acquire load of the X word it then takes by a CAS against
+ * that exact word (relaxed atomics, so that a duplicate's read is defined and
+ * its CAS fails). */
+struct net_rdzv_slot_s {
+  /* Aligned to its size, so no slot of a line-aligned level straddles two
+   * lines. */
+  _Alignas(32) _Atomic(uint64_t) word;
+  _Atomic(uintptr_t) cb;
+  _Atomic(uintptr_t) arg;
+  _Atomic(uint64_t) len;
+};
+
+/* One level of the chain.  `next` is grow-only: every thread that finds it
+ * NULL builds a zeroed level and CASes it in (acq_rel; an acquire load reads
+ * it), and a loser frees its copy, which no other thread saw. */
+struct net_rdzv_level_s {
+  _Atomic(struct net_rdzv_level_s *) next;
+  struct net_rdzv_slot_s slot[];
+};
+
+/* Level 0, made by arts_net_init before any runtime thread exists and freed
+ * by quiesce once every runtime thread has passed the ready_to_clean barrier,
+ * so a plain pointer: thread creation and the barrier order every use. */
+static struct net_rdzv_level_s *g_rdzv_level0;
+
 /* txid counter — starts at 1 so a full txid is never 0 (0 is the wire
  * sentinel for "no landing advertised / no payload moved").  A ticket: only
  * its own value. */
 static _Atomic(uint64_t) g_rdzv_txid_ctr = 1;
-/* Observability + whitebox-test hook: remote-write completions processed.
- * Bumped before the pairing it counts runs: only its own value. */
-static _Atomic(uint64_t) g_rdzv_arrived_count;
 
-static inline unsigned net_rdzv_bucket(uint64_t txid) {
-  /* The low bits are a local counter, already uniform across buckets. */
-  return (unsigned)(txid & (ARTS_NET_RDZV_BUCKETS - 1));
+static inline unsigned net_rdzv_level_log2(unsigned level) {
+  return level == 0 ? ARTS_NET_RDZV_LEVEL0_LOG2 : ARTS_NET_RDZV_LEVEL_LOG2;
 }
 
-/* Unlink and return the entry for txid, or NULL.  Caller holds g_rdzv_lock. */
-static struct net_rdzv_ent_s *net_rdzv_take_locked(uint64_t txid) {
-  struct net_rdzv_ent_s **pp = &g_rdzv_tab[net_rdzv_bucket(txid)];
-  while (*pp != NULL) {
-    if ((*pp)->txid == txid) {
-      struct net_rdzv_ent_s *e = *pp;
-      *pp = e->next;
-      return e;
-    }
-    pp = &(*pp)->next;
+static struct net_rdzv_level_s *net_rdzv_level_new(unsigned level) {
+  return (struct net_rdzv_level_s *)arts_calloc_aligned(
+      1,
+      sizeof(struct net_rdzv_level_s) +
+          ((size_t)1 << net_rdzv_level_log2(level)) *
+              sizeof(struct net_rdzv_slot_s),
+      ARTS_CACHE_LINE_SIZE);
+}
+
+/* txid's slot at `level`: a multiplicative hash with a distinct odd
+ * multiplier per level, so a receiver's consecutive txids scatter and two
+ * txids that share a slot at one level rarely share one at the next.  The
+ * shift is taken in 64 bits, so a one-slot level is index 0. */
+static inline struct net_rdzv_slot_s *
+net_rdzv_slot(struct net_rdzv_level_s *lv, unsigned level, uint32_t txid) {
+  uint32_t h = txid * (UINT32_C(0x9E3779B1) * (2u * level + 1u));
+  return &lv->slot[(uint64_t)h >> (32u - net_rdzv_level_log2(level))];
+}
+
+/* The level below lv, made on the first descend past lv's last level. */
+static struct net_rdzv_level_s *net_rdzv_deeper(struct net_rdzv_level_s *lv,
+                                                unsigned level) {
+  struct net_rdzv_level_s *next =
+      atomic_load_explicit(&lv->next, memory_order_acquire);
+  if (next != NULL) {
+    return next;
   }
-  return NULL;
+  struct net_rdzv_level_s *mine = net_rdzv_level_new(level + 1);
+  if (atomic_compare_exchange_strong_explicit(
+          &lv->next, &next, mine, memory_order_acq_rel, memory_order_acquire)) {
+    return mine;
+  }
+  arts_free(mine);
+  return next;
 }
 
-static void net_rdzv_insert_locked(uint64_t txid, uint64_t len,
-                                   void (*cb)(void *), void *arg) {
-  struct net_rdzv_ent_s *e =
-      (struct net_rdzv_ent_s *)arts_malloc(sizeof(struct net_rdzv_ent_s));
-  e->txid = txid;
-  e->len = len;
-  e->cb = cb;
-  e->arg = arg;
-  unsigned b = net_rdzv_bucket(txid);
-  e->next = g_rdzv_tab[b];
-  g_rdzv_tab[b] = e;
+enum net_rdzv_act {
+  NET_RDZV_ACT_CLAIM,   /* EMPTY, no pass: park this event's record */
+  NET_RDZV_ACT_TAKE,    /* the partner's ready record: take it and fire */
+  NET_RDZV_ACT_MARK,    /* the partner's XP: mark it, its thread fires */
+  NET_RDZV_ACT_DESCEND, /* not this txid's slot to take: pass it */
+  NET_RDZV_ACT_DUP,     /* a second event of this event's kind */
+};
+
+/* What an event of `txid` (an expectation or an arrival) does at a slot whose
+ * word is w, and the word it leaves. */
+static enum net_rdzv_act net_rdzv_decide(uint64_t w, uint32_t txid, bool expect,
+                                         uint64_t *next) {
+  unsigned state = net_rdzv_word_state(w);
+  if (state != NET_RDZV_EMPTY && net_rdzv_word_txid(w) == txid) {
+    if (state == NET_RDZV_A || state == NET_RDZV_X) {
+      if (expect != (state == NET_RDZV_A)) {
+        return NET_RDZV_ACT_DUP;
+      }
+      *next = net_rdzv_word_taken(w);
+      return NET_RDZV_ACT_TAKE;
+    }
+    if (expect || state == NET_RDZV_XPA) {
+      return NET_RDZV_ACT_DUP;
+    }
+    *next = (w & ~NET_RDZV_STATE_MASK) | (uint64_t)NET_RDZV_XPA
+                                             << NET_RDZV_STATE_SHIFT;
+    return NET_RDZV_ACT_MARK;
+  }
+  if (state == NET_RDZV_EMPTY && net_rdzv_word_pass(w) == 0) {
+    *next = net_rdzv_word_claimed(w, txid, expect ? NET_RDZV_XP : NET_RDZV_A);
+    return NET_RDZV_ACT_CLAIM;
+  }
+  if (net_rdzv_word_pass(w) == NET_RDZV_PASS_MAX) {
+    ARTS_ERROR("arts_net: %llu rendezvous records parked behind one slot",
+               (unsigned long long)NET_RDZV_PASS_MAX);
+  }
+  *next = w + NET_RDZV_PASS_ONE;
+  return NET_RDZV_ACT_DESCEND;
+}
+
+/* Add `delta` passes (a negative multiple of NET_RDZV_PASS_ONE) at txid's
+ * slots of levels 0 .. depth - 1: the pair's own passes come back after a
+ * take, or a dropped duplicate's own.  Relaxed: the take or the duplicate's
+ * acquire already follows every pass removed here. */
+static void net_rdzv_unpass(uint32_t txid, unsigned depth, uint64_t delta) {
+  struct net_rdzv_level_s *lv = g_rdzv_level0;
+  for (unsigned level = 0; level < depth; level++) {
+    atomic_fetch_sub_explicit(&net_rdzv_slot(lv, level, txid)->word, delta,
+                              memory_order_relaxed);
+    lv = atomic_load_explicit(&lv->next, memory_order_acquire);
+  }
+}
+
+/* The callback a completed pairing runs. */
+struct net_rdzv_fire_s {
+  void (*cb)(void *);
+  void *arg;
+  uint64_t len;
+};
+
+/* Raise one event of `txid`: an expectation when `exp` is non-NULL (its
+ * callback), an arrival otherwise.  True when this event completed the
+ * pairing: *out is then the callback to run, on this thread. */
+static bool net_rdzv_event(uint64_t txid64, const struct net_rdzv_fire_s *exp,
+                           struct net_rdzv_fire_s *out) {
+  if (txid64 == 0 || txid64 > UINT32_MAX) {
+    ARTS_ERROR("arts_net: rendezvous txid %llx is not a 32-bit draw",
+               (unsigned long long)txid64);
+  }
+  const uint32_t txid = (uint32_t)txid64;
+  const bool expect = exp != NULL;
+  struct net_rdzv_level_s *lv = g_rdzv_level0;
+  for (unsigned level = 0;; level++) {
+    struct net_rdzv_slot_s *sl = net_rdzv_slot(lv, level, txid);
+    uint64_t w = atomic_load_explicit(&sl->word, memory_order_acquire);
+    for (;;) {
+      uint64_t next = 0;
+      enum net_rdzv_act act = net_rdzv_decide(w, txid, expect, &next);
+      if (act == NET_RDZV_ACT_DESCEND) {
+        if (atomic_compare_exchange_weak_explicit(&sl->word, &w, next,
+                                                  memory_order_relaxed,
+                                                  memory_order_relaxed)) {
+          break;
+        }
+        w = atomic_load_explicit(&sl->word, memory_order_acquire);
+        continue;
+      }
+      if (act == NET_RDZV_ACT_DUP) {
+        if (expect) {
+          /* Each transfer registers exactly one continuation: two are a
+           * protocol bug, never merged silently. */
+          ARTS_ERROR("arts_net: duplicate rdzv expectation for txid %llx",
+                     (unsigned long long)txid64);
+        }
+        ARTS_WARN("arts_net: duplicate rdzv data arrival for txid %llx "
+                  "(dropped)",
+                  (unsigned long long)txid64);
+        net_rdzv_unpass(txid, level, NET_RDZV_PASS_ONE);
+        return false;
+      }
+      struct net_rdzv_fire_s rec = {0};
+      if (act == NET_RDZV_ACT_TAKE && !expect) {
+        /* w was read by an acquire load: the fields it published are
+         * visible, and the CAS against that exact word validates them. */
+        rec.cb = (void (*)(void *))atomic_load_explicit(&sl->cb,
+                                                        memory_order_relaxed);
+        rec.arg = (void *)atomic_load_explicit(&sl->arg, memory_order_relaxed);
+        rec.len = atomic_load_explicit(&sl->len, memory_order_relaxed);
+        arts_sched_fuzz_point(); /* widen the read<->take window */
+      }
+      if (!atomic_compare_exchange_weak_explicit(&sl->word, &w, next,
+                                                 memory_order_acq_rel,
+                                                 memory_order_acquire)) {
+        continue;
+      }
+      if (act == NET_RDZV_ACT_MARK) {
+        return false; /* the expectation's thread fires */
+      }
+      if (act == NET_RDZV_ACT_TAKE) {
+        net_rdzv_unpass(txid, level, 2 * NET_RDZV_PASS_ONE);
+        *out = expect ? *exp : rec;
+        return true;
+      }
+      /* Claimed. */
+      if (!expect) {
+        return false;
+      }
+      atomic_store_explicit(&sl->cb, (uintptr_t)exp->cb, memory_order_relaxed);
+      atomic_store_explicit(&sl->arg, (uintptr_t)exp->arg,
+                            memory_order_relaxed);
+      atomic_store_explicit(&sl->len, exp->len, memory_order_relaxed);
+      arts_sched_fuzz_point(); /* widen the claim<->publish window */
+      w = atomic_load_explicit(&sl->word, memory_order_acquire);
+      for (;;) {
+        /* A descend of another txid may move the pass meanwhile; an arrival
+         * of this one may mark the slot. */
+        bool marked = net_rdzv_word_state(w) == NET_RDZV_XPA;
+        uint64_t to = marked ? net_rdzv_word_taken(w)
+                             : (w & ~NET_RDZV_STATE_MASK) |
+                                   (uint64_t)NET_RDZV_X << NET_RDZV_STATE_SHIFT;
+        if (atomic_compare_exchange_weak_explicit(&sl->word, &w, to,
+                                                  memory_order_acq_rel,
+                                                  memory_order_acquire)) {
+          if (!marked) {
+            return false;
+          }
+          net_rdzv_unpass(txid, level, 2 * NET_RDZV_PASS_ONE);
+          *out = *exp;
+          return true;
+        }
+      }
+    }
+    lv = net_rdzv_deeper(lv, level);
+  }
 }
 
 uint64_t arts_net_rdzv_txid_next(void) {
@@ -846,51 +1090,23 @@ uint64_t arts_net_rdzv_txid_peek(void) {
 
 void arts_net_rdzv_expect(uint64_t txid, uint64_t len,
                           void (*on_data)(void *), void *arg) {
-  pthread_mutex_lock(&g_rdzv_lock);
-  struct net_rdzv_ent_s *e = net_rdzv_take_locked(txid);
-  if (e == NULL) {
-    /* Metadata first: park the expectation for the write completion. */
-    net_rdzv_insert_locked(txid, len, on_data, arg);
-    pthread_mutex_unlock(&g_rdzv_lock);
-    return;
+  const struct net_rdzv_fire_s exp = {.cb = on_data, .arg = arg, .len = len};
+  struct net_rdzv_fire_s fire;
+  if (net_rdzv_event(txid, &exp, &fire)) {
+    INCREMENT_BYTES_REMOTE_RECEIVED_BY(fire.len);
+    fire.cb(fire.arg); /* data already landed: fire inline */
   }
-  pthread_mutex_unlock(&g_rdzv_lock);
-  if (e->cb != NULL) {
-    /* Two expectations on one txid = a protocol bug (each transfer registers
-     * exactly one continuation) — never merge them silently. */
-    ARTS_ERROR("arts_net: duplicate rdzv expectation for txid %llx",
-               (unsigned long long)txid);
-  }
-  arts_free(e); /* arrival marker consumed */
-  INCREMENT_BYTES_REMOTE_RECEIVED_BY(len);
-  on_data(arg); /* data already landed: fire inline (dispatch-path caller) */
 }
 
 /* Dispatch-side processing of a remote-write completion (imm == txid).  Runs
  * with the CQ token RELEASED (pending-list dispatch), so the paired callback —
  * which may install a coherence buffer and send — is safe here. */
 static void net_rdzv_data_arrived(uint64_t txid) {
-  atomic_fetch_add_explicit(&g_rdzv_arrived_count, 1, memory_order_acq_rel);
-  pthread_mutex_lock(&g_rdzv_lock);
-  struct net_rdzv_ent_s *e = net_rdzv_take_locked(txid);
-  if (e == NULL) {
-    /* Data first: park an arrival marker for the metadata handler. */
-    net_rdzv_insert_locked(txid, 0, NULL, NULL);
-    pthread_mutex_unlock(&g_rdzv_lock);
-    return;
+  struct net_rdzv_fire_s fire;
+  if (net_rdzv_event(txid, NULL, &fire)) {
+    INCREMENT_BYTES_REMOTE_RECEIVED_BY(fire.len);
+    fire.cb(fire.arg);
   }
-  pthread_mutex_unlock(&g_rdzv_lock);
-  if (e->cb == NULL) {
-    ARTS_WARN("arts_net: duplicate rdzv data arrival for txid %llx (dropped)",
-              (unsigned long long)txid);
-    arts_free(e);
-    return;
-  }
-  void (*cb)(void *) = e->cb;
-  void *arg = e->arg;
-  INCREMENT_BYTES_REMOTE_RECEIVED_BY(e->len);
-  arts_free(e);
-  cb(arg);
 }
 
 bool arts_net_rdzv_local(const void *p, uint64_t len, uint64_t *raddr,
@@ -1843,6 +2059,9 @@ void arts_net_init(const char *provider, const char *fabric_domain,
                    const char *net_interface, bool one_host) {
   net_write_delay_init();
   net_req_delay_init();
+  if (g_rdzv_level0 == NULL) {
+    g_rdzv_level0 = net_rdzv_level_new(0);
+  }
   bool provider_pinned = provider && provider[0] != '\0';
   if (provider_pinned) {
     /* Config is the deliberate artifact, the env var is ambient: overwrite
@@ -2271,18 +2490,17 @@ void arts_net_quiesce(void) {
   }
   g_pending_tail = NULL;
 
-  /* Drop unpaired rendezvous entries (an expectation whose data never landed,
+  /* Drop unpaired rendezvous records (an expectation whose data never landed,
    * or data whose metadata never arrived — both only possible when a peer died
-   * or shutdown cut a transfer mid-flight).  Quiescent: no callback runs. */
-  pthread_mutex_lock(&g_rdzv_lock);
-  for (unsigned b = 0; b < ARTS_NET_RDZV_BUCKETS; b++) {
-    while (g_rdzv_tab[b] != NULL) {
-      struct net_rdzv_ent_s *e = g_rdzv_tab[b];
-      g_rdzv_tab[b] = e->next;
-      arts_free(e);
-    }
+   * or shutdown cut a transfer mid-flight) with the levels that hold them.
+   * Quiescent: no callback runs. */
+  for (struct net_rdzv_level_s *lv = g_rdzv_level0; lv != NULL;) {
+    struct net_rdzv_level_s *next =
+        atomic_load_explicit(&lv->next, memory_order_relaxed);
+    arts_free(lv);
+    lv = next;
   }
-  pthread_mutex_unlock(&g_rdzv_lock);
+  g_rdzv_level0 = NULL;
 
   /* Reap already-posted sends so their completion-gated frees run (bounces back
    * to the still-live pool).  TX-only: inbound completions are ignored and no

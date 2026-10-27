@@ -79,6 +79,26 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
 
 /* ------------------------------------------------------------------------- */
 
+/* True while txid's arrival marker is parked: its chain is walked down to the
+ * slot that holds the marker, past every slot another record holds or a
+ * record of its own passes. */
+static bool net_rdzv_parked(uint64_t txid) {
+  struct net_rdzv_level_s *lv = g_rdzv_level0;
+  for (unsigned level = 0; lv != NULL; level++) {
+    uint64_t w = atomic_load_explicit(
+        &net_rdzv_slot(lv, level, (uint32_t)txid)->word, memory_order_acquire);
+    unsigned state = net_rdzv_word_state(w);
+    if (state != NET_RDZV_EMPTY && net_rdzv_word_txid(w) == (uint32_t)txid) {
+      return state == NET_RDZV_A;
+    }
+    if (state == NET_RDZV_EMPTY && net_rdzv_word_pass(w) == 0) {
+      return false;
+    }
+    lv = atomic_load_explicit(&lv->next, memory_order_acquire);
+  }
+  return false;
+}
+
 #define PUT_LEN ((size_t)8 * 1024 * 1024) /* 8 MiB — 4x the control ceiling */
 
 static uint64_t now_ns(void) {
@@ -182,15 +202,12 @@ int main(void) {
          (unsigned long long)raddr, (unsigned long long)rkey, g_net.mr_mode);
 
   /* --- (3) order A: data arrives BEFORE the expectation --------------- */
-  uint64_t before_arrived =
-      atomic_load_explicit(&g_rdzv_arrived_count, memory_order_acquire);
   arts_net_put_payload(0, raddr, rkey, t1, src, PUT_LEN, on_local_done, NULL);
 
-  /* Wait until the remote-write completion has been PROCESSED (the arrival
-   * either paired or parked a marker) — g_rdzv_arrived_count counts that. */
+  /* Wait until the remote-write completion has been PROCESSED: with no
+   * expectation registered, the arrival parks its marker. */
   uint64_t deadline = now_ns() + 5000000000ULL;
-  while (atomic_load_explicit(&g_rdzv_arrived_count, memory_order_acquire) ==
-         before_arrived) {
+  while (!net_rdzv_parked(t1)) {
     arts_net_progress();
     if (now_ns() > deadline) {
       fprintf(stderr,

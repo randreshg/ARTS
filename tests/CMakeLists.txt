@@ -130,6 +130,7 @@ set(ARTS_REFERENCE_TREE_PROGRAMS
     regpool_direct_oversize
     regpool_theap_no_room
     regpool_room_per_thread
+    rdzv_payload_flood
 )
 
 # Pins an assertion of the runtime (edt.c's remote finish-scope guard), which
@@ -1334,6 +1335,22 @@ if(ARTS_MALLOC STREQUAL "mimalloc")
     register_pure_unit_test(net_rendezvous TIMEOUT 60)
     set_tests_properties(net_rendezvous PROPERTIES ENVIRONMENT "FI_PROVIDER=tcp")
 
+    # net_rdzv_slots — whitebox for the rendezvous pairing table: one slot at
+    # level 0 and two below, so every txid collides and chains grow; three
+    # threads raise both events of about a million txids in random orders.
+    # Same standalone harness shape as net_rendezvous; no fabric comes up.
+    add_executable(net_rdzv_slots unit/net_rdzv_slots.c $<TARGET_OBJECTS:arts_regpool>)
+    target_include_directories(net_rdzv_slots PRIVATE
+        ${ARTS_PUBLIC_INCLUDE_DIR} ${ARTS_INTERNAL_INCLUDE_DIR}
+        ${ARTS_BUILD_INTERNAL_INCLUDE_DIR})
+    arts_apply_protocol(net_rdzv_slots ${ARTS_COHERENCE_ARM} ${ARTS_WRITE_POLICY} ${ARTS_RELEASE_POLICY})
+    set_test_log_level(net_rdzv_slots 2)
+    target_link_libraries(net_rdzv_slots PRIVATE
+        Threads::Threads mimalloc-static arts::libfabric ${RT_LIBRARY})
+    register_pure_unit_test(net_rdzv_slots TIMEOUT 120)
+    set_tests_properties(net_rdzv_slots PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS net_rdzv_slots")
+
     # net_tx_accounting — whitebox for the outstanding-transmit count: the
     # posting threads' per-ring counts against the CQ token holder's
     # completions, read by several senders while one thread reaps, and the
@@ -1975,6 +1992,24 @@ if(ARTS_DEBUG_INJECTION AND NOT ARTS_CXL_TREE_RESIDENCY)
             PASS_REGULAR_EXPRESSION "PASS: 4 DBs"
             FAIL_REGULAR_EXPRESSION "FAIL:")
     endforeach()
+endif()
+
+# One-sided payloads in flight both ways at once: every block's chain of
+# writers alternates between the ranks, all chains together, so the senders
+# run into backpressure while the receivers pair each PUT with its metadata.
+# The transport is the same on every cell, so the reference tree runs it, at
+# the cfg with two progress threads (two pairings dispatched at once), and an
+# injection tree lowers the one-sided ceiling so each payload leaves as six
+# pieces paired on the last.
+if(ARTS_TEST_REFERENCE_TREE)
+    register_multinode_test(rdzv_payload_flood TIMEOUT 120 VARIANTS 2n_8w_2p)
+    set_tests_properties(rdzv_payload_flood_2n_8w_2p PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS: rdzv_payload_flood"
+        FAIL_REGULAR_EXPRESSION "FAIL:")
+    if(ARTS_DEBUG_INJECTION)
+        set_property(TEST rdzv_payload_flood_2n_8w_2p APPEND PROPERTY
+            ENVIRONMENT "ARTS_NET_MAX_MSG=8192")
+    endif()
 endif()
 
 # Add-dependence-then-release hand-off: consumers whose slots satisfied BEFORE
