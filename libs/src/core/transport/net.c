@@ -745,6 +745,7 @@ static struct net_pending_s *g_pending_tail; /* FIFO tail (newest)              
 struct net_rdzv_ent_s {
   struct net_rdzv_ent_s *next;
   uint64_t txid;
+  uint64_t len; /* an expectation's payload length; 0 in a marker */
   void (*cb)(void *);
   void *arg;
 };
@@ -779,11 +780,12 @@ static struct net_rdzv_ent_s *net_rdzv_take_locked(uint64_t txid) {
   return NULL;
 }
 
-static void net_rdzv_insert_locked(uint64_t txid, void (*cb)(void *),
-                                   void *arg) {
+static void net_rdzv_insert_locked(uint64_t txid, uint64_t len,
+                                   void (*cb)(void *), void *arg) {
   struct net_rdzv_ent_s *e =
       (struct net_rdzv_ent_s *)arts_malloc(sizeof(struct net_rdzv_ent_s));
   e->txid = txid;
+  e->len = len;
   e->cb = cb;
   e->arg = arg;
   unsigned b = net_rdzv_bucket(txid);
@@ -804,12 +806,13 @@ uint64_t arts_net_rdzv_txid_peek(void) {
   return atomic_load_explicit(&g_rdzv_txid_ctr, memory_order_relaxed);
 }
 
-void arts_net_rdzv_expect(uint64_t txid, void (*on_data)(void *), void *arg) {
+void arts_net_rdzv_expect(uint64_t txid, uint64_t len,
+                          void (*on_data)(void *), void *arg) {
   pthread_mutex_lock(&g_rdzv_lock);
   struct net_rdzv_ent_s *e = net_rdzv_take_locked(txid);
   if (e == NULL) {
     /* Metadata first: park the expectation for the write completion. */
-    net_rdzv_insert_locked(txid, on_data, arg);
+    net_rdzv_insert_locked(txid, len, on_data, arg);
     pthread_mutex_unlock(&g_rdzv_lock);
     return;
   }
@@ -821,6 +824,7 @@ void arts_net_rdzv_expect(uint64_t txid, void (*on_data)(void *), void *arg) {
                (unsigned long long)txid);
   }
   arts_free(e); /* arrival marker consumed */
+  INCREMENT_BYTES_REMOTE_RECEIVED_BY(len);
   on_data(arg); /* data already landed: fire inline (dispatch-path caller) */
 }
 
@@ -833,7 +837,7 @@ static void net_rdzv_data_arrived(uint64_t txid) {
   struct net_rdzv_ent_s *e = net_rdzv_take_locked(txid);
   if (e == NULL) {
     /* Data first: park an arrival marker for the metadata handler. */
-    net_rdzv_insert_locked(txid, NULL, NULL);
+    net_rdzv_insert_locked(txid, 0, NULL, NULL);
     pthread_mutex_unlock(&g_rdzv_lock);
     return;
   }
@@ -846,6 +850,7 @@ static void net_rdzv_data_arrived(uint64_t txid) {
   }
   void (*cb)(void *) = e->cb;
   void *arg = e->arg;
+  INCREMENT_BYTES_REMOTE_RECEIVED_BY(e->len);
   arts_free(e);
   cb(arg);
 }
@@ -894,19 +899,16 @@ static void net_put_piece_done(void *arg) {
   }
 }
 
-void arts_net_put_payload(int rank, uint64_t raddr, uint64_t rkey,
-                          uint64_t txid, const void *src, uint64_t len,
-                          void (*on_local_done)(void *), void *arg) {
+/* The one-sided PUT itself, counted by its caller and timed when `timed`;
+ * false when teardown dropped it (the local-done hook has then run). */
+static bool net_put(int rank, uint64_t raddr, uint64_t rkey, uint64_t txid,
+                    const void *src, uint64_t len,
+                    void (*on_local_done)(void *), void *arg, bool timed) {
   if (len == 0 || txid == 0) {
     ARTS_ERROR("arts_net: put_payload requires a payload and a txid "
                "(len=%llu txid=%llx)",
                (unsigned long long)len, (unsigned long long)txid);
   }
-  /* Every datablock payload leaves through this one call, so it is where the
-   * payload half of the traffic can be told apart from the control half that
-   * BYTES_REMOTE_SENT lumps together with it. */
-  INCREMENT_BYTES_DB_PAYLOAD_SENT_BY(len);
-  INCREMENT_NUM_DB_PAYLOAD_SENT_BY(1);
   /* Teardown has begun: drop the PUT but still run the local-done hook so the
    * source buffer's completion-gated release is not leaked (mirrors
    * arts_net_send_core's quiescing contract). */
@@ -914,11 +916,8 @@ void arts_net_put_payload(int rank, uint64_t raddr, uint64_t rkey,
     if (on_local_done != NULL) {
       on_local_done(arg);
     }
-    return;
+    return false;
   }
-  /* One-sided payload PUT is its own wire transfer. */
-  INCREMENT_BYTES_REMOTE_SENT_BY(len);
-  INCREMENT_NUM_REMOTE_SEND_BY(1);
   fi_addr_t addr = g_net.peers[rank];
   size_t ceiling = g_net.max_msg;
   if (len <= ceiling) {
@@ -929,9 +928,9 @@ void arts_net_put_payload(int rank, uint64_t raddr, uint64_t rkey,
     txn->raddr = raddr;
     txn->rkey = rkey;
     txn->imm = txid;
-    txn->posted_ns = net_put_stamp();
+    txn->posted_ns = timed ? net_put_stamp() : 0;
     net_submit(txn, /*is_ack=*/false);
-    return;
+    return true;
   }
   /* Above the ceiling the payload goes as consecutive pieces of at most the
    * ceiling each, submitted in order from this thread to one endpoint, so
@@ -951,7 +950,7 @@ void arts_net_put_payload(int rank, uint64_t raddr, uint64_t rkey,
   struct net_put_group_s *group =
       (struct net_put_group_s *)arts_malloc(sizeof(struct net_put_group_s));
   atomic_store_explicit(&group->remaining, pieces, memory_order_relaxed);
-  group->posted_ns = net_put_stamp();
+  group->posted_ns = timed ? net_put_stamp() : 0;
   group->on_local_done = on_local_done;
   group->arg = arg;
   for (uint64_t off = 0; off < len; off += ceiling) {
@@ -966,6 +965,21 @@ void arts_net_put_payload(int rank, uint64_t raddr, uint64_t rkey,
     txn->rkey = rkey;
     txn->imm = last ? txid : 0;
     net_submit(txn, /*is_ack=*/false);
+  }
+  return true;
+}
+
+void arts_net_put_payload(int rank, uint64_t raddr, uint64_t rkey,
+                          uint64_t txid, const void *src, uint64_t len,
+                          void (*on_local_done)(void *), void *arg) {
+  /* Every datablock payload leaves through this one call, so it is where the
+   * payload half of the traffic can be told apart from the control half that
+   * BYTES_REMOTE_SENT counts with it. */
+  if (net_put(rank, raddr, rkey, txid, src, len, on_local_done, arg,
+              /*timed=*/true)) {
+    INCREMENT_BYTES_DB_PAYLOAD_SENT_BY(len);
+    INCREMENT_NUM_DB_PAYLOAD_SENT_BY(1);
+    INCREMENT_BYTES_REMOTE_SENT_BY(len);
   }
 }
 
@@ -1427,10 +1441,8 @@ static bool net_reap_locked(void) {
        * landing is valid, so it is ignored rather than paired on a zero
        * txid. */
       if ((e->flags & FI_REMOTE_WRITE) && (e->flags & FI_REMOTE_CQ_DATA)) {
-        /* One-sided payload landed: count it as its own remote receive (the
-         * pairing control message is counted separately at dispatch). */
-        INCREMENT_BYTES_REMOTE_RECEIVED_BY(e->len);
-        INCREMENT_NUM_REMOTE_RECEIVE_BY(1);
+        /* The bytes are counted where the pairing completes, from the length
+         * its metadata names: this completion reports the last piece only. */
         struct net_pending_s *pn =
             (struct net_pending_s *)arts_malloc(sizeof(struct net_pending_s));
         pn->next = NULL;
@@ -1601,9 +1613,10 @@ void arts_net_selfcheck(void) {
   /* Set by the expectation's callback on this thread: the selfcheck runs
    * before any other thread can reap or pair. */
   bool done = false;
-  arts_net_rdzv_expect(txid, net_selfcheck_arrived, &done);
-  arts_net_put_payload((int)arts_global_rank_id, raddr, rkey, txid, src,
-                       SELFCHECK_LEN, NULL, NULL);
+  /* A probe of the plane, not a datablock payload: no counter sees it. */
+  arts_net_rdzv_expect(txid, 0, net_selfcheck_arrived, &done);
+  (void)net_put((int)arts_global_rank_id, raddr, rkey, txid, src,
+                SELFCHECK_LEN, NULL, NULL, /*timed=*/false);
   struct timespec start;
   (void)clock_gettime(CLOCK_MONOTONIC, &start);
   while (!done) {

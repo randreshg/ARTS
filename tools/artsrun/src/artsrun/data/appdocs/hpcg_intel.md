@@ -409,7 +409,13 @@ and it grows with the crossing count -- +0.2 s at 0.51 crossings per tile,
 | `BYTES_REMOTE_SENT` | 1,024,540,700 | 1,197,759,900 | 1,024,673,308 | 1,270,826,636 |
 | `BYTES_DB_PAYLOAD_SENT` | 717,479,912 | 717,479,912 | 717,496,488 | 717,496,488 |
 
-`NUM_DB_CREATE` counts only the local-create branch, so the difference,
+These counts were taken when `NUM_DB_CREATE` counted only creates homed on
+the creating rank, `NUM_REMOTE_SEND` counted each one-sided payload as a
+message too and `NUM_DB_ACQUIRE_REMOTE` counted an acquisition by whether it
+waited on another rank rather than by where its permission or copy came from
+(today every create counts, on its creating rank, `NUM_REMOTE_SEND` counts
+two-sided messages alone, and the acquire census follows ownership and valid
+copies), so the difference,
 1,139,600 in both arms, is the number of remote-homed creates -- exactly
 `11 exchanges x 2072 crossing links x 50 iterations`, the bisection's own
 count, which is the check that the layer moves the blocks it means to and no

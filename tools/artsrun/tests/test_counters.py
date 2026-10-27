@@ -461,9 +461,19 @@ def test_the_validation_cfg_states_every_counter_and_captures_once():
     settings = dict(re.findall(r"^([A-Z][A-Z0-9_]*)=(\S+)$", cfg, re.MULTILINE))
     assert set(settings) == declared
     captured = {k for k, v in settings.items() if v != "OFF"}
-    assert captured == {"NUM_EDT_CREATE", "NUM_SNAPSHOT_SIZE_CTS",
-                        "NUM_GRANT_SIZE_CTS", "NUM_EXCL_SIZE_CTS",
-                        "NUM_INV_SIZE_CTS"}
+    assert captured == {
+        "NUM_EDT_CREATE", "NUM_EDT_FINISH",
+        "NUM_DB_CREATE", "NUM_DB_CREATE_NO_ACQUIRE", "NUM_DB_DESTROY",
+        "NUM_DB_ACQUIRE_READ", "NUM_DB_ACQUIRE_WRITE",
+        "NUM_DB_ACQUIRE_LOCAL_HIT", "NUM_DB_ACQUIRE_REMOTE",
+        "BYTES_DB_CREATE", "BYTES_DB_PAYLOAD_SENT", "NUM_DB_PAYLOAD_SENT",
+        "BYTES_REMOTE_SENT", "BYTES_REMOTE_RECEIVED",
+        "NUM_REMOTE_SEND", "NUM_REMOTE_RECEIVE",
+        "NUM_SNAPSHOT_REQUEST", "NUM_SNAPSHOT_HEADER_ONLY",
+        "NUM_SNAPSHOT_SIZE_CTS", "NUM_RO_COMBINE_WINDOW",
+        "NUM_RO_COMBINE_JOINED", "NUM_GRANT_SIZE_CTS", "NUM_EXCL_SIZE_CTS",
+        "NUM_INV_SIZE_CTS", "NUM_FLUSH_SIZE_CTS", "NUM_EXCL_RECALL_SENT",
+        "NUM_PURGE_RETURN"}
     assert {settings[k] for k in captured} == {"ONCE,NODE"}
 
 

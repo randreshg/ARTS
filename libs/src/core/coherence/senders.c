@@ -21,6 +21,7 @@
 #include "arts/coherence/handlers.h"
 
 #include "arts/coherence/buffer.h" /* landing alloc / ref-release cb */
+#include "arts/coherence/census.h"
 
 #include <semaphore.h>
 #include <stddef.h>
@@ -307,7 +308,9 @@ void arts_send_db_snapshot_response(unsigned int requester_rank,
         .rdzv_cookie = (landing != NULL) ? landing->cookie : 0,
     };
     if (db != NULL) {
+      uint8_t census = arts_db_census_serving(false);
       arts_handler_db_snapshot_response(db, &args);
+      arts_db_census_served(census);
     } else if (landing != NULL && landing->cookie != 0) {
       /* The requester is gone with its descriptor: its unused landing still
        * has to go back, or the storage it keeps alive never does. */
@@ -319,13 +322,8 @@ void arts_send_db_snapshot_response(unsigned int requester_rank,
     }
     return;
   }
-  /* A kind-2 reply is a size round or a dismiss; its sites count the size
-   * rounds. */
-  if (kind == 0) {
-    /* The requester already holds this version: the ledger turned what would
-     * have been a payload into a header. */
-    INCREMENT_NUM_SNAPSHOT_HEADER_ONLY_BY(1);
-  }
+  /* A kind-0 reply is a ledger hit or a holder with nothing to serve, and a
+   * kind-2 one a size round or a dismiss: their sites count what each is. */
   if (kind == 1) {
     /* One-sided serve: PUT straight from the live buffer into the
      * requester's landing — zero copy at the source.  The strong buffer ref

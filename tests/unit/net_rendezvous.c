@@ -190,7 +190,7 @@ int main(void) {
   /* Data has arrived and no expectation was parked — registering it now must
    * fire the callback inline (order A). */
   int cb_seq = 0;
-  arts_net_rdzv_expect(t1, on_data, &cb_seq);
+  arts_net_rdzv_expect(t1, PUT_LEN, on_data, &cb_seq);
   if (atomic_load_explicit(&g_paired, memory_order_acquire) != 1) {
     fprintf(stderr,
             "FAIL net_rendezvous: order-A expect did not fire inline\n");
@@ -209,7 +209,7 @@ int main(void) {
   /* --- (4) order B: expectation registered BEFORE the PUT ------------- */
   fill_pattern(src, PUT_LEN, 42);
   memset(dst, 0, PUT_LEN);
-  arts_net_rdzv_expect(t2, on_data, NULL); /* parks (no data yet) */
+  arts_net_rdzv_expect(t2, PUT_LEN, on_data, NULL); /* parks (no data yet) */
   if (atomic_load_explicit(&g_paired, memory_order_acquire) != 1) {
     fprintf(stderr, "FAIL net_rendezvous: order-B expect fired early\n");
     ++failures;

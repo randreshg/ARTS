@@ -32,6 +32,7 @@
 #include <string.h>
 
 #include "arts/coherence/buffer.h"
+#include "arts/coherence/census.h"
 #include "arts/coherence/coherence.h"
 #include "arts/coherence/directory.h"
 #include "arts/coherence/handlers.h"
@@ -177,7 +178,10 @@ static void home_response_landed_cb(void *arg) {
   struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(ctx->db_h);
   arts_db_buf_install_landed(&db->cache, ctx->version, ctx->landing,
                              ctx->data_size);
+  /* A one-sided payload comes from another rank. */
+  uint8_t census = arts_db_census_serving(true);
   home_response_commit(ctx->db_h); /* releases */
+  arts_db_census_served(census);
   arts_free(ctx);
 }
 
@@ -211,7 +215,8 @@ void arts_handler_db_grant_response(void *payload, size_t size) {
       /* Consume any in-flight one-sided payload so the pairing table stays
        * leak-free; the landing ends when that payload arrives, or at once
        * when none was sent. */
-      arts_db_rdzv_discard_landing(hdr->rdzv_txid, hdr->rdzv_cookie);
+      arts_db_rdzv_discard_landing(hdr->rdzv_txid, hdr->data_size,
+                                   hdr->rdzv_cookie);
       return; /* the install lost to an object already retired — drop. */
     }
   }
@@ -246,7 +251,8 @@ void arts_handler_db_grant_response(void *payload, size_t size) {
         (struct arts_db_buffer_s *)(uintptr_t)hdr->rdzv_cookie;
     ctx->version = hdr->version;
     ctx->data_size = hdr->data_size;
-    arts_net_rdzv_expect(hdr->rdzv_txid, home_response_landed_cb, ctx);
+    arts_net_rdzv_expect(hdr->rdzv_txid, hdr->data_size,
+                         home_response_landed_cb, ctx);
     return;
   }
 
@@ -274,7 +280,9 @@ void arts_handler_db_grant_response(void *payload, size_t size) {
     arts_db_buf_install(cache, hdr->version, data_start, data_size);
     arts_db_cache_learn_size(cache, data_size);
   }
+  uint8_t census = arts_db_census_serving_from(hdr->header.rank);
   home_response_commit(db_h); /* releases db_h */
+  arts_db_census_served(census);
 }
 
 /* ===== WT CONFIRM handler (home A) =============================== */

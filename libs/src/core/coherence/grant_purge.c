@@ -38,6 +38,7 @@
 #include <stdint.h>
 
 #include "arts/coherence/buffer.h"
+#include "arts/coherence/census.h"
 #include "arts/coherence/coherence.h"
 #include "arts/coherence/directory.h"
 #include "arts/coherence/handlers.h"
@@ -97,6 +98,7 @@ static void send_grant_return(struct arts_db_cache_s *cache) {
   arts_guid_t db_guid = cache->db_guid;
   unsigned int home_rank = arts_guid_get_rank(db_guid);
   INCREMENT_NUM_GRANT_PURGE_RETURN_BY(1);
+  INCREMENT_NUM_PURGE_RETURN_BY(1);
   struct arts_msg_grant_return_packet_s p;
   arts_fill_packet_header(&p.header, sizeof(p), MSG_DB_GRANT_RETURN);
   p.header.rank = arts_global_rank_id;
@@ -186,7 +188,9 @@ serve: {
        * waiter pushed after the take re-requests from inside that drain: the
        * request reaches this very tail through the engine, finds the baton
        * held, and stays queued for the re-check below. */
+      uint8_t census = arts_db_census_serving(false);
       arts_db_drain_pending_rw_after_grant(cache);
+      arts_db_census_served(census);
       goto release_recheck;
     }
     /* Remote front: claim the right away from the home in ONE CAS.  It is
@@ -240,6 +244,7 @@ serve: {
       if (atomic_compare_exchange_strong_explicit(
               &db->invalidate_in_flight, &expected, 1u, memory_order_acq_rel,
               memory_order_acquire)) {
+        INCREMENT_NUM_GRANT_BATON_RECLAIM_BY(1);
         goto serve;
       }
     }
@@ -264,6 +269,7 @@ release_recheck:
         atomic_compare_exchange_strong_explicit(
             &db->invalidate_in_flight, &expected, 1u, memory_order_acq_rel,
             memory_order_acquire)) {
+      INCREMENT_NUM_GRANT_BATON_RECLAIM_BY(1);
       goto serve;
     }
   }
@@ -275,6 +281,7 @@ release_recheck:
         atomic_compare_exchange_strong_explicit(
             &db->invalidate_in_flight, &expected, 1u, memory_order_acq_rel,
             memory_order_acquire)) {
+      INCREMENT_NUM_GRANT_BATON_RECLAIM_BY(1);
       unsigned int want = parked;
       if (atomic_compare_exchange_strong_explicit(
               &db->pending_return_from, &want, ARTS_GRANT_NO_RETURNER,
@@ -539,6 +546,7 @@ bool arts_db_grant_return_claim_leg(struct arts_db_cache_s *cache) {
              &cache->writer_count, memory_order_acquire)) == 0u &&
          "a hand-back is discharged from a word with no holds");
   INCREMENT_NUM_GRANT_PURGE_FLAG_BY(1);
+  INCREMENT_NUM_PURGE_RETURN_BY(1);
   return true;
 }
 

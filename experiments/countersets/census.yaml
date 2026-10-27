@@ -35,6 +35,10 @@ counters:
     mode: ONCE
     level: NODE
     reduce: SUM
+  NUM_DB_PAYLOAD_SENT:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
   BYTES_REMOTE_SENT:
     mode: ONCE
     level: NODE

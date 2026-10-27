@@ -330,8 +330,7 @@ not change per-round parallelism.
   `c16 s6` is 287.2 s, but the placement counters at 8 nodes say why the
   slower one is chosen: `c17 s5` leaves 72 417 units (600 per worker here,
   **21 per worker at 32 nodes**) and already shows 1.19× spread in
-  `TIME_EDT_EXEC` with 173× spread in steal attempts, while `c16 s6` leaves
-  788 725 units, 1.05× and 47×.  The 1.3% is real, not noise — the `s6`/`s7`
+  `TIME_EDT_EXEC`, while `c16 s6` leaves 788 725 units and 1.05×.  The 1.3% is real, not noise — the `s6`/`s7`
   pair of the same row is an accidental repeat of one configuration (scatter
   saturates at `max_set+2`, so both scatter everything) and reproduced to
   287.2 / 287.3 s, putting the run-to-run band under 0.1%.  The 1.3% is

@@ -57,7 +57,6 @@ extern "C" {
   X(TIME_EDT_EXEC)                                                             \
   X(TIME_EDT_CREATE)                                                           \
   X(TIME_EDT_SIGNAL)                                                           \
-  X(TIME_CONTEXT_SWITCH)                                                       \
   /* Num: EDT lifecycle */                                                     \
   X(NUM_EDT_CREATE)                                                            \
   X(NUM_EDT_ACQUIRE)                                                           \
@@ -66,109 +65,98 @@ extern "C" {
   X(NUM_YIELD)                                                                 \
   /* Time: DB lifecycle */                                                     \
   X(TIME_DB_CREATE)                                                            \
-  /* Num: DB lifecycle */                                                      \
+  /* Num: DB lifecycle.  A create is counted on the creating rank whatever     \
+   * the block's home.  An acquisition is one (EDT, block) pair, counted       \
+   * once in the strongest mode the EDT's slots name the block in, on the      \
+   * EDT's rank where the arm takes it; a create's hold is a write             \
+   * acquisition of its own. */                                                \
   X(NUM_DB_CREATE)                                                             \
+  X(NUM_DB_CREATE_NO_ACQUIRE)                                                  \
   X(NUM_DB_DESTROY)                                                            \
   X(NUM_DB_ACQUIRE_READ)                                                       \
   X(NUM_DB_ACQUIRE_WRITE)                                                      \
-  /* Num: coherence — where an acquire was answered.  Their sum is the       \
-   * acquire population; the hit share is what aggregation buys, and is      \
-   * comparable across every arm because both are counted in the shared      \
-   * acquire helpers rather than in one arm's handler. */                    \
+  /* Num: coherence — every acquisition READ and WRITE count, classified       \
+   * once on its rank by where what it needs is: LOCAL_HIT when this rank      \
+   * holds the write right (a write) or a valid copy or right covering the     \
+   * read (a read), REMOTE when it had to come from another rank.  Under the   \
+   * voluntary-return policy the write right is the home's, so whatever the    \
+   * home rank acquires is LOCAL_HIT.  The state at the decision classifies:   \
+   * one that parks holding what it needs (a gated install) is LOCAL_HIT,      \
+   * any other by where what it waits for comes from, whichever serve          \
+   * takes it; one a shutdown leaves parked is in neither. */                  \
   X(NUM_DB_ACQUIRE_LOCAL_HIT)                                                  \
   X(NUM_DB_ACQUIRE_REMOTE)                                                     \
   /* Bytes: DB data */                                                         \
   X(BYTES_DB_CREATE)                                                           \
-  /* Bytes: coherence — payload actually shipped for a datablock, as opposed \
-   * to BYTES_REMOTE_SENT which mixes control traffic in. */                 \
+  /* Bytes/Num/Time: datablock payloads put on the fabric one-sided, one per   \
+   * payload however many pieces the provider's ceiling cut it into.  The      \
+   * time runs from the PUT's post to its last piece's local completion --     \
+   * the provider done reading the source, not the bytes visible at the        \
+   * peer -- and is added by whichever thread reaps that completion. */        \
   X(BYTES_DB_PAYLOAD_SENT)                                                     \
-  /* Num/Time: the same datablock payloads, one per payload however many     \
-   * pieces the provider's ceiling cut it into.  The time runs from the      \
-   * PUT's post to its last piece's local completion -- the provider done   \
-   * reading the source, not the bytes visible at the peer -- and is added   \
-   * by whichever thread reaps that completion. */                          \
   X(NUM_DB_PAYLOAD_SENT)                                                       \
   X(TIME_DB_PAYLOAD_PUT)                                                       \
   /* Bytes: memory */                                                          \
   X(BYTES_MEMORY_FOOTPRINT)                                                    \
-  /* Bytes: network */                                                         \
+  /* Bytes: network — two-sided messages and one-sided payloads together */    \
   X(BYTES_REMOTE_SENT)                                                         \
   X(BYTES_REMOTE_RECEIVED)                                                     \
-  /* Num: network */                                                           \
+  /* Num: network — two-sided messages only */                                 \
   X(NUM_REMOTE_SEND)                                                           \
   X(NUM_REMOTE_RECEIVE)                                                        \
-  /* Num: network — outbound message size census, bucketed by total wire     \
-   * size (header + payload) at the async send entry points, before         \
-   * fragmentation/retry. NET_MSG_TOTAL is the message population count     \
-   * standing in for a per-wire-type breakdown (no array-counter infra to   \
-   * key by message type cheaply). */                                       \
-  X(NET_MSG_LE64)                                                              \
-  X(NET_MSG_LE512)                                                             \
-  X(NET_MSG_LE4K)                                                              \
-  X(NET_MSG_LE64K)                                                             \
-  X(NET_MSG_GT64K)                                                             \
-  X(NET_MSG_TOTAL)                                                             \
-  /* Time: network */                                                          \
-  X(TIME_REMOTE_MOVE)                                                          \
   /* Num/Bytes/Time: CXL data-block flushes, counted where every one of them \
    * runs (arts_cxl_store_flush): the sweep and its fence, never the staged  \
    * copy beside it.  PRODUCER is the purge that publishes a turn's writes,  \
    * CONSUMER the fetch that drops stale private lines before a grant is     \
-   * read.  The flushes of the arena table's own metadata and of the         \
-   * tournament lock are not counted.  Inert in a build without a CXL        \
-   * store. */                                                               \
+   * read; the bytes are the block's declared size.  The flushes of the        \
+   * arena table's own metadata and of the tournament lock are not counted.    \
+   * Inert in a build without a CXL store. */                                  \
   X(NUM_CXL_FLUSH_PRODUCER)                                                    \
   X(NUM_CXL_FLUSH_CONSUMER)                                                    \
   X(BYTES_CXL_FLUSH_PRODUCER)                                                  \
   X(BYTES_CXL_FLUSH_CONSUMER)                                                  \
   X(TIME_CXL_FLUSH_PRODUCER)                                                   \
   X(TIME_CXL_FLUSH_CONSUMER)                                                   \
-  /* Time: events */                                                           \
-  X(TIME_EVENT_CREATE)                                                         \
-  X(TIME_EVENT_SIGNAL)                                                         \
   /* Num: events */                                                            \
   X(NUM_EVENT_CREATE)                                                          \
   X(NUM_EVENT_DESTROY)                                                         \
-  X(NUM_EVENT_SIGNAL)                                                          \
   /* Num: scheduling */                                                        \
-  X(NUM_STEAL_ATTEMPT)                                                         \
   X(NUM_STEAL_SUCCESS)                                                         \
-  /* Time: scheduling */                                                       \
-  X(TIME_YIELD)                                                                \
   /* Num: out-of-order */                                                      \
   X(NUM_OO_ENQUEUE)                                                            \
-  /* Num/Time: validation arm.  A reply with no payload (data_present 0) is  \
-   * one the version ledger saved; a size-only CTS (data_present 2) is the   \
-   * rendezvous negotiating a landing and is counted apart, since it makes   \
-   * a size-unknown first touch cost two requests rather than one.  A        \
-   * request that joins an open window is one combining kept off the wire.   \
-   * Inert unless the build compiles the VAL family in. */                   \
+  /* Num: validation arm.  A reply with no payload is one the version ledger   \
+   * saved; a size round (data_present 2, never a dismiss) negotiates a        \
+   * landing for a request that could not size one.  A window is a read       \
+   * request that is not a re-send; a reader that sends none of its own waits  \
+   * for the next window or rides the rank's write request.  Inert unless the  \
+   * build compiles the VAL family in. */                                      \
   X(NUM_SNAPSHOT_REQUEST)                                                      \
   X(NUM_SNAPSHOT_HEADER_ONLY)                                                  \
   X(NUM_SNAPSHOT_SIZE_CTS)                                                     \
-  /* Size-only CTS fallbacks on the other planes: with the GUID size hint    \
-   * these count only sentinel GUIDs (pre-reserved ranges, oversize), so a   \
-   * nonzero steady rate is the hint NOT covering a workload. */             \
+  X(NUM_RO_COMBINE_WINDOW)                                                     \
+  X(NUM_RO_COMBINE_JOINED)                                                     \
+  /* Size rounds on the other planes, counted at the replying rank, a          \
+   * dismiss never among them: with the GUID size hint only a reserved or      \
+   * labeled GUID (or a size past the hint's range) takes one, so a nonzero    \
+   * steady rate is the hint NOT covering a workload. */                       \
   X(NUM_GRANT_SIZE_CTS)                                                        \
   X(NUM_EXCL_SIZE_CTS)                                                         \
   X(NUM_INV_SIZE_CTS)                                                          \
-  X(NUM_RO_COMBINE_WINDOW)                                                     \
-  X(NUM_RO_COMBINE_JOINED)                                                     \
-  /* Num/Time: invalidation arm — one round per RW release, its multicast    \
-   * and the acks it blocks on.  The time is the release-side cost the       \
-   * regime map attributes the crossover to. */                              \
+  X(NUM_FLUSH_SIZE_CTS)                                                        \
+  /* Num/Time: invalidation arm — rounds that retired at least one release     \
+   * (a round batches every release queued when it starts), the copies they    \
+   * targeted, and the time a release blocks on its round. */                  \
   X(NUM_INVALIDATE_ROUND)                                                      \
-  X(NUM_INVALIDATE_SENT)                                                       \
   X(NUM_INVALIDATE_ACK)                                                        \
   X(TIME_INVALIDATE_ROUND)                                                     \
-  /* Num: migrating write permission — a grant that moved versus one a       \
-   * later local writer reused without touching the wire (the sticky grant). \
-   * Live in the arms whose ownership migrates. */                           \
+  /* Num: migrating write permission — a write request a rank committed        \
+   * versus a write turn a later local writer took on a grant it still held    \
+   * (the sticky grant).  Live in the arms whose ownership migrates. */        \
   X(NUM_GRANT_MIGRATE)                                                         \
   X(NUM_GRANT_LOCAL_REUSE)                                                     \
-  /* Num: exclusion arm — turns that could not be granted on arrival and had \
-   * to queue at the home: the reader/writer serialization its philosophy    \
-   * pays for. */                                                            \
+  /* Num: exclusion arm — requests, read or write, the home could not grant    \
+   * at its decision and queued: the reader/writer serialization its           \
+   * philosophy pays for. */                                                   \
   X(NUM_EXCL_QUEUE_WAIT)                                                       \
   /* Num: retention arm — the cost of making the relinquish involuntary.     \
    * RECALL_SENT counts every "give the read grant back" the home fans out;  \
@@ -188,8 +176,8 @@ extern "C" {
    * open flight (the write-combining win); TRAILING = relaunches for        \
    * waiters the ACK left uncovered; CTS_FALLBACK = credit-less announce     \
    * legs (steady nonzero = the credit teachers are not covering a           \
-   * workload); ABANDON = parked publish waiters woken by a destroy/teardown \
-   * path instead of an ACK. */                                              \
+   * workload); ABANDON = parked publish waiters an abandon woke instead of  \
+   * an ACK. */                                                              \
   X(NUM_PUB_FLIGHT)                                                            \
   X(NUM_PUB_FLIGHT_JOIN)                                                       \
   X(NUM_PUB_FLIGHT_TRAILING)                                                   \
@@ -198,8 +186,8 @@ extern "C" {
   /* Num: grant plane rare paths.  BATON_RECLAIM = a releasing claimant      \
    * found the queue non-empty on its post-release re-check and re-claimed   \
    * (the lost-wake window the re-check loop exists to close); HOME_DATALESS \
-   * = an ownership grant INTO the write-through home, which moves the       \
-   * permission with no payload (the home already holds the newest bytes). */\
+   * = a write request the write-through home sends its own directory,         \
+   * asking for the permission alone (it already holds the newest bytes). */   \
   X(NUM_GRANT_BATON_RECLAIM)                                                   \
   X(NUM_GRANT_HOME_DATALESS)                                                   \
   /* Num: the voluntary-return release policy.  RETURN = write rights handed \
@@ -219,7 +207,13 @@ extern "C" {
   X(NUM_GRANT_PURGE_ACCEPT)                                                    \
   X(NUM_GRANT_PURGE_LATCHED)                                                   \
   X(NUM_GRANT_PURGE_STALE_SETTLE)                                              \
-  X(NUM_GRANT_REGRANT_DEDUP)
+  X(NUM_GRANT_REGRANT_DEDUP)                                                   \
+  /* Num: the same policy on every arm -- hand-backs of a permission, with     \
+   * its bytes if any, that a rank sends the block's home, counted on the      \
+   * returning rank (the home's own idle edge sends nothing).  On the grant    \
+   * plane it is RETURN plus FLAG above; under exclusion it is every read and  \
+   * write turn a rank other than the home gives back. */                      \
+  X(NUM_PURGE_RETURN)
 /* End-to-end wall time is not a counter: it is the env-gated "[E2E] <ns>"
  * stderr marker (rank 0; see runtime.c / shutdown.c / threads.c), identical
  * across arts/xsocr/ocr-vx. */

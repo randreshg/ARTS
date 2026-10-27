@@ -140,8 +140,9 @@ void arts_handler_db_flush_commit(void *item_v, void *args_v);
 void arts_handler_db_flush_ack(void *item_v, void *args_v);
 void arts_handler_db_flush_cts(void *item_v, void *args_v);
 /* A fetch response whose descriptor is gone: free the landing the cookie
- * names once (or as soon as) the PUT has landed. */
-void arts_db_flush_discard_landing(uint64_t txid, uint64_t cookie);
+ * names once (or as soon as) the PUT of `len` bytes has landed. */
+void arts_db_flush_discard_landing(uint64_t txid, uint64_t len,
+                                   uint64_t cookie);
 #endif /* ARTS_PROTOCOL_FLUSH */
 
 #if defined(ARTS_PROTOCOL_VAL) && defined(ARTS_WRITE_POLICY_WB)
@@ -214,8 +215,10 @@ void arts_handler_db_snapshot_response(void *item_v, void *args_v);
 /* Consume an in-flight rendezvous whose receiver-side target is gone (the
  * metadata packet reached a destroyed object): registers a discard
  * continuation so the landing frees and the txid pairing table stays
- * leak-free.  No-op for txid == 0. */
-void arts_db_rdzv_discard_landing(uint64_t txid, uint64_t cookie);
+ * leak-free.  `len` is the payload the metadata names.  No-op for txid == 0.
+ */
+void arts_db_rdzv_discard_landing(uint64_t txid, uint64_t len,
+                                  uint64_t cookie);
 /* Pure (cache, args) body: item_v is the db_s (cache is its first member);
  * args_v is an arts_ooo_args_db_grant_invalidate_s.  The wire dispatcher /
  * self-send looks the cache up and calls this body DIRECTLY — no OoO defer.  In

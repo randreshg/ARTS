@@ -50,6 +50,7 @@
 #include "arts.h"
 
 #include "arts/coherence/buffer.h"
+#include "arts/coherence/census.h"
 #include "arts/coherence/coherence.h"
 #include "arts/db.h"
 #include "arts/edt.h"
@@ -134,9 +135,12 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   unsigned int before =
       atomic_load_explicit(&edt->acquire_remaining, memory_order_acquire);
 
-  /* Two wakes of the SAME (edt, slot) — a duplicate delivery of one slot. */
+  /* Two wakes of the SAME (edt, slot) — a duplicate delivery of one slot,
+   * each a serve from what this rank holds, as a serve path declares. */
+  uint8_t census = arts_db_census_serving(false);
   mark_edt_ready_by_guid(eg, 0);
   mark_edt_ready_by_guid(eg, 0);
+  arts_db_census_served(census);
 
   unsigned int after =
       atomic_load_explicit(&edt->acquire_remaining, memory_order_acquire);

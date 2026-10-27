@@ -3,7 +3,7 @@
 ** Licensed under the Apache License, Version 2.0 (the "License").           **
 ******************************************************************************/
 
-/* db_size_round_once — a rank pays at most one size round per cache.
+/* db_size_round_once — a rank pays exactly one size round per cache.
  *
  * A request from a cache that does not know the block's size carries no
  * landing, and its home answers with the size alone (a size round) before
@@ -11,13 +11,13 @@
  * its caches never pay one; a reserved GUID carries none, so a rank's cache
  * of it pays one, after which it knows the size.  Per block homed on the
  * first rank and created there, the turn alternates between the second rank
- * and the first for 16 rounds: with `writes` the second rank takes a write
- * turn every round, with `reads` a read turn (the first rank writing in
- * between), so the second rank sends a fresh request every round.  The size
- * rounds the home sent are read back from the first rank's counter file (the
- * sum of NUM_GRANT_SIZE_CTS, NUM_SNAPSHOT_SIZE_CTS, NUM_EXCL_SIZE_CTS and
- * NUM_INV_SIZE_CTS): at most one per block for `reserved`, none for `minted`.
- * Registered only where the tree's counter config captures those counters.
+ * and the first for 16 rounds, each turn's acquisition ordered after the
+ * previous turn's release: with `writes` the second rank takes a write turn
+ * every round, with `reads` a read turn (the first rank writing in between),
+ * so the second rank sends a fresh request every round.  The size rounds the
+ * home sent are read back from the first rank's counter file (the sum of the
+ * size-round counters of every plane): one per block for `reserved`, none for
+ * `minted`.  Registered only where the tree's counter config captures them.
  *
  * Arguments: reserved|minted writes|reads.  Needs two ranks.
  */
@@ -42,7 +42,28 @@ static arts_guid_t edt_on(arts_edt_t fn, unsigned int rank, uint32_t paramc,
   return arts_edt_create(fn, paramc, paramv, depc, &h);
 }
 
-/* paramv: g, step, steps, all, reads */
+static arts_guid_t latch_one(void) {
+  arts_event_hint_t h = ARTS_EVENT_HINT_LATCH(1);
+  return arts_event_create(&h);
+}
+
+/* A turn of g on `rank`, ordered after the release of the turn whose output
+ * event is `after` (none for the first); its own output event goes in pv[5]. */
+static void turn(arts_edt_t fn, unsigned int rank, uint64_t *pv, arts_guid_t g,
+                 arts_db_access_mode_t mode, arts_guid_t after) {
+  arts_guid_t out = latch_one();
+  pv[5] = (uint64_t)out;
+  arts_edt_hint_t h = ARTS_EDT_HINT_DEFAULTS;
+  h.rank = rank;
+  h.output_event = out;
+  arts_guid_t e = arts_edt_create(fn, 6, pv, after == NULL_GUID ? 1u : 2u, &h);
+  arts_add_dependence(g, e, 0, mode);
+  if (after != NULL_GUID) {
+    arts_add_dependence(after, e, 1, DB_MODE_NULL);
+  }
+}
+
+/* paramv: g, step, steps, all, reads, this turn's output event */
 static void step(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                  arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -62,11 +83,10 @@ static void step(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_guid_t g = (arts_guid_t)paramv[0];
   uint64_t s = paramv[1] + 1u;
   if (s < paramv[2]) {
-    uint64_t pv[5] = {paramv[0], s, paramv[2], paramv[3], paramv[4]};
+    uint64_t pv[6] = {paramv[0], s, paramv[2], paramv[3], paramv[4], 0u};
     unsigned int rank = (s & 1u) ? 0u : 1u;
-    arts_guid_t nx = edt_on(step, rank, 5, pv, 1);
-    arts_add_dependence(g, nx, 0,
-                        (rank == 1u && paramv[4]) ? DB_MODE_RO : DB_MODE_RW);
+    turn(step, rank, pv, g, (rank == 1u && paramv[4]) ? DB_MODE_RO : DB_MODE_RW,
+         (arts_guid_t)paramv[5]);
   } else {
     arts_db_destroy(g);
     arts_event_satisfy((arts_guid_t)paramv[3], NULL_GUID);
@@ -88,9 +108,8 @@ static void maker(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
   atomic_store_explicit((_Atomic(uint32_t) *)p, 0u, memory_order_relaxed);
   arts_db_release(g, DB_MODE_RW);
-  uint64_t pv[5] = {(uint64_t)g, 0u, paramv[1], paramv[2], paramv[3]};
-  arts_guid_t first = edt_on(step, 1u, 5, pv, 1);
-  arts_add_dependence(g, first, 0, paramv[3] ? DB_MODE_RO : DB_MODE_RW);
+  uint64_t pv[6] = {(uint64_t)g, 0u, paramv[1], paramv[2], paramv[3], 0u};
+  turn(step, 1u, pv, g, paramv[3] ? DB_MODE_RO : DB_MODE_RW, NULL_GUID);
 }
 
 static void terminal(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
@@ -194,18 +213,19 @@ int main(int argc, char **argv) {
   found |= counter_value(buf, "NUM_SNAPSHOT_SIZE_CTS", &rounds);
   found |= counter_value(buf, "NUM_EXCL_SIZE_CTS", &rounds);
   found |= counter_value(buf, "NUM_INV_SIZE_CTS", &rounds);
+  found |= counter_value(buf, "NUM_FLUSH_SIZE_CTS", &rounds);
   free(buf);
   if (!found) {
     printf("FAIL: db_size_round_once: n0.json carries no size-round counter\n");
     return 1;
   }
-  uint64_t limit = g_reserved ? NBLOCKS : 0u;
-  if (rounds > limit) {
+  uint64_t want = g_reserved ? NBLOCKS : 0u;
+  if (rounds != want) {
     printf("FAIL: db_size_round_once: %llu size rounds for %u %s blocks "
-           "(%s), at most %llu\n",
+           "(%s), expected %llu\n",
            (unsigned long long)rounds, NBLOCKS,
            g_reserved ? "reserved" : "minted", g_reads ? "reads" : "writes",
-           (unsigned long long)limit);
+           (unsigned long long)want);
     return 1;
   }
   printf("PASS: db_size_round_once %llu size rounds for %u %s blocks (%s)\n",

@@ -144,7 +144,9 @@ void arts_db_reader_serve_chain(struct arts_db_reader_pool_s *p,
     struct arts_db_reader_node_s *r = arts_db_reader_node(p, i);
     tail = i;
     i = atomic_load_explicit(&r->next, memory_order_relaxed);
+    uint8_t census = arts_db_census_serving_waiter(ARTS_DB_CENSUS_HELD(r));
     mark_edt_ready_by_guid(r->edt_guid, r->slot);
+    arts_db_census_served(census);
   } while (i != 0u);
   arts_db_reader_free_chain(p, head, tail);
 }

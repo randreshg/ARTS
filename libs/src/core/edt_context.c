@@ -39,7 +39,6 @@
 #include "arts/edt_context.h"
 
 #include "arts.h"
-#include "arts/counter/Preamble.h" /* TIME_CONTEXT_SWITCH_START/STOP */
 #include "arts/system/print.h"
 #include "arts/utils/shared.h"
 #include "arts/utils/vector.h"
@@ -125,7 +124,6 @@ void arts_set_thread_local_edt_info(struct arts_edt_s *edt) {
 }
 
 void arts_edt_ctx_save(arts_edt_ctx_t *tl) {
-  TIME_CONTEXT_SWITCH_START();
   tl->current_edt = current_edt;
   tl->created_db_list = created_db_list; /* struct copy: ownership moves */
   tl->owned_finish_list = owned_finish_list;
@@ -133,17 +131,14 @@ void arts_edt_ctx_save(arts_edt_ctx_t *tl) {
   current_edt = NULL;
   created_db_list = (arts_vector_t){0};
   owned_finish_list = (arts_vector_t){0};
-  TIME_CONTEXT_SWITCH_STOP();
 }
 
 void arts_edt_ctx_restore(arts_edt_ctx_t *tl) {
-  TIME_CONTEXT_SWITCH_START();
   current_edt = tl->current_edt;
   created_db_list_free(&created_db_list);
   created_db_list = tl->created_db_list;
   arts_vector_free(&owned_finish_list);
   owned_finish_list = tl->owned_finish_list;
-  TIME_CONTEXT_SWITCH_STOP();
 }
 
 void arts_cleanup_edt_tls() {

@@ -44,6 +44,7 @@ extern "C" {
 #ifndef ARTS_PROTOCOL_VAL
 #error "val/types.h is the VAL layout; this translation unit's cell is another"
 #endif
+#include "arts/coherence/census.h" /* ARTS_DB_CENSUS */
 
 #include <assert.h>
 
@@ -252,6 +253,12 @@ struct arts_db_cache_s {
   struct arts_rank_to_u64_map_s *cached_version;
   /* Treiber stack of RW waiters parked on this rank (order-free drain-all). */
   arts_lf_stack_t pending_rw;
+#if ARTS_DB_CENSUS
+  /* Whether the grant this rank installed last was shipped by another rank:
+   * written by the install before its CONFIRM leaves, read by the drain that
+   * CONFIRM's acknowledgement runs, which the delivery orders after it. */
+  bool census_install_remote;
+#endif
 #else
   /* Owner-side dedup map.  WT never creates it (always NULL): home serves RO
    * via SNAPSHOT_REQUEST with the home->cached_version watermark, so the WT
@@ -262,6 +269,11 @@ struct arts_db_cache_s {
   /* Treiber stack of RW waiters parked on this rank (order-free drain-all). */
   arts_lf_stack_t pending_rw;
   arts_lf_stack_t publication_waiters;
+#if ARTS_DB_CENSUS
+  /* Whether the block's first publication, which publication_waiters await,
+   * comes from another rank: its creator's.  Written at init. */
+  bool census_publisher_remote;
+#endif
 
   /* WT publish write-combining — the write-side twin of the RO combining
    * window below.  pub_flight is the one-word flight state ({FLYING,DIRTY}):

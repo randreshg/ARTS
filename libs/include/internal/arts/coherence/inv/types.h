@@ -36,6 +36,7 @@
 #ifndef ARTS_PROTOCOL_INV
 #error "inv/types.h is the INV layout; this translation unit's cell is another"
 #endif
+#include "arts/coherence/census.h" /* ARTS_DB_CENSUS */
 #include "arts/rank_bitset.h"
 #include "arts/utils/stdatomic_compat.h"
 
@@ -280,6 +281,11 @@ struct arts_db_cache_s {
   arts_lf_stack_t buf_retired;
 #ifdef ARTS_WRITE_POLICY_WT
   arts_lf_stack_t publication_waiters; /* pre-publication read holds */
+#if ARTS_DB_CENSUS
+  /* Whether the block's first publication, which publication_waiters await,
+   * comes from another rank: its creator's.  Written at init. */
+  bool census_publisher_remote;
+#endif
 #endif
   /* RW waiters parked on this rank (Treiber, order-free drain-all): every
    * waiter is woken regardless of order, so a LIFO stack suffices. */
@@ -300,6 +306,12 @@ struct arts_db_cache_s {
    * have_version), published with the two fields above; the 0-edge actor
    * ships no payload when the canonical bytes are at that very version. */
   uint64_t incoming_new_owner_have;
+#endif
+#if defined(ARTS_WRITE_POLICY_WB) && ARTS_DB_CENSUS
+  /* Whether the grant this rank installed last was shipped by another rank:
+   * written by the install before its CONFIRM leaves, read by the drain that
+   * CONFIRM's acknowledgement runs, which the delivery orders after it. */
+  bool census_install_remote;
 #endif
   /* Always NULL in this arm.  INV's sharer plane deliberately carries no
    * version ledger — a dedup watermark on it would stop the plane being

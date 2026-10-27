@@ -40,34 +40,15 @@
 /* Control-plane send facade.
  *
  * This translation unit holds the public send names the rest of the runtime
- * calls and the outbound-size census.  A remote target is forwarded to the
- * fabric core (arts_net_send_core); a single-node run never presents one. */
+ * calls.  A remote target is forwarded to the fabric core
+ * (arts_net_send_core); a single-node run never presents one. */
 
 #include "arts/transport/net.h" /* public API + arts_net_send_core */
 
-#include "arts/counter/counter.h" /* NET_MSG_* census */
 #include "arts/system/identity.h" /* arts_global_rank_id / arts_global_rank_count */
 #include "arts/system/print.h"
 
-/* ===== Outbound census + guards =========================================== */
-
-/* Outbound message size census: one switch-free arithmetic bucket on the total
- * wire size (header + payload), taken at the async send entry points.  A
- * diagnostic distribution only — no transport decision branches on size. */
-static inline void arts_net_msg_census(uint64_t total_size) {
-  if (total_size <= 64) {
-    INCREMENT_NET_MSG_LE64_BY(1);
-  } else if (total_size <= 512) {
-    INCREMENT_NET_MSG_LE512_BY(1);
-  } else if (total_size <= 4096) {
-    INCREMENT_NET_MSG_LE4K_BY(1);
-  } else if (total_size <= 65536) {
-    INCREMENT_NET_MSG_LE64K_BY(1);
-  } else {
-    INCREMENT_NET_MSG_GT64K_BY(1);
-  }
-  INCREMENT_NET_MSG_TOTAL_BY(1);
-}
+/* ===== Guards ============================================================= */
 
 static inline void size_send_check(uint64_t size) {
   if (size == 0) {
@@ -96,7 +77,6 @@ void arts_transport_send_async(int rank, char *message, unsigned int length) {
   if (!net_target_ok(rank)) {
     return;
   }
-  arts_net_msg_census(length);
   arts_net_send_core(rank, message, length, NULL, 0, 0, NULL);
 }
 
@@ -109,6 +89,5 @@ void arts_transport_send_payload_async_free(int rank, char *message,
   }
   size_send_check(length);
   size_send_check(size);
-  arts_net_msg_census((uint64_t)length + size);
   arts_net_send_core(rank, message, length, payload, offset, size, free_method);
 }

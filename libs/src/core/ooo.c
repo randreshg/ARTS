@@ -96,14 +96,14 @@
  * ===========================================================================*/
 
 /* ===== g_ooo_table — kind → replay handler ================================
- * Each handler replays the operation against the now-installed target by
- * re-issuing the original entry (internal_signal_edt, arts_event_satisfy_slot,
- * arts_handler_db_*, ...).  The entry's own lookup HITs during a drain
- * (drain runs post-install), takes its inline hit path, and does NOT re-enter
- * dispatch_or_defer — so re-issue is one level deep, never recursive.  `item`
- * (the acquired object) is passed through for the pure (item, args) bodies
- * that operate on it directly; the create replays and
- * arts_db_acquire_replay_dep ignore it. */
+ * Each handler replays the operation against the now-installed target: the
+ * operation's pure (item, args) body (arts_handler_edt_satisfy_slot,
+ * arts_handler_event_satisfy_slot, arts_handler_db_*, ...), which runs on the
+ * acquired object, or a driver entry whose own lookup HITs during a drain
+ * (drain runs post-install) and takes its inline hit path.  Neither re-enters
+ * dispatch_or_defer for the drained GUID — so a replay is one level deep,
+ * never recursive.  `item` (the acquired object) is passed through for the
+ * pure bodies; the create replays and arts_db_acquire_replay_dep ignore it. */
 
 /* EDT satisfy + destroy handlers live in edt.c
  * (arts_handler_edt_satisfy_slot[_ptr], arts_handler_edt_destroy) — pure cores

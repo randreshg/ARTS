@@ -7,14 +7,11 @@
 /// @brief A counter VALUE in n0.json, end to end: the increment path
 ///        (arts_counter_increment_by), node reduction and the JSON write.
 ///
-/// Where the counter config captures NUM_EDT_CREATE (configs/counters.cfg
-/// makes it PERIODIC,CLUSTER), the per-node JSON (n0.json) carries a
-/// "NUM_EDT_CREATE" object whose numeric "value" is reduced (SUM) across this
-/// node's worker threads.  We create a known number N of EDTs; the recorded
-/// value must be >= N (the runtime also creates internal EDTs, so it is a
-/// lower bound, not equality).  The test is registered only in a tree whose
-/// counter config captures the counter; if the file lacks it anyway the test
-/// SKIPs.  Config-agnostic across coherence protocols.
+/// The per-node JSON (n0.json) carries a "NUM_EDT_CREATE" and a
+/// "NUM_EDT_FINISH" object whose numeric "value" is reduced (SUM) across this
+/// node's threads.  We create a known number N of EDTs; with the main EDT the
+/// runtime creates and runs, each value must be exactly N + 1.  The test is
+/// registered only in a tree whose counter config captures both counters.
 
 #include "arts.h"
 
@@ -111,24 +108,25 @@ int main(int argc, char **argv) {
   (void)fclose(fp);
   buf[got] = '\0';
 
-  uint64_t value = 0;
-  bool found = read_counter_value(buf, "NUM_EDT_CREATE", &value);
-  free(buf);
-
-  if (!found) {
-    /* NUM_EDT_CREATE disabled in this build's counter config. */
-    printf("SKIP counter_smoke_value: NUM_EDT_CREATE not present in n0.json\n");
-    return 0;
+  static const char *const names[] = {"NUM_EDT_CREATE", "NUM_EDT_FINISH"};
+  const uint64_t want = (uint64_t)N_EDTS + 1u;
+  int failures = 0;
+  for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+    uint64_t value = 0;
+    if (!read_counter_value(buf, names[i], &value)) {
+      printf("FAIL counter_smoke_value: %s not present in n0.json\n", names[i]);
+      failures++;
+    } else if (value != want) {
+      printf("FAIL counter_smoke_value: %s value %llu, expected %llu\n",
+             names[i], (unsigned long long)value, (unsigned long long)want);
+      failures++;
+    }
   }
-
-  if (value < (uint64_t)N_EDTS) {
-    printf("FAIL counter_smoke_value: NUM_EDT_CREATE value %llu < expected "
-           ">= %d\n",
-           (unsigned long long)value, N_EDTS);
+  free(buf);
+  if (failures != 0) {
     return 1;
   }
-
-  printf("PASS counter_smoke_value: NUM_EDT_CREATE value %llu >= %d\n",
-         (unsigned long long)value, N_EDTS);
+  printf("PASS counter_smoke_value: NUM_EDT_CREATE = NUM_EDT_FINISH = %llu\n",
+         (unsigned long long)want);
   return 0;
 }

@@ -48,6 +48,7 @@
 
 #include "arts.h"
 #include "arts/coherence/buffer.h"
+#include "arts/coherence/census.h"
 #include "arts/coherence/coherence.h"
 #include "arts/coherence/handlers.h"
 #include "arts/counter/Preamble.h"
@@ -439,8 +440,6 @@ static void db_create_in_place(arts_guid_t guid, void *addr, uint64_t len,
     shadow->cache.db_guid = guid;
   }
 #endif
-  INCREMENT_NUM_DB_CREATE_BY(1);
-  INCREMENT_BYTES_DB_CREATE_BY(len);
 }
 
 /* A coherent block created with ARTS_DB_PROP_NO_ACQUIRE on its home rank:
@@ -661,8 +660,11 @@ static bool db_create_claim_first_touch(struct arts_db_s *found,
    * create's announce, so the cache carries no hold and the hold commits; a
    * cache of an earlier lifetime that kept a right to the block (the write
    * right; under EXCL x RETAIN also its resident bytes or a retained read
-   * grant) refuses it. */
-  return arts_db_create_take_hold(cache, owed);
+   * grant) refuses it.  What the hold serves, it serves from this rank. */
+  uint8_t census = arts_db_census_serving(false);
+  bool held = arts_db_create_take_hold(cache, owed);
+  arts_db_census_served(census);
+  return held;
 }
 
 /* The creator's cache-only descriptor for a block homed on another rank,
@@ -901,6 +903,17 @@ arts_guid_t arts_db_create(void **addr, uint64_t len, arts_db_types_t db_type,
       guid = NULL_GUID;
     }
   }
+  if (guid != NULL_GUID) {
+    INCREMENT_NUM_DB_CREATE_BY(1);
+    INCREMENT_BYTES_DB_CREATE_BY(len);
+    if (no_acquire) {
+      INCREMENT_NUM_DB_CREATE_NO_ACQUIRE_BY(1);
+    } else {
+      /* The creator's hold is a write acquisition, held from the create on. */
+      INCREMENT_NUM_DB_ACQUIRE_WRITE_BY(1);
+      INCREMENT_NUM_DB_ACQUIRE_LOCAL_HIT_BY(1);
+    }
+  }
   TIME_DB_CREATE_STOP();
   return guid;
 }
@@ -915,13 +928,13 @@ arts_guid_t arts_db_create(void **addr, uint64_t len, arts_db_types_t db_type,
  * Storage goes when the last outstanding reference drops.
  */
 void arts_db_destroy(arts_guid_t guid) {
-  INCREMENT_NUM_DB_DESTROY_BY(1);
   arts_guid_kind_t type = arts_guid_get_kind(guid);
   if (type != ARTS_GUID_DB) {
     ARTS_WARN("arts_db_destroy called with non-DB type %u (GUID %lu)", type,
               guid);
     return;
   }
+  INCREMENT_NUM_DB_DESTROY_BY(1);
 
   /* Implicit release: if the calling EDT holds an acquire on this DB,
    * release it first (matches OCR ocrDbDestroy semantics).  A created/owned
@@ -949,6 +962,18 @@ void arts_db_destroy(arts_guid_t guid) {
 
 /**********************DB MEMORY MODEL*************************************/
 
+/* One EDT acquisition of a block, counted in the mode its owner slot carries
+ * (the strongest any of the EDT's slots names the block in) where the slot is
+ * handed to the block's arm, so a deferral counts only when its replay
+ * reaches the arm. */
+static void db_acquire_census_mode(arts_db_access_mode_t mode) {
+  if (mode == DB_MODE_RO) {
+    INCREMENT_NUM_DB_ACQUIRE_READ_BY(1);
+  } else if (mode == DB_MODE_RW) {
+    INCREMENT_NUM_DB_ACQUIRE_WRITE_BY(1);
+  }
+}
+
 /* acquire_one_dep — attempt the single DB dependency depv[i].
  *
  * On a synchronous resolve it claims the slot's acquire record (NULL is a
@@ -971,13 +996,6 @@ static void acquire_one_dep(struct arts_edt_s *edt, arts_edt_dep_t *depv,
 
   if (guid_type != ARTS_GUID_DB) {
     return; /* not a DB GUID — nothing to acquire */
-  }
-
-  // Update access-mode counters
-  if (access_mode == DB_MODE_RO) {
-    INCREMENT_NUM_DB_ACQUIRE_READ_BY(1);
-  } else if (access_mode == DB_MODE_RW) {
-    INCREMENT_NUM_DB_ACQUIRE_WRITE_BY(1);
   }
 
   ARTS_INFO("Acquiring DB[Guid:%lu, GuidType:%u, AccessMode:%u, Owner:%u, "
@@ -1048,7 +1066,10 @@ static void acquire_one_dep(struct arts_edt_s *edt, arts_edt_dep_t *depv,
     rec->subtype = ARTS_DB;
     struct arts_ooo_args_db_acquire_s a = {
         .edt = edt, .db_guid = depv[i].guid, .slot = i};
+    db_acquire_census_mode(access_mode);
+    uint8_t census = arts_db_census_deciding();
     arts_handler_db_acquire(arts_db_of_cache(cache), &a);
+    arts_db_census_served(census);
     /* A local hit resolved the slot and took the EDT's buffer ref.  Pin the
      * descriptor by MOVING the still-alive cache-owning handle into the
      * slot's pin (consumed in release_one_dep), so the release reaches this
@@ -1089,6 +1110,10 @@ static void acquire_one_dep(struct arts_edt_s *edt, arts_edt_dep_t *depv,
                 arts_global_rank_id, owner);
     }
     rec->subtype = db_temp->db_type;
+    if (access_mode == DB_MODE_RO || access_mode == DB_MODE_RW) {
+      db_acquire_census_mode(access_mode);
+      INCREMENT_NUM_DB_ACQUIRE_LOCAL_HIT_BY(1);
+    }
     arts_db_acquire_local_hit(edt, i, arts_db_user_ptr(db_temp));
     arts_shared_release(&db_temp_h);
     arts_db_acquire_resolved(edt, i);

@@ -36,6 +36,7 @@
 #include <string.h>
 
 #include "arts/coherence/buffer.h"
+#include "arts/coherence/census.h"
 #include "arts/coherence/coherence.h"
 #include "arts/coherence/handlers.h"
 #include "arts/coherence/directory.h"
@@ -330,8 +331,11 @@ static void owner_try_execute(struct arts_db_cache_s *cache) {
         /* Only rw_pending: a reader never parks while this rank is resident
          * (the read acquire's owner-bit branch serves it immediately), so
          * ro_pending is empty whenever the owner-bit is already set.  A change
-         * that removed the read fast path would strand parked readers here. */
+         * that removed the read fast path would strand parked readers here.
+         * The write right never left this rank. */
+        uint8_t census = arts_db_census_serving(false);
         lock_drain_pending(&cache->rw_pending, cache_owner_parked_rw(cur));
+        arts_db_census_served(census);
         arts_send_db_excl_confirm(arts_guid_get_rank(cache->db_guid),
                                   cache->db_guid);
         break;
@@ -811,11 +815,13 @@ void arts_handler_db_excl_recall(void *item_v) {
   struct arts_db_cache_s *cache = &db->cache;
   uint64_t cur, next;
   bool retire = false;
+  bool early = false;
   do {
     cur = atomic_load_explicit(&cache->cache_state, memory_order_acquire);
     uint32_t ros = CACHE_RO_ST(cur);
     uint32_t ro_next = ros;
     retire = false;
+    early = false;
     if (ros == CACHE_ST_GRANT && CACHE_RO_CNT(cur) == 0u) {
       ro_next = CACHE_ST_IDLE; /* nothing live here — give it back now */
       retire = true;
@@ -839,7 +845,7 @@ void arts_handler_db_excl_recall(void *item_v) {
         arts_shared_release(&db_h); /* token already set — idempotent */
         return;
       }
-      INCREMENT_NUM_EXCL_RECALL_EARLY_BY(1);
+      early = true;
       next = cur | CACHE_OWNER_LEASED_MASK;
       continue; /* fall through to the CAS below via the loop condition */
     } else {
@@ -856,6 +862,9 @@ void arts_handler_db_excl_recall(void *item_v) {
   } while (!atomic_compare_exchange_weak_explicit(&cache->cache_state, &cur,
                                                   next, memory_order_acq_rel,
                                                   memory_order_acquire));
+  if (early) {
+    INCREMENT_NUM_EXCL_RECALL_EARLY_BY(1);
+  }
   if (retire && CACHE_GRANTED(cur)) {
     arts_send_db_excl_roret(arts_guid_get_rank(cache->db_guid), cache->db_guid);
   }
@@ -927,10 +936,11 @@ void arts_handler_db_acquire(void *item, void *args) {
      * write grant or the resident copy serves it, this is where a block whose
      * create took no hold gets its storage: on the acquiring thread's node,
      * before the EDT is handed a pointer. */
-    INCREMENT_NUM_DB_ACQUIRE_LOCAL_HIT_BY(1);
     (void)arts_db_buf_ensure(
         cache, atomic_load_explicit(&cache->db_size, memory_order_relaxed));
+    uint8_t census = arts_db_census_serving(false);
     mark_edt_ready_by_guid(edt->guid, slot);
+    arts_db_census_served(census);
     return;
   }
 
@@ -944,10 +954,8 @@ void arts_handler_db_acquire(void *item, void *args) {
       (mode == DB_MODE_RW) ? &cache->rw_pending : &cache->ro_pending, &w->link);
 
   if (act == CACHE_ACT_SEND_RW) {
-    INCREMENT_NUM_DB_ACQUIRE_REMOTE_BY(1);
     arts_send_db_excl_request(cache, DB_MODE_RW, excl_rw_cover(cur));
   } else if (act == CACHE_ACT_SEND_RO) {
-    INCREMENT_NUM_DB_ACQUIRE_REMOTE_BY(1);
     arts_send_db_excl_request(cache, DB_MODE_RO, excl_ro_cover(next));
   }
 }
@@ -1070,8 +1078,11 @@ static void lock_deliver_landed_cb(void *arg) {
   struct lock_deliver_landed_ctx_s *ctx =
       (struct lock_deliver_landed_ctx_s *)arg;
   if (arts_shared_get(ctx->db_h) != NULL) {
+    /* A one-sided payload comes from another rank. */
+    uint8_t census = arts_db_census_serving(true);
     lock_deliver_commit(ctx->db_h, ctx->db_guid, ctx->tag, ctx->mode, NULL,
                         ctx->data_size);
+    arts_db_census_served(census);
   } else {
     arts_shared_release(&ctx->db_h);
   }
@@ -1090,7 +1101,7 @@ void arts_handler_db_excl_deliver(void *payload, size_t size) {
   if (db == NULL) {
     /* Destroyed mid-flight: consume any pairing (the landing is the stable
      * buffer, cookie 0 — nothing to free). */
-    arts_db_rdzv_discard_landing(p->rdzv_txid, p->rdzv_cookie);
+    arts_db_rdzv_discard_landing(p->rdzv_txid, p->data_size, p->rdzv_cookie);
     arts_shared_release(&db_h);
     return;
   }
@@ -1108,14 +1119,17 @@ void arts_handler_db_excl_deliver(void *payload, size_t size) {
     ctx->mode = mode;
     ctx->data_size = p->data_size;
     ctx->tag = p->tag;
-    arts_net_rdzv_expect(p->rdzv_txid, lock_deliver_landed_cb, ctx);
+    arts_net_rdzv_expect(p->rdzv_txid, p->data_size, lock_deliver_landed_cb,
+                         ctx);
     return;
   }
 
   /* Same-rank / data-less deliver: inline payload (if any), no landing. */
+  uint8_t census = arts_db_census_serving_from(p->header.rank);
   lock_deliver_commit(db_h, p->db_guid, p->tag, mode,
                       (data_size > 0u) ? data : NULL,
                       data_size); /* consumes db_h */
+  arts_db_census_served(census);
 }
 
 static void lock_deliver_commit(arts_shared_ptr_t db_h, arts_guid_t db_guid,
@@ -1739,6 +1753,9 @@ void arts_handler_db_excl_request(void *item_v, void *args_v) {
     } while (!atomic_compare_exchange_weak_explicit(&db->lock_state, &cur, next,
                                                     memory_order_acq_rel,
                                                     memory_order_acquire));
+    if (action != EXCL_ACTION_FORWARD_MIGRATE) {
+      INCREMENT_NUM_EXCL_QUEUE_WAIT_BY(1);
+    }
     lock_owner_home_forward(db, action, next);
     /* First writer of the round: ask every rank holding an unmarked read grant
      * to give it back.  Placed AFTER the forward so a self-send cannot make the
@@ -1792,6 +1809,9 @@ void arts_handler_db_excl_request(void *item_v, void *args_v) {
     } while (!atomic_compare_exchange_weak_explicit(&db->lock_state, &cur, next,
                                                     memory_order_acq_rel,
                                                     memory_order_acquire));
+    if (action != EXCL_ACTION_FORWARD_SERVE_ONE) {
+      INCREMENT_NUM_EXCL_QUEUE_WAIT_BY(1);
+    }
     /* Queue AFTER the r++ CAS.  Every serve is a drain of the whole stack, so
      * a node queued before its count commits could be forwarded by another
      * frame while r does not yet hold it against the next write phase — and

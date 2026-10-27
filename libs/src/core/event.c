@@ -232,7 +232,6 @@ static void event_install(arts_guid_t *guid, const arts_event_hint_t *h_in) {
 }
 
 arts_guid_t arts_event_create(const arts_event_hint_t *hint) {
-  TIME_EVENT_CREATE_START();
   INCREMENT_NUM_EVENT_CREATE_BY(1);
   arts_event_hint_t h = hint_or_defaults(hint);
   if (h.finish) {
@@ -258,7 +257,6 @@ arts_guid_t arts_event_create(const arts_event_hint_t *hint) {
     /* Mechanism B — register creator-token for completion cleanup. */
     arts_owned_finish_register(g);
   }
-  TIME_EVENT_CREATE_STOP();
   return g;
 }
 
@@ -522,9 +520,6 @@ static void event_simple_step(struct arts_event_s *e, arts_guid_t guid, int op,
  *   GPU LC invalidation drain → force-defer on the GPU wrapper's slot. */
 void arts_event_satisfy_slot(arts_guid_t event_guid, arts_guid_t data_guid,
                              uint32_t slot) {
-  TIME_EVENT_SIGNAL_START();
-  INCREMENT_NUM_EVENT_SIGNAL_BY(1);
-
   struct arts_ooo_args_event_satisfy_s a = {
       .event_guid = event_guid, .data_guid = data_guid, .slot = slot};
   if (current_edt && current_edt->invalidate_count > 0) {
@@ -536,7 +531,6 @@ void arts_event_satisfy_slot(arts_guid_t event_guid, arts_guid_t data_guid,
     arts_ooo_dispatch_or_defer_guid(event_guid, OOO_EVENT_SATISFY_SLOT, &a,
                                     sizeof(a));
   }
-  TIME_EVENT_SIGNAL_STOP();
 }
 
 /* OCR-aligned convenience wrapper: satisfy slot 0 (LATCH_DECR). */
@@ -812,7 +806,6 @@ bool arts_event_wait(arts_guid_t event_guid) {
   INCREMENT_NUM_YIELD_BY(1);
   arts_edt_ctx_t tl;
   arts_edt_ctx_save(&tl);
-  TIME_YIELD_START();
   while (atomic_load_explicit(&arts_thread_info.alive, memory_order_acquire)) {
     /* Fire -> auto_destroy -> mark_delete detaches the slot; lookup returns
      * NULL and we exit.  Use the lookup/release pair so we never read freed
@@ -829,7 +822,6 @@ bool arts_event_wait(arts_guid_t event_guid) {
   while (arts_node_info.scheduler()) {
     ;
   }
-  TIME_YIELD_STOP();
   arts_edt_ctx_restore(&tl);
 
   arts_wait_reacquire_dbs();

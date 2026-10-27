@@ -77,7 +77,9 @@ void arts_pending_rw_chain_wake(arts_lf_link_t *chain,
         atomic_load_explicit(&chain->next, memory_order_relaxed);
     struct arts_db_rw_waiter_s *w =
         ARTS_CONTAINER_OF(chain, struct arts_db_rw_waiter_s, link);
+    uint8_t census = arts_db_census_serving_waiter(ARTS_DB_CENSUS_HELD(w));
     cb(w->edt_guid, w->slot, ctx);
+    arts_db_census_served(census);
     arts_free(w);
     chain = next;
   }

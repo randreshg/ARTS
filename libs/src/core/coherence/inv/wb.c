@@ -26,6 +26,7 @@
 #include <stddef.h>
 
 #include "arts/coherence/buffer.h"
+#include "arts/coherence/census.h"
 #include "arts/coherence/coherence.h"
 #include "arts/coherence/directory.h"
 #include "arts/coherence/handlers.h"
@@ -102,8 +103,9 @@ void arts_handler_db_acquire(void *item, void *args) {
    * materialization below: a second load of the same word could see the
    * grant withdrawn in between and skip the storage the first one entitled,
    * handing the EDT no pointer for a sized block. */
-  bool own =
-      (int)atomic_load_explicit(&cache->writer_count, memory_order_acquire) > 0;
+  unsigned int wc =
+      atomic_load_explicit(&cache->writer_count, memory_order_acquire);
+  bool own = (int)wc > 0;
   if (INV_CACHE_RO(peek) == INV_RO_VALID || own) {
     /* First use of a block whose create took no hold: its storage was left
      * for whoever uses it first, and holding the block's OWNERSHIP is what
@@ -117,11 +119,10 @@ void arts_handler_db_acquire(void *item, void *args) {
       (void)arts_db_buf_ensure(
           cache, atomic_load_explicit(&cache->db_size, memory_order_relaxed));
     }
-    /* A durable copy answers with no message and no CAS — still an
-     * acquire served locally, so it belongs in the same census the
-     * other arms feed through arts_db_acquire_local. */
-    INCREMENT_NUM_DB_ACQUIRE_LOCAL_HIT_BY(1);
+    /* A durable copy answers with no message and no CAS. */
+    uint8_t census = arts_db_census_serving(false);
     mark_edt_ready_by_guid(edt->guid, slot);
+    arts_db_census_served(census);
     return;
   }
 
@@ -132,6 +133,9 @@ void arts_handler_db_acquire(void *item, void *args) {
       arts_db_reader_node(&cache->reader_pool, idx);
   node->edt_guid = edt->guid;
   node->slot = slot;
+  /* Nonzero here is an install whose confirmation is still out: the right
+   * that covers this read is already on this rank. */
+  ARTS_DB_CENSUS_SET_HELD(node, wc != 0u);
 
   uint32_t act;
   uint64_t cur, next;
@@ -148,20 +152,18 @@ void arts_handler_db_acquire(void *item, void *args) {
                                                   memory_order_acquire));
 
   switch (act) {
-  case INV_CACHE_ACT_SELF_SERVE:
+  case INV_CACHE_ACT_SELF_SERVE: {
     /* The copy turned valid while we were deciding — served from here. */
-    INCREMENT_NUM_DB_ACQUIRE_LOCAL_HIT_BY(1);
     arts_db_reader_free(&cache->reader_pool, idx);
+    uint8_t census = arts_db_census_serving(false);
     mark_edt_ready_by_guid(edt->guid, slot);
+    arts_db_census_served(census);
     break;
+  }
   case INV_CACHE_ACT_SEND_RO:
-    INCREMENT_NUM_DB_ACQUIRE_REMOTE_BY(1);
     arts_send_db_inv_request(cache, DB_MODE_RO, inv_read_cover(next));
     break;
   default: /* PARK: the fetch's committer will serve us */
-    /* Parked behind an open fetch: still an acquire this rank could not
-     * answer, so it counts with the one that issued the fetch. */
-    INCREMENT_NUM_DB_ACQUIRE_REMOTE_BY(1);
     break;
   }
 }

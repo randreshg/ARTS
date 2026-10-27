@@ -645,18 +645,6 @@ add_arts_test(random_thread_safe)
 register_single_node_test(random_thread_safe TIMEOUT 60)
 set_tests_properties(random_thread_safe PROPERTIES PASS_REGULAR_EXPRESSION "PASS random_thread_safe")
 
-# --- counters ---
-# counter_smoke_value reads NUM_EDT_CREATE back from the counter files, which
-# exist only where the tree's counter config captures it; everywhere else there
-# is nothing for the program to read, so it is built (and kept compiling) but
-# not registered.
-add_arts_test(counter_smoke_value)
-file(STRINGS "${COUNTER_CONFIG_FILE}" _num_edt_create REGEX "^NUM_EDT_CREATE=")
-if(_num_edt_create AND NOT _num_edt_create MATCHES "^NUM_EDT_CREATE=OFF")
-    register_single_node_test(counter_smoke_value TIMEOUT 30)
-    set_tests_properties(counter_smoke_value PROPERTIES PASS_REGULAR_EXPRESSION "PASS counter_smoke_value")
-endif()
-
 add_arts_test(counter_timer_balance)
 register_single_node_test(counter_timer_balance TIMEOUT 30)
 set_tests_properties(counter_timer_balance PROPERTIES PASS_REGULAR_EXPRESSION "PASS counter_timer_balance")
@@ -669,6 +657,310 @@ set_tests_properties(api_init_per_node_worker PROPERTIES PASS_REGULAR_EXPRESSION
 add_arts_test(api_current_finish_event_null)
 register_single_node_test(api_current_finish_event_null TIMEOUT 10)
 set_tests_properties(api_current_finish_event_null PROPERTIES PASS_REGULAR_EXPRESSION "PASS api_current_finish_event_null")
+endif()
+
+# --- counters ---
+# The counter tests read their values back from the counter files, which carry
+# a counter only where the tree's counter config captures it; everywhere else
+# there is nothing for a program to read, so it is built (and kept compiling)
+# but not registered.  arts_counters_captured(out NAME...) is TRUE when the
+# config captures every NAME.
+function(arts_counters_captured out)
+    set(_all TRUE)
+    foreach(_c IN LISTS ARGN)
+        file(STRINGS "${COUNTER_CONFIG_FILE}" _line REGEX "^${_c}=")
+        if(NOT _line OR _line MATCHES "^${_c}=OFF")
+            set(_all FALSE)
+        endif()
+    endforeach()
+    set(${out} ${_all} PARENT_SCOPE)
+endfunction()
+
+# counter_smoke_value: the EDTs a program creates and runs are counted exactly,
+# main EDT included.  No cell changes how EDTs are counted.
+if(ARTS_TEST_REFERENCE_TREE)
+    add_arts_test(counter_smoke_value)
+    arts_counters_captured(_c NUM_EDT_CREATE NUM_EDT_FINISH)
+    if(_c)
+        register_single_node_test(counter_smoke_value TIMEOUT 30)
+        set_tests_properties(counter_smoke_value PROPERTIES PASS_REGULAR_EXPRESSION "PASS counter_smoke_value")
+    endif()
+endif()
+
+# counter_exact: exact values of known programs (tests/ocr/counter_exact.c).
+# Every cell classifies acquisitions in its own arm, so the acquisition census
+# of the one- and two-rank programs registers in every tree, each cell with
+# its own values; what no cell changes (creates, destroys, EDTs, the network
+# of a one-rank run) is checked in the reference tree only, and so is the
+# network of the two-rank exchange below.
+add_arts_test(counter_exact)
+arts_counters_captured(_c NUM_DB_ACQUIRE_READ NUM_DB_ACQUIRE_WRITE
+                       NUM_DB_ACQUIRE_LOCAL_HIT NUM_DB_ACQUIRE_REMOTE)
+if(_c)
+    # 10 blocks: 4 with the creator's hold, 4 without (one on a reserved
+    # GUID), 2 of size zero with the hold; one read and one write each.
+    set(_one 0:NUM_DB_ACQUIRE_READ=10 0:NUM_DB_ACQUIRE_WRITE=16
+             0:NUM_DB_ACQUIRE_LOCAL_HIT=26 0:NUM_DB_ACQUIRE_REMOTE=0)
+    if(ARTS_TEST_REFERENCE_TREE)
+        list(APPEND _one 0:NUM_DB_CREATE=10 0:NUM_DB_CREATE_NO_ACQUIRE=4
+                         0:BYTES_DB_CREATE=2048 0:NUM_DB_DESTROY=10
+                         0:NUM_EDT_CREATE=22 0:NUM_EDT_FINISH=22
+                         0:NUM_REMOTE_SEND=0 0:NUM_REMOTE_RECEIVE=0
+                         0:BYTES_REMOTE_SENT=0 0:BYTES_REMOTE_RECEIVED=0
+                         0:NUM_DB_PAYLOAD_SENT=0 0:BYTES_DB_PAYLOAD_SENT=0)
+    endif()
+    arts_counters_captured(_c NUM_PURGE_RETURN)
+    if(_c AND ARTS_RELEASE_POLICY STREQUAL "PURGE"
+       AND NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
+        list(APPEND _one 0:NUM_PURGE_RETURN=0)
+    endif()
+    arts_add_test(counter_exact_one COMMAND counter_exact one ${_one})
+    arts_test_cfg(_cfg 1n_20w)
+    set_tests_properties(counter_exact_one PROPERTIES
+        LABELS "single_node" TIMEOUT 30 RESOURCE_LOCK "arts_runtime"
+        ENVIRONMENT "ARTS_CONFIG=${_cfg}"
+        PASS_REGULAR_EXPRESSION "PASS: counter_exact one"
+        FAIL_REGULAR_EXPRESSION "FAIL:")
+
+    # The two-rank program, per cell: rank 1 reads 3 times, writes, reads;
+    # then rank 0, the home, reads.  Rank 0 also holds two creates.
+    set(_two 0:NUM_DB_ACQUIRE_READ=1 0:NUM_DB_ACQUIRE_WRITE=2
+             1:NUM_DB_ACQUIRE_READ=4 1:NUM_DB_ACQUIRE_WRITE=1)
+    set(_cell "${ARTS_COHERENCE_ARM}_${ARTS_WRITE_POLICY}_${ARTS_RELEASE_POLICY}")
+    if(ARTS_COHERENCE_ARM STREQUAL "FLUSH")
+        set(_cell "FLUSH")
+    endif()
+    # rank 0 local, rank 0 remote, rank 1 local, rank 1 remote
+    set(_census_VAL_WT_RETAIN 3 0 1 4)
+    set(_census_VAL_WT_PURGE 3 0 0 5)
+    set(_census_VAL_WB_RETAIN 2 1 1 4)
+    set(_census_INV_WT_RETAIN 3 0 3 2)
+    set(_census_INV_WT_PURGE 3 0 3 2)
+    set(_census_INV_WB_RETAIN 2 1 3 2)
+    set(_census_EXCL_WB_PURGE 3 0 0 5)
+    set(_census_EXCL_WB_RETAIN 2 1 3 2)
+    set(_census_FLUSH 3 0 0 5)
+    list(GET _census_${_cell} 0 _l0)
+    list(GET _census_${_cell} 1 _r0)
+    list(GET _census_${_cell} 2 _l1)
+    list(GET _census_${_cell} 3 _r1)
+    list(APPEND _two 0:NUM_DB_ACQUIRE_LOCAL_HIT=${_l0}
+                     0:NUM_DB_ACQUIRE_REMOTE=${_r0}
+                     1:NUM_DB_ACQUIRE_LOCAL_HIT=${_l1}
+                     1:NUM_DB_ACQUIRE_REMOTE=${_r1})
+    arts_counters_captured(_c NUM_SNAPSHOT_REQUEST NUM_RO_COMBINE_WINDOW
+                           NUM_RO_COMBINE_JOINED NUM_SNAPSHOT_HEADER_ONLY)
+    if(_c AND _cell STREQUAL "VAL_WT_RETAIN")
+        list(APPEND _two 1:NUM_SNAPSHOT_REQUEST=3 1:NUM_RO_COMBINE_WINDOW=3
+                         1:NUM_RO_COMBINE_JOINED=0 0:NUM_SNAPSHOT_REQUEST=0
+                         0:NUM_SNAPSHOT_HEADER_ONLY=2)
+    elseif(_c AND _cell STREQUAL "VAL_WT_PURGE")
+        list(APPEND _two 1:NUM_SNAPSHOT_REQUEST=4 1:NUM_RO_COMBINE_WINDOW=4
+                         1:NUM_RO_COMBINE_JOINED=0 0:NUM_SNAPSHOT_REQUEST=0
+                         0:NUM_SNAPSHOT_HEADER_ONLY=3)
+    elseif(_c AND _cell STREQUAL "VAL_WB_RETAIN")
+        list(APPEND _two 1:NUM_SNAPSHOT_REQUEST=3 1:NUM_RO_COMBINE_WINDOW=3
+                         1:NUM_RO_COMBINE_JOINED=0 0:NUM_SNAPSHOT_REQUEST=1
+                         0:NUM_RO_COMBINE_WINDOW=1 0:NUM_SNAPSHOT_HEADER_ONLY=2
+                         1:NUM_SNAPSHOT_HEADER_ONLY=0)
+    endif()
+    arts_counters_captured(_c NUM_EXCL_RECALL_SENT)
+    if(_c AND _cell STREQUAL "EXCL_WB_RETAIN")
+        list(APPEND _two 0:NUM_EXCL_RECALL_SENT=1 1:NUM_EXCL_RECALL_SENT=0)
+    endif()
+    # Hand-backs: rank 0's hold of the block homed on rank 1; on rank 1 the
+    # write turn, and under exclusion every read turn too.
+    arts_counters_captured(_purge NUM_PURGE_RETURN)
+    if(_purge AND _cell STREQUAL "EXCL_WB_PURGE")
+        list(APPEND _two 0:NUM_PURGE_RETURN=1 1:NUM_PURGE_RETURN=5)
+    elseif(_purge AND _cell MATCHES "_PURGE$")
+        list(APPEND _two 0:NUM_PURGE_RETURN=1 1:NUM_PURGE_RETURN=1)
+    endif()
+    if(ARTS_TEST_REFERENCE_TREE)
+        list(APPEND _two 0:NUM_DB_CREATE=3 0:NUM_DB_CREATE_NO_ACQUIRE=1
+                         0:BYTES_DB_CREATE=768 0:NUM_DB_DESTROY=3
+                         1:NUM_DB_CREATE=0 1:NUM_DB_DESTROY=0)
+    endif()
+
+    # The home program, per cell: rank 1 writes, then rank 0, the home, reads
+    # and writes.  Rank 0's read is local where the home holds the bytes, and
+    # its write where the write right belongs to the home (the voluntary-return
+    # policy); each is remote where rank 1 has to send it back.
+    set(_home 0:NUM_DB_ACQUIRE_READ=1 0:NUM_DB_ACQUIRE_WRITE=2
+              1:NUM_DB_ACQUIRE_READ=0 1:NUM_DB_ACQUIRE_WRITE=1
+              1:NUM_DB_ACQUIRE_LOCAL_HIT=0 1:NUM_DB_ACQUIRE_REMOTE=1)
+    # rank 0 local, rank 0 remote
+    set(_home_VAL_WT_RETAIN 2 1)
+    set(_home_VAL_WT_PURGE 3 0)
+    set(_home_VAL_WB_RETAIN 1 2)
+    set(_home_INV_WT_RETAIN 2 1)
+    set(_home_INV_WT_PURGE 3 0)
+    set(_home_INV_WB_RETAIN 1 2)
+    set(_home_EXCL_WB_PURGE 3 0)
+    set(_home_EXCL_WB_RETAIN 1 2)
+    set(_home_FLUSH 3 0)
+    list(GET _home_${_cell} 0 _l0)
+    list(GET _home_${_cell} 1 _r0)
+    list(APPEND _home 0:NUM_DB_ACQUIRE_LOCAL_HIT=${_l0}
+                      0:NUM_DB_ACQUIRE_REMOTE=${_r0})
+    if(_purge AND _cell MATCHES "_PURGE$")
+        list(APPEND _home 0:NUM_PURGE_RETURN=0 1:NUM_PURGE_RETURN=1)
+    endif()
+
+    # The recall program: rank 1 reads, then rank 0, the home and creator,
+    # writes.  The write right is rank 0's throughout, so its write is local on
+    # every cell, though under exclusion it recalls rank 1's read turn first.
+    set(_recall 0:NUM_DB_ACQUIRE_READ=0 0:NUM_DB_ACQUIRE_WRITE=2
+                0:NUM_DB_ACQUIRE_LOCAL_HIT=2 0:NUM_DB_ACQUIRE_REMOTE=0
+                1:NUM_DB_ACQUIRE_READ=1 1:NUM_DB_ACQUIRE_WRITE=0
+                1:NUM_DB_ACQUIRE_LOCAL_HIT=0 1:NUM_DB_ACQUIRE_REMOTE=1)
+    arts_counters_captured(_c NUM_EXCL_RECALL_SENT)
+    if(_c AND _cell STREQUAL "EXCL_WB_RETAIN")
+        list(APPEND _recall 0:NUM_EXCL_RECALL_SENT=1 1:NUM_EXCL_RECALL_SENT=0)
+    endif()
+    if(_purge AND _cell STREQUAL "EXCL_WB_PURGE")
+        list(APPEND _recall 0:NUM_PURGE_RETURN=0 1:NUM_PURGE_RETURN=1)
+    elseif(_purge AND _cell MATCHES "_PURGE$")
+        list(APPEND _recall 0:NUM_PURGE_RETURN=0 1:NUM_PURGE_RETURN=0)
+    endif()
+
+    # The claim program: rank 1's reader acquires the block before rank 1
+    # creates it, and the create's claim of rank 1's first-touch cache serves
+    # it, except where every acquisition fetches from the home.
+    set(_claim 0:NUM_DB_ACQUIRE_READ=0 0:NUM_DB_ACQUIRE_WRITE=0
+               0:NUM_DB_ACQUIRE_LOCAL_HIT=0 0:NUM_DB_ACQUIRE_REMOTE=0
+               1:NUM_DB_ACQUIRE_READ=1 1:NUM_DB_ACQUIRE_WRITE=1)
+    if(_cell STREQUAL "FLUSH")
+        list(APPEND _claim 1:NUM_DB_ACQUIRE_LOCAL_HIT=1
+                           1:NUM_DB_ACQUIRE_REMOTE=1)
+    else()
+        list(APPEND _claim 1:NUM_DB_ACQUIRE_LOCAL_HIT=2
+                           1:NUM_DB_ACQUIRE_REMOTE=0)
+    endif()
+    if(_purge AND _cell MATCHES "_PURGE$")
+        list(APPEND _claim 0:NUM_PURGE_RETURN=0 1:NUM_PURGE_RETURN=1)
+    endif()
+
+    # The pub program: rank 0's reader acquires at the home before rank 1
+    # creates the block, so it waits for rank 1's create and first
+    # publication, whichever drain then wakes it.  It is remote wherever the
+    # copy comes from rank 1, and local where the home holds the write right
+    # (the voluntary-return policy) or every home acquisition is local.
+    set(_pub 0:NUM_DB_ACQUIRE_READ=1 0:NUM_DB_ACQUIRE_WRITE=0
+             1:NUM_DB_ACQUIRE_READ=0 1:NUM_DB_ACQUIRE_WRITE=1
+             1:NUM_DB_ACQUIRE_LOCAL_HIT=1 1:NUM_DB_ACQUIRE_REMOTE=0)
+    if(_cell MATCHES "_PURGE$" OR _cell STREQUAL "FLUSH")
+        list(APPEND _pub 0:NUM_DB_ACQUIRE_LOCAL_HIT=1
+                         0:NUM_DB_ACQUIRE_REMOTE=0)
+    else()
+        list(APPEND _pub 0:NUM_DB_ACQUIRE_LOCAL_HIT=0
+                         0:NUM_DB_ACQUIRE_REMOTE=1)
+    endif()
+    if(_purge AND _cell MATCHES "_PURGE$")
+        list(APPEND _pub 0:NUM_PURGE_RETURN=0 1:NUM_PURGE_RETURN=1)
+    endif()
+
+    # The join program, its read requests held so the second reader parks
+    # while the first's is out: both wait on another rank, and the third
+    # reader, made by the first while it holds its own, reads the copy or
+    # read turn rank 1 holds, except where a read off the home always asks
+    # the home (there each later reader waits for the next request).
+    set(_join 0:NUM_DB_ACQUIRE_READ=0 0:NUM_DB_ACQUIRE_WRITE=1
+              0:NUM_DB_ACQUIRE_LOCAL_HIT=1 0:NUM_DB_ACQUIRE_REMOTE=0
+              1:NUM_DB_ACQUIRE_READ=3 1:NUM_DB_ACQUIRE_WRITE=0)
+    if(_cell MATCHES "^(VAL_|FLUSH)")
+        list(APPEND _join 1:NUM_DB_ACQUIRE_LOCAL_HIT=0
+                          1:NUM_DB_ACQUIRE_REMOTE=3)
+    else()
+        list(APPEND _join 1:NUM_DB_ACQUIRE_LOCAL_HIT=1
+                          1:NUM_DB_ACQUIRE_REMOTE=2)
+    endif()
+    if(_purge AND _cell STREQUAL "EXCL_WB_PURGE")
+        list(APPEND _join 0:NUM_PURGE_RETURN=0 1:NUM_PURGE_RETURN=1)
+    elseif(_purge AND _cell MATCHES "_PURGE$")
+        list(APPEND _join 0:NUM_PURGE_RETURN=0 1:NUM_PURGE_RETURN=0)
+    endif()
+
+    # The gate program, where the write right stays with the rank it moved
+    # to: rank 1's writer and the two readers its request serves are remote,
+    # and the write the first reader makes once it runs is local, the home's
+    # confirmation of rank 1's right still out or not.
+    set(_gate 0:NUM_DB_ACQUIRE_READ=0 0:NUM_DB_ACQUIRE_WRITE=1
+              0:NUM_DB_ACQUIRE_LOCAL_HIT=1 0:NUM_DB_ACQUIRE_REMOTE=0
+              1:NUM_DB_ACQUIRE_READ=2 1:NUM_DB_ACQUIRE_WRITE=2
+              1:NUM_DB_ACQUIRE_LOCAL_HIT=1 1:NUM_DB_ACQUIRE_REMOTE=3)
+    arts_counters_captured(_c NUM_RO_COMBINE_WINDOW NUM_RO_COMBINE_JOINED)
+    if(_c AND _cell MATCHES "^VAL_")
+        list(APPEND _join 1:NUM_RO_COMBINE_WINDOW=3 1:NUM_RO_COMBINE_JOINED=2)
+        list(APPEND _gate 1:NUM_RO_COMBINE_WINDOW=1 1:NUM_RO_COMBINE_JOINED=1)
+    endif()
+
+    # join and gate hold every read request: join's for 100 ms, so its
+    # answer serves both readers; gate's past the run, so the write turn
+    # serves them.
+    set(_shapes two home recall claim pub)
+    if(ARTS_DEBUG_INJECTION)
+        list(APPEND _shapes join)
+        if(_cell MATCHES "_RETAIN$")
+            list(APPEND _shapes gate)
+        endif()
+    endif()
+    set(_hook_join "ARTS_REQUEST_DELAY_MS=100:ro")
+    set(_hook_gate "ARTS_REQUEST_DELAY_MS=60000:ro")
+    foreach(_v 2n_9w_1p 2n_8w_2p)
+        arts_test_cfg(_cfg ${_v})
+        foreach(_shape IN LISTS _shapes)
+            set(_env "ARTS_CONFIG=${_cfg}")
+            if(DEFINED _hook_${_shape})
+                list(APPEND _env "${_hook_${_shape}}")
+            endif()
+            arts_add_test(counter_exact_${_shape}_${_v}
+                          COMMAND counter_exact ${_shape} ${_${_shape}})
+            set_tests_properties(counter_exact_${_shape}_${_v} PROPERTIES
+                LABELS "multinode" TIMEOUT 60 RESOURCE_LOCK "arts_runtime"
+                ENVIRONMENT "${_env}"
+                PASS_REGULAR_EXPRESSION "PASS: counter_exact ${_shape}"
+                FAIL_REGULAR_EXPRESSION "FAIL:")
+        endforeach()
+    endforeach()
+endif()
+# A two-rank exchange: rank 0 creates a 64 KiB block with the hold and an EDT
+# on rank 1 that reads it and shuts the run down.  Rank 1 dispatches every
+# message rank 0 sends, and takes in the payload whole however many pieces it
+# travels in (the split variant cuts it into sixteen); whether rank 0
+# dispatches the shutdown message is not fixed (a receiver also stops when it
+# sees the initiator's connection close), so its receives are left out.  The
+# read is served by one one-sided payload from the home under this tree's
+# cell.
+arts_counters_captured(_c NUM_REMOTE_SEND NUM_REMOTE_RECEIVE BYTES_REMOTE_SENT
+                       BYTES_REMOTE_RECEIVED NUM_DB_PAYLOAD_SENT
+                       BYTES_DB_PAYLOAD_SENT)
+if(_c AND ARTS_TEST_REFERENCE_TREE)
+    set(_ping 1:NUM_REMOTE_RECEIVE=0:NUM_REMOTE_SEND
+              1:BYTES_REMOTE_RECEIVED=0:BYTES_REMOTE_SENT
+              1:NUM_REMOTE_SEND=2
+              0:NUM_DB_PAYLOAD_SENT=1 0:BYTES_DB_PAYLOAD_SENT=65536
+              1:NUM_DB_PAYLOAD_SENT=0 1:BYTES_DB_PAYLOAD_SENT=0)
+    set(_ping_runs 2n_9w_1p 2n_8w_2p)
+    if(ARTS_DEBUG_INJECTION)
+        list(APPEND _ping_runs split)
+    endif()
+    foreach(_v IN LISTS _ping_runs)
+        if(_v STREQUAL "split")
+            arts_test_cfg(_cfg 2n_9w_1p)
+            set(_env "ARTS_CONFIG=${_cfg}" "ARTS_NET_MAX_MSG=4096")
+        else()
+            arts_test_cfg(_cfg ${_v})
+            set(_env "ARTS_CONFIG=${_cfg}")
+        endif()
+        arts_add_test(counter_exact_ping_${_v}
+                      COMMAND counter_exact ping ${_ping})
+        set_tests_properties(counter_exact_ping_${_v} PROPERTIES
+            LABELS "multinode" TIMEOUT 60 RESOURCE_LOCK "arts_runtime"
+            ENVIRONMENT "${_env}"
+            PASS_REGULAR_EXPRESSION "PASS: counter_exact ping"
+            FAIL_REGULAR_EXPRESSION "FAIL:")
+    endforeach()
 endif()
 
 # --- graph library ---

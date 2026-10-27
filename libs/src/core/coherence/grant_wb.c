@@ -22,6 +22,7 @@
 #include <string.h>
 
 #include "arts/coherence/buffer.h"
+#include "arts/coherence/census.h"
 #include "arts/coherence/coherence.h"
 #include "arts/coherence/directory.h"
 #include "arts/coherence/handlers.h"
@@ -104,7 +105,8 @@ void arts_handler_db_grant_response(void *payload, size_t size) {
       /* Consume any in-flight one-sided payload so the pairing table stays
        * leak-free; the landing ends when that payload arrives, or at once
        * when none was sent. */
-      arts_db_rdzv_discard_landing(hdr->rdzv_txid, hdr->rdzv_cookie);
+      arts_db_rdzv_discard_landing(hdr->rdzv_txid, hdr->data_size,
+                                   hdr->rdzv_cookie);
       return; /* the install lost to an object already retired — drop. */
     }
   }
@@ -151,7 +153,8 @@ void arts_handler_db_grant_response(void *payload, size_t size) {
     ctx->landing = (struct arts_db_buffer_s *)(uintptr_t)hdr->rdzv_cookie;
     ctx->version = hdr->version;
     ctx->data_size = hdr->data_size;
-    arts_net_rdzv_expect(hdr->rdzv_txid, owner_response_landed_cb, ctx);
+    arts_net_rdzv_expect(hdr->rdzv_txid, hdr->data_size,
+                         owner_response_landed_cb, ctx);
     return;
   }
 
@@ -180,7 +183,9 @@ void arts_handler_db_grant_response(void *payload, size_t size) {
     arts_db_buf_install(cache, hdr->version, data_start, data_size);
     arts_db_cache_learn_size(cache, data_size);
   }
+  uint8_t census = arts_db_census_serving_from(hdr->header.rank);
   owner_response_commit(db_h, db_guid); /* releases db_h */
+  arts_db_census_served(census);
 }
 
 /* Post-install tail of the GRANT_RESPONSE handler — everything that must
@@ -212,6 +217,9 @@ static void owner_response_commit(arts_shared_ptr_t db_h, arts_guid_t db_guid) {
    * would clobber such a decrement and lose the transfer (distributed hang). */
   atomic_fetch_add_explicit(&cache->writer_count, 2u + ARTS_GRANT_UNCONFIRMED,
                             memory_order_acq_rel);
+#if ARTS_DB_CENSUS
+  cache->census_install_remote = arts_db_census_serving_remote();
+#endif
 
   /* RW drain is DEFERRED to the CONFIRM_ACK handler (home has not flipped
    * rw_holder to us yet).  Reads are not: a read waiter resumed here gets
@@ -243,7 +251,10 @@ static void owner_response_landed_cb(void *arg) {
   struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(ctx->db_h);
   arts_db_buf_install_landed(&db->cache, ctx->version, ctx->landing,
                              ctx->data_size);
+  /* A one-sided payload comes from another rank. */
+  uint8_t census = arts_db_census_serving(true);
   owner_response_commit(ctx->db_h, ctx->db_guid); /* releases */
+  arts_db_census_served(census);
   arts_free(ctx);
 }
 
@@ -313,6 +324,16 @@ void arts_handler_db_grant_confirm(void *item_v, void *args_v) {
 
 /* ===== WB CONFIRM_ACK handler (new owner C) ==================== */
 
+/* Whether the grant this rank installed last came from another rank. */
+static bool install_was_remote(const struct arts_db_cache_s *cache) {
+#if ARTS_DB_CENSUS
+  return cache->census_install_remote;
+#else
+  (void)cache;
+  return false;
+#endif
+}
+
 /* Cat-C pure body (CONFIRM_ACK, new-owner side). Home has flipped
  * rw_holder to this rank; it is now safe for this rank's RW EDTs to run and
  * make their writes observable. Clear ARTS_GRANT_UNCONFIRMED from the count,
@@ -343,7 +364,9 @@ void arts_handler_db_grant_confirm_ack(void *item_v, void *args_v) {
   /* Drain the RW waiters that the GRANT_RESPONSE handler deferred (this is the
    * work moved out of arts_handler_db_grant_response); the drain takes them
    * and then releases the coalescing flag. */
+  uint8_t census = arts_db_census_serving(install_was_remote(cache));
   arts_db_drain_pending_rw_after_grant(cache);
+  arts_db_census_served(census);
 
   /* Piggybacked INVALIDATE effect (merged from the former standalone
    * GRANT_INVALIDATE).  Mirror the INVALIDATE handler's discipline: publish

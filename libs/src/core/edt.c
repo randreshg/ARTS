@@ -585,7 +585,6 @@ void arts_gpu_signal_edt_memset(arts_guid_t edt_guid, uint32_t slot,
 void arts_send_object_blob(unsigned int rank, arts_guid_t guid, void *ptr,
                            unsigned int mem_size, unsigned message_type,
                            void (*free_method)(void *)) {
-  TIME_REMOTE_MOVE_START();
   struct arts_msg_object_blob_packet_s packet;
   packet.guid = guid;
   arts_fill_packet_header(&packet.header, sizeof(packet) + mem_size,
@@ -593,7 +592,6 @@ void arts_send_object_blob(unsigned int rank, arts_guid_t guid, void *ptr,
   arts_transport_send_payload_async_free((int)rank, (char *)&packet,
                                          sizeof(packet), (char *)ptr, 0,
                                          mem_size, free_method);
-  TIME_REMOTE_MOVE_STOP();
 }
 
 #ifdef ARTS_DEBUG_INJECTION

@@ -77,7 +77,7 @@ Examples
 Available Counters
 ------------------
 
-The list below is generated from the ``ARTS_COUNTER_LIST`` X-macro in
+The list below follows the ``ARTS_COUNTER_LIST`` X-macro in
 ``libs/include/internal/arts/counter/counter.h`` — the single source of
 truth the enum, the string table, and ``artsrun``'s catalog are all
 derived from.  Grouping follows the header's own comments.
@@ -92,13 +92,19 @@ EDT Lifecycle — Time
    * - Counter
      - Description
    * - ``TIME_EDT_EXEC``
-     - Wall-clock time executing EDT user functions (paused during yield/wait).
+     - Wall time inside EDT bodies, summed over a rank's threads and
+       paused while a body blocks in ``arts_event_wait()``.  It includes
+       every runtime call the body makes, not the DB acquires before the
+       body or the releases after it.
    * - ``TIME_EDT_CREATE``
-     - Time spent in ``arts_edt_create()`` (GUID alloc, route table insertion).
+     - Wall time of ``arts_edt_create()`` on the creating thread:
+       placement, allocation, GUID, finish-scope join, and either the ship
+       to a remote home or the local install, which readies the EDT and
+       starts its DB acquires when its dependences are already met.
    * - ``TIME_EDT_SIGNAL``
-     - Time spent in EDT dependency signaling.
-   * - ``TIME_CONTEXT_SWITCH``
-     - Time spent saving/restoring EDT thread-local context during preemption.
+     - Wall time of ``arts_edt_satisfy_slot()`` on the satisfying thread,
+       including readying the EDT and starting its DB acquires when the
+       satisfy is its last; a satisfy of a remote EDT is only the send.
 
 EDT Lifecycle — Count
 ~~~~~~~~~~~~~~~~~~~~~
@@ -110,15 +116,21 @@ EDT Lifecycle — Count
    * - Counter
      - Description
    * - ``NUM_EDT_CREATE``
-     - Number of EDTs created.
+     - EDT creates issued on this rank, whatever the EDT's home.  Includes
+       the runtime's main EDT and, under the OCR shim, the trampoline EDT
+       that runs ``mainEdt``.
    * - ``NUM_EDT_ACQUIRE``
-     - Number of EDTs that resolved all dependencies and became ready.
+     - EDTs whose dependences and DB acquires all completed and that were
+       queued to run, counted on the EDT's rank.
    * - ``NUM_EDT_FINISH``
-     - Number of EDTs that completed execution.
+     - EDTs whose body returned, counted on the executing rank.  Includes
+       the main EDT and the shim's trampoline, not an EDT destroyed before
+       it ran or abandoned at shutdown.
    * - ``NUM_EDT_SIGNAL``
-     - Number of EDT dependency signals (``arts_edt_satisfy_slot()`` calls).
+     - EDT dependence-slot satisfactions (``arts_edt_satisfy_slot()``
+       calls), counted on the rank that issues them.
    * - ``NUM_YIELD``
-     - Count of voluntary EDT yields (``arts_event_wait()`` blocking).
+     - Calls to ``arts_event_wait()``.
 
 DataBlock Lifecycle — Time
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -130,10 +142,21 @@ DataBlock Lifecycle — Time
    * - Counter
      - Description
    * - ``TIME_DB_CREATE``
-     - Time spent in ``arts_db_create()`` (alloc, route table, data copy).
+     - Wall time of ``arts_db_create()`` on the creating thread:
+       placement, descriptor and payload allocation, GUID mint, and the
+       local install or the announce to a remote home.  No payload is
+       copied: a created block's payload is uninitialized.
 
 DataBlock Lifecycle — Count
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+A create is counted on the creating rank, whatever the block's home.  An
+acquisition is one (EDT, block) pair: an EDT whose slots name one block
+several times acquires it once, in the strongest mode they name, and
+that acquisition is counted on the EDT's rank when its slot reaches the
+block's coherence arm (a slot deferred until the block exists is counted
+when its replay gets there).  A create that takes the creator's hold is
+a write acquisition of its own.
 
 .. list-table::
    :header-rows: 1
@@ -142,21 +165,52 @@ DataBlock Lifecycle — Count
    * - Counter
      - Description
    * - ``NUM_DB_CREATE``
-     - Number of DataBlocks created.
+     - ``arts_db_create()`` calls that returned a block, with or without a
+       hold.
+   * - ``NUM_DB_CREATE_NO_ACQUIRE``
+     - The creates ``NUM_DB_CREATE`` counts that passed
+       ``ARTS_DB_PROP_NO_ACQUIRE`` (no creator hold).
    * - ``NUM_DB_DESTROY``
-     - Number of ``arts_db_destroy()`` calls.
+     - ``arts_db_destroy()`` calls on a DataBlock GUID, counted on the
+       calling rank.
    * - ``NUM_DB_ACQUIRE_READ``
-     - Count of RO-mode DataBlock acquisitions.
+     - EDT acquisitions whose strongest mode is RO.
    * - ``NUM_DB_ACQUIRE_WRITE``
-     - Count of RW-mode DataBlock acquisitions.
+     - EDT acquisitions whose strongest mode is RW, plus every create that
+       takes the creator's hold.
 
 Coherence — Acquire Resolution
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Where an acquire was answered.  Their sum is the acquire population; the
-hit share is what aggregation buys, and is comparable across every
-coherence arm because both are counted in the shared acquire helpers
-rather than in one arm's handler.
+Every acquisition ``NUM_DB_ACQUIRE_READ`` and ``NUM_DB_ACQUIRE_WRITE``
+count is classified once, on its rank, by the same rule on every coherence
+cell: by where the permission and the copy it needs are, never by the
+messages it caused or by what it waited behind.  A write is a local hit when
+its rank holds the block's write right, already or still after a change of
+phase on that rank (read turns recalled, a read-only phase ended), and remote
+when the write right had to move to its rank from another rank.  A read is
+a local hit when its rank holds a copy it may read without asking (a read
+turn or read-only phase with a valid copy, a durable copy, the write right,
+or, under ``VAL``, the block's home answering itself), and remote when the
+copy or the read permission had to come from another rank; under ``VAL`` a
+read off the block's home rank that its rank's write right does not cover is
+remote, since its version check goes to the home.  Under the voluntary-return
+release policy (``PURGE``) the write right belongs to the block's home, so
+every acquisition on the home rank is a local hit.  The state at an
+acquisition's decision classifies it: one whose rank holds what it needs there
+is a local hit even if it then waits behind a gate (a write right installed on
+its rank that the home has not yet confirmed).  One that parks without it is
+classified by where what it waits for comes from, whichever serve takes it:
+remote when that serve installs a permission or a copy another rank sent (a
+grant, a migration, a read reply) or wakes the readers of a first publish
+another rank made, local when it serves from what the rank already holds (a
+phase change on the rank, a create's claim of its first-touch cache, a first
+publish of its own).  On a one-rank run every acquisition is a local hit.
+``NUM_DB_ACQUIRE_LOCAL_HIT + NUM_DB_ACQUIRE_REMOTE = NUM_DB_ACQUIRE_READ +
+NUM_DB_ACQUIRE_WRITE`` holds on every cell for a run whose shutdown is
+quiescent: an acquisition a non-quiescent shutdown leaves parked and unserved
+is counted in ``NUM_DB_ACQUIRE_READ`` or ``NUM_DB_ACQUIRE_WRITE`` and in
+neither of the two.
 
 .. list-table::
    :header-rows: 1
@@ -165,9 +219,18 @@ rather than in one arm's handler.
    * - Counter
      - Description
    * - ``NUM_DB_ACQUIRE_LOCAL_HIT``
-     - Acquire answered from a copy already resident on the requesting rank.
+     - Acquisitions whose rank held what they need at their decision (a write
+       right installed but not yet confirmed included): the write right for a
+       write; for a read, a valid copy it may read, a read turn, the write
+       right or (``VAL``) the block's home answering itself.  A create's hold,
+       a zero-size block, and a serve from what the rank holds (a phase change
+       on the rank, a create's claim of its first-touch cache) included; under
+       ``PURGE`` every acquisition on the block's home rank.
    * - ``NUM_DB_ACQUIRE_REMOTE``
-     - Acquire that had to fetch from a remote rank.
+     - Acquisitions whose permission or copy had to come from another rank:
+       a grant or migration of the write right, a read turn, read reply or
+       first publish another rank sent, and a ``VAL`` read off the block's
+       home rank that its rank's write right does not cover.
 
 DataBlock Lifecycle — Bytes
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -179,10 +242,10 @@ DataBlock Lifecycle — Bytes
    * - Counter
      - Description
    * - ``BYTES_DB_CREATE``
-     - Total bytes of DataBlock data allocated via ``arts_db_create()``.
+     - Declared bytes of the blocks ``NUM_DB_CREATE`` counts.
 
-Coherence — Bytes
-~~~~~~~~~~~~~~~~~
+Coherence — Payload
+~~~~~~~~~~~~~~~~~~~
 
 .. list-table::
    :header-rows: 1
@@ -191,18 +254,20 @@ Coherence — Bytes
    * - Counter
      - Description
    * - ``BYTES_DB_PAYLOAD_SENT``
-     - Payload bytes actually shipped for a DataBlock, as opposed to
-       ``BYTES_REMOTE_SENT`` which mixes control traffic in.
+     - Datablock bytes this rank put on the fabric one-sided.  A CXL
+       store's transfers are the CXL counters.
    * - ``NUM_DB_PAYLOAD_SENT``
-     - DataBlock payloads shipped, one per payload however many pieces the
-       provider's message ceiling cut it into.
+     - Datablock payloads this rank put on the fabric one-sided, one per
+       payload however many pieces the provider's message ceiling cut it
+       into.
    * - ``TIME_DB_PAYLOAD_PUT``
      - Time from a payload PUT's post to its last piece's local completion
        (the provider done reading the source, not the bytes visible at the
-       peer).  Added by the thread that reaps that completion, so it
-       includes time queued behind a busy provider.  Concurrent PUTs each
-       add their own time: ``BYTES_DB_PAYLOAD_SENT`` over this is the
-       per-transfer throughput, not the link's aggregate bandwidth.
+       peer), time on the sender's retry ring included.  Added by the
+       thread that reaps that completion, so it includes time queued
+       behind a busy provider.  Concurrent PUTs each add their own time:
+       ``BYTES_DB_PAYLOAD_SENT`` over this is the per-transfer throughput,
+       not the link's aggregate bandwidth.
 
 Memory — Bytes
 ~~~~~~~~~~~~~~
@@ -214,10 +279,15 @@ Memory — Bytes
    * - Counter
      - Description
    * - ``BYTES_MEMORY_FOOTPRINT``
-     - Running total of allocated minus freed bytes (current heap footprint).
+     - Usable bytes held through the runtime's ``arts_malloc`` family:
+       control structures, not DB payloads or the registered pool.  A
+       thread's own value wraps when another thread frees what it
+       allocated, so read it as a node or cluster ``SUM``.
 
 Network — Bytes
 ~~~~~~~~~~~~~~~
+
+Two-sided messages and one-sided datablock payloads together.
 
 .. list-table::
    :header-rows: 1
@@ -226,12 +296,19 @@ Network — Bytes
    * - Counter
      - Description
    * - ``BYTES_REMOTE_SENT``
-     - Total bytes sent over the network to remote ranks.
+     - Bytes this rank put on the fabric: each two-sided message's header
+       and tail plus each one-sided datablock payload, with no provider
+       framing and no retries.
    * - ``BYTES_REMOTE_RECEIVED``
-     - Total bytes received from the network.
+     - Bytes this rank took in from the fabric: each dispatched two-sided
+       message's header and tail plus each landed datablock payload's
+       whole length, counted when the payload pairs with its metadata.
 
 Network — Count
 ~~~~~~~~~~~~~~~
+
+Two-sided messages only; the one-sided payloads are
+``NUM_DB_PAYLOAD_SENT``.
 
 .. list-table::
    :header-rows: 1
@@ -240,50 +317,9 @@ Network — Count
    * - Counter
      - Description
    * - ``NUM_REMOTE_SEND``
-     - Number of remote messages sent.
+     - Two-sided messages this rank sent.
    * - ``NUM_REMOTE_RECEIVE``
-     - Number of remote messages received.
-
-Network — Outbound Message Size Census
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-Outbound message size census, bucketed by total wire size (header +
-payload) at the async send entry points, before fragmentation/retry.
-``NET_MSG_TOTAL`` is the message population count standing in for a
-per-wire-type breakdown (no array-counter infra to key by message type
-cheaply).
-
-.. list-table::
-   :header-rows: 1
-   :widths: 40 60
-
-   * - Counter
-     - Description
-   * - ``NET_MSG_LE64``
-     - Outbound messages with total wire size <= 64 bytes.
-   * - ``NET_MSG_LE512``
-     - Outbound messages with total wire size <= 512 bytes.
-   * - ``NET_MSG_LE4K``
-     - Outbound messages with total wire size <= 4 KB.
-   * - ``NET_MSG_LE64K``
-     - Outbound messages with total wire size <= 64 KB.
-   * - ``NET_MSG_GT64K``
-     - Outbound messages with total wire size > 64 KB.
-   * - ``NET_MSG_TOTAL``
-     - Total outbound message count (the population the size buckets
-       partition).
-
-Network — Time
-~~~~~~~~~~~~~~
-
-.. list-table::
-   :header-rows: 1
-   :widths: 40 60
-
-   * - Counter
-     - Description
-   * - ``TIME_REMOTE_MOVE``
-     - Time spent moving a local DB's data out to a remote rank.
+     - Two-sided messages this rank dispatched.
 
 CXL Flush
 ~~~~~~~~~
@@ -309,27 +345,13 @@ flushing a single cache line, so per-flush means for small blocks run high.
    * - ``NUM_CXL_FLUSH_CONSUMER``
      - Consumer flushes (fetches).
    * - ``BYTES_CXL_FLUSH_PRODUCER``
-     - Bytes swept by producer flushes.
+     - Declared bytes of the blocks producer flushes swept.
    * - ``BYTES_CXL_FLUSH_CONSUMER``
-     - Bytes swept by consumer flushes.
+     - Declared bytes of the blocks consumer flushes swept.
    * - ``TIME_CXL_FLUSH_PRODUCER``
      - Time in producer flushes (sweep + ``sfence``).
    * - ``TIME_CXL_FLUSH_CONSUMER``
      - Time in consumer flushes (sweep + ``mfence``).
-
-Event — Time
-~~~~~~~~~~~~
-
-.. list-table::
-   :header-rows: 1
-   :widths: 40 60
-
-   * - Counter
-     - Description
-   * - ``TIME_EVENT_CREATE``
-     - Time spent in ``arts_event_create()``.
-   * - ``TIME_EVENT_SIGNAL``
-     - Time spent in ``arts_event_satisfy_slot()`` (signaling dependents).
 
 Event — Count
 ~~~~~~~~~~~~~
@@ -341,9 +363,13 @@ Event — Count
    * - Counter
      - Description
    * - ``NUM_EVENT_CREATE``
-     - Number of ``arts_event_create()`` calls.
-   * - ``NUM_EVENT_SIGNAL``
-     - Number of ``arts_event_satisfy_slot()`` calls.
+     - Event creates issued on this rank, including the finish-scope
+       proxies the runtime makes on an EDT's home when the EDT's scope is
+       homed elsewhere.
+   * - ``NUM_EVENT_DESTROY``
+     - Events retired on their home: an explicit destroy, an auto-destroy
+       after firing, or a counted event's last bind.  Summed over the
+       cluster, creates minus this is what the run still holds.
 
 Scheduling — Count
 ~~~~~~~~~~~~~~~~~~
@@ -354,23 +380,9 @@ Scheduling — Count
 
    * - Counter
      - Description
-   * - ``NUM_STEAL_ATTEMPT``
-     - Number of work-stealing attempts.
    * - ``NUM_STEAL_SUCCESS``
-     - Number of successful work steals (non-NULL deque pop).
-
-Scheduling — Time
-~~~~~~~~~~~~~~~~~
-
-.. list-table::
-   :header-rows: 1
-   :widths: 40 60
-
-   * - Counter
-     - Description
-   * - ``TIME_YIELD``
-     - Time spent blocked in ``arts_event_wait()`` (idle, spin-polling the
-       scheduler).
+     - EDTs a worker took from another thread's deque, a worker's or a
+       progress thread's, and ran; counted on the thief.
 
 Out-of-Order
 ~~~~~~~~~~~~
@@ -382,18 +394,17 @@ Out-of-Order
    * - Counter
      - Description
    * - ``NUM_OO_ENQUEUE``
-     - Number of pushes onto a route slot's OoO list, one per park or
-       re-park of a payload: a non-create operation whose target is not
+     - Number of pushes onto a route slot's OoO list, one per park or re-
+       park of a payload: a non-create operation whose target is not
        installed, or a create whose GUID is still occupied.
 
-Validation Arm (VAL) — Snapshot Requests
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Validation Arm (VAL) — Read Requests
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-A reply with no payload (``data_present`` 0) is one the version ledger
-saved; a size-only CTS (``data_present`` 2) is the rendezvous negotiating
-a landing and is counted apart, since it makes a size-unknown first touch
-cost two requests rather than one.  Inert unless the build compiles the
-VAL family in.
+A reply with no payload is one the version ledger saved; a size round
+(``data_present`` 2, never a dismiss) negotiates a landing for a request
+that could not size one.  A window is a read request that is not a re-
+send.  Inert unless the build compiles the VAL family in.
 
 .. list-table::
    :header-rows: 1
@@ -402,22 +413,29 @@ VAL family in.
    * - Counter
      - Description
    * - ``NUM_SNAPSHOT_REQUEST``
-     - Remote snapshot request issued by a VAL-arm RO acquire.
+     - VAL read requests this rank sent, one per message: re-sends after a
+       size round, a dismiss or a write give-back, and the home's request
+       to itself, included.
    * - ``NUM_SNAPSHOT_HEADER_ONLY``
-     - Reply with no payload: the requested version was already covered by
-       the requester's cached-version ledger.
+     - Read replies with no payload because the requester's ledger already
+       held that version, counted at the replying rank.
    * - ``NUM_SNAPSHOT_SIZE_CTS``
-     - Size-only CTS reply: the rendezvous negotiating a landing buffer for
-       a size-unknown first touch.
+     - Read size rounds, counted at the replying rank (the home, or the
+       owner under WB).
+   * - ``NUM_RO_COMBINE_WINDOW``
+     - Read windows opened: a first reader's request, the next window an
+       answer opens, and a write give-back's.
+   * - ``NUM_RO_COMBINE_JOINED``
+     - Readers that sent no request of their own: parked for the next
+       window or riding the rank's write request.
 
-Size-Only CTS Fallbacks / RO Combining
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Size Rounds on the Other Planes
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Size-only CTS fallbacks on the other planes: with the GUID size hint
-these count only sentinel GUIDs (pre-reserved ranges, oversize), so a
-nonzero steady rate is the hint NOT covering a workload.  The RO combine
-counters count the VAL family's combining window and are inert under the
-other protocols.
+Counted at the replying rank, a dismiss never among them.  With the GUID
+size hint only a reserved or labeled GUID (or a size past the hint's
+range) takes one, so a nonzero steady rate is the hint NOT covering a
+workload.
 
 .. list-table::
    :header-rows: 1
@@ -426,23 +444,20 @@ other protocols.
    * - Counter
      - Description
    * - ``NUM_GRANT_SIZE_CTS``
-     - Size-only CTS fallback on the migrating-grant plane (VAL/INV).
+     - Size rounds on the migrating-grant plane (VAL, INV).
    * - ``NUM_EXCL_SIZE_CTS``
-     - Size-only CTS fallback on the EXCL plane.
+     - Size rounds on the EXCL plane.
    * - ``NUM_INV_SIZE_CTS``
-     - Size-only CTS fallback on the INV plane.
-   * - ``NUM_RO_COMBINE_WINDOW``
-     - A combining window opened for a same-DB remote RO acquire.
-   * - ``NUM_RO_COMBINE_JOINED``
-     - A request that joined an open combining window instead of going to
-       the wire.
+     - Size rounds on the INV read plane.
+   * - ``NUM_FLUSH_SIZE_CTS``
+     - Size rounds on the FLUSH fetch plane.
 
 Invalidation Arm (INV)
 ~~~~~~~~~~~~~~~~~~~~~~
 
-One round per RW release, its multicast and the acks it blocks on.  The
-time is the release-side cost the write-policy regime crossover is
-attributed to.
+A round batches every release queued at the home when it starts, and
+retires them with one multicast; the release blocks until its round's
+acks are in.
 
 .. list-table::
    :header-rows: 1
@@ -451,20 +466,21 @@ attributed to.
    * - Counter
      - Description
    * - ``NUM_INVALIDATE_ROUND``
-     - Number of invalidation rounds run (one per RW release under INV).
-   * - ``NUM_INVALIDATE_SENT``
-     - Number of INVALIDATE messages multicast to sharers.
+     - Invalidation rounds at the home that retired at least one release.
    * - ``NUM_INVALIDATE_ACK``
-     - Number of INVALIDATE acknowledgements received.
+     - Sharer copies the rounds targeted, one ack each (a target that held
+       no valid copy and the WB home's own copy included).
    * - ``TIME_INVALIDATE_ROUND``
-     - Time an RW release spends blocked on its invalidation round.
+     - Time an RW release blocks on its round; under WT it includes the
+       payload's write-through, and a release that joined another's flight
+       waits for that flight.
 
 Migrating Write Permission
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-A grant that moved versus one a later local writer reused without
-touching the wire (the sticky grant).  Live in the arms whose ownership
-migrates (VAL, INV).
+A write request a rank committed versus a write turn a later local
+writer took on a grant it still held (the sticky grant).  Live in the
+arms whose ownership migrates (VAL, INV).
 
 .. list-table::
    :header-rows: 1
@@ -473,16 +489,18 @@ migrates (VAL, INV).
    * - Counter
      - Description
    * - ``NUM_GRANT_MIGRATE``
-     - An ownership grant that moved across ranks.
+     - Write requests this rank committed, one per grant round asked for,
+       the home's request to itself included.
    * - ``NUM_GRANT_LOCAL_REUSE``
-     - A local writer that reused a still-resident grant without touching
-       the wire.
+     - Write turns taken on a grant this rank already held.
 
 Exclusion Arm (EXCL)
 ~~~~~~~~~~~~~~~~~~~~
 
-Turns that could not be granted on arrival and had to queue at the home:
-the reader/writer serialization its philosophy pays for.
+Requests the home could not grant at its decision: the reader/writer
+serialization its philosophy pays for.  Under the retention release
+policy the home also asks retained read grants back before a write
+phase.
 
 .. list-table::
    :header-rows: 1
@@ -491,7 +509,14 @@ the reader/writer serialization its philosophy pays for.
    * - Counter
      - Description
    * - ``NUM_EXCL_QUEUE_WAIT``
-     - Turns that queued at the home instead of being granted on arrival.
+     - Requests, read or write, the home could not grant at its decision
+       and queued.
+   * - ``NUM_EXCL_RECALL_SENT``
+     - Read grants the home asked back so a writer could proceed, one per
+       retaining rank, itself included.
+   * - ``NUM_EXCL_RECALL_EARLY``
+     - Recalls that overtook their grant and had to be remembered rather
+       than acted on, once per recall.
 
 Write-Through Publish Flight Machine
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -516,8 +541,8 @@ healthy path.
      - Credit-less announce legs (steady nonzero = the credit teachers are
        not covering a workload).
    * - ``NUM_PUB_FLIGHT_ABANDON``
-     - Parked publish waiters woken by a destroy/teardown path instead of
-       an ACK.
+     - Parked publish waiters an abandon woke instead of an ACK (the
+       destroy or teardown of a block whose flight was open).
 
 Grant Plane Rare Paths
 ~~~~~~~~~~~~~~~~~~~~~~
@@ -529,13 +554,53 @@ Grant Plane Rare Paths
    * - Counter
      - Description
    * - ``NUM_GRANT_BATON_RECLAIM``
-     - A releasing claimant found the queue non-empty on its post-release
-       re-check and re-claimed it (the lost-wake window the re-check loop
-       exists to close).
+     - A releasing claimant's post-release re-check found queued work (a
+       request, or under the voluntary-return policy a parked hand-back)
+       and re-claimed the baton: the lost-wake window the re-check loop
+       exists to close.
    * - ``NUM_GRANT_HOME_DATALESS``
-     - An ownership grant INTO the write-through home, which moves the
-       permission with no payload (the home already holds the newest
+     - Write requests the write-through home sent its own directory,
+       asking for the permission alone (it already holds the newest
        bytes).
+
+Voluntary-Return Release Policy
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``NUM_PURGE_RETURN`` counts this policy's hand-backs on every arm.  On
+the grant plane ``RETURN`` and ``FLAG`` are the two vehicles of a
+hand-back and do not overlap: their sum is every hand-back, and
+``RETURN`` alone is what the fallback still costs.  ``RETURN`` plus
+``FLAG`` minus ``ACCEPT`` across the cluster is what is still in flight.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 40 60
+
+   * - Counter
+     - Description
+   * - ``NUM_PURGE_RETURN``
+     - Hand-backs of a permission, with its bytes if any, that a rank sent
+       the block's home, counted on the returning rank; the home's own idle
+       edge sends nothing.  On the grant plane ``NUM_GRANT_PURGE_RETURN +
+       NUM_GRANT_PURGE_FLAG``; under exclusion every read and write turn a
+       rank other than the home gave back.
+   * - ``NUM_GRANT_PURGE_RETURN``
+     - Write rights handed back at a holder's own idle edge, in a message
+       of their own.
+   * - ``NUM_GRANT_PURGE_FLAG``
+     - Hand-backs that rode a release's own publish.
+   * - ``NUM_GRANT_PURGE_ACCEPT``
+     - Hand-backs the home took.
+   * - ``NUM_GRANT_PURGE_LATCHED``
+     - Hand-backs parked because another thread was inside the home's
+       serving tail: the contended hand-off the single-slot latch exists
+       for.
+   * - ``NUM_GRANT_PURGE_STALE_SETTLE``
+     - Settles that found the hand-back token armed under a later grant
+       generation and left it alone.
+   * - ``NUM_GRANT_REGRANT_DEDUP``
+     - Grants served with the permission alone because the requester's own
+       copy was already the current one.
 
 .. note::
 

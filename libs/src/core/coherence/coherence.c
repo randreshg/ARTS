@@ -45,6 +45,7 @@
 #include <time.h>
 
 #include "arts/coherence/buffer.h"
+#include "arts/coherence/census.h"
 #include "arts/coherence/coherence.h"
 #include "arts/coherence/handlers.h"
 #include "arts/coherence/directory.h"
@@ -109,6 +110,12 @@ void arts_db_cache_common_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
 #if (defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)) &&              \
     defined(ARTS_WRITE_POLICY_WT)
   arts_lf_stack_init(&c->publication_waiters);
+#if ARTS_DB_CENSUS
+  /* Only a home's create-time image is ever unpublished, and the creator's
+   * hold is the write that publishes it first. */
+  c->census_publisher_remote = (kind == ARTS_DB_INIT_HOME_RECV &&
+                                creator_rank != arts_global_rank_id);
+#endif
 #endif
 #ifdef ARTS_PROTOCOL_VAL
   atomic_init(&c->req_state,
@@ -337,6 +344,7 @@ static bool resume_parked(struct arts_edt_s *edt, unsigned int slot,
     db_h = NULL; /* the slot owns it now */
   }
   arts_shared_release(&db_h); /* no-op when moved into the pin above */
+  arts_db_census_count_serve(depv[slot].guid);
   /* The block's payload is final for this EDT now: every other slot naming it
    * shares these bytes.  Run after the claim published them, and before this
    * slot's own account, which may be the one that schedules the EDT. */
@@ -496,6 +504,11 @@ arts_shared_ptr_t arts_db_cache_stub_install(arts_guid_t db_guid,
   return arts_route_table_lookup_db(db_guid);
 }
 
+#if ARTS_DB_CENSUS
+ARTS_THREAD_LOCAL uint8_t arts_db_census_serve;
+ARTS_THREAD_LOCAL bool arts_db_census_held;
+#endif
+
 /* ===== Case 1/3/5: local-buffer acquire ============================= */
 
 void *arts_db_acquire_local(struct arts_db_cache_s *cache) {
@@ -513,7 +526,6 @@ void *arts_db_acquire_local(struct arts_db_cache_s *cache) {
   if (buf == NULL) {
     return NULL; /* h is NULL — nothing installed, nothing held */
   }
-  INCREMENT_NUM_DB_ACQUIRE_LOCAL_HIT_BY(1);
   return buf->data;
 }
 
@@ -583,16 +595,17 @@ arts_db_acquire_remote_ro(struct arts_db_cache_s *cache, arts_guid_t edt_guid,
                           unsigned int slot) {
   assert(arts_global_rank_count > 1 &&
          "a rank alone homes every block and reads it locally");
-  INCREMENT_NUM_DB_ACQUIRE_REMOTE_BY(1);
   uint32_t idx = arts_db_reader_alloc(&cache->reader_pool);
   struct arts_db_reader_node_s *w =
       arts_db_reader_node(&cache->reader_pool, idx);
   w->edt_guid = edt_guid;
   w->slot = slot;
+  ARTS_DB_CENSUS_SET_HELD(w, false);
   uint64_t post;
   uint32_t act;
   (void)val_req_step(cache, VREQ_OP_ACQ_RO, idx, &post, &act);
   if (act == VREQ_ACT_SEND_RO) {
+    INCREMENT_NUM_RO_COMBINE_WINDOW_BY(1);
     val_send_window(cache, post);
   } else {
     INCREMENT_NUM_RO_COMBINE_JOINED_BY(1);
@@ -688,6 +701,9 @@ void arts_db_rw_req_giveback(struct arts_db_cache_s *cache, uint32_t tok) {
   uint64_t post;
   uint32_t act;
   (void)val_req_step(cache, VREQ_OP_RW_GIVE, tok, &post, &act);
+  if (act == VREQ_ACT_SEND_RO) {
+    INCREMENT_NUM_RO_COMBINE_WINDOW_BY(1);
+  }
   if (act == VREQ_ACT_RESEND || act == VREQ_ACT_SEND_RO) {
     val_send_window(cache, post);
   }
@@ -764,6 +780,12 @@ uint8_t arts_db_val_claim_cover(struct arts_db_cache_s *cache) {
     defined(ARTS_WRITE_POLICY_WT)
 void arts_db_drain_publication_waiters(struct arts_db_cache_s *cache) {
   arts_lf_link_t *node = arts_lf_stack_drain(&cache->publication_waiters);
+  /* Every waiter here waits for the first publication, so it counts from the
+   * publisher's rank whichever drain -- the publisher's own or a parker's
+   * re-check -- wakes it. */
+#if ARTS_DB_CENSUS
+  uint8_t census = arts_db_census_serving(cache->census_publisher_remote);
+#endif
   while (node != NULL) {
     struct arts_db_read_waiter_s *w = (struct arts_db_read_waiter_s *)node;
     arts_lf_link_t *next =
@@ -785,6 +807,9 @@ void arts_db_drain_publication_waiters(struct arts_db_cache_s *cache) {
     }
     node = next;
   }
+#if ARTS_DB_CENSUS
+  arts_db_census_served(census);
+#endif
 }
 #endif /* write-through homes that hold reads until the first publication */
 
@@ -1029,7 +1054,6 @@ static void pub_flight_abandon_land(struct arts_db_cache_s *cache) {
  * drain is safe: the Treiber drain hands each node to exactly one drainer.
  * Nodes are freed by their woken owners. */
 void arts_db_pub_flight_abandon(struct arts_db_cache_s *cache) {
-  INCREMENT_NUM_PUB_FLIGHT_ABANDON_BY(1);
 #if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
   /* No further leg will leave this cache: whatever hand-back is still armed
    * is discharged with the block. */
@@ -1050,6 +1074,7 @@ void arts_db_pub_flight_abandon(struct arts_db_cache_s *cache) {
   }
   while (n != NULL) {
     arts_lf_link_t *next = atomic_load_explicit(&n->next, memory_order_relaxed);
+    INCREMENT_NUM_PUB_FLIGHT_ABANDON_BY(1);
     sem_post(&((struct arts_db_pub_waiter_s *)n)->sem);
     n = next;
   }

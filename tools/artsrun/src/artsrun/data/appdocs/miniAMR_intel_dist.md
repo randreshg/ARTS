@@ -195,6 +195,9 @@ the same instance sends 1,112,405 messages from the hinted tier and **618,106**
 from this one — 77 k per rank against 139 k — for the same payload, and takes
 **zero** write-ownership migrations against the base row's 2,352,209: a
 payload is written only by tasks of the rank that owns it, for the whole run.
+These counts predate the counters' current definitions: `NUM_DB_CREATE` then
+counted only creates homed on the creating rank, `NUM_DB_ACQUIRE_LOCAL_HIT`
+left a create's hold out, and a one-sided payload counted as a message.
 
 ## Wiring
 

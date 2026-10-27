@@ -15,6 +15,7 @@
 #include <string.h>
 
 #include "arts/coherence/buffer.h"
+#include "arts/coherence/census.h"
 #include "arts/coherence/coherence.h"
 #include "arts/coherence/handlers.h"
 #include "arts/counter/Preamble.h"
@@ -182,13 +183,11 @@ void arts_handler_db_acquire(void *item, void *args) {
      * hold; every later use finds it. */
     (void)arts_db_buf_ensure(
         cache, atomic_load_explicit(&cache->db_size, memory_order_relaxed));
+    INCREMENT_NUM_DB_ACQUIRE_LOCAL_HIT_BY(1);
     arts_db_acquire_local_hit(edt, slot, arts_db_acquire_local(cache));
     arts_db_acquire_resolved(edt, slot);
     return;
   }
-  /* Counted where the acquire is decided, not where a request leaves: the
-   * size-only round re-enters the sender, and one acquire is one acquire. */
-  INCREMENT_NUM_DB_ACQUIRE_REMOTE_BY(1);
   fetch_send(cache, edt->guid, slot); /* parks; the response resumes it */
 }
 
@@ -222,6 +221,7 @@ void arts_handler_db_fetch_request(void *item_v, void *args_v) {
     arts_db_buf_release(&line_h);
   } else if (a->rdzv.txid == 0) {
     p.kind = 2; /* the requester could not size a landing */
+    INCREMENT_NUM_FLUSH_SIZE_CTS_BY(1);
     arts_db_buf_release(&line_h);
   } else {
     p.kind = 1;
@@ -263,7 +263,8 @@ static void copy_drop(struct arts_db_buffer_s *copy) {
 
 static void discard_cb(void *arg) { copy_drop((struct arts_db_buffer_s *)arg); }
 
-void arts_db_flush_discard_landing(uint64_t txid, uint64_t cookie) {
+void arts_db_flush_discard_landing(uint64_t txid, uint64_t len,
+                                   uint64_t cookie) {
   struct arts_db_buffer_s *copy = (struct arts_db_buffer_s *)(uintptr_t)cookie;
   if (copy == NULL) {
     return;
@@ -272,7 +273,7 @@ void arts_db_flush_discard_landing(uint64_t txid, uint64_t cookie) {
     copy_drop(copy);
     return;
   }
-  arts_net_rdzv_expect(txid, discard_cb, copy);
+  arts_net_rdzv_expect(txid, len, discard_cb, copy);
 }
 
 struct fetch_landed_ctx_s {
@@ -284,12 +285,15 @@ struct fetch_landed_ctx_s {
 
 static void fetch_landed_cb(void *arg) {
   struct fetch_landed_ctx_s *ctx = (struct fetch_landed_ctx_s *)arg;
+  /* A one-sided payload comes from another rank. */
+  uint8_t census = arts_db_census_serving(true);
   if (arts_shared_get(ctx->db_h) == NULL) {
     /* The block went away under a pending acquire, which the model leaves
      * undefined — but the slot still resolves, to NULL, the value a block
      * with no storage reads as, so the EDT is not left parked forever.  The
      * landed bytes have no descriptor to belong to and die here. */
     (void)arts_db_resume_parked(ctx->edt_guid, ctx->slot, NULL, ctx->db_h);
+    arts_db_census_served(census);
     copy_drop(ctx->copy);
     arts_free(ctx);
     return;
@@ -301,6 +305,7 @@ static void fetch_landed_cb(void *arg) {
   if (!arts_db_resume_parked(ctx->edt_guid, ctx->slot, copy_h, ctx->db_h)) {
     arts_shared_release(&copy_h);
   }
+  arts_db_census_served(census);
   arts_free(ctx);
 }
 
@@ -332,8 +337,11 @@ void arts_handler_db_fetch_response(void *item_v, void *args_v) {
   }
   if (a->kind == 0) {
     copy_drop(copy);
+    /* Only a rank other than the home fetches. */
+    uint8_t census = arts_db_census_serving(true);
     (void)arts_db_resume_parked(a->edt_guid, a->slot, NULL,
                                 arts_route_table_lookup_db(cache->db_guid));
+    arts_db_census_served(census);
     return;
   }
   struct fetch_landed_ctx_s *ctx =
@@ -342,7 +350,7 @@ void arts_handler_db_fetch_response(void *item_v, void *args_v) {
   ctx->copy = copy;
   ctx->edt_guid = a->edt_guid;
   ctx->slot = a->slot;
-  arts_net_rdzv_expect(a->rdzv_txid, fetch_landed_cb, ctx);
+  arts_net_rdzv_expect(a->rdzv_txid, a->db_size, fetch_landed_cb, ctx);
 }
 
 /* ===== release: the home does nothing, everyone else writes back ======== */
@@ -536,7 +544,11 @@ void arts_handler_db_flush_commit(void *item_v, void *args_v) {
   ctx->db_guid = a->db_guid;
   ctx->releaser = a->releaser;
   ctx->sem = a->sem;
-  arts_net_rdzv_expect(a->txid, flush_landed_cb, ctx);
+  arts_net_rdzv_expect(
+      a->txid,
+      atomic_load_explicit(&((struct arts_db_s *)item_v)->cache.db_size,
+                           memory_order_relaxed),
+      flush_landed_cb, ctx);
 }
 
 void arts_handler_db_flush_ack(void *item_v, void *args_v) {

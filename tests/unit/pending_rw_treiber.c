@@ -89,6 +89,7 @@ static struct arts_db_rw_waiter_s *mk_waiter(long id) {
       (struct arts_db_rw_waiter_s *)malloc(sizeof(*w));
   w->edt_guid = mk_guid((uint64_t)id);
   w->slot = (unsigned int)(id ^ 0x5555);
+  ARTS_DB_CENSUS_SET_HELD(w, false);
   return w;
 }
 
@@ -172,6 +173,7 @@ static void *conc_producer(void *arg) {
         (struct arts_db_rw_waiter_s *)malloc(sizeof(*w));
     w->edt_guid = mk_guid((uint64_t)id);
     w->slot = (unsigned int)id;
+    ARTS_DB_CENSUS_SET_HELD(w, false);
     arts_pending_rw_queue_push(&g_q, w);
   }
   atomic_fetch_add_explicit(&g_prod_done, 1, memory_order_release);
@@ -244,6 +246,9 @@ int main(void) {
 void *arts_calloc(size_t nmemb, size_t size) { return calloc(nmemb, size); }
 void arts_free(void *ptr) { free(ptr); }
 void *arts_malloc(size_t size) { return malloc(size); }
+#if ARTS_DB_CENSUS
+ARTS_THREAD_LOCAL uint8_t arts_db_census_serve;
+#endif
 #endif
 
 #include "core/coherence/grant_queue.c"

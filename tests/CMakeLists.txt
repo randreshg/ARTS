@@ -2135,41 +2135,44 @@ if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
                             PASS "PASS: db_destroy_cover_settles 8 rounds x 32 blocks \\(t2, hop\\)")
         endif()
     endif()
-    # db_size_round_once reads the size rounds the home sent back from the
-    # counter file, which carries them only where the tree's counter config
-    # captures the arm's counters; elsewhere it is built and not registered.
-    # A store whose grants carry no payload sends no size round.
-    add_arts_test(db_size_round_once)
-    if(ARTS_COHERENCE_ARM STREQUAL "EXCL")
-        set(_size_counters NUM_EXCL_SIZE_CTS)
-    elseif(ARTS_COHERENCE_ARM STREQUAL "VAL")
-        set(_size_counters NUM_GRANT_SIZE_CTS NUM_SNAPSHOT_SIZE_CTS)
-    else()
-        set(_size_counters NUM_GRANT_SIZE_CTS NUM_INV_SIZE_CTS)
+endif()
+
+# db_size_round_once reads the size rounds the home sent back from the counter
+# file, which carries them only where the tree's counter config captures the
+# arm's counters; elsewhere it is built and not registered.  A store whose
+# grants carry no payload sends no size round.
+add_arts_test(db_size_round_once)
+if(ARTS_COHERENCE_ARM STREQUAL "EXCL")
+    set(_size_counters NUM_EXCL_SIZE_CTS)
+elseif(ARTS_COHERENCE_ARM STREQUAL "VAL")
+    set(_size_counters NUM_GRANT_SIZE_CTS NUM_SNAPSHOT_SIZE_CTS)
+elseif(ARTS_COHERENCE_ARM STREQUAL "FLUSH")
+    set(_size_counters NUM_FLUSH_SIZE_CTS)
+else()
+    set(_size_counters NUM_GRANT_SIZE_CTS NUM_INV_SIZE_CTS)
+endif()
+set(_size_captured ON)
+foreach(_c IN LISTS _size_counters)
+    file(STRINGS "${COUNTER_CONFIG_FILE}" _line REGEX "^${_c}=")
+    if(NOT _line OR _line MATCHES "^${_c}=OFF")
+        set(_size_captured OFF)
     endif()
-    set(_size_captured ON)
-    foreach(_c IN LISTS _size_counters)
-        file(STRINGS "${COUNTER_CONFIG_FILE}" _line REGEX "^${_c}=")
-        if(NOT _line OR _line MATCHES "^${_c}=OFF")
-            set(_size_captured OFF)
-        endif()
-    endforeach()
-    if(_size_captured AND NOT ARTS_CXL_TREE_RESIDENCY)
-        arts_test_cfg(_cfg 2n_9w_1p)
-        foreach(_g reserved minted)
-            foreach(_m writes reads)
-                arts_add_test(db_size_round_once_${_g}_${_m}
-                              COMMAND db_size_round_once ${_g} ${_m})
-                set_tests_properties(db_size_round_once_${_g}_${_m} PROPERTIES
-                    LABELS "multinode"
-                    TIMEOUT 60
-                    RESOURCE_LOCK "arts_runtime"
-                    ENVIRONMENT "ARTS_CONFIG=${_cfg}"
-                    PASS_REGULAR_EXPRESSION "PASS: db_size_round_once"
-                    FAIL_REGULAR_EXPRESSION "FAIL:")
-            endforeach()
+endforeach()
+if(_size_captured AND NOT ARTS_CXL_TREE_RESIDENCY)
+    arts_test_cfg(_cfg 2n_9w_1p)
+    foreach(_g reserved minted)
+        foreach(_m writes reads)
+            arts_add_test(db_size_round_once_${_g}_${_m}
+                          COMMAND db_size_round_once ${_g} ${_m})
+            set_tests_properties(db_size_round_once_${_g}_${_m} PROPERTIES
+                LABELS "multinode"
+                TIMEOUT 60
+                RESOURCE_LOCK "arts_runtime"
+                ENVIRONMENT "ARTS_CONFIG=${_cfg}"
+                PASS_REGULAR_EXPRESSION "PASS: db_size_round_once"
+                FAIL_REGULAR_EXPRESSION "FAIL:")
         endforeach()
-    endif()
+    endforeach()
 endif()
 
 # db_create_minted_guid_refused: a create handed a GUID an earlier create

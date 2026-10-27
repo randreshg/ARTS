@@ -47,6 +47,7 @@
 
 #include "arts.h" /* ARTS_DB_PROP_NO_ACQUIRE */
 #include "arts/coherence/buffer.h"
+#include "arts/coherence/census.h"
 #include "arts/coherence/coherence.h"
 #include "arts/coherence/directory.h"
 #include "arts/db.h"
@@ -329,7 +330,8 @@ static void rdzv_discard_cb(void *arg) {
   arts_free(ctx);
 }
 
-void arts_db_rdzv_discard_landing(uint64_t txid, uint64_t cookie) {
+void arts_db_rdzv_discard_landing(uint64_t txid, uint64_t len,
+                                  uint64_t cookie) {
   if (txid == 0) {
     if (cookie != 0) {
       arts_db_buf_landing_return((struct arts_db_buffer_s *)(uintptr_t)cookie);
@@ -339,7 +341,7 @@ void arts_db_rdzv_discard_landing(uint64_t txid, uint64_t cookie) {
   struct rdzv_discard_ctx_s *ctx =
       (struct rdzv_discard_ctx_s *)arts_malloc(sizeof(*ctx));
   ctx->landing = (struct arts_db_buffer_s *)(uintptr_t)cookie;
-  arts_net_rdzv_expect(txid, rdzv_discard_cb, ctx);
+  arts_net_rdzv_expect(txid, len, rdzv_discard_cb, ctx);
 }
 
 #if defined(ARTS_PROTOCOL_VAL)
@@ -372,7 +374,10 @@ static void snapshot_landed_cb(void *arg) {
   struct arts_db_cache_s *cache = &db->cache;
   arts_db_buf_install_landed(cache, ctx->version, ctx->landing,
                              ctx->data_size);
+  /* A one-sided payload comes from another rank. */
+  uint8_t census = arts_db_census_serving(true);
   arts_db_ro_combine_on_terminal(cache, ctx->cover);
+  arts_db_census_served(census);
   arts_shared_release(&ctx->db_h);
   arts_free(ctx);
 }
@@ -411,7 +416,7 @@ void arts_handler_db_snapshot_response(void *item_v, void *args_v) {
     ctx->version = a->version;
     ctx->data_size = a->db_size;
     ctx->cover = a->cover;
-    arts_net_rdzv_expect(a->rdzv_txid, snapshot_landed_cb, ctx);
+    arts_net_rdzv_expect(a->rdzv_txid, a->db_size, snapshot_landed_cb, ctx);
     return;
   }
 

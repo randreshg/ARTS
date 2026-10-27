@@ -206,7 +206,8 @@ angles, and it lost at every multinode geometry in both write policies. Its
 counters say why — under write-back it changed nothing it targeted
 (`NUM_DB_ACQUIRE_REMOTE` 1,237,628 → 1,237,747) and added two messages per moved
 block; under write-through it removed 92 % of the remote acquires and still lost,
-because it added three.
+because it added three.  These counts predate the counters' current definitions
+(hpcg_intel's appdoc says how they differ).
 
 Placement in this row is the design instead. The tile→domain map is the
 author's recursive bisection, balanced 1.000 with compact 3-D sub-boxes at every

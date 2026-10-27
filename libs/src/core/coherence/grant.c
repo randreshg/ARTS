@@ -89,11 +89,13 @@ bool arts_db_acquire_rw_local_fast(struct arts_db_cache_s *cache,
    * held, or invalidated) and negative (held but unconfirmed, where a write
    * would be observable while the directory still names the previous owner and
    * a reader is redirected to that rank's retained, now stale copy).  Both go
-   * remote-RW, which parks; the in-flight round's drain wakes them. */
+   * remote-RW, which parks: the in-flight round's drain wakes a waiter pushed
+   * before its take, and one pushed after it opens a request of its own. */
   while (1) {
     unsigned int wc =
         atomic_load_explicit(&cache->writer_count, memory_order_acquire);
     if ((int)wc <= 0) {
+      arts_db_census_note_held(wc != 0u);
       return false; /* no grant, or one not yet confirmed — go remote-RW. */
     }
     if (atomic_compare_exchange_strong_explicit(&cache->writer_count, &wc,
@@ -111,6 +113,7 @@ bool arts_db_acquire_rw_local_fast(struct arts_db_cache_s *cache,
       /* A write turn taken on a grant this rank already held: the round trip
        * the sticky grant removed. */
       INCREMENT_NUM_GRANT_LOCAL_REUSE_BY(1);
+      INCREMENT_NUM_DB_ACQUIRE_LOCAL_HIT_BY(1);
       arts_db_acquire_local_hit(edt, slot, arts_db_acquire_local(cache));
       return true;
     }
@@ -135,7 +138,7 @@ arts_db_acquire_remote_rw(struct arts_db_cache_s *cache, arts_guid_t edt_guid,
       (struct arts_db_rw_waiter_s *)arts_malloc(sizeof(*w));
   w->edt_guid = edt_guid;
   w->slot = slot;
-  INCREMENT_NUM_DB_ACQUIRE_REMOTE_BY(1);
+  ARTS_DB_CENSUS_SET_HELD(w, arts_db_census_take_held());
   arts_pending_rw_queue_push(&cache->pending_rw, w);
   arts_sched_fuzz_point(); /* widen the push<->coalescing-flag-CAS window */
   /* seq_cst fence: store->load pair with arts_db_grant_take_waiters (and

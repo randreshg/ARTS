@@ -33,6 +33,7 @@
 #include <string.h>
 
 #include "arts/coherence/buffer.h"
+#include "arts/coherence/census.h"
 #include "arts/coherence/coherence.h"
 #include "arts/coherence/directory.h"
 #include "arts/coherence/handlers.h"
@@ -123,6 +124,9 @@ void arts_db_rw_req_giveback(struct arts_db_cache_s *cache, uint32_t tok) {
   if (act == INV_CACHE_ACT_SEND_RO) {
     arts_send_db_inv_request(cache, DB_MODE_RO, inv_read_cover(post));
   } else if (act == INV_CACHE_ACT_SERVE) {
+    /* No serve section: a valid copy never has a parked chain (every
+     * transition into it leaves the chain empty, and an arrival on it serves
+     * itself), so this takes no reader. */
     arts_db_reader_serve_chain(&cache->reader_pool, INV_CACHE_HEAD_RO(pre));
   }
 }
@@ -471,14 +475,11 @@ void inv_home_round_try_open(struct arts_db_s *db) {
     /* Claim held.  Take the whole queued batch (Treiber head XCHG). */
     arts_lf_link_t *chain = arts_lf_stack_drain(&db->pub_queue);
     struct arts_db_inv_pub_s *entries = (struct arts_db_inv_pub_s *)chain;
-    /* One round per claim, counted where the claim is won so an empty round
-     * (a claim that raced past consumed work) is counted too — it costs the
-     * same directory transition. */
-    INCREMENT_NUM_INVALIDATE_ROUND_BY(1);
     if (entries == NULL) {
       /* Empty round: the claim raced past work another opener consumed. */
       inv_home_round_close(db, NULL);
     } else {
+      INCREMENT_NUM_INVALIDATE_ROUND_BY(1);
       /* Single publication point: a data entry's bytes already landed IN
        * PLACE in the stable buffer (the commit-leg pairing gates the queue),
        * so publishing is the version stamp alone.  At most one data entry
@@ -718,7 +719,7 @@ void arts_handler_db_publish(void *item_v, void *args_v) {
     ctx->db_h = arts_route_table_lookup_db(a->db_guid);
     ctx->db_guid = a->db_guid;
     ctx->entry = e;
-    arts_net_rdzv_expect(a->rdzv_txid, inv_pub_landed_cb, ctx);
+    arts_net_rdzv_expect(a->rdzv_txid, a->data_size, inv_pub_landed_cb, ctx);
     return;
   }
   arts_lf_stack_push(&db->pub_queue, &e->link);
@@ -823,7 +824,10 @@ static void inv_landed_cb(void *arg) {
     arts_free(ctx);
     return;
   }
+  /* A one-sided payload comes from another rank. */
+  uint8_t census = arts_db_census_serving(true);
   inv_deliver_commit(ctx->db_h, ctx->version, ctx->landing, ctx->data_size);
+  arts_db_census_served(census);
   arts_free(ctx);
 }
 
@@ -834,7 +838,7 @@ void arts_handler_db_inv_deliver(void *payload, size_t size) {
   arts_shared_ptr_t db_h = arts_route_table_lookup_db(p->db_guid);
   struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(db_h);
   if (db == NULL) {
-    arts_db_rdzv_discard_landing(p->rdzv_txid, p->rdzv_cookie);
+    arts_db_rdzv_discard_landing(p->rdzv_txid, p->data_size, p->rdzv_cookie);
     arts_shared_release(&db_h);
     return;
   }
@@ -847,7 +851,7 @@ void arts_handler_db_inv_deliver(void *payload, size_t size) {
     ctx->landing = (struct arts_db_buffer_s *)(uintptr_t)p->rdzv_cookie;
     ctx->version = p->version;
     ctx->data_size = p->data_size;
-    arts_net_rdzv_expect(p->rdzv_txid, inv_landed_cb, ctx);
+    arts_net_rdzv_expect(p->rdzv_txid, p->data_size, inv_landed_cb, ctx);
     return;
   }
   /* Data-less reply.  The commit below turns this rank's copy VALID and
@@ -876,7 +880,9 @@ void arts_handler_db_inv_deliver(void *payload, size_t size) {
                  "landing nor a buffer to make valid");
     }
   }
+  uint8_t census = arts_db_census_serving_from(p->header.rank);
   inv_deliver_commit(db_h, p->version, NULL, 0u);
+  arts_db_census_served(census);
 }
 
 void arts_handler_db_inv_invalidate(struct arts_db_s *db) {
@@ -973,7 +979,6 @@ void arts_send_db_inv_cts(unsigned int requester_rank, struct arts_db_s *db,
  * what the round costs. */
 void arts_send_db_inv_invalidate(unsigned int sharer_rank,
                                  arts_guid_t db_guid) {
-  INCREMENT_NUM_INVALIDATE_SENT_BY(1);
   if (sharer_rank == arts_global_rank_id) {
     /* Local hit: run the retirement inline.  Reachable under WB, where the
      * home holds no canonical copy and is therefore an ordinary sharer — its

@@ -163,15 +163,16 @@ void arts_run_edt(struct arts_edt_s *edt) {
   arts_set_thread_local_edt_info(edt);
 
   TIME_EDT_EXEC_START();
+#if ARTS_LOG_LEVEL >= 2
   struct timespec start_time;
   struct timespec end_time;
   (void)clock_gettime(CLOCK_MONOTONIC, &start_time);
+#endif
   func(paramc, paramv, depc, depv);
+#if ARTS_LOG_LEVEL >= 2
   (void)clock_gettime(CLOCK_MONOTONIC, &end_time);
+#endif
   TIME_EDT_EXEC_STOP();
-
-  uint64_t exec_ns = ((end_time.tv_sec - start_time.tv_sec) * 1000000000ULL) +
-                     (end_time.tv_nsec - start_time.tv_nsec);
 
   INCREMENT_NUM_EDT_FINISH_BY(1);
 
@@ -209,7 +210,12 @@ void arts_run_edt(struct arts_edt_s *edt) {
 
   arts_unset_thread_local_edt_info(true);
 
-  ARTS_INFO("EDT[Guid:%lu] finished (exec_ns=%lu)", edt->guid, exec_ns);
+#if ARTS_LOG_LEVEL >= 2
+  ARTS_INFO("EDT[Guid:%lu] finished (exec_ns=%lu)", edt->guid,
+            (unsigned long)(((end_time.tv_sec - start_time.tv_sec) *
+                             1000000000ULL) +
+                            (end_time.tv_nsec - start_time.tv_nsec)));
+#endif
   arts_shared_release(&sref);
 }
 
@@ -221,6 +227,7 @@ inline struct arts_edt_s *arts_runtime_steal_from_network() {
       index = (index + 1) % arts_node_info.progress_thread_count;
       if ((edt = (struct arts_edt_s *)arts_deque_pop_back(
                arts_node_info.progress_deque[index])) != NULL) {
+        INCREMENT_NUM_STEAL_SUCCESS_BY(1);
         break;
       }
     }
@@ -231,7 +238,6 @@ inline struct arts_edt_s *arts_runtime_steal_from_network() {
 inline struct arts_edt_s *arts_runtime_steal_from_worker() {
   struct arts_edt_s *edt = NULL;
   if (arts_node_info.total_thread_count > 1) {
-    INCREMENT_NUM_STEAL_ATTEMPT_BY(1);
     long unsigned int steal_loc;
     do {
       /* Through the shared helper, not a raw jrand48: its result is signed, and

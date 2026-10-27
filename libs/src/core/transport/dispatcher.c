@@ -42,6 +42,7 @@
 #include <unistd.h>
 
 #include "arts.h"
+#include "arts/coherence/census.h"
 #include "arts/coherence/coherence.h" /* arts_handler_db_grant_* bodies */
 #include "arts/coherence/handlers.h"
 #include "arts/counter/counter.h" /* arts_handler_time_sync_* */
@@ -355,12 +356,16 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
     arts_shared_ptr_t h = arts_route_table_lookup_db(pack->db_guid);
     struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(h);
     if (db != NULL) {
+      /* A read answer on the wire comes from another rank. */
+      uint8_t census = arts_db_census_serving(true);
       arts_handler_db_snapshot_response(db, &args);
+      arts_db_census_served(census);
     } else {
       /* MISS: still consume the txid of any one-sided payload in flight so
        * the pairing table stays leak-free; the landing ends when that payload
        * arrives, or at once when none was sent. */
-      arts_db_rdzv_discard_landing(pack->rdzv_txid, pack->rdzv_cookie);
+      arts_db_rdzv_discard_landing(pack->rdzv_txid, pack->db_size,
+                                   pack->rdzv_cookie);
     }
     arts_shared_release(&h);
     break;
@@ -431,7 +436,8 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
     if (db != NULL) {
       arts_handler_db_fetch_response(db, &args);
     } else {
-      arts_db_flush_discard_landing(pack->rdzv_txid, pack->rdzv_cookie);
+      arts_db_flush_discard_landing(pack->rdzv_txid, pack->db_size,
+                                    pack->rdzv_cookie);
     }
     arts_shared_release(&h);
     break;
@@ -1012,7 +1018,7 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
     if (db != NULL) {
       arts_handler_db_inv_cts(db, pack);
     } else {
-      arts_db_rdzv_discard_landing(0u, pack->rdzv_cookie);
+      arts_db_rdzv_discard_landing(0u, 0u, pack->rdzv_cookie);
     }
     arts_shared_release(&h);
     break;

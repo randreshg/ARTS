@@ -13,162 +13,127 @@ counters:
   TIME_EDT_EXEC:
     group: 'EDT time'
     unit: ns
-    help: 'Wall-clock time spent executing EDT user functions (paused during yield/wait)'
+    help: 'Wall time inside EDT bodies, summed over a rank''s threads and paused while a body blocks in arts_event_wait; includes every runtime call the body makes, not the acquires before it or the releases after'
 
   TIME_EDT_CREATE:
     group: 'EDT time'
     unit: ns
-    help: 'Time spent in arts_edt_create() — GUID allocation, metadata setup, route table'
+    help: 'Wall time of arts_edt_create on the creating thread: placement, allocation, GUID, finish-scope join, and the ship to a remote home or the local install (readying the EDT and starting its DB acquires when its dependences are already met)'
 
   TIME_EDT_SIGNAL:
     group: 'EDT time'
     unit: ns
-    help: 'Time spent in EDT dependency signaling (internal_signal_edt)'
-
-  TIME_CONTEXT_SWITCH:
-    group: 'EDT time'
-    unit: ns
-    help: 'Time spent saving/restoring EDT thread-local context during preemption'
+    help: 'Wall time of arts_edt_satisfy_slot on the satisfying thread, including readying the EDT and starting its DB acquires when the satisfy is its last; a satisfy of a remote EDT is only the send'
 
   NUM_EDT_CREATE:
     group: 'EDT counts'
     unit: count
-    help: 'Total number of EDTs created on this rank'
+    help: 'EDT creates issued on this rank, whatever the EDT''s home; includes the runtime''s main EDT and, under the OCR shim, the trampoline EDT that runs mainEdt'
 
   NUM_EDT_ACQUIRE:
     group: 'EDT counts'
     unit: count
-    help: 'Number of EDTs that resolved all dependencies and became ready to execute'
+    help: 'EDTs whose dependences and DB acquires all completed and that were queued to run, on the EDT''s rank'
 
   NUM_EDT_FINISH:
     group: 'EDT counts'
     unit: count
-    help: 'Number of EDTs that completed execution'
+    help: 'EDTs whose body returned, on the executing rank; includes the main EDT and the shim''s trampoline, not EDTs destroyed before running or abandoned at shutdown'
 
   NUM_EDT_SIGNAL:
     group: 'EDT counts'
     unit: count
-    help: 'Number of EDT dependency signals (arts_edt_satisfy_slot calls)'
+    help: 'EDT dependence-slot satisfactions (arts_edt_satisfy_slot calls), counted on the rank that issues them'
 
   NUM_YIELD:
     group: 'EDT counts'
     unit: count
-    help: 'Count of voluntary EDT yields (arts_yield and arts_wait_on_handle)'
+    help: 'Calls to arts_event_wait'
 
   TIME_DB_CREATE:
     group: 'DB time'
     unit: ns
-    help: 'Time spent in arts_db_create() — allocation, route table insertion, data copy'
+    help: 'Wall time of arts_db_create on the creating thread: placement, descriptor and payload allocation, GUID mint, and the local install or the announce to a remote home (no payload copy)'
 
   NUM_DB_CREATE:
     group: 'DB counts'
     unit: count
-    help: 'Total number of DataBlocks created on this rank'
+    help: 'arts_db_create calls that returned a block, counted on the creating rank whatever the block''s home, with or without a hold'
+
+  NUM_DB_CREATE_NO_ACQUIRE:
+    group: 'DB counts'
+    unit: count
+    help: 'The creates NUM_DB_CREATE counts that passed ARTS_DB_PROP_NO_ACQUIRE (no creator hold)'
 
   NUM_DB_DESTROY:
     group: 'DB counts'
     unit: count
-    help: 'Number of arts_db_destroy() calls'
+    help: 'arts_db_destroy calls on a DataBlock GUID, on the calling rank'
 
   NUM_DB_ACQUIRE_READ:
     group: 'DB counts'
     unit: count
-    help: 'Count of READ-mode DataBlock acquisitions during dependency resolution'
+    help: 'EDT read acquisitions: one per (EDT, block) whose strongest slot names it RO, on the EDT''s rank when the slot reaches the block''s arm (several slots naming one block are one acquisition, in the strongest mode)'
 
   NUM_DB_ACQUIRE_WRITE:
     group: 'DB counts'
     unit: count
-    help: 'Count of WRITE-mode DataBlock acquisitions during dependency resolution'
+    help: 'EDT write acquisitions: one per (EDT, block) whose strongest slot names it RW, plus one per create that takes the creator''s hold, on the creating rank'
 
   NUM_DB_ACQUIRE_LOCAL_HIT:
     group: 'Coherence: acquires'
     unit: count
-    help: 'Acquires answered from this rank''s own copy — no message'
+    help: 'Acquisitions (READ + WRITE) whose rank held what they need at their decision, whatever they then waited behind (a write right installed but not yet confirmed included): the write right for a write; for a read a valid copy it may read, a read turn, the write right or, under validation, the block''s home answering itself (a create''s hold, a zero-size block and a serve from what the rank holds included: a phase change on the rank, a create''s claim of its first-touch cache); under the voluntary-return policy every acquisition on the block''s home rank; every acquisition of a one-rank run'
 
   NUM_DB_ACQUIRE_REMOTE:
     group: 'Coherence: acquires'
     unit: count
-    help: 'Acquires that had to park on a remote round'
+    help: 'Acquisitions (READ + WRITE) whose permission or copy had to come from another rank: a grant or migration of the write right, a read turn, read reply or first publish another rank sent, and a validation read off the block''s home that its rank''s write right does not cover; never decided by the messages an acquisition caused, what it waited behind or which path ended the wait (a first publish counts from its publisher''s rank); LOCAL_HIT + REMOTE = READ + WRITE when the shutdown is quiescent (an acquisition a non-quiescent shutdown leaves parked is in neither)'
 
   BYTES_DB_CREATE:
     group: 'DB bytes'
     unit: bytes
-    help: 'Total bytes of DataBlock data allocated via arts_db_create()'
+    help: 'Declared bytes of the blocks NUM_DB_CREATE counts'
 
   BYTES_DB_PAYLOAD_SENT:
     group: 'Coherence: payload'
     unit: bytes
-    help: 'Datablock payload shipped, excluding control traffic'
+    help: 'Datablock bytes this rank put on the fabric one-sided (a CXL store''s transfers are the CXL counters)'
 
   NUM_DB_PAYLOAD_SENT:
     group: 'Coherence: payload'
     unit: count
-    help: 'Datablock payloads shipped, one per payload however many pieces the provider cut it into'
+    help: 'Datablock payloads this rank put on the fabric one-sided, one per payload however many pieces the provider cut it into'
 
   TIME_DB_PAYLOAD_PUT:
     group: 'Coherence: payload'
     unit: ns
-    help: "Time from a payload PUT's post to its last piece's local completion"
+    help: 'Time from a payload PUT''s post to its last piece''s local completion (time on the sender''s retry ring included), added by the thread that reaps that completion'
 
   BYTES_MEMORY_FOOTPRINT:
     group: 'Memory'
     unit: bytes
-    help: 'Running total of allocated minus freed bytes (current heap footprint)'
+    help: 'Usable bytes held through the runtime''s arts_malloc family (control structures, not DB payloads or the registered pool); a thread''s value wraps when another thread frees what it allocated, so read it as a node or cluster SUM'
 
   BYTES_REMOTE_SENT:
     group: 'Network bytes'
     unit: bytes
-    help: 'Total bytes sent over the network to remote ranks'
+    help: 'Bytes this rank put on the fabric: each two-sided message''s header and tail plus each one-sided datablock payload (no provider framing, no retries)'
 
   BYTES_REMOTE_RECEIVED:
     group: 'Network bytes'
     unit: bytes
-    help: 'Total bytes received from the network from remote ranks'
+    help: 'Bytes this rank took in from the fabric: each dispatched two-sided message''s header and tail plus each landed datablock payload''s whole length'
 
   NUM_REMOTE_SEND:
     group: 'Network counts'
     unit: count
-    help: 'Number of remote messages sent (per arts_actual_send call)'
+    help: 'Two-sided messages this rank sent (one-sided payloads are NUM_DB_PAYLOAD_SENT)'
 
   NUM_REMOTE_RECEIVE:
     group: 'Network counts'
     unit: count
-    help: 'Number of remote messages received (per completed packet)'
-
-  NET_MSG_LE64:
-    group: 'Network counts'
-    unit: count
-    help: 'Outbound messages with total size <= 64 bytes'
-
-  NET_MSG_LE512:
-    group: 'Network counts'
-    unit: count
-    help: 'Outbound messages with total size <= 512 bytes (and > 64)'
-
-  NET_MSG_LE4K:
-    group: 'Network counts'
-    unit: count
-    help: 'Outbound messages with total size <= 4K bytes (and > 512)'
-
-  NET_MSG_LE64K:
-    group: 'Network counts'
-    unit: count
-    help: 'Outbound messages with total size <= 64K bytes (and > 4K)'
-
-  NET_MSG_GT64K:
-    group: 'Network counts'
-    unit: count
-    help: 'Outbound messages with total size > 64K bytes'
-
-  NET_MSG_TOTAL:
-    group: 'Network counts'
-    unit: count
-    help: 'Total outbound messages across all buckets (population census)'
-
-  TIME_REMOTE_MOVE:
-    group: 'Network time'
-    unit: ns
-    help: 'Time spent in arts_remote_memory_move() — sending local DB data to remote node'
+    help: 'Two-sided messages this rank dispatched'
 
   NUM_CXL_FLUSH_PRODUCER:
     group: 'CXL flush'
@@ -183,12 +148,12 @@ counters:
   BYTES_CXL_FLUSH_PRODUCER:
     group: 'CXL flush'
     unit: bytes
-    help: 'Bytes swept by producer flushes'
+    help: 'Declared bytes of the blocks producer flushes swept'
 
   BYTES_CXL_FLUSH_CONSUMER:
     group: 'CXL flush'
     unit: bytes
-    help: 'Bytes swept by consumer flushes'
+    help: 'Declared bytes of the blocks consumer flushes swept'
 
   TIME_CXL_FLUSH_PRODUCER:
     group: 'CXL flush'
@@ -200,45 +165,20 @@ counters:
     unit: ns
     help: 'Time in consumer flushes, the cache-line sweep and its mfence'
 
-  TIME_EVENT_CREATE:
-    group: 'Event time'
-    unit: ns
-    help: 'Time spent in arts_event_create()'
-
-  TIME_EVENT_SIGNAL:
-    group: 'Event time'
-    unit: ns
-    help: 'Time spent in arts_event_satisfy_slot() — signaling all dependents'
-
   NUM_EVENT_CREATE:
     group: 'Event counts'
     unit: count
-    help: 'Number of arts_event_create() calls'
+    help: 'Event creates issued on this rank, including the finish-scope proxies the runtime makes on an EDT''s home when its scope is homed elsewhere'
 
   NUM_EVENT_DESTROY:
     group: 'Event counts'
     unit: count
-    help: 'Events actually reclaimed — create minus this is what the run still holds'
-
-  NUM_EVENT_SIGNAL:
-    group: 'Event counts'
-    unit: count
-    help: 'Number of arts_event_satisfy_slot() calls'
-
-  NUM_STEAL_ATTEMPT:
-    group: 'Scheduling'
-    unit: count
-    help: 'Number of work-stealing attempts (arts_runtime_steal_from_worker entries)'
+    help: 'Events retired on their home (explicit destroy, auto-destroy after firing, a counted event''s last bind); summed over the cluster, creates minus this is what remains'
 
   NUM_STEAL_SUCCESS:
     group: 'Scheduling'
     unit: count
-    help: 'Number of successful work steals (non-NULL deque pop_back)'
-
-  TIME_YIELD:
-    group: 'Scheduling'
-    unit: ns
-    help: 'Time spent in arts_yield / arts_wait_on_handle (sleeping/waiting)'
+    help: 'EDTs a worker took from another thread''s deque (a worker''s or a progress thread''s) and ran, counted on the thief'
 
   NUM_OO_ENQUEUE:
     group: 'Out-of-order'
@@ -248,67 +188,67 @@ counters:
   NUM_SNAPSHOT_REQUEST:
     group: 'Validation arm'
     unit: count
-    help: 'Snapshot requests put on the wire'
+    help: 'VAL read requests this rank sent, one per message: re-sends after a size round, a dismiss or a write give-back and the home''s request to itself included'
 
   NUM_SNAPSHOT_HEADER_ONLY:
     group: 'Validation arm'
     unit: count
-    help: 'Replies with no payload because the requester already held that version'
+    help: 'VAL read replies with no payload because the requester''s ledger already held that version, counted at the replying rank'
 
   NUM_SNAPSHOT_SIZE_CTS:
     group: 'Validation arm'
     unit: count
-    help: 'Size-only CTS replies — the rendezvous leg that makes a size-unknown first touch cost two requests'
-
-  NUM_GRANT_SIZE_CTS:
-    group: 'Migrating grant'
-    unit: count
-    help: 'Size-only CTS fallbacks on the grant plane — with the GUID size hint, only sentinel GUIDs take this leg'
-
-  NUM_EXCL_SIZE_CTS:
-    group: 'Exclusion arm'
-    unit: count
-    help: 'Size-only CTS fallbacks on the exclusion plane — with the GUID size hint, only sentinel GUIDs take this leg'
-
-  NUM_INV_SIZE_CTS:
-    group: 'Invalidation arm'
-    unit: count
-    help: 'Size-only CTS fallbacks on the invalidation plane — with the GUID size hint, only sentinel GUIDs take this leg'
+    help: 'VAL read size rounds (the size alone, to a request that could not size a landing), counted at the replying rank; dismisses excluded'
 
   NUM_RO_COMBINE_WINDOW:
     group: 'Validation arm'
     unit: count
-    help: 'Combining windows opened (one request each)'
+    help: 'VAL read windows opened: every read request that is not a re-send (a first reader''s, the next window an answer opens, a write give-back''s)'
 
   NUM_RO_COMBINE_JOINED:
     group: 'Validation arm'
     unit: count
-    help: 'Readers that joined an open window instead of asking'
+    help: 'VAL readers that sent no request of their own: parked for the next window or riding the rank''s write request'
+
+  NUM_GRANT_SIZE_CTS:
+    group: 'Size rounds'
+    unit: count
+    help: 'Size rounds on the grant plane (VAL, INV), counted at the home; with the GUID size hint only reserved or labeled GUIDs take one'
+
+  NUM_EXCL_SIZE_CTS:
+    group: 'Size rounds'
+    unit: count
+    help: 'Size rounds on the EXCL plane, counted at the home; dismisses excluded'
+
+  NUM_INV_SIZE_CTS:
+    group: 'Size rounds'
+    unit: count
+    help: 'Size rounds on the INV read plane, counted at the home; dismisses excluded'
+
+  NUM_FLUSH_SIZE_CTS:
+    group: 'Size rounds'
+    unit: count
+    help: 'Size rounds on the FLUSH fetch plane, counted at the home'
 
   NUM_INVALIDATE_ROUND:
     group: 'Invalidation arm'
     unit: count
-    help: 'Invalidation rounds opened at the home'
-
-  NUM_INVALIDATE_SENT:
-    group: 'Invalidation arm'
-    unit: count
-    help: 'INVALIDATE messages multicast to sharers'
+    help: 'INV invalidation rounds at the home that retired at least one release (a round batches every release queued when it starts)'
 
   NUM_INVALIDATE_ACK:
     group: 'Invalidation arm'
     unit: count
-    help: 'Invalidation acks collected'
+    help: 'Sharer copies the home''s rounds targeted, one ack each (a target that held no valid copy and the WB home''s own copy included)'
 
   TIME_INVALIDATE_ROUND:
     group: 'Invalidation arm'
     unit: ns
-    help: 'Time a release blocked on its invalidation round'
+    help: 'Time an INV RW release blocks on its round (under WT the payload write-through included; a joined release waits for the flight it joined)'
 
   NUM_GRANT_MIGRATE:
     group: 'Write grant'
     unit: count
-    help: 'Write grants that had to move between ranks'
+    help: 'Write requests this rank committed on the grant plane, one per round asked for (the home''s request to itself included)'
 
   NUM_GRANT_LOCAL_REUSE:
     group: 'Write grant'
@@ -318,17 +258,17 @@ counters:
   NUM_EXCL_QUEUE_WAIT:
     group: 'Exclusion arm'
     unit: count
-    help: 'Turns that could not be granted on arrival and queued'
+    help: 'EXCL requests, read or write, the home could not grant at its decision and queued'
 
   NUM_EXCL_RECALL_SENT:
     group: 'Retention arm'
     unit: count
-    help: 'Read grants the home asked back so a writer could proceed'
+    help: 'Read grants the home asked back so a writer could proceed, one per retaining rank (itself included)'
 
   NUM_EXCL_RECALL_EARLY:
     group: 'Retention arm'
     unit: count
-    help: 'Recalls that overtook their grant and had to be remembered'
+    help: 'Recalls that overtook their grant and had to be remembered, once per recall'
 
   NUM_PUB_FLIGHT:
     group: 'Publish flight'
@@ -363,7 +303,7 @@ counters:
   NUM_GRANT_HOME_DATALESS:
     group: 'Write grant'
     unit: count
-    help: 'Ownership grants into the WT home (permission only, no payload)'
+    help: 'Write requests the write-through home sends its own directory, asking for the permission alone (it already holds the newest bytes)'
 
   NUM_GRANT_PURGE_RETURN:
     group: 'Write grant'
@@ -394,3 +334,8 @@ counters:
     group: 'Write grant'
     unit: count
     help: 'Grants served with permission alone because the requester already held the current copy'
+
+  NUM_PURGE_RETURN:
+    group: 'Voluntary return'
+    unit: count
+    help: 'Hand-backs of a permission (with its bytes, if any) a rank sent the block''s home under the voluntary-return release policy, counted on the returning rank; the home''s own idle edge sends nothing. Grant plane: NUM_GRANT_PURGE_RETURN + NUM_GRANT_PURGE_FLAG; exclusion: every read and write turn a rank other than the home gave back'

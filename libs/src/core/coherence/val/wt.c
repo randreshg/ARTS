@@ -120,6 +120,7 @@ void arts_handler_db_acquire(void *item, void *args) {
         }
         return;
       }
+      INCREMENT_NUM_DB_ACQUIRE_LOCAL_HIT_BY(1);
       arts_db_acquire_local_hit(edt, slot, payload);
       arts_db_acquire_resolved(edt, slot);
       return;
@@ -306,6 +307,7 @@ static void update_cached_version_max(struct arts_db_cache_s *cache,
       atomic_load_explicit(&cache->db_size, memory_order_relaxed);
   uint64_t cur = arts_rank_u64_map_get(db->cached_version, requester);
   if (cur >= master_v) {
+    INCREMENT_NUM_SNAPSHOT_HEADER_ONLY_BY(1);
     arts_db_buf_release(&master_h);
     arts_send_db_snapshot_response(requester, db, cache->db_guid, master_v,
                                    cover, /*kind=*/0, db_size, rdzv, NULL);
@@ -576,7 +578,7 @@ void arts_handler_db_publish(void *item_v, void *args_v) {
   ctx->db_guid = a->db_guid;
   ctx->cv = a->cv;
   ctx->returns_grant = (a->returns_grant != 0u);
-  arts_net_rdzv_expect(a->rdzv_txid, pub_landed_cb, ctx);
+  arts_net_rdzv_expect(a->rdzv_txid, a->data_size, pub_landed_cb, ctx);
 }
 
 /* Cat-B pure body (OoO g_ooo_table[OOO_DB_DESTROY]): the OoO engine has already

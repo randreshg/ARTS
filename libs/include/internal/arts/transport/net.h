@@ -179,8 +179,11 @@ bool arts_net_rdzv_local(const void *p, uint64_t len, uint64_t *raddr,
 /* Register the continuation for txid's payload arrival.  If the write
  * completion already landed, `on_data` fires inline (caller is a dispatch-path
  * progress thread); otherwise it fires when the immediate arrives.  Exactly
- * one expectation per txid. */
-void arts_net_rdzv_expect(uint64_t txid, void (*on_data)(void *), void *arg);
+ * one expectation per txid.  `len` is the payload's whole length, which the
+ * pairing adds to BYTES_REMOTE_RECEIVED: the completion reports only the last
+ * piece of a payload the sender's ceiling cut apart. */
+void arts_net_rdzv_expect(uint64_t txid, uint64_t len,
+                          void (*on_data)(void *), void *arg);
 
 /* One-sided PUT of `len` bytes from the registered buffer `src` into the
  * peer's advertised landing {raddr, rkey}, delivering `txid` as the immediate.

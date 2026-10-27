@@ -82,6 +82,9 @@ void mark_edt_ready_by_guid(arts_guid_t g, unsigned int s) {
   (void)g;
   (void)s;
 }
+#if ARTS_DB_CENSUS
+ARTS_THREAD_LOCAL uint8_t arts_db_census_serve;
+#endif
 
 /* One requester queued at a time is all either scenario needs. */
 static int q_n = 0;

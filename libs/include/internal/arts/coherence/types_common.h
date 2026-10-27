@@ -98,6 +98,7 @@ extern "C" {
 /* The home metadata embeds its destroy roster, a per-rank bit-set, by
  * value. */
 #include "arts/rank_bitset.h"
+#include "arts/coherence/census.h" /* ARTS_DB_CENSUS */
 
 /* Sentinel for arts_db_cache_s.incoming_new_owner meaning "no ownership
  * transfer pending".  A real rank is always < rank_count, so UINT_MAX is a safe
@@ -348,6 +349,9 @@ struct arts_db_reader_node_s {
   _Atomic(uint32_t) next;
   unsigned int slot;    /* dep slot of the parked acquire */
   arts_guid_t edt_guid; /* the parked EDT */
+#if ARTS_DB_CENSUS
+  bool census_held; /* its park found the right it waits for held here */
+#endif
 };
 
 struct arts_db_reader_pool_s {
@@ -378,6 +382,9 @@ struct arts_db_rw_waiter_s {
   arts_lf_link_t link; /* FIRST — required by arts_lf_stack_t */
   arts_guid_t edt_guid;
   unsigned int slot;
+#if ARTS_DB_CENSUS
+  bool census_held; /* its park found the write right held here */
+#endif
 };
 
 /* Forward decl; sparse rank-keyed u64 map (owner-side dedup; protocol arms). */

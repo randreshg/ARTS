@@ -61,6 +61,7 @@ void arts_handler_db_acquire(void *item, void *args) {
        * always brings storage with it. */
       (void)arts_db_buf_ensure(
           cache, atomic_load_explicit(&cache->db_size, memory_order_relaxed));
+      INCREMENT_NUM_DB_ACQUIRE_LOCAL_HIT_BY(1);
       arts_db_acquire_local_hit(edt, slot, arts_db_acquire_local(cache));
       arts_db_acquire_resolved(edt, slot);
       return;
@@ -384,6 +385,7 @@ void arts_handler_db_snapshot_redirect(void *item_v, void *args_v) {
   if (known_v >= cur_v) {
     /* Requester already holds this version — no payload moves; echo the
      * unused landing for recycling. */
+    INCREMENT_NUM_SNAPSHOT_HEADER_ONLY_BY(1);
     arts_db_buf_release(&buf_h);
     arts_send_db_snapshot_response(requester, arts_db_of_cache(cache),
                                    a->db_guid, cur_v, cover, /*kind=*/0,
