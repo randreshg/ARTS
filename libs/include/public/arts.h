@@ -961,7 +961,9 @@ void arts_db_release(arts_guid_t guid, arts_db_access_mode_t mode);
  * create's auto-acquire or a dependence) is the exception: it is released
  * first, as by arts_db_release.  A hold released after the destroy is a
  * program error, and so is an acquire still pending when the destroy is
- * issued: the runtime need not serve it, and it may never complete.
+ * issued: the runtime need not serve it, and it may never complete.  A block
+ * is destroyed once: a second destroy of it waits for a block of that GUID,
+ * which never comes, and is a program error too.
  *
  * The destroy is not acknowledged.  The block's home tears the block down and
  * tells every rank that caches it.  A release message sent before the destroy

@@ -201,6 +201,8 @@ adding a dependence) calls :c:func:`arts_db_release` right after its last
 access to the block and before that hand-off.  A hold released after the
 destroy is a program error, and so is an acquisition still pending when the
 destroy is issued: the runtime need not serve it, and it may never complete.
+A block is destroyed once: a second destroy of it waits for a block of that
+GUID, which never comes, and is a program error too.
 
 The destroy is not acknowledged: the home tears the block down and notifies
 every rank that caches it, and a rank's copy is retired when that notice

@@ -51,12 +51,10 @@
 /// db_s mid-handler (no UAF).
 ///
 /// Black-box driver: a high-churn create→acquire(RO+RW across ranks)→destroy
-/// loop on a fresh DB GUID every generation.  This drives all Cat-C families:
-///   - CACHE_DESTROY fan-out — both HIT and idempotent MISS,
-///   - SNAPSHOT_RESPONSE (RO acquire) — HIT and torn-down-home MISS,
-///   - PUBLISH_ACK / PUBLISH_CTS (RW release) — HIT and MISS,
-///   - SNAPSHOT_REDIRECT / GRANT_CONFIRM[_ACK] (ownership transfer) where
-///   the protocol uses them.
+/// loop on a fresh DB GUID every generation.  It drives the HIT path of each
+/// Cat-C family: the CACHE_DESTROY fan-out, SNAPSHOT_RESPONSE (RO acquire),
+/// PUBLISH_ACK / PUBLISH_CTS (RW release), and SNAPSHOT_REDIRECT /
+/// GRANT_CONFIRM[_ACK] (ownership transfer) where the protocol uses them.
 /// Each generation's DB is explicitly destroyed; if any Cat-C path leaked a
 /// ref, the cb would never reach refcount 0 and the finish scope would never
 /// drain → ctest TIMEOUT FAIL.  The HIT-path UAF would surface as an ASan
@@ -130,9 +128,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     }
     arts_event_wait(fe);
 
-    /* Destroy + idempotent second destroy: drives CACHE_DESTROY HIT then MISS.
-     * A leaked Cat-C ref would block the cb from reaching refcount 0. */
-    arts_db_destroy(db);
+    /* A leaked Cat-C ref would keep the cb from reaching refcount 0. */
     arts_db_destroy(db);
   }
 
