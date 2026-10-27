@@ -87,13 +87,13 @@ const unsigned int arts_scheduler_loop_count =
     sizeof(arts_scheduler_loop) / sizeof(arts_scheduler_loop[0]);
 
 /* Schedule a fully DB-acquired EDT onto the calling thread's own
- * work-stealing deque.  Reached when the strict sequential acquire walk in
- * arts_db_acquire_all completes (rw_cursor == depc) — either synchronously
- * (initial arts_handle_ready_edt on a worker) or asynchronously (a coherence
- * wake / OoO drain resumes the walk on the progress thread that dispatches the
- * waking message).  A deque has one owner, the only thread that pushes onto
- * it, so only a thread that owns a deque may get here: every thread that
- * dispatches a message owns one. */
+ * work-stealing deque.  Reached when the acquire phase ends: every
+ * acquisition resolved at this rank, or none was needed — either
+ * synchronously (initial arts_handle_ready_edt on a worker) or asynchronously
+ * (a coherence wake / OoO drain resumes the walk on the progress thread that
+ * dispatches the waking message).  A deque has one owner, the only thread that
+ * pushes onto it, so only a thread that owns a deque may get here: every thread
+ * that dispatches a message owns one. */
 void arts_schedule_ready_edt(struct arts_edt_s *edt) {
   INCREMENT_NUM_EDT_ACQUIRE_BY(1);
 #ifdef ARTS_USE_GPU
@@ -120,12 +120,13 @@ void arts_schedule_ready_edt(struct arts_edt_s *edt) {
 /*
  * arts_handle_ready_edt — Transition an EDT from "all deps signaled" to DB
  * acquisition.  Called when depc_needed reaches 0 (the satisfy phase
- * completes).  Seeds the two acquire counters (rw_cursor = 0, the readiness
- * counter acquire_remaining = 1 as a +1 bias) and enters arts_db_acquire_all,
- * which fires all non-serialized (RO) deps at once and walks the serialized
- * (RW) deps by GUID-ordered cursor.  The EDT is scheduled (via
- * arts_schedule_ready_edt) when acquire_remaining reaches 0 — i.e. when every
- * DB dep's data has resolved at this rank.
+ * completes).  Seeds the cursor (rw_cursor = 0) and enters
+ * arts_db_acquire_all, which sets the readiness counter acquire_remaining to
+ * its bias plus the acquisitions, fires all non-serialized (RO) deps at once
+ * and walks the serialized (RW) deps by GUID-ordered cursor.  The EDT is
+ * scheduled (via arts_schedule_ready_edt) when acquire_remaining reaches 0 —
+ * i.e. when every DB dep's data has resolved at this rank — or at once when it
+ * acquires nothing.
  */
 void arts_handle_ready_edt(struct arts_edt_s *edt) {
   ARTS_INFO("EDT[Guid:%lu] ready — entering sequential DB acquire (depc=%u)",
@@ -143,9 +144,6 @@ void arts_handle_ready_edt(struct arts_edt_s *edt) {
    * arts_shared_copy(NULL) is a safe no-op for any unarmed path. */
   arts_shared_copy(edt->self_cb);
   edt->rw_cursor = 0;
-  /* +1 bias; arts_db_acquire_all adds the dep count.  Nothing has fired, so
-   * no other frame reads it yet. */
-  atomic_store_explicit(&edt->acquire_remaining, 1u, memory_order_relaxed);
   arts_db_acquire_all(edt);
 }
 

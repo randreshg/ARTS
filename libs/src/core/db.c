@@ -1680,7 +1680,8 @@ void arts_db_acquire_prepare(struct arts_edt_s *edt) {
 /* Driver: fire all non-serialized deps (Pass 1), then fire the serialized ones
  * from the cursor (Pass 2; the handler's resolved path self-continues the RW
  * chain). acquire_remaining is +1-biased so data arrivals during the fire
- * cannot schedule before the fire completes. Called once per EDT from
+ * cannot schedule before the fire completes; an EDT with nothing to acquire
+ * is scheduled at once and never touches it. Called once per EDT from
  * arts_handle_ready_edt. */
 void arts_db_acquire_all(struct arts_edt_s *edt) {
   arts_edt_dep_t *depv = (arts_edt_dep_t *)arts_get_depv(edt);
@@ -1695,8 +1696,14 @@ void arts_db_acquire_all(struct arts_edt_s *edt) {
       n++;
     }
   }
-  /* now (1 + n) with the bias */
-  atomic_fetch_add_explicit(&edt->acquire_remaining, n, memory_order_acq_rel);
+  if (n == 0u) {
+    arts_schedule_ready_edt(edt);
+    arts_db_drain_resume_list();
+    return;
+  }
+  /* The bias and the n acquisitions, before the first fire can publish the
+   * EDT to another frame. */
+  atomic_store_explicit(&edt->acquire_remaining, 1u + n, memory_order_relaxed);
 
   /* Pass 1: every non-serialized real DB dep that OWNS its block's single
    * acquisition, order-independent (the handler self-accounts via

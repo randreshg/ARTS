@@ -68,8 +68,8 @@ void arts_runtime_stop_network();
 void arts_handle_ready_edt(struct arts_edt_s *edt);
 void arts_run_edt(struct arts_edt_s *edt);
 /* Schedule a fully DB-acquired EDT onto the calling thread's own
- * work-stealing deque; the caller must own one.  Reached when the sequential
- * acquire walk in arts_db_acquire_all completes (rw_cursor == depc). */
+ * work-stealing deque; the caller must own one.  Reached when the acquire
+ * phase ends: every acquisition resolved at this rank, or none was needed. */
 void arts_schedule_ready_edt(struct arts_edt_s *edt);
 void arts_thread_zero_node_start(int argc, char **argv, arts_edt_t entry);
 void arts_runtime_private_init(struct thread_mask_s *thread,

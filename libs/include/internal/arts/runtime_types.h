@@ -136,10 +136,13 @@ struct arts_edt_s {
   struct arts_dep_acq_s *dep_acq;
   /** Dependences whose data is not yet resolved at this rank, plus one per
    * frame still touching the acquire state (the walk's bias, a resume
-   * entry).  Every frame decrements acq_rel after its slot work (the record,
-   * buffer refs, pins, the cursor): the decrement that reaches 0 acquires all
-   * of it, hands the resolved slots to depv and schedules the EDT.
-   * Increments are taken while the count is above zero. */
+   * entry).  Set once, by a relaxed store of 1 + n (the walk's bias and the
+   * n acquisitions) when the acquire phase begins, before anything can reach
+   * the EDT; an EDT with nothing to acquire never touches it.  Every frame
+   * decrements acq_rel after its slot work (the record, buffer refs, pins,
+   * the cursor): the decrement that reaches 0 acquires all of it, hands the
+   * resolved slots to depv and schedules the EDT.  Increments are taken while
+   * the count is above zero. */
   _Atomic(unsigned int) acquire_remaining;
   unsigned int invalidate_count; /**< Outstanding cache invalidations of a GPU
                                       wrapper EDT: set while it is private,
@@ -200,9 +203,11 @@ struct arts_event_s {
        * axis and observes the rest, and the decision is bound to the atom that
        * causes it. */
       /* [destroyed:1|fire_st:2|nb_deps:29|latch:32].  Committed only by a CAS
-       * (acq_rel, from an acquire load) through event_compute_next.  The
-       * FIRING->FIRED CAS releases `data`, which the IDLE->FIRING winner
-       * writes in between; an acquire load that reads FIRED takes it. */
+       * (acq_rel, from an acquire load) through event_compute_next; a
+       * non-counted event's ADD_DEP, which the decider never lets change the
+       * word, decides from an acquire load instead.  The FIRING->FIRED CAS
+       * releases `data`, which the IDLE->FIRING winner writes in between; an
+       * acquire load that reads FIRED takes it. */
       _Atomic(uint64_t) state;
       /* Immutable after creation, so they race with nothing and enter the
        * decider as arguments rather than living in the word. */

@@ -89,15 +89,20 @@ struct circular_array_s {
 } ARTS_ALIGNED(64);
 
 struct arts_deque_s {
-  /* Advanced by CAS only, by thieves and by the owner on the last element.
-   * An acquire load orders the reader after the slot reads of the thief whose
-   * CAS it reads, so the owner never overwrites a slot still being read. */
+  /* Advanced by CAS only, by thieves and by the owner on the last element;
+   * never a plain or relaxed store, since the owner's cached top relies on
+   * every write after the init being an RMW.  An acquire load orders the
+   * reader after the slot reads of the thief whose CAS it reads, so the owner
+   * never overwrites a slot still being read. */
   _Atomic(uint64_t) top;
   char pad1[56];
   /* Written by the owner only, always with a release store; a thief's acquire
    * load of it is the edge that publishes the slots below it. */
   _Atomic(uint64_t) bottom;
-  char pad2[56];
+  /* The owner's last acquire load of top, private to the owner: at most top,
+   * which only grows. */
+  uint64_t top_cache;
+  char pad2[48];
   /* Written by the owner only, with a release store after the new array is
    * filled; a thief's acquire load sees the copied slots. */
   _Atomic(struct circular_array_s *) active;
@@ -142,6 +147,7 @@ struct arts_deque_s *arts_deque_new(unsigned int size) {
       1, sizeof(struct arts_deque_s), 64);
   atomic_init(&deque->top, 1);
   atomic_init(&deque->bottom, 1);
+  deque->top_cache = 1;
   deque->head = new_circular_array(size);
   atomic_init(&deque->active, deque->head);
   return deque;
@@ -162,14 +168,20 @@ bool arts_deque_push_front(struct arts_deque_s *deque, void *item,
                            unsigned int priority) {
   (void)priority;
   uint64_t b = atomic_load_explicit(&deque->bottom, memory_order_relaxed);
-  /* Acquire: a thief's read of a slot happens before this push reuses it. */
-  uint64_t t = atomic_load_explicit(&deque->top, memory_order_acquire);
   struct circular_array_s *a =
       atomic_load_explicit(&deque->active, memory_order_relaxed);
-  if (b >= a->size - 1 + t) {
-    a = grow_circular_array(a, b, t);
-    /* Release: a thief that loads the new array sees what was copied in. */
-    atomic_store_explicit(&deque->active, a, memory_order_release);
+  /* The cache is at most top, so a stale one only refreshes early.  Below its
+   * bound the slot this push reuses last held an index the cached load
+   * already saw taken, and that load read the release sequence of the CAS
+   * that took it. */
+  if (b >= a->size - 1 + deque->top_cache) {
+    /* Acquire: a thief's read of a slot happens before this push reuses it. */
+    deque->top_cache = atomic_load_explicit(&deque->top, memory_order_acquire);
+    if (b >= a->size - 1 + deque->top_cache) {
+      a = grow_circular_array(a, b, deque->top_cache);
+      /* Release: a thief that loads the new array sees what was copied in. */
+      atomic_store_explicit(&deque->active, a, memory_order_release);
+    }
   }
   put_circular_array(a, b, item);
   atomic_store_explicit(&deque->bottom, b + 1, memory_order_release);

@@ -506,21 +506,35 @@ void arts_handler_event_add_dependence(void *item, void *vargs) {
     return;
   }
 
-  /* Commit the registration through the decider so the declared consumer count
-   * actually moves: it is what tells a counted event that the last binder has
-   * arrived, and the destroy edge is emitted from that same transition.  The
-   * action it awards decides deliver-vs-park, and the destroy modifier is
-   * applied AFTER whichever of those runs — never instead of it, or the last
-   * consumer of a COUNTED(1) event is dropped and its slot never satisfied. */
-  uint64_t cur, next;
+  /* A counted event commits the registration through the decider so the
+   * declared consumer count actually moves: it is what tells a counted event
+   * that the last binder has arrived, and the destroy edge is emitted from
+   * that same transition.  The action it awards decides deliver-vs-park, and
+   * the destroy modifier is applied AFTER whichever of those runs — never
+   * instead of it, or the last consumer of a COUNTED(1) event is dropped and
+   * its slot never satisfied.  For a non-counted event the decider leaves the
+   * word as it is (no count moves, and PUBLISH sets destroyed in the atom that
+   * makes an auto-destroy event FIRED), so an acquire load decides: one that
+   * reads FIRED takes `data`, and a stale one only parks, which the re-check
+   * after the push closes. */
   uint32_t act;
-  do {
-    cur = atomic_load_explicit(&event->simple.state, memory_order_acquire);
-    next = event_compute_next(cur, EV_OP_ADD_DEP, event->simple.counted != 0u,
-                              event->simple.auto_destroy != 0u, &act);
-  } while (!atomic_compare_exchange_weak_explicit(
-      &event->simple.state, &cur, next, memory_order_acq_rel,
-      memory_order_acquire));
+  if (!event->simple.counted) {
+    uint64_t cur =
+        atomic_load_explicit(&event->simple.state, memory_order_acquire);
+    assert(!(EV_FIRE(cur) == EV_FIRE_FIRED && event->simple.auto_destroy &&
+             !EV_DESTROYED(cur)));
+    act = EV_FIRE(cur) == EV_FIRE_FIRED ? EV_ACT_DELIVER : EV_ACT_PARK;
+    arts_sched_fuzz_point(); /* widen the load<->push window */
+  } else {
+    uint64_t cur, next;
+    do {
+      cur = atomic_load_explicit(&event->simple.state, memory_order_acquire);
+      next = event_compute_next(cur, EV_OP_ADD_DEP, true,
+                                event->simple.auto_destroy != 0u, &act);
+    } while (!atomic_compare_exchange_weak_explicit(&event->simple.state, &cur,
+                                                    next, memory_order_acq_rel,
+                                                    memory_order_acquire));
+  }
 
   if ((act & EV_ACT_BASE_MASK) == EV_ACT_DELIVER) {
     arts_guid_t data = event->simple.data;
@@ -531,9 +545,9 @@ void arts_handler_event_add_dependence(void *item, void *vargs) {
     }
   } else {
     /* Not yet published: park on the Treiber stack.  The event may reach
-     * FIRED between our commit and our push; re-check and drain so our dep is
-     * not stranded.  addDep never advances fire_st — only the FIRING claimer,
-     * who wrote simple.data, may publish. */
+     * FIRED between our decision and our push; re-check and drain so our dep
+     * is not stranded.  addDep never advances fire_st — only the FIRING
+     * claimer, who wrote simple.data, may publish. */
     struct arts_event_dep_s *dep =
         event_node_alloc(dest_type, destination, slot, access_mode);
     /* Push then re-check, against the publisher's PUBLISH CAS then drain

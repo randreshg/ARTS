@@ -1,16 +1,16 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * scheduler_acquire_bias — single-node stress for the +1 acquire bias in
- * arts_handle_ready_edt, and for the readiness wakes a dependence slot does
- * not carry.
+ * scheduler_acquire_bias — single-node stress for the +1 acquire bias of an
+ * EDT's acquire phase, and for the readiness wakes a dependence slot does not
+ * carry.
  *
- * The +1 bias (arts_handle_ready_edt: rw_cursor=0, acquire_remaining=1, then
- * arts_db_acquire_all adds the real dep count) prevents a premature schedule
- * when every per-dep decrement races to completion BEFORE the seed loop
- * finishes.  An off-by-one would either double-schedule (UAF, EDT body runs
- * twice) or never-schedule (EDT parked forever → hang).  It is stressed with
- * many EDTs each carrying MANY DB deps, all of whose owners resolve
- * concurrently, and each EDT body must run EXACTLY ONCE.
+ * The +1 bias (arts_db_acquire_all stores acquire_remaining = 1 + the real
+ * dep count, one store, before the seed loop fires anything) prevents a
+ * premature schedule when every per-dep decrement races to completion BEFORE
+ * the seed loop finishes.  An off-by-one would either double-schedule (UAF,
+ * EDT body runs twice) or never-schedule (EDT parked forever → hang).  It is
+ * stressed with many EDTs each carrying MANY DB deps, all of whose owners
+ * resolve concurrently, and each EDT body must run EXACTLY ONCE.
  *
  * Beside them, a chain of EDTs takes one shared block for writing in turn,
  * each link woken by its predecessor through a NO_SLOT control satisfy: a

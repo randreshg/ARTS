@@ -76,6 +76,25 @@ int main(void) {
   s = event_compute_next(s, EV_OP_SAT_DECR, false, false, &a);
   s = event_compute_next(s, EV_OP_ADD_DEP, false, false, &a);
   chk("firing/parks", a & EV_ACT_BASE_MASK, EV_ACT_PARK);
+  /* Non-counted ADD_DEP leaves the word unchanged and delivers iff FIRED: what
+   * lets a binder of a non-counted event decide from a load.  FIRED with
+   * auto_destroy and not destroyed is unreachable (PUBLISH sets both). */
+  {
+    const uint64_t w[] = {EV_MAKE(0,EV_FIRE_IDLE,0,1), EV_MAKE(0,EV_FIRE_IDLE,0,-1),
+                          EV_MAKE(0,EV_FIRE_FIRING,0,0), EV_MAKE(0,EV_FIRE_FIRED,0,0),
+                          EV_MAKE(1,EV_FIRE_FIRED,0,0), EV_MAKE(0,EV_FIRE_FIRED,0,3)};
+    for (unsigned i = 0; i < sizeof w / sizeof w[0]; i++) {
+      for (int ad = 0; ad < 2; ad++) {
+        bool fired = EV_FIRE(w[i]) == EV_FIRE_FIRED;
+        if (ad && fired && !EV_DESTROYED(w[i])) continue;
+        uint64_t n = event_compute_next(w[i], EV_OP_ADD_DEP, false, ad != 0, &a);
+        chk("noncounted/word-unchanged", n == w[i], 1);
+        chk("noncounted/deliver-iff-fired", (int)(a & EV_ACT_BASE_MASK),
+            fired ? EV_ACT_DELIVER : EV_ACT_PARK);
+        chk("noncounted/no-destroy", (a & EV_ACT_DESTROY) != 0, 0);
+      }
+    }
+  }
   printf(fails ? "FAILURES: %d\n" : "all decider cases pass\n", fails);
   return fails != 0;
 }
