@@ -565,6 +565,17 @@ if(ARTS_BUILD_BENCHMARKS)
     if(TARGET arts_cxl)
         list(APPEND _ARTS_VARIANT_OBJLIBS arts_cxl)
     endif()
+    # Every TU some cell's model selection names is variant-specific: a
+    # variant drops all of them from the object libraries' sources and adds
+    # back exactly its own cell's.
+    set(_ARTS_MODEL_TUS_ALL "")
+    foreach(_cell "FLUSH;WB;RETAIN" "INV;WB;RETAIN" "INV;WT;RETAIN"
+                  "INV;WT;PURGE" "EXCL;WB;RETAIN" "EXCL;WB;PURGE"
+                  "VAL;WT;RETAIN" "VAL;WT;PURGE" "VAL;WB;RETAIN")
+        arts_coherence_model_tus(_tus ${_cell})
+        list(APPEND _ARTS_MODEL_TUS_ALL ${_tus})
+    endforeach()
+    list(REMOVE_DUPLICATES _ARTS_MODEL_TUS_ALL)
 
     # Applies variant <suffix>'s cell to <target>: every translation unit
     # linked into a variant's executable is compiled for that variant's cell,
@@ -588,8 +599,8 @@ if(ARTS_BUILD_BENCHMARKS)
             set(cxl_residency "${ARGV4}")
         endif()
         # Gather all protocol-independent sources (absolute paths) from the
-        # object libs, dropping any coherence MODEL TU (path contains
-        # /coherence/<model>/), which is variant-specific.
+        # object libs, dropping every TU some cell's model selection names
+        # (_ARTS_MODEL_TUS_ALL), which is variant-specific.
         set(srcs "${CMAKE_CURRENT_SOURCE_DIR}/core/main.c")
         foreach(lib ${_ARTS_VARIANT_OBJLIBS})
             get_target_property(lsrcs ${lib} SOURCES)
@@ -600,15 +611,12 @@ if(ARTS_BUILD_BENCHMARKS)
                 else()
                     set(abs "${ldir}/${s}")
                 endif()
-                # Skip variant-specific coherence TUs: the per-arm subdirs, the
-                # grant plane (linked only by arms whose ownership migrates), the
-                # version ledger (only by arms that keep versions) and the rank
-                # bit-set (only by arms whose rank sets are arts_rank_bitset_s).
+                file(RELATIVE_PATH rel "${CMAKE_CURRENT_SOURCE_DIR}/core" "${abs}")
                 if(abs MATCHES "/core/cxl/")
                     # The store is a per-variant choice like the protocol, so a
                     # variant that does not name it must not compile it.
                     list(APPEND cxl_srcs "${abs}")
-                elseif(NOT abs MATCHES "/coherence/(val|excl|inv|flush)/|/coherence/(grant(_wt|_wb|_queue|_purge|_retain)?|rank_u64_map|rank_bitset)\\.c$")
+                elseif(NOT rel IN_LIST _ARTS_MODEL_TUS_ALL)
                     list(APPEND srcs "${abs}")
                 endif()
             endforeach()
