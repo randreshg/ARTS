@@ -31,13 +31,56 @@ PAPI hardware events (--papi SET, repeatable) run the same matrix from a
 separate build tree, PAPI_APP_BUILD_DIR, configured with -DARTS_USE_PAPI=ON
 and PAPI_COUNTER_CONFIG (the ipdps27 counters plus every PAPI scope).  Each
 cell runs once per event set, with the set's name in its cell_id, and the
-set's events are written into that cell's arts.cfg as papi_events.  A set is
-a name from PAPI_EVENT_SETS, NAME=EV1,EV2,... or a bare EV1,EV2,... (at most
-six events; they must fit the core's counters without multiplexing).
-Preflight checks the tree's cache for ARTS_USE_PAPI and ssh-es to every node
-to confirm it can count each set (perf_event_paranoid <= 2, papi_command_line
-adds every event).  An instrumented tree's e2e times are not results: take
-timings from the plain campaign.
+set's events are written into that cell's arts.cfg as papi_events.  This
+script never builds; it only checks the tree.
+
+  1. Build the PAPI tree.  PAPI is not vendored: name an existing install
+     (PAPI 7.x is tested), at the same path on every node.  The tree must be
+     build_papi, beside the plain tree, which stays as it is: an
+     instrumented tree's e2e times are not results.
+
+       cmake -GNinja -Bbuild_papi -DCMAKE_BUILD_TYPE=Release
+         -DARTS_USE_PAPI=ON -DARTS_PAPI_DIR=/path/to/papi/install
+         -DARTS_COUNTER_CONFIG=$PWD/configs/counters_cxl_ipdps27_papi.cfg
+         -DARTS_BUILD_HPX=OFF -DARTS_BUILD_OCRVX=OFF -DARTS_BUILD_XSOCR=OFF
+         <the CXL options of the plain tree>
+       ninja -C build_papi
+
+     Repeat the plain tree's CXL options so both trees build the same
+     variants (with ARTS_CXL_REAL=ON, all four library paths):
+
+       grep -E '^ARTS_(CXL|USE_CXL|COHERENCE|WRITE|RELEASE)' build/CMakeCache.txt
+
+     build_papi/CMakeCache.txt must then hold ARTS_USE_PAPI:BOOL=ON, and
+     build_papi/benchmarks/apps every <app>_<variant> binary.
+
+  2. Prepare every node.  perf_event_paranoid must be <= 2
+     (cat /proc/sys/kernel/perf_event_paranoid; to lower it,
+     sudo sh -c "echo 2 > /proc/sys/kernel/perf_event_paranoid").
+     papi_avail lists the presets the host counts ("Avail" must say Yes),
+     papi_native_avail the CPU's native event names.
+
+  3. Pick event sets.  A set is a name from PAPI_EVENT_SETS (cache: cache
+     and TLB misses; memstall_skx: Skylake-SP native names only),
+     NAME=EV1,EV2,... or a bare EV1,EV2,... (named custom<k>).  At most six
+     events, which must fit the core's counters together (ARTS never
+     multiplexes); put PAPI_TOT_CYC,PAPI_TOT_INS first so IPC and the
+     per-kilo-instruction rates are derived.  Every --papi runs the whole
+     matrix once more.
+
+  4. Run.  Preflight refuses a tree without ARTS_USE_PAPI or with another
+     counter config, and ssh-es to every node to check perf_event_paranoid
+     and that papi_command_line can add each set's events; a refusal names
+     the node and event, so swap that event out or split the set.  A
+     --resume must repeat the campaign's --papi arguments.
+
+PAPI results go to RESULTS_ROOT/papi-<timestamp>/, with a papi_set column in
+both CSVs.  Counter slots are renamed after their events,
+ctr_PAPI_<SCOPE>[<event>] (e.g. ctr_PAPI_EDT[PAPI_L1_DCM]), and derive per
+scope papi_<scope>_ipc, papi_<scope>_<event>_pki (per 1000 instructions),
+papi_edt_<event>_per_edt, and papi_worker_runtime_* (TOTAL_WORKER - EDT:
+worker time outside EDT bodies).  Scopes are inclusive and overlap (a
+release includes the flushes it causes): compare them, never add them.
 
 Output (under RESULTS_ROOT/<run-id>/):
 
@@ -57,9 +100,12 @@ Usage:
   python3 experiment_scripts/run_cxl_experiments_optimal.py --resume <run-dir>
   python3 experiment_scripts/run_cxl_experiments_optimal.py --smoke-test
   python3 experiment_scripts/run_cxl_experiments_optimal.py --papi cache --dry-run
+  python3 experiment_scripts/run_cxl_experiments_optimal.py --smoke-test --papi cache
   python3 experiment_scripts/run_cxl_experiments_optimal.py --papi cache --papi memstall_skx
   python3 experiment_scripts/run_cxl_experiments_optimal.py \\
-      --papi spr=PAPI_TOT_CYC,PAPI_TOT_INS,CYCLE_ACTIVITY:STALLS_L3_MISS
+      --papi cache --papi stall=PAPI_TOT_CYC,PAPI_TOT_INS,CYCLE_ACTIVITY:STALLS_L3_MISS
+  python3 experiment_scripts/run_cxl_experiments_optimal.py \\
+      --papi cache --papi stall=... --resume <papi-run-dir>
 """
 
 from __future__ import annotations
