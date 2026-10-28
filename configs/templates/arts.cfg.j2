@@ -37,3 +37,6 @@ counter_folder={{ counter_folder }}
 {%- if counter_capture_interval %}
 counter_capture_interval={{ counter_capture_interval }}
 {%- endif %}
+{%- if papi_events %}
+papi_events={{ papi_events | join(',') }}
+{%- endif %}

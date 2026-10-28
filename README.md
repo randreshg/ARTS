@@ -72,6 +72,8 @@ All options are set on the cmake line with `-D<NAME>=<VALUE>`, e.g.
 | `ARTS_USE_SANS` | `OFF` | Enable ASan + UBSan + LSan in Debug builds (excludes CUDA). Mutually exclusive with `ARTS_USE_TSAN`. |
 | `ARTS_USE_TSAN` | `OFF` | Enable ThreadSanitizer in Debug builds (excludes CUDA). Compiler-incompatible with `ARTS_USE_SANS`; use a separate build dir. |
 | `ARTS_COUNTER_CONFIG` | `configs/counters_off.cfg` | Counter configuration file parsed at configure time into introspection macros. The default is the all-OFF file; `configs/counters.cfg` is the profiling example, not the default. |
+| `ARTS_USE_PAPI` | `OFF` | Read hardware events (cache/TLB misses, cycles, stalls) through PAPI into the `PAPI_*` counters. See [PAPI hardware counters](#papi-hardware-counters). |
+| `ARTS_PAPI_DIR` | `$PAPI_DIR` | `ARTS_USE_PAPI=ON`: the PAPI install prefix holding `include/papi.h` and `lib/libpapi.so` (or `lib64/`). PAPI is never vendored; a prefix without both is a configure error. |
 
 Standard CMake variables also apply: `CMAKE_BUILD_TYPE` (`Debug` default, or `Release`),
 `CMAKE_INSTALL_PREFIX` (`./install` default), `CMAKE_CUDA_ARCHITECTURES` (see `ARTS_USE_LOCAL_CUDA_ARCHITECTURES`),
@@ -141,6 +143,219 @@ region (`/dev/shm/arts_fake_cxl`).
 
 Benchmarks and experiment campaigns are driven by `artsrun` rather than run
 by hand — see `tools/artsrun/README.md`.
+
+## PAPI hardware counters
+
+ARTS can read the CPU's hardware performance counters through
+[PAPI](https://icl.utk.edu/papi/) and report them beside its own
+introspection counters, so a run can say not only *how many* acquires,
+flushes or sends happened but *what they cost* in cycles, instructions and
+cache/TLB misses. The intended use is comparing network ARTS against CXL
+ARTS on the same application: where the misses land (EDT bodies, the
+network send/handler path, the CXL flush edges) is the hardware evidence for
+the difference.
+
+### How it works
+
+PAPI values are ordinary introspection counters. They are compiled in by the
+same `ARTS_COUNTER_CONFIG` file, kept in the same per-thread storage, reduced
+the same way (THREAD/NODE/CLUSTER) and written to the same
+`n{rank}.json`/`cluster.json` files, so every existing tool reads them
+unchanged. Only reading the hardware is new (`libs/src/core/counter/papi.c`,
+`libs/include/internal/arts/counter/papi.h`).
+
+- **Scopes.** Each instrumented span of the runtime is a *scope*. A scope
+  counts only while its thread is inside the span, charging the difference
+  between `PAPI_read`s at its start and end.
+
+  | Scope | What it spans |
+  |-------|---------------|
+  | `PAPI_TOTAL_WORKER` | a worker thread's whole run loop |
+  | `PAPI_TOTAL_PROGRESS` | a progress thread's whole run loop (all runtime/network work) |
+  | `PAPI_EDT` | EDT bodies only (`func()` in `arts_run_edt`) |
+  | `PAPI_DB_ACQUIRE` | acquiring an EDT's DataBlocks before its body runs |
+  | `PAPI_DB_RELEASE` | releasing an EDT's DataBlocks (and the ones it created) after its body |
+  | `PAPI_CXL_FLUSH_PRODUCER` | producer-side CXL ownership-edge flushes (`cxl/store.c`) |
+  | `PAPI_CXL_FLUSH_CONSUMER` | consumer-side CXL ownership-edge flushes (`cxl/store.c`) |
+  | `PAPI_NET_SEND` | libfabric sends and payload puts (`transport/net.c`) |
+  | `PAPI_MSG_HANDLER` | dispatching each inbound message to its handler (`transport/dispatcher.c`, `loopback.c`) |
+
+- **Slots.** Each scope has six counter slots, `PAPI_<SCOPE>_E0` …
+  `PAPI_<SCOPE>_E5`; slot `E<k>` counts the k-th event named by the
+  `papi_events` key of `arts.cfg`. Event names are chosen **at run time**, so
+  trying another event set needs no rebuild. Six covers the two fixed counters
+  (cycles, instructions) plus the four programmable ones per hyperthread on
+  Skylake/Sapphire Rapids.
+- **One EventSet per thread.** Each runtime thread registers with PAPI and
+  starts one EventSet when it enters the runtime and stops it when its run
+  loop returns; the stop charges the `TOTAL_*` scope matching the thread's
+  role. Scope edges are cheap `PAPI_read`s, never start/stop.
+- **No multiplexing.** The event set must fit the core's counters at once;
+  multiplexed (time-sliced) counts would make per-scope differences
+  meaningless.
+- **Scopes are inclusive and may overlap.** A consumer-side CXL flush
+  triggered by an inbound message is counted in both `CXL_FLUSH_CONSUMER` and
+  `MSG_HANDLER`, and `DB_RELEASE` includes any flushes it causes. Compare
+  scopes; do not add them up. A scope re-entered on the same thread is
+  measured once, by its outermost span.
+- **Parked EDTs.** An EDT that blocks in `arts_event_wait` runs the scheduler
+  (and other EDTs) on its own stack. The EDT scope is closed at the wait and
+  reopened when it returns (next to the existing `TIME_EDT_EXEC` timer), so
+  `PAPI_EDT` holds application bodies only and the scheduling in between
+  counts as runtime.
+- **Runtime overhead** on workers is therefore `PAPI_TOTAL_WORKER − PAPI_EDT`.
+- **Compiled away when unused.** A scope is active only if its
+  `PAPI_<SCOPE>_E0` counter is enabled in the counter config. With every
+  `PAPI_*` counter OFF, or without `ARTS_USE_PAPI`, the hooks are no-ops.
+- **Fail fast.** Every PAPI problem stops the run at startup with an error
+  instead of recording zeros: an unknown event name, more than six events, a
+  set that does not fit the core's counters, or a host that cannot count
+  (the perf_event component's own reason is printed, e.g. `perf_event support
+  disabled by Linux with paranoid=4`). Likewise, a counter config that
+  enables a `PAPI_*` counter in a tree built without `ARTS_USE_PAPI` is a
+  configure error.
+
+### Building with PAPI
+
+PAPI is not vendored. Point the build at an existing install (a system
+package, a module, or a source build; PAPI 7.x is tested) and name a counter
+config that enables the scopes you want:
+
+```bash
+cmake -GNinja -Bbuild_papi -DCMAKE_BUILD_TYPE=Release \
+  -DARTS_USE_PAPI=ON -DARTS_PAPI_DIR=/path/to/papi/install \
+  -DARTS_COUNTER_CONFIG=$PWD/configs/my_papi_counters.cfg \
+  [protocol / CXL / benchmark options as usual]
+ninja -C build_papi
+```
+
+`ARTS_PAPI_DIR` defaults to `$PAPI_DIR`. The library is linked into
+`arts_interface`, so `libarts`, every benchmark variant
+(`*_arts_ocr_excl_retain`, `*_cxl_staged`, …) and the tests all pick it up.
+If `libpapi.so` is not on the default loader path, add its `lib/` directory
+to `LD_LIBRARY_PATH` when running.
+
+A counter config enables PAPI scopes like any other counter. A bare scope
+name sets all six of its slots:
+
+```ini
+# configs/my_papi_counters.cfg
+PAPI_TOTAL_WORKER=ONCE,NODE,SUM
+PAPI_TOTAL_PROGRESS=ONCE,NODE,SUM
+PAPI_EDT=ONCE,NODE,SUM
+PAPI_DB_ACQUIRE=ONCE,NODE,SUM
+PAPI_DB_RELEASE=ONCE,NODE,SUM
+PAPI_CXL_FLUSH_PRODUCER=ONCE,NODE,SUM
+PAPI_CXL_FLUSH_CONSUMER=ONCE,NODE,SUM
+PAPI_NET_SEND=ONCE,NODE,SUM
+PAPI_MSG_HANDLER=ONCE,NODE,SUM
+# counts to normalise by
+NUM_EDT_FINISH=ONCE,NODE,SUM
+TIME_EDT_EXEC=ONCE,NODE,SUM
+NUM_CXL_FLUSH_PRODUCER=ONCE,NODE,SUM
+NUM_CXL_FLUSH_CONSUMER=ONCE,NODE,SUM
+NUM_REMOTE_SEND=ONCE,NODE,SUM
+```
+
+Individual slots can also be set (`PAPI_EDT_E2=ONCE,NODE,SUM`), but a scope
+only counts if its `_E0` slot is enabled. `configs/counters.cfg` lists every
+slot (OFF) with a description of each scope. Prefer `NODE` level: `THREAD`
+level writes one JSON file per thread, which is slow on a network file system.
+
+### Host requirements
+
+Counting needs the kernel's perf_event interface:
+
+- `perf_event_paranoid` must be **≤ 2** for an unprivileged user
+  (`cat /proc/sys/kernel/perf_event_paranoid`). Lowering it needs root:
+  `sudo sh -c "echo 2 > /proc/sys/kernel/perf_event_paranoid"`.
+- A VM must expose the PMU to the guest.
+- Check what the host can count with PAPI's own tools: `papi_avail` (presets;
+  the "Avail" column must say Yes) and `papi_native_avail` (CPU-specific
+  native events). `papi_component_avail` reports why the perf_event component
+  is disabled, if it is.
+
+### Choosing events: `papi_events`
+
+`arts.cfg`'s `papi_events` key names up to six comma-separated PAPI preset or
+native events. The default is:
+
+```ini
+[ARTS]
+papi_events=PAPI_TOT_CYC,PAPI_TOT_INS,PAPI_L1_DCM,PAPI_L2_TCM,PAPI_L3_TCM,PAPI_TLB_DM
+```
+
+Native stall/memory-bound events are CPU-specific, so they are never hard-coded
+in the runtime. On Skylake-SP, for example:
+
+```ini
+papi_events=PAPI_TOT_CYC,PAPI_TOT_INS,CYCLE_ACTIVITY:STALLS_L3_MISS,MEM_LOAD_L3_MISS_RETIRED:LOCAL_DRAM,MEM_LOAD_L3_MISS_RETIRED:REMOTE_DRAM,MEM_LOAD_L3_MISS_RETIRED:REMOTE_HITM
+```
+
+Confirm names on the target machine with `papi_native_avail` before a
+campaign. If the set does not fit the core's counters, the run stops with
+`too many or conflicting events`; split the list across runs.
+
+### Output
+
+Each counter file (`n{rank}_t{tid}.json`, `n{rank}.json`, `cluster.json`)
+carries the event list in its metadata, so `E<k>` can be mapped back to a
+name:
+
+```json
+"metadata": {
+  "papi_events": ["PAPI_TOT_CYC", "PAPI_TOT_INS", "PAPI_L1_DCM",
+                  "PAPI_L2_TCM", "PAPI_L3_TCM", "PAPI_TLB_DM"],
+  ...
+},
+"counters": {
+  "PAPI_EDT_E0": { "captureMode": "ONCE", "captureLevel": "NODE",
+                   "reduce_method": "SUM", "value": 851642649 },
+  ...
+}
+```
+
+`experiment_scripts/run_cxl_experiments.py` (and its `_optimal` copy) rename
+slots to `PAPI_<SCOPE>[<event>]` from that metadata and derive, per scope:
+IPC, each event's total, misses per thousand instructions (`_pki`), EDT
+events per finished EDT (`_per_edt`), and `PAPI_WORKER_RUNTIME`
+(`TOTAL_WORKER − EDT`).
+
+### With artsrun
+
+Two countersets ship in `experiments/countersets/`:
+
+- `papi_cache`: every PAPI scope with the default cache/TLB events.
+- `papi_memstall_skx`: every PAPI scope with Skylake-SP stall and DRAM events.
+
+Both also enable the `NUM_*`/`TIME_*` counters that normalise the PAPI counts.
+A counterset's `papi_events` list is rendered into each run's `arts.cfg`
+(at most six names, validated when the counterset loads).
+
+artsrun reconfigures a benchmark tree with only `ARTS_COUNTER_CONFIG`, so
+configure the tree with `-DARTS_USE_PAPI=ON -DARTS_PAPI_DIR=...` once
+beforehand; the setting stays in its CMake cache. Then run as usual:
+
+```bash
+artsrun counterset show papi_cache
+artsrun run -p <profile> -x <experiment> -c papi_cache
+```
+
+A PAPI-instrumented tree is a counter build, so it is not used for wall-time
+numbers. Take timings from an uninstrumented tree.
+
+### Testing
+
+`tests/unit/papi_scope.c` (registered as `papi_scope` only when
+`ARTS_USE_PAPI=ON`) checks the scope bookkeeping directly: charge at end,
+proportionality, same-scope re-entry, the `arts_event_wait` close/reopen
+pattern, `TOTAL ≥ EDT`, unstarted threads, the fail-fast paths and the
+`papi_events` config key. A host that cannot count prints `SKIP papi_scope`
+instead of failing.
+
+```bash
+ctest --test-dir build_papi -R '^papi_scope$' --output-on-failure
+```
 
 ## Repository Layout (selected paths)
 

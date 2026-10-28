@@ -7,6 +7,7 @@
 
 #include "arts.h"
 #include "arts/counter/Preamble.h"
+#include "arts/counter/papi.h"
 #include "arts/cxl/deque.h"
 #include "arts/runtime_state.h"
 #include "arts/system/print.h"
@@ -136,15 +137,19 @@ void arts_cxl_store_flush(const void *p, size_t bytes, bool producer) {
     INCREMENT_NUM_CXL_FLUSH_PRODUCER_BY(1);
     INCREMENT_BYTES_CXL_FLUSH_PRODUCER_BY(bytes);
     TIME_CXL_FLUSH_PRODUCER_START();
+    ARTS_PAPI_BEGIN(CXL_FLUSH_PRODUCER);
     FLUSH_FENCE_PRODUCER(p, bytes);
     __asm__ __volatile__("sfence" ::: "memory");
+    ARTS_PAPI_END(CXL_FLUSH_PRODUCER);
     TIME_CXL_FLUSH_PRODUCER_STOP();
   } else {
     INCREMENT_NUM_CXL_FLUSH_CONSUMER_BY(1);
     INCREMENT_BYTES_CXL_FLUSH_CONSUMER_BY(bytes);
     TIME_CXL_FLUSH_CONSUMER_START();
+    ARTS_PAPI_BEGIN(CXL_FLUSH_CONSUMER);
     FLUSH_FENCE_CONSUMER(p, bytes);
     __asm__ __volatile__("mfence" ::: "memory");
+    ARTS_PAPI_END(CXL_FLUSH_CONSUMER);
     TIME_CXL_FLUSH_CONSUMER_STOP();
   }
 }

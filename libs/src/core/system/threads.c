@@ -51,6 +51,7 @@
 #endif
 
 #include "arts/counter/counter.h"
+#include "arts/counter/papi.h"
 #include "arts/memory/regpool.h" /* the pool learns this rank's NUMA nodes */
 #include "arts/runtime_state.h"
 #include "arts/system/config.h"
@@ -72,6 +73,10 @@ void *arts_thread_loop(void *data) {
   struct thread_mask_s *thread = (struct thread_mask_s *)data;
   arts_runtime_private_init(thread, g_config);
   arts_runtime_loop();
+  /* Close the PAPI TOTAL scope before the counters are copied out below.  A
+   * thread arts_thread_main_join has to cancel never gets here, and its PAPI
+   * totals are lost with it. */
+  ARTS_PAPI_THREAD_STOP();
   arts_runtime_private_cleanup();
 
   // Save final counter values to saved_counters before thread exits
@@ -100,6 +105,7 @@ void *arts_thread_loop(void *data) {
 void arts_thread_main_join() {
   ARTS_DEBUG("arts_thread_main_join: main thread entering runtime_loop");
   arts_runtime_loop();
+  ARTS_PAPI_THREAD_STOP();
   ARTS_DEBUG("arts_thread_main_join: main thread exited runtime_loop, joining "
              "%u threads",
              arts_node_info.total_thread_count - 1);

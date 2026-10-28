@@ -124,6 +124,9 @@ void arts_runtime_global_cleanup(void) {}
 void arts_runtime_stop(void) {}
 void arts_runtime_stop_network(void) {}
 void arts_counter_timer_end(arts_counter_t *counter) { (void)counter; }
+#ifdef ARTS_USE_PAPI
+void arts_papi_thread_stop(void) {}
+#endif
 
 /* arts_thread_loop is DEFINED in threads.c (real); it will run the counter-save
  * path which touches arts_node_info.saved_counters / live_counters.  Provide a

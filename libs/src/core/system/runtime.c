@@ -47,6 +47,7 @@
 
 #include "arts/counter/Preamble.h"
 #include "arts/counter/counter.h"
+#include "arts/counter/papi.h"
 #include "arts/db.h"
 #include "arts/defs.h"
 #include "arts/edt.h"
@@ -352,6 +353,9 @@ void arts_runtime_node_init(struct arts_config_s *config) {
   /* Performance counters */
   arts_node_info.counter_folder = config->counter_folder;
   arts_node_info.counter_capture_interval = config->counter_capture_interval;
+  /* Before any thread exists: PAPI_thread_init must precede every
+   * PAPI_register_thread, and a host that cannot count fails here once. */
+  ARTS_PAPI_NODE_INIT(config->papi_events);
 
   arts_node_info.live_counters =
       (arts_counter_t **)arts_calloc(tc, sizeof(arts_counter_t *));
@@ -672,6 +676,10 @@ void arts_runtime_private_init(struct thread_mask_s *thread,
     };
   }
   arts_thread_random_init(arts_global_rank_id, thread->id);
+  /* Last, past every startup barrier, so the TOTAL scope holds the run and
+   * not the bring-up.  Thread 0 opens its own here too: it reaches this
+   * function from arts_thread_init. */
+  ARTS_PAPI_THREAD_START();
 }
 
 void arts_runtime_private_cleanup() {

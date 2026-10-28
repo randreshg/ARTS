@@ -49,6 +49,7 @@
 
 #include "arts.h"
 #include "arts/counter/json.h"
+#include "arts/counter/papi.h"
 #include "arts/runtime_state.h"
 #include "arts/system/print.h"
 #include "arts/system/threads.h"
@@ -389,6 +390,18 @@ static void arts_write_common_metadata(arts_json_writer_t *writer) {
     arts_json_writer_write_string(writer, "counter_folder",
                                   arts_node_info.counter_folder);
   }
+#ifdef ARTS_USE_PAPI
+  /* PAPI_<SCOPE>_E<k> holds papi_events[k]: the slots are positional, so the
+   * names travel with every file that carries their values.  Every rank reads
+   * the same arts.cfg, so the master's list also labels cluster.json. */
+  if (ARTS_PAPI_ANY_ENABLED) {
+    arts_json_writer_begin_array(writer, "papi_events");
+    for (unsigned int k = 0; k < arts_papi_event_count(); k++) {
+      arts_json_writer_write_string(writer, NULL, arts_papi_event_name(k));
+    }
+    arts_json_writer_end_array(writer);
+  }
+#endif
 }
 
 // Helper: check if any counters exist at given level, return count

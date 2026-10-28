@@ -1,0 +1,259 @@
+name: papi_memstall_skx
+description: memory-bound stalls and where L3 misses were served (local DRAM, remote DRAM, remote cache HITM); Skylake-SP native names, so confirm with papi_native_avail and copy this set for another CPU
+capture_interval: 250
+papi_events:
+- PAPI_TOT_CYC
+- PAPI_TOT_INS
+- CYCLE_ACTIVITY:STALLS_L3_MISS
+- MEM_LOAD_L3_MISS_RETIRED:LOCAL_DRAM
+- MEM_LOAD_L3_MISS_RETIRED:REMOTE_DRAM
+- MEM_LOAD_L3_MISS_RETIRED:REMOTE_HITM
+counters:
+  NUM_EDT_FINISH:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  TIME_EDT_EXEC:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  NUM_DB_ACQUIRE_LOCAL_HIT:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  NUM_DB_ACQUIRE_REMOTE:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  NUM_CXL_FLUSH_PRODUCER:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  NUM_CXL_FLUSH_CONSUMER:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  NUM_REMOTE_SEND:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  NUM_REMOTE_RECEIVE:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  PAPI_TOTAL_WORKER_E0:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  PAPI_TOTAL_WORKER_E1:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  PAPI_TOTAL_WORKER_E2:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  PAPI_TOTAL_WORKER_E3:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  PAPI_TOTAL_WORKER_E4:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  PAPI_TOTAL_WORKER_E5:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  PAPI_TOTAL_PROGRESS_E0:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  PAPI_TOTAL_PROGRESS_E1:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  PAPI_TOTAL_PROGRESS_E2:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  PAPI_TOTAL_PROGRESS_E3:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  PAPI_TOTAL_PROGRESS_E4:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  PAPI_TOTAL_PROGRESS_E5:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  PAPI_EDT_E0:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  PAPI_EDT_E1:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  PAPI_EDT_E2:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  PAPI_EDT_E3:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  PAPI_EDT_E4:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  PAPI_EDT_E5:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  PAPI_DB_ACQUIRE_E0:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  PAPI_DB_ACQUIRE_E1:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  PAPI_DB_ACQUIRE_E2:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  PAPI_DB_ACQUIRE_E3:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  PAPI_DB_ACQUIRE_E4:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  PAPI_DB_ACQUIRE_E5:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  PAPI_DB_RELEASE_E0:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  PAPI_DB_RELEASE_E1:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  PAPI_DB_RELEASE_E2:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  PAPI_DB_RELEASE_E3:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  PAPI_DB_RELEASE_E4:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  PAPI_DB_RELEASE_E5:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  PAPI_CXL_FLUSH_PRODUCER_E0:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  PAPI_CXL_FLUSH_PRODUCER_E1:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  PAPI_CXL_FLUSH_PRODUCER_E2:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  PAPI_CXL_FLUSH_PRODUCER_E3:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  PAPI_CXL_FLUSH_PRODUCER_E4:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  PAPI_CXL_FLUSH_PRODUCER_E5:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  PAPI_CXL_FLUSH_CONSUMER_E0:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  PAPI_CXL_FLUSH_CONSUMER_E1:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  PAPI_CXL_FLUSH_CONSUMER_E2:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  PAPI_CXL_FLUSH_CONSUMER_E3:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  PAPI_CXL_FLUSH_CONSUMER_E4:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  PAPI_CXL_FLUSH_CONSUMER_E5:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  PAPI_NET_SEND_E0:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  PAPI_NET_SEND_E1:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  PAPI_NET_SEND_E2:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  PAPI_NET_SEND_E3:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  PAPI_NET_SEND_E4:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  PAPI_NET_SEND_E5:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  PAPI_MSG_HANDLER_E0:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  PAPI_MSG_HANDLER_E1:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  PAPI_MSG_HANDLER_E2:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  PAPI_MSG_HANDLER_E3:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  PAPI_MSG_HANDLER_E4:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  PAPI_MSG_HANDLER_E5:
+    mode: ONCE
+    level: NODE
+    reduce: SUM

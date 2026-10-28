@@ -95,10 +95,24 @@ foreach(LINE ${COUNTER_CONFIG_LINES})
     endif()
     # Match: COUNTER=MODE or COUNTER=MODE,LEVEL or COUNTER=MODE,LEVEL,REDUCE
     if(LINE MATCHES "^([A-Za-z0-9_]+)[ \\t]*=[ \\t]*(OFF|ONCE|PERIODIC)(,[ \\t]*(THREAD|NODE|CLUSTER))?(,[ \\t]*(SUM|MAX|MIN|MASTER))?")
-        set(KEY ${CMAKE_MATCH_1})
+        set(CFG_KEY ${CMAKE_MATCH_1})
         set(COUNTER_MODE ${CMAKE_MATCH_2})
         set(COUNTER_LEVEL ${CMAKE_MATCH_4})
         set(REDUCE_METHOD ${CMAKE_MATCH_6})
+
+        # A bare PAPI scope name (PAPI_EDT=...) stands for all of its event
+        # slots: the slots only mean anything together (their names are
+        # assigned at runtime from papi_events), so a cfg enabling some of
+        # them would emit a scope with holes.
+        set(CFG_TARGETS ${CFG_KEY})
+        list(FIND COUNTER_TYPES "${CFG_KEY}" CFG_KEY_IDX)
+        list(FIND COUNTER_TYPES "${CFG_KEY}_E0" CFG_SLOT_IDX)
+        if(CFG_KEY_IDX EQUAL -1 AND NOT CFG_SLOT_IDX EQUAL -1)
+            set(CFG_TARGETS)
+            foreach(SLOT RANGE 0 5)
+                list(APPEND CFG_TARGETS "${CFG_KEY}_E${SLOT}")
+            endforeach()
+        endif()
 
         # Default counterLevel to NODE if not specified
         if(NOT COUNTER_LEVEL)
@@ -110,48 +124,64 @@ foreach(LINE ${COUNTER_CONFIG_LINES})
             set(REDUCE_METHOD "SUM")
         endif()
 
-        # Set CMake variables for this counter
-        if(COUNTER_MODE STREQUAL "OFF")
-            set(ENABLE_${KEY} 0)
-            set(COUNTER_MODE_${KEY} 0) # artsCounterModeOff
-            set(COUNTER_LEVEL_${KEY} 1) # default to NODE
-            set(REDUCE_METHOD_${KEY} 0) # default to SUM
-            math(EXPR DISABLED_COUNT "${DISABLED_COUNT} + 1")
-        else()
-            set(ENABLE_${KEY} 1)
-            math(EXPR ENABLED_COUNT "${ENABLED_COUNT} + 1")
+        foreach(KEY ${CFG_TARGETS})
+            # Set CMake variables for this counter
+            if(COUNTER_MODE STREQUAL "OFF")
+                set(ENABLE_${KEY} 0)
+                set(COUNTER_MODE_${KEY} 0) # artsCounterModeOff
+                set(COUNTER_LEVEL_${KEY} 1) # default to NODE
+                set(REDUCE_METHOD_${KEY} 0) # default to SUM
+                math(EXPR DISABLED_COUNT "${DISABLED_COUNT} + 1")
+            else()
+                set(ENABLE_${KEY} 1)
+                math(EXPR ENABLED_COUNT "${ENABLED_COUNT} + 1")
 
-            # Set counter mode
-            if(COUNTER_MODE STREQUAL "ONCE")
-                set(COUNTER_MODE_${KEY} 1) # artsCounterModeOnce
-            elseif(COUNTER_MODE STREQUAL "PERIODIC")
-                set(COUNTER_MODE_${KEY} 2) # artsCounterModePeriodic
-            endif()
+                # Set counter mode
+                if(COUNTER_MODE STREQUAL "ONCE")
+                    set(COUNTER_MODE_${KEY} 1) # artsCounterModeOnce
+                elseif(COUNTER_MODE STREQUAL "PERIODIC")
+                    set(COUNTER_MODE_${KEY} 2) # artsCounterModePeriodic
+                endif()
 
-            # Set counter level
-            if(COUNTER_LEVEL STREQUAL "THREAD")
-                set(COUNTER_LEVEL_${KEY} 0) # artsCounterLevelThread
-            elseif(COUNTER_LEVEL STREQUAL "NODE")
-                set(COUNTER_LEVEL_${KEY} 1) # artsCounterLevelNode
-            elseif(COUNTER_LEVEL STREQUAL "CLUSTER")
-                set(COUNTER_LEVEL_${KEY} 2) # artsCounterLevelCluster
-            endif()
+                # Set counter level
+                if(COUNTER_LEVEL STREQUAL "THREAD")
+                    set(COUNTER_LEVEL_${KEY} 0) # artsCounterLevelThread
+                elseif(COUNTER_LEVEL STREQUAL "NODE")
+                    set(COUNTER_LEVEL_${KEY} 1) # artsCounterLevelNode
+                elseif(COUNTER_LEVEL STREQUAL "CLUSTER")
+                    set(COUNTER_LEVEL_${KEY} 2) # artsCounterLevelCluster
+                endif()
 
-            # Set reduce method
-            if(REDUCE_METHOD STREQUAL "SUM")
-                set(REDUCE_METHOD_${KEY} 0) # artsCounterReduceSum
-            elseif(REDUCE_METHOD STREQUAL "MAX")
-                set(REDUCE_METHOD_${KEY} 1) # artsCounterReduceMax
-            elseif(REDUCE_METHOD STREQUAL "MIN")
-                set(REDUCE_METHOD_${KEY} 2) # artsCounterReduceMin
-            elseif(REDUCE_METHOD STREQUAL "MASTER")
-                set(REDUCE_METHOD_${KEY} 3) # artsCounterReduceMaster
+                # Set reduce method
+                if(REDUCE_METHOD STREQUAL "SUM")
+                    set(REDUCE_METHOD_${KEY} 0) # artsCounterReduceSum
+                elseif(REDUCE_METHOD STREQUAL "MAX")
+                    set(REDUCE_METHOD_${KEY} 1) # artsCounterReduceMax
+                elseif(REDUCE_METHOD STREQUAL "MIN")
+                    set(REDUCE_METHOD_${KEY} 2) # artsCounterReduceMin
+                elseif(REDUCE_METHOD STREQUAL "MASTER")
+                    set(REDUCE_METHOD_${KEY} 3) # artsCounterReduceMaster
+                endif()
             endif()
-        endif()
+        endforeach()
     endif()
 endforeach()
 
 message(STATUS "Counter configuration: ${ENABLED_COUNT} enabled, ${DISABLED_COUNT} disabled")
+
+# PAPI slots are filled by libs/src/core/counter/papi.c, which is compiled only
+# under ARTS_USE_PAPI.  Without it an enabled slot would be written out as a
+# silent zero that reads like a measurement, so refuse the configuration.
+if(NOT ARTS_USE_PAPI)
+    foreach(COUNTER ${COUNTER_TYPES})
+        if(COUNTER MATCHES "^PAPI_" AND ENABLE_${COUNTER})
+            message(FATAL_ERROR
+                "${ARTS_COUNTER_CONFIG} enables ${COUNTER}, but ARTS_USE_PAPI "
+                "is OFF.  Configure with -DARTS_USE_PAPI=ON (and ARTS_PAPI_DIR) "
+                "or turn the PAPI_* counters off.")
+        endif()
+    endforeach()
+endif()
 
 # Generate counter header file
 set(GENERATED_HEADER "${CMAKE_CURRENT_BINARY_DIR}/Preamble.h")

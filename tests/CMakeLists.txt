@@ -653,6 +653,14 @@ register_pure_unit_test(port_block_relocation TIMEOUT 30)
 set_tests_properties(port_block_relocation PROPERTIES
     PASS_REGULAR_EXPRESSION "PASS port_block_relocation|SKIP port_block_relocation")
 register_pure_unit_test(stdio_forward_scale_test)
+# Drives counter/papi.c's scope bookkeeping on one thread, no runtime started.
+# Only a PAPI build has the TU; a host that cannot count SKIPs (PASS).
+if(ARTS_USE_PAPI)
+    add_arts_test(papi_scope)
+    register_pure_unit_test(papi_scope TIMEOUT 30)
+    set_tests_properties(papi_scope PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS papi_scope|SKIP papi_scope")
+endif()
 
 # regpool_basic/regpool_guard assert the confinement invariant (every
 # returned pointer resolves through arts_regpool_lookup to a registered

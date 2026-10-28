@@ -239,6 +239,7 @@ class Campaign:
                     self.run_dir / "cfg" / f"arts_{cell.slug}.cfg",
                     counter_folder=str(out),
                     capture_interval=counters.capture_interval,
+                    papi_events=counters.papi_events,
                 )
 
         return expand(

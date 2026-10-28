@@ -409,3 +409,273 @@ counters:
     group: 'Write grant'
     unit: count
     help: 'Grants served with permission alone because the requester already held the current copy'
+
+  PAPI_TOTAL_WORKER_E0:
+    group: 'PAPI hardware events'
+    unit: count
+    help: "papi_events[0] counted over a worker thread's whole run loop"
+
+  PAPI_TOTAL_WORKER_E1:
+    group: 'PAPI hardware events'
+    unit: count
+    help: "papi_events[1] counted over a worker thread's whole run loop"
+
+  PAPI_TOTAL_WORKER_E2:
+    group: 'PAPI hardware events'
+    unit: count
+    help: "papi_events[2] counted over a worker thread's whole run loop"
+
+  PAPI_TOTAL_WORKER_E3:
+    group: 'PAPI hardware events'
+    unit: count
+    help: "papi_events[3] counted over a worker thread's whole run loop"
+
+  PAPI_TOTAL_WORKER_E4:
+    group: 'PAPI hardware events'
+    unit: count
+    help: "papi_events[4] counted over a worker thread's whole run loop"
+
+  PAPI_TOTAL_WORKER_E5:
+    group: 'PAPI hardware events'
+    unit: count
+    help: "papi_events[5] counted over a worker thread's whole run loop"
+
+  PAPI_TOTAL_PROGRESS_E0:
+    group: 'PAPI hardware events'
+    unit: count
+    help: "papi_events[0] counted over a progress thread's whole run loop (all runtime/network)"
+
+  PAPI_TOTAL_PROGRESS_E1:
+    group: 'PAPI hardware events'
+    unit: count
+    help: "papi_events[1] counted over a progress thread's whole run loop (all runtime/network)"
+
+  PAPI_TOTAL_PROGRESS_E2:
+    group: 'PAPI hardware events'
+    unit: count
+    help: "papi_events[2] counted over a progress thread's whole run loop (all runtime/network)"
+
+  PAPI_TOTAL_PROGRESS_E3:
+    group: 'PAPI hardware events'
+    unit: count
+    help: "papi_events[3] counted over a progress thread's whole run loop (all runtime/network)"
+
+  PAPI_TOTAL_PROGRESS_E4:
+    group: 'PAPI hardware events'
+    unit: count
+    help: "papi_events[4] counted over a progress thread's whole run loop (all runtime/network)"
+
+  PAPI_TOTAL_PROGRESS_E5:
+    group: 'PAPI hardware events'
+    unit: count
+    help: "papi_events[5] counted over a progress thread's whole run loop (all runtime/network)"
+
+  PAPI_EDT_E0:
+    group: 'PAPI hardware events'
+    unit: count
+    help: "papi_events[0] counted over EDT bodies only (closed while an EDT is parked in a wait)"
+
+  PAPI_EDT_E1:
+    group: 'PAPI hardware events'
+    unit: count
+    help: "papi_events[1] counted over EDT bodies only (closed while an EDT is parked in a wait)"
+
+  PAPI_EDT_E2:
+    group: 'PAPI hardware events'
+    unit: count
+    help: "papi_events[2] counted over EDT bodies only (closed while an EDT is parked in a wait)"
+
+  PAPI_EDT_E3:
+    group: 'PAPI hardware events'
+    unit: count
+    help: "papi_events[3] counted over EDT bodies only (closed while an EDT is parked in a wait)"
+
+  PAPI_EDT_E4:
+    group: 'PAPI hardware events'
+    unit: count
+    help: "papi_events[4] counted over EDT bodies only (closed while an EDT is parked in a wait)"
+
+  PAPI_EDT_E5:
+    group: 'PAPI hardware events'
+    unit: count
+    help: "papi_events[5] counted over EDT bodies only (closed while an EDT is parked in a wait)"
+
+  PAPI_DB_ACQUIRE_E0:
+    group: 'PAPI hardware events'
+    unit: count
+    help: "papi_events[0] counted over acquiring an EDT's DBs before its body runs"
+
+  PAPI_DB_ACQUIRE_E1:
+    group: 'PAPI hardware events'
+    unit: count
+    help: "papi_events[1] counted over acquiring an EDT's DBs before its body runs"
+
+  PAPI_DB_ACQUIRE_E2:
+    group: 'PAPI hardware events'
+    unit: count
+    help: "papi_events[2] counted over acquiring an EDT's DBs before its body runs"
+
+  PAPI_DB_ACQUIRE_E3:
+    group: 'PAPI hardware events'
+    unit: count
+    help: "papi_events[3] counted over acquiring an EDT's DBs before its body runs"
+
+  PAPI_DB_ACQUIRE_E4:
+    group: 'PAPI hardware events'
+    unit: count
+    help: "papi_events[4] counted over acquiring an EDT's DBs before its body runs"
+
+  PAPI_DB_ACQUIRE_E5:
+    group: 'PAPI hardware events'
+    unit: count
+    help: "papi_events[5] counted over acquiring an EDT's DBs before its body runs"
+
+  PAPI_DB_RELEASE_E0:
+    group: 'PAPI hardware events'
+    unit: count
+    help: "papi_events[0] counted over releasing an EDT's DBs (and the DBs it created) after its body"
+
+  PAPI_DB_RELEASE_E1:
+    group: 'PAPI hardware events'
+    unit: count
+    help: "papi_events[1] counted over releasing an EDT's DBs (and the DBs it created) after its body"
+
+  PAPI_DB_RELEASE_E2:
+    group: 'PAPI hardware events'
+    unit: count
+    help: "papi_events[2] counted over releasing an EDT's DBs (and the DBs it created) after its body"
+
+  PAPI_DB_RELEASE_E3:
+    group: 'PAPI hardware events'
+    unit: count
+    help: "papi_events[3] counted over releasing an EDT's DBs (and the DBs it created) after its body"
+
+  PAPI_DB_RELEASE_E4:
+    group: 'PAPI hardware events'
+    unit: count
+    help: "papi_events[4] counted over releasing an EDT's DBs (and the DBs it created) after its body"
+
+  PAPI_DB_RELEASE_E5:
+    group: 'PAPI hardware events'
+    unit: count
+    help: "papi_events[5] counted over releasing an EDT's DBs (and the DBs it created) after its body"
+
+  PAPI_CXL_FLUSH_PRODUCER_E0:
+    group: 'PAPI hardware events'
+    unit: count
+    help: "papi_events[0] counted over CXL producer-side flush sweeps and their fence"
+
+  PAPI_CXL_FLUSH_PRODUCER_E1:
+    group: 'PAPI hardware events'
+    unit: count
+    help: "papi_events[1] counted over CXL producer-side flush sweeps and their fence"
+
+  PAPI_CXL_FLUSH_PRODUCER_E2:
+    group: 'PAPI hardware events'
+    unit: count
+    help: "papi_events[2] counted over CXL producer-side flush sweeps and their fence"
+
+  PAPI_CXL_FLUSH_PRODUCER_E3:
+    group: 'PAPI hardware events'
+    unit: count
+    help: "papi_events[3] counted over CXL producer-side flush sweeps and their fence"
+
+  PAPI_CXL_FLUSH_PRODUCER_E4:
+    group: 'PAPI hardware events'
+    unit: count
+    help: "papi_events[4] counted over CXL producer-side flush sweeps and their fence"
+
+  PAPI_CXL_FLUSH_PRODUCER_E5:
+    group: 'PAPI hardware events'
+    unit: count
+    help: "papi_events[5] counted over CXL producer-side flush sweeps and their fence"
+
+  PAPI_CXL_FLUSH_CONSUMER_E0:
+    group: 'PAPI hardware events'
+    unit: count
+    help: "papi_events[0] counted over CXL consumer-side flush sweeps and their fence"
+
+  PAPI_CXL_FLUSH_CONSUMER_E1:
+    group: 'PAPI hardware events'
+    unit: count
+    help: "papi_events[1] counted over CXL consumer-side flush sweeps and their fence"
+
+  PAPI_CXL_FLUSH_CONSUMER_E2:
+    group: 'PAPI hardware events'
+    unit: count
+    help: "papi_events[2] counted over CXL consumer-side flush sweeps and their fence"
+
+  PAPI_CXL_FLUSH_CONSUMER_E3:
+    group: 'PAPI hardware events'
+    unit: count
+    help: "papi_events[3] counted over CXL consumer-side flush sweeps and their fence"
+
+  PAPI_CXL_FLUSH_CONSUMER_E4:
+    group: 'PAPI hardware events'
+    unit: count
+    help: "papi_events[4] counted over CXL consumer-side flush sweeps and their fence"
+
+  PAPI_CXL_FLUSH_CONSUMER_E5:
+    group: 'PAPI hardware events'
+    unit: count
+    help: "papi_events[5] counted over CXL consumer-side flush sweeps and their fence"
+
+  PAPI_NET_SEND_E0:
+    group: 'PAPI hardware events'
+    unit: count
+    help: "papi_events[0] counted over network sends: control messages and one-sided payload PUTs"
+
+  PAPI_NET_SEND_E1:
+    group: 'PAPI hardware events'
+    unit: count
+    help: "papi_events[1] counted over network sends: control messages and one-sided payload PUTs"
+
+  PAPI_NET_SEND_E2:
+    group: 'PAPI hardware events'
+    unit: count
+    help: "papi_events[2] counted over network sends: control messages and one-sided payload PUTs"
+
+  PAPI_NET_SEND_E3:
+    group: 'PAPI hardware events'
+    unit: count
+    help: "papi_events[3] counted over network sends: control messages and one-sided payload PUTs"
+
+  PAPI_NET_SEND_E4:
+    group: 'PAPI hardware events'
+    unit: count
+    help: "papi_events[4] counted over network sends: control messages and one-sided payload PUTs"
+
+  PAPI_NET_SEND_E5:
+    group: 'PAPI hardware events'
+    unit: count
+    help: "papi_events[5] counted over network sends: control messages and one-sided payload PUTs"
+
+  PAPI_MSG_HANDLER_E0:
+    group: 'PAPI hardware events'
+    unit: count
+    help: "papi_events[0] counted over inbound message handlers (wire and loopback)"
+
+  PAPI_MSG_HANDLER_E1:
+    group: 'PAPI hardware events'
+    unit: count
+    help: "papi_events[1] counted over inbound message handlers (wire and loopback)"
+
+  PAPI_MSG_HANDLER_E2:
+    group: 'PAPI hardware events'
+    unit: count
+    help: "papi_events[2] counted over inbound message handlers (wire and loopback)"
+
+  PAPI_MSG_HANDLER_E3:
+    group: 'PAPI hardware events'
+    unit: count
+    help: "papi_events[3] counted over inbound message handlers (wire and loopback)"
+
+  PAPI_MSG_HANDLER_E4:
+    group: 'PAPI hardware events'
+    unit: count
+    help: "papi_events[4] counted over inbound message handlers (wire and loopback)"
+
+  PAPI_MSG_HANDLER_E5:
+    group: 'PAPI hardware events'
+    unit: count
+    help: "papi_events[5] counted over inbound message handlers (wire and loopback)"

@@ -223,7 +223,70 @@ extern "C" {
   X(NUM_GRANT_PURGE_ACCEPT)                                                    \
   X(NUM_GRANT_PURGE_LATCHED)                                                   \
   X(NUM_GRANT_PURGE_STALE_SETTLE)                                              \
-  X(NUM_GRANT_REGRANT_DEDUP)
+  X(NUM_GRANT_REGRANT_DEDUP)                                                   \
+  /* PAPI hardware events (ARTS_USE_PAPI).  Each scope owns six slots,         \
+   * _E0.._E5, one per entry of the runtime papi_events list in order (the     \
+   * names ride in every counter file's metadata as "papi_events").  A cfg     \
+   * line naming the bare scope (PAPI_EDT=ONCE) sets all six.  TOTAL_* span    \
+   * a thread's whole run loop, split by role; EDT spans only the task body    \
+   * (paused while an EDT is parked in a blocking wait), so TOTAL_WORKER       \
+   * minus EDT is runtime overhead on workers.  The region scopes are          \
+   * inclusive and may nest inside one another (a CXL flush inside a           \
+   * DB_RELEASE counts in both): never sum regions. */                         \
+  X(PAPI_TOTAL_WORKER_E0)                                                      \
+  X(PAPI_TOTAL_WORKER_E1)                                                      \
+  X(PAPI_TOTAL_WORKER_E2)                                                      \
+  X(PAPI_TOTAL_WORKER_E3)                                                      \
+  X(PAPI_TOTAL_WORKER_E4)                                                      \
+  X(PAPI_TOTAL_WORKER_E5)                                                      \
+  X(PAPI_TOTAL_PROGRESS_E0)                                                    \
+  X(PAPI_TOTAL_PROGRESS_E1)                                                    \
+  X(PAPI_TOTAL_PROGRESS_E2)                                                    \
+  X(PAPI_TOTAL_PROGRESS_E3)                                                    \
+  X(PAPI_TOTAL_PROGRESS_E4)                                                    \
+  X(PAPI_TOTAL_PROGRESS_E5)                                                    \
+  X(PAPI_EDT_E0)                                                               \
+  X(PAPI_EDT_E1)                                                               \
+  X(PAPI_EDT_E2)                                                               \
+  X(PAPI_EDT_E3)                                                               \
+  X(PAPI_EDT_E4)                                                               \
+  X(PAPI_EDT_E5)                                                               \
+  X(PAPI_DB_ACQUIRE_E0)                                                        \
+  X(PAPI_DB_ACQUIRE_E1)                                                        \
+  X(PAPI_DB_ACQUIRE_E2)                                                        \
+  X(PAPI_DB_ACQUIRE_E3)                                                        \
+  X(PAPI_DB_ACQUIRE_E4)                                                        \
+  X(PAPI_DB_ACQUIRE_E5)                                                        \
+  X(PAPI_DB_RELEASE_E0)                                                        \
+  X(PAPI_DB_RELEASE_E1)                                                        \
+  X(PAPI_DB_RELEASE_E2)                                                        \
+  X(PAPI_DB_RELEASE_E3)                                                        \
+  X(PAPI_DB_RELEASE_E4)                                                        \
+  X(PAPI_DB_RELEASE_E5)                                                        \
+  X(PAPI_CXL_FLUSH_PRODUCER_E0)                                                \
+  X(PAPI_CXL_FLUSH_PRODUCER_E1)                                                \
+  X(PAPI_CXL_FLUSH_PRODUCER_E2)                                                \
+  X(PAPI_CXL_FLUSH_PRODUCER_E3)                                                \
+  X(PAPI_CXL_FLUSH_PRODUCER_E4)                                                \
+  X(PAPI_CXL_FLUSH_PRODUCER_E5)                                                \
+  X(PAPI_CXL_FLUSH_CONSUMER_E0)                                                \
+  X(PAPI_CXL_FLUSH_CONSUMER_E1)                                                \
+  X(PAPI_CXL_FLUSH_CONSUMER_E2)                                                \
+  X(PAPI_CXL_FLUSH_CONSUMER_E3)                                                \
+  X(PAPI_CXL_FLUSH_CONSUMER_E4)                                                \
+  X(PAPI_CXL_FLUSH_CONSUMER_E5)                                                \
+  X(PAPI_NET_SEND_E0)                                                          \
+  X(PAPI_NET_SEND_E1)                                                          \
+  X(PAPI_NET_SEND_E2)                                                          \
+  X(PAPI_NET_SEND_E3)                                                          \
+  X(PAPI_NET_SEND_E4)                                                          \
+  X(PAPI_NET_SEND_E5)                                                          \
+  X(PAPI_MSG_HANDLER_E0)                                                       \
+  X(PAPI_MSG_HANDLER_E1)                                                       \
+  X(PAPI_MSG_HANDLER_E2)                                                       \
+  X(PAPI_MSG_HANDLER_E3)                                                       \
+  X(PAPI_MSG_HANDLER_E4)                                                       \
+  X(PAPI_MSG_HANDLER_E5)
 /* Note: end-to-end / init wall time is no longer a counter — it is the
  * env-gated "[E2E] <ns>" stderr marker (rank 0; see runtime.c / shutdown.c /
  * threads.c), identical across arts/xsocr/ocr-vx. */

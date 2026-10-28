@@ -39,6 +39,12 @@
 
 # Collect all source files
 file(GLOB COUNTER_SOURCES "*.c")
+# papi.c is the only PAPI consumer; without ARTS_USE_PAPI its hooks are no-op
+# macros (arts/counter/papi.h), so the TU is left out rather than stubbed.
+# Benchmark variants gather this target's SOURCES, so they inherit the choice.
+if(NOT ARTS_USE_PAPI)
+    list(FILTER COUNTER_SOURCES EXCLUDE REGEX "/papi\\.c$")
+endif()
 
 # Create object library for the counter module
 add_library(arts_counter OBJECT ${COUNTER_SOURCES})

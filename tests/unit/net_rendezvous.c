@@ -70,6 +70,11 @@ void arts_counter_increment_by(arts_counter_t *counter, uint64_t num) {
   (void)counter;
   (void)num;
 }
+#ifdef ARTS_USE_PAPI
+/* ...and so do its PAPI NET_SEND scope edges, in a tree built with PAPI. */
+void arts_papi_scope_begin(arts_papi_scope_t scope) { (void)scope; }
+void arts_papi_scope_end(arts_papi_scope_t scope) { (void)scope; }
+#endif
 
 /* ------------------------------------------------------------------------- */
 

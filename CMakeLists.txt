@@ -455,6 +455,26 @@ set(ARTS_COUNTER_CONFIG
     "${CMAKE_CURRENT_SOURCE_DIR}/configs/counters_off.cfg"
     CACHE FILEPATH "ARTS counter configuration file (parsed to generate introspection macros)")
 
+# PAPI hardware events ride the counter pipeline above: libs/src/core/counter/
+# papi.c fills the PAPI_* counter slots, so the counter cfg decides which
+# scopes are compiled in and arts.cfg's papi_events decides what they count.
+# PAPI is never vendored: point ARTS_PAPI_DIR (or $PAPI_DIR) at an install.
+option(ARTS_USE_PAPI "Read hardware events through PAPI into the PAPI_* counters" OFF)
+set(ARTS_PAPI_DIR "$ENV{PAPI_DIR}" CACHE PATH "PAPI install prefix (holds include/papi.h and lib/libpapi)")
+if(ARTS_USE_PAPI)
+  find_path(ARTS_PAPI_INCLUDE_DIR papi.h
+            HINTS ${ARTS_PAPI_DIR} PATH_SUFFIXES include)
+  find_library(ARTS_PAPI_LIBRARY NAMES papi
+               HINTS ${ARTS_PAPI_DIR} PATH_SUFFIXES lib lib64)
+  if(NOT ARTS_PAPI_INCLUDE_DIR OR NOT ARTS_PAPI_LIBRARY)
+    message(FATAL_ERROR
+      "ARTS_USE_PAPI=ON but papi.h/libpapi were not found "
+      "(ARTS_PAPI_DIR='${ARTS_PAPI_DIR}').  Set -DARTS_PAPI_DIR=<prefix>.")
+  endif()
+  message(STATUS "PAPI: ${ARTS_PAPI_LIBRARY} (headers ${ARTS_PAPI_INCLUDE_DIR})")
+  add_compile_definitions(ARTS_USE_PAPI=1)
+endif()
+
 # ── Memory-model × family × second-axes validation + arm derivation ───────
 # The user-facing axes reduce to one protocol ARM — the TU family that gets
 # compiled and the ARTS_PROTOCOL_* macro it defines:

@@ -45,6 +45,14 @@ target_include_directories(arts_interface INTERFACE
     $<BUILD_INTERFACE:${ARTS_BUILD_INTERNAL_INCLUDE_DIR}>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
+# Through the interface target PAPI reaches libarts, every arts_static_<variant>
+# and every benchmark binary linked against one.  Only counter/papi.c includes
+# papi.h, so the header path stays build-side.
+if(ARTS_USE_PAPI)
+    target_include_directories(arts_interface INTERFACE
+        $<BUILD_INTERFACE:${ARTS_PAPI_INCLUDE_DIR}>)
+    target_link_libraries(arts_interface INTERFACE ${ARTS_PAPI_LIBRARY})
+endif()
 
 # --- Coherence-protocol helpers (shared by main lib + benchmark variants) -----
 # Sets ${out} (caller scope) to the coherence model TU paths for

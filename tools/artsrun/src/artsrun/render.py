@@ -28,7 +28,8 @@ def _env(root: Path | None = None) -> Environment:
 
 
 def render_arts(profile: Profile, nodes: int, *, counter_folder: str | None = None,
-                capture_interval: int | None = None) -> str:
+                capture_interval: int | None = None,
+                papi_events: list[str] | None = None) -> str:
     """The runtime configuration of one node count."""
     hosts = profile.hosts[:nodes] if profile.launcher is Launcher.SSH else []
     return _env().get_template("arts.cfg.j2").render(
@@ -52,6 +53,7 @@ def render_arts(profile: Profile, nodes: int, *, counter_folder: str | None = No
         hosts=hosts,
         counter_folder=counter_folder,
         counter_capture_interval=capture_interval,
+        papi_events=papi_events,
     )
 
 
@@ -136,12 +138,14 @@ def write_configs(profile: Profile, nodes: int, out_dir: Path, *,
 
 def write_arts_cfg(profile: Profile, nodes: int, path: Path, *,
                    counter_folder: str | None = None,
-                   capture_interval: int | None = None) -> Path:
+                   capture_interval: int | None = None,
+                   papi_events: list[str] | None = None) -> Path:
     """Write one ARTS configuration to an exact path."""
     path.parent.mkdir(parents=True, exist_ok=True)
     return _write_once(path, render_arts(profile, nodes,
                                          counter_folder=counter_folder,
-                                         capture_interval=capture_interval))
+                                         capture_interval=capture_interval,
+                                         papi_events=papi_events))
 
 
 def config_for(kind: RuntimeKind, configs: dict[str, Path]) -> Path | None:

@@ -47,6 +47,7 @@
 #include "arts/coherence/coherence.h" /* arts_handler_db_grant_* bodies */
 #include "arts/coherence/handlers.h"
 #include "arts/counter/counter.h" /* arts_handler_time_sync_* */
+#include "arts/counter/papi.h"    /* MSG_HANDLER scope */
 #include "arts/db.h"
 #include "arts/edt.h"
 #include "arts/event.h"
@@ -120,7 +121,9 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
         exp_seq_number, packet->seq_num, packet->rank, packet->message_type);
   }
 #endif
+  ARTS_PAPI_BEGIN(MSG_HANDLER);
   arts_transport_dispatch_body(packet);
+  ARTS_PAPI_END(MSG_HANDLER);
 }
 
 void arts_transport_dispatch_body(struct arts_msg_header_s *packet) {

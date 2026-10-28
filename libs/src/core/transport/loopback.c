@@ -51,6 +51,7 @@
 #include <string.h>
 
 #include "arts/counter/counter.h" /* NET_MSG_* census */
+#include "arts/counter/papi.h"    /* MSG_HANDLER scope */
 #include "arts/system/identity.h" /* arts_global_rank_id / arts_global_rank_count */
 #include "arts/system/print.h"
 #include "arts/transport/dispatcher.h" /* arts_transport_dispatch_body */
@@ -128,7 +129,9 @@ bool arts_transport_loopback_drain(void) {
      * wire sequence number, so it must skip the SEQUENCENUMBERS wire-ordering
      * check (whose rec_seq_numbers[seq_rank] index would read an unstamped
      * field). */
+    ARTS_PAPI_BEGIN(MSG_HANDLER);
     arts_transport_dispatch_body((struct arts_msg_header_s *)(node + 1));
+    ARTS_PAPI_END(MSG_HANDLER);
     arts_free(node);
     head = next;
   }

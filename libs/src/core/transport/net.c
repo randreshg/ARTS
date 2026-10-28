@@ -61,6 +61,7 @@
 
 #include "arts/counter/Preamble.h" /* INCREMENT_{BYTES,NUM}_REMOTE_* */
 #include "arts/counter/counter.h"
+#include "arts/counter/papi.h" /* NET_SEND scope */
 #include "arts/defs.h"
 #include "arts/memory/regpool.h"
 #include "arts/system/identity.h" /* arts_global_rank_id / arts_global_rank_count */
@@ -556,9 +557,9 @@ static void net_inject_header(fi_addr_t addr, const void *buf, size_t len,
 /* Send core                                                                   */
 /* ------------------------------------------------------------------------- */
 
-void arts_net_send_core(int rank, char *message, unsigned int length,
-                        char *payload, unsigned int offset, uint64_t size,
-                        void (*free_method)(void *)) {
+static void net_send_core(int rank, char *message, unsigned int length,
+                          char *payload, unsigned int offset, uint64_t size,
+                          void (*free_method)(void *)) {
   /* Teardown has begun (threads have joined): drop the send, but still run its
    * completion-gated free so the caller payload is not leaked. */
   if (atomic_load_explicit(&g_net.quiescing, memory_order_acquire)) {
@@ -614,6 +615,17 @@ void arts_net_send_core(int rank, char *message, unsigned int length,
   net_submit(
       net_txn_new(addr, b, (size_t)total, net_desc(b), b, free_method, payload),
       is_ack);
+}
+
+/* The PAPI NET_SEND scope wraps the whole call: net_send_core returns from
+ * several places, and its EAGAIN path may progress the fabric inline (so a
+ * MSG_HANDLER span can open inside this one). */
+void arts_net_send_core(int rank, char *message, unsigned int length,
+                        char *payload, unsigned int offset, uint64_t size,
+                        void (*free_method)(void *)) {
+  ARTS_PAPI_BEGIN(NET_SEND);
+  net_send_core(rank, message, length, payload, offset, size, free_method);
+  ARTS_PAPI_END(NET_SEND);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -864,9 +876,9 @@ static void net_put_piece_done(void *arg) {
   }
 }
 
-void arts_net_put_payload(int rank, uint64_t raddr, uint64_t rkey,
-                          uint64_t txid, const void *src, uint64_t len,
-                          void (*on_local_done)(void *), void *arg) {
+static void net_put_payload(int rank, uint64_t raddr, uint64_t rkey,
+                            uint64_t txid, const void *src, uint64_t len,
+                            void (*on_local_done)(void *), void *arg) {
   if (len == 0 || txid == 0) {
     ARTS_ERROR("arts_net: put_payload requires a payload and a txid "
                "(len=%llu txid=%llx)",
@@ -940,6 +952,16 @@ void arts_net_put_payload(int rank, uint64_t raddr, uint64_t rkey,
     txn->imm = last ? txid : 0;
     net_submit(txn, /*is_ack=*/false);
   }
+}
+
+/* Payload PUTs share the NET_SEND scope with control sends: both are this
+ * rank's network injection cost. */
+void arts_net_put_payload(int rank, uint64_t raddr, uint64_t rkey,
+                          uint64_t txid, const void *src, uint64_t len,
+                          void (*on_local_done)(void *), void *arg) {
+  ARTS_PAPI_BEGIN(NET_SEND);
+  net_put_payload(rank, raddr, rkey, txid, src, len, on_local_done, arg);
+  ARTS_PAPI_END(NET_SEND);
 }
 
 static inline uint64_t net_now_ns(void) {

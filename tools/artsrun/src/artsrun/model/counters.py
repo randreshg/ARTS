@@ -112,6 +112,10 @@ class Counterset(BaseModel):
     # Runtime-side, so these move without a rebuild.
     capture_interval: int = Field(default=100, ge=1)
     folder: str | None = None
+    # The hardware events the PAPI_<SCOPE>_E<k> slots count, in slot order.
+    # Native names differ per CPU, so a set names the events of the machine it
+    # was written for; None leaves the runtime's default list.
+    papi_events: list[str] | None = Field(default=None, max_length=6)
 
     counters: dict[str, CounterSetting] = Field(default_factory=dict)
 
@@ -130,6 +134,15 @@ class Counterset(BaseModel):
             raise ValueError(
                 f"not counters this runtime defines: {', '.join(sorted(unknown))}"
             )
+        return self
+
+    @model_validator(mode="after")
+    def _papi_events_spell(self) -> "Counterset":
+        # The runtime splits the list on commas and the cfg line on '#'.
+        bad = [e for e in self.papi_events or []
+               if not e or any(c in e for c in ",#= \t")]
+        if bad:
+            raise ValueError(f"papi_events entries are not event names: {bad}")
         return self
 
     def setting(self, name: str) -> CounterSetting:

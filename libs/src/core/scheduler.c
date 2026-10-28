@@ -45,6 +45,7 @@
 
 #include "arts/counter/Preamble.h"
 #include "arts/counter/counter.h"
+#include "arts/counter/papi.h"
 #include "arts/db.h"
 #include "arts/defs.h"
 #include "arts/edt.h"
@@ -182,7 +183,9 @@ void arts_run_edt(struct arts_edt_s *edt) {
 
   ARTS_INFO("Running EDT[Guid:%lu, Deps: %u, Params: %u, DepvPtr: %p]",
             edt->guid, depc, paramc, depv);
+  ARTS_PAPI_BEGIN(DB_ACQUIRE);
   prep_dbs(depc, depv, false);
+  ARTS_PAPI_END(DB_ACQUIRE);
 
   arts_set_thread_local_edt_info(edt);
 
@@ -190,7 +193,11 @@ void arts_run_edt(struct arts_edt_s *edt) {
   struct timespec start_time;
   struct timespec end_time;
   (void)clock_gettime(CLOCK_MONOTONIC, &start_time);
+  /* The EDT scope brackets the body alone; arts_event_wait closes and reopens
+   * it around a blocking wait, exactly as it does TIME_EDT_EXEC. */
+  ARTS_PAPI_BEGIN(EDT);
   func(paramc, paramv, depc, depv);
+  ARTS_PAPI_END(EDT);
   (void)clock_gettime(CLOCK_MONOTONIC, &end_time);
   TIME_EDT_EXEC_STOP();
 
@@ -204,8 +211,10 @@ void arts_run_edt(struct arts_edt_s *edt) {
    * queued to the sender thread before the
    * finish DECR message, so TCP FIFO ordering guarantees data arrives at home
    * first. */
+  ARTS_PAPI_BEGIN(DB_RELEASE);
   release_dbs(depc, depv, false);
   arts_release_created_dbs();
+  ARTS_PAPI_END(DB_RELEASE);
 
   /* Retire the GUID before any completion signal leaves: whoever observes the
    * completion (output event, finish scope) may create the GUID's next

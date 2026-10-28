@@ -554,10 +554,50 @@ def read_rank_counters(counter_dir: Path) -> dict[int, dict[str, int]]:
             data = json.loads(path.read_text())
         except (OSError, json.JSONDecodeError):
             continue
+        events = data.get("metadata", {}).get("papi_events", [])
         out[int(m.group(1))] = {
-            name: int(rec["value"])
+            papi_slot_name(name, events): int(rec["value"])
             for name, rec in data.get("counters", {}).items()
         }
+    return out
+
+PAPI_SLOT_RE = re.compile(r"(PAPI_[A-Z_]+)_E(\d)")
+
+def papi_slot_name(name: str, events: list[str]) -> str:
+    """PAPI_<SCOPE>_E<k> holds the k-th papi_events entry of that run, so the
+    slot is renamed to what it counted: PAPI_EDT[PAPI_L1_DCM].  Two runs with
+    different event lists then never sum one event into another."""
+    m = PAPI_SLOT_RE.fullmatch(name)
+    if not m or int(m.group(2)) >= len(events):
+        return name
+    return f"{m.group(1)}[{events[int(m.group(2))]}]"
+
+def derive_papi(sums: dict[str, int], edts) -> dict:
+    """Per PAPI scope: IPC, each other event per kilo-instruction, and, for the
+    EDT scope, per EDT.  Worker runtime overhead is TOTAL_WORKER minus EDT,
+    event by event (EDT bodies run only on workers).  Region scopes overlap,
+    so they are never summed."""
+    scopes: dict[str, dict[str, int]] = {}
+    for name, value in sums.items():
+        m = re.fullmatch(r"(PAPI_[A-Z_]+)\[(.+)\]", name)
+        if m:
+            scopes.setdefault(m.group(1), {})[m.group(2)] = value
+    tot, edt = scopes.get("PAPI_TOTAL_WORKER"), scopes.get("PAPI_EDT")
+    if tot and edt:
+        scopes["PAPI_WORKER_RUNTIME"] = {
+            e: tot[e] - edt[e] for e in tot if e in edt}
+    out = {}
+    for scope, ev in scopes.items():
+        key = scope.removeprefix("PAPI_").lower()
+        ins = ev.get("PAPI_TOT_INS")
+        out[f"papi_{key}_ipc"] = _div(ins, ev.get("PAPI_TOT_CYC"))
+        for e, v in ev.items():
+            out[f"papi_{key}_{e}"] = v
+            if e not in ("PAPI_TOT_INS", "PAPI_TOT_CYC"):
+                rate = _div(v, ins)
+                out[f"papi_{key}_{e}_pki"] = None if rate is None else rate * 1e3
+            if scope == "PAPI_EDT":
+                out[f"papi_{key}_{e}_per_edt"] = _div(v, edts)
     return out
 
 def _div(a, b):
@@ -615,6 +655,7 @@ def derive(sums: dict[str, int], e2e_s: float | None) -> dict:
         "db_payload_put_count": n_put,
         "mean_db_payload_put_ns": _div(t_put, n_put),
         "db_payload_put_op_Bps": per_ns(payload, t_put),
+        **derive_papi(sums, edts),
     }
 
 def sanity_checks(cell, stamps, per_rank, sums, complete) -> list[str]:

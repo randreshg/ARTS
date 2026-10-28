@@ -68,6 +68,7 @@ static void event_simple_step(struct arts_event_s *e, arts_guid_t guid, int op,
 #include "arts.h"
 #include "arts/db.h" /* arts_wait_release_dbs / arts_wait_reacquire_dbs */
 #include "arts/edt.h"
+#include "arts/counter/papi.h" /* EDT scope paused across a wait */
 #include "arts/edt_context.h" /* current_edt */
 #include "arts/gas/guid.h"
 #include "arts/gas/route_table.h"
@@ -785,6 +786,7 @@ void arts_event_release_creator_token(arts_guid_t event_guid) {
  */
 bool arts_event_wait(arts_guid_t event_guid) {
   TIME_EDT_EXEC_STOP();
+  ARTS_PAPI_END(EDT);
   /* Consume the creator-token: skip it in completion cleanup, then decrement
    * the latch to close the scope (mirrors the paired INCR issued at create). */
   arts_owned_finish_consume(event_guid);
@@ -817,6 +819,7 @@ bool arts_event_wait(arts_guid_t event_guid) {
   arts_edt_ctx_restore(&tl);
 
   arts_wait_reacquire_dbs();
+  ARTS_PAPI_BEGIN(EDT);
   TIME_EDT_EXEC_START();
   return true;
 }

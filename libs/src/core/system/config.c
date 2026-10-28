@@ -860,6 +860,9 @@ static const struct arts_config_entry_s config_entries[] = {
     {"counter_folder", CONFIG_STRING, OFF(counter_folder), "./counters", NULL},
     {"counter_capture_interval", CONFIG_UINT, OFF(counter_capture_interval),
      "100", NULL},
+    /* Read only by a PAPI build with PAPI_* counters enabled; accepted always
+     * so one arts.cfg serves every build.  NULL selects papi.c's default. */
+    {"papi_events", CONFIG_STRING, OFF(papi_events), NULL, NULL},
     /* --- Custom handlers --- */
     {"launcher", CONFIG_CUSTOM, 0, NULL, handle_launcher},
     {"net_interface", CONFIG_CUSTOM, 0, NULL, handle_net_interface},
@@ -1504,5 +1507,8 @@ void arts_config_destroy(struct arts_config_s *config) {
   }
   if (config->counter_folder) {
     arts_free(config->counter_folder);
+  }
+  if (config->papi_events) {
+    arts_free(config->papi_events);
   }
 }

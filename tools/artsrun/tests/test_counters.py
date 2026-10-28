@@ -453,3 +453,27 @@ def test_the_build_defaults_to_the_all_off_counter_file():
     text = (repo_root() / "CMakeLists.txt").read_text()
     block = text.split("set(ARTS_COUNTER_CONFIG", 1)[1].split(")", 1)[0]
     assert "configs/counters_off.cfg" in block
+
+
+def test_a_sets_papi_events_reach_the_runtime_configuration():
+    # Like the interval, the events are a runtime key: they move without a
+    # rebuild, and an unset list leaves the runtime's default.
+    from artsrun.render import render_arts
+    from artsrun.store import load_counterset, load_profile
+
+    cset = load_counterset("papi_memstall_skx")
+    text = render_arts(load_profile("ferrari-local"), 2,
+                       counter_folder="/runs/c",
+                       papi_events=cset.papi_events)
+    assert ("papi_events=PAPI_TOT_CYC,PAPI_TOT_INS,"
+            "CYCLE_ACTIVITY:STALLS_L3_MISS,") in text
+    assert "papi_events" not in render_arts(load_profile("ferrari-local"), 2)
+
+
+def test_papi_events_must_be_names_the_runtime_can_split():
+    with pytest.raises(ValidationError, match="not event names"):
+        Counterset(name="p", counters={}, allow_empty=True,
+                   papi_events=["PAPI_TOT_CYC,PAPI_L3_TCM"])
+    with pytest.raises(ValidationError):
+        Counterset(name="p", counters={}, allow_empty=True,
+                   papi_events=[f"E{i}" for i in range(7)])

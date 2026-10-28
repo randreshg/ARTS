@@ -107,6 +107,7 @@ struct arts_config_s {
   unsigned int deque_size;
   char *counter_folder;
   unsigned int counter_capture_interval;
+  char *papi_events; /* ARTS_USE_PAPI: comma-separated event names */
   unsigned int scheduler;
   unsigned int deque_type;
   bool master_boot;
