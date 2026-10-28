@@ -27,6 +27,18 @@ COUNTER_CONFIG (configs/counters_cxl_ipdps27.cfg, via
 and the counters it lists are the ones every rank file is expected to carry.
 Any other counter present in the rank files is still recorded.
 
+PAPI hardware events (--papi SET, repeatable) run the same matrix from a
+separate build tree, PAPI_APP_BUILD_DIR, configured with -DARTS_USE_PAPI=ON
+and PAPI_COUNTER_CONFIG (the ipdps27 counters plus every PAPI scope).  Each
+cell runs once per event set, with the set's name in its cell_id, and the
+set's events are written into that cell's arts.cfg as papi_events.  A set is
+a name from PAPI_EVENT_SETS, NAME=EV1,EV2,... or a bare EV1,EV2,... (at most
+six events; they must fit the core's counters without multiplexing).
+Preflight checks the tree's cache for ARTS_USE_PAPI and ssh-es to every node
+to confirm it can count each set (perf_event_paranoid <= 2, papi_command_line
+adds every event).  An instrumented tree's e2e times are not results: take
+timings from the plain campaign.
+
 Output (under RESULTS_ROOT/<run-id>/):
 
   manifest.json        the constants, git revision, and roster of this campaign
@@ -44,6 +56,10 @@ Usage:
   python3 experiment_scripts/run_cxl_experiments_optimal.py --apps fft_dist,stream_dist --nodes 1,2
   python3 experiment_scripts/run_cxl_experiments_optimal.py --resume <run-dir>
   python3 experiment_scripts/run_cxl_experiments_optimal.py --smoke-test
+  python3 experiment_scripts/run_cxl_experiments_optimal.py --papi cache --dry-run
+  python3 experiment_scripts/run_cxl_experiments_optimal.py --papi cache --papi memstall_skx
+  python3 experiment_scripts/run_cxl_experiments_optimal.py \\
+      --papi spr=PAPI_TOT_CYC,PAPI_TOT_INS,CYCLE_ACTIVITY:STALLS_L3_MISS
 """
 
 from __future__ import annotations
@@ -154,6 +170,36 @@ def _configured_counters(path: Path) -> list[str]:
     return names
 
 EXPECTED_COUNTERS = _configured_counters(COUNTER_CONFIG)
+
+# --papi campaigns.  PAPI is compiled in, so they run from their own tree:
+#   cmake -GNinja -Bbuild_papi -DCMAKE_BUILD_TYPE=Release \
+#     -DARTS_USE_PAPI=ON -DARTS_PAPI_DIR=/path/to/papi/install \
+#     -DARTS_COUNTER_CONFIG=$PWD/configs/counters_cxl_ipdps27_papi.cfg \
+#     [the same protocol / CXL / benchmark options as the plain tree]
+# Every node needs perf_event_paranoid <= 2 and the PAPI install at the same
+# path (the binaries link libpapi by path).
+PAPI_APP_BUILD_DIR = REPO_ROOT / "build_papi" / "benchmarks" / "apps"
+PAPI_COUNTER_CONFIG = REPO_ROOT / "configs" / "counters_cxl_ipdps27_papi.cfg"
+
+# Named event sets for --papi, in slot order (E0..E5), at most six each.
+# PAPI_TOT_CYC and PAPI_TOT_INS go first so every set yields IPC and per-
+# kilo-instruction rates.  Native names are CPU-specific: memstall_skx is
+# Skylake-SP's.  Confirm names with papi_native_avail on the target machine
+# and add a set here (or pass NAME=EV1,... on the command line) for another
+# CPU; preflight refuses a set a node cannot count.
+PAPI_EVENT_SETS: dict[str, list[str]] = {
+    # experiments/countersets/papi_cache.yaml's set.
+    "cache": ["PAPI_TOT_CYC", "PAPI_TOT_INS", "PAPI_L1_DCM", "PAPI_L2_TCM",
+              "PAPI_L3_TCM", "PAPI_TLB_DM"],
+    # experiments/countersets/papi_memstall_skx.yaml's set: memory-bound
+    # stalls and where L3 misses were served.
+    "memstall_skx": ["PAPI_TOT_CYC", "PAPI_TOT_INS",
+                     "CYCLE_ACTIVITY:STALLS_L3_MISS",
+                     "MEM_LOAD_L3_MISS_RETIRED:LOCAL_DRAM",
+                     "MEM_LOAD_L3_MISS_RETIRED:REMOTE_DRAM",
+                     "MEM_LOAD_L3_MISS_RETIRED:REMOTE_HITM"],
+}
+PAPI_MAX_EVENTS = 6
 
 # Applications (base names, without the _<variant> suffix) and their inputs.
 # "{repo}" is replaced with REPO_ROOT.  Inputs are fixed across node counts
@@ -330,7 +376,8 @@ DONE_RE = re.compile(r"^DONE!\s+(-?\d+)", re.M)
 
 # Fixed leading columns of runs.csv; derived metrics and ctr_* follow.
 BASE_COLUMNS = [
-    "cell_id", "app", "variant", "executable", "nodes", "worker_threads",
+    "cell_id", "app", "variant", "papi_set", "executable", "nodes",
+    "worker_threads",
     "progress_threads", "repeat", "is_warmup", "status", "return_code",
     "e2e_ns", "e2e_s", "wall_s", "ranks_reported", "counters_complete",
     "checks_failed", "started_at",
@@ -354,21 +401,27 @@ DERIVED_COLUMNS = [
 # Campaign plan
 # ---------------------------------------------------------------------------
 
-def plan_cells(apps, variants, node_counts, repeats, warmups):
-    """Warm-ups first per (app, variant, nodes), then measured repetitions
-    repeat-major, so slow drift over the campaign spreads across all cells
-    instead of landing on whichever app happens to run last."""
+def plan_cells(apps, variants, node_counts, repeats, warmups, papi_sets=None):
+    """Warm-ups first per (app, variant, event set, nodes), then measured
+    repetitions repeat-major, so slow drift over the campaign spreads across
+    all cells instead of landing on whichever app happens to run last.
+    papi_sets is [(name, events)] for a --papi campaign, None otherwise."""
+    sets = papi_sets or [None]
     cells = []
     for variant in variants:
-        for app, args in apps:
-            for n in node_counts:
-                for w in range(warmups):
-                    cells.append(_cell(app, args, variant, n, w, warmup=True))
-    for rep in range(repeats):
-        for variant in variants:
+        for papi in sets:
             for app, args in apps:
                 for n in node_counts:
-                    cells.append(_cell(app, args, variant, n, rep, warmup=False))
+                    for w in range(warmups):
+                        cells.append(_cell(app, args, variant, n, w,
+                                           warmup=True, papi=papi))
+    for rep in range(repeats):
+        for variant in variants:
+            for papi in sets:
+                for app, args in apps:
+                    for n in node_counts:
+                        cells.append(_cell(app, args, variant, n, rep,
+                                           warmup=False, papi=papi))
     return cells
 
 PER_NODE_RE = re.compile(r"\{per_node:(\d+)\}")
@@ -391,12 +444,18 @@ def expand_args(args: str, nodes: int) -> str:
     args = PER_NODE_RE.sub(lambda m: str(int(m.group(1)) // nodes), args)
     return args.replace("{repo}", str(REPO_ROOT))
 
-def _cell(app, args, variant, nodes, index, *, warmup):
+def _cell(app, args, variant, nodes, index, *, warmup, papi=None):
     tag = f"w{index}" if warmup else f"r{index}"
+    # The event set is part of the cell's identity: two sets of one
+    # (app, variant, nodes, repeat) are two runs, not a retry.
+    papi_set, papi_events = papi if papi else (None, None)
+    set_tag = f"__{papi_set}" if papi_set else ""
     return {
-        "cell_id": f"{app}__{variant}__n{nodes}__{tag}",
+        "cell_id": f"{app}__{variant}__n{nodes}{set_tag}__{tag}",
         "app": app,
         "variant": variant,
+        "papi_set": papi_set,
+        "papi_events": papi_events,
         "executable": f"{app}_{variant}",
         "args": expand_args(args, nodes),
         "nodes": nodes,
@@ -408,7 +467,8 @@ def _cell(app, args, variant, nodes, index, *, warmup):
 # Per-cell files
 # ---------------------------------------------------------------------------
 
-def render_arts_cfg(nodes: int, counter_folder: Path) -> str:
+def render_arts_cfg(nodes: int, counter_folder: Path,
+                    papi_events: list[str] | None = None) -> str:
     lines = [
         "[ARTS]",
         f"worker_threads={WORKER_THREADS}",
@@ -428,6 +488,8 @@ def render_arts_cfg(nodes: int, counter_folder: Path) -> str:
         lines.append(f"provider={ARTS_PROVIDER}")
     if ARTS_NET_INTERFACE:
         lines.append(f"net_interface={ARTS_NET_INTERFACE}")
+    if papi_events:
+        lines.append(f"papi_events={','.join(papi_events)}")
     lines += [f"{k}={v}" for k, v in EXTRA_ARTS_CFG.items()]
     return "\n".join(lines) + "\n"
 
@@ -442,7 +504,8 @@ def prepare_cell(cell, run_dir: Path):
     counter_dir.mkdir(parents=True, exist_ok=True)
 
     cfg = cell_dir / "arts.cfg"
-    cfg.write_text(render_arts_cfg(cell["nodes"], counter_dir))
+    cfg.write_text(render_arts_cfg(cell["nodes"], counter_dir,
+                                   cell["papi_events"]))
 
     spec = {
         "app": str(APP_BUILD_DIR / cell["executable"]),
@@ -480,6 +543,13 @@ def run_cell(cell, run_dir: Path, timeout_s: int):
     env.update(EXTRA_ENV)
     env["ARTS_CONFIG"] = str(cfg)
     env["ARTS_E2E_MARKER"] = "1"
+    if cell["papi_set"]:
+        # The binaries carry libpapi's build-tree rpath; this covers a tree
+        # installed or copied without it.  ARTS forwards it to remote ranks.
+        lib_dir = papi_lib_dir()
+        if lib_dir:
+            env["LD_LIBRARY_PATH"] = os.pathsep.join(
+                filter(None, [lib_dir, env.get("LD_LIBRARY_PATH")]))
 
     argv = launch_argv(args_json)
     started_at = dt.datetime.now().isoformat(timespec="seconds")
@@ -519,9 +589,10 @@ def run_cell(cell, run_dir: Path, timeout_s: int):
     if status == "ok" and not stamps:
         status = "no_e2e"
 
-    per_rank = read_rank_counters(counter_dir)
+    per_rank, rank_events = read_rank_counters(counter_dir)
     record = build_record(cell, status, rc, stamps, wall_s, per_rank,
-                          started_at, wrapper_done=done is not None)
+                          started_at, wrapper_done=done is not None,
+                          rank_events=rank_events)
     record["log"] = str(log_path.relative_to(run_dir))
     record["counter_dir"] = str(counter_dir.relative_to(run_dir))
     return record
@@ -530,10 +601,12 @@ def run_cell(cell, run_dir: Path, timeout_s: int):
 # Counters
 # ---------------------------------------------------------------------------
 
-def read_rank_counters(counter_dir: Path) -> dict[int, dict[str, int]]:
-    """{rank: {counter: value}} from n<rank>.json.  The integer "value" is
-    used for time counters too (ns), never the rounded value_ms."""
-    out = {}
+def read_rank_counters(counter_dir: Path):
+    """({rank: {counter: value}}, {rank: papi_events}) from n<rank>.json.
+    The integer "value" is used for time counters too (ns), never the rounded
+    value_ms.  papi_events is the list the rank's metadata echoes ([] when
+    the build counts no PAPI events)."""
+    out, rank_events = {}, {}
     for path in sorted(counter_dir.glob("n*.json")):
         m = re.fullmatch(r"n(\d+)\.json", path.name)
         if not m:
@@ -543,11 +616,12 @@ def read_rank_counters(counter_dir: Path) -> dict[int, dict[str, int]]:
         except (OSError, json.JSONDecodeError):
             continue
         events = data.get("metadata", {}).get("papi_events", [])
+        rank_events[int(m.group(1))] = events
         out[int(m.group(1))] = {
             papi_slot_name(name, events): int(rec["value"])
             for name, rec in data.get("counters", {}).items()
         }
-    return out
+    return out, rank_events
 
 PAPI_SLOT_RE = re.compile(r"(PAPI_[A-Z_]+)_E(\d)")
 
@@ -559,6 +633,20 @@ def papi_slot_name(name: str, events: list[str]) -> str:
     if not m or int(m.group(2)) >= len(events):
         return name
     return f"{m.group(1)}[{events[int(m.group(2))]}]"
+
+def expected_counters(papi_events: list[str] | None) -> list[str]:
+    """EXPECTED_COUNTERS as one cell's rank files name them: a bare PAPI scope
+    of the counter config (PAPI_EDT) stands for one PAPI_EDT[<event>] per
+    event of the cell's set, and an explicit slot is renamed the same way."""
+    out = []
+    for name in EXPECTED_COUNTERS:
+        if not name.startswith("PAPI_"):
+            out.append(name)
+        elif PAPI_SLOT_RE.fullmatch(name):
+            out.append(papi_slot_name(name, papi_events or []))
+        else:
+            out += [f"{name}[{e}]" for e in papi_events or []]
+    return out
 
 def derive_papi(sums: dict[str, int], edts) -> dict:
     """Per PAPI scope: IPC, each other event per kilo-instruction, and, for the
@@ -646,7 +734,8 @@ def derive(sums: dict[str, int], e2e_s: float | None) -> dict:
         **derive_papi(sums, edts),
     }
 
-def sanity_checks(cell, stamps, per_rank, sums, complete) -> list[str]:
+def sanity_checks(cell, stamps, per_rank, sums, complete,
+                  rank_events) -> list[str]:
     """The run-rejection checks of counter_exploration.md that one run can
     evaluate on its own (cross-run checks belong to post-processing)."""
     failed = []
@@ -659,10 +748,17 @@ def sanity_checks(cell, stamps, per_rank, sums, complete) -> list[str]:
                  + (sums.get("BYTES_CXL_FLUSH_PRODUCER") or 0))
     if not is_cxl and cxl_bytes:
         failed.append("cxl_bytes_in_network_build")
+    # A rank that counted some other list (or none: a tree without
+    # ARTS_USE_PAPI) would publish its slots under the wrong event names.
+    if cell["papi_set"]:
+        off = sorted(r for r, ev in rank_events.items()
+                     if ev != cell["papi_events"])
+        if off:
+            failed.append(f"papi_events_mismatch:ranks_{off}")
     return failed
 
 def build_record(cell, status, rc, stamps, wall_s, per_rank, started_at, *,
-                 wrapper_done):
+                 wrapper_done, rank_events):
     nodes = cell["nodes"]
     complete = sorted(per_rank) == list(range(nodes))
     names = sorted({n for vals in per_rank.values() for n in vals})
@@ -672,12 +768,14 @@ def build_record(cell, status, rc, stamps, wall_s, per_rank, started_at, *,
             if complete else {})
     e2e_ns = stamps[0] if stamps else None
     e2e_s = e2e_ns / 1e9 if e2e_ns is not None else None
-    checks = sanity_checks(cell, stamps, per_rank, sums, complete)
+    checks = sanity_checks(cell, stamps, per_rank, sums, complete,
+                           rank_events)
     if status == "ok" and checks:
         status = "check_failed"
     return {
-        **{k: cell[k] for k in ("cell_id", "app", "variant", "executable",
-                                "args", "nodes", "repeat", "is_warmup")},
+        **{k: cell[k] for k in ("cell_id", "app", "variant", "papi_set",
+                                "papi_events", "executable", "args", "nodes",
+                                "repeat", "is_warmup")},
         "hosts": NODES[:nodes],
         "worker_threads": WORKER_THREADS,
         "progress_threads": PROGRESS_THREADS,
@@ -690,8 +788,9 @@ def build_record(cell, status, rc, stamps, wall_s, per_rank, started_at, *,
         "wall_s": round(wall_s, 3),
         "ranks_reported": len(per_rank),
         "counters_complete": complete,
-        "missing_expected_counters": [c for c in EXPECTED_COUNTERS
-                                      if c not in names],
+        "missing_expected_counters": [
+            c for c in expected_counters(cell["papi_events"])
+            if c not in names],
         "checks_failed": checks,
         "counters_cluster_sum": sums,
         "counters_per_rank": {str(r): v for r, v in sorted(per_rank.items())},
@@ -719,7 +818,12 @@ def write_tables(run_dir: Path, records: list[dict]):
     counters = sorted({n for r in rows for n in r["counters_cluster_sum"]}
                       | {n for r in rows for v in r["counters_per_rank"].values()
                          for n in v})
-    columns = BASE_COLUMNS + DERIVED_COLUMNS + [f"ctr_{c}" for c in counters]
+    # The papi_* metrics are named after the run's events, so they cannot be
+    # fixed columns: they follow DERIVED_COLUMNS in name order.
+    papi_derived = sorted({k for r in rows for k in r["derived"]}
+                          - set(DERIVED_COLUMNS))
+    columns = (BASE_COLUMNS + DERIVED_COLUMNS + papi_derived
+               + [f"ctr_{c}" for c in counters])
     tmp = run_dir / "runs.csv.tmp"
     with open(tmp, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=columns)
@@ -736,13 +840,14 @@ def write_tables(run_dir: Path, records: list[dict]):
     tmp = run_dir / "counters_long.csv.tmp"
     with open(tmp, "w", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["cell_id", "app", "variant", "nodes", "repeat",
-                    "is_warmup", "rank", "counter", "value"])
+        w.writerow(["cell_id", "app", "variant", "papi_set", "nodes",
+                    "repeat", "is_warmup", "rank", "counter", "value"])
         for r in rows:
             for rank, vals in r["counters_per_rank"].items():
                 for name, value in sorted(vals.items()):
                     w.writerow([r["cell_id"], r["app"], r["variant"],
-                                r["nodes"], r["repeat"], r["is_warmup"],
+                                r.get("papi_set"), r["nodes"], r["repeat"],
+                                r["is_warmup"],
                                 rank, name, value])
     tmp.replace(run_dir / "counters_long.csv")
 
@@ -792,6 +897,9 @@ def write_manifest(run_dir: Path, cells, args):
             "extra_env": EXTRA_ENV,
             "counter_config": str(COUNTER_CONFIG),
             "expected_counters": EXPECTED_COUNTERS,
+            # {name: events}; null for a campaign without PAPI.
+            "papi_sets": dict(args.papi) if args.papi else None,
+            "papi_library": papi_library() if args.papi else None,
         },
         "apps": [{"app": a, "args": s.replace("{repo}", str(REPO_ROOT))}
                  for a, s in args.apps],
@@ -830,16 +938,96 @@ def stage_inputs(cells) -> list[str]:
 # The build tree APP_BUILD_DIR (<build>/benchmarks/apps) belongs to.
 BUILD_CMAKE_CACHE = APP_BUILD_DIR.parents[1] / "CMakeCache.txt"
 
-def built_counter_config() -> Path | None:
-    """The ARTS_COUNTER_CONFIG the binaries were configured with."""
+def select_build(papi: bool):
+    """Point the campaign at the PAPI tree and its counter config.  The rest
+    of the script reads these module globals, so a --papi campaign swaps them
+    once, before anything is planned against them."""
+    global APP_BUILD_DIR, BUILD_CMAKE_CACHE, COUNTER_CONFIG, EXPECTED_COUNTERS
+    if not papi:
+        return
+    APP_BUILD_DIR = PAPI_APP_BUILD_DIR
+    BUILD_CMAKE_CACHE = APP_BUILD_DIR.parents[1] / "CMakeCache.txt"
+    COUNTER_CONFIG = PAPI_COUNTER_CONFIG
+    EXPECTED_COUNTERS = _configured_counters(COUNTER_CONFIG)
+
+def cmake_cache_value(key: str) -> str | None:
+    """The value of one entry of the build tree's CMakeCache.txt."""
     try:
         text = BUILD_CMAKE_CACHE.read_text(errors="replace")
     except OSError:
         return None
-    m = re.search(r"^ARTS_COUNTER_CONFIG:[A-Z]+=(.+)$", text, re.M)
-    return Path(m.group(1).strip()) if m else None
+    m = re.search(rf"^{re.escape(key)}:[A-Z]+=(.*)$", text, re.M)
+    return m.group(1).strip() if m else None
 
-def preflight(cells) -> list[str]:
+def built_counter_config() -> Path | None:
+    """The ARTS_COUNTER_CONFIG the binaries were configured with."""
+    value = cmake_cache_value("ARTS_COUNTER_CONFIG")
+    return Path(value) if value else None
+
+def papi_library() -> str | None:
+    """The libpapi the PAPI tree linked (by path, so every node needs it at
+    the same path)."""
+    value = cmake_cache_value("ARTS_PAPI_LIBRARY")
+    return value if value and not value.endswith("-NOTFOUND") else None
+
+def papi_lib_dir() -> str | None:
+    lib = papi_library()
+    return str(Path(lib).parent) if lib else None
+
+def papi_tool(name: str) -> str:
+    """A PAPI utility from the install the tree was built against, or from
+    PATH when that prefix has no bin/."""
+    prefix = cmake_cache_value("ARTS_PAPI_DIR")
+    tool = Path(prefix) / "bin" / name if prefix else None
+    return str(tool) if tool and tool.is_file() else name
+
+def _on_host(host: str, argv: list[str], timeout_s: int = 60):
+    if host != socket.gethostname():
+        argv = ["ssh", "-o", "BatchMode=yes", host, shlex.join(argv)]
+    return subprocess.run(argv, capture_output=True, text=True,
+                          timeout=timeout_s)
+
+FAILED_ADD_RE = re.compile(r"^Failed adding: (\S+)\s*\nbecause: (.+)$", re.M)
+
+def papi_node_problems(host: str, papi_sets) -> list[str]:
+    """Whether one node can count every event set: the same checks ARTS
+    fails on at startup, made once per node instead of once per cell.
+    papi_command_line adds a set's events to one EventSet, so it refuses a
+    name the CPU does not know and a set that does not fit its counters
+    together (ARTS never multiplexes)."""
+    try:
+        r = _on_host(host, ["cat", "/proc/sys/kernel/perf_event_paranoid"])
+    except (OSError, subprocess.SubprocessError) as e:
+        return [f"{host}: cannot probe PAPI: {e}"]
+    try:
+        paranoid = int(r.stdout.strip())
+    except ValueError:
+        return [f"{host}: cannot read perf_event_paranoid: "
+                f"{(r.stderr or r.stdout).strip()}"]
+    if paranoid > 2:
+        return [f"{host}: perf_event_paranoid={paranoid}; PAPI needs <= 2 "
+                "(sudo sh -c 'echo 2 > /proc/sys/kernel/perf_event_paranoid')"]
+    problems = []
+    env = [f"LD_LIBRARY_PATH={papi_lib_dir()}"] if papi_lib_dir() else []
+    for name, events in papi_sets:
+        argv = ["env", *env, papi_tool("papi_command_line"), *events]
+        try:
+            r = _on_host(host, argv)
+        except (OSError, subprocess.SubprocessError) as e:
+            problems.append(f"{host}: papi set {name}: {e}")
+            continue
+        failed = FAILED_ADD_RE.findall(r.stdout + r.stderr)
+        for event, why in failed:
+            problems.append(f"{host}: papi set {name}: cannot count {event}: "
+                            f"{why.strip()}")
+        if r.returncode and not failed:
+            out = (r.stderr or r.stdout).strip().splitlines()
+            problems.append(f"{host}: papi set {name}: papi_command_line "
+                            f"exited {r.returncode}"
+                            + (f": {out[-1]}" if out else ""))
+    return problems
+
+def preflight(cells, papi_sets=None) -> list[str]:
     problems = [f"input file missing: {p}" for p in input_files(cells)
                 if not Path(p).exists()]
     if not RUN_PY.is_file():
@@ -861,6 +1049,19 @@ def preflight(cells) -> list[str]:
     if NODES and NODES[0] != socket.gethostname():
         problems.append(f"NODES[0]={NODES[0]} is not this host "
                         f"({socket.gethostname()}); rank 0 runs here")
+    if papi_sets:
+        use_papi = cmake_cache_value("ARTS_USE_PAPI")
+        if use_papi is None or use_papi.upper() not in ("ON", "TRUE", "1",
+                                                        "YES"):
+            problems.append(f"{BUILD_CMAKE_CACHE} has ARTS_USE_PAPI="
+                            f"{use_papi}; --papi needs a tree configured "
+                            "with -DARTS_USE_PAPI=ON")
+        lib = papi_library()
+        if not lib or not Path(lib).is_file():
+            problems.append(f"PAPI library not found: {lib}")
+        hosts = NODES[:max(c["nodes"] for c in cells)]
+        for host in hosts:
+            problems += papi_node_problems(host, papi_sets)
     return problems
 
 def estimate(cells, paths: list[Path], timeout_s: int):
@@ -941,6 +1142,12 @@ def parse_args():
                        f"{c['timeout']}s timeout" for n, c in PROFILES.items()))
     p.add_argument("--smoke-test", action="store_const", const="smoke",
                    dest="profile", help="same as --profile smoke")
+    p.add_argument("--papi", action="append", metavar="SET",
+                   help="count PAPI hardware events from the PAPI tree "
+                   f"({PAPI_APP_BUILD_DIR.relative_to(REPO_ROOT)}); "
+                   "repeatable, each cell runs once per set.  SET is "
+                   f"{' / '.join(PAPI_EVENT_SETS)}, NAME=EV1,EV2,... or "
+                   f"EV1,EV2,... (at most {PAPI_MAX_EVENTS} events)")
     p.add_argument("--repeats", type=int, help="override the profile's")
     p.add_argument("--warmups", type=int, help="override the profile's")
     p.add_argument("--timeout", type=int,
@@ -988,19 +1195,65 @@ def parse_args():
               for c in per_node_conflicts(s, args.node_counts)]
     if uneven:
         p.error("per-node share not even: " + "; ".join(uneven))
+    args.papi = parse_papi_sets(args.papi or [], p)
     return args
+
+SET_NAME_RE = re.compile(r"[A-Za-z0-9_]+")
+
+def parse_papi_sets(values: list[str], p) -> list[tuple[str, list[str]]]:
+    """--papi values as [(name, events)].  The name goes into cell ids and
+    directory names; a bare event list is named custom<k>.  Event names
+    cannot hold ',' '#' '=' or blanks (the runtime splits on ',' and the cfg
+    line on '#'), so NAME= is never part of an event."""
+    sets = []
+    for k, value in enumerate(values, 1):
+        if value in PAPI_EVENT_SETS:
+            name, events = value, PAPI_EVENT_SETS[value]
+        elif "=" in value:
+            name, _, spec = value.partition("=")
+            events = spec.split(",")
+        elif "," in value or value.startswith("PAPI_") or ":" in value:
+            name, events = f"custom{k}", value.split(",")
+        else:
+            p.error(f"--papi {value}: not a set name "
+                    f"({', '.join(PAPI_EVENT_SETS)}) or an event list")
+        events = [e.strip() for e in events]
+        if not SET_NAME_RE.fullmatch(name):
+            p.error(f"--papi {value}: set name {name!r} must be [A-Za-z0-9_]+")
+        bad = [e for e in events if not e or any(c in e for c in ",#= \t")]
+        if bad or not events:
+            p.error(f"--papi {value}: not event names: {bad}")
+        if len(events) > PAPI_MAX_EVENTS:
+            p.error(f"--papi {value}: {len(events)} events; a run counts at "
+                    f"most {PAPI_MAX_EVENTS}, so split the list across sets")
+        if len(set(events)) != len(events):
+            p.error(f"--papi {value}: an event is listed twice")
+        if any(name == n for n, _ in sets):
+            p.error(f"--papi: set {name} given twice")
+        sets.append((name, events))
+    return sets
 
 def main():
     args = parse_args()
+    select_build(bool(args.papi))
     cells = plan_cells(args.apps, args.variants, args.node_counts,
-                       args.repeats, args.warmups)
+                       args.repeats, args.warmups, args.papi)
 
     if args.resume:
         run_dir = args.resume.resolve()
         if not (run_dir / "manifest.json").exists():
             sys.exit(f"not a campaign directory: {run_dir}")
+        # A resume with other event sets (or without --papi) would plan
+        # cell ids the campaign never had and mix trees in one directory.
+        recorded = json.loads((run_dir / "manifest.json").read_text())
+        recorded = recorded["config"].get("papi_sets")
+        if recorded != (dict(args.papi) if args.papi else None):
+            sys.exit(f"{run_dir} was planned with papi sets {recorded}; "
+                     "resume it with the same --papi arguments")
     else:
         prefix = "" if args.profile == "main" else f"{args.profile}-"
+        if args.papi:
+            prefix = "papi-" + prefix
         run_id = args.run_id or dt.datetime.now().strftime(
             f"{prefix}%Y%m%d-%H%M%S")
         run_dir = (RESULTS_ROOT / run_id).resolve()
@@ -1020,15 +1273,17 @@ def main():
             spec = {"app": str(APP_BUILD_DIR / c["executable"]), "args": c["args"]}
             print(f"\n[{c['cell_id']}] hosts={','.join(NODES[:c['nodes']])}")
             print(f"  args.json: {json.dumps(spec)}")
+            if c["papi_events"]:
+                print(f"  papi_events={','.join(c['papi_events'])}")
             print(f"  {shlex.join(launch_argv(Path('<cell>/args.json')))}")
-        for msg in preflight(cells):
+        for msg in preflight(cells, args.papi):
             print(f"preflight: {msg}")
         if args.estimate:
             estimate(todo, args.estimate, args.timeout)
         return
 
     stage_inputs(cells)
-    problems = preflight(cells)
+    problems = preflight(cells, args.papi)
     for msg in problems:
         print(f"preflight: {msg}", file=sys.stderr)
     if problems and not args.force:
