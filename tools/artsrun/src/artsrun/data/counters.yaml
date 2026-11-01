@@ -180,6 +180,16 @@ counters:
     unit: count
     help: 'Pushes onto a route slot''s OoO list, one per park or re-park (a non-create operation whose target is not installed, or a create whose GUID is still occupied)'
 
+  NUM_ROUTE_PROBE:
+    group: 'Out-of-order'
+    unit: count
+    help: 'Route-table probes: one per key search (every pass of a retry loop counts) and one per fresh-GUID reservation (a reservation''s claim and scan are not counted)'
+
+  NUM_ROUTE_PIN:
+    group: 'Out-of-order'
+    unit: count
+    help: 'Pins of a route slot''s object, counted at a checked lookup that hits, a non-create out-of-order dispatch that runs on an installed object, and a create that finds its slot occupied'
+
   NUM_SNAPSHOT_REQUEST:
     group: 'Validation arm'
     unit: count

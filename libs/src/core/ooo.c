@@ -266,6 +266,7 @@ static void ooo_dispatch_create(struct arts_route_item_s *slot,
     bool ours = arts_shared_tag(h) == (uint64_t)guid;
     arts_shared_release(&h);
     if (ours) {
+      INCREMENT_NUM_ROUTE_PIN_BY(1);
       break;
     }
   }
@@ -338,6 +339,7 @@ void arts_ooo_dispatch_or_defer(struct arts_route_item_s *slot,
     break;
   }
   if (h) {
+    INCREMENT_NUM_ROUTE_PIN_BY(1);
     void *item = arts_shared_get(h);
     /* Ref pinned across the whole handler call — a concurrent destroy's
      * exchange-to-NULL drops only the install ref; `h` keeps the object alive

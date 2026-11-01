@@ -123,6 +123,12 @@ extern "C" {
   X(NUM_STEAL_SUCCESS)                                                         \
   /* Num: out-of-order */                                                      \
   X(NUM_OO_ENQUEUE)                                                            \
+  /* Num: route table.  PROBE = one per key search (each retry pass counts)    \
+   * and per fresh reservation (its claim and scan are not counted); PIN =     \
+   * one per pin at a checked lookup that hits, a non-create OoO dispatch on   \
+   * an installed object, or a create that finds its slot occupied. */         \
+  X(NUM_ROUTE_PROBE)                                                           \
+  X(NUM_ROUTE_PIN)                                                             \
   /* Num: validation arm.  A reply with no payload is one the version ledger   \
    * saved; a size round (data_present 2, never a dismiss) negotiates a        \
    * landing for a request that could not size one.  A window is a read       \

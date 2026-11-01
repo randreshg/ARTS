@@ -75,6 +75,8 @@ void arts_ooo_redrive_all(struct arts_route_item_s *s) { (void)s; }
 #include "../../libs/src/core/gas/route_table.c"
 #include "../../libs/src/core/utils/shared.c"
 
+#include "counter_stubs.h"
+
 #include "route_table_segment_probe.h"
 
 struct arts_runtime_shared_s arts_node_info;

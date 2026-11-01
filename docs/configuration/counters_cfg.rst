@@ -394,6 +394,14 @@ Out-of-Order
      - Number of pushes onto a route slot's OoO list, one per park or re-
        park of a payload: a non-create operation whose target is not
        installed, or a create whose GUID is still occupied.
+   * - ``NUM_ROUTE_PROBE``
+     - Route-table probes: one per key search (every pass of a retry loop
+       counts) and one per fresh-GUID reservation (a reservation's claim and
+       scan are not counted).
+   * - ``NUM_ROUTE_PIN``
+     - Pins of a route slot's object, counted at a checked lookup that
+       hits, a non-create out-of-order dispatch that runs on an installed
+       object, and a create that finds its slot occupied.
 
 Validation Arm (VAL) — Read Requests
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

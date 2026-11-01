@@ -473,7 +473,7 @@ def test_the_validation_cfg_states_every_counter_and_captures_once():
         "NUM_SNAPSHOT_SIZE_CTS", "NUM_RO_COMBINE_WINDOW",
         "NUM_RO_COMBINE_JOINED", "NUM_GRANT_SIZE_CTS", "NUM_EXCL_SIZE_CTS",
         "NUM_INV_SIZE_CTS", "NUM_FLUSH_SIZE_CTS", "NUM_EXCL_RECALL_SENT",
-        "NUM_PURGE_RETURN"}
+        "NUM_PURGE_RETURN", "NUM_ROUTE_PROBE", "NUM_ROUTE_PIN"}
     assert {settings[k] for k in captured} == {"ONCE,NODE"}
 
 

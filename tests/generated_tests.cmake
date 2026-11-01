@@ -1273,3 +1273,42 @@ foreach(_n IN LISTS _arts_pass_gate_fail_tests _arts_pass_gate_fail_error_tests)
         endif()
     endforeach()
 endforeach()
+
+# route_budget: the route table's probes and pins per unit of a program shape,
+# judged by the difference of two runs (N and 2N units) so what a run does
+# once cancels.  arts_route_budget_test(<shape> <n> <probes> <pins>
+# [RANK <r>] [CFG <cfg>] [REFERENCE_ONLY]) registers one shape: <probes> and
+# <pins> are the judged rank's NUM_ROUTE_PROBE and NUM_ROUTE_PIN per unit.
+# REFERENCE_ONLY marks a shape no cell can change; it registers in the
+# reference tree only.  Both counters must be captured.
+add_arts_test(route_budget)
+function(arts_route_budget_test shape n probes pins)
+    cmake_parse_arguments(ARG "REFERENCE_ONLY" "RANK;CFG" "" ${ARGN})
+    if(ARG_REFERENCE_ONLY AND NOT ARTS_TEST_REFERENCE_TREE)
+        return()
+    endif()
+    arts_counters_captured(_c NUM_ROUTE_PIN NUM_ROUTE_PROBE)
+    if(NOT _c)
+        return()
+    endif()
+    if(NOT DEFINED ARG_RANK)
+        set(ARG_RANK 0)
+    endif()
+    if(NOT ARG_CFG)
+        set(ARG_CFG 1n_20w)
+    endif()
+    arts_test_cfg(_cfg ${ARG_CFG})
+    arts_add_test(route_budget_${shape}
+        COMMAND ${CMAKE_COMMAND}
+                -DPROGRAM=$<TARGET_FILE:route_budget> -DSHAPE=${shape}
+                -DN=${n} -DRANK=${ARG_RANK}
+                -DPROBES_PER_UNIT=${probes} -DPINS_PER_UNIT=${pins}
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/route_budget_diff.cmake)
+    set_tests_properties(route_budget_${shape} PROPERTIES
+        LABELS "single_node" TIMEOUT 60 RESOURCE_LOCK "arts_runtime"
+        ENVIRONMENT "ARTS_CONFIG=${_cfg}"
+        PASS_REGULAR_EXPRESSION "PASS: route_budget_diff ${shape}"
+        FAIL_REGULAR_EXPRESSION "FAIL:")
+endfunction()
+
+arts_route_budget_test(none 8 0 0 REFERENCE_ONLY)

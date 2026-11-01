@@ -51,6 +51,7 @@
 #include <time.h>
 
 #include "arts.h"
+#include "arts/counter/Preamble.h"
 #include "arts/gas/guid.h"
 #include "arts/ooo.h"           /* arts_ooo_drain / arts_ooo_redrive_all */
 #include "arts/runtime_state.h" /* arts_node_info */
@@ -358,6 +359,7 @@ static arts_route_table_t *route_table_next_or_grow(arts_route_table_t *t,
 arts_route_item_t *
 arts_route_table_search_for_key(arts_route_table_t *route_table,
                                 arts_guid_t key) {
+  INCREMENT_NUM_ROUTE_PROBE_BY(1);
   arts_route_table_t *current = route_table;
   uint64_t key_val;
   while (current) {
@@ -662,6 +664,7 @@ static void route_table_fresh_check(arts_route_table_t *table, arts_guid_t key,
 #endif
 
 void arts_route_table_reserve_fresh(arts_guid_t key, arts_route_item_t **out) {
+  INCREMENT_NUM_ROUTE_PROBE_BY(1);
   arts_route_table_t *table = arts_get_route_table(key);
   for (arts_route_table_t *t = table;; t = route_table_next_or_grow(t, key)) {
     uint64_t pos = get_route_table_key((uint64_t)key, t->shift);
@@ -945,6 +948,9 @@ route_item_acquire_checked(arts_route_item_t *item, arts_guid_t key) {
   if (h != NULL && arts_shared_tag(h) != (uint64_t)key) {
     arts_shared_release(&h);
     return NULL;
+  }
+  if (h != NULL) {
+    INCREMENT_NUM_ROUTE_PIN_BY(1);
   }
   return h;
 }
