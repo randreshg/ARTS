@@ -74,6 +74,16 @@ struct arts_lock_ro_serve_node_s {
   struct arts_rdzv_landing_s rdzv; /* reader's serve landing (its stable buffer) */
 };
 
+/* The bodies of the messages a rank can send itself, on the descriptor the
+ * caller resolved or holds (the wire entries resolve the block once and call
+ * them; a self-send calls them on the sender's descriptor).  Each borrows
+ * `db` under the caller's count. */
+static void excl_forward_on(struct arts_db_s *db,
+                            const struct arts_msg_excl_forward_packet_s *p);
+static void excl_confirm_on(struct arts_db_s *db, unsigned int new_owner);
+static void excl_recall_on(struct arts_db_s *db);
+static void excl_roret_on(struct arts_db_s *db);
+
 /* ===== arts_db_acquire_is_serialized ===================================
  * EXCL: both RW and RO are blocking locks — both are GUID-serialized so the
  * engine acquires them in a global order (deadlock-free lock ordering). */
@@ -334,8 +344,7 @@ static void owner_try_execute(struct arts_db_cache_s *cache, uint64_t word) {
         uint8_t census = arts_db_census_serving(false);
         lock_drain_pending(&cache->rw_pending, cache_owner_parked_rw(cur));
         arts_db_census_served(census);
-        arts_send_db_excl_confirm(arts_guid_get_rank(cache->db_guid),
-                                  cache->db_guid);
+        arts_send_db_excl_confirm(arts_db_of_cache(cache));
         break;
       }
       continue; /* CAS lost: cur holds the word it met. */
@@ -493,9 +502,10 @@ static void owner_try_execute(struct arts_db_cache_s *cache, uint64_t word) {
 
 /* ===== arts_send_db_excl_request ========================================
  * Send MSG_DB_EXCL_REQUEST to the home rank.  Self-send (home == this rank)
- * dispatches through the OoO engine (HIT runs inline; MISS defers until the
- * home db_s is installed) — a REQUEST can race the home CREATE on a cross-rank
- * stub-install path.  Remote send goes via the transport. */
+ * runs the request body on the requester's descriptor (arts_ooo_dispatch_on),
+ * or defers by GUID until the home db_s is installed — a REQUEST can race the
+ * home CREATE on a cross-rank stub-install path.  Remote send goes via the
+ * transport. */
 /* This rank's deliver landing is its stable buffer (the fixed-address
  * backing store), installed IN PLACE by the DELIVER for either mode.  Phase
  * exclusion keeps the buffer quiescent for the whole flight of a request:
@@ -568,8 +578,11 @@ void arts_send_db_excl_request(struct arts_db_cache_s *cache,
         .cover = cover,
         .rdzv = {0, 0, 0, 0},
     };
-    arts_ooo_dispatch_or_defer_guid(db_guid, OOO_DB_EXCL_REQUEST, &args,
-                                    sizeof(args));
+    /* The requester's cache is the home's descriptor, on which the request
+     * body runs; one not yet installed takes the engine by GUID, deferred
+     * until the home installs and drains. */
+    arts_ooo_dispatch_on(arts_db_of_cache(cache)->self_cb, OOO_DB_EXCL_REQUEST,
+                         db_guid, &args, sizeof(args));
     return;
   }
   struct arts_rdzv_landing_s rdzv;
@@ -681,10 +694,12 @@ void arts_handler_db_excl_cts(void *item_v, void *args_v) {
 /* ===== arts_send_db_excl_forward ========================================
  * home → current owner.  Direct send (Cat-C): the owner's cache is always
  * installed (it became owner via DELIVER, or is the creator).  Self-send (owner
- * == home) calls the handler body directly (local hit, no wire). */
-void arts_send_db_excl_forward(unsigned int owner_rank, arts_guid_t db_guid,
+ * == home) runs the body on the home's descriptor, which the caller holds
+ * (local hit, no wire). */
+void arts_send_db_excl_forward(struct arts_db_s *db, unsigned int owner_rank,
                                uint32_t mode, uint32_t target, uint32_t tag,
                                const struct arts_rdzv_landing_s *target_rdzv) {
+  arts_guid_t db_guid = db->cache.db_guid;
   struct arts_msg_excl_forward_packet_s p;
   arts_fill_packet_header(&p.header, sizeof(p), MSG_DB_EXCL_FORWARD);
   p.db_guid = db_guid;
@@ -701,7 +716,16 @@ void arts_send_db_excl_forward(unsigned int owner_rank, arts_guid_t db_guid,
     p.rdzv = (struct arts_msg_rdzv_landing_s){0, 0, 0, 0};
   }
   if (owner_rank == arts_global_rank_id) {
-    arts_handler_db_excl_forward(&p);
+    /* The body runs on the home's descriptor while it is live and on what a
+     * lookup finds otherwise; a miss drops, as on the wire. */
+    arts_shared_ptr_t looked = NULL;
+    struct arts_db_s *owner =
+        (struct arts_db_s *)arts_route_table_borrow_or_lookup(db->self_cb,
+                                                              db_guid, &looked);
+    if (owner != NULL) {
+      excl_forward_on(owner, &p);
+    }
+    arts_shared_release(&looked);
     return;
   }
   if (!arts_net_send_held((int)owner_rank, (char *)&p, sizeof(p),
@@ -761,15 +785,27 @@ void arts_send_db_excl_deliver(unsigned int target_rank, arts_guid_t db_guid,
 /* ===== arts_send_db_excl_confirm ========================================
  * new owner → home: migration complete.  Direct send (Cat-C): home db_s is
  * always installed (home sent the FORWARD that triggered the migration).
- * Self-send (new owner == home) calls the home handler body directly. */
-void arts_send_db_excl_confirm(unsigned int home_rank, arts_guid_t db_guid) {
+ * Self-send (new owner == home) runs the home body on the new owner's
+ * descriptor, which is the home's and which the caller holds. */
+void arts_send_db_excl_confirm(struct arts_db_s *db) {
+  arts_guid_t db_guid = db->cache.db_guid;
+  unsigned int home_rank = arts_guid_get_rank(db_guid);
+  if (home_rank == arts_global_rank_id) {
+    /* Live, the body runs on it; otherwise on what a lookup finds, and a
+     * miss drops, as on the wire. */
+    arts_shared_ptr_t looked = NULL;
+    struct arts_db_s *home =
+        (struct arts_db_s *)arts_route_table_borrow_or_lookup(db->self_cb,
+                                                              db_guid, &looked);
+    if (home != NULL) {
+      excl_confirm_on(home, arts_global_rank_id);
+    }
+    arts_shared_release(&looked);
+    return;
+  }
   struct arts_msg_excl_confirm_packet_s p;
   arts_fill_packet_header(&p.header, sizeof(p), MSG_DB_EXCL_CONFIRM);
   p.db_guid = db_guid;
-  if (home_rank == arts_global_rank_id) {
-    arts_handler_db_excl_confirm(&p);
-    return;
-  }
   arts_transport_send_async((int)home_rank, (char *)&p, sizeof(p));
 }
 
@@ -785,30 +821,45 @@ void arts_send_db_excl_confirm(unsigned int home_rank, arts_guid_t db_guid) {
  * only thing standing between it and its own write.  Filtering `rank != self`
  * — the idiom the adjacent destroy fan-out uses — deadlocks it against itself,
  * deterministically. */
-void arts_send_db_excl_recall(unsigned int target_rank, arts_guid_t db_guid) {
+void arts_send_db_excl_recall(struct arts_db_s *db, unsigned int target_rank) {
+  arts_guid_t db_guid = db->cache.db_guid;
+  if (target_rank == arts_global_rank_id) {
+    /* The holder's cache is the home's descriptor, which the caller holds:
+     * the body runs on it while it is live and on what a lookup finds
+     * otherwise; a miss drops, as on the wire. */
+    arts_shared_ptr_t looked = NULL;
+    struct arts_db_s *holder =
+        (struct arts_db_s *)arts_route_table_borrow_or_lookup(db->self_cb,
+                                                              db_guid, &looked);
+    if (holder != NULL) {
+      excl_recall_on(holder);
+    }
+    arts_shared_release(&looked);
+    return;
+  }
   struct arts_msg_excl_confirm_packet_s p;
   arts_fill_packet_header(&p.header, sizeof(p), MSG_DB_EXCL_RECALL);
   p.db_guid = db_guid;
-  if (target_rank == arts_global_rank_id) {
-    arts_handler_db_excl_recall(&p);
-    return;
-  }
   arts_transport_send_async((int)target_rank, (char *)&p, sizeof(p));
 }
 
 /* ===== arts_handler_db_excl_recall ======================================
- * Cat-C.  One CAS; the count test and the transition must read the SAME word,
- * or a reader's acquire (rc++) landing between a separate load and the CAS
- * turns the "readers live" row into the "no readers" row. */
+ * Cat-C: the wire entry resolves the block once; a miss drops. */
 void arts_handler_db_excl_recall(void *item_v) {
   struct arts_msg_excl_confirm_packet_s *p =
       (struct arts_msg_excl_confirm_packet_s *)item_v;
   arts_shared_ptr_t db_h = arts_route_table_lookup_db(p->db_guid);
-  struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(db_h);
-  if (db == NULL) {
-    arts_shared_release(&db_h);
+  if (db_h == NULL) {
     return;
   }
+  excl_recall_on((struct arts_db_s *)arts_shared_get(db_h));
+  arts_shared_release(&db_h);
+}
+
+/* One CAS; the count test and the transition must read the SAME word, or a
+ * reader's acquire (rc++) landing between a separate load and the CAS turns
+ * the "readers live" row into the "no readers" row. */
+static void excl_recall_on(struct arts_db_s *db) {
   struct arts_db_cache_s *cache = &db->cache;
   uint64_t cur, next;
   bool retire = false;
@@ -839,15 +890,13 @@ void arts_handler_db_excl_recall(void *item_v) {
        * the owner's not-yet-drained serve node in place, and the DELIVER arm is
        * what owes the return for it. */
       if (CACHE_GRANTED(cur)) {
-        arts_shared_release(&db_h); /* token already set — idempotent */
-        return;
+        return; /* token already set — idempotent */
       }
       early = true;
       next = cur | CACHE_OWNER_LEASED_MASK;
       continue; /* fall through to the CAS below via the loop condition */
     } else {
-      arts_shared_release(&db_h); /* IDLE / GRANT_PURGE — nothing to do */
-      return;
+      return; /* IDLE / GRANT_PURGE — nothing to do */
     }
     next = CACHE_MAKE_FULL(CACHE_OWNER(cur), CACHE_RW_ST(cur), ro_next,
                            CACHE_MIGRATE_TARGET(cur), CACHE_RW_CNT(cur),
@@ -863,23 +912,34 @@ void arts_handler_db_excl_recall(void *item_v) {
     INCREMENT_NUM_EXCL_RECALL_EARLY_BY(1);
   }
   if (retire && CACHE_GRANTED(cur)) {
-    arts_send_db_excl_roret(arts_guid_get_rank(cache->db_guid), cache->db_guid);
+    arts_send_db_excl_roret(db);
   }
-  arts_shared_release(&db_h);
 }
 
 /* ===== arts_send_db_excl_roret ==========================================
  * reader → home: RO release (data-less).  Direct send (Cat-C): home db_s is
  * always installed (home sent the FORWARD(serve) that granted this reader its
- * copy).  Self-send (reader == home) calls the home handler body directly. */
-void arts_send_db_excl_roret(unsigned int home_rank, arts_guid_t db_guid) {
+ * copy).  Self-send (reader == home) runs the home body on the reader's
+ * descriptor, which is the home's and which the caller holds. */
+void arts_send_db_excl_roret(struct arts_db_s *db) {
+  arts_guid_t db_guid = db->cache.db_guid;
+  unsigned int home_rank = arts_guid_get_rank(db_guid);
+  if (home_rank == arts_global_rank_id) {
+    /* Live, the body runs on it; otherwise on what a lookup finds, and a
+     * miss drops, as on the wire. */
+    arts_shared_ptr_t looked = NULL;
+    struct arts_db_s *home =
+        (struct arts_db_s *)arts_route_table_borrow_or_lookup(db->self_cb,
+                                                              db_guid, &looked);
+    if (home != NULL) {
+      excl_roret_on(home);
+    }
+    arts_shared_release(&looked);
+    return;
+  }
   struct arts_msg_excl_confirm_packet_s p; /* CONFIRM/RORET share the struct */
   arts_fill_packet_header(&p.header, sizeof(p), MSG_DB_EXCL_RORET);
   p.db_guid = db_guid;
-  if (home_rank == arts_global_rank_id) {
-    arts_handler_db_excl_roret(&p);
-    return;
-  }
   arts_transport_send_async((int)home_rank, (char *)&p, sizeof(p));
 }
 
@@ -960,6 +1020,12 @@ void arts_handler_db_acquire(void *item, void *args) {
   arts_sched_fuzz_point();
   arts_lf_stack_push(q, &w->link);
 
+  /* The node is the drainer's now, yet the slot's pin, borrowed here, still
+   * holds `cache` across the send below, a self-sent request body that can
+   * tear the home down included: every EXCL dependence is serialized, so this
+   * runs in the EDT's walk, which owes the EDT an account until it returns,
+   * and no resolution of the slot can schedule the EDT (whose release drops
+   * the pin) before then.  A non-serialized EXCL dependence would break it. */
   if (act == CACHE_ACT_SEND_RW) {
     arts_send_db_excl_request(cache, DB_MODE_RW, excl_rw_cover(cur));
   } else if (act == CACHE_ACT_SEND_RO) {
@@ -973,19 +1039,23 @@ void arts_handler_db_acquire(void *item, void *args) {
  * push the reader rank onto ro_serve.  Then owner_try_execute drives the ship
  * (immediate if wc==0; otherwise the eventual release 0-edge does it).
  *
- * Cat-C route-table lookup: a NULL lookup means the DB was destroyed
- * concurrently → drop. */
+ * Cat-C: the wire entry resolves the block once (a NULL lookup means the DB
+ * was destroyed concurrently → drop) and runs excl_forward_on. */
 void arts_handler_db_excl_forward(void *item_v) {
   struct arts_msg_excl_forward_packet_s *p =
       (struct arts_msg_excl_forward_packet_s *)item_v;
   arts_shared_ptr_t db_h = arts_route_table_lookup_db(p->db_guid);
-  struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(db_h);
-  if (db == NULL) {
+  if (db_h == NULL) {
     /* Torn down after the home took the request in; the landing is the
      * requester's own buffer, so nothing is owed back. */
-    arts_shared_release(&db_h);
     return;
   }
+  excl_forward_on((struct arts_db_s *)arts_shared_get(db_h), p);
+  arts_shared_release(&db_h);
+}
+
+static void excl_forward_on(struct arts_db_s *db,
+                            const struct arts_msg_excl_forward_packet_s *p) {
   struct arts_db_cache_s *cache = &db->cache;
 
   if ((arts_db_access_mode_t)p->mode == DB_MODE_RW) {
@@ -1048,7 +1118,6 @@ void arts_handler_db_excl_forward(void *item_v) {
     owner_try_execute(cache, atomic_fetch_or_explicit(&cache->cache_state, 0u,
                                                       memory_order_acq_rel));
   }
-  arts_shared_release(&db_h);
 }
 
 /* ===== arts_handler_db_excl_deliver ====================================
@@ -1062,7 +1131,8 @@ void arts_handler_db_excl_forward(void *item_v) {
  *   RO → install the copy, set ro_st=GRANT (CAS), drain ro_pending (the parked
  *        RO readers are secured + ready).
  *
- * Cat-C route-table lookup: NULL ⇒ DB destroyed concurrently ⇒ drop.
+ * Cat-C: the wire entry resolves the block once (NULL ⇒ DB destroyed
+ * concurrently ⇒ drop) and runs excl_deliver_on on what it found.
  * Data is installed BEFORE the CAS so drained waiters observe it. */
 /* Post-arrival tail of the DELIVER handler: the state transition + drains /
  * CONFIRM / return, run once the payload bytes are available.  `data` is the
@@ -1072,6 +1142,9 @@ static void lock_deliver_commit(arts_shared_ptr_t db_h, arts_guid_t db_guid,
                                 uint32_t tag,
                                 arts_db_access_mode_t mode, const void *data,
                                 uint64_t data_size);
+static void excl_deliver_on(arts_shared_ptr_t db_h,
+                            const struct arts_msg_excl_deliver_packet_s *p,
+                            size_t size);
 
 /* Rendezvous continuation: the deliver payload fully landed, in place in the
  * stable buffer for either mode.  Runs the commit. */
@@ -1091,34 +1164,36 @@ struct lock_deliver_landed_ctx_s {
 static void lock_deliver_landed_cb(void *arg) {
   struct lock_deliver_landed_ctx_s *ctx =
       (struct lock_deliver_landed_ctx_s *)arg;
-  if (arts_shared_get(ctx->db_h) != NULL) {
-    /* A one-sided payload comes from another rank. */
-    uint8_t census = arts_db_census_serving(true);
-    lock_deliver_commit(ctx->db_h, ctx->db_guid, ctx->tag, ctx->mode, NULL,
-                        ctx->data_size);
-    arts_db_census_served(census);
-  } else {
-    arts_shared_release(&ctx->db_h);
-  }
+  /* A one-sided payload comes from another rank. */
+  uint8_t census = arts_db_census_serving(true);
+  lock_deliver_commit(ctx->db_h, ctx->db_guid, ctx->tag, ctx->mode, NULL,
+                      ctx->data_size);
+  arts_db_census_served(census);
   arts_free(ctx);
 }
 
 void arts_handler_db_excl_deliver(void *payload, size_t size) {
   struct arts_msg_excl_deliver_packet_s *p =
       (struct arts_msg_excl_deliver_packet_s *)payload;
-  arts_db_access_mode_t mode = (arts_db_access_mode_t)p->mode;
-  const void *data = (const char *)p + sizeof(*p);
-  uint64_t data_size = (uint64_t)size - (uint64_t)sizeof(*p);
-
   arts_shared_ptr_t db_h = arts_route_table_lookup_db(p->db_guid);
-  struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(db_h);
-  if (db == NULL) {
+  if (db_h == NULL) {
     /* Destroyed mid-flight: consume any pairing (the landing is the stable
      * buffer, cookie 0 — nothing to free). */
     arts_db_rdzv_discard_landing(p->rdzv_txid, p->data_size, p->rdzv_cookie);
-    arts_shared_release(&db_h);
     return;
   }
+  excl_deliver_on(db_h, p, size);
+}
+
+/* The DELIVER's body on the target's descriptor, which db_h holds; consumes
+ * db_h. */
+static void excl_deliver_on(arts_shared_ptr_t db_h,
+                            const struct arts_msg_excl_deliver_packet_s *p,
+                            size_t size) {
+  arts_db_access_mode_t mode = (arts_db_access_mode_t)p->mode;
+  const void *data = (const char *)p + sizeof(*p);
+  uint64_t data_size = (uint64_t)size - (uint64_t)sizeof(*p);
+  struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(db_h);
 
   /* Hinted first touch: the size may still be unlearned here. */
   arts_db_cache_learn_size(&db->cache, p->data_size);
@@ -1190,7 +1265,7 @@ static void lock_deliver_commit(arts_shared_ptr_t db_h, arts_guid_t db_guid,
     lock_drain_pending(&cache->ro_pending, cache_owner_parked_ro(cur));
     /* Tell home the migration is complete so it can advance (RW chain / flip).
      */
-    arts_send_db_excl_confirm(arts_guid_get_rank(db_guid), db_guid);
+    arts_send_db_excl_confirm(db);
     /* A migrate_target / ro_serve may already be pending (home chained the next
      * action); drive it. */
     owner_try_execute(cache, next);
@@ -1356,7 +1431,7 @@ void arts_db_release_ro(struct arts_db_cache_s *cache) {
   bool relinquished =
       (CACHE_RO_ST(cur) != CACHE_ST_IDLE) && (CACHE_RO_ST(next) == CACHE_ST_IDLE);
   if (relinquished && CACHE_GRANTED(cur)) {
-    arts_send_db_excl_roret(arts_guid_get_rank(cache->db_guid), cache->db_guid);
+    arts_send_db_excl_roret(arts_db_of_cache(cache));
   }
   /* The engine must be driven on EVERY rc zero edge, whether or not the grant
    * was relinquished: it is the only driver for a deferred lend or migration,
@@ -1434,17 +1509,10 @@ static bool lock_request_cover(struct arts_db_s *db, unsigned int requester,
   return true;
 }
 
-void arts_handler_db_destroy(void *item_v, void *args_v) {
-  struct arts_db_cache_s *cache = &((struct arts_db_s *)item_v)->cache;
-  struct arts_ooo_args_db_destroy_s *a =
-      (struct arts_ooo_args_db_destroy_s *)args_v;
-  struct arts_db_s *db = arts_db_of_cache(cache);
-  if (db == NULL) {
-    return;
-  }
+void arts_db_destroy_arrived(struct arts_db_s *db) {
   bool marked = false;
   if (arts_cover_gate_step(db, ARTS_COVER_GATE_MARK, &marked)) {
-    arts_excl_home_teardown(db, a->db_guid);
+    arts_excl_home_teardown(db, db->cache.db_guid);
   }
 }
 
@@ -1510,8 +1578,8 @@ static void lock_owner_home_forward(struct arts_db_s *db, uint32_t action,
     struct arts_rdzv_landing_s target_rdzv;
     if (arts_home_grantreq_queue_peek(&db->rw_waiters, &target, &target_rdzv, NULL)) {
       target_rdzv = forward_target_landing(db, owner, target, &target_rdzv);
-      arts_send_db_excl_forward(owner, db->cache.db_guid, (uint32_t)DB_MODE_RW,
-                                target, /*tag=*/0u, &target_rdzv);
+      arts_send_db_excl_forward(db, owner, (uint32_t)DB_MODE_RW, target,
+                                /*tag=*/0u, &target_rdzv);
     }
   } else if (action == EXCL_ACTION_FORWARD_SERVE_ALL) {
     /* The relinquish policy stamped on this batch comes from a FRESH load taken
@@ -1585,9 +1653,8 @@ static void lock_owner_home_forward(struct arts_db_s *db, uint32_t action,
           }
           struct arts_rdzv_landing_s serve_rdzv =
               forward_target_landing(db, serve_owner, rn->rank, &rn->rdzv);
-          arts_send_db_excl_forward(serve_owner, db->cache.db_guid,
-                                    (uint32_t)DB_MODE_RO, rn->rank, tag,
-                                    &serve_rdzv);
+          arts_send_db_excl_forward(db, serve_owner, (uint32_t)DB_MODE_RO,
+                                    rn->rank, tag, &serve_rdzv);
           arts_free(rn);
           node = nx;
         }
@@ -1696,7 +1763,7 @@ void arts_handler_db_excl_request(void *item_v, void *args_v) {
           unsigned int b = (unsigned int)__builtin_ctzll(w);
           w &= (w - 1ull);
           INCREMENT_NUM_EXCL_RECALL_SENT_BY(1);
-          arts_send_db_excl_recall((i * 64u) + b, db->cache.db_guid);
+          arts_send_db_excl_recall(db, (i * 64u) + b);
         }
       }
     }
@@ -1769,26 +1836,27 @@ void arts_handler_db_excl_request(void *item_v, void *args_v) {
 
 /* ===== arts_handler_db_excl_confirm ====================================
  * Cat-C @home (direct dispatch).  item_v is the full wire packet
- * (arts_msg_excl_confirm_packet_s *); the new owner is packet->header.rank (the
- * sender — both wire and self-send set it via arts_fill_packet_header).
- *
- * Cat-C route-table lookup: NULL ⇒ a CONFIRM that trailed the block's
- * destroy (it is fire-and-forget, sent once the new owner's writers are
- * ready) ⇒ drop, harmlessly.  pop the
- * RW waiter (assert front == src), then CAS lock_owner_compute_next(CONFIRM,
- * new_owner=src) — this sets owner=src + w-- + next phase + action in ONE CAS.
- * Dispatch: MIGRATE → next RW migrate; SERVE_ALL → RW→RO flip drain. */
+ * (arts_msg_excl_confirm_packet_s *); the new owner is packet->header.rank,
+ * the sender (a self-send passes arts_global_rank_id and builds no packet).
+ * The wire entry resolves the block once (NULL ⇒ a CONFIRM that trailed the
+ * block's destroy: it is fire-and-forget, sent once the new owner's writers
+ * are ready ⇒ drop, harmlessly) and runs excl_confirm_on. */
 void arts_handler_db_excl_confirm(void *item_v) {
   struct arts_msg_excl_confirm_packet_s *p =
       (struct arts_msg_excl_confirm_packet_s *)item_v;
-  unsigned int new_owner = p->header.rank;
   arts_shared_ptr_t db_h = arts_route_table_lookup_db(p->db_guid);
-  struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(db_h);
-  if (db == NULL) {
-    arts_shared_release(&db_h);
+  if (db_h == NULL) {
     return;
   }
+  excl_confirm_on((struct arts_db_s *)arts_shared_get(db_h), p->header.rank);
+  arts_shared_release(&db_h);
+}
 
+/* Pop the RW waiter (the confirming requester), then CAS
+ * lock_owner_compute_next(CONFIRM, new_owner) — this sets owner=new_owner +
+ * w-- + next phase + action in ONE CAS.  Dispatch: MIGRATE → next RW migrate;
+ * SERVE_ALL → RW→RO flip drain. */
+static void excl_confirm_on(struct arts_db_s *db, unsigned int new_owner) {
   /* pop the confirming requester off the RW queue (it was the migrate target).
    * front must equal new_owner (the home FORWARDed migrate to the queue front,
    * and CONFIRM comes only from that owner).  The target was pushed before the
@@ -1814,27 +1882,29 @@ void arts_handler_db_excl_confirm(void *item_v) {
   } while (!atomic_compare_exchange_weak_explicit(
       &db->lock_state, &cur, next, memory_order_acq_rel, memory_order_acquire));
   lock_owner_home_forward(db, action, next);
-  arts_shared_release(&db_h);
 }
 
 /* ===== arts_handler_db_excl_roret ======================================
  * Cat-C @home (direct dispatch).  item_v is the full wire packet
  * (arts_msg_excl_confirm_packet_s *, shared with CONFIRM); the returning reader
  * is packet->header.rank (informational — RO accounting is rank-agnostic).
- *
- * CAS lock_owner_compute_next(RO_RET) — r--; on r→0 with RW waiting, flip phase
- * to RW and MIGRATE to the next RW waiter (RO→RW flip).  Dispatch the action.
- */
+ * The wire entry resolves the block once (a miss drops) and runs
+ * excl_roret_on. */
 void arts_handler_db_excl_roret(void *item_v) {
   struct arts_msg_excl_confirm_packet_s *p =
       (struct arts_msg_excl_confirm_packet_s *)item_v;
   arts_shared_ptr_t db_h = arts_route_table_lookup_db(p->db_guid);
-  struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(db_h);
-  if (db == NULL) {
-    arts_shared_release(&db_h);
+  if (db_h == NULL) {
     return;
   }
+  excl_roret_on((struct arts_db_s *)arts_shared_get(db_h));
+  arts_shared_release(&db_h);
+}
 
+/* CAS lock_owner_compute_next(RO_RET) — r--; on r→0 with RW waiting, flip
+ * phase to RW and MIGRATE to the next RW waiter (RO→RW flip).  Dispatch the
+ * action. */
+static void excl_roret_on(struct arts_db_s *db) {
   uint32_t action;
   uint64_t cur, next;
   arts_sched_fuzz_point();
@@ -1849,5 +1919,4 @@ void arts_handler_db_excl_roret(void *item_v) {
   } while (!atomic_compare_exchange_weak_explicit(
       &db->lock_state, &cur, next, memory_order_acq_rel, memory_order_acquire));
   lock_owner_home_forward(db, action, next);
-  arts_shared_release(&db_h);
 }

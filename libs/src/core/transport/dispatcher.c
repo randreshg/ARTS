@@ -1060,7 +1060,8 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
       arts_shared_release(&h);
     } else {
       arts_shared_release(&h);
-      arts_send_db_inv_invalidate_ack(pack->header.rank, pack->db_guid);
+      arts_send_db_inv_invalidate_ack(/*held=*/NULL, pack->header.rank,
+                                      pack->db_guid);
     }
     break;
   }

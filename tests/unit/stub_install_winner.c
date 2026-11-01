@@ -18,15 +18,15 @@
 ///        acquires of a remote-owned DB on one rank install exactly one stub,
 ///        every consumer gets a valid pinned handle, and no stub leaks.
 ///
-/// THE WINDOW UNDER TEST (coherence.c `arts_db_cache_stub_install`).  When a
-/// rank first touches a remote-owned DB it allocates a cache-only STUB db_s,
-/// `arts_db_cache_init(..., ARTS_DB_INIT_STUB)`s it, and installs it
-/// (`arts_route_table_install_handle_if_absent`).  Multiple actors on the SAME
-/// rank (concurrent wire-receive + acquire-path) can stub-install the same
-/// GUID at once — the install is the arbiter: exactly one wins (drains its
-/// OoO), every loser frees its stub (the destructor must be stub-safe: it
+/// THE WINDOW UNDER TEST (coherence.c `arts_db_cache_stub_install_into`).
+/// When a rank first touches a remote-owned DB it allocates a cache-only STUB
+/// db_s, `arts_db_cache_init(..., ARTS_DB_INIT_STUB)`s it, and installs it into
+/// the slot its one reservation found (`arts_route_table_install_or_get`).
+/// Multiple actors on the SAME rank (concurrent acquires) can stub-install the
+/// same GUID at once — the install is the arbiter: exactly one wins (drains
+/// its OoO), every loser frees its stub (the destructor must be stub-safe: it
 /// reads the zeroed `home_initialized == false` IN BOUNDS and skips home
-/// teardown) and returns a pinned handle to the established db_s.
+/// teardown) and gets a pinned handle to the established db_s.
 ///
 /// HOW THIS TEST DRIVES THE WINDOW.  Per round a fresh remote-owned DB is
 /// seeded on a remote rank (so consumer ranks have NO local cache yet); then a

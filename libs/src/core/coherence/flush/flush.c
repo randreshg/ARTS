@@ -524,8 +524,7 @@ static bool line_credential(struct arts_db_cache_s *cache, uint64_t *addr,
 }
 
 struct flush_landed_ctx_s {
-  arts_shared_ptr_t db_h;
-  arts_guid_t db_guid;
+  arts_shared_ptr_t db_h; /* the home descriptor the commit arrived on */
   unsigned int releaser;
   uint64_t sem;
 };
@@ -535,10 +534,14 @@ static void flush_landed_cb(void *arg) {
   struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(ctx->db_h);
   uint64_t next = 0;
   uint64_t addr, rkey;
-  if (db != NULL && line_credential(&db->cache, &addr, &rkey)) {
+  /* A home not live (a destroy that overtook a write-back, which the model
+   * leaves undefined, or a descriptor whose install has not yet stored its
+   * home) mints no credit and materializes no line: it is only acked. */
+  if (arts_route_table_live(ctx->db_h, db->cache.db_guid) &&
+      line_credential(&db->cache, &addr, &rkey)) {
     next = arts_net_rdzv_txid_next();
   }
-  send_flush_ack(ctx->releaser, ctx->db_guid, ctx->sem, next);
+  send_flush_ack(ctx->releaser, db->cache.db_guid, ctx->sem, next);
   arts_shared_release(&ctx->db_h);
   arts_free(ctx);
 }
@@ -553,8 +556,7 @@ void arts_handler_db_flush_commit(void *item_v, void *args_v) {
   }
   struct flush_landed_ctx_s *ctx =
       (struct flush_landed_ctx_s *)arts_malloc(sizeof(*ctx));
-  ctx->db_h = arts_route_table_lookup_db(a->db_guid);
-  ctx->db_guid = a->db_guid;
+  ctx->db_h = arts_shared_copy(((struct arts_db_s *)item_v)->self_cb);
   ctx->releaser = a->releaser;
   ctx->sem = a->sem;
   arts_net_rdzv_expect(
@@ -659,17 +661,13 @@ void arts_db_create_claim_creator_copy(struct arts_db_s *db) { (void)db; }
 /* The teardown is immediate: a read release sends nothing and a write-back
  * blocks until the home ACKs it, so under the destroy contract nothing a
  * release sends can arrive after the destroy. */
-void arts_handler_db_destroy(void *item_v, void *args_v) {
-  struct arts_db_s *db = (struct arts_db_s *)item_v;
-  struct arts_ooo_args_db_destroy_s *a = (struct arts_ooo_args_db_destroy_s *)args_v;
-  if (db == NULL) {
-    return;
-  }
+void arts_db_destroy_arrived(struct arts_db_s *db) {
+  arts_guid_t db_guid = db->cache.db_guid;
   unsigned int n = arts_global_rank_count;
   for (unsigned int r = 0; r < n; r++) {
     if (r != arts_global_rank_id && sharers_test(db, r)) {
-      arts_send_db_cache_destroy(r, a->db_guid);
+      arts_send_db_cache_destroy(r, db_guid);
     }
   }
-  (void)arts_ooo_retire(a->db_guid, db->self_cb);
+  (void)arts_ooo_retire(db_guid, db->self_cb);
 }

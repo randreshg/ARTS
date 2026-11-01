@@ -4,9 +4,10 @@
  *
  * Defines: arts_db_home_init, arts_db_home_teardown.
  *
- * arts_handler_db_destroy lives in engine.c: it fans out over
- * the wire, and this TU must stay linkable standalone (pure lifecycle)
- * for the whitebox unit tests.
+ * The home's destroy (arts_db_destroy_arrived, behind the common
+ * arts_handler_db_destroy) lives in engine.c: it fans out over the wire, and
+ * this TU must stay linkable standalone (pure lifecycle) for the whitebox
+ * unit tests.
  *
  * This TU carries the home-directory lifecycle shared by both write-policy
  * variants.  The arbiters live in arbiters.c, and the handler/sender bodies

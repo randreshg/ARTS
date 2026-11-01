@@ -501,14 +501,19 @@ static void db_create_no_acquire_local(struct arts_db_s *db) {
  *
  * A registration and the acquire that must see it form a store->load pair
  * across the GUID's route slot: the create registers and then looks the slot
- * up, the acquire looks the slot up and, on a miss, reads the table.  An
- * acquire can miss because a retire of the slot's previous occupant is under
- * way, having synchronised with nothing the create wrote.  A seq_cst fence on
- * each side closes the pair (db_create_remote_creator, acquire_one_dep): the
- * create's lookup read the slot before the retire wrote it, the acquire's
- * lookup read the retire's write, so the create's fence precedes the
- * acquire's and the acquire's table read cannot miss the registration.  The
- * table's own accesses carry nothing else. */
+ * up, the acquire reserves the slot, reads it and, finding it empty, reads the
+ * table.  An acquire can find it empty because a retire of the slot's
+ * previous occupant is under way, having synchronised with nothing the create
+ * wrote.  A seq_cst fence on each side closes the pair
+ * (db_create_remote_creator, acquire_resolve): the create's lookup read the
+ * slot's key word before the retire wrote it, and the acquire's reservation
+ * either read the retire's write of that word (or a later one) itself, or
+ * found the key published in another slot of its probe sequence by a
+ * reserver whose post-claim scan read that write, the acquire's acquire load
+ * of the key reading that reserver's release publish (hb ; eco ; hb).  Either
+ * way the create's fence precedes the acquire's and the acquire's table read
+ * cannot miss the registration.
+ * The table's own accesses carry nothing else. */
 #define DB_PARKED_SEG 64u
 struct db_parked_seg_s {
   /* Claimed 0 -> GUID by a registering create and returned to 0 by CAS; only
@@ -749,8 +754,8 @@ static void db_create_remote_creator(arts_guid_t guid, uint64_t len,
      * the create installs (arts_db_create_install_local) or claims a cache. */
     db_parked_add(guid);
     /* Orders the registration above before the slot lookups below; the
-     * other side is acquire_one_dep's fence between its lookup miss and its
-     * table read (the parked-create table's pair). */
+     * other side is acquire_resolve's fence between its empty slot read and
+     * its table read (the parked-create table's pair). */
     atomic_thread_fence(memory_order_seq_cst);
     for (;;) {
       arts_shared_ptr_t found_h = arts_route_table_lookup_db(guid);
@@ -946,14 +951,21 @@ arts_guid_t arts_db_create(void **addr, uint64_t len, arts_db_types_t db_type,
   return guid;
 }
 
+static arts_shared_ptr_t db_release_hold(arts_guid_t guid);
+
 /*
  * arts_db_destroy — destroy a DataBlock system-wide, from any rank.
  *
  * An acquire the calling EDT holds on the block (its own create's hold or a
- * dependence slot) is released first.  A coherent block's destroy is then a
- * message to the block's home, which tears the block down and notifies every
- * caching rank; a GPU kind is retired on the creating rank it lives on.
- * Storage goes when the last outstanding reference drops.
+ * dependence slot) is released first.  The destroy then goes to the block's
+ * home, derived from the GUID: the home's destroy body retires a GPU kind,
+ * which lives on its creating rank (its home) alone, and hands a coherent
+ * block to its arm, which tears it down and notifies every caching rank.  A
+ * home on this rank runs the destroy on the descriptor the released hold
+ * named while that descriptor is live, and resolves the GUID otherwise: when
+ * the EDT held nothing, or held a descriptor not installed (a create parked
+ * behind an occupant) or already retired.  Storage goes when the last
+ * outstanding reference drops.
  */
 void arts_db_destroy(arts_guid_t guid) {
   arts_guid_kind_t type = arts_guid_get_kind(guid);
@@ -964,28 +976,11 @@ void arts_db_destroy(arts_guid_t guid) {
   }
   INCREMENT_NUM_DB_DESTROY_BY(1);
 
-  /* Implicit release: if the calling EDT holds an acquire on this DB,
-   * release it first (matches OCR ocrDbDestroy semantics).  A created/owned
-   * DB releases as RW; a dep release reads the slot mode in Path 2 regardless.
-   */
-  arts_db_release(guid, DB_MODE_RW);
-
-  arts_shared_ptr_t db_res_h = arts_route_table_lookup_db(guid);
-  struct arts_db_s *db_res = (struct arts_db_s *)arts_shared_get(db_res_h);
-
-  /* A coherent block's destroy goes to its home, which is derived from the
-   * GUID and fans the teardown out to every caching rank, this one included.
-   * The lookup exists only to recognise a GPU kind, which the GUID does not
-   * encode: such a block lives on its creating rank alone and has no
-   * home protocol, so its descriptor is retired here and, once outstanding
-   * refs drop, the cb deleter (arts_db_deleter) runs. */
-  if (db_res != NULL && db_res->db_type != ARTS_DB) {
-    (void)arts_route_table_set_destroyed_item(guid, db_res_h);
-    arts_shared_release(&db_res_h);
-    return;
-  }
-  arts_shared_release(&db_res_h);
-  arts_db_destroy_remote(guid);
+  /* Implicit release (OCR ocrDbDestroy semantics): the hold is released
+   * first, and the handle it held is kept across the destroy. */
+  arts_shared_ptr_t held = db_release_hold(guid);
+  arts_send_db_destroy(guid, held);
+  arts_shared_release(&held);
 }
 
 /**********************DB MEMORY MODEL*************************************/
@@ -1033,6 +1028,64 @@ void arts_dep_waiter_check(const struct arts_edt_s *edt, arts_guid_t edt_guid,
 }
 #endif
 
+/* The descriptor of depv[i]'s block on this rank, for a slot that holds none
+ * yet, from ONE reservation of the block's route slot: the slot's occupant,
+ * pinned; for a block homed elsewhere, the first-touch cache this rank
+ * installs into that slot (arts_db_cache_stub_install_into, which returns the
+ * occupant instead when another install got there first).  NULL when the
+ * acquire parked on the slot instead, to replay against the descriptor that
+ * installs there: a block homed here and not installed yet, or one whose
+ * create on this rank is in progress (db_parked_here), whose descriptor this
+ * acquire must run against rather than a cache the create would park behind
+ * (the parked-create table's declaration states the pair that orders the two
+ * readings). */
+static arts_shared_ptr_t acquire_resolve(struct arts_edt_s *edt,
+                                         const arts_edt_dep_t *depv,
+                                         uint32_t i) {
+  arts_guid_t guid = depv[i].guid;
+  arts_route_item_t *slot;
+  arts_route_table_reserve_or_lookup(guid, &slot);
+  for (;;) {
+    /* A returned slot answers for another GUID now (or none): follow the
+     * GUID to the slot that names it. */
+    if (atomic_load_explicit(&slot->key, memory_order_acquire) != guid) {
+      arts_route_table_reserve_or_lookup(guid, &slot);
+      continue;
+    }
+    arts_shared_ptr_t h = arts_shared_slot_load(&slot->value);
+    if (h == NULL) {
+      break;
+    }
+    /* The pinned cb's tag names the key its object was installed under; a
+     * mismatch is a slot that changed hands between the key check and the
+     * load. */
+    if (arts_shared_tag(h) == (uint64_t)guid) {
+      INCREMENT_NUM_ROUTE_PIN_BY(1);
+      return h;
+    }
+    arts_shared_release(&h);
+    arts_route_table_reserve_or_lookup(guid, &slot);
+  }
+  if (arts_guid_get_rank(guid) != arts_global_rank_id) {
+    /* seq_cst fence: store->load pair with db_create_remote_creator's fence
+     * between its registration and its lookups (the parked-create table's
+     * pair); this side sits between the empty slot read above and the table
+     * read below.  The pair closes through the retired slot's key word, read
+     * by the reservation itself or by the reserver whose release publish of
+     * the key elsewhere in the probe sequence the reservation read. */
+    atomic_thread_fence(memory_order_seq_cst);
+    if (!db_parked_here(guid)) {
+      return arts_db_cache_stub_install_into(slot, guid);
+    }
+  } else {
+    ARTS_DEBUG("DB[Guid:%lu] out of order request slot %u", guid, i);
+  }
+  struct arts_ooo_args_db_acquire_s a = {
+      .edt = edt, .db_guid = guid, .slot = i};
+  arts_ooo_dispatch_or_defer(slot, NULL, OOO_DB_ACQUIRE, guid, &a, sizeof(a));
+  return NULL;
+}
+
 /* acquire_one_dep — attempt the single DB dependency depv[i].
  *
  * On a synchronous resolve it writes the slot's acquire record (NULL is a
@@ -1041,12 +1094,12 @@ void arts_dep_waiter_check(const struct arts_edt_s *edt, arts_guid_t edt_guid,
  * when the EDT must park (remote ownership/data round, or OoO defer of a
  * not-yet-installed local DB) it leaves the slot to its one resolver (the
  * frame a plane's take hands the waiter to) or to its OoO replay, and
- * does NOT account.  The 3-way route_table dispatch (local
- * entry / remote-home stub install / home==self-but-not-created → OoO push)
- * lives here, inlined from the old single-DB arts_db_acquire API.  The caller
- * (arts_db_acquire_all / rw_fire_from_cursor) has already filtered NULL_GUID /
- * DB_MODE_NULL / pre-filled slots, so depv[i] is a real, not-yet-acquired DB
- * dependency. */
+ * does NOT account.  The block's descriptor is the one a replay handed the
+ * slot (arts_db_acquire_replay_dep) or the one acquire_resolve finds; either
+ * way its handle becomes the slot's pin, which the release consumes and an
+ * alias copies.  The caller (arts_db_acquire_all / rw_fire_from_cursor) has
+ * already filtered NULL_GUID / DB_MODE_NULL / pre-filled slots, so depv[i] is
+ * a real, not-yet-acquired DB dependency. */
 static void acquire_one_dep(struct arts_edt_s *edt, arts_edt_dep_t *depv,
                             uint32_t i) {
   struct arts_dep_acq_s *rec = &edt->dep_acq[i];
@@ -1063,142 +1116,81 @@ static void acquire_one_dep(struct arts_edt_s *edt, arts_edt_dep_t *depv,
             depv[i].guid, guid_type, access_mode, owner, arts_global_rank_id,
             edt->guid, i);
 
-  // Look up DB first — subtype dispatch requires the struct.  lookup_db pairs
-  // with the release below (every successful lookup => one release).
-  arts_shared_ptr_t db_temp_h = arts_route_table_lookup_db(depv[i].guid);
-  struct arts_db_s *db_temp = (struct arts_db_s *)arts_shared_get(db_temp_h);
-
-  /* Coherent ARTS_DB path (any protocol, either write policy).  Two entry
-   * points:
-   *   - Existing local cache_s (db_temp with db_type == ARTS_DB; embedded
-   *     cache).
-   *   - Remote DB never seen on this rank (db_temp == NULL, owner remote):
-   *     stub-install a stub cache_s and dispatch through
-   *     arts_handler_db_acquire.
-   * The GPU kinds bypass coherence and fall through below. */
-  struct arts_db_cache_s *cache = NULL;
-  /* When db_temp misses on a remote-owned DB we stub-install a stub and the
-   * call returns a SEPARATE pinned handle (stub_h) to the just-installed db_s;
-   * it must be released on every path below, mirroring db_temp_h. */
-  arts_shared_ptr_t stub_h = NULL;
-  /* Which of the two handles keeps `cache`'s descriptor (arts_db_s) alive.
-   * It is MOVED into the slot's pin before the handler runs, so the slot pins
-   * the descriptor for its whole firing->release span. */
-  arts_shared_ptr_t *cache_owner_h = NULL;
-  if (db_temp != NULL && db_temp->db_type == ARTS_DB) {
-    cache = &db_temp->cache;
-    cache_owner_h = &db_temp_h;
-  } else if (db_temp == NULL && owner != arts_global_rank_id) {
-    /* Orders the lookup miss above before the table read below; the other
-     * side is db_create_remote_creator's fence between its registration and
-     * its lookups (the parked-create table's pair). */
-    atomic_thread_fence(memory_order_seq_cst);
-    if (db_parked_here(depv[i].guid)) {
-      /* A create of the block on this rank is in progress: the acquire runs
-       * against its descriptor once it installs. */
-      arts_shared_release(&db_temp_h);
-      struct arts_ooo_args_db_acquire_s a = {
-          .edt = edt, .db_guid = depv[i].guid, .slot = i};
-      arts_ooo_dispatch_or_defer_guid(depv[i].guid, OOO_DB_ACQUIRE, &a,
-                                      sizeof(a));
-      return;
-    }
-    /* db_size=0 means "size learned on first GRANT/SNAPSHOT_RESPONSE
-     * install_buffer".  The home is encoded in the GUID, so all ranks
-     * agree. */
-    stub_h = arts_db_cache_stub_install(depv[i].guid, /*db_size=*/0);
-    struct arts_db_s *stub_db = (struct arts_db_s *)arts_shared_get(stub_h);
-    if (stub_db != NULL) {
-      cache = &stub_db->cache;
-      cache_owner_h = &stub_h;
+  arts_shared_ptr_t h = rec->pin;
+  rec->pin = NULL;
+  if (h == NULL) {
+    h = acquire_resolve(edt, depv, i);
+    if (h == NULL) {
+      return; /* parked: the replay re-fires this slot */
     }
   }
-  if (cache != NULL &&
+  struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(h);
+
+  /* Coherent ARTS_DB path (any protocol, either write policy): the arm's
+   * arts_handler_db_acquire.  The handler resolves the slot in its own frame,
+   * or publishes it to its one resolver and touches neither the slot nor the
+   * EDT again.  So the subtype and the descriptor pin go in first: the handle
+   * is MOVED into the slot's pin, which the resolver reads the descriptor
+   * from and release_one_dep consumes, so the release reaches this
+   * descriptor even after a destroy has retired its GUID. */
+  if (db->db_type == ARTS_DB &&
       (access_mode == DB_MODE_RO || access_mode == DB_MODE_RW)) {
-    /* The handler resolves the slot in its own frame, or publishes it to its
-     * one resolver and touches neither the slot nor the EDT again.  So the
-     * subtype and the descriptor pin go in first: the cache-owning handle is
-     * MOVED into the slot's pin, which the resolver reads the descriptor from
-     * and release_one_dep consumes, so the release reaches this descriptor
-     * even after a destroy has retired its GUID. */
     rec->subtype = ARTS_DB;
-    rec->pin = *cache_owner_h;
-    *cache_owner_h = NULL;
+    rec->pin = h;
     struct arts_ooo_args_db_acquire_s a = {
         .edt = edt, .db_guid = depv[i].guid, .slot = i};
     db_acquire_census_mode(access_mode);
     uint8_t census = arts_db_census_deciding();
-    arts_handler_db_acquire(arts_db_of_cache(cache), &a);
+    arts_handler_db_acquire(db, &a);
     arts_db_census_served(census);
-    /* The handle that kept the descriptor was moved; drop the other. */
-    arts_shared_release(&db_temp_h);
-    arts_shared_release(&stub_h);
     return;
   }
-  /* cache==NULL fall-throughs below never used stub_h (it is only set on the
-   * remote-miss arm, which always has a non-NULL cache here unless the DB was
-   * destroyed before install — stub_h NULL then); release defensively. */
-  arts_shared_release(&stub_h);
 
   /* The GPU kinds (ARTS_DB_GPU_PIN, ARTS_DB_GPU) live only on their creator
    * rank, and a coherent DB reaches here only in a mode outside the
    * coherence protocol (device-side sync modes): either way the local payload
-   * is handed back, wherever the subtype keeps it. */
-  if (db_temp != NULL) {
-    if (owner != arts_global_rank_id) {
-      ARTS_WARN("arts_db_acquire_all: non-coherent DB[Guid:%lu, Type:%s] "
-                "referenced from non-creator rank %u (owner=%u). Only ARTS_DB "
-                "is internode relocatable.",
-                depv[i].guid, GET_DB_TYPE_NAME(db_temp->db_type),
-                arts_global_rank_id, owner);
-    }
-    rec->subtype = db_temp->db_type;
-    if (access_mode == DB_MODE_RO || access_mode == DB_MODE_RW) {
-      db_acquire_census_mode(access_mode);
-      INCREMENT_NUM_DB_ACQUIRE_LOCAL_HIT_BY(1);
-    }
-    arts_db_acquire_local_hit(edt, i, arts_db_user_ptr(db_temp));
-    arts_shared_release(&db_temp_h);
-    arts_db_acquire_resolved(edt, i);
-    return;
+   * is handed back, wherever the subtype keeps it.  The handle stays in the
+   * slot as its pin, as a coherent one does: an alias copies it, and the
+   * release drops it. */
+  if (owner != arts_global_rank_id) {
+    ARTS_WARN("arts_db_acquire_all: non-coherent DB[Guid:%lu, Type:%s] "
+              "referenced from non-creator rank %u (owner=%u). Only ARTS_DB "
+              "is internode relocatable.",
+              depv[i].guid, GET_DB_TYPE_NAME(db->db_type), arts_global_rank_id,
+              owner);
   }
-
-  /* DB absent locally.  OoO defer keyed on the DB GUID (park): when DB_CREATE
-   * installs it (home==self case) the drain re-attempts this dep through
-   * arts_handler_db_acquire.  A remote non-coherent (GPU-kind) reference
-   * can never resolve locally and waits here.  No resolved — the data and
-   * cursor advance arrive on the drain replay. */
-  if (arts_guid_is_local(depv[i].guid)) {
-    ARTS_DEBUG("DB[Guid:%lu] out of order request slot %u", depv[i].guid, i);
-  } else {
-    ARTS_WARN("arts_db_acquire_all: cannot resolve remote DB[Guid:%lu] for "
-              "non-coherent dep on rank %u — owner=%u. Deferring via "
-              "OoO.",
-              depv[i].guid, arts_global_rank_id, owner);
+  rec->subtype = db->db_type;
+  rec->pin = h;
+  if (access_mode == DB_MODE_RO || access_mode == DB_MODE_RW) {
+    db_acquire_census_mode(access_mode);
+    INCREMENT_NUM_DB_ACQUIRE_LOCAL_HIT_BY(1);
   }
-  {
-    struct arts_ooo_args_db_acquire_s a = {
-        .edt = edt, .db_guid = depv[i].guid, .slot = i};
-    arts_ooo_dispatch_or_defer_guid(depv[i].guid, OOO_DB_ACQUIRE, &a,
-                                    sizeof(a));
-  }
+  arts_db_acquire_local_hit(edt, i, arts_db_user_ptr(db));
+  arts_db_acquire_resolved(edt, i);
 }
 
 static void rw_fire_from_cursor(struct arts_edt_s *edt);
 static void resume_enqueue(struct arts_edt_s *edt);
 
 /* OOO_DB_ACQUIRE replay table entry — see db.h.  Re-attempts the single
- * deferred dep through acquire_one_dep's subtype-aware 3-way: for an ARTS_DB
- * this lands in arts_handler_db_acquire (coherent), for a GPU-kind DB in its
- * inline ptr path, and a still-absent DB re-defers.  Mapping OOO_DB_ACQUIRE
+ * deferred dep through acquire_one_dep's subtype-aware path, on the
+ * descriptor the replay was dispatched on: for an ARTS_DB this lands in
+ * arts_handler_db_acquire (coherent), for a GPU-kind DB in its inline ptr
+ * path.  Mapping OOO_DB_ACQUIRE
  * straight to arts_handler_db_acquire would mishandle non-coherent subtypes
  * (their embedded cache is zeroed — its pending_rw queue is uninitialised, so
  * the coherent RW path would push onto a NULL-headed queue and crash). */
 void arts_db_acquire_replay_dep(void *item, void *args) {
-  (void)item; /* the 3-way re-looks it up; the dispatcher pins it meanwhile */
   struct arts_ooo_args_db_acquire_s *a =
       (struct arts_ooo_args_db_acquire_s *)args;
   arts_edt_dep_t *depv = (arts_edt_dep_t *)arts_get_depv(a->edt);
+  /* The slot re-fires on the descriptor this replay was dispatched on, with a
+   * pin of its own (the dispatcher's lasts only for this call), instead of
+   * resolving its GUID again.  The slot is unaccounted and parked, so nothing
+   * else touches its record; the re-fire reads the pin on this thread, inline
+   * or from this thread's resume drain. */
+  a->edt->dep_acq[a->slot].pin =
+      arts_shared_copy(((struct arts_db_s *)item)->self_cb);
   if (arts_dep_is_serialized(depv, a->slot)) {
     /* Serialized dep deferred at the cursor: re-drive the acquire loop from the
      * cursor.  Route through the flat resume trampoline (enqueue + drain) so
@@ -1542,9 +1534,9 @@ static void fill_one_alias(struct arts_edt_s *edt, uint32_t slot, void *payload,
 #ifdef ARTS_CXL_DIRECT
   /* Header-relative arithmetic on the payload lands in the block's store, not
    * in a header, so the descriptor comes from the cache the caller has already
-   * pinned.  pin_src is non-NULL here by arts_db_fill_aliases's rule — with no
-   * descriptor to pin it hands out no bytes — and the owner slot's own ref
-   * keeps this descriptor alive across the acquire.  The handle is OWNED: it
+   * pinned.  pin_src is the owner's record pin, which every owner carries,
+   * and the owner slot's own ref keeps this descriptor alive across the
+   * acquire.  The handle is OWNED: it
    * is the slot's buffer ref, which its release drops through the pin.  A
    * block that no longer names a descriptor takes the same shape here as any
    * other block with no bytes to hand out: NULL, and no ref. */
@@ -1582,13 +1574,9 @@ static void fill_one_alias(struct arts_edt_s *edt, uint32_t slot, void *payload,
  * (coherence.c) — and nowhere else.
  *
  * The owner's record pin is the descriptor handle the aliases copy, borrowed
- * for the call.  An owner with no pin (a non-coherent block resolved on the
- * synchronous path) has the block looked up once here — and a MISS means the
- * block was destroyed under a pending acquire, which the model leaves
- * undefined: the aliases then resolve to NULL and take no buffer ref, the
- * value and the shape every other path delivers for a block with no storage.
- * A payload therefore never reaches an alias without the descriptor it
- * belongs to.
+ * for the call: every owner fires with its descriptor's handle in its record,
+ * whatever its storage kind (acquire_one_dep), so a payload never reaches an
+ * alias without the descriptor it belongs to.
  *
  * One pass over depv in this frame, no recursion and no dispatch: an alias
  * needs nothing from the network, and the slots it fills were classified
@@ -1611,9 +1599,8 @@ void arts_db_fill_aliases(struct arts_edt_s *edt, unsigned int owner_slot) {
   arts_guid_t guid = depv[owner_slot].guid;
   void *payload = acq[owner_slot].ptr;
   arts_db_types_t subtype = acq[owner_slot].subtype;
-  arts_shared_ptr_t looked_up = NULL;
   arts_shared_ptr_t pin_src = acq[owner_slot].pin;
-  bool pin_known = (pin_src != NULL);
+  assert(pin_src != NULL);
   /* A slot this loop resolves is a slot nobody has accounted, so the EDT
    * cannot have run yet and the owner's payload is alive under its own ref. */
   uint32_t owed = 0;
@@ -1621,20 +1608,9 @@ void arts_db_fill_aliases(struct arts_edt_s *edt, unsigned int owner_slot) {
     if (!acq[k].alias || depv[k].guid != guid) {
       continue;
     }
-    if (!pin_known) {
-      /* Paid once, and only by an EDT that has an alias to fill: the common
-       * alias-free resolve never touches the route table here. */
-      looked_up = arts_route_table_lookup_db(guid);
-      pin_src = looked_up;
-      if (pin_src == NULL) {
-        payload = NULL; /* no descriptor to pin: hand out no bytes either */
-      }
-      pin_known = true;
-    }
     fill_one_alias(edt, k, payload, subtype, pin_src);
     owed++;
   }
-  arts_shared_release(&looked_up);
   while (owed-- > 0) {
     arts_db_acquire_account(edt);
   }
@@ -1830,20 +1806,20 @@ static arts_shared_ptr_t dep_release_pin(const struct arts_edt_s *edt,
  *   - ARTS_DB_GPU subtype (GPU build, a CPU EDT's non-LC_SYNC slot): drop
  *     the staging lock's read side arts_prep_dbs took.
  *
- * `db_pin` is the descriptor pin the slot holds (NULL for none) and is
- * consumed.  Does NOT nullify caller-visible state (guid/ptr/mode).  Callers
- * that need to mark the slot as released (mid-EDT release) do that
- * themselves.
+ * `db_pin` is the descriptor pin the slot holds (NULL for none); it is
+ * returned for the caller to release (or keep, as a destroy keeps the hold's
+ * handle), after everything that reads through it here.  Does NOT nullify
+ * caller-visible state (guid/ptr/mode).  Callers that need to mark the slot
+ * as released (mid-EDT release) do that themselves.
  */
-static void release_one_dep(const struct arts_dep_release_s *dep,
-                            arts_shared_ptr_t db_pin, bool gpu) {
+static arts_shared_ptr_t release_one_dep(const struct arts_dep_release_s *dep,
+                                         arts_shared_ptr_t db_pin, bool gpu) {
   arts_db_access_mode_t access_mode = dep->mode;
   /* A slot that names no data block (NULL_GUID or another kind) was never
    * acquired, whatever its mode: dep_needs_acquire skips it. */
   if (access_mode == DB_MODE_NULL ||
       arts_guid_get_kind(dep->guid) != ARTS_GUID_DB) {
-    arts_shared_release(&db_pin); /* NULL for such a slot */
-    return;
+    return db_pin; /* NULL for such a slot */
   }
 
   /* Coherent release path for ARTS_DB.  Routed by dep->subtype (recorded at
@@ -1910,8 +1886,7 @@ static void release_one_dep(const struct arts_dep_release_s *dep,
     }
     /* The descriptor pin last: the CXL-direct branch above resolves the
      * buffer through it. */
-    arts_shared_release(&db_pin);
-    return;
+    return db_pin;
   }
 
   /* Reaching this point means the dep is for a GPU kind (ARTS_DB_GPU_PIN,
@@ -1938,7 +1913,7 @@ static void release_one_dep(const struct arts_dep_release_s *dep,
   /* GPU_PIN, or RW / RO on a GPU kind: nothing to release at the
    * DB-coherence level.  Hardware coherence and
    * application-level event ordering handle the rest. */
-  arts_shared_release(&db_pin);
+  return db_pin;
 }
 
 /*
@@ -1958,13 +1933,15 @@ void arts_release_dbs(struct arts_edt_s *edt, bool gpu) {
      * the owner also releases the single coherence hold.  See
      * struct arts_dep_acq_s / release_one_dep. */
     struct arts_dep_release_s dep = dep_release_of(edt, depv, i);
-    release_one_dep(&dep, dep_release_pin(edt, i), gpu);
+    arts_shared_ptr_t pin = release_one_dep(&dep, dep_release_pin(edt, i), gpu);
+    arts_shared_release(&pin);
   }
 }
 
 /*
  * release_one_created — Release a single created DB through the descriptor
- * handle its create recorded, and drop that handle's ref.
+ * handle its create recorded, and return that handle for the caller to
+ * release or keep.
  *
  * No route lookup: the creator's hold is on the descriptor its create built,
  * which the route slot may not hold yet (a parked create).  For ARTS_DB the
@@ -1976,7 +1953,7 @@ void arts_release_dbs(struct arts_edt_s *edt, bool gpu) {
  * release: no coherence hold, and no side of a GPU staging lock, which only
  * arts_prep_dbs takes.
  */
-static void release_one_created(arts_shared_ptr_t h) {
+static arts_shared_ptr_t release_one_created(arts_shared_ptr_t h) {
   struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(h);
   if (db->db_type == ARTS_DB) {
     /* Coherent creator release.  No buffer ref to drop (the hold is the seed
@@ -1986,11 +1963,11 @@ static void release_one_created(arts_shared_ptr_t h) {
      * could name.  The coherent creator hold is always RW. */
     arts_db_release_created(&db->cache);
   }
-  arts_shared_release(&h);
+  return h;
 }
 
 /*
- * arts_db_release — Release access to a single DB mid-EDT.
+ * db_release_hold — Release the calling EDT's hold on a single DB mid-EDT.
  *
  * Two search paths:
  *   1. created_db_list — DBs the current EDT created (held RW from the create).
@@ -2000,10 +1977,11 @@ static void release_one_created(arts_shared_ptr_t h) {
  * per-mode, per-subtype and route-table-ref rules live in exactly one
  * place.  The slot/entry is marked released after the unwind so the
  * epilogue (arts_release_dbs / arts_release_created_dbs) skips it cleanly.
+ * Returns the handle the released hold held on the block's descriptor (the
+ * created-list entry, or the owner slot's pin), which the caller releases;
+ * NULL when the EDT held nothing.
  */
-void arts_db_release(arts_guid_t guid, arts_db_access_mode_t mode) {
-  /* The block, not the mode, decides what either path releases. */
-  (void)mode;
+static arts_shared_ptr_t db_release_hold(arts_guid_t guid) {
   /* Path 1: created_db_list (DBs this EDT created).  Scanned from the back
    * because the common shape is create-then-release, and REMOVED on a match
    * rather than blanked: the list has to track what is still HELD, not what was
@@ -2015,8 +1993,7 @@ void arts_db_release(arts_guid_t guid, arts_db_access_mode_t mode) {
     arts_shared_ptr_t h = *(arts_shared_ptr_t *)arts_vector_at(list, i - 1);
     if (((struct arts_db_s *)arts_shared_get(h))->cache.db_guid == guid) {
       arts_vector_swap_remove(list, i - 1);
-      release_one_created(h);
-      return;
+      return release_one_created(h);
     }
   }
 
@@ -2043,7 +2020,7 @@ void arts_db_release(arts_guid_t guid, arts_db_access_mode_t mode) {
    * aliases while the acquisition itself stayed held, so the bytes would reach
    * the home later than the program asked. */
   if (!arts_current_edt) {
-    return;
+    return NULL;
   }
   struct arts_edt_s *edt = arts_current_edt;
   arts_edt_dep_t *depv = (arts_edt_dep_t *)arts_get_depv(edt);
@@ -2067,12 +2044,13 @@ void arts_db_release(arts_guid_t guid, arts_db_access_mode_t mode) {
     owner = unclassified;
   }
   if (owner == depc) {
-    return;
+    return NULL;
   }
   /* The flag arts_prep_dbs ran this EDT's slots with. */
   bool gpu = edt->edt_type == ARTS_EDT_GPU;
   struct arts_dep_release_s dep = dep_release_of(edt, depv, owner);
-  release_one_dep(&dep, dep_release_pin(edt, owner), gpu);
+  arts_shared_ptr_t held =
+      release_one_dep(&dep, dep_release_pin(edt, owner), gpu);
   depv[owner].guid = NULL_GUID;
   depv[owner].ptr = NULL;
   depv[owner].mode = DB_MODE_NULL;
@@ -2083,11 +2061,21 @@ void arts_db_release(arts_guid_t guid, arts_db_access_mode_t mode) {
     }
     /* buffer ref + descriptor pin only */
     dep = dep_release_of(edt, depv, i);
-    release_one_dep(&dep, dep_release_pin(edt, i), gpu);
+    arts_shared_ptr_t pin = release_one_dep(&dep, dep_release_pin(edt, i), gpu);
+    arts_shared_release(&pin);
     depv[i].guid = NULL_GUID;
     depv[i].ptr = NULL;
     depv[i].mode = DB_MODE_NULL;
   }
+  return held;
+}
+
+/* arts_db_release — release the calling EDT's hold on one DB mid-EDT
+ * (db_release_hold); the block, not the mode, decides what it releases. */
+void arts_db_release(arts_guid_t guid, arts_db_access_mode_t mode) {
+  (void)mode;
+  arts_shared_ptr_t held = db_release_hold(guid);
+  arts_shared_release(&held);
 }
 
 /*
@@ -2107,6 +2095,7 @@ void arts_release_created_dbs(void) {
     uint64_t last = arts_vector_count(list) - 1;
     arts_shared_ptr_t h = *(arts_shared_ptr_t *)arts_vector_at(list, last);
     arts_vector_swap_remove(list, last);
-    release_one_created(h);
+    h = release_one_created(h);
+    arts_shared_release(&h);
   }
 }

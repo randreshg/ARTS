@@ -1323,3 +1323,17 @@ arts_route_budget_test(none 8 0 0 REFERENCE_ONLY)
 # the EDT's completion retires it through its control block's home (none).
 # No cell changes a create that acquires nothing.
 arts_route_budget_test(create 64 3 0 REFERENCE_ONLY)
+# rw: the unit's create reserves its minted GUID's slot on the fresh path (one
+# probe) and installs into it (none); the destroy releases the creator's hold
+# and runs on the descriptor that hold names (none), whose teardown tells no
+# other rank and retires through the control block's home (none).  What the
+# release does in between is the cell's, and resolves nothing on any cell:
+# VAL's home publishes nothing (its buffer is the canonical copy under WT, the
+# bytes stay with the owner under WB, and under PURGE the home keeps the right
+# it holds); INV's release sends its PUBLISH to this rank, which runs on the
+# releaser's own descriptor, and the round, with no copy to retire, acks it on
+# the same descriptor; EXCL x PURGE commits the home's release in place (the
+# CXL residencies after the purge into the block's store); EXCL x RETAIN's
+# creator stays the sticky owner and sends nothing; FLUSH's home writes nothing
+# back.  1 probe, 0 pins, every cell.
+arts_route_budget_test(rw 64 1 0)

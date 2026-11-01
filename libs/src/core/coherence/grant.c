@@ -53,7 +53,7 @@
 #include "arts/coherence/directory.h" /* arts_home_grantreq_queue_push */
 #include "arts/db.h"
 #include "arts/edt.h"
-#include "arts/gas/route_table.h" /* arts_route_table_lookup_db (Cat-C self-send) */
+#include "arts/gas/route_table.h" /* arts_route_table_borrow_or_lookup */
 #include "arts/ooo.h"
 #include "arts/runtime_state.h"
 #include "arts/runtime_types.h"
@@ -633,12 +633,9 @@ void arts_send_db_grant_request(struct arts_db_cache_s *cache,
   p.rdzv.txid = rdzv.txid;
   p.rdzv.cookie = rdzv.cookie;
   if (home_rank == arts_global_rank_id) {
-    /* Self-send: route through the OoO engine exactly as the wire RX
-     * dispatcher does — HIT runs the GRANT_REQUEST body inline, MISS defers
-     * the args and replays once the home db_s is installed + drained.  (The
-     * handler is a pure (item, args) body that does no lookup-or-defer of
-     * its own, so the inline shortcut must enter through
-     * dispatch_or_defer.) */
+    /* Self-send: the requester's cache is the home's descriptor, on which the
+     * request body runs; one not yet installed takes the engine by GUID,
+     * deferred until the home installs and drains. */
     struct arts_ooo_args_db_grant_request_s args = {
         .requester = p.header.rank,
         .db_guid = db_guid,
@@ -646,8 +643,8 @@ void arts_send_db_grant_request(struct arts_db_cache_s *cache,
         .have_version = have_version,
         .cover = cover,
     };
-    arts_ooo_dispatch_or_defer_guid(db_guid, OOO_DB_GRANT_REQUEST, &args,
-                                    sizeof(args));
+    arts_ooo_dispatch_on(arts_db_of_cache(cache)->self_cb, OOO_DB_GRANT_REQUEST,
+                         db_guid, &args, sizeof(args));
     return;
   }
   if (!arts_net_send_held((int)home_rank, (char *)&p, sizeof(p),
@@ -684,8 +681,9 @@ void arts_handler_db_grant_cts(void *item_v, void *args_v) {
 
 #ifndef ARTS_RELEASE_PURGE
 void arts_send_db_grant_invalidate(
-    unsigned int owner_rank, arts_guid_t db_guid, unsigned int new_owner_rank,
+    struct arts_db_s *db, unsigned int owner_rank, unsigned int new_owner_rank,
     const struct arts_rdzv_landing_s *new_owner_rdzv, uint64_t new_owner_have) {
+  arts_guid_t db_guid = db->cache.db_guid;
   struct arts_rdzv_landing_s rdzv =
       (new_owner_rdzv != NULL) ? *new_owner_rdzv
                                : (struct arts_rdzv_landing_s){0, 0, 0, 0};
@@ -726,14 +724,17 @@ void arts_send_db_grant_invalidate(
         .new_owner_rdzv = rdzv,
         .new_owner_have = new_owner_have,
     };
-    /* Pin the db_s for the handler's duration (cache is its FIRST member,
-     * offset 0) — keeps it alive against a concurrent DESTROY.  Target is the
-     * rw_holder, published only post-install, so it is provably present. */
-    arts_shared_ptr_t db_h = arts_route_table_lookup_db(db_guid);
-    struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(db_h);
-    assert(db != NULL); /* target is rw_holder, published post-install */
-    arts_handler_db_grant_invalidate(db, &args);
-    arts_shared_release(&db_h);
+    /* The holder's cache is the home's descriptor, which the caller holds:
+     * the body runs on it while it is live, and on what a lookup finds
+     * otherwise.  The target is rw_holder, published only post-install, so
+     * the cache is present either way. */
+    arts_shared_ptr_t looked = NULL;
+    struct arts_db_s *holder =
+        (struct arts_db_s *)arts_route_table_borrow_or_lookup(db->self_cb,
+                                                              db_guid, &looked);
+    assert(holder != NULL);
+    arts_handler_db_grant_invalidate(holder, &args);
+    arts_shared_release(&looked);
     return;
   }
   arts_transport_send_async((int)owner_rank, (char *)&p, sizeof(p));
@@ -743,21 +744,26 @@ void arts_send_db_grant_invalidate(
  * rw_holder and advances the next round; under WB its handler also replies
  * CONFIRM_ACK, under WT it does not.  The handler reads pending_install_owner
  * and takes no args. */
-void arts_send_db_grant_confirm(unsigned int home_rank, arts_guid_t db_guid) {
+void arts_send_db_grant_confirm(struct arts_db_s *db) {
+  arts_guid_t db_guid = db->cache.db_guid;
+  unsigned int home_rank = arts_guid_get_rank(db_guid);
   struct arts_msg_grant_confirm_packet_s p;
   arts_fill_packet_header(&p.header, sizeof(p), MSG_DB_GRANT_CONFIRM);
   p.header.rank = arts_global_rank_id;
   p.db_guid = db_guid;
   if (home_rank == arts_global_rank_id) {
-    /* Self-send: mirror the wire RX dispatcher's Cat-C lookup-acquire-or-drop.
-     * HIT advances the transfer round on the ref-pinned home db_s; MISS (DB
-     * destroyed) silently drops. */
-    arts_shared_ptr_t h = arts_route_table_lookup_db(db_guid);
-    struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(h);
-    if (db != NULL) {
-      arts_handler_db_grant_confirm(db, NULL);
+    /* Self-send: the new owner's cache is the home's descriptor, which the
+     * caller holds.  The body advances the transfer round on it while it is
+     * live, and on what a lookup finds otherwise; a miss (DB destroyed)
+     * silently drops, as on the wire. */
+    arts_shared_ptr_t looked = NULL;
+    struct arts_db_s *home =
+        (struct arts_db_s *)arts_route_table_borrow_or_lookup(db->self_cb,
+                                                              db_guid, &looked);
+    if (home != NULL) {
+      arts_handler_db_grant_confirm(home, NULL);
     }
-    arts_shared_release(&h);
+    arts_shared_release(&looked);
     return;
   }
   arts_transport_send_async((int)home_rank, (char *)&p, sizeof(p));

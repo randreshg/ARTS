@@ -108,22 +108,22 @@ enum arts_ooo_kind {
  * installed ⇒ OoO push, replayed on the CREATE handler's drain. */
 #if defined(ARTS_PROTOCOL_EXCL) && defined(ARTS_RELEASE_PURGE)
   OOO_DB_ACQUIRE, /* → arts_db_acquire_replay_dep (re-attempts the one deferred
-                     local dep; pushed by arts_db_acquire_all's per-dep 3-way)
-                   */
+                     local dep; pushed by the acquire's resolution on the slot
+                     its one reservation found) */
   OOO_DB_EXCL_REQUEST, /* → arts_handler_db_excl_request @ home */
   OOO_DB_EXCL_RELEASE, /* → arts_handler_db_excl_release @ home */
 #elif defined(ARTS_PROTOCOL_EXCL) && defined(ARTS_RELEASE_RETAIN)
   OOO_DB_ACQUIRE, /* → arts_db_acquire_replay_dep (re-attempts the one deferred
-                     local dep; pushed by arts_db_acquire_all's per-dep 3-way)
-                   */
+                     local dep; pushed by the acquire's resolution on the slot
+                     its one reservation found) */
   OOO_DB_EXCL_REQUEST, /* → arts_handler_db_excl_request @ home */
 /* NO OOO_DB_EXCL_RELEASE: the RETAIN release policy has no synchronous publish release; the
  * DELIVER/CONFIRM/RORET messages are all direct-dispatched (Cat-C, target
  * provably installed by the time these messages arrive). */
 #elif defined(ARTS_PROTOCOL_INV)
   OOO_DB_ACQUIRE, /* → arts_db_acquire_replay_dep (re-attempts the one deferred
-                     local dep; pushed by arts_db_acquire_all's per-dep 3-way)
-                   */
+                     local dep; pushed by the acquire's resolution on the slot
+                     its one reservation found) */
   /* The migrating grant, shared with every other grant-bearing arm. */
   OOO_DB_GRANT_REQUEST, /* → arts_handler_db_grant_request @ home */
   /* INV's own: the reader fetch, and (WT write policy only) the release that
@@ -150,8 +150,8 @@ enum arts_ooo_kind {
  * CONFIRM. */
 #elif defined(ARTS_PROTOCOL_VAL) && defined(ARTS_WRITE_POLICY_WT)
   OOO_DB_ACQUIRE, /* → arts_db_acquire_replay_dep (re-attempts the one deferred
-                     local dep; pushed by arts_db_acquire_all's per-dep 3-way)
-                   */
+                     local dep; pushed by the acquire's resolution on the slot
+                     its one reservation found) */
   OOO_DB_SNAPSHOT_REQUEST,  /* → arts_handler_db_snapshot_request @ home */
   OOO_DB_GRANT_REQUEST, /* → arts_handler_db_grant_request @ home */
   /* NO OOO_DB_GRANT_INVALIDATE — where the home revokes, rw_holder is
@@ -168,8 +168,8 @@ enum arts_ooo_kind {
 #endif
 #elif defined(ARTS_PROTOCOL_VAL) && defined(ARTS_WRITE_POLICY_WB)
   OOO_DB_ACQUIRE, /* → arts_db_acquire_replay_dep (re-attempts the one deferred
-                     local dep; pushed by arts_db_acquire_all's per-dep 3-way)
-                   */
+                     local dep; pushed by the acquire's resolution on the slot
+                     its one reservation found) */
   OOO_DB_SNAPSHOT_REQUEST,  /* → arts_handler_db_snapshot_request @ home */
   OOO_DB_GRANT_REQUEST, /* → arts_handler_db_grant_request @ home */
 /* NO OOO_DB_GRANT_INVALIDATE — the WB write policy never defers INVALIDATE

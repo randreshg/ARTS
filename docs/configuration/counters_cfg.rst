@@ -401,7 +401,9 @@ Out-of-Order
    * - ``NUM_ROUTE_PIN``
      - Pins of a route slot's object, counted at a checked lookup that
        hits, a non-create out-of-order dispatch that runs on an installed
-       object, and a create that finds its slot occupied.
+       object, a create that finds its slot occupied, a first-touch install
+       that finds an occupant (the occupant it returns), and an acquire that
+       resolves its block's slot to the installed object.
 
 Validation Arm (VAL) — Read Requests
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

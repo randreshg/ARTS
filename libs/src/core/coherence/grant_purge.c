@@ -328,8 +328,8 @@ accept: {
    * one of them.  Sent here, by the latch's single consumer, so exactly one
    * reply leaves per hand-back whichever actor applied it. */
   if (reply.ack) {
-    arts_send_db_publish_ack(latched, cache->db_guid, reply.cv, reply.version,
-                             reply.credit ? cache : NULL);
+    arts_send_db_publish_ack(latched, db, reply.cv, reply.version,
+                             reply.credit);
   }
   arts_sched_fuzz_point(); /* widen the accept<->serve window */
   goto serve;

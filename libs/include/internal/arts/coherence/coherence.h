@@ -87,10 +87,6 @@ void arts_db_cache_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
                         uint64_t db_size, arts_db_init_kind_t kind,
                         unsigned int creator_rank);
 
-/* Public destroy entry — sends DESTROY_REQ to home; home runs the
- * fan-out and finalize.  Defined in coherence.c. */
-void arts_db_destroy_remote(arts_guid_t db_guid);
-
 /* Cache_s destructor: drops the buffer slot's shared_ptr ref (the cb deleter
  * ends the buffer once the last in-flight acquirer releases) and tears down
  * home_s in place.
@@ -120,13 +116,22 @@ typedef enum {
   ARTS_DB_ACQUIRE_PARK,
 } arts_db_acquire_result_t;
 
-/* Stub first-touch: allocate cache_s on this rank if absent.  Used by the
- * acquire path when a lookup_db miss is observed on a remote-owned DB.
- * Returns a PINNED handle to the db_s whose cache it installed; the caller
- * MUST arts_shared_release it on every control-flow path.  A NULL handle =
- * the DB was destroyed before the install could be observed. */
+/* Stub first-touch: allocate cache_s on this rank if absent.  Used where a
+ * lookup_db miss is observed on a remote-owned DB.  Returns a PINNED handle
+ * to the db_s whose cache it installed; the caller MUST arts_shared_release
+ * it on every control-flow path.  A NULL handle = the DB was destroyed before
+ * the install could be observed. */
 arts_shared_ptr_t arts_db_cache_stub_install(arts_guid_t db_guid,
                                              uint64_t db_size);
+/* The acquire's first touch of a remote-owned DB, into `slot`, the slot one
+ * reservation of db_guid returned and found empty: installs a size-unknown
+ * cache-only stub there, or, when another install got there first, returns
+ * that occupant pinned instead (arts_route_table_install_or_get).  Never
+ * NULL; the caller owns the returned handle. */
+struct arts_route_item_s;
+arts_shared_ptr_t
+arts_db_cache_stub_install_into(struct arts_route_item_s *slot,
+                                arts_guid_t db_guid);
 
 /* The coherent acquire of one dep (per model).  item = the installed db_s;
  * args = arts_ooo_args_db_acquire_s {edt, db_guid, slot}.  Attempts the one
@@ -179,13 +184,12 @@ void arts_db_acquire_resolved(struct arts_edt_s *edt, unsigned int slot);
  * no bytes reads as.  One pass over depv in the calling frame: no dispatch, no
  * recursion.
  *
- * The aliases copy the owner's record pin: an alias must never end with a
- * buffer ref and no descriptor pin (a release that cannot derive the buffer
- * from the payload address finds it through the descriptor), and a fresh
- * lookup can miss under a concurrent destroy while the payload is still alive
- * under the owner's own pin.  Only an owner with no pin (a non-coherent block)
- * has the block looked up here, and a miss resolves the aliases to NULL with
- * no ref at all. */
+ * The aliases copy the owner's record pin, which every owner carries
+ * whatever its storage kind: an alias must never end with a buffer ref and no
+ * descriptor pin (a release that cannot derive the buffer from the payload
+ * address finds it through the descriptor), and a fresh lookup could miss
+ * under a concurrent destroy while the payload is still alive under the
+ * owner's own pin. */
 void arts_db_fill_aliases(struct arts_edt_s *edt, unsigned int owner_slot);
 
 /* Per-protocol classification used by the arts_db_acquire_all driver: returns

@@ -246,11 +246,11 @@ void arts_db_send_grant_response(struct arts_db_cache_s *c, unsigned int t,
     hand_back(t);
   }
 }
-void arts_send_db_publish_ack(unsigned int r, arts_guid_t g, uint64_t cv,
-                              uint64_t v, struct arts_db_cache_s *hc) {
-  (void)g;
+void arts_send_db_publish_ack(unsigned int r, struct arts_db_s *db, uint64_t cv,
+                              uint64_t v, bool credit) {
+  (void)db;
   (void)v;
-  (void)hc;
+  (void)credit;
   int helper = 0;
 #ifdef ARTS_DEBUG_INJECTION
   helper = t_helper;

@@ -316,12 +316,7 @@ void arts_db_create_install_home_buffer(struct arts_db_cache_s *cache,
 #endif
 }
 
-void arts_handler_db_destroy(void *item_v, void *args_v) {
-  (void)args_v;
-  struct arts_db_s *db = (struct arts_db_s *)item_v;
-  if (db == NULL) {
-    return;
-  }
+void arts_db_destroy_arrived(struct arts_db_s *db) {
   arts_db_cover_destroy(db);
 }
 
@@ -485,16 +480,16 @@ inv_round_run(struct arts_db_s *db, struct arts_db_inv_pub_s *batch) {
   if (ntargets == 0u) {
     return batch;
   }
-  const arts_guid_t guid = cache->db_guid;
   db->round_entries = batch;
-  /* ARM, before the first INVALIDATE leaves.  From here on only locals: the
-   * last ack can finish this round, and start the next, before this loop
-   * returns (under WB the home's own ack runs inline inside it). */
+  /* ARM, before the first INVALIDATE leaves.  From here on nothing of the
+   * round's state is read, only locals and the descriptor's fixed GUID and
+   * self_cb: the last ack can finish this round, and start the next, before
+   * this loop returns (under WB the home's own ack runs inline inside it). */
   atomic_store_explicit(&db->round_acks, ntargets, memory_order_release);
   for (unsigned int wi = 0; wi < nwords; wi++) {
     for (uint64_t m = tmask[wi]; m != 0u; m &= m - 1u) {
-      arts_send_db_inv_invalidate(wi * 64u + (unsigned int)__builtin_ctzll(m),
-                                  guid);
+      arts_send_db_inv_invalidate(db,
+                                  wi * 64u + (unsigned int)__builtin_ctzll(m));
     }
   }
   return NULL;
@@ -520,12 +515,12 @@ static void inv_round_finish(struct arts_db_s *db,
 #ifdef ARTS_WRITE_POLICY_WT
       /* Write-through commits land in the stable buffer, so the ACK refills
        * the releaser's in-place credit. */
-      arts_send_db_publish_ack(e->releaser_rank, db->cache.db_guid, 0u, e->vnew,
-                               &db->cache);
+      arts_send_db_publish_ack(e->releaser_rank, db, 0u, e->vnew,
+                               /*credit=*/true);
 #else
       /* Write-back releases carry no payload — nothing to credit. */
-      arts_send_db_publish_ack(e->releaser_rank, db->cache.db_guid, 0u, e->vnew,
-                               /*home_cache=*/NULL);
+      arts_send_db_publish_ack(e->releaser_rank, db, 0u, e->vnew,
+                               /*credit=*/false);
 #endif
       arts_free(e);
     }
@@ -614,29 +609,17 @@ static void inv_round_submit(struct arts_db_s *db,
 
 #ifdef ARTS_WRITE_POLICY_WT
 /* Commit-leg pairing continuation: the dirty bytes are in the home landing;
- * submit the entry to the round. */
+ * submit the entry to the round.  The pairing holds the home descriptor the
+ * publish ran on; the releaser blocks on the round's ACK, which keeps the
+ * block's destroy behind it. */
 struct inv_pub_landed_ctx_s {
   arts_shared_ptr_t db_h;
-  arts_guid_t db_guid;
   struct arts_db_inv_pub_s *entry;
 };
 
 static void inv_pub_landed_cb(void *arg) {
   struct inv_pub_landed_ctx_s *ctx = (struct inv_pub_landed_ctx_s *)arg;
-  struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(ctx->db_h);
-  if (db == NULL) {
-    /* Destroyed mid-pairing: nothing to reclaim (the bytes landed in the
-     * stable buffer, which died with the cache) — never strand the blocked
-     * releaser. */
-    struct arts_db_inv_pub_s *e = ctx->entry;
-    arts_send_db_publish_ack(e->releaser_rank, ctx->db_guid, 0u, e->vnew,
-                             /*home_cache=*/NULL);
-    arts_free(e);
-    arts_shared_release(&ctx->db_h);
-    arts_free(ctx);
-    return;
-  }
-  inv_round_submit(db, ctx->entry);
+  inv_round_submit((struct arts_db_s *)arts_shared_get(ctx->db_h), ctx->entry);
   arts_shared_release(&ctx->db_h);
   arts_free(ctx);
 }
@@ -707,8 +690,7 @@ void arts_handler_db_publish(void *item_v, void *args_v) {
     e->landed = true;
     struct inv_pub_landed_ctx_s *ctx =
         (struct inv_pub_landed_ctx_s *)arts_malloc(sizeof(*ctx));
-    ctx->db_h = arts_route_table_lookup_db(a->db_guid);
-    ctx->db_guid = a->db_guid;
+    ctx->db_h = arts_shared_copy(db->self_cb);
     ctx->entry = e;
     arts_net_rdzv_expect(a->rdzv_txid, a->data_size, inv_pub_landed_cb, ctx);
     return;
@@ -741,8 +723,8 @@ void arts_handler_db_inv_cts(struct arts_db_s *db,
   if (act == INV_CACHE_ACT_RESEND) {
     arts_send_db_inv_request(cache, DB_MODE_RO, arts_inv_read_cover(post));
   } else if (act == INV_CACHE_ACT_CLOSE_ACK) {
-    arts_send_db_inv_invalidate_ack(arts_guid_get_rank(cache->db_guid),
-                                    cache->db_guid);
+    arts_send_db_inv_invalidate_ack(
+        db->self_cb, arts_guid_get_rank(cache->db_guid), cache->db_guid);
   }
 }
 
@@ -792,7 +774,8 @@ static void inv_deliver_commit(arts_shared_ptr_t db_h, uint64_t version,
     } while (!atomic_compare_exchange_weak_explicit(
         &cache->cache_state, &cur, next, memory_order_acq_rel,
         memory_order_acquire));
-    arts_send_db_inv_invalidate_ack(arts_guid_get_rank(cache->db_guid),
+    arts_send_db_inv_invalidate_ack(db->self_cb,
+                                    arts_guid_get_rank(cache->db_guid),
                                     cache->db_guid); /* owed ack, LAST */
   }
   arts_shared_release(&db_h);
@@ -805,17 +788,11 @@ struct inv_landed_ctx_s {
   uint64_t data_size;
 };
 
+static void inv_deliver_on(arts_shared_ptr_t db_h,
+                           const struct arts_msg_inv_deliver_packet_s *p);
 
 static void inv_landed_cb(void *arg) {
   struct inv_landed_ctx_s *ctx = (struct inv_landed_ctx_s *)arg;
-  if (arts_shared_get(ctx->db_h) == NULL) {
-    /* Destroyed while the pairing was outstanding (destroy during a pending
-     * acquire is app UB): end the landing and drop. */
-    arts_db_buf_landing_return(ctx->landing);
-    arts_shared_release(&ctx->db_h);
-    arts_free(ctx);
-    return;
-  }
   /* A one-sided payload comes from another rank. */
   uint8_t census = arts_db_census_serving(true);
   inv_deliver_commit(ctx->db_h, ctx->version, ctx->landing, ctx->data_size);
@@ -828,12 +805,19 @@ void arts_handler_db_inv_deliver(void *payload, size_t size) {
   struct arts_msg_inv_deliver_packet_s *p =
       (struct arts_msg_inv_deliver_packet_s *)payload;
   arts_shared_ptr_t db_h = arts_route_table_lookup_db(p->db_guid);
-  struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(db_h);
-  if (db == NULL) {
+  if (db_h == NULL) {
     arts_db_rdzv_discard_landing(p->rdzv_txid, p->data_size, p->rdzv_cookie);
-    arts_shared_release(&db_h);
     return;
   }
+  inv_deliver_on(db_h, p);
+}
+
+/* The DELIVER's body on the requester's descriptor, which db_h holds;
+ * consumes db_h (the commit releases it, after a one-sided payload's
+ * pairing when one is in flight). */
+static void inv_deliver_on(arts_shared_ptr_t db_h,
+                           const struct arts_msg_inv_deliver_packet_s *p) {
+  struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(db_h);
   /* Hinted first touch: the size may still be unlearned here. */
   arts_db_cache_learn_size(&db->cache, p->data_size);
   if (p->rdzv_txid != 0) {
@@ -897,7 +881,7 @@ void arts_handler_db_inv_invalidate(struct arts_db_s *db) {
                                                   next, memory_order_acq_rel,
                                                   memory_order_acquire));
   if (act == INV_CACHE_ACT_PURGE_ACK || act == INV_CACHE_ACT_NOOP_ACK) {
-    arts_send_db_inv_invalidate_ack(home_rank, cache->db_guid);
+    arts_send_db_inv_invalidate_ack(db->self_cb, home_rank, cache->db_guid);
   }
   /* KILL_MARKED: the ack is owed — the doomed DELIVER fires it after its
    * serve-once, keeping every pre-ack serve legally racy. */
@@ -954,24 +938,32 @@ void arts_send_db_inv_cts(unsigned int requester_rank, struct arts_db_s *db,
   arts_transport_send_async((int)requester_rank, (char *)&p, sizeof(p));
 }
 
-
 /* One message per sharer in the roster snapshot: the multicast whose width is
- * what the round costs. */
-void arts_send_db_inv_invalidate(unsigned int sharer_rank,
-                                 arts_guid_t db_guid) {
+ * what the round costs.  db is the home's descriptor, which the caller
+ * holds. */
+void arts_send_db_inv_invalidate(struct arts_db_s *db,
+                                 unsigned int sharer_rank) {
+  arts_guid_t db_guid = db->cache.db_guid;
   if (sharer_rank == arts_global_rank_id) {
-    /* Local hit: run the retirement inline.  Reachable under WB, where the
-     * home holds no canonical copy and is therefore an ordinary sharer — its
-     * own copy has to be retired like everyone else's.  A MISS still owes the
-     * round its ack, which the handler body sends. */
-    arts_shared_ptr_t h = arts_route_table_lookup_db(db_guid);
-    struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(h);
-    if (db != NULL) {
-      arts_handler_db_inv_invalidate(db);
+    /* Local hit: run the retirement inline, on the home's descriptor, which
+     * is this sharer's cache, while it is live, and on what a lookup finds
+     * otherwise.  Reachable under WB, where the home holds no canonical copy
+     * and is therefore an ordinary sharer — its own copy has to be retired
+     * like everyone else's.  A MISS still owes the round its ack, which the
+     * handler body sends. */
+    arts_shared_ptr_t looked = NULL;
+    struct arts_db_s *sharer =
+        (struct arts_db_s *)arts_route_table_borrow_or_lookup(db->self_cb,
+                                                              db_guid, &looked);
+    if (sharer != NULL) {
+      arts_handler_db_inv_invalidate(sharer);
     } else {
-      arts_send_db_inv_invalidate_ack(arts_guid_get_rank(db_guid), db_guid);
+      /* The home's descriptor was not live and the lookup missed: the ack
+       * resolves by GUID alone. */
+      arts_send_db_inv_invalidate_ack(NULL, arts_guid_get_rank(db_guid),
+                                      db_guid);
     }
-    arts_shared_release(&h);
+    arts_shared_release(&looked);
     return;
   }
   struct arts_msg_inv_invalidate_packet_s p;
@@ -981,17 +973,22 @@ void arts_send_db_inv_invalidate(unsigned int sharer_rank,
   arts_transport_send_async((int)sharer_rank, (char *)&p, sizeof(p));
 }
 
-void arts_send_db_inv_invalidate_ack(unsigned int home_rank,
+void arts_send_db_inv_invalidate_ack(arts_shared_ptr_t held,
+                                     unsigned int home_rank,
                                      arts_guid_t db_guid) {
   if (home_rank == arts_global_rank_id) {
-    /* Local hit: account the ack inline.  A MISS drops — the round's other
-     * acks still finish it, and a destroyed DB has no round to finish. */
-    arts_shared_ptr_t h = arts_route_table_lookup_db(db_guid);
-    struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(h);
-    if (db != NULL) {
-      arts_handler_db_inv_invalidate_ack(db, arts_global_rank_id);
+    /* Local hit: account the ack inline, on the sharer's descriptor, which is
+     * the home's, while it is live, and on what a lookup finds otherwise.  A
+     * MISS drops — the round's other acks still finish it, and a destroyed DB
+     * has no round to finish. */
+    arts_shared_ptr_t looked = NULL;
+    struct arts_db_s *home =
+        (struct arts_db_s *)arts_route_table_borrow_or_lookup(held, db_guid,
+                                                              &looked);
+    if (home != NULL) {
+      arts_handler_db_inv_invalidate_ack(home, arts_global_rank_id);
     }
-    arts_shared_release(&h);
+    arts_shared_release(&looked);
     return;
   }
   struct arts_msg_inv_invalidate_ack_packet_s p;
@@ -1027,8 +1024,9 @@ void arts_send_db_inv_request(struct arts_db_cache_s *cache,
     (void)arts_db_buf_landing_alloc(cache, fetch_size, &rdzv);
   }
   if (home_rank == arts_global_rank_id) {
-    /* Self-send: route through the OoO engine so before-create reorders
-     * defer exactly like the wire path. */
+    /* Self-send: the requester's cache is the home's descriptor, on which the
+     * request body runs; one not yet installed takes the engine by GUID,
+     * deferred until the home installs and drains, as the wire's does. */
     struct arts_ooo_args_db_inv_request_s args = {
         .requester = arts_global_rank_id,
         .db_guid = db_guid,
@@ -1036,8 +1034,8 @@ void arts_send_db_inv_request(struct arts_db_cache_s *cache,
         .cover = cover,
         .rdzv = rdzv,
     };
-    arts_ooo_dispatch_or_defer_guid(db_guid, OOO_DB_INV_REQUEST, &args,
-                                    sizeof(args));
+    arts_ooo_dispatch_on(arts_db_of_cache(cache)->self_cb, OOO_DB_INV_REQUEST,
+                         db_guid, &args, sizeof(args));
     return;
   }
   struct arts_msg_inv_request_packet_s p;
@@ -1119,7 +1117,14 @@ void arts_send_db_inv_deliver(unsigned int requester_rank,
       }
       p.rdzv_cookie = 0;
     }
-    arts_handler_db_inv_deliver(&p, sizeof(p));
+    /* The body runs on this rank's descriptor while it is live and on what a
+     * lookup finds otherwise; a miss has no landing left to give back. */
+    arts_shared_ptr_t looked = NULL;
+    if (arts_route_table_borrow_or_lookup(db->self_cb, p.db_guid, &looked) !=
+        NULL) {
+      inv_deliver_on(looked != NULL ? looked : arts_shared_copy(db->self_cb),
+                     &p);
+    }
     return;
   }
   if (src == NULL || rdzv == NULL || rdzv->txid == 0) {

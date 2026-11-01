@@ -18,7 +18,7 @@
 #include "arts/counter/Preamble.h"
 #include "arts/db.h"
 #include "arts/edt.h"             /* arts_edt_dep_t (acquire body) */
-#include "arts/gas/route_table.h" /* arts_route_table_lookup_db (Cat-C self-send) */
+#include "arts/gas/route_table.h" /* arts_route_table_borrow_or_lookup */
 #include "arts/ooo.h"             /* OOO_DB_* args (handler bodies) */
 #include "arts/runtime_state.h"
 #include "arts/runtime_types.h"
@@ -262,26 +262,20 @@ void arts_handler_db_snapshot_request(void *item_v, void *args_v) {
   }
   unsigned int owner =
       atomic_load_explicit(&db->rw_holder, memory_order_acquire);
-  arts_send_db_snapshot_redirect(owner, cache->db_guid, requester, cover,
-                                 &a->rdzv);
+  arts_send_db_snapshot_redirect(db, owner, requester, cover, &a->rdzv);
 }
 
-/* Cat-B pure body (OoO g_ooo_table[OOO_DB_DESTROY]): the OoO engine has already
- * acquired the home db_s and pinned a ref across this call (cache is its FIRST
- * member).  Order: roster fan-out, then arts_ooo_retire LAST (a parked
- * waiter at destroy = UB, never woken: its slot's pin keeps it).  WB roster
- * source = the cached-ranks bit-set: the creator joins it at create and every
- * requester when its request arrives, so it names rw_holder and, during a
- * transfer, pending_install_owner too.  The teardown is immediate: no release
- * on this arm sends the home anything, and a transfer's CONFIRM is answered
- * before the new owner's writers run, so under the destroy contract nothing
- * owed to the home can arrive after the destroy. */
-void arts_handler_db_destroy(void *item_v, void *args_v) {
-  (void)args_v;
-  struct arts_db_s *db = (struct arts_db_s *)item_v;
-  if (db == NULL) {
-    return;
-  }
+/* The coherent destroy at the home (arts_handler_db_destroy, under its
+ * caller's ref on the home db_s).  Order: roster fan-out, then
+ * arts_ooo_retire LAST (a parked waiter at destroy = UB, never woken: its
+ * slot's pin keeps it).  WB roster source = the cached-ranks bit-set: the
+ * creator joins it at create and every requester when its request arrives,
+ * so it names rw_holder and, during a transfer, pending_install_owner too.
+ * The teardown is immediate: no release on this arm sends the home anything,
+ * and a transfer's CONFIRM is answered before the new owner's writers run, so
+ * under the destroy contract nothing owed to the home can arrive after the
+ * destroy. */
+void arts_db_destroy_arrived(struct arts_db_s *db) {
   arts_db_cover_destroy(db);
 }
 
@@ -415,10 +409,11 @@ void arts_handler_db_snapshot_redirect(void *item_v, void *args_v) {
   }
 }
 
-void arts_send_db_snapshot_redirect(unsigned int owner_rank,
-                                    arts_guid_t db_guid,
+void arts_send_db_snapshot_redirect(struct arts_db_s *db,
+                                    unsigned int owner_rank,
                                     unsigned int requester_rank, uint32_t cover,
                                     const struct arts_rdzv_landing_s *rdzv) {
+  arts_guid_t db_guid = db->cache.db_guid;
   struct arts_rdzv_landing_s fwd =
       (rdzv != NULL) ? *rdzv : (struct arts_rdzv_landing_s){0, 0, 0, 0};
   struct arts_msg_snapshot_redirect_packet_s p;
@@ -432,26 +427,29 @@ void arts_send_db_snapshot_redirect(unsigned int owner_rank,
   p.rdzv.txid = fwd.txid;
   p.rdzv.cookie = fwd.cookie;
   if (owner_rank == arts_global_rank_id) {
-    /* Self-send: mirror the wire RX dispatcher's lookup.  HIT serves
-     * SNAPSHOT_RESPONSE from the ref-pinned owner-side db_s; MISS dismisses
-     * the requester, as the wire path does. */
+    /* Self-send: the owner's cache is the home's descriptor, which the caller
+     * holds.  The body serves SNAPSHOT_RESPONSE from it while it is live, and
+     * from what a lookup finds otherwise; a miss dismisses the requester, as
+     * the wire path does. */
     struct arts_db_snapshot_redirect_args_s args = {
         .db_guid = db_guid,
         .requester_rank = requester_rank,
         .cover = cover,
         .rdzv = fwd,
     };
-    arts_shared_ptr_t h = arts_route_table_lookup_db(db_guid);
-    struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(h);
-    if (db != NULL) {
-      arts_handler_db_snapshot_redirect(db, &args);
+    arts_shared_ptr_t looked = NULL;
+    struct arts_db_s *owner =
+        (struct arts_db_s *)arts_route_table_borrow_or_lookup(db->self_cb,
+                                                              db_guid, &looked);
+    if (owner != NULL) {
+      arts_handler_db_snapshot_redirect(owner, &args);
     } else {
       /* Torn down after the home took the request in: dismiss it. */
       arts_send_db_snapshot_response(requester_rank, NULL, db_guid,
                                      /*version=*/0, cover, /*kind=*/2,
                                      /*db_size=*/0, &fwd, NULL);
     }
-    arts_shared_release(&h);
+    arts_shared_release(&looked);
     return;
   }
   if (!arts_net_send_held((int)owner_rank, (char *)&p, sizeof(p),

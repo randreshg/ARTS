@@ -228,11 +228,11 @@ void arts_db_send_grant_response(struct arts_db_cache_s *c, unsigned int t,
   atomic_fetch_add_explicit(&g_grants_to[t], 1u, memory_order_release);
 }
 
-void arts_send_db_publish_ack(unsigned int r, arts_guid_t g, uint64_t cv,
-                              uint64_t v, struct arts_db_cache_s *hc) {
-  (void)g;
+void arts_send_db_publish_ack(unsigned int r, struct arts_db_s *db, uint64_t cv,
+                              uint64_t v, bool credit) {
+  (void)db;
   (void)v;
-  (void)hc;
+  (void)credit;
   if (r == 0u || r > RANKS) {
     fail("an acknowledgement to a rank that never handed back");
     return;

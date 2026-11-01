@@ -73,8 +73,8 @@ void arts_db_grant_advance(struct arts_db_cache_s *cache, struct arts_db_s *db,
    * the target's cache is installed when the INVALIDATE arrives and it is
    * never deferred. */
   arts_send_db_grant_invalidate(
-      atomic_load_explicit(&db->rw_holder, memory_order_acquire),
-      cache->db_guid, next_owner, &next_rdzv, next_have);
+      db, atomic_load_explicit(&db->rw_holder, memory_order_acquire),
+      next_owner, &next_rdzv, next_have);
 }
 
 /* A grant is never handed back unasked here, so there is no obligation to

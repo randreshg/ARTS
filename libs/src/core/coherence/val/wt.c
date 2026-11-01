@@ -21,7 +21,6 @@
 #include "arts/db.h"
 #include "arts/edt.h"             /* arts_edt_dep_t (acquire body) */
 #include "arts/gas/guid.h"
-#include "arts/gas/route_table.h" /* arts_route_table_lookup_db (pin db_s) */
 #include "arts/ooo.h"             /* OOO_DB_* args (handler bodies) */
 #include "arts/runtime_state.h"
 #include "arts/runtime_types.h"
@@ -487,15 +486,13 @@ void arts_handler_db_snapshot_request(void *item_v, void *args_v) {
 /* Rendezvous continuation for a committed publish: the dirty bytes have
  * fully landed IN PLACE in the stable home buffer; publication is the version
  * stamp alone (release-store, sequenced after the {commit packet, write
- * completion} pairing — "landing valid" precedes the stamp).  The ACK fires
- * even if the DB was destroyed while the pairing was outstanding — a
- * torn-down home cache must never strand the blocked releaser (the
- * PUBLISH_ACK-on-MISS rule). */
+ * completion} pairing — "landing valid" precedes the stamp).  The pairing
+ * holds the home descriptor the publish ran on, so the ACK always fires: the
+ * releaser blocks on it, which keeps the block's destroy behind it. */
 struct pub_landed_ctx_s {
   arts_shared_ptr_t db_h;
   uint64_t version;
   unsigned int releaser;
-  arts_guid_t db_guid;
   uint64_t cv;
   bool returns_grant;
 };
@@ -503,31 +500,28 @@ struct pub_landed_ctx_s {
 static void pub_landed_cb(void *arg) {
   struct pub_landed_ctx_s *ctx = (struct pub_landed_ctx_s *)arg;
   struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(ctx->db_h);
-  if (db != NULL) {
-    arts_db_buf_bump_inplace(&db->cache, ctx->version);
-    /* The releaser holds the version it just published — credit the ledger
-     * so its own next acquire dedups to no-data. */
-    arts_rank_u64_map_advance(db->cached_version, ctx->releaser, ctx->version);
-    /* First-publish publication (bump from version 0): wake home-parked RO
-     * acquires and re-issue home-parked SNAPSHOT_REQUEST serves. */
-    arts_db_drain_publication_waiters(&db->cache);
-  }
-  if (ctx->returns_grant && db != NULL) {
+  arts_db_buf_bump_inplace(&db->cache, ctx->version);
+  /* The releaser holds the version it just published — credit the ledger
+   * so its own next acquire dedups to no-data. */
+  arts_rank_u64_map_advance(db->cached_version, ctx->releaser, ctx->version);
+  /* First-publish publication (bump from version 0): wake home-parked RO
+   * acquires and re-issue home-parked SNAPSHOT_REQUEST serves. */
+  arts_db_drain_publication_waiters(&db->cache);
+  if (ctx->returns_grant) {
     /* The releaser handed the write right back with these bytes.  Accepting
      * here and not a moment earlier is what makes the two one event: the
      * stamp above is already in place, so a block handed straight on carries
      * a version this release has not moved past.  The publish's
      * acknowledgement rides the hand-back and leaves once the home has
-     * applied it.  A block destroyed while the bytes were in flight owes
-     * nothing but the acknowledgement — its directory went with it. */
+     * applied it. */
     struct arts_db_grant_return_reply_s reply = {.cv = ctx->cv,
                                                  .version = ctx->version,
                                                  .ack = true,
                                                  .credit = true};
     arts_db_grant_return_arrived(db, ctx->releaser, &reply);
   } else {
-    arts_send_db_publish_ack(ctx->releaser, ctx->db_guid, ctx->cv,
-                             ctx->version, db != NULL ? &db->cache : NULL);
+    arts_send_db_publish_ack(ctx->releaser, db, ctx->cv, ctx->version,
+                             /*credit=*/true);
   }
   arts_shared_release(&ctx->db_h);
   arts_free(ctx);
@@ -543,8 +537,8 @@ void arts_handler_db_publish(void *item_v, void *args_v) {
      * hand-back rides payload legs only. */
     assert(a->returns_grant == 0u &&
            "a hand-back never rides a data-less publish");
-    arts_send_db_publish_ack(a->releaser, a->db_guid, a->cv, a->version,
-                               cache);
+    arts_send_db_publish_ack(a->releaser, arts_db_of_cache(cache), a->cv,
+                             a->version, /*credit=*/true);
     return;
   }
   if (a->rdzv_txid == 0) {
@@ -581,32 +575,25 @@ void arts_handler_db_publish(void *item_v, void *args_v) {
    * version and ACK the blocked releaser. */
   struct pub_landed_ctx_s *ctx =
       (struct pub_landed_ctx_s *)arts_malloc(sizeof(*ctx));
-  ctx->db_h = arts_route_table_lookup_db(cache->db_guid);
+  ctx->db_h = arts_shared_copy(arts_db_of_cache(cache)->self_cb);
   ctx->version = a->version;
   ctx->releaser = a->releaser;
-  ctx->db_guid = a->db_guid;
   ctx->cv = a->cv;
   ctx->returns_grant = (a->returns_grant != 0u);
   arts_net_rdzv_expect(a->rdzv_txid, a->data_size, pub_landed_cb, ctx);
 }
 
-/* Cat-B pure body (OoO g_ooo_table[OOO_DB_DESTROY]): the OoO engine has already
- * acquired the home db_s and pinned a ref across this call (cache is its FIRST
- * member).  Order: roster fan-out, then arts_ooo_retire LAST (detach the slot
- * cb + drop the install ref); a waiter left parked at destroy (UB) is
- * never woken and keeps the descriptor through its slot's pin, and the cb
- * deleter frees the cache once every ref drains.  A second DESTROY_REQ parks on the empty
- * slot (a second destroy is a program error).  WT roster source =
- * home->cached_ranks.  The teardown is immediate: every release that sends
- * the home anything (a publish, a hand-back) blocks until the home ACKs it,
- * so under the destroy contract none arrives after the destroy; a transfer's
- * CONFIRM that does finds no home and is dropped. */
-void arts_handler_db_destroy(void *item_v, void *args_v) {
-  (void)args_v;
-  struct arts_db_s *db = (struct arts_db_s *)item_v;
-  if (db == NULL) {
-    return;
-  }
+/* The coherent destroy at the home (arts_handler_db_destroy, under its
+ * caller's ref on the home db_s).  Order: roster fan-out, then
+ * arts_ooo_retire LAST (detach the slot cb + drop the install ref); a waiter
+ * left parked at destroy (UB) is never woken and keeps the descriptor through
+ * its slot's pin, and the cb deleter frees the cache once every ref drains.
+ * A second DESTROY_REQ parks on the empty slot (a second destroy is a program
+ * error).  WT roster source = home->cached_ranks.  The teardown is immediate:
+ * every release that sends the home anything (a publish, a hand-back) blocks
+ * until the home ACKs it, so under the destroy contract none arrives after the
+ * destroy; a transfer's CONFIRM that does finds no home and is dropped. */
+void arts_db_destroy_arrived(struct arts_db_s *db) {
   arts_db_cover_destroy(db);
 }
 

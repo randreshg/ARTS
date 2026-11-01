@@ -19,6 +19,8 @@
 ///   none    Nothing per unit.
 ///   create  A sticky event, a block created with ARTS_DB_PROP_NO_ACQUIRE and
 ///           an EDT with no dependence, whose body ends the unit.
+///   rw      A block created with the creator's hold, written through the
+///           pointer the create hands out, and destroyed by the same run.
 
 #include "arts.h"
 
@@ -80,12 +82,32 @@ static void shape_create(uint64_t n) {
   }
 }
 
+static void shape_rw(uint64_t n) {
+  for (uint64_t i = 0; i < n; i++) {
+    uint64_t *addr = NULL;
+    arts_guid_t db = arts_db_create((void **)&addr, 64, ARTS_DB,
+                                    ARTS_DB_PROP_NONE, NULL);
+    if (db == NULL_GUID || addr == NULL) {
+      printf("FAIL: route_budget rw: a block create failed\n");
+      arts_test_fail();
+      unit_done();
+      continue;
+    }
+    for (uint64_t k = 0; k < 64 / sizeof(uint64_t); k++) {
+      addr[k] = i + k;
+    }
+    arts_db_destroy(db);
+    unit_done();
+  }
+}
+
 static const struct {
   const char *name;
   shape_fn run;
 } g_shapes[] = {
     {"none", shape_none},
     {"create", shape_create},
+    {"rw", shape_rw},
 };
 
 static shape_fn g_run;

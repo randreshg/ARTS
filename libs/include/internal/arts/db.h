@@ -114,11 +114,14 @@ struct arts_dep_acq_s {
   /* The slot's payload: written by the slot's one resolver before its
    * account; read by the frame whose account reaches zero. */
   void *ptr;
-  /* The descriptor pin the slot holds from its firing to its release.  An
-   * owner's is stored by the frame that fires it, before the arm's handler
-   * can publish the slot; an alias's by its owner's resolver.  Reaches the
-   * resolver through the handler's publication of the waiter, the release
-   * through acquire_remaining's zero edge and the hand-off to the run. */
+  /* The descriptor pin the slot holds from its firing to its release, for
+   * every storage kind.  An owner's is stored by the frame that fires it,
+   * before the arm's handler can publish the slot (a replay that re-fires a
+   * parked slot stores the descriptor it was dispatched on first, and the
+   * re-fire takes it from here on the same thread); an alias's by its owner's
+   * resolver.  Reaches the resolver through the handler's publication of the
+   * waiter, the release through acquire_remaining's zero edge and the hand-off
+   * to the run. */
   arts_shared_ptr_t pin;
   /* The storage kind: written before the handler, or by the alias fill; the
    * release routes on it. */
@@ -240,12 +243,12 @@ void arts_db_drain_resume_list(void);
 void arts_db_resume_list_free(void);
 
 /* OOO_DB_ACQUIRE replay (table entry): re-dispatch the ONE deferred local dep
- * through the per-dep 3-way (subtype-aware — ARTS_DB → arts_handler_db_acquire,
- * a GPU kind → its inline ptr path, still-absent → re-defer).  item = the
- * just-installed db_s (the 3-way re-looks it up; the OoO dispatcher's pin on
- * it keeps the descriptor alive across the call); args =
- * arts_ooo_args_db_acquire_s {edt, db_guid, slot}.  NOT the coherent handler
- * directly — that would mishandle non-coherent subtypes. */
+ * through the per-dep path (subtype-aware — ARTS_DB → arts_handler_db_acquire,
+ * a GPU kind → its inline ptr path).  item = the just-installed db_s, whose
+ * handle the replay copies into the slot's pin so the re-fire resolves
+ * nothing (the OoO dispatcher's pin on it keeps the descriptor alive across
+ * the call); args = arts_ooo_args_db_acquire_s {edt, db_guid, slot}.  NOT the
+ * coherent handler directly — that would mishandle non-coherent subtypes. */
 void arts_db_acquire_replay_dep(void *item, void *args);
 void arts_release_dbs(struct arts_edt_s *edt, bool gpu);
 void arts_release_created_dbs(void);

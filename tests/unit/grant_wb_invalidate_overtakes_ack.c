@@ -56,9 +56,12 @@ UNREACHED(arts_shared_ptr_t arts_route_table_lookup_db(arts_guid_t g))
 UNREACHED(arts_shared_ptr_t arts_db_cache_stub_install(arts_guid_t g,
                                                        uint64_t s))
 UNREACHED(void arts_db_rdzv_discard_landing(uint64_t t, uint64_t s, uint64_t c))
-UNREACHED(void arts_send_db_grant_confirm(unsigned int h, arts_guid_t g))
+UNREACHED(void *arts_route_table_borrow_or_lookup(arts_shared_ptr_t h,
+                                                  arts_guid_t g,
+                                                  arts_shared_ptr_t *l))
+UNREACHED(void arts_send_db_grant_confirm(struct arts_db_s *db))
 UNREACHED(void arts_send_db_grant_invalidate(
-    unsigned int o, arts_guid_t g, unsigned int n,
+    struct arts_db_s *db, unsigned int o, unsigned int n,
     const struct arts_rdzv_landing_s *r, uint64_t h))
 UNREACHED(void arts_db_grant_note_ex_holder(struct arts_db_s *db,
                                             unsigned int r))

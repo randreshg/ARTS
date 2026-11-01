@@ -103,7 +103,10 @@ UNREACHED(arts_shared_ptr_t arts_route_table_lookup_db(arts_guid_t g))
 UNREACHED(arts_shared_ptr_t arts_db_cache_stub_install(arts_guid_t g,
                                                        uint64_t s))
 UNREACHED(void arts_db_rdzv_discard_landing(uint64_t t, uint64_t s, uint64_t c))
-UNREACHED(void arts_send_db_grant_confirm(unsigned int h, arts_guid_t g))
+UNREACHED(void *arts_route_table_borrow_or_lookup(arts_shared_ptr_t h,
+                                                  arts_guid_t g,
+                                                  arts_shared_ptr_t *l))
+UNREACHED(void arts_send_db_grant_confirm(struct arts_db_s *db))
 UNREACHED(void *arts_shared_get(arts_shared_ptr_t h))
 UNREACHED(void arts_shared_release(arts_shared_ptr_t *p))
 UNREACHED(bool arts_rank_u64_map_load(struct arts_rank_to_u64_map_s *m,
@@ -169,12 +172,12 @@ static void post_round(unsigned int target) {
   atomic_store_explicit(&g_round_posted, 1, memory_order_release);
 }
 
-void arts_send_db_grant_invalidate(unsigned int current, arts_guid_t db_guid,
+void arts_send_db_grant_invalidate(struct arts_db_s *db, unsigned int current,
                                    unsigned int new_owner,
                                    const struct arts_rdzv_landing_s *rdzv,
                                    uint64_t have) {
+  (void)db;
   (void)current;
-  (void)db_guid;
   (void)rdzv;
   (void)have;
   popped(new_owner);

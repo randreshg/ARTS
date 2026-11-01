@@ -15,16 +15,25 @@
  *     HIT, or DEFERS the args and replays them once DB_CREATE installs.
  *   - Cat-C (non-deferrable, no OOO_* kind — e.g. SNAPSHOT_RESPONSE /
  *     CACHE_DESTROY / PUBLISH_ACK / SNAPSHOT_REDIRECT / GRANT_INVALIDATE /
- *     GRANT_CONFIRM / GRANT_CONFIRM_ACK): the wire dispatcher (and the
- *     matching self-send shortcut) does the ref-pinned lookup-acquire; on a
- *     HIT it calls the pure (item, args) body, and on a MISS it applies that
- *     handler's exact miss-action (silent drop, a dismiss reply, or the
- *     PUBLISH_ACK sem-post — see each body).
+ *     GRANT_CONFIRM / GRANT_CONFIRM_ACK): the wire dispatcher does the
+ *     ref-pinned lookup-acquire; on a HIT it calls the pure (item, args) body,
+ *     and on a MISS it applies that handler's exact miss-action (silent drop,
+ *     a dismiss reply, or the PUBLISH_ACK sem-post — see each body).
  * Either way an (item, args) body operates on the already-acquired,
  * ref-pinned cache (the FIRST member of the db_s the caller hands it) and
- * does not look it up to operate on it.  A body handed the whole packet
- * (GRANT_RESPONSE, INV_DELIVER, EXCL_GRANT and the EXCL RETAIN messages)
- * looks its block up itself.
+ * does not look it up to operate on it.  A message handed over as the whole
+ * packet (GRANT_RESPONSE, INV_DELIVER, EXCL_GRANT and the EXCL RETAIN
+ * messages) has a wire entry that looks its block up once and a body on the
+ * object.
+ *
+ * Self-sends.  On this rank a block has one descriptor, which the sending
+ * caller holds, so a sender whose target is this rank acts on it rather than
+ * resolving the GUID again: a Cat-B kind through arts_ooo_dispatch_on (the
+ * body inline while the descriptor is live, the engine by GUID otherwise; no
+ * coherence kind is one of the satisfies the GPU LC holds back, so none needs
+ * that check first), a Cat-C body on what arts_route_table_borrow_or_lookup
+ * returns (the descriptor while it is live, else a lookup, whose miss is the
+ * body's miss action, as on the wire).
  *
  * Memory ordering: handlers run concurrently on every progress thread, and a
  * self-send's handler runs inline on the sending thread, a worker included,
@@ -78,13 +87,26 @@
  * (EXCL_RELEASE, RETAIN's owner-to-owner EXCL_DELIVER, FLUSH_COMMIT); none
  * of them sends MSG_DB_PUBLISH, so none defines this body. */
 
-/* arts_handler_db_destroy is protocol-specific — each arm keeps its own exact
- * destroy roster (the creator, the readers, every write requester) — so its
- * whole body lives in each arm's own write-policy TU.  Every body runs the
- * roster fan-out, then retires the descriptor through its self_cb; any waiter
- * left parked at destroy time (UB per OCR) is never woken, and its slot's
+/* The OOO_DB_DESTROY body: a block's destroy at its home, on the descriptor
+ * the engine or a holder dispatched it on.  The storage kind decides.  A GPU
+ * kind lives on its creating rank alone and keeps no home protocol: it is
+ * retired here, its storage going once the last reference drops.  A coherent
+ * block goes to its arm (arts_db_destroy_arrived), which keeps its own exact
+ * destroy roster (the creator, the readers, every write requester), runs the
+ * fan-out, then retires the descriptor through its self_cb; any waiter left
+ * parked at destroy time (UB per OCR) is never woken, and its slot's
  * descriptor pin keeps the descriptor, and so the waiter, until the process
  * ends. */
+void arts_handler_db_destroy(void *item_v, void *args_v) {
+  struct arts_db_s *db = (struct arts_db_s *)item_v;
+  const struct arts_ooo_args_db_destroy_s *a =
+      (const struct arts_ooo_args_db_destroy_s *)args_v;
+  if (db->db_type != ARTS_DB) {
+    (void)arts_ooo_retire(a->db_guid, db->self_cb);
+    return;
+  }
+  arts_db_destroy_arrived(db);
+}
 
 /* NO_ACQUIRE home normalization.  The creator neither acquires nor releases,
  * so the home is the sole idle owner.  Every home create path seeds a
@@ -296,12 +318,8 @@ void arts_handler_db_create(void *item_v, void *args_v) {
    * credit.  Only while this block is still installed: the install's drain
    * can run a destroy deferred before the create, and a destroyed block's
    * buffer is on its way back to the pool. */
-  if (!no_acquire) {
-    arts_shared_ptr_t live_h = arts_route_table_lookup_db(db_guid);
-    if (arts_shared_get(live_h) == (void *)stub) {
-      arts_send_db_create_return(creator_rank, &stub->cache);
-    }
-    arts_shared_release(&live_h);
+  if (!no_acquire && arts_route_table_live(mine, db_guid)) {
+    arts_send_db_create_return(creator_rank, &stub->cache);
   }
 #endif
   arts_shared_release(&mine);
@@ -313,19 +331,6 @@ void arts_handler_db_create(void *item_v, void *args_v) {
  * coherence/grant_wt.c; WB's overload lives in
  * coherence/grant_wb.c. */
 
-/* Cat-C pure body (SNAPSHOT_RESPONSE).  The wire dispatcher / self-send
- * shortcut has already looked the home db_s up with a held ref and passes it as
- * item_v (cache is its FIRST member, offset 0, so item_v IS the cache).  No
- * lookup/NULL-check here — the dispatcher's MISS branch resumes nothing and
- * only ends the landing (this 1:1 response resumes a parked EDT; a missing
- * cache means it was torn down).
- *
- * The response ends the requester's combining window, whose cohort is the
- * cache's own chain; it echoes the request's cover word, whose parity must be
- * the open window's (checked in the CAS that consumes the answer).  Bytes
- * that travel one-sided are installed first (version-conditional); a reply
- * that moves none names a version this cache already holds, and resumes
- * against the live buffer.  Shared verbatim by WT/WB. */
 /* Consume an in-flight rendezvous whose receiver-side object is gone: the
  * metadata packet arrived for a destroyed target, so nobody will ever expect
  * the txid — register a discard continuation that returns the landing once
@@ -394,6 +399,19 @@ static void snapshot_landed_cb(void *arg) {
   arts_free(ctx);
 }
 
+/* Cat-C pure body (SNAPSHOT_RESPONSE).  item_v is the requester's db_s (cache
+ * is its FIRST member, offset 0, so item_v IS the cache), held by the wire
+ * dispatcher's lookup or, on a self-send, by the caller's pin.  No
+ * lookup/NULL-check here — the dispatcher's MISS branch resumes nothing and
+ * only ends the landing (this 1:1 response resumes a parked EDT; a missing
+ * cache means it was torn down).
+ *
+ * The response ends the requester's combining window, whose cohort is the
+ * cache's own chain; it echoes the request's cover word, whose parity must be
+ * the open window's (checked in the CAS that consumes the answer).  Bytes
+ * that travel one-sided are installed first (version-conditional); a reply
+ * that moves none names a version this cache already holds, and resumes
+ * against the live buffer.  Shared verbatim by WT/WB. */
 void arts_handler_db_snapshot_response(void *item_v, void *args_v) {
   struct arts_db_cache_s *cache = &((struct arts_db_s *)item_v)->cache;
   struct arts_db_snapshot_response_args_s *a =
@@ -485,14 +503,14 @@ void arts_handler_db_snapshot_response(void *item_v, void *args_v) {
  * !EXCL && (!WB || INV)); the exclusion arm has no synchronous publish and
  * its dispatcher fatals on the message. */
 
-/* Cat-C pure body (CACHE_DESTROY).  The wire dispatcher / self-send shortcut
- * has already looked the cache up with a held ref and passes the db_s as item_v
- * (cache is its FIRST member, offset 0).  No lookup/NULL-check here.  A block
- * is destroyed once and its home tells each rank on its roster once; every
- * such rank installed its cache before the request that put it there, and
- * nothing else retires it, so the lookup misses only when a GUID is reused:
- * another lifetime's notice already retired this rank's cache.  The
- * dispatcher drops that notice.
+/* Cat-C pure body (CACHE_DESTROY).  The wire dispatcher has already looked
+ * the cache up with a held ref and passes the db_s as item_v (cache is its
+ * FIRST member, offset 0); a home never sends this to its own rank.  No
+ * lookup/NULL-check here.  A block is destroyed once and its home tells each
+ * rank on its roster once; every such rank installed its cache before the
+ * request that put it there, and nothing else retires it, so the lookup misses
+ * only when a GUID is reused: another lifetime's notice already retired this
+ * rank's cache.  The dispatcher drops that notice.
  *
  * Destroy is just the route-slot detach of the object the message was
  * dispatched on (CAS value→NULL + drop the install ref), through its self_cb

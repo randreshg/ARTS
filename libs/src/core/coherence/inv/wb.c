@@ -22,6 +22,7 @@
 #include "arts/coherence/inv/types.h"
 
 #include "arts/utils/stdatomic_compat.h"
+#include <assert.h>
 #include <stdbool.h>
 #include <stddef.h>
 
@@ -317,22 +318,8 @@ void arts_send_db_inv_redirect(unsigned int holder_rank, arts_guid_t db_guid,
   p.rdzv.key = rdzv->key;
   p.rdzv.txid = rdzv->txid;
   p.rdzv.cookie = rdzv->cookie;
-  if (holder_rank == arts_global_rank_id) {
-    struct arts_ooo_args_db_inv_redirect_s args = {.requester = requester,
-                                                   .cover = cover,
-                                                   .db_guid = db_guid,
-                                                   .rdzv = *rdzv};
-    arts_shared_ptr_t h = arts_route_table_lookup_db(db_guid);
-    struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(h);
-    if (db != NULL) {
-      arts_handler_db_inv_redirect(db, &args);
-    } else {
-      /* Torn down after the home took the request in: dismiss it. */
-      arts_send_db_inv_cts(requester, NULL, db_guid, 0u, cover, rdzv->cookie);
-    }
-    arts_shared_release(&h);
-    return;
-  }
+  /* The home serves the reader itself when it holds the grant. */
+  assert(holder_rank != arts_global_rank_id);
   if (!arts_net_send_held((int)holder_rank, (char *)&p, sizeof(p),
                           ARTS_HELD_HOP, db_guid)) {
     arts_transport_send_async((int)holder_rank, (char *)&p, sizeof(p));
@@ -358,24 +345,9 @@ void arts_send_db_inv_request_for(arts_guid_t db_guid, unsigned int requester,
   p.rdzv.key = rdzv->key;
   p.rdzv.txid = rdzv->txid;
   p.rdzv.cookie = rdzv->cookie;
-  if (home_rank == arts_global_rank_id) {
-    struct arts_ooo_args_db_inv_request_s args = {.requester = requester,
-                                                  .db_guid = db_guid,
-                                                  .mode = DB_MODE_RO,
-                                                  .cover = cover,
-                                                  .bounce = true,
-                                                  .rdzv = *rdzv};
-    arts_shared_ptr_t h = arts_route_table_lookup_db(db_guid);
-    struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(h);
-    if (db != NULL) {
-      arts_handler_db_inv_request(db, &args);
-    } else {
-      /* Torn down after the home took the request in: dismiss it. */
-      arts_send_db_inv_cts(requester, NULL, db_guid, 0u, cover, rdzv->cookie);
-    }
-    arts_shared_release(&h);
-    return;
-  }
+  /* The holder a home redirects to is another rank (the home serves itself
+   * when it holds the grant), so a bounce always leaves this rank. */
+  assert(home_rank != arts_global_rank_id);
   if (!arts_net_send_held((int)home_rank, (char *)&p, sizeof(p),
                           ARTS_HELD_HOP, db_guid)) {
     arts_transport_send_async((int)home_rank, (char *)&p, sizeof(p));

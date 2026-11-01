@@ -91,8 +91,7 @@ static void home_response_commit(arts_shared_ptr_t db_h) {
   /* Tell the home we installed: it names this rank as the holder only now,
    * so a revocation never reaches a rank that has not installed, and the
    * round it advances may revoke this rank at once. */
-  arts_send_db_grant_confirm(arts_guid_get_rank(cache->db_guid),
-                             cache->db_guid);
+  arts_send_db_grant_confirm(db);
 #endif
 
   /* Close the commit.  Whether that means dropping a hold the commit kept for
@@ -140,13 +139,11 @@ void arts_handler_db_grant_response(void *payload, size_t size) {
   }
   arts_guid_t db_guid = hdr->db_guid;
 
-  /* Pin the db_s across the install + commit (and, on the rendezvous path,
-   * across the pairing wait): the embedded cache is its FIRST member (offset
-   * 0), so one cb ref keeps it alive against a concurrent DESTROY on another
-   * progress thread.  Released by the commit tail. */
+  /* The wire's one resolution of the block; the body runs on what it found,
+   * pinned across the install + commit (and, on the rendezvous path, across
+   * the pairing wait) and released by the commit tail. */
   arts_shared_ptr_t db_h = arts_route_table_lookup_db(db_guid);
-  struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(db_h);
-  if (db == NULL) {
+  if (db_h == NULL) {
     /* Only a program outside the destroy contract gets here: the cache this
      * rank installed when it requested was retired by a destroy while the
      * acquire was pending.  The grant then goes into a fresh cache of the
@@ -154,9 +151,7 @@ void arts_handler_db_grant_response(void *payload, size_t size) {
      * it is dropped only when that install loses to an object already
      * retired. */
     db_h = arts_db_cache_stub_install(db_guid, /*db_size=*/0);
-    db = (struct arts_db_s *)arts_shared_get(db_h);
-    if (db == NULL) {
-      arts_shared_release(&db_h);
+    if (db_h == NULL) {
       /* Consume any in-flight one-sided payload so the pairing table stays
        * leak-free; the landing ends when that payload arrives, or at once
        * when none was sent. */
@@ -165,6 +160,15 @@ void arts_handler_db_grant_response(void *payload, size_t size) {
       return; /* the install lost to an object already retired — drop. */
     }
   }
+  arts_db_grant_response_on(db_h, payload, size);
+}
+
+void arts_db_grant_response_on(arts_shared_ptr_t db_h, void *payload,
+                               size_t size) {
+  struct arts_msg_grant_response_packet_s *hdr =
+      (struct arts_msg_grant_response_packet_s *)payload;
+  arts_guid_t db_guid = hdr->db_guid;
+  struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(db_h);
   struct arts_db_cache_s *cache = &db->cache;
 
   /* A hinted first touch may reach its first grant with the size still
@@ -233,10 +237,11 @@ void arts_handler_db_grant_response(void *payload, size_t size) {
 /* ===== WT CONFIRM handler (home A) =============================== */
 
 #ifndef ARTS_RELEASE_PURGE
-/* Cat-C pure body (CONFIRM, home side).  The wire dispatcher / self-send
- * shortcut has already looked the home db_s up with a held ref and passes it as
- * item_v (cache is its FIRST member).  args_v is unused — the new owner is read
- * from db->pending_install_owner (stored by the baton holder).  WT does
+/* Cat-C pure body (CONFIRM, home side).  item_v is the home db_s (cache is
+ * its FIRST member), held by the wire dispatcher's lookup or, on a self-send,
+ * the caller's live descriptor (borrowed) or what a lookup finds when it is not
+ * live.  args_v is unused — the new owner is
+ * read from db->pending_install_owner (stored by the baton holder).  WT does
  * NOT send CONFIRM_ACK (the new owner already drained + ran at
  * GRANT_RESPONSE); it only flips rw_holder + advances the next round. */
 void arts_handler_db_grant_confirm(void *item_v, void *args_v) {
@@ -258,15 +263,17 @@ void arts_handler_db_grant_confirm(void *item_v, void *args_v) {
 
 /* ===== WT GRANT_INVALIDATE handler (pure body) =================== */
 
-/* Pure (cache, args) body.  The wire dispatcher / self-send shortcut has
- * already looked the cache up (the target is rw_holder, published only at the
- * post-install CONFIRM owner-swap, so the cache is provably installed when
- * INVALIDATE arrives) and passes the db_s as item_v — cache is its FIRST member
- * (offset 0).  No OoO defer is needed: rw_holder flips post-install in both
- * write policies, so no INVALIDATE can reach a rank ahead of the GRANT it
- * revokes.  GRANT(+sentinel) strictly precedes INVALIDATE(-1); the install
- * guard (+2) keeps writer_count non-negative even if the next round's
- * INVALIDATE lands mid-install on another progress thread. */
+/* Pure (cache, args) body.  item_v is the holder's db_s (cache is its FIRST
+ * member, offset 0), held by the wire dispatcher's lookup or, on a self-send,
+ * the home's live descriptor (borrowed) or what a lookup finds when it is not
+ * live; the target is rw_holder, published
+ * only at the post-install CONFIRM owner-swap, so the cache is provably
+ * installed when INVALIDATE arrives.  No OoO defer is needed: rw_holder
+ * flips post-install in both write policies, so no INVALIDATE can reach a
+ * rank ahead of the GRANT it revokes.  GRANT(+sentinel) strictly precedes
+ * INVALIDATE(-1); the install guard (+2) keeps writer_count non-negative even
+ * if the next round's INVALIDATE lands mid-install on another progress
+ * thread. */
 void arts_handler_db_grant_invalidate(void *item_v, void *args_v) {
   struct arts_db_cache_s *cache = &((struct arts_db_s *)item_v)->cache;
   struct arts_ooo_args_db_grant_invalidate_s *a =

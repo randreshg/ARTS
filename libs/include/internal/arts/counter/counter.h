@@ -126,7 +126,9 @@ extern "C" {
   /* Num: route table.  PROBE = one per key search (each retry pass counts)    \
    * and per fresh reservation (its claim and scan are not counted); PIN =     \
    * one per pin at a checked lookup that hits, a non-create OoO dispatch on   \
-   * an installed object, or a create that finds its slot occupied. */         \
+   * an installed object, a create that finds its slot occupied, a             \
+   * first-touch install that finds an occupant (it returns that occupant),    \
+   * or an acquire that resolves its block's slot to the installed object. */  \
   X(NUM_ROUTE_PROBE)                                                           \
   X(NUM_ROUTE_PIN)                                                             \
   /* Num: validation arm.  A reply with no payload is one the version ledger   \

@@ -27,7 +27,7 @@
  *      identity instead: the releaser's rendezvous address rides the packet
  *      and is echoed back — no per-cache seq state, no busy-wait.
  *
- *   4. Destroy lifecycle (arts_db_destroy_remote public entry).  Final teardown
+ *   4. Destroy lifecycle (the cache destructor).  Final teardown
  *      is driven by the cb (shared-ptr) deferred-free model: destroy fans out,
  *      then the slot's retire (through the descriptor's self_cb) drops the
  *      install ref, and once all refs drain arts_db_free runs the cache
@@ -301,25 +301,44 @@ void arts_db_resolve_slot_cached(struct arts_edt_s *edt, unsigned int slot) {
 
 /* ===== Stub first-touch =========================================== */
 
-/* Allocate a stub arts_db_s + cache_s for a DIST DB that this rank
- * has not yet touched, register it in the route_table, and return a
- * PINNED handle to the db_s whose cache it installed.  The stub has no
- * user data payload — install_buffer allocates on demand cache->user_data on
- * first wire arrival.
- *
- * Race-safe: the install rejects if another thread (e.g. a concurrent
- * wire-receive) raced us; in that case we free our stub and return a pinned
- * handle to the established db_s.  On a win the handle returned is the one
- * this call held across the install.
- *
- * Returns a pinned handle; the caller MUST arts_shared_release it once the
- * cache is no longer needed (on every control-flow path).  A NULL handle
- * means the DB was destroyed before the install could be observed (the
- * lost-race lookup found no live entry). */
-arts_shared_ptr_t arts_db_cache_stub_install(arts_guid_t db_guid,
-                                             uint64_t db_size) {
+/* A cache-only stub arts_db_s + cache_s for a DIST DB this rank has not yet
+ * touched, built privately, its self_cb armed: its control block, whose one
+ * ref is the caller's.  No home directory (this rank is not the GUID home):
+ * arts_db_cache_stub_size() spans cache + db_type, stopping before the home
+ * fields.  No user data payload either — install_buffer allocates
+ * cache->user_data on demand at the first wire arrival (db_size 0) or the
+ * first install. */
+static arts_shared_ptr_t db_cache_stub_make(arts_guid_t db_guid,
+                                            uint64_t db_size) {
   assert(arts_guid_get_rank(db_guid) != arts_global_rank_id &&
          "a first-touch cache is never made on the block's home rank");
+  uint64_t stub_sz = arts_db_cache_stub_size();
+  struct arts_db_s *stub =
+      (struct arts_db_s *)arts_malloc_aligned(stub_sz, ARTS_CACHE_LINE_SIZE);
+  memset(stub, 0, stub_sz);
+  stub->db_type = ARTS_DB;
+  arts_db_cache_init(&stub->cache, db_guid, /*db_size=*/db_size,
+                     ARTS_DB_INIT_STUB,
+                     /*creator_rank=*/0);
+  arts_shared_ptr_t cb = arts_route_table_make_handle(stub, db_guid);
+  stub->self_cb = cb;
+  return cb;
+}
+
+/* Free a stub whose control block no install took. */
+static void db_cache_stub_discard(arts_shared_ptr_t cb) {
+  struct arts_db_s *stub = (struct arts_db_s *)arts_shared_get(cb);
+  stub->self_cb = NULL;
+  arts_shared_abandon(&cb);
+  arts_db_free(stub);
+}
+
+/* Race-safe: the install rejects if another thread (e.g. a concurrent
+ * wire-receive) raced us; in that case we free our stub and return a pinned
+ * handle to the established db_s.  On a win the handle returned is the one
+ * this call held across the install. */
+arts_shared_ptr_t arts_db_cache_stub_install(arts_guid_t db_guid,
+                                             uint64_t db_size) {
   /* First check if it already exists (someone else stub-installed or
    * a wire-receive fired). */
   arts_shared_ptr_t existing = arts_route_table_lookup_db(db_guid);
@@ -328,26 +347,7 @@ arts_shared_ptr_t arts_db_cache_stub_install(arts_guid_t db_guid,
   }
   arts_shared_release(&existing);
 
-  /* Stub install (non-home consumer first acquire): cache-only stub — no home
-   * directory (this rank is not the GUID home).  arts_db_cache_stub_size()
-   * spans cache + db_type, stopping before the home fields. */
-  uint64_t stub_sz = arts_db_cache_stub_size();
-  struct arts_db_s *stub =
-      (struct arts_db_s *)arts_malloc_aligned(stub_sz, ARTS_CACHE_LINE_SIZE);
-  memset(stub, 0, stub_sz);
-  stub->db_type = ARTS_DB;
-
-  /* db_size==0 ⇒ stub install: buffer alloc deferred until first wire
-   * arrival (install_buffer with the actual db_size).  Cache-only: this path
-   * runs on a rank that is NOT the block's home (the caller gates it on the
-   * owner not being this rank), so there are no home fields to initialize and
-   * the stub's allocation deliberately stops before them. */
-  arts_db_cache_init(&stub->cache, db_guid, /*db_size=*/db_size,
-                     ARTS_DB_INIT_STUB,
-                     /*creator_rank=*/0);
-
-  arts_shared_ptr_t cb = arts_route_table_make_handle(stub, db_guid);
-  stub->self_cb = cb;
+  arts_shared_ptr_t cb = db_cache_stub_make(db_guid, db_size);
   arts_shared_ptr_t mine = arts_shared_copy(cb);
   if (arts_route_table_install_handle_if_absent(cb, db_guid)) {
     return mine;
@@ -356,10 +356,19 @@ arts_shared_ptr_t arts_db_cache_stub_install(arts_guid_t db_guid,
   /* Lost the race — another thread already installed.  Tear down our
    * stub and return a pinned handle to the established db_s. */
   arts_shared_release(&mine);
-  stub->self_cb = NULL;
-  arts_shared_abandon(&cb);
-  arts_db_free(stub);
+  db_cache_stub_discard(cb);
   return arts_route_table_lookup_db(db_guid);
+}
+
+arts_shared_ptr_t
+arts_db_cache_stub_install_into(struct arts_route_item_s *slot,
+                                arts_guid_t db_guid) {
+  arts_shared_ptr_t cb = db_cache_stub_make(db_guid, /*db_size=*/0);
+  arts_shared_ptr_t got = arts_route_table_install_or_get(slot, cb, db_guid);
+  if (got != cb) {
+    db_cache_stub_discard(cb);
+  }
+  return got;
 }
 
 #if ARTS_DB_CENSUS
@@ -803,8 +812,8 @@ pub_flight_drive(struct arts_db_cache_s *cache, bool may_block,
 #if !ARTS_PUB_CONTROL_ONLY
   uint64_t db_size =
       atomic_load_explicit(&cache->db_size, memory_order_relaxed);
-#endif
   unsigned int home_rank = arts_guid_get_rank(cache->db_guid);
+#endif
   /* A claiming releaser gates on ITS OWN flight, not merely on a covering
    * ACK: a claim won after the claimer's registered waiter was already
    * covered (the claim-after-covered race) would otherwise launch a flight
@@ -828,7 +837,7 @@ pub_flight_drive(struct arts_db_cache_s *cache, bool may_block,
       ARTS_ERROR("coherence: payload publish flight with no local buffer");
     }
     arts_db_buf_release(&buf_h);
-    arts_send_db_publish(home_rank, cache->db_guid, version, /*cv=*/0,
+    arts_send_db_publish(arts_db_of_cache(cache), version, /*cv=*/0,
                          /*data_size=*/0, /*rdzv_txid=*/0, /*rdzv_cookie=*/0,
                          /*return_grant=*/false);
     return gate;
@@ -849,7 +858,7 @@ pub_flight_drive(struct arts_db_cache_s *cache, bool may_block,
         atomic_load_explicit(&cache->home_pub_addr, memory_order_relaxed),
         atomic_load_explicit(&cache->home_pub_rkey, memory_order_relaxed), txid,
         buf->data, db_size, arts_db_buf_ref_release_cb, (void *)buf_h);
-    arts_send_db_publish(home_rank, cache->db_guid, version, /*cv=*/0, db_size,
+    arts_send_db_publish(arts_db_of_cache(cache), version, /*cv=*/0, db_size,
                          txid, /*rdzv_cookie=*/0,
                          pub_leg_takes_grant_return(cache));
     return gate;
@@ -884,7 +893,7 @@ pub_flight_drive(struct arts_db_cache_s *cache, bool may_block,
       (struct arts_db_pub_rendezvous_s *)arts_malloc(sizeof(*wr));
   sem_init(&wr->sem, 0, 0);
   wr->landing = (struct arts_rdzv_landing_s){0, 0, 0, 0};
-  arts_send_db_publish(home_rank, cache->db_guid, version,
+  arts_send_db_publish(arts_db_of_cache(cache), version,
                        (uint64_t)(uintptr_t)wr, db_size, /*rdzv_txid=*/0,
                        /*rdzv_cookie=*/0, /*return_grant=*/false);
   if (!arts_db_await_ack(&wr->sem)) {
@@ -901,7 +910,7 @@ pub_flight_drive(struct arts_db_cache_s *cache, bool may_block,
   arts_net_put_payload((int)home_rank, wr->landing.addr, wr->landing.key,
                        wr->landing.txid, buf->data, db_size,
                        arts_db_buf_ref_release_cb, (void *)buf_h);
-  arts_send_db_publish(home_rank, cache->db_guid, version, /*cv=*/0, db_size,
+  arts_send_db_publish(arts_db_of_cache(cache), version, /*cv=*/0, db_size,
                        wr->landing.txid, wr->landing.cookie,
                        pub_leg_takes_grant_return(cache));
   /* The commit carries cv 0 — the final ACK completes the FLIGHT, not this
@@ -1206,17 +1215,6 @@ void arts_db_cover_home_teardown(struct arts_db_s *db) {
 /* ================================================================== */
 /* ===== Destroy lifecycle ========================================== */
 /* ================================================================== */
-
-/* ===== arts_db_destroy_remote public API ============================= */
-
-/* Public destroy: send MSG_DB_DESTROY to the home (a home on this rank runs
- * it through the OoO engine inline, as the wire dispatcher does).  The caller
- * has released its own hold, and the program orders this destroy after the
- * release of every other hold on the block. */
-void arts_db_destroy_remote(arts_guid_t db_guid) {
-  unsigned int home_rank = arts_guid_get_rank(db_guid);
-  arts_send_db_destroy(home_rank, db_guid);
-}
 
 /* ===== cache_s destructor (chained from arts_db_free) =============
  *

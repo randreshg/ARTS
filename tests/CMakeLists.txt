@@ -2246,6 +2246,22 @@ set_tests_properties(db_destroy_untouched_rank_2n_9w_1p PROPERTIES
     PASS_REGULAR_EXPRESSION "PASS: db_destroy_untouched_rank"
     FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
 
+# db_destroy_gpu_kind_remote: a GPU-kind block is destroyed by a task on a rank
+# other than its home, and the home polls until the block is no longer
+# installed.  A GPU kind's destroy retires its descriptor whatever the cell, so
+# the reference tree runs it; both two-rank variants, since the poll makes the
+# verdict independent of the order the home dispatches the messages in.
+if(ARTS_TEST_REFERENCE_TREE)
+    add_arts_test(db_destroy_gpu_kind_remote)
+    register_multinode_test(db_destroy_gpu_kind_remote TIMEOUT 60
+                            VARIANTS 2n_9w_1p 2n_8w_2p)
+    foreach(_v 2n_9w_1p 2n_8w_2p)
+        set_tests_properties(db_destroy_gpu_kind_remote_${_v} PROPERTIES
+            PASS_REGULAR_EXPRESSION "PASS: db_destroy_gpu_kind_remote"
+            FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
+    endforeach()
+endif()
+
 # Covered requests: a request whose waiters something other than its own
 # answer served -- its rank's write turn, or a create's hold on the cache its
 # rank made by a first touch -- is still travelling when the program destroys

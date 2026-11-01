@@ -10,12 +10,13 @@
  * receiver-advertised rendezvous landings, never on the control plane.
  *
  * The receive-side bodies (arts_handler_db_*) and the home-side dedup /
- * transfer helpers live in coherence_handlers.c.
+ * transfer helpers live in handlers.c and the arms' TUs.
  *
  * Single-node note: arts_transport_send_async drops messages whose
- * destination is the local rank (self_send_check rejects).  The coherence protocol
- * uses uniform "send to home" semantics including home == self, so we dispatch
- * handlers directly when rank == self instead of going over the network.
+ * destination is the local rank (net_target_ok warns and drops them).  The
+ * coherence protocol uses uniform "send to home" semantics including home ==
+ * self, so we dispatch handlers directly when rank == self instead of going
+ * over the network.
  */
 
 #include "arts/coherence/handlers.h"
@@ -23,15 +24,16 @@
 #include "arts/coherence/buffer.h" /* landing alloc / ref-release cb */
 #include "arts/coherence/census.h"
 
+#include <assert.h>
 #include <semaphore.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
 
 #include "arts/coherence/coherence.h" /* the handler arg structs */
-#include "arts/db.h" /* struct arts_db_s (Cat-C self-send lookup-acquire) */
-#include "arts/gas/route_table.h" /* arts_route_table_lookup_db (Cat-C self-send) */
-#include "arts/ooo.h" /* arts_ooo_dispatch_or_defer_guid (self-send replay) */
+#include "arts/db.h" /* struct arts_db_s (the self-send's descriptor) */
+#include "arts/gas/route_table.h" /* arts_route_table_borrow_or_lookup */
+#include "arts/ooo.h" /* arts_ooo_dispatch_on (self-send on the descriptor) */
 #include "arts/system/print.h"
 #include "arts/system/threads.h"
 #include "arts/transport/net.h" /* outbound send helpers */
@@ -46,10 +48,11 @@
  * coherence/grant.c, shared by WT and WB. */
 
 #if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
-void arts_send_db_publish(unsigned int home_rank, arts_guid_t db_guid,
-                          uint64_t version, uint64_t cv, uint64_t data_size,
-                          uint64_t rdzv_txid, uint64_t rdzv_cookie,
-                          bool return_grant) {
+void arts_send_db_publish(struct arts_db_s *db, uint64_t version, uint64_t cv,
+                          uint64_t data_size, uint64_t rdzv_txid,
+                          uint64_t rdzv_cookie, bool return_grant) {
+  arts_guid_t db_guid = db->cache.db_guid;
+  unsigned int home_rank = arts_guid_get_rank(db_guid);
   struct arts_msg_publish_packet_s p;
   arts_fill_packet_header(&p.header, sizeof(p), MSG_DB_PUBLISH);
   p.header.rank = arts_global_rank_id;
@@ -63,12 +66,10 @@ void arts_send_db_publish(unsigned int home_rank, arts_guid_t db_guid,
 /* The OoO kind exists only in arms that publish at a release; VAL under WB
  * publishes nothing, so its local-hit branch is compiled out with it. */
 #if !defined(ARTS_WRITE_POLICY_WB) || defined(ARTS_PROTOCOL_INV)
-  /* Local hit: the home is this rank, so there is nothing to put on the wire.
-   * Route through the OoO engine exactly as the wire RX dispatcher does — a
-   * HIT runs the publish body inline, a MISS defers the args (trailing payload
-   * preserved) and replays once the home db_s installs and drains.  Skipping
-   * the engine here would lose the before-create reorder handling that the
-   * remote path gets for free. */
+  /* Local hit: the home is this rank, whose one descriptor of the block is
+   * the releaser's own, so the publish body runs on it.  A descriptor not yet
+   * installed (or retired) takes the engine by GUID as the wire's publish
+   * does, deferred until the home installs and drains. */
   if (home_rank == arts_global_rank_id) {
     /* A home-resident releaser's buffer is the canonical copy, so its flight
      * moves no bytes: the args carry the ordering round alone. */
@@ -82,8 +83,8 @@ void arts_send_db_publish(unsigned int home_rank, arts_guid_t db_guid,
         .rdzv_cookie = 0,
         .returns_grant = return_grant ? 1u : 0u,
     };
-    arts_ooo_dispatch_or_defer_guid(db_guid, OOO_DB_PUBLISH, &args,
-                                    sizeof(args));
+    arts_ooo_dispatch_on(db->self_cb, OOO_DB_PUBLISH, db_guid, &args,
+                         sizeof(args));
     return;
   }
 #endif
@@ -127,9 +128,9 @@ void arts_send_db_publish_cts(unsigned int releaser_rank, arts_guid_t db_guid,
  * PUBLISH_ACK and its dispatcher refuses the wire message. */
 #if (defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)) &&             \
     (!defined(ARTS_WRITE_POLICY_WB) || defined(ARTS_PROTOCOL_INV))
-void arts_send_db_publish_ack(unsigned int releaser_rank, arts_guid_t db_guid,
-                                uint64_t cv, uint64_t version,
-                                struct arts_db_cache_s *home_cache) {
+void arts_send_db_publish_ack(unsigned int releaser_rank, struct arts_db_s *db,
+                              uint64_t cv, uint64_t version, bool credit) {
+  arts_guid_t db_guid = db->cache.db_guid;
   struct arts_msg_publish_ack_packet_s p;
   arts_fill_packet_header(&p.header, sizeof(p), MSG_DB_PUBLISH_ACK);
   p.header.rank = arts_global_rank_id;
@@ -151,13 +152,11 @@ void arts_send_db_publish_ack(unsigned int releaser_rank, arts_guid_t db_guid,
    * once the block is gone: its stable buffer goes back to the pool when the
    * last reference drops, and the releaser's next flight would land in it. */
   uint64_t home_size =
-      home_cache != NULL
-          ? atomic_load_explicit(&home_cache->db_size, memory_order_relaxed)
-          : 0u;
+      credit ? atomic_load_explicit(&db->cache.db_size, memory_order_relaxed)
+             : 0u;
   if (home_size > 0 && releaser_rank != arts_global_rank_id &&
-      arts_global_rank_count > 1 &&
-      !arts_db_cover_marked(arts_db_of_cache(home_cache))) {
-    arts_shared_ptr_t mh = arts_db_buf_acquire(home_cache);
+      arts_global_rank_count > 1 && !arts_db_cover_marked(db)) {
+    arts_shared_ptr_t mh = arts_db_buf_acquire(&db->cache);
     struct arts_db_buffer_s *master =
         (struct arts_db_buffer_s *)arts_shared_get(mh);
     uint64_t addr = 0, rkey = 0;
@@ -170,18 +169,20 @@ void arts_send_db_publish_ack(unsigned int releaser_rank, arts_guid_t db_guid,
     arts_db_buf_release(&mh);
   }
   if (releaser_rank == arts_global_rank_id) {
-    /* Self-send: mirror the wire RX dispatcher's Cat-C lookup-acquire.  Call
-     * the body unconditionally (db may be NULL — a missing cache must still
+    /* Self-send: the releaser's descriptor is the home's, which the caller
+     * holds.  The body runs on it while it is live and on whatever a lookup
+     * finds otherwise, as on the wire, unconditionally (a miss must still
      * post a nonzero cv, else the blocked releaser hangs). */
     struct arts_db_publish_ack_args_s args = {.cv = cv,
                                               .version = version,
                                               .credit_addr = p.credit_addr,
                                               .credit_rkey = p.credit_rkey,
                                               .credit_txid = p.credit_txid};
-    arts_shared_ptr_t h = arts_route_table_lookup_db(db_guid);
-    struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(h);
-    arts_handler_db_publish_ack(db, &args);
-    arts_shared_release(&h);
+    arts_shared_ptr_t looked = NULL;
+    arts_handler_db_publish_ack(
+        arts_route_table_borrow_or_lookup(db->self_cb, db_guid, &looked),
+        &args);
+    arts_shared_release(&looked);
     return;
   }
   arts_transport_send_async((int)releaser_rank, (char *)&p, sizeof(p));
@@ -259,19 +260,17 @@ void arts_send_db_snapshot_request(struct arts_db_cache_s *cache,
   p.rdzv.txid = rdzv.txid;
   p.rdzv.cookie = rdzv.cookie;
   if (home_rank == arts_global_rank_id) {
-    /* Self-send: route through the OoO engine exactly as the wire RX
-     * dispatcher does — HIT serves the snapshot inline, MISS defers the args
-     * and replays once the home db_s is installed + drained.  (The handler is
-     * a pure (item, args) body that does no lookup-or-defer of its own, so
-     * the inline shortcut must enter through dispatch_or_defer.) */
+    /* Self-send: the requester's cache is the home's descriptor, on which the
+     * request body runs; one not yet installed takes the engine by GUID,
+     * deferred until the home installs and drains. */
     struct arts_ooo_args_db_snapshot_request_s args = {
         .requester = p.header.rank,
         .db_guid = db_guid,
         .cover = cover,
         .rdzv = rdzv,
     };
-    arts_ooo_dispatch_or_defer_guid(db_guid, OOO_DB_SNAPSHOT_REQUEST, &args,
-                                    sizeof(args));
+    arts_ooo_dispatch_on(arts_db_of_cache(cache)->self_cb,
+                         OOO_DB_SNAPSHOT_REQUEST, db_guid, &args, sizeof(args));
     return;
   }
   if (!arts_net_send_held((int)home_rank, (char *)&p, sizeof(p),
@@ -368,10 +367,9 @@ void arts_send_db_create_coherent(unsigned int home_rank, arts_guid_t db_guid,
   p.db_type = db_type;
   p.owed = owed;
   memset(p.pad, 0, sizeof(p.pad));
-  if (home_rank == arts_global_rank_id) {
-    arts_db_create_announce_enter(&p);
-    return;
-  }
+  /* A create on the block's home rank installs its descriptor there itself;
+   * only a creator on another rank announces. */
+  assert(home_rank != arts_global_rank_id);
   arts_transport_send_async((int)home_rank, (char *)&p, sizeof(p));
 }
 
@@ -392,51 +390,37 @@ void arts_db_create_announce_enter(
   arts_ooo_dispatch_or_defer_guid(p->db_guid, OOO_DB_CREATE, &a, sizeof(a));
 }
 
-void arts_send_db_destroy(unsigned int home_rank, arts_guid_t db_guid) {
+void arts_send_db_destroy(arts_guid_t db_guid, arts_shared_ptr_t held) {
+  unsigned int home_rank = arts_guid_get_rank(db_guid);
+  if (home_rank == arts_global_rank_id) {
+    /* The home is this rank: the destroy body runs on the descriptor `held`
+     * names while it is live, and takes the engine by GUID otherwise (no
+     * handle, or a descriptor not yet installed or retired), deferred until
+     * the home installs and drains. */
+    struct arts_ooo_args_db_destroy_s args = {
+        .requester = arts_global_rank_id,
+        .db_guid = db_guid,
+    };
+    arts_ooo_dispatch_on(held, OOO_DB_DESTROY, db_guid, &args, sizeof(args));
+    return;
+  }
   struct arts_msg_destroy_packet_s p;
   arts_fill_packet_header(&p.header, sizeof(p), MSG_DB_DESTROY);
   p.header.rank = arts_global_rank_id;
   p.db_guid = db_guid;
-  if (home_rank == arts_global_rank_id) {
-    /* Self-send: route through the OoO engine exactly as the wire RX
-     * dispatcher does — HIT runs the destroy body inline, MISS defers the args
-     * and replays once the home db_s is installed + drained.  (The handler is
-     * a pure (item, args) body that does no lookup-or-defer of its own, so
-     * the inline shortcut must enter through dispatch_or_defer.) */
-    struct arts_ooo_args_db_destroy_s args = {
-        .requester = p.header.rank,
-        .db_guid = db_guid,
-    };
-    arts_ooo_dispatch_or_defer_guid(db_guid, OOO_DB_DESTROY, &args,
-                                    sizeof(args));
-    return;
-  }
   arts_transport_send_async((int)home_rank, (char *)&p, sizeof(p));
 }
 
 void arts_send_db_cache_destroy(unsigned int sharer_rank, arts_guid_t db_guid) {
+  /* Every roster fan-out skips the home's own rank: the home retires its
+   * descriptor itself. */
+  assert(sharer_rank != arts_global_rank_id);
   struct arts_msg_cache_destroy_packet_s p;
   arts_fill_packet_header(&p.header, sizeof(p), MSG_DB_CACHE_DESTROY);
   p.header.rank = arts_global_rank_id;
   p.db_guid = db_guid;
-  if (sharer_rank == arts_global_rank_id) {
-    /* Self-send: mirror the wire RX dispatcher's Cat-C lookup-acquire-or-drop.
-     * HIT retires this rank's cache (parked acquirers are freed with it, never
-     * resumed); MISS (already torn down on this rank) silently drops. */
-    struct arts_db_cache_destroy_args_s args = {.db_guid = db_guid};
-    arts_shared_ptr_t h = arts_route_table_lookup_db(db_guid);
-    struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(h);
-    if (db != NULL) {
-      arts_handler_db_cache_destroy(db, &args);
-    }
-    arts_shared_release(&h);
-    return;
-  }
   arts_transport_send_async((int)sharer_rank, (char *)&p, sizeof(p));
 }
-
-#ifdef ARTS_PROTOCOL_EXCL
-#endif /* ARTS_PROTOCOL_EXCL */
 
 /* The WB-only senders (CONFIRM_ACK, SNAPSHOT_REDIRECT) live in
  * coherence/grant_wb.c and coherence/val/wb.c alongside their handlers;
