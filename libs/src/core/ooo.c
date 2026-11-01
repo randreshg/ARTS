@@ -40,6 +40,7 @@
 #include "arts/ooo.h"
 
 #include "arts/utils/stdatomic_compat.h"
+#include <assert.h>
 #include <stdlib.h>
 #include <string.h> /* memcpy (OoO payload alloc) */
 
@@ -48,6 +49,7 @@
 #include "arts/coherence/handlers.h" /* coherence wire handlers + replay */
 #include "arts/db.h"                 /* arts_db_acquire_replay_dep */
 #include "arts/edt.h"   /* arts_handler_edt_satisfy_slot[_ptr], arts_get_depv */
+#include "arts/edt_context.h" /* arts_current_edt (the force-defer check) */
 #include "arts/event.h" /* arts_handler_event_satisfy_slot / add_dependence */
 #include "arts/gas/route_table.h"
 #include "arts/system/print.h" /* ARTS_WARN / ARTS_INFO */
@@ -66,16 +68,18 @@
  * trailing args blob).
  *
  * Two polarities, one engine:
- *   - Create body (OOO_*_CREATE) runs while the slot is empty: it installs
- *     the object, which drains the slot.  While the slot is occupied the
- *     create parks; the occupant's destroy re-drives it and it installs as
- *     the GUID's next generation.  Several parked creates of one GUID are the
- *     undefined concurrent-create shape: each destroy admits one of them and
- *     the rest re-park, in no promised order.
+ *   - Create body (OOO_*_CREATE) runs while the slot is empty, handed that
+ *     slot: it installs the object into it, which drains the slot on the
+ *     installer's handle.  While the slot is occupied the create parks; the
+ *     occupant's destroy re-drives it and it installs as the GUID's next
+ *     generation.  Several parked creates of one GUID are the undefined
+ *     concurrent-create shape: each destroy admits one of them and the rest
+ *     re-park, in no promised order.
  *   - Non-create handler (Cat B/C) receives an already-acquired, valid item
- *     from dispatch_or_defer and operates on it — no lookup/acquire/push in
- *     the handler body.  The g_ooo_table[kind] entries are these handler
- *     bodies, defined in each subsystem TU.
+ *     from dispatch_or_defer (or from drain_on, or from a holder through
+ *     dispatch_on) and operates on it — no lookup/acquire/push in the
+ *     handler body.  The g_ooo_table[kind] entries are these handler bodies,
+ *     defined in each subsystem TU.
  *
  * Concurrency of the non-create polarity (lock-free, per-call acquire):
  *   - A producer's dispatch_or_defer reloads slot.value every call.  HIT
@@ -103,7 +107,8 @@
  * (drain runs post-install) and takes its inline hit path.  Neither re-enters
  * dispatch_or_defer for the drained GUID — so a replay is one level deep,
  * never recursive.  `item` (the acquired object) is passed through for the
- * pure bodies; the create replays and arts_db_acquire_replay_dep ignore it. */
+ * pure bodies, and the slot for the create bodies;
+ * arts_db_acquire_replay_dep ignores it. */
 
 /* EDT satisfy + destroy handlers live in edt.c
  * (arts_handler_edt_satisfy_slot[_ptr], arts_handler_edt_destroy) — pure cores
@@ -138,8 +143,8 @@
 /* Event/EDT destroy replay bodies are the wire handlers themselves
  * (arts_handler_event_destroy / arts_handler_edt_destroy) — pure (item, args)
  * Cat-B bodies defined in event.c / edt.c.  The item is installed (drain runs
- * post-install) and ref-pinned by dispatch_or_defer; the body performs the
- * destroy action (route_table_set_destroyed) directly on it. */
+ * post-install) and held by its caller; the body retires it through its
+ * self_cb (arts_ooo_retire). */
 
 /* Mirrors the per-model ooo_kind enum: the model-agnostic slots are always
  * present, and each build's OOO_DB_* arm initializes only that model's kinds
@@ -206,20 +211,8 @@ arts_ooo_payload_alloc(ooo_kind_t kind, arts_guid_t guid, const void *args,
 
 /* ===== dispatch_or_defer ================================================== */
 
-/* The handle pinned for the non-create handler running on this thread. */
-static ARTS_THREAD_LOCAL arts_shared_ptr_t ooo_dispatched;
-
-arts_shared_ptr_t arts_ooo_dispatched_handle(const void *item) {
-  arts_shared_ptr_t h = ooo_dispatched;
-  return (h != NULL && arts_shared_get(h) == item) ? h : NULL;
-}
-
-bool arts_ooo_retire_item(arts_guid_t key, const void *item) {
-  arts_shared_ptr_t h = arts_ooo_dispatched_handle(item);
-  if (h == NULL) {
-    return arts_route_table_set_destroyed_object(key, item);
-  }
-  return arts_route_table_set_destroyed_item(key, h);
+bool arts_ooo_retire(arts_guid_t key, arts_shared_ptr_t cb) {
+  return arts_route_table_set_destroyed_item(key, cb);
 }
 
 /* Runs between a park's push and its rescue re-read: a scheduling-fuzz point
@@ -233,11 +226,14 @@ static bool ooo_kind_is_create(ooo_kind_t k) {
   return k == OOO_EDT_CREATE || k == OOO_EVENT_CREATE || k == OOO_DB_CREATE;
 }
 
-/* The create polarity: run the body while the slot is empty, park while it is
- * occupied.  A parked create is dispatched by the drain that follows the
- * occupant's destroy (the teardown's re-drive), finds the slot empty, and
- * installs.  A create whose body loses the install CAS re-enters here and
- * parks behind the object that won it. */
+/* The create polarity: run the body while the slot is empty, handing it the
+ * slot, and park while it is occupied.  A parked create is dispatched by the
+ * drain that follows the occupant's destroy (the teardown's re-drive), finds
+ * the slot empty, and installs.  The body's install decides emptiness and the
+ * key again in one atom, so it loses when another install filled the slot or
+ * when a retire took the slot between the key check and the value load below;
+ * the body then re-enters here by GUID, and parks behind the winner or runs
+ * again on the slot its GUID names now. */
 static void ooo_dispatch_create(struct arts_route_item_s *slot,
                                 struct arts_ooo_payload_s *payload,
                                 ooo_kind_t kind, arts_guid_t guid,
@@ -251,7 +247,7 @@ static void ooo_dispatch_create(struct arts_route_item_s *slot,
     }
     arts_shared_ptr_t h = arts_shared_slot_load(&slot->value);
     if (h == NULL) {
-      g_ooo_table[kind](NULL, (void *)args);
+      g_ooo_table[kind](slot, (void *)args);
       if (payload != NULL) {
         arts_free(payload); /* drain context: the popped node is consumed */
       }
@@ -343,13 +339,8 @@ void arts_ooo_dispatch_or_defer(struct arts_route_item_s *slot,
     void *item = arts_shared_get(h);
     /* Ref pinned across the whole handler call — a concurrent destroy's
      * exchange-to-NULL drops only the install ref; `h` keeps the object alive
-     * until we release below.  The handle is published to the handler's
-     * thread (nested dispatches stack), so a body can retire the object it was
-     * dispatched on by identity. */
-    arts_shared_ptr_t outer = ooo_dispatched;
-    ooo_dispatched = h;
+     * until we release below. */
     g_ooo_table[kind](item, (void *)args);
-    ooo_dispatched = outer;
     arts_shared_release(&h);
     if (payload != NULL) {
       arts_free(payload); /* drain context: the popped node is consumed */
@@ -403,6 +394,41 @@ void arts_ooo_dispatch_or_defer_guid(arts_guid_t guid, ooo_kind_t kind,
   arts_ooo_dispatch_or_defer(slot, NULL, kind, guid, args, args_size);
 }
 
+/* A non-create operation on a held handle.  Live, the body runs inline under
+ * the caller's reference: the object's install happened before (the acquire
+ * load of the home) and no retire had cleared its tag when it was read, so it
+ * is the object a resolution would return, or one a retire is taking at that
+ * instant, which every body copes with.  Not live, it takes the engine by
+ * GUID: through `slot` with `payload` (a drain's node, re-parked or consumed
+ * there) when given, else by a resolution of the GUID. */
+static void ooo_run_on(arts_shared_ptr_t h, struct arts_route_item_s *slot,
+                       struct arts_ooo_payload_s *payload, ooo_kind_t kind,
+                       arts_guid_t guid, const void *args, uint32_t args_size) {
+  assert(!ooo_kind_is_create(kind));
+  if (arts_route_table_live(h, guid)) {
+    g_ooo_table[kind](arts_shared_get(h), (void *)args);
+    if (payload != NULL) {
+      arts_free(payload); /* drain context: the popped node is consumed */
+    }
+    return;
+  }
+  if (slot == NULL) {
+    arts_route_table_reserve_or_lookup(guid, &slot);
+  }
+  arts_ooo_dispatch_or_defer(slot, payload, kind, guid, args, args_size);
+}
+
+void arts_ooo_dispatch_on(arts_shared_ptr_t h, ooo_kind_t kind,
+                          arts_guid_t guid, const void *args,
+                          uint32_t args_size) {
+  /* The satisfies the API entries hold back on the wrapper's slot while the
+   * running EDT's device invalidations drain are the caller's to hold back
+   * the same way before calling here. */
+  assert(arts_current_edt == NULL || arts_current_edt->invalidate_count == 0 ||
+         (kind != OOO_EDT_SATISFY_SLOT && kind != OOO_EVENT_SATISFY_SLOT));
+  ooo_run_on(h, NULL, NULL, kind, guid, args, args_size);
+}
+
 void arts_ooo_push_guid(arts_guid_t guid, ooo_kind_t kind, const void *args,
                         uint32_t args_size) {
   arts_route_item_t *slot;
@@ -430,6 +456,29 @@ void arts_ooo_drain(struct arts_route_item_s *slot) {
     arts_ooo_dispatch_or_defer(slot, payload, payload->kind, payload->guid,
                                arts_ooo_payload_args(payload),
                                payload->args_size);
+    head = next;
+  }
+}
+
+void arts_ooo_drain_on(struct arts_route_item_s *slot,
+                       arts_shared_ptr_t installed) {
+  /* One snapshot, walked once, its exchange unconditional, as in
+   * arts_ooo_drain.  The installer holds `installed` across this call, so a
+   * replay that retires the object leaves its memory valid for the rest of
+   * the walk, whose later nodes find it no longer live. */
+  arts_lf_link_t *head = arts_lf_stack_reverse_drain(&slot->ooo_list);
+  while (head != NULL) {
+    arts_lf_link_t *next =
+        atomic_load_explicit(&head->next, memory_order_relaxed);
+    struct arts_ooo_payload_s *payload = (struct arts_ooo_payload_s *)head;
+    if (ooo_kind_is_create(payload->kind)) {
+      arts_ooo_dispatch_or_defer(slot, payload, payload->kind, payload->guid,
+                                 arts_ooo_payload_args(payload),
+                                 payload->args_size);
+    } else {
+      ooo_run_on(installed, slot, payload, payload->kind, payload->guid,
+                 arts_ooo_payload_args(payload), payload->args_size);
+    }
     head = next;
   }
 }
@@ -470,18 +519,19 @@ void arts_ooo_free_all(struct arts_route_item_s *slot) {
         atomic_load_explicit(&head->next, memory_order_relaxed);
     struct arts_ooo_payload_s *payload = (struct arts_ooo_payload_s *)head;
     /* A parked create in the adopt shape owns the object it never
-     * installed. */
+     * installed: an EDT as the object, a data block or an event through the
+     * reference its control block holds for the install. */
     if (ooo_kind_is_create(payload->kind) &&
         payload->args_size == sizeof(struct arts_ooo_args_create_local_s)) {
       const struct arts_ooo_args_create_local_s *a =
           (const struct arts_ooo_args_create_local_s *)arts_ooo_payload_args(
               payload);
       if (a->size == ARTS_OOO_CREATE_ADOPT) {
-        if (payload->kind == OOO_DB_CREATE) {
+        if (payload->kind == OOO_EDT_CREATE) {
+          arts_route_table_delete_unpublished(a->guid, a->descriptor);
+        } else {
           arts_shared_ptr_t cb = (arts_shared_ptr_t)a->descriptor;
           arts_shared_release(&cb);
-        } else {
-          arts_route_table_delete_unpublished(a->guid, a->descriptor);
         }
       }
     }

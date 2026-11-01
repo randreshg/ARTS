@@ -29,9 +29,9 @@
  *
  *   4. Destroy lifecycle (arts_db_destroy_remote public entry).  Final teardown
  *      is driven by the cb (shared-ptr) deferred-free model: destroy fans out,
- *      then the slot's retire (by the dispatched item) drops the install ref,
- *      and once all refs drain arts_db_free runs the cache destructor and
- *      releases the descriptor's storage.
+ *      then the slot's retire (through the descriptor's self_cb) drops the
+ *      install ref, and once all refs drain arts_db_free runs the cache
+ *      destructor and releases the descriptor's storage.
  */
 
 #include <errno.h>
@@ -307,9 +307,10 @@ void arts_db_resolve_slot_cached(struct arts_edt_s *edt, unsigned int slot) {
  * user data payload — install_buffer allocates on demand cache->user_data on
  * first wire arrival.
  *
- * Race-safe: route_table_install_if_absent rejects if another thread
- * (e.g. a concurrent wire-receive) raced us; in that case we free our
- * stub and return a pinned handle to the established db_s.
+ * Race-safe: the install rejects if another thread (e.g. a concurrent
+ * wire-receive) raced us; in that case we free our stub and return a pinned
+ * handle to the established db_s.  On a win the handle returned is the one
+ * this call held across the install.
  *
  * Returns a pinned handle; the caller MUST arts_shared_release it once the
  * cache is no longer needed (on every control-flow path).  A NULL handle
@@ -345,17 +346,18 @@ arts_shared_ptr_t arts_db_cache_stub_install(arts_guid_t db_guid,
                      ARTS_DB_INIT_STUB,
                      /*creator_rank=*/0);
 
-  arts_shared_ptr_t installed_h =
-      arts_route_table_install_if_absent(stub, db_guid);
-  bool installed = installed_h != NULL;
-  arts_shared_release(&installed_h);
-  if (installed) {
-    /* Pin the just-installed db_s (one cb ref) for the caller. */
-    return arts_route_table_lookup_db(db_guid);
+  arts_shared_ptr_t cb = arts_route_table_make_handle(stub, db_guid);
+  stub->self_cb = cb;
+  arts_shared_ptr_t mine = arts_shared_copy(cb);
+  if (arts_route_table_install_handle_if_absent(cb, db_guid)) {
+    return mine;
   }
 
   /* Lost the race — another thread already installed.  Tear down our
    * stub and return a pinned handle to the established db_s. */
+  arts_shared_release(&mine);
+  stub->self_cb = NULL;
+  arts_shared_abandon(&cb);
   arts_db_free(stub);
   return arts_route_table_lookup_db(db_guid);
 }

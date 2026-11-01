@@ -53,7 +53,11 @@ void arts_sched_fuzz_point(void) {}
 #endif
 
 struct arts_route_item_s;
-void arts_ooo_drain(struct arts_route_item_s *s) { (void)s; }
+struct arts_shared_s;
+void arts_ooo_drain_on(struct arts_route_item_s *s, struct arts_shared_s *h) {
+  (void)s;
+  (void)h;
+}
 void arts_ooo_redrive_all(struct arts_route_item_s *s) { (void)s; }
 void arts_ooo_free_all(struct arts_route_item_s *s) { (void)s; }
 
@@ -66,6 +70,21 @@ static void test_after_claim(arts_guid_t key);
 #include "../../libs/src/core/utils/shared.c"
 
 #include "counter_stubs.h"
+
+/* Installs `obj` under `key` as the runtime's creates do: wrapped in its
+ * control block, with a reference of the caller's own held across the
+ * install.  A win returns that reference; a loss abandons the control block
+ * (the object stays the caller's) and returns NULL. */
+static arts_shared_ptr_t install_obj(void *obj, arts_guid_t key) {
+  arts_shared_ptr_t cb = arts_route_table_make_handle(obj, key);
+  arts_shared_ptr_t mine = arts_shared_copy(cb);
+  if (arts_route_table_install_handle_if_absent(cb, key)) {
+    return mine;
+  }
+  arts_shared_release(&mine);
+  arts_shared_abandon(&cb);
+  return NULL;
+}
 
 struct arts_runtime_shared_s arts_node_info;
 ARTS_THREAD_LOCAL struct arts_runtime_private_s arts_thread_info;
@@ -110,7 +129,7 @@ static void test_after_miss(arts_guid_t key) {
   }
   g_miss_armed = 0;
   /* A: passes E (K's), claims L, installs the object there. */
-  g_cb = arts_route_table_install_if_absent(&g_obj, key);
+  g_cb = install_obj(&g_obj, key);
   /* K dies: E is returned. */
   atomic_store_explicit(&g_first_probe->key, (arts_guid_t)0,
                         memory_order_release);
@@ -135,7 +154,7 @@ static void test_after_claim(arts_guid_t key) {
   g_claim_ran = what;
   if (what == 1) {
     /* The next generation's create, issued once A's object is installed. */
-    g_early_cb = arts_route_table_install_if_absent(&g_next_obj, key);
+    g_early_cb = install_obj(&g_next_obj, key);
     return;
   }
   /* A retire holds the slot; it settles 100 ms into the reserver's scan. */
@@ -234,7 +253,7 @@ int main(void) {
     FAIL("2: the live generation's destroy did not land\n");
   }
   arts_shared_release(&g_cb);
-  g_early_cb = arts_route_table_install_if_absent(&g_next_obj, g_key);
+  g_early_cb = install_obj(&g_next_obj, g_key);
   if (g_early_cb == NULL || !lookup_is(&g_next_obj)) {
     FAIL("2: the next generation did not install after the destroy\n");
   }
@@ -247,7 +266,7 @@ int main(void) {
   for (int what = 2; what <= 3; what++) {
     rt = fresh_key();
     /* G is published on L with an object; a retire holds L. */
-    g_cb = arts_route_table_install_if_absent(&g_obj, g_key);
+    g_cb = install_obj(&g_obj, g_key);
     g_retiring_slot = g_first_probe + 1;
     if (g_cb == NULL || slots_keyed(rt) != 1u ||
         atomic_load_explicit(&g_retiring_slot->key, memory_order_acquire) !=

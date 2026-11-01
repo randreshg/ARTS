@@ -72,6 +72,16 @@ struct arts_db_cache_s {
 struct arts_db_s {
   struct arts_db_cache_s cache; /**< FIRST — the cache aliases the descriptor */
   arts_db_types_t db_type;
+  /* Non-owning alias to the control block this descriptor is installed
+   * with, armed right after the cb is made and before the install publishes
+   * the descriptor; cleared on a lost install that abandons that cb.  Inside
+   * the cache-only stub's span: every descriptor has one.  Ordered by the
+   * install that publishes the descriptor.  It holds no count: the deleter
+   * runs before the cb is freed, so it is valid while any count on the
+   * descriptor is held, and a frame holding one upgrades with
+   * arts_shared_copy or, once the descriptor is installed, retires the block
+   * through it (arts_ooo_retire). */
+  arts_shared_ptr_t self_cb;
   bool home_initialized;
   /* Ranks that hold a stub for this block (fetched it, or were told the
    * line's address at create): the destroy fan-out roster and nothing else.

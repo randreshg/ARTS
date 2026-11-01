@@ -63,7 +63,11 @@ void arts_sched_fuzz_point(void) {}
 #endif
 
 struct arts_route_item_s;
-void arts_ooo_drain(struct arts_route_item_s *s) { (void)s; }
+struct arts_shared_s;
+void arts_ooo_drain_on(struct arts_route_item_s *s, struct arts_shared_s *h) {
+  (void)s;
+  (void)h;
+}
 void arts_ooo_redrive_all(struct arts_route_item_s *s) { (void)s; }
 void arts_ooo_free_all(struct arts_route_item_s *s) { (void)s; }
 
@@ -95,6 +99,21 @@ static void hook_hold(gate_t **slot) {
 #include "../../libs/src/core/utils/shared.c"
 
 #include "counter_stubs.h"
+
+/* Installs `obj` under `key` as the runtime's creates do: wrapped in its
+ * control block, with a reference of the caller's own held across the
+ * install.  A win returns that reference; a loss abandons the control block
+ * (the object stays the caller's) and returns NULL. */
+static arts_shared_ptr_t install_obj(void *obj, arts_guid_t key) {
+  arts_shared_ptr_t cb = arts_route_table_make_handle(obj, key);
+  arts_shared_ptr_t mine = arts_shared_copy(cb);
+  if (arts_route_table_install_handle_if_absent(cb, key)) {
+    return mine;
+  }
+  arts_shared_release(&mine);
+  arts_shared_abandon(&cb);
+  return NULL;
+}
 
 struct arts_runtime_shared_s arts_node_info;
 ARTS_THREAD_LOCAL struct arts_runtime_private_s arts_thread_info;
@@ -228,7 +247,7 @@ static void case_a(void) {
   /* s2: an installed key whose retire is held inside its window. */
   put(s0, k[3]);
   put(s0 + 1, k[4]);
-  arts_shared_ptr_t cb = arts_route_table_install_if_absent(&g_obj, kret);
+  arts_shared_ptr_t cb = install_obj(&g_obj, kret);
   CHECK(cb != NULL && word(s0 + 2) == kret, "a: setup of the retiring slot\n");
   gate_t gr;
   gate_init(&gr);

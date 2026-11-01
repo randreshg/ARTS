@@ -20,9 +20,10 @@
  *      retired handle, an unpublished one or none it looks the key up and
  *      hands the caller the counted result; a miss returns NULL.  The handle
  *      passed in is never released.
- *   E. Every install of the global table records the home: install_if_absent,
- *      install_handle_if_absent and install_handle_fresh; a lost install
- *      records none, and neither does a mirror slot's install_data.
+ *   E. Every install of the global table records the home:
+ *      install_handle_into, install_handle_if_absent and install_handle_fresh;
+ *      a lost install records none, and neither does a mirror slot's
+ *      install_data.
  *   F. An identity retire of a handle with a home reaches its slot with no
  *      search, a stale handle (retired, home kept) takes nothing from the
  *      key's next generation, and a handle with no home falls back to the
@@ -119,23 +120,36 @@ void arts_counter_increment_by(arts_counter_t *counter, uint64_t num) {
   atomic_fetch_add_explicit(&counter->count, num, memory_order_relaxed);
 }
 
-/* Every install drains its slot after storing the home: a drain that finds
- * an installed cb whose home is not this slot ends the test.  A drain that
- * finds the slot empty (its object retired inside the install) counts
+/* Every install drains its slot on the installed cb after storing the home:
+ * a drain whose cb's home is not this slot ends the test.  A drain whose cb
+ * the slot no longer holds (its object retired inside the install) counts
  * nothing. */
 static int g_drains;
-void arts_ooo_drain(struct arts_route_item_s *s) {
-  arts_shared_ptr_t h = arts_shared_slot_load(&s->value);
-  if (h == NULL) {
-    return;
-  }
-  if (arts_shared_home(h) != (void *)s) {
+void arts_ooo_drain_on(struct arts_route_item_s *s,
+                       arts_shared_ptr_t installed) {
+  if (arts_shared_home(installed) != (void *)s) {
     (void)fprintf(stderr, "FAIL route_handle_live: a drain ran before its "
                           "install stored the home\n");
     exit(1);
   }
-  g_drains++;
-  arts_shared_release(&h);
+  if (arts_shared_slot_holds(&s->value, installed)) {
+    g_drains++;
+  }
+}
+
+/* Installs `obj` under `key` as the runtime's creates do: wrapped in its
+ * control block, with a reference of the caller's own held across the
+ * install.  A win returns that reference; a loss abandons the control block
+ * (the object stays the caller's) and returns NULL. */
+static arts_shared_ptr_t install_obj(void *obj, arts_guid_t key) {
+  arts_shared_ptr_t cb = arts_route_table_make_handle(obj, key);
+  arts_shared_ptr_t mine = arts_shared_copy(cb);
+  if (arts_route_table_install_handle_if_absent(cb, key)) {
+    return mine;
+  }
+  arts_shared_release(&mine);
+  arts_shared_abandon(&cb);
+  return NULL;
 }
 
 static _Atomic(int) g_deletes;
@@ -296,7 +310,7 @@ static int run_b(void) {
   arts_guid_t g3 = arts_guid_reserve(ARTS_GUID_DB, 0);
   atomic_store_explicit(&g_deletes, 0, memory_order_relaxed);
   int *a = new_obj(2);
-  arts_shared_ptr_t ha = arts_route_table_install_if_absent(a, g);
+  arts_shared_ptr_t ha = install_obj(a, g);
   if (ha == NULL) {
     FAIL("B: the occupant's install lost\n");
   }
@@ -356,7 +370,7 @@ static int run_c(void) {
   /* The occupant is pinned; the caller's control block is untouched. */
   arts_guid_t g = arts_guid_reserve(ARTS_GUID_DB, 0);
   int *a = new_obj(4);
-  arts_shared_ptr_t ha = arts_route_table_install_if_absent(a, g);
+  arts_shared_ptr_t ha = install_obj(a, g);
   if (ha == NULL) {
     FAIL("C: the occupant's install lost\n");
   }
@@ -407,7 +421,7 @@ static int run_c(void) {
    * retire, so it names the key no longer. */
   arts_guid_t g3 = arts_guid_reserve(ARTS_GUID_DB, 0);
   arts_route_item_t *s3 = slot_of(g3);
-  arts_shared_ptr_t h0 = arts_route_table_install_if_absent(new_obj(7), g3);
+  arts_shared_ptr_t h0 = install_obj(new_obj(7), g3);
   if (h0 == NULL || !arts_route_table_set_destroyed_if(g3, h0)) {
     FAIL("C: the earlier generation's install or retire failed\n");
   }
@@ -446,7 +460,7 @@ static int run_d(void) {
   atomic_store_explicit(&g_deletes, 0, memory_order_relaxed);
   arts_guid_t g = arts_guid_reserve(ARTS_GUID_DB, 0);
   int *a = new_obj(9);
-  arts_shared_ptr_t ha = arts_route_table_install_if_absent(a, g);
+  arts_shared_ptr_t ha = install_obj(a, g);
   if (ha == NULL) {
     FAIL("D: the install lost\n");
   }
@@ -463,7 +477,7 @@ static int run_d(void) {
     FAIL("D: the retire failed\n");
   }
   int *a2 = new_obj(10);
-  arts_shared_ptr_t ha2 = arts_route_table_install_if_absent(a2, g);
+  arts_shared_ptr_t ha2 = install_obj(a2, g);
   if (ha2 == NULL) {
     FAIL("D: the next generation's install lost\n");
   }
@@ -523,10 +537,12 @@ static int run_e(void) {
   g_drains = 0;
 
   arts_guid_t g1 = arts_guid_reserve(ARTS_GUID_DB, 0);
-  arts_shared_ptr_t h1 = arts_route_table_install_if_absent(new_obj(12), g1);
-  if (h1 == NULL || arts_shared_home(h1) != (void *)slot_of(g1) ||
+  arts_shared_ptr_t cb1 = arts_route_table_make_handle(new_obj(12), g1);
+  arts_shared_ptr_t h1 = arts_shared_copy(cb1);
+  if (!arts_route_table_install_handle_into(slot_of(g1), cb1, g1) ||
+      arts_shared_home(h1) != (void *)slot_of(g1) ||
       !arts_route_table_live(h1, g1)) {
-    FAIL("E: install_if_absent did not record its slot\n");
+    FAIL("E: install_handle_into did not record its slot\n");
   }
 
   arts_guid_t g2 = arts_guid_reserve(ARTS_GUID_DB, 0);
@@ -591,7 +607,7 @@ static int run_e(void) {
 static int run_f(void) {
   atomic_store_explicit(&g_deletes, 0, memory_order_relaxed);
   arts_guid_t g = arts_guid_reserve(ARTS_GUID_DB, 0);
-  arts_shared_ptr_t h1 = arts_route_table_install_if_absent(new_obj(16), g);
+  arts_shared_ptr_t h1 = install_obj(new_obj(16), g);
   if (h1 == NULL) {
     FAIL("F: the install lost\n");
   }
@@ -616,7 +632,7 @@ static int run_f(void) {
   }
   SPENT("F: the retire of a live handle", s, 0, 0);
 
-  arts_shared_ptr_t h2 = arts_route_table_install_if_absent(new_obj(17), g);
+  arts_shared_ptr_t h2 = install_obj(new_obj(17), g);
   if (h2 == NULL) {
     FAIL("F: the next generation's install lost\n");
   }

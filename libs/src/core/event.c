@@ -166,7 +166,8 @@ static void event_free_typed(struct arts_event_s *e) { arts_event_deleter(e); }
 /* --- Internal allocation / install --------------------------------------- */
 
 /* Initialize a zeroed event from its hint.  The route_table cb installed with
- * it owns its lifetime (deleter-by-kind), so there is no shared field here. */
+ * it owns its lifetime (deleter-by-kind); self_cb, its alias to that cb, is
+ * armed by the create that makes the cb. */
 static void event_init(struct arts_event_s *e, const arts_event_hint_t *h) {
   e->is_channel = h->channel ? 1 : 0;
 
@@ -221,7 +222,13 @@ void arts_event_create_enter(const struct arts_msg_object_blob_packet_s *packet,
                                   (uint32_t)sizeof(args));
 }
 
-static void event_install(arts_guid_t *guid, const arts_event_hint_t *h_in) {
+/* Builds the event.  For a home on this rank it wraps the event in the
+ * control block the install will take, arms self_cb, and hands the engine
+ * that cb; with `hold` it returns the creator's own counted handle, taken
+ * before the engine can install and retire the event.  For a remote home it
+ * ships the image.  NULL otherwise. */
+static arts_shared_ptr_t
+event_install(arts_guid_t *guid, const arts_event_hint_t *h_in, bool hold) {
   arts_event_hint_t h = hint_or_defaults(h_in);
   unsigned int rank = h.rank;
   if (rank == ARTS_HINT_CURRENT_RANK) {
@@ -236,9 +243,13 @@ static void event_install(arts_guid_t *guid, const arts_event_hint_t *h_in) {
   event_init(event, &h);
 
   if (rank == arts_global_rank_id) {
-    /* The engine installs this very object; it is the create's until then. */
+    /* The engine installs this very object; its cb is the create's until
+     * then. */
+    arts_shared_ptr_t cb = arts_route_table_make_handle(event, *guid);
+    event->self_cb = cb;
+    arts_shared_ptr_t held = hold ? arts_shared_copy(cb) : NULL;
     struct arts_ooo_args_create_local_s a = {
-        .size = ARTS_OOO_CREATE_ADOPT, .guid = *guid, .descriptor = event};
+        .size = ARTS_OOO_CREATE_ADOPT, .guid = *guid, .descriptor = (void *)cb};
     if (minted) {
       /* Minted above and named to no one yet. */
       arts_route_item_t *slot;
@@ -248,15 +259,19 @@ static void event_install(arts_guid_t *guid, const arts_event_hint_t *h_in) {
     } else {
       arts_ooo_dispatch_or_defer_guid(*guid, OOO_EVENT_CREATE, &a, sizeof(a));
     }
-    return;
+    return held;
   }
   /* The GUID is minted for the home rank before the ship, so the caller has
    * its handle at once; the home installs the object when the blob lands. */
   arts_send_object_blob(rank, *guid, event, sizeof(*event), MSG_EVENT_CREATE,
                         arts_event_deleter);
+  return NULL;
 }
 
-arts_guid_t arts_event_create(const arts_event_hint_t *hint) {
+/* The create both entry points share; `hold` asks for the creator's
+ * handle. */
+static arts_shared_ptr_t event_create(const arts_event_hint_t *hint,
+                                      arts_guid_t *guid, bool hold) {
   INCREMENT_NUM_EVENT_CREATE_BY(1);
   arts_event_hint_t h = hint_or_defaults(hint);
   if (h.finish) {
@@ -271,7 +286,7 @@ arts_guid_t arts_event_create(const arts_event_hint_t *hint) {
   if (g != NULL_GUID) {
     h.rank = arts_guid_get_rank(g);
   }
-  event_install(&g, &h);
+  arts_shared_ptr_t held = event_install(&g, &h, hold);
   if (h.finish) {
     /* Mechanism A — auto-chain to the ambient finish scope (if any). */
     arts_guid_t ambient = arts_current_finish_event();
@@ -282,20 +297,33 @@ arts_guid_t arts_event_create(const arts_event_hint_t *hint) {
     /* Mechanism B — register creator-token for completion cleanup. */
     arts_owned_finish_register(g);
   }
+  *guid = g;
+  return held;
+}
+
+arts_shared_ptr_t arts_event_create_held(const arts_event_hint_t *hint,
+                                         arts_guid_t *guid) {
+  return event_create(hint, guid, true);
+}
+
+arts_guid_t arts_event_create(const arts_event_hint_t *hint) {
+  arts_guid_t g = NULL_GUID;
+  (void)event_create(hint, &g, false);
   return g;
 }
 
 /* ── Event destroy ──────────────────────────────────────────────────── */
 
 /* Pure Cat-B body (g_ooo_table[OOO_EVENT_DESTROY]).  The event is installed and
- * ref-pinned by dispatch_or_defer; the destroy retires that event — the
- * generation the dispatch chose — by identity, and the deleter runs once
- * outstanding refs drain.  A duplicate or late replay finds its event already
- * retired and does nothing. */
+ * held by its caller; the destroy retires that event — the generation the
+ * dispatch chose — through its own cb, and the deleter runs once outstanding
+ * refs drain.  A duplicate or late replay finds its event already retired and
+ * does nothing. */
 void arts_handler_event_destroy(void *item_v, void *args_v) {
   struct arts_ooo_args_event_destroy_s *a =
       (struct arts_ooo_args_event_destroy_s *)args_v;
-  if (arts_ooo_retire_item(a->guid, item_v)) {
+  struct arts_event_s *event = (struct arts_event_s *)item_v;
+  if (arts_ooo_retire(a->guid, event->self_cb)) {
     INCREMENT_NUM_EVENT_DESTROY_BY(1);
   }
 }
@@ -371,7 +399,7 @@ static void drain_simple_chain(struct arts_event_s *e, arts_guid_t event_guid) {
 /* ── arts_event_satisfy_slot ───────────────────────────────────────── */
 
 /* Home-routed handler (OOO_EVENT_SATISFY_SLOT): item is the installed event,
- * ref-held by dispatch_or_defer.  Pure core — no lookup / acquire / release. */
+ * held by its caller.  Pure core — no lookup / acquire / release. */
 void arts_handler_event_satisfy_slot(void *item, void *vargs) {
   struct arts_event_s *event = (struct arts_event_s *)item;
   struct arts_ooo_args_event_satisfy_s *a =
@@ -452,7 +480,7 @@ static void event_simple_step(struct arts_event_s *e, arts_guid_t guid, int op,
     break;
   }
   if (act & EV_ACT_DESTROY) {
-    if (arts_ooo_retire_item(guid, e)) {
+    if (arts_ooo_retire(guid, e->self_cb)) {
       INCREMENT_NUM_EVENT_DESTROY_BY(1);
     }
   }
@@ -486,7 +514,7 @@ void arts_event_satisfy(arts_guid_t event_guid, arts_guid_t data_guid) {
 /* ── arts_event_add_dependence ─────────────────────────────────────── */
 
 /* Home-routed handler (OOO_EVENT_ADD_DEPENDENCE): item is the installed source
- * event, ref-held by dispatch_or_defer.  Pure core — register the dependent on
+ * event, held by its caller.  Pure core — register the dependent on
  * the event (CHANNEL queue / fire-and-linger immediate deliver / Treiber
  * waiter).  No lookup / acquire / release. */
 void arts_handler_event_add_dependence(void *item, void *vargs) {
@@ -564,7 +592,7 @@ void arts_handler_event_add_dependence(void *item, void *vargs) {
    * destroy after — must not lean on that: a destroy executed instead of a
    * park drops the very consumer counted events exist to serve. */
   if (act & EV_ACT_DESTROY) {
-    if (arts_ooo_retire_item(source, event)) {
+    if (arts_ooo_retire(source, event->self_cb)) {
       INCREMENT_NUM_EVENT_DESTROY_BY(1);
     }
   }
@@ -646,29 +674,35 @@ void arts_send_event_add_dependence(arts_guid_t source, arts_guid_t destination,
 }
 
 /* g_ooo_table[OOO_EVENT_CREATE]: the engine runs it while the GUID's slot is
- * empty (`item_v` is NULL).  A local create hands over the event it built,
- * which is installed as is.  A received blob is copied into a fresh object
- * whose atomic members are initialized here rather than inherited: its queue
- * and stack words hold the building rank's addresses, so they start empty,
- * while the state word takes the image's value and the flags travel as built.
- * A lost install CAS means another create filled the slot after the engine
- * saw it empty, so this one re-enters the engine and parks behind it — with
- * the same object when it was handed over. */
+ * empty, and `item_v` is that slot.  A local create hands over the control
+ * block of the event it built (self_cb armed), which is installed as is.  A
+ * received blob is copied into a fresh object whose atomic members are
+ * initialized here rather than inherited: its queue and stack words hold the
+ * building rank's addresses, so they start empty, while the state word takes
+ * the image's value and the flags travel as built; the body wraps it in its
+ * cb.  The body holds a count of its own across the install, whose drain
+ * runs on the cb and may already retire the event; no creator's count can
+ * stand in for it, since a parked create's body runs later, on whichever
+ * thread drains it.  A lost install means the slot left the empty state the
+ * engine saw (another create filled it, or a retire in flight took it
+ * between the engine's key check and its value load), so this one re-enters
+ * the engine by GUID — with the same cb when it was handed over. */
 void arts_handler_event_create(void *item_v, void *args_v) {
-  (void)item_v;
+  arts_route_item_t *slot = (arts_route_item_t *)item_v;
   const struct arts_ooo_args_create_blob_s *a =
       (const struct arts_ooo_args_create_blob_s *)args_v;
   if (a->size == ARTS_OOO_CREATE_ADOPT) {
     const struct arts_ooo_args_create_local_s *l =
         (const struct arts_ooo_args_create_local_s *)args_v;
+    arts_shared_ptr_t cb = (arts_shared_ptr_t)l->descriptor;
     arts_sched_fuzz_point(); /* widen the empty-seen<->install window */
-    arts_shared_ptr_t h =
-        arts_route_table_install_if_absent(l->descriptor, l->guid);
-    if (h == NULL) {
+    arts_shared_ptr_t mine = arts_shared_copy(cb);
+    bool installed = arts_route_table_install_handle_into(slot, cb, l->guid);
+    arts_shared_release(&mine);
+    if (!installed) {
       arts_ooo_dispatch_or_defer_guid(l->guid, OOO_EVENT_CREATE, args_v,
                                       (uint32_t)sizeof(*l));
     }
-    arts_shared_release(&h);
     return;
   }
   const unsigned char *packet = (const unsigned char *)(a + 1);
@@ -682,6 +716,8 @@ void arts_handler_event_create(void *item_v, void *args_v) {
   struct arts_event_s *e =
       (struct arts_event_s *)arts_malloc_aligned(size, ARTS_CACHE_LINE_SIZE);
   memcpy(e, image, size);
+  /* An address of the building rank starts empty here. */
+  e->self_cb = NULL;
   if (e->is_channel) {
     atomic_init(&e->channel.state, 0u);
     arts_mpsc_init(&e->channel.data_queue);
@@ -695,13 +731,18 @@ void arts_handler_event_create(void *item_v, void *args_v) {
   }
 
   arts_sched_fuzz_point(); /* widen the empty-seen<->install window */
-  /* A successful install drains the slot, which may already retire the event;
-   * the handle is released without another read of it. */
-  arts_shared_ptr_t h = arts_route_table_install_if_absent(e, guid);
-  if (h != NULL) {
-    arts_shared_release(&h);
+  arts_shared_ptr_t cb = arts_route_table_make_handle(e, guid);
+  e->self_cb = cb;
+  arts_shared_ptr_t mine = arts_shared_copy(cb);
+  bool installed = arts_route_table_install_handle_into(slot, cb, guid);
+  /* The install's drain may already have retired the event: released
+   * without another read of it. */
+  arts_shared_release(&mine);
+  if (installed) {
     return;
   }
+  e->self_cb = NULL;
+  arts_shared_abandon(&cb);
   event_free_typed(e);
   arts_ooo_dispatch_or_defer_guid(guid, OOO_EVENT_CREATE, args_v,
                                   (uint32_t)(sizeof(*a) + a->size));

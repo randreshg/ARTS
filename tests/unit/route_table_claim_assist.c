@@ -66,7 +66,11 @@ void arts_sched_fuzz_point(void) {}
 #endif
 
 struct arts_route_item_s;
-void arts_ooo_drain(struct arts_route_item_s *s) { (void)s; }
+struct arts_shared_s;
+void arts_ooo_drain_on(struct arts_route_item_s *s, struct arts_shared_s *h) {
+  (void)s;
+  (void)h;
+}
 void arts_ooo_redrive_all(struct arts_route_item_s *s) { (void)s; }
 void arts_ooo_free_all(struct arts_route_item_s *s) { (void)s; }
 
@@ -105,6 +109,21 @@ static void hook_hold(gate_t **slot) {
 #include "../../libs/src/core/utils/shared.c"
 
 #include "counter_stubs.h"
+
+/* Installs `obj` under `key` as the runtime's creates do: wrapped in its
+ * control block, with a reference of the caller's own held across the
+ * install.  A win returns that reference; a loss abandons the control block
+ * (the object stays the caller's) and returns NULL. */
+static arts_shared_ptr_t install_obj(void *obj, arts_guid_t key) {
+  arts_shared_ptr_t cb = arts_route_table_make_handle(obj, key);
+  arts_shared_ptr_t mine = arts_shared_copy(cb);
+  if (arts_route_table_install_handle_if_absent(cb, key)) {
+    return mine;
+  }
+  arts_shared_release(&mine);
+  arts_shared_abandon(&cb);
+  return NULL;
+}
 
 struct arts_runtime_shared_s arts_node_info;
 ARTS_THREAD_LOCAL struct arts_runtime_private_s arts_thread_info;
@@ -483,13 +502,13 @@ static void case_e(void) {
   /* B helps A's claim to publication. */
   CHECK(reserve_here(k) == s0 && word(s0) == k, "e: B did not publish s\n");
   /* B installs K's object and retires it by identity: s is returned. */
-  arts_shared_ptr_t cb = arts_route_table_install_if_absent(&g_obj_k, k);
+  arts_shared_ptr_t cb = install_obj(&g_obj_k, k);
   CHECK(cb != NULL, "e: K's object did not install\n");
   CHECK(arts_route_table_set_destroyed_if(k, cb), "e: K's retire failed\n");
   arts_shared_release(&cb);
   CHECK(word(s0) == 0, "e: K's retire did not return s\n");
   /* C, of the same window, publishes s and installs its object. */
-  arts_shared_ptr_t cc = arts_route_table_install_if_absent(&g_obj_c, kc);
+  arts_shared_ptr_t cc = install_obj(&g_obj_c, kc);
   CHECK(cc != NULL && word(s0) == kc, "e: C did not publish s\n");
   gate_open(&ga);
   pthread_join(a.tid, NULL);
@@ -539,7 +558,7 @@ static void case_e2(void) {
   CHECK(gate_await(&ga) && ROUTE_KEY_IS_CLAIM(word(s0)),
         "e': A's claim is not in the first slot\n");
   /* B helps and publishes s, then installs object k1. */
-  arts_shared_ptr_t k1 = arts_route_table_install_if_absent(&g_obj_k, k);
+  arts_shared_ptr_t k1 = install_obj(&g_obj_k, k);
   CHECK(k1 != NULL && word(s0) == k, "e': k1 is not installed in s\n");
   /* R2, a duplicate retire of k1, peeks it and is held before its claim. */
   retirer_t r2 = {k, arts_shared_copy(k1), &gbefore, &gafter, -1, 0};
@@ -548,7 +567,7 @@ static void case_e2(void) {
   /* R1 retires k1 in full; K's next generation k2 is created into s. */
   CHECK(arts_route_table_set_destroyed_if(k, k1), "e': R1's retire failed\n");
   arts_shared_release(&k1);
-  arts_shared_ptr_t k2 = arts_route_table_install_if_absent(&g_obj_k2, k);
+  arts_shared_ptr_t k2 = install_obj(&g_obj_k2, k);
   CHECK(k2 != NULL && word(s0) == k, "e': k2 is not installed in s\n");
   /* R2 claims RETIRING over k2's publication and is held there. */
   gate_open(&gbefore);

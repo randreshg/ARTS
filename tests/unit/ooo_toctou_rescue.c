@@ -10,9 +10,10 @@
  *   If an installer published `value` after the producer's initial NULL load
  *   but before/around the push, the producer's own post-push re-check MUST
  *   observe the install and drain the slot — so the just-pushed node is never
- *   stranded.  Symmetrically, the installer's own drain (after publishing
- *   value) detaches whatever was already pushed.  Between the two, EVERY
- *   pushed payload is dispatched EXACTLY ONCE and freed (no loss, no double).
+ *   stranded.  Symmetrically, the installer's own drain on its handle (after
+ *   publishing value and recording the home) detaches whatever was already
+ *   pushed and runs it on that handle.  Between the two, EVERY pushed payload
+ *   is dispatched EXACTLY ONCE and freed (no loss, no double).
  *
  * Interleaving driven:
  *   For each round, N producer threads each call dispatch_or_defer on the
@@ -30,7 +31,8 @@
  * This is a standalone unit test: it #includes the runtime's ooo.c so the
  * file-static g_ooo_table + engine bodies are compiled in, links shared.c for
  * the cb shared-ptr slot, and provides a single-slot
- * arts_route_table_reserve_or_lookup plus libc malloc shims.  No ARTS runtime.
+ * arts_route_table_reserve_or_lookup, the route table's liveness predicate
+ * over shared.c, plus libc malloc shims.  No ARTS runtime.
  */
 
 #include "arts/utils/stdatomic_compat.h"
@@ -130,10 +132,9 @@ void arts_route_table_reserve_or_lookup(arts_guid_t key,
   abort();
 }
 
-bool arts_route_table_set_destroyed_object(arts_guid_t key, const void *obj) {
-  (void)key;
-  (void)obj;
-  return false;
+bool arts_route_table_live(arts_shared_ptr_t h, arts_guid_t key) {
+  return h != NULL && arts_shared_home(h) != NULL &&
+         arts_shared_tag(h) == (uint64_t)key;
 }
 bool arts_route_table_set_destroyed_item(arts_guid_t key,
                                          arts_shared_ptr_t cb) {
@@ -168,6 +169,9 @@ void arts_free(void *p) { free(p); }
 
 /* Pull in the engine under test (compiles g_ooo_table + the bodies). */
 #include "../../libs/src/core/ooo.c"
+
+/* The running EDT, read by the engine's Debug force-defer check: none. */
+ARTS_THREAD_LOCAL struct arts_edt_s *arts_current_edt;
 
 #include "counter_stubs.h"
 
@@ -352,13 +356,17 @@ static void *installer_fn(void *vp) {
   while (atomic_load_explicit(c->gate, memory_order_acquire) == 0) {
     /* spin */
   }
-  /* Publish value (the install) then drain — the create-handler protocol.
-   * Stamped like a real install: dispatch verifies the pinned value by its
-   * tag, so an unstamped cb is treated as a stranger's and never dispatched. */
+  /* Publish value (the install), record the home, then drain on the
+   * installer's own reference — the install's protocol.  Stamped like a real
+   * install: dispatch verifies the pinned value by its tag, so an unstamped
+   * cb is treated as a stranger's and never dispatched. */
   arts_shared_ptr_t cb = arts_shared_make(&g_obj, noop_deleter);
   arts_shared_set_tag(cb, 0x1234u);
+  arts_shared_ptr_t mine = arts_shared_copy(cb);
   arts_shared_slot_store(&g_slot.value, cb);
-  arts_ooo_drain(&g_slot);
+  arts_shared_set_home(cb, &g_slot);
+  arts_ooo_drain_on(&g_slot, mine);
+  arts_shared_release(&mine);
   return NULL;
 }
 

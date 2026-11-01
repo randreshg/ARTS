@@ -236,12 +236,12 @@ static inline void *arts_ooo_payload_args(struct arts_ooo_payload_s *p) {
  *     already holds the built object: the body installs that object itself,
  *     without a copy.  The payload owns the object until the install; a lost
  *     install re-parks the same object, and a payload freed without dispatch
- *     (teardown) frees it with the GUID kind's deleter.  A data block's
- *     descriptor is named by its control block (an arts_shared_ptr_t made
- *     before the install) instead, because its creator keeps a reference to
- *     it while the create is parked; the payload owns the reference the slot
- *     takes over at the install, and a payload freed without dispatch drops
- *     it.
+ *     (teardown) frees it with the GUID kind's deleter.  A data block's or an
+ *     event's descriptor is named by its control block (an arts_shared_ptr_t
+ *     made before the install, which the object's self_cb aliases) instead,
+ *     because its creator can keep a reference to it while the create is
+ *     parked; the payload owns the reference the slot takes over at the
+ *     install, and a payload freed without dispatch drops it.
  * A data block's announce to its home is the third shape, struct
  * arts_ooo_args_db_create_s, which leads with the same word.
  * One kind per object keeps the kind ↔ body naming 1:1; every create body
@@ -271,7 +271,9 @@ struct arts_ooo_args_db_create_s {
 struct arts_ooo_args_create_local_s {
   uint32_t size; /* == ARTS_OOO_CREATE_ADOPT */
   arts_guid_t guid;
-  void *descriptor; /* the built object, installed as is */
+  /* The built EDT, or the control block (arts_shared_ptr_t) of a built data
+   * block or event; installed as is. */
+  void *descriptor;
 };
 
 /* EDT satisfy args (OOO_EDT_SATISFY_SLOT) — a GUID/value reference only,
@@ -456,18 +458,20 @@ struct arts_ooo_args_db_excl_release_s {
 
 /* g_ooo_table handler, both polarities.  A non-create handler operates on an
  * already-acquired item with the decoded args and performs NO route-table
- * lookup / NULL-check / acquire / push — dispatch_or_defer pinned `item` while
- * it was installed under its GUID, and the pin keeps it valid for the duration
- * of the call (a concurrent retire may still detach it).  A create body gets
- * `item == NULL`: the engine saw the GUID's slot empty, and the body installs
- * its object there through an install of the global table (which checks the
- * slot's key in the same atom as its CAS and drains the slot after it),
- * re-entering the engine (which parks it) when another install won the slot
- * first. */
+ * lookup / NULL-check / acquire / push — its caller holds a reference on
+ * `item` for the duration of the call (the engine's pin, or the handle a
+ * caller dispatches on).  A create body gets as `item` the GUID's slot (an
+ * arts_route_item_t *), which the engine saw empty: the body installs its
+ * object there with arts_route_table_install_handle_into, holding a reference
+ * of its own across the install, and re-enters the engine by GUID when the
+ * install loses (another install filled the slot, or a retire in flight took
+ * it between the engine's key check and its value load). */
 typedef void (*arts_ooo_handler_fn_t)(void *item, void *args);
 
-/* Universal entry — wire RX dispatcher, API drivers, and the drain walk all
- * enter here, for every kind.
+/* Universal entry — wire RX dispatcher, API drivers, and the drain walks
+ * enter here, for every kind; the exceptions are the live non-create payloads
+ * an install's arts_ooo_drain_on runs on its handle, and arts_ooo_dispatch_on
+ * on a live handle, which run their bodies without it.
  *
  *   payload == NULL : fresh entry (wire RX / API).  On park a payload is
  *                     allocated (args copied) and pushed.
@@ -475,27 +479,44 @@ typedef void (*arts_ooo_handler_fn_t)(void *item, void *args);
  *                     (no alloc/free); on dispatch it is consumed.
  *
  * A non-create kind runs against the occupant and parks while the slot is
- * empty; a create kind runs its body (item == NULL) while the slot is empty and
- * parks while it is occupied.  The slot value is (re)loaded on every call, so a
- * destroy or an install earlier in the same drain walk is observed.
+ * empty; a create kind runs its body (item == the slot) while the slot is
+ * empty and parks while it is occupied.  The slot value is (re)loaded on every
+ * call, so a destroy or an install earlier in the same drain walk is observed.
  */
 void arts_ooo_dispatch_or_defer(struct arts_route_item_s *slot,
                                 struct arts_ooo_payload_s *payload,
                                 ooo_kind_t kind, arts_guid_t guid,
                                 const void *args, uint32_t args_size);
 
-/* The handle the engine pinned for the non-create handler running on this
- * thread, if that handler's item is `item`; NULL otherwise. */
-arts_shared_ptr_t arts_ooo_dispatched_handle(const void *item);
+/* A non-create `kind` for `guid` on a handle the caller holds: when `h` is
+ * live for `guid` (arts_route_table_live) its body runs inline on the object,
+ * under the caller's reference; otherwise (NULL included) the operation takes
+ * arts_ooo_dispatch_or_defer_guid.  `h` is borrowed, never released here;
+ * `args` carry GUIDs only.  The GPU LC force-defer is the caller's duty, as
+ * it is the API entries' ahead of the GUID path: while the running EDT has
+ * device invalidations outstanding (arts_current_edt->invalidate_count > 0),
+ * an OOO_EDT_SATISFY_SLOT or OOO_EVENT_SATISFY_SLOT is held back on the
+ * wrapper's slot (arts_ooo_push_guid) instead of coming here; a Debug build
+ * asserts it. */
+void arts_ooo_dispatch_on(arts_shared_ptr_t h, ooo_kind_t kind,
+                          arts_guid_t guid, const void *args,
+                          uint32_t args_size);
 
-/* Retire `item` under `key`: always that object, never whatever the slot
- * holds.  From a body the engine dispatched on `item` it uses the handle the
- * dispatch pinned (arts_route_table_set_destroyed_item); anywhere else — a
- * teardown owed by a release that runs on the object directly — it pins the
- * key's object and retires it only if it is `item`
- * (arts_route_table_set_destroyed_object).  Returns true if this call
- * detached the object. */
-bool arts_ooo_retire_item(arts_guid_t key, const void *item);
+/* Retire the object `cb` controls under `key` (the dispatched-item form,
+ * arts_route_table_set_destroyed_item): always that object, never whatever
+ * the slot holds, reaching its slot through the cb's home.  The caller holds
+ * a reference on `cb` — an object's self_cb, borrowed under the count the
+ * caller already holds on the object.  Precondition: `cb` is installed — the
+ * body was dispatched on it, arts_route_table_live accepted it, or the
+ * caller's count came from the installed object (an EDT's run for
+ * arts_edt_delete, the EXCL home-local release edge that opens a teardown).
+ * Retiring a cb that was never installed waits out the route table's bound,
+ * then aborts.  The armed cb of a create that is still parked is never
+ * retired through it; a holder that cannot tell goes through
+ * arts_ooo_dispatch_on, where a cb that is not live takes the GUID path.
+ * Returns true if this call detached the object; false once another retire
+ * did, or for a NULL `cb`. */
+bool arts_ooo_retire(arts_guid_t key, arts_shared_ptr_t cb);
 
 /* Convenience fresh entry: reserve/lookup the slot for `guid`, then
  * dispatch_or_defer with payload == NULL. */
@@ -509,11 +530,23 @@ void arts_ooo_dispatch_or_defer_guid(arts_guid_t guid, ooo_kind_t kind,
 void arts_ooo_push_guid(arts_guid_t guid, ooo_kind_t kind, const void *args,
                         uint32_t args_size);
 
-/* Create handler's last step: replay accumulated payloads against the
- * just-installed item.  Detaches one snapshot of the slot's OoO chain
- * (reverse_drain → FIFO) and runs each through dispatch_or_defer.  Lock-free:
- * concurrent drains detach disjoint snapshots.  The detach is an
+/* An install's last step: replay the payloads parked on `slot` against the
+ * object just installed there under `installed`, the installer's handle,
+ * which it holds across the call.  Detaches one snapshot of the slot's OoO
+ * chain (reverse_drain → FIFO): each non-create payload of the installed GUID
+ * runs on `installed` while it is live (as arts_ooo_dispatch_on, reusing the
+ * node); a create payload, a payload of another GUID, and one met after a
+ * replay retired the object take dispatch_or_defer.  Like the engine's own
+ * dispatch it applies no GPU LC force-defer: a replay is not a new satisfy,
+ * and an install can run inside a GPU wrapper's body.  The detach is an
  * unconditional exchange, which an install's pairing with a parker needs. */
+void arts_ooo_drain_on(struct arts_route_item_s *slot,
+                       arts_shared_ptr_t installed);
+
+/* The drain for a caller that holds no installed handle (a parker's rescue,
+ * a GUID-keyed drain): one snapshot of the slot's OoO chain, each payload run
+ * through dispatch_or_defer.  Lock-free: concurrent drains detach disjoint
+ * snapshots; the detach is an unconditional exchange. */
 void arts_ooo_drain(struct arts_route_item_s *slot);
 
 /* Convenience: look up the slot for `guid` and drain it, for a caller that

@@ -150,16 +150,20 @@ struct arts_edt_s {
                                       cleared after its host function, which
                                       the stream orders after every read. */
   /* Non-owning alias to this EDT's own route-table control block, armed
-   * before the install publishes the EDT, so before it can become runnable.
-   * An EDT is dispatched by raw pointer through the lock-free deques and is
-   * held by raw pointer across asynchronous coherence park/resume, so nothing
-   * on those paths can recover a control block to ref-count.  This alias lets
-   * the runnable-phase code take an owning ref (arts_shared_copy at the ready
-   * transition, released at run completion) that keeps the EDT alive even
-   * after a concurrent destroy has CAS-detached the route slot.  It holds NO
-   * strong count itself (that would be a self-cycle that never frees); the cb
-   * pool guarantees the pointer stays valid, and copies are only ever taken
-   * while another ref is held. */
+   * before the install publishes the EDT, so before it can become runnable;
+   * cleared on a lost install, and NULL in an EDT built from a received
+   * image until its create body arms it.  Ordered by the install that
+   * publishes the EDT.  An EDT is dispatched by raw pointer through the
+   * lock-free deques and is held by raw pointer across asynchronous
+   * coherence park/resume, so nothing on those paths can recover a control
+   * block to ref-count.  This alias lets the runnable-phase code take an
+   * owning ref (arts_shared_copy at the ready transition, released at run
+   * completion) that keeps the EDT alive even after a concurrent destroy has
+   * CAS-detached the route slot, and lets a holder retire the installed EDT
+   * through it (arts_ooo_retire).  It holds NO strong count itself (that
+   * would be a self-cycle that never frees): the deleter runs before the cb
+   * is freed, so the pointer is valid while any count is held, and copies
+   * are only ever taken under another count. */
   arts_shared_ptr_t self_cb;
 } ARTS_ALIGNED_MAX;
 
@@ -195,6 +199,16 @@ struct arts_event_dep_s;
  *    - No auto-destroy; only explicit `arts_event_destroy`. */
 struct arts_event_s {
   uint8_t is_channel; /* discriminator: 0=simple, 1=channel */
+  /* Non-owning alias to the control block this event is installed with,
+   * armed right after the cb is made and before the install publishes the
+   * event, cleared on a lost install that abandons that cb, and NULL in an
+   * event built from a received image until its create body arms it.
+   * Ordered by the install that publishes the event.  It holds no count:
+   * the deleter runs before the cb is freed, so it is valid while any count
+   * on the event is held, and a frame holding one upgrades with
+   * arts_shared_copy or, once the event is installed, retires it through it
+   * (arts_ooo_retire). */
+  arts_shared_ptr_t self_cb;
 
   union {
     struct {

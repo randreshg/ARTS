@@ -268,7 +268,7 @@ void arts_handler_db_snapshot_request(void *item_v, void *args_v) {
 
 /* Cat-B pure body (OoO g_ooo_table[OOO_DB_DESTROY]): the OoO engine has already
  * acquired the home db_s and pinned a ref across this call (cache is its FIRST
- * member).  Order: roster fan-out, then arts_ooo_retire_item LAST (a parked
+ * member).  Order: roster fan-out, then arts_ooo_retire LAST (a parked
  * waiter at destroy = UB, never woken: its slot's pin keeps it).  WB roster
  * source = the cached-ranks bit-set: the creator joins it at create and every
  * requester when its request arrives, so it names rw_holder and, during a
@@ -298,7 +298,7 @@ void arts_db_home_destroy_now(struct arts_db_s *db) {
       arts_send_db_cache_destroy(rank, db->cache.db_guid);
     }
   }
-  (void)arts_ooo_retire_item(db->cache.db_guid, db);
+  (void)arts_ooo_retire(db->cache.db_guid, db->self_cb);
 }
 
 /* Retract nothing: this arm's readers hold no durable copy claim — every

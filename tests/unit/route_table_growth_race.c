@@ -55,7 +55,11 @@ void *arts_calloc_aligned(size_t n, size_t s, size_t a) {
 void arts_free(void *p) { free(p); }
 
 struct arts_route_item_s;
-void arts_ooo_drain(struct arts_route_item_s *s) { (void)s; }
+struct arts_shared_s;
+void arts_ooo_drain_on(struct arts_route_item_s *s, struct arts_shared_s *h) {
+  (void)s;
+  (void)h;
+}
 void arts_ooo_redrive_all(struct arts_route_item_s *s) { (void)s; }
 void arts_ooo_free_all(struct arts_route_item_s *s) { (void)s; }
 

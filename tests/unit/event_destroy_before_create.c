@@ -11,9 +11,10 @@
  * arts_ooo_dispatch_or_defer_guid(OOO_EVENT_DESTROY).  If the destroy races
  * AHEAD of the event's create (the slot is still absent), it must DEFER on the
  * slot and replay when the event installs: the create's install drains the
- * OoO list, running the deferred destroy body, which retires the event by
- * identity (arts_ooo_retire_item).  Net effect: a destroy that arrived before
- * the create still tears the event down once it appears.
+ * OoO list on the installed event's handle, running the deferred destroy
+ * body, which retires the event through its own control block
+ * (arts_ooo_retire).  Net effect: a destroy that arrived before the create
+ * still tears the event down once it appears.
  *
  * Deterministic single-run scenario (home-local on rank 0):
  *   1. Reserve an event GUID on the current rank.

@@ -67,9 +67,18 @@ void arts_handler_event_satisfy_slot(void *item, void *args);
 void arts_handler_event_add_dependence(void *item, void *args);
 void arts_handler_event_destroy(void *item, void *args);
 /* OOO_EVENT_CREATE body: installs the event the args carry into the empty
- * slot of its GUID, or parks the create behind an object that took the slot
- * first. */
+ * slot of its GUID (`item`), or parks the create behind an object that took
+ * the slot first. */
 void arts_handler_event_create(void *item, void *args);
+
+/* arts_event_create, keeping the creator's counted handle on the event it
+ * made: for a home on this rank a handle on the cb the install takes (self_cb),
+ * held from before the create enters the engine, so it stays valid whether
+ * the create installs at once, parks, or is retired by the install's drain;
+ * the caller releases it.  NULL for a home on another rank.  *guid receives
+ * the event's GUID. */
+arts_shared_ptr_t arts_event_create_held(const arts_event_hint_t *hint,
+                                         arts_guid_t *guid);
 
 /* Cross-rank wire TX/RX for event ops. */
 void arts_send_event_add_dependence(arts_guid_t source, arts_guid_t destination,
@@ -88,8 +97,8 @@ void arts_event_create_enter(const struct arts_msg_object_blob_packet_s *packet,
  * (declared above as the Cat-B OoO body): the dispatcher decodes the GUID and
  * routes through arts_ooo_dispatch_or_defer_guid(OOO_EVENT_DESTROY), so a
  * DESTROY that races ahead of the event's CREATE defers and replays on the
- * create handler's drain.  The body retires by identity via
- * `arts_ooo_retire_item`, so a duplicate destroy finds its event already
+ * create handler's drain.  The body retires the event through its own cb
+ * (`arts_ooo_retire`), so a duplicate destroy finds its event already
  * retired. */
 void arts_send_event_destroy(arts_guid_t guid);
 

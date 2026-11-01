@@ -192,11 +192,11 @@ void arts_handler_db_publish(void *item_v, void *args_v);
  * arts_ooo_args_db_destroy_s.  The wire dispatcher decodes DESTROY_REQ into
  * those args and routes through arts_ooo_dispatch_or_defer_guid. */
 void arts_handler_db_destroy(void *item_v, void *args_v);
-/* OOO_DB_CREATE body (g_ooo_table): item_v is NULL (the engine runs a create
- * only on an empty slot); args_v is an arts_ooo_args_db_create_s (an announce)
- * or an arts_ooo_args_create_local_s naming a descriptor built on this rank.
- * The wire dispatcher and the self-send enter it through
- * arts_ooo_dispatch_or_defer_guid. */
+/* OOO_DB_CREATE body (g_ooo_table): item_v is the GUID's route slot, which the
+ * engine found empty and the body installs into; args_v is an
+ * arts_ooo_args_db_create_s (an announce) or an arts_ooo_args_create_local_s
+ * naming a descriptor built on this rank.  The wire dispatcher and the
+ * self-send enter it through arts_ooo_dispatch_or_defer_guid. */
 void arts_handler_db_create(void *item_v, void *args_v);
 /* An announce, received or self-sent, entering the engine as OOO_DB_CREATE. */
 void arts_db_create_announce_enter(

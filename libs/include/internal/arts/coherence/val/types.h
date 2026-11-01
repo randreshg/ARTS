@@ -321,6 +321,16 @@ struct arts_db_s {
                                      right after the cache so a cache-only stub
                                      (arts_db_cache_stub_size()) still covers it
                                      — every coherence lookup/free reads it. */
+  /* Non-owning alias to the control block this descriptor is installed
+   * with, armed right after the cb is made and before the install publishes
+   * the descriptor; cleared on a lost install that abandons that cb.  Inside
+   * the cache-only stub's span: every descriptor has one.  Ordered by the
+   * install that publishes the descriptor.  It holds no count: the deleter
+   * runs before the cb is freed, so it is valid while any count on the
+   * descriptor is held, and a frame holding one upgrades with
+   * arts_shared_copy or, once the descriptor is installed, retires the block
+   * through it (arts_ooo_retire). */
+  arts_shared_ptr_t self_cb;
   /* Home-directory metadata — present only on the rank that is the GUID home
    * for this DB.  Non-home / WB / creator-remote ranks allocate a cache-only
    * footprint of arts_db_cache_stub_size() bytes: it ends at the first home-arm

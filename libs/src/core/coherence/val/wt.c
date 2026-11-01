@@ -592,8 +592,8 @@ void arts_handler_db_publish(void *item_v, void *args_v) {
 
 /* Cat-B pure body (OoO g_ooo_table[OOO_DB_DESTROY]): the OoO engine has already
  * acquired the home db_s and pinned a ref across this call (cache is its FIRST
- * member).  Order: roster fan-out, then arts_ooo_retire_item LAST (detach the
- * slot cb + drop the install ref); a waiter left parked at destroy (UB) is
+ * member).  Order: roster fan-out, then arts_ooo_retire LAST (detach the slot
+ * cb + drop the install ref); a waiter left parked at destroy (UB) is
  * never woken and keeps the descriptor through its slot's pin, and the cb
  * deleter frees the cache once every ref drains.  A second DESTROY_REQ parks on the empty
  * slot (a second destroy is a program error).  WT roster source =
@@ -625,7 +625,7 @@ void arts_db_home_destroy_now(struct arts_db_s *db) {
       arts_send_db_cache_destroy(rank, guid);
     }
   }
-  (void)arts_ooo_retire_item(guid, db);
+  (void)arts_ooo_retire(guid, db->self_cb);
 }
 
 /* Retract nothing: this arm's readers hold no durable copy claim — every

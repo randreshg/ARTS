@@ -16,7 +16,9 @@
 /// it, and whoever takes it to zero shuts the run down.  That termination is
 /// harness mechanics, not a pattern for a program.
 ///
-///   none  Nothing per unit.
+///   none    Nothing per unit.
+///   create  A sticky event, a block created with ARTS_DB_PROP_NO_ACQUIRE and
+///           an EDT with no dependence, whose body ends the unit.
 
 #include "arts.h"
 
@@ -50,11 +52,40 @@ static void shape_none(uint64_t n) {
   }
 }
 
+static void create_unit_end(uint32_t paramc, const uint64_t *paramv,
+                            uint32_t depc, arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)paramv;
+  (void)depc;
+  (void)depv;
+  unit_done();
+}
+
+static void shape_create(uint64_t n) {
+  for (uint64_t i = 0; i < n; i++) {
+    if (arts_event_create(NULL) == NULL_GUID) {
+      printf("FAIL: route_budget create: an event create failed\n");
+      arts_test_fail();
+    }
+    void *addr = NULL;
+    if (arts_db_create(&addr, 64, ARTS_DB, ARTS_DB_PROP_NO_ACQUIRE, NULL) ==
+        NULL_GUID) {
+      printf("FAIL: route_budget create: a block create failed\n");
+      arts_test_fail();
+    }
+    if (arts_edt_create(create_unit_end, 0, NULL, 0, NULL) == NULL_GUID) {
+      printf("FAIL: route_budget create: an EDT create failed\n");
+      arts_test_fail();
+    }
+  }
+}
+
 static const struct {
   const char *name;
   shape_fn run;
 } g_shapes[] = {
     {"none", shape_none},
+    {"create", shape_create},
 };
 
 static shape_fn g_run;

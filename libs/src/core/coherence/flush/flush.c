@@ -671,5 +671,5 @@ void arts_handler_db_destroy(void *item_v, void *args_v) {
       arts_send_db_cache_destroy(r, a->db_guid);
     }
   }
-  (void)arts_ooo_retire_item(a->db_guid, item_v);
+  (void)arts_ooo_retire(a->db_guid, db->self_cb);
 }

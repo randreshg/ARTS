@@ -22,14 +22,14 @@
  * outside ThreadSanitizer, the peak resident set (VmHWM) while T racers map
  * T segments, and its delete drains the one slot holding a payload and
  * writes no other slot.  While the racers are held, phase B runs every chain
- * walker against the table (key search, iteration, parked count, the
- * retire-time pin), with the link still NULL.  Phase C returns a slot of a
- * full window while a racer is held in its build: a reserver that claims that
- * slot ends its scan at the NULL link and publishes there, and the held
- * racer, once it links its segment and claims there, resolves to that one
- * slot.  Phase D is the no-wait witness: one racer is held inside its build
- * while a second reaches the chain's end, builds, links, claims and returns;
- * released, the first finds the link taken and discards its segment.
+ * walker against the table (key search, iteration, parked count), with the
+ * link still NULL.  Phase C returns a slot of a full window while a racer is
+ * held in its build: a reserver that claims that slot ends its scan at the
+ * NULL link and publishes there, and the held racer, once it links its
+ * segment and claims there, resolves to that one slot.  Phase D is the
+ * no-wait witness: one racer is held inside its build while a second reaches
+ * the chain's end, builds, links, claims and returns; released, the first
+ * finds the link taken and discards its segment.
  *
  * The segment ops are the CPU ops wrapped to count, record and hold builds
  * (route_table_segment_probe.h).  No runtime: route_table.c + guid.c +
@@ -68,7 +68,11 @@ void arts_sched_fuzz_point(void) {}
 #endif
 
 struct arts_route_item_s;
-void arts_ooo_drain(struct arts_route_item_s *s) { (void)s; }
+struct arts_shared_s;
+void arts_ooo_drain_on(struct arts_route_item_s *s, struct arts_shared_s *h) {
+  (void)s;
+  (void)h;
+}
 void arts_ooo_redrive_all(struct arts_route_item_s *s) { (void)s; }
 
 #include "../../libs/src/core/gas/guid.c"
@@ -460,10 +464,6 @@ static void walk_while_building(const arts_guid_t *keys) {
         "B: a missed search found a slot mid-growth\n");
   CHECK(arts_route_table_lookup(missing) == NULL,
         "B: a lookup of an unclaimed key found an object mid-growth\n");
-  CHECK(route_table_pin_published(missing) == NULL,
-        "B: the retire-time pin found an object mid-growth\n");
-  CHECK(!arts_route_table_set_destroyed_object(missing, &missing),
-        "B: an object retire of an unclaimed key succeeded mid-growth\n");
   unsigned keyed = 0;
   arts_route_table_iterator_t iter;
   arts_reset_route_table_iterator(&iter, root);

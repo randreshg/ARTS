@@ -346,7 +346,7 @@ void arts_db_home_destroy_now(struct arts_db_s *db) {
       arts_send_db_cache_destroy(rank, guid);
     }
   }
-  (void)arts_ooo_retire_item(guid, db);
+  (void)arts_ooo_retire(guid, db->self_cb);
 }
 
 /* ===== the invalidation round ===========================================

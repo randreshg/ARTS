@@ -192,11 +192,12 @@ arts_route_table_t *arts_new_route_table(unsigned int route_table_size,
 /* ---------------------------------------------------------------------------
  * cb-based item lifecycle API.
  *
- * The slot holds an atomic shared-ptr cb.  Install wraps the object in a cb
- * (deleter chosen by GUID kind); lookups return a caller-owned cb handle the
- * caller releases when done; destroy detaches the cb and drops the install
- * ref (the object's deleter runs once the last reader also releases, so
- * destroy-during-use is a deferred free, never a use-after-free).
+ * The slot holds an atomic shared-ptr cb.  An object is wrapped in its cb
+ * (deleter chosen by GUID kind) before its install, and the object's self_cb
+ * aliases it; lookups return a caller-owned cb handle the caller releases when
+ * done; destroy detaches the cb and drops the install ref (the object's
+ * deleter runs once the last reader also releases, so destroy-during-use is a
+ * deferred free, never a use-after-free).
  * --------------------------------------------------------------------------*/
 
 /* Register the cb deleter for a GUID kind.  Each object type calls this once
@@ -216,31 +217,24 @@ void arts_route_table_delete_unpublished(arts_guid_t key, void *obj);
  * identity, and it never replaces an occupant.  An occupied slot is the
  * caller's to wait for (the OoO engine parks a create there until the occupant
  * is retired).  A won install records the slot as the cb's home
- * (arts_shared_home) after its CAS and before it drains the slot's OoO list.
- *
- * install_if_absent: install `obj` under `key` if the slot is empty, then
- * drain the slot's OoO list.  On a win the slot owns the object through its
- * cb and the call returns a handle holding one strong ref, which the caller
- * owns and must release: the drain may already have retired the object (a
- * destroy parked before the install runs inside it), and that ref keeps the
- * caller's reads valid.  On a loss (the slot held an object under `key` when
- * the install looked; it may be empty again by the return) it returns NULL,
- * abandons its cb without running the deleter, and `obj` stays the
- * caller's. */
-arts_shared_ptr_t arts_route_table_install_if_absent(void *obj,
-                                                     arts_guid_t key);
+ * (arts_shared_home) after its CAS and before it drains the slot's OoO list on
+ * the installed cb (arts_ooo_drain_on): a destroy parked before the install
+ * can retire the object inside the install. */
 
-/* The control block install_if_absent would wrap `obj` in: the GUID kind's
- * deleter, tagged with `key`.  One ref, the caller's.  For an object that must
- * be referenced before it is installed. */
+/* The control block an object is installed with: the GUID kind's deleter,
+ * tagged with `key`.  One ref, the caller's.  The object's self_cb aliases it
+ * from here to the install, so it is made before anything can reference the
+ * object through it. */
 arts_shared_ptr_t arts_route_table_make_handle(void *obj, arts_guid_t key);
 
-/* install_if_absent for a control block made by arts_route_table_make_handle.
- * On a win the slot takes over the ref the caller passed and the slot's OoO
- * list is drained.  The caller holds a ref of its own across the call (the
- * install writes the cb's home after handing the passed ref to the slot) and
- * for as long as it reads the object.  On a loss nothing changes and the
- * passed ref stays the caller's. */
+/* Install a control block made by arts_route_table_make_handle into `key`'s
+ * slot if that slot is empty.  On a win the slot takes over the ref the
+ * caller passed and the slot's OoO list is drained.  The caller holds a ref
+ * of its own across the call (the install writes the cb's home after handing
+ * the passed ref to the slot, and the drain runs on the cb) and for as long
+ * as it reads the object.  On a loss (the slot held an object under `key`
+ * when the install looked; it may be empty again by the return) nothing
+ * changes and the passed ref stays the caller's. */
 bool arts_route_table_install_handle_if_absent(arts_shared_ptr_t cb,
                                                arts_guid_t key);
 
@@ -291,16 +285,13 @@ bool arts_route_table_live(arts_shared_ptr_t h, arts_guid_t key);
  * a retired object from a live one.  An installed object is never moved
  * between slots, so a live object is always in the one slot its key names.
  *
- * Every form retires one OBJECT, never "whatever the slot holds".  The
- * dispatched-item and object forms wait out another retire holding the slot
- * and retry only while their object is still installed, so none of them takes
- * a generation installed after it looked.  Two retires of one object may be
- * in flight at once (a duplicate teardown notice, a completion racing a
- * destroy): exactly one of them returns true.  A slot being retired hides its
- * key from a search, and when that retire hands the key back (it named an
- * object the slot no longer held) the slot's occupant is still the key's; the
- * object form therefore looks through a RETIRING slot of the key's window
- * rather than miss it.  Waits are bounded; outliving the bound is fatal. */
+ * Both forms retire one OBJECT, named by its cb, never "whatever the slot
+ * holds".  The dispatched-item form waits out another retire holding the slot
+ * and retries only while its object is still installed, so neither takes a
+ * generation installed after it looked.  Two retires of one object may be in
+ * flight at once (a duplicate teardown notice, a completion racing a
+ * destroy): exactly one of them returns true.  Waits are bounded; outliving
+ * the bound is fatal. */
 
 /* Identity form: retires only while `key`'s slot holds exactly `cb`, on which
  * the caller holds a ref; otherwise retires nothing and returns false, without
@@ -310,17 +301,14 @@ bool arts_route_table_live(arts_shared_ptr_t h, arts_guid_t key);
  * install has recorded it, and by a search of `key` before then. */
 bool arts_route_table_set_destroyed_if(arts_guid_t key, arts_shared_ptr_t cb);
 
-/* Dispatched-item form: the object a DISPATCH chose.  As the identity form,
- * but a concurrent retire holding the slot is waited out, so the retire lands
+/* Dispatched-item form: the object a dispatch or a holder chose, named by
+ * the cb it was installed with (an object's self_cb, or a handle a resolution
+ * returned).  Precondition: `cb` was installed; a cb made and never installed
+ * is tagged too, and is waited on until the bound.  As the identity form, but
+ * a concurrent retire holding the slot is waited out, so the retire lands
  * unless another one retired `cb` first.  Returns false once `cb` is
  * retired. */
 bool arts_route_table_set_destroyed_item(arts_guid_t key, arts_shared_ptr_t cb);
-
-/* Object form: the object at `obj`, for a caller that has the object but no
- * handle on it: pins whatever `key` currently publishes, looking through a
- * retire in flight, and retires it by the dispatched-item form only if it is
- * `obj`.  Returns false when `key` publishes another object or none. */
-bool arts_route_table_set_destroyed_object(arts_guid_t key, const void *obj);
 
 /* Type-aware safe lookups: return a caller-owned cb handle (strong ref held)
  * or NULL if the slot is absent / destroyed / a kind mismatch.  Use

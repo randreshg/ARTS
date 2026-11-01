@@ -25,19 +25,37 @@
  *      distinct payload id is dispatched EXACTLY ONCE and the chain ends empty
  *      (no loss, no duplicate, no corruption).
  *
- * Each payload carries a unique 32-bit id in its args blob; the dispatch
- * handler records the id into a global seen[] bitmap and flags any duplicate.
+ *  (3) The drain on the installer's handle (arts_ooo_drain_on) walks its
+ *      snapshot the same way: on a handle that is not live every node takes
+ *      the engine and, the slot still empty, is re-pushed; on a live handle
+ *      every node runs inline on the handle's object and its node is
+ *      consumed; and once a node of the walk retires the object, every later
+ *      node of the walk takes the engine and parks again.
  *
- * Standalone: #includes ooo.c, links shared.c, single fixed slot, libc shims.
+ *  (4) Debug only: arts_ooo_dispatch_on refuses an EDT or event satisfy while
+ *      the running EDT has device invalidations outstanding (the API entries
+ *      hold those back on the wrapper's slot first); a forked child that
+ *      tries it ends by SIGABRT.
+ *
+ * Each payload carries a unique 32-bit id in its args blob; the dispatch
+ * handler records the id into a global seen[] bitmap and flags any duplicate,
+ * and any non-create handler run against an object other than the test's.
+ *
+ * Standalone: #includes ooo.c, links shared.c, single fixed slot, libc shims,
+ * the counter increments recorded here; arts_route_table_live is the route
+ * table's predicate over shared.c.
  */
 
 #include "arts/utils/stdatomic_compat.h"
 #include <inttypes.h>
 #include <pthread.h>
+#include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 #include "arts/gas/route_table.h"
 #include "arts/ooo.h"
@@ -49,8 +67,13 @@ static _Atomic(unsigned char) g_seen[MAX_IDS];
 static _Atomic(uint64_t) g_dispatched;
 static _Atomic(uint64_t) g_dup;
 
+static int g_obj = 0x1234;
+static _Atomic(uint64_t) g_wrong_item;
+
 static void recorder(void *item, void *args) {
-  (void)item;
+  if (item != &g_obj) {
+    atomic_fetch_add_explicit(&g_wrong_item, 1, memory_order_relaxed);
+  }
   uint32_t id = *(const uint32_t *)args;
   if (id < MAX_IDS) {
     unsigned char prev =
@@ -69,7 +92,6 @@ void arts_handler_event_satisfy_slot(void *i, void *a) { recorder(i, a); }
 void arts_handler_edt_satisfy_slot(void *i, void *a) { recorder(i, a); }
 void arts_handler_event_add_dependence(void *i, void *a) { recorder(i, a); }
 void arts_handler_edt_destroy(void *i, void *a) { recorder(i, a); }
-void arts_handler_event_destroy(void *i, void *a) { recorder(i, a); }
 void arts_handler_db_destroy(void *i, void *a) { recorder(i, a); }
 void arts_db_acquire_replay_dep(void *i, void *a) { recorder(i, a); }
 void arts_handler_db_snapshot_request(void *i, void *a) { recorder(i, a); }
@@ -107,10 +129,24 @@ void arts_free(void *p) { free(p); }
 #ifdef ARTS_DEBUG_INJECTION
 void arts_sched_fuzz_point(void) {}
 #endif
-bool arts_route_table_set_destroyed_object(arts_guid_t key, const void *obj) {
-  (void)key;
-  (void)obj;
-  return false;
+bool arts_route_table_live(arts_shared_ptr_t h, arts_guid_t key) {
+  return h != NULL && arts_shared_home(h) != NULL &&
+         arts_shared_tag(h) == (uint64_t)key;
+}
+
+/* Part 3's destroy body retires the object it runs on, as a real destroy
+ * does: the cb's tag cleared and the value taken out of the slot. */
+static arts_shared_ptr_t g_p3_cb;
+void arts_handler_event_destroy(void *i, void *a) {
+  recorder(i, a);
+  if (g_p3_cb != NULL) {
+    arts_shared_set_tag(g_p3_cb, 0);
+    arts_shared_ptr_t old =
+        arts_shared_slot_exchange(&g_slot.value, (arts_shared_ptr_t)NULL);
+    if (old != NULL) {
+      arts_shared_release(&old);
+    }
+  }
 }
 bool arts_route_table_set_destroyed_item(arts_guid_t key,
                                          arts_shared_ptr_t cb) {
@@ -125,9 +161,20 @@ void arts_route_table_delete_unpublished(arts_guid_t key, void *obj) {
 
 #include "../../libs/src/core/ooo.c"
 
-#include "counter_stubs.h"
+/* The running EDT, read by the engine's Debug force-defer check: none. */
+ARTS_THREAD_LOCAL struct arts_edt_s *arts_current_edt;
 
-static int g_obj = 0x1234;
+/* The engine's counter increments, recorded so part 3 can count the pins a
+ * drain spends where the tree captures NUM_ROUTE_PIN. */
+ARTS_THREAD_LOCAL arts_counter_t arts_thread_local_counters[NUM_COUNTER_TYPES];
+void arts_counter_increment_by(arts_counter_t *counter, uint64_t num) {
+  atomic_fetch_add_explicit(&counter->count, num, memory_order_relaxed);
+}
+static uint64_t pins_now(void) {
+  return atomic_load_explicit(&arts_thread_local_counters[NUM_ROUTE_PIN].count,
+                              memory_order_relaxed);
+}
+
 static void noop_deleter(void *o) { (void)o; }
 
 /* ───────────────────────────────────────────────────────────────────────
@@ -375,6 +422,185 @@ static int part2_concurrent_repush(void) {
   return 0;
 }
 
+/* ───────────────────────────────────────────────────────────────────────
+ * PART 3 — the drain on the installer's handle.
+ *
+ * The slot names a GUID of its own.  M payloads are parked; a drain on a
+ * handle with no home re-pushes them all.  The handle is then installed
+ * (value, home, tag) and a drain on it runs every node inline, once each,
+ * on the handle's object, pinning nothing, and leaves the chain empty.  Last,
+ * a destroy node is parked ahead of M more: the drain runs the destroy
+ * inline, which retires the object, and every later node of the walk is
+ * re-pushed, none run.
+ * ──────────────────────────────────────────────────────────────────────── */
+static uint32_t chain_len(void) {
+  uint32_t n = 0;
+  for (arts_lf_link_t *p =
+           atomic_load_explicit(&g_slot.ooo_list.head, memory_order_relaxed);
+       p != NULL; p = atomic_load_explicit(&p->next, memory_order_relaxed)) {
+    n++;
+  }
+  return n;
+}
+
+static int part3_drain_on(void) {
+  const uint32_t M = 1000;
+  const arts_guid_t G = (arts_guid_t)0x5a5a;
+  atomic_store_explicit(&g_slot.key, G, memory_order_relaxed);
+  atomic_store_explicit(&g_slot.value, (arts_shared_slot_t){0},
+                        memory_order_relaxed);
+  arts_lf_stack_init(&g_slot.ooo_list);
+  for (uint32_t id = 0; id < 2u * M + 1u; id++) {
+    atomic_store_explicit(&g_seen[id], 0, memory_order_relaxed);
+  }
+  atomic_store_explicit(&g_dispatched, 0, memory_order_relaxed);
+  atomic_store_explicit(&g_dup, 0, memory_order_relaxed);
+
+  arts_shared_ptr_t cb = arts_shared_make(&g_obj, noop_deleter);
+  arts_shared_set_tag(cb, (uint64_t)G);
+  arts_shared_ptr_t mine = arts_shared_copy(cb);
+  for (uint32_t id = 0; id < M; id++) {
+    arts_ooo_dispatch_or_defer(&g_slot, NULL, OOO_EVENT_SATISFY_SLOT, G, &id,
+                               sizeof(id));
+  }
+  arts_ooo_drain_on(&g_slot, mine);
+  if (atomic_load_explicit(&g_dispatched, memory_order_relaxed) != 0 ||
+      chain_len() != M) {
+    (void)fprintf(stderr,
+                  "FAIL part3: a drain on a handle with no home ran %" PRIu64
+                  " nodes and left %u parked (want 0 and %u)\n",
+                  atomic_load_explicit(&g_dispatched, memory_order_relaxed),
+                  chain_len(), M);
+    return 1;
+  }
+
+  arts_shared_slot_store(&g_slot.value, cb);
+  arts_shared_set_home(cb, &g_slot);
+  uint64_t pins = pins_now();
+  arts_ooo_drain_on(&g_slot, mine);
+  pins = pins_now() - pins;
+#if ENABLE_NUM_ROUTE_PIN
+  if (pins != 0u) {
+    (void)fprintf(stderr,
+                  "FAIL part3: a drain on a live handle pinned %" PRIu64
+                  " times (want 0)\n",
+                  pins);
+    return 1;
+  }
+#endif
+  if (atomic_load_explicit(&g_dispatched, memory_order_relaxed) != M ||
+      chain_len() != 0u) {
+    (void)fprintf(stderr,
+                  "FAIL part3: a drain on a live handle ran %" PRIu64
+                  " nodes and left %u parked (want %u and 0)\n",
+                  atomic_load_explicit(&g_dispatched, memory_order_relaxed),
+                  chain_len(), M);
+    return 1;
+  }
+
+  uint32_t destroy_id = 2u * M;
+  pins = pins_now();
+  arts_ooo_dispatch_or_defer(&g_slot, NULL, OOO_EVENT_DESTROY, G, &destroy_id,
+                             sizeof(destroy_id));
+  pins = pins_now() - pins;
+  if (atomic_load_explicit(&g_dispatched, memory_order_relaxed) != M + 1u) {
+    (void)fprintf(stderr, "FAIL part3: the destroy did not run at once\n");
+    return 1;
+  }
+#if ENABLE_NUM_ROUTE_PIN
+  /* The engine's own dispatch does pin: the count is live. */
+  if (pins != 1u) {
+    (void)fprintf(stderr,
+                  "FAIL part3: the engine's dispatch pinned %" PRIu64
+                  " times (want 1)\n",
+                  pins);
+    return 1;
+  }
+#endif
+  /* Run the destroy again from a drain: put the object back first. */
+  atomic_store_explicit(&g_seen[destroy_id], 0, memory_order_relaxed);
+  atomic_store_explicit(&g_dispatched, 0, memory_order_relaxed);
+  arts_shared_ptr_t again = arts_shared_copy(mine);
+  arts_shared_ptr_t prev =
+      arts_shared_slot_exchange(&g_slot.value, (arts_shared_ptr_t)NULL);
+  if (prev != NULL) {
+    arts_shared_release(&prev);
+  }
+  struct arts_ooo_payload_s *d = arts_ooo_payload_alloc(
+      OOO_EVENT_DESTROY, G, &destroy_id, sizeof(destroy_id));
+  arts_lf_stack_push(&g_slot.ooo_list, &d->link);
+  for (uint32_t id = M; id < 2u * M; id++) {
+    struct arts_ooo_payload_s *n =
+        arts_ooo_payload_alloc(OOO_EVENT_SATISFY_SLOT, G, &id, sizeof(id));
+    arts_lf_stack_push(&g_slot.ooo_list, &n->link);
+  }
+  arts_shared_slot_store(&g_slot.value, again);
+  g_p3_cb = mine;
+  arts_ooo_drain_on(&g_slot, mine);
+  g_p3_cb = NULL;
+  if (atomic_load_explicit(&g_dispatched, memory_order_relaxed) != 1u ||
+      atomic_load_explicit(&g_seen[destroy_id], memory_order_relaxed) != 1u ||
+      chain_len() != M) {
+    (void)fprintf(stderr,
+                  "FAIL part3: after a retire in the walk %" PRIu64
+                  " nodes ran and %u stayed parked (want the destroy alone, "
+                  "and %u)\n",
+                  atomic_load_explicit(&g_dispatched, memory_order_relaxed),
+                  chain_len(), M);
+    return 1;
+  }
+  arts_ooo_free_all(&g_slot);
+  arts_shared_release(&mine);
+  atomic_store_explicit(&g_slot.key, (arts_guid_t)0, memory_order_relaxed);
+  printf("[part3] PASS  drain on the installer's handle: re-push, inline run, "
+         "stop at a retire\n");
+  return 0;
+}
+
+/* ───────────────────────────────────────────────────────────────────────
+ * PART 4 — the force-defer guard of arts_ooo_dispatch_on (Debug only).
+ * ──────────────────────────────────────────────────────────────────────── */
+static int part4_force_defer_guard(void) {
+#ifndef NDEBUG
+  const ooo_kind_t held_back[] = {OOO_EDT_SATISFY_SLOT, OOO_EVENT_SATISFY_SLOT};
+  for (size_t k = 0; k < sizeof(held_back) / sizeof(held_back[0]); k++) {
+    pid_t pid = fork();
+    if (pid < 0) {
+      (void)fprintf(stderr, "FAIL part4: fork\n");
+      return 1;
+    }
+    if (pid == 0) {
+      /* The expected assertion's message is not this test's output. */
+      (void)freopen("/dev/null", "w", stderr);
+      static struct arts_edt_s wrapper;
+      wrapper.invalidate_count = 1;
+      arts_current_edt = &wrapper;
+      /* Without the refusal the call resolves its GUID through this file's
+       * single slot for ever; the alarm ends it as a failure instead. */
+      (void)alarm(5);
+      uint32_t id = 0;
+      arts_ooo_dispatch_on(NULL, held_back[k], (arts_guid_t)0x77, &id,
+                           sizeof(id));
+      _exit(0);
+    }
+    int st = 0;
+    if (waitpid(pid, &st, 0) != pid) {
+      (void)fprintf(stderr, "FAIL part4: waitpid\n");
+      return 1;
+    }
+    if (!WIFSIGNALED(st) || WTERMSIG(st) != SIGABRT) {
+      (void)fprintf(stderr,
+                    "FAIL part4: dispatch_on of kind %d under outstanding "
+                    "invalidations did not abort\n",
+                    (int)held_back[k]);
+      return 1;
+    }
+  }
+  printf("[part4] PASS  dispatch_on refuses a held-back satisfy\n");
+#endif
+  return 0;
+}
+
 int main(void) {
   if (part1_save_next() != 0) {
     return 1;
@@ -382,6 +608,20 @@ int main(void) {
   if (part2_concurrent_repush() != 0) {
     return 1;
   }
-  printf("PASS ooo_drain_repush: save-next + re-push ABA all clean\n");
+  if (part3_drain_on() != 0) {
+    return 1;
+  }
+  if (part4_force_defer_guard() != 0) {
+    return 1;
+  }
+  if (atomic_load_explicit(&g_wrong_item, memory_order_relaxed) != 0) {
+    (void)fprintf(stderr,
+                  "FAIL: %" PRIu64 " handler(s) ran on an object "
+                  "that is not the slot's\n",
+                  atomic_load_explicit(&g_wrong_item, memory_order_relaxed));
+    return 1;
+  }
+  printf("PASS ooo_drain_repush: save-next + re-push ABA + drain on the "
+         "installer's handle all clean\n");
   return 0;
 }

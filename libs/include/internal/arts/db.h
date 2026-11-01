@@ -265,13 +265,17 @@ void arts_db_descriptor_quarantine_drain(void);
 #endif
 
 /* Install a descriptor a create built on this rank, named by the control
- * block arts_route_table_make_handle made for it.  On success the slot takes
- * over the ref `cb` carries and, when this rank is not the block's home, the
- * block is announced to its home.  On a loss nothing changes: the ref is
- * still the caller's.  The OOO_DB_CREATE body's local shape.  `fresh`: the
- * create minted the GUID and has named it to no one, so it reserves by
+ * block arts_route_table_make_handle made for it (the descriptor's self_cb).
+ * On success the slot takes over the ref `cb` carries and, when this rank is
+ * not the block's home, the block is announced to its home.  On a loss
+ * nothing changes: the ref is still the caller's.  `slot`: the GUID's slot
+ * the engine found empty (the OOO_DB_CREATE body's local shape), installed
+ * into once; NULL resolves the GUID here.  `fresh`: the create minted the
+ * GUID and has named it to no one, so it reserves by
  * arts_route_table_reserve_fresh and was never registered as parked. */
-bool arts_db_create_install_local(arts_shared_ptr_t cb, bool fresh);
+struct arts_route_item_s;
+bool arts_db_create_install_local(arts_shared_ptr_t cb,
+                                  struct arts_route_item_s *slot, bool fresh);
 
 /* User-visible payload pointer for a DB: a coherent DB's installed coherence
  * buffer, and the inline payload after the wrapping struct for every other

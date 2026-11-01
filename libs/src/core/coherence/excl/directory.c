@@ -142,9 +142,10 @@ void arts_excl_home_teardown(struct arts_db_s *db, arts_guid_t db_guid) {
   /* Claim first: only the caller that actually detaches the object may put
    * CACHE_DESTROY on the wire.  Duplicate destroys are produced by the
    * protocol on purpose, and a second fan-out would tell every cache to drop a
-   * DB twice.  Reading db below stays safe after the detach — the dispatch
-   * that reached this handler pins the object across the call. */
-  if (!arts_ooo_retire_item(db_guid, db)) {
+   * DB twice.  Reading db below stays safe after the detach — the caller's
+   * count on the object (its dispatch pin, or the hold a release returns),
+   * which self_cb is borrowed under, keeps it across the call. */
+  if (!arts_ooo_retire(db_guid, db->self_cb)) {
     return;
   }
   struct arts_rank_bitset_cursor_s c =

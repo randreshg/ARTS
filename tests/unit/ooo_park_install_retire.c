@@ -4,12 +4,14 @@
  *
  * A parker pushes its node onto the slot's ooo_list and then re-reads the
  * slot's value and key; an installer
- * (arts_route_table_install_handle_if_absent) stores the value and then drains
- * the list, and a retirer (arts_route_table_set_destroyed_if) clears the value
- * and returns the key and then re-drives the list.  Of a parker and an
- * installer or retirer, either the drain takes the node or the parker's re-read
- * sees the change and drains it itself, so every message is dispatched exactly
- * once and no node is left on any slot.
+ * (arts_route_table_install_handle_if_absent, or a create body's
+ * arts_route_table_install_handle_into on the slot the engine handed it) stores
+ * the value and then drains the list on its own handle, and a retirer
+ * (arts_route_table_set_destroyed_if) clears the value and returns the key and
+ * then re-drives the list.  Of a parker and an installer or retirer, either the
+ * drain takes the node or the parker's re-read sees the change and drains it
+ * itself, so every message is dispatched exactly once and no node is left on
+ * any slot.
  *
  * Scenarios, each over many rounds on a fresh GUID, the racing threads
  * released together and each delayed by a random spin, with a random spin
@@ -21,11 +23,19 @@
  *
  *   B. retire vs a create parker: the GUID holds generation 1; one thread
  *      sends a create of the GUID (parks behind generation 1) while another
- *      retires generation 1.  The create body runs once, installs generation
- *      2 into the empty slot, and never meets generation 1.
+ *      retires generation 1.  The create body may run more than once (an
+ *      install it loses to the retire re-enters by GUID) and installs
+ *      generation 2 once, into the empty slot; it never meets generation 1.
  *
  *   C. both at once: B with PARKERS non-create messages also in flight.
  *      Every message runs once, against generation 1 or generation 2.
+ *
+ *   D. holders acting on a held handle while it is retired: C, but each
+ *      parker holds a reference on generation 1 and sends its message with
+ *      arts_ooo_dispatch_on.  A message whose handle is still live runs on
+ *      generation 1 inline; one whose handle a retire has cleared takes its
+ *      GUID's path and runs on generation 2.  Every message runs once, and
+ *      both outcomes occur over the run.
  *
  * After each round no node is parked on any slot of any table, and each
  * generation's deleter runs once when it is retired.  The scenarios also
@@ -98,6 +108,9 @@ static void after_park(void) {
 #include "../../libs/src/core/ooo.c"
 #include "../../libs/src/core/utils/shared.c"
 
+/* The running EDT, read by the engine's Debug force-defer check: none. */
+ARTS_THREAD_LOCAL struct arts_edt_s *arts_current_edt;
+
 #include "counter_stubs.h"
 
 struct arts_runtime_shared_s arts_node_info;
@@ -109,7 +122,7 @@ static int *g_gen1; /* the object installed before the round (B, C) */
 static int *g_gen2; /* the object the round installs */
 static _Atomic(int) g_errors;
 static _Atomic(uint64_t) g_dispatched; /* non-create messages run */
-static _Atomic(uint64_t) g_creates;    /* create bodies run */
+static _Atomic(uint64_t) g_creates;    /* create bodies that installed */
 static _Atomic(int) g_deletes;
 
 /* Who ran a parker's message: the installing or retiring side's drain, or
@@ -117,11 +130,15 @@ static _Atomic(int) g_deletes;
  * the non-create one in A and C (whose create body installs, so its drain is
  * the installing side's) and the create in B. */
 enum role { ROLE_PARKER, ROLE_INSTALLER, ROLE_RETIRER, ROLE_CREATOR };
-enum scenario { SC_A, SC_B, SC_C, SC_STOP };
+enum scenario { SC_A, SC_B, SC_C, SC_D, SC_STOP };
 static enum scenario g_scenario; /* written by main between barriers */
 static __thread enum role t_role;
 static _Atomic(uint64_t) g_by_drainer;
 static _Atomic(uint64_t) g_by_rescue;
+/* D: messages that ran on the held generation 1, and on generation 2 by
+ * their GUID's path. */
+static _Atomic(uint64_t) g_on_handle;
+static _Atomic(uint64_t) g_by_guid;
 
 static void error(const char *what) {
   if (atomic_fetch_add_explicit(&g_errors, 1, memory_order_relaxed) == 0) {
@@ -152,6 +169,10 @@ static void noncreate(void *item, void *args) {
   if (item == NULL || (item != g_gen1 && item != g_gen2)) {
     error("a message ran against an object that is not its GUID's");
   }
+  if (g_scenario == SC_D) {
+    atomic_fetch_add_explicit(item == g_gen1 ? &g_on_handle : &g_by_guid, 1,
+                              memory_order_relaxed);
+  }
   note_dispatcher(false);
   atomic_fetch_add_explicit(&g_dispatched, 1, memory_order_relaxed);
 }
@@ -162,22 +183,37 @@ static void unexpected(void *item, void *args) {
   error("a handler of a kind the test never sends ran");
 }
 
-/* The create body: installs generation 2, as a real create's body does. */
+/* The create body: installs generation 2 into the slot the engine handed it,
+ * as a real create's body does.  The engine saw the slot empty and keyed by
+ * the GUID, but a retire can take the slot between its key check and its
+ * value load, so the install can lose; the body then re-enters the engine by
+ * GUID, which resolves the slot again. */
 void arts_handler_event_create(void *item, void *args) {
-  (void)args;
-  if (item != NULL) {
-    error("a create body was handed an object");
+  arts_route_item_t *slot = (arts_route_item_t *)item;
+  if (slot == NULL) {
+    error("a create body was handed no slot");
+    return;
+  }
+  arts_shared_ptr_t cb = arts_route_table_make_handle(g_gen2, g_guid);
+  arts_shared_ptr_t pin = arts_shared_copy(cb);
+  bool installed = arts_route_table_install_handle_into(slot, cb, g_guid);
+  arts_shared_release(&pin);
+  if (!installed) {
+    /* The engine hands the slot over only after generation 1's value
+     * exchange, so a lost install never finds generation 1 there. */
+    arts_shared_ptr_t h = arts_shared_slot_load(&slot->value);
+    bool gen1 = h != NULL && g_gen1 != NULL && arts_shared_get(h) == g_gen1;
+    arts_shared_release(&h);
+    if (gen1) {
+      error("a create body was handed a slot still holding generation 1");
+    }
+    arts_shared_abandon(&cb);
+    arts_ooo_dispatch_or_defer_guid(g_guid, OOO_EVENT_CREATE, args,
+                                    sizeof(uint64_t));
+    return;
   }
   note_dispatcher(true);
   atomic_fetch_add_explicit(&g_creates, 1, memory_order_relaxed);
-  arts_shared_ptr_t cb = arts_route_table_make_handle(g_gen2, g_guid);
-  arts_shared_ptr_t pin = arts_shared_copy(cb);
-  if (!arts_route_table_install_handle_if_absent(cb, g_guid)) {
-    arts_shared_release(&pin);
-    arts_shared_abandon(&cb);
-    error("a create body ran while its GUID's slot was occupied");
-  }
-  arts_shared_release(&pin);
 }
 
 void arts_handler_event_satisfy_slot(void *i, void *a) { noncreate(i, a); }
@@ -241,8 +277,16 @@ static void barrier(void) {
   }
 }
 
-static void send_noncreate(void) {
+/* D: each parker's reference on generation 1, taken before the round. */
+static arts_shared_ptr_t g_held[PARKERS];
+
+static void send_noncreate(int id) {
   uint64_t args = 0;
+  if (g_scenario == SC_D) {
+    arts_ooo_dispatch_on(g_held[id], OOO_EVENT_SATISFY_SLOT, g_guid, &args,
+                         sizeof(args));
+    return;
+  }
   arts_ooo_dispatch_or_defer_guid(g_guid, OOO_EVENT_SATISFY_SLOT, &args,
                                   sizeof(args));
 }
@@ -261,7 +305,7 @@ static void *worker(void *vp) {
     if (id < PARKERS) {
       t_role = ROLE_PARKER;
       if (sc != SC_B) {
-        send_noncreate();
+        send_noncreate(id);
       }
     } else if (id == PARKERS) {
       if (sc == SC_A) {
@@ -327,13 +371,15 @@ static int retire_current(const int *want) {
 }
 
 typedef struct {
-  uint64_t parks, by_drainer, by_rescue;
+  uint64_t parks, by_drainer, by_rescue, on_handle, by_guid;
 } tally_t;
 
 static int run(enum scenario sc, int rounds, const char *name, tally_t *t) {
   atomic_store_explicit(&g_parks, 0, memory_order_relaxed);
   atomic_store_explicit(&g_by_drainer, 0, memory_order_relaxed);
   atomic_store_explicit(&g_by_rescue, 0, memory_order_relaxed);
+  atomic_store_explicit(&g_on_handle, 0, memory_order_relaxed);
+  atomic_store_explicit(&g_by_guid, 0, memory_order_relaxed);
   for (int r = 0; r < rounds; r++) {
     g_guid = arts_guid_reserve(ARTS_GUID_DB, 0);
     g_gen1 = NULL;
@@ -353,6 +399,11 @@ static int run(enum scenario sc, int rounds, const char *name, tally_t *t) {
         (void)fprintf(stderr, "FAIL %s: setup install\n", name);
         return 1;
       }
+      if (sc == SC_D) {
+        for (int i = 0; i < PARKERS; i++) {
+          g_held[i] = arts_shared_copy(pin);
+        }
+      }
       arts_shared_release(&pin);
     }
     g_scenario = sc;
@@ -366,13 +417,18 @@ static int run(enum scenario sc, int rounds, const char *name, tally_t *t) {
     if (msgs != want_msgs || creates != want_creates || parked != 0u) {
       (void)fprintf(stderr,
                     "FAIL %s round %d: %" PRIu64 " messages run (want %" PRIu64
-                    "), %" PRIu64 " creates run (want %" PRIu64
+                    "), %" PRIu64 " creates installed (want %" PRIu64
                     "), %u nodes left parked\n",
                     name, r, msgs, want_msgs, creates, want_creates, parked);
       return 1;
     }
     if (atomic_load_explicit(&g_errors, memory_order_relaxed) != 0) {
       return 1;
+    }
+    if (sc == SC_D) {
+      for (int i = 0; i < PARKERS; i++) {
+        arts_shared_release(&g_held[i]);
+      }
     }
     if (!retire_current(g_gen2)) {
       (void)fprintf(stderr, "FAIL %s round %d: generation 2 not installed\n",
@@ -391,6 +447,18 @@ static int run(enum scenario sc, int rounds, const char *name, tally_t *t) {
   t->parks = atomic_load_explicit(&g_parks, memory_order_relaxed);
   t->by_drainer = atomic_load_explicit(&g_by_drainer, memory_order_relaxed);
   t->by_rescue = atomic_load_explicit(&g_by_rescue, memory_order_relaxed);
+  t->on_handle = atomic_load_explicit(&g_on_handle, memory_order_relaxed);
+  t->by_guid = atomic_load_explicit(&g_by_guid, memory_order_relaxed);
+  if (sc == SC_D) {
+    if (t->on_handle == 0u || t->by_guid == 0u) {
+      (void)fprintf(stderr,
+                    "FAIL %s: not both outcomes exercised (%" PRIu64
+                    " on the held handle, %" PRIu64 " by the GUID)\n",
+                    name, t->on_handle, t->by_guid);
+      return 1;
+    }
+    return 0;
+  }
   if (t->by_drainer == 0u || t->by_rescue == 0u) {
     (void)fprintf(stderr,
                   "FAIL %s: not both outcomes exercised (%" PRIu64
@@ -412,10 +480,11 @@ int main(void) {
       return 1;
     }
   }
-  tally_t a, b, c;
+  tally_t a, b, c, d;
   int rc = run(SC_A, 2000 * ROUND_SCALE, "A install-vs-park", &a) ||
            run(SC_B, 4000 * ROUND_SCALE, "B retire-vs-create-park", &b) ||
-           run(SC_C, 2000 * ROUND_SCALE, "C retire-create-vs-parks", &c);
+           run(SC_C, 2000 * ROUND_SCALE, "C retire-create-vs-parks", &c) ||
+           run(SC_D, 2000 * ROUND_SCALE, "D dispatch-on-vs-retire", &d);
   if (rc != 0) {
     _exit(1); /* workers wait at a barrier main never reaches */
   }
@@ -428,8 +497,9 @@ int main(void) {
   printf("PASS ooo_park_install_retire: A %" PRIu64 " parks (%" PRIu64
          " by the install's drain, %" PRIu64 " by a rescue), B %" PRIu64
          " (%" PRIu64 " by the retire's re-drive, %" PRIu64
-         " by a rescue), C %" PRIu64 " (%" PRIu64 ", %" PRIu64 ")\n",
+         " by a rescue), C %" PRIu64 " (%" PRIu64 ", %" PRIu64 "), D %" PRIu64
+         " on the held handle, %" PRIu64 " by the GUID\n",
          a.parks, a.by_drainer, a.by_rescue, b.parks, b.by_drainer, b.by_rescue,
-         c.parks, c.by_drainer, c.by_rescue);
+         c.parks, c.by_drainer, c.by_rescue, d.on_handle, d.by_guid);
   return 0;
 }

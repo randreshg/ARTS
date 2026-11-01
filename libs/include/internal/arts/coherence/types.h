@@ -115,14 +115,14 @@ static inline void arts_db_cache_learn_size(struct arts_db_cache_s *c,
 }
 
 /* Footprint of a non-home / WB / creator-remote DB stub: the cache prefix +
- * db_type + home_initialized, stopping before the home-directory queues/maps
- * (which only the GUID home rank ever touches).  home_initialized MUST be in
- * bounds: the cache destructor reads it on EVERY free to decide whether to tear
- * down the home directory — on a stub it reads (zeroed) false and skips the
- * teardown.  Allocating this much keeps db_type + home_initialized in bounds
- * while shedding the bulky home directory (MPSC queue + rank->u64 map +
- * cached_ranks bitset).  The home rank allocates the full sizeof(struct
- * arts_db_s) instead.
+ * db_type + home_initialized + self_cb, stopping before the home-directory
+ * queues/maps (which only the GUID home rank ever touches).  home_initialized
+ * MUST be in bounds: the cache destructor reads it on EVERY free to decide
+ * whether to tear down the home directory — on a stub it reads (zeroed) false
+ * and skips the teardown.  Allocating this much keeps db_type +
+ * home_initialized in bounds while shedding the bulky home directory (MPSC
+ * queue + rank->u64 map + cached_ranks bitset).  The home rank allocates the
+ * full sizeof(struct arts_db_s) instead.
  * The stub ends at the first home-directory field after home_initialized
  * (protocol-dependent: for VAL, rw_holder where the home revokes and
  * pending_rw where it names no holder). */

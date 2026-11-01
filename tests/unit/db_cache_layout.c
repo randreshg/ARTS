@@ -21,6 +21,9 @@
  *   4. home_initialized is laid out AFTER db_type which is AFTER the cache —
  *      i.e. offsetof(cache)==0 < offsetof(db_type) <
  * offsetof(home_initialized).
+ *   4a. self_cb lies between db_type and home_initialized, so a cache-only
+ *      stub carries the alias to its control block (every descriptor is
+ *      installed with one and retired through it).
  *   5. The buffer's payload member lands at offset 64 (cache-line
  *      boundary), whether it is the inline bytes or a pointer to storage
  *      the descriptor does not own.
@@ -87,6 +90,13 @@ static_assert(offsetof(struct arts_db_s, db_type) >
 static_assert(offsetof(struct arts_db_s, home_initialized) >
                   offsetof(struct arts_db_s, db_type),
               "home_initialized must follow db_type");
+/* (4a) self_cb inside the stub's span, before the home fields. */
+static_assert(offsetof(struct arts_db_s, self_cb) >
+                  offsetof(struct arts_db_s, db_type),
+              "self_cb must follow db_type");
+static_assert(offsetof(struct arts_db_s, home_initialized) >
+                  offsetof(struct arts_db_s, self_cb),
+              "self_cb must precede home_initialized");
 
 #ifdef __cplusplus
 #define LAYOUT_LANG "cpp"
@@ -258,6 +268,7 @@ static void print_fingerprint(void) {
   TYPE(db_t);
   MEMBER(db_t, cache);
   MEMBER(db_t, db_type);
+  MEMBER(db_t, self_cb);
   MEMBER(db_t, home_initialized);
 #if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
 #ifndef ARTS_RELEASE_PURGE
@@ -335,6 +346,16 @@ int main(void) {
                   "FAIL db_cache_layout: stub_size(%llu) must be > "
                   "offsetof(home_initialized)=%zu (the teardown reads it)\n",
                   (unsigned long long)stub, off_home_init);
+    rc = 1;
+  }
+  /* (4a) The stub carries the whole self_cb. */
+  size_t off_self_cb = offsetof(struct arts_db_s, self_cb);
+  if (!(stub >= off_self_cb + sizeof(((struct arts_db_s *)0)->self_cb))) {
+    (void)fprintf(stderr,
+                  "FAIL db_cache_layout: stub_size(%llu) truncates self_cb "
+                  "(end=%zu)\n",
+                  (unsigned long long)stub,
+                  off_self_cb + sizeof(((struct arts_db_s *)0)->self_cb));
     rc = 1;
   }
   /* The stub must still leave room to read the whole bool home_initialized. */

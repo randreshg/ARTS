@@ -363,20 +363,21 @@ static void arts_edt_free(struct arts_edt_s *edt) {
  * create for good.  The detach drops the
  * install ref, so the deleter (arts_edt_deleter -> arts_edt_free) runs at the
  * last release; `edt` stays dereferenceable after the call only while the
- * caller holds its own reference (the run path's runnable-phase ref). */
+ * caller holds its own reference (the run path's runnable-phase ref), which
+ * is also the count self_cb is borrowed under. */
 void arts_edt_delete(struct arts_edt_s *edt) {
   ARTS_INFO("EDT delete [Guid:%lu, Depc:%u, DepcNeeded:%u] on rank %u",
             edt->guid, edt->depc,
             atomic_load_explicit(&edt->depc_needed, memory_order_relaxed),
             arts_global_rank_id);
-  arts_route_table_set_destroyed_item(edt->guid, edt->self_cb);
+  (void)arts_ooo_retire(edt->guid, edt->self_cb);
 }
 
 /* Pure Cat-B body (g_ooo_table[OOO_EDT_DESTROY]).  The EDT is installed and
- * ref-pinned by dispatch_or_defer.  OCR restricts ocrEdtDestroy to
+ * held by its caller.  OCR restricts ocrEdtDestroy to
  * pre-runnable EDTs (depc_needed > 0); destroying a runnable/queued/running EDT
- * is UB and is skipped.  The retire names the object the dispatch chose, so it
- * fails when the EDT's own completion retired it first.  A destroyed EDT never
+ * is UB and is skipped.  The retire names the EDT's own cb, so it fails when
+ * the EDT's own completion retired it first.  A destroyed EDT never
  * completes, so the destroy that wins the retire sends the finish-scope DECR
  * its completion would have: to the local proxy when the scope is remote (its
  * fire forwards the DECR and reclaims it), else to the scope itself.  The
@@ -396,7 +397,7 @@ void arts_handler_edt_destroy(void *item_v, void *args_v) {
   ARTS_INFO("EDT destroy [Guid:%lu, Depc:%u, DepcNeeded:%u] on rank %u",
             edt->guid, edt->depc, needed, arts_global_rank_id);
   arts_guid_t finish_event = edt->finish_event;
-  if (arts_ooo_retire_item(a->guid, item_v) && finish_event != NULL_GUID) {
+  if (arts_ooo_retire(a->guid, edt->self_cb) && finish_event != NULL_GUID) {
     arts_event_satisfy_slot(finish_event, NULL_GUID,
                             ARTS_EVENT_LATCH_DECR_SLOT);
   }
@@ -610,19 +611,21 @@ void (*arts_edt_installed_hook)(struct arts_edt_s *edt) = NULL;
 #endif
 
 /* g_ooo_table[OOO_EDT_CREATE]: the engine runs it while the GUID's slot is
- * empty (`item_v` is NULL).  A local create hands over the EDT it built, which
- * is installed as is; a received blob is copied into a fresh object.  Every
- * field another thread may read once the EDT is installed is final before
- * the install, self_cb included: a satisfy or destroy dispatched on another
- * thread, or replayed by the install's own drain, can act on the EDT from
- * that point on, and the satisfy whose decrement reads 1 readies it there.
- * An EDT with no dependence has no satisfier, so the body readies it.  A lost
- * install CAS means another create filled the slot after the engine saw it
- * empty, so this one re-enters the engine and parks behind it with the object
- * it built, ready as it is.  A parked create keeps open the finish-scope INCR
- * its creating rank emitted until it installs. */
+ * empty, and `item_v` is that slot.  A local create hands over the EDT it
+ * built, which is installed as is; a received blob is copied into a fresh
+ * object.  Every field another thread may read once the EDT is installed is
+ * final before the install, self_cb included: a satisfy or destroy dispatched
+ * on another thread, or replayed by the install's own drain, can act on the
+ * EDT from that point on, and the satisfy whose decrement reads 1 readies it
+ * there.  An EDT with no dependence has no satisfier, so the body readies it.
+ * A lost install means the slot left the empty state the engine saw (another
+ * create filled it, or a retire in flight took it between the engine's key
+ * check and its value load), so this one re-enters the engine by GUID with
+ * the object it built, ready as it is: it parks behind an occupant, or
+ * installs into the slot its GUID names now.  A parked create keeps open the
+ * finish-scope INCR its creating rank emitted until it installs. */
 void arts_handler_edt_create(void *item_v, void *args_v) {
-  (void)item_v;
+  arts_route_item_t *slot = (arts_route_item_t *)item_v;
   const struct arts_ooo_args_create_blob_s *a =
       (const struct arts_ooo_args_create_blob_s *)args_v;
   struct arts_edt_s *edt;
@@ -668,11 +671,13 @@ void arts_handler_edt_create(void *item_v, void *args_v) {
    * the install's release publishes the EDT, since a satisfier that readies
    * it takes the runnable-phase ref from self_cb.  `pin` keeps the EDT alive
    * from the install to the end of this body, even when it is readied, run
-   * and retired meanwhile, or a destroy the drain replays retires it. */
+   * and retired meanwhile, or a destroy the drain replays retires it; it is
+   * also the reference of the installer's own that the install's drain runs
+   * on. */
   arts_shared_ptr_t cb = arts_route_table_make_handle(edt, guid);
   edt->self_cb = cb;
   arts_shared_ptr_t pin = arts_shared_copy(cb);
-  if (!arts_route_table_install_handle_if_absent(cb, guid)) {
+  if (!arts_route_table_install_handle_into(slot, cb, guid)) {
     arts_shared_release(&pin);
     arts_shared_abandon(&cb);
     edt->self_cb = NULL;

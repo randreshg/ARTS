@@ -93,9 +93,9 @@ void arts_free(void *p) { free(p); }
 #ifdef ARTS_DEBUG_INJECTION
 void arts_sched_fuzz_point(void) {}
 #endif
-bool arts_route_table_set_destroyed_object(arts_guid_t key, const void *obj) {
+bool arts_route_table_live(arts_shared_ptr_t h, arts_guid_t key) {
+  (void)h;
   (void)key;
-  (void)obj;
   return false;
 }
 bool arts_route_table_set_destroyed_item(arts_guid_t key,
@@ -111,6 +111,9 @@ void arts_route_table_delete_unpublished(arts_guid_t key, void *obj) {
 
 /* Expose the file-static g_ooo_table by compiling ooo.c into this TU. */
 #include "../../libs/src/core/ooo.c"
+
+/* The running EDT, read by the engine's Debug force-defer check: none. */
+ARTS_THREAD_LOCAL struct arts_edt_s *arts_current_edt;
 
 #include "counter_stubs.h"
 

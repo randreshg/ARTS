@@ -363,7 +363,8 @@ static void db_create_in_place(arts_guid_t guid, void *addr, uint64_t len,
                                arts_db_types_t db_type, bool acquires) {
   struct arts_db_s *db_res = (struct arts_db_s *)addr;
   /* lifecycle/deleter handled by the route_table cb (deleter-by-kind) on
-   * install — no per-object shared field to initialize. */
+   * install; self_cb, the alias to that cb, is armed by db_create_enter once
+   * the cb is made. */
 #ifdef ARTS_GPU_LAYOUT
   atomic_store_explicit(&db_res->version, 0u, memory_order_relaxed);
   db_res->time_stamp = 0;
@@ -583,14 +584,22 @@ static bool db_parked_here(arts_guid_t guid) {
   return false;
 }
 
-bool arts_db_create_install_local(arts_shared_ptr_t cb, bool fresh) {
+bool arts_db_create_install_local(arts_shared_ptr_t cb,
+                                  struct arts_route_item_s *slot, bool fresh) {
   struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(cb);
   arts_guid_t guid = db->cache.db_guid;
   /* The install's drain can retire the descriptor (a destroy deferred before
-   * the create), so the reads below go through a ref of this call's own. */
+   * the create), so the reads below go through a ref of this call's own,
+   * which the drain also runs on. */
   arts_shared_ptr_t pin = arts_shared_copy(cb);
-  bool installed = fresh ? arts_route_table_install_handle_fresh(cb, guid)
-                         : arts_route_table_install_handle_if_absent(cb, guid);
+  bool installed;
+  if (slot != NULL) {
+    installed = arts_route_table_install_handle_into(slot, cb, guid);
+  } else if (fresh) {
+    installed = arts_route_table_install_handle_fresh(cb, guid);
+  } else {
+    installed = arts_route_table_install_handle_if_absent(cb, guid);
+  }
   if (!installed) {
     arts_shared_release(&pin);
     return false;
@@ -622,6 +631,7 @@ bool arts_db_create_install_local(arts_shared_ptr_t cb, bool fresh) {
 static void db_create_enter(struct arts_db_s *db, arts_guid_t guid,
                             bool acquires, bool fresh, void **addr) {
   arts_shared_ptr_t cb = arts_route_table_make_handle(db, guid);
+  db->self_cb = cb;
   if (acquires) {
     arts_db_auto_acquire(arts_shared_copy(cb));
   }
@@ -704,6 +714,7 @@ static struct arts_db_s *db_creator_descriptor(arts_guid_t guid, uint64_t len,
                         /*data_payload=*/NULL, len);
   }
   *cb = arts_route_table_make_handle(stub, guid);
+  stub->self_cb = *cb;
   *mine = arts_shared_copy(*cb);
   return stub;
 }
@@ -726,7 +737,7 @@ static void db_create_remote_creator(arts_guid_t guid, uint64_t len,
      * have made a cache of it here and its create cannot park, so it is
      * neither looked up nor registered. */
     stub = db_creator_descriptor(guid, len, &cb, &mine);
-    if (arts_db_create_install_local(cb, /*fresh=*/true)) {
+    if (arts_db_create_install_local(cb, NULL, /*fresh=*/true)) {
       *addr = arts_db_user_ptr(stub);
       arts_db_auto_acquire(mine);
       return;
@@ -771,7 +782,7 @@ static void db_create_remote_creator(arts_guid_t guid, uint64_t len,
       if (stub == NULL) {
         stub = db_creator_descriptor(guid, len, &cb, &mine);
       }
-      if (arts_db_create_install_local(cb, /*fresh=*/false)) {
+      if (arts_db_create_install_local(cb, NULL, /*fresh=*/false)) {
         *addr = arts_db_user_ptr(stub);
         arts_db_auto_acquire(mine);
         return;

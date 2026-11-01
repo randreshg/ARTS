@@ -81,7 +81,7 @@
 /* arts_handler_db_destroy is protocol-specific — each arm keeps its own exact
  * destroy roster (the creator, the readers, every write requester) — so its
  * whole body lives in each arm's own write-policy TU.  Every body runs the
- * roster fan-out, then retires the slot by the dispatched item; any waiter
+ * roster fan-out, then retires the descriptor through its self_cb; any waiter
  * left parked at destroy time (UB per OCR) is never woken, and its slot's
  * descriptor pin keeps the descriptor, and so the waiter, until the process
  * ends. */
@@ -158,8 +158,9 @@ static inline void db_create_no_acquire_idle(struct arts_db_s *db,
 
 
 /* The OOO_DB_CREATE body.  The engine runs it only while the GUID's slot on
- * this rank is empty; a create that finds the slot occupied is parked there
- * and dispatched by the occupant's destroy.  Two shapes:
+ * this rank is empty, and hands it that slot (`item_v`); a create that finds
+ * the slot occupied is parked there and dispatched by the occupant's destroy.
+ * Two shapes:
  *   - the announce (arts_ooo_args_db_create_s): the home builds the block's
  *     directory for a creator on another rank, or for a creator here that
  *     acquires nothing;
@@ -167,14 +168,16 @@ static inline void db_create_no_acquire_idle(struct arts_db_s *db,
  *     privately on this rank: it is installed as is, and a creator that is
  *     not the block's home announces the block once its descriptor is
  *     installed.
- * A lost install re-enters the engine with the same args, which parks. */
+ * A lost install (the slot left the empty state the engine saw: another
+ * create filled it, or a retire in flight took it) re-enters the engine by
+ * GUID with the same args. */
 void arts_handler_db_create(void *item_v, void *args_v) {
-  (void)item_v;
+  arts_route_item_t *slot = (arts_route_item_t *)item_v;
   if (((const struct arts_ooo_args_create_local_s *)args_v)->size ==
       ARTS_OOO_CREATE_ADOPT) {
     const struct arts_ooo_args_create_local_s *l =
         (const struct arts_ooo_args_create_local_s *)args_v;
-    if (!arts_db_create_install_local((arts_shared_ptr_t)l->descriptor,
+    if (!arts_db_create_install_local((arts_shared_ptr_t)l->descriptor, slot,
                                       /*fresh=*/false)) {
       arts_ooo_dispatch_or_defer_guid(l->guid, OOO_DB_CREATE, l, sizeof(*l));
     }
@@ -265,9 +268,16 @@ void arts_handler_db_create(void *item_v, void *args_v) {
     arts_db_create_install_home_buffer(&stub->cache, db_size);
   }
 
-  arts_shared_ptr_t installed_h =
-      arts_route_table_install_if_absent(stub, db_guid);
-  if (installed_h == NULL) {
+  /* `mine` is this body's own reference across the install, whose drain
+   * runs on the cb and can retire the descriptor (a destroy deferred before
+   * the create). */
+  arts_shared_ptr_t cb = arts_route_table_make_handle(stub, db_guid);
+  stub->self_cb = cb;
+  arts_shared_ptr_t mine = arts_shared_copy(cb);
+  if (!arts_route_table_install_handle_into(slot, cb, db_guid)) {
+    arts_shared_release(&mine);
+    stub->self_cb = NULL;
+    arts_shared_abandon(&cb);
     /* The descriptor was never published; the store stays the creator's,
      * named again by the replay. */
 #ifdef ARTS_USE_CXL
@@ -294,7 +304,7 @@ void arts_handler_db_create(void *item_v, void *args_v) {
     arts_shared_release(&live_h);
   }
 #endif
-  arts_shared_release(&installed_h);
+  arts_shared_release(&mine);
 }
 
 /* ===== Sharer-side response handlers =============================== */
@@ -485,15 +495,17 @@ void arts_handler_db_snapshot_response(void *item_v, void *args_v) {
  * dispatcher drops that notice.
  *
  * Destroy is just the route-slot detach of the object the message was
- * dispatched on (CAS value→NULL + drop the install ref); the cb deleter
- * (arts_db_cache_destructor) runs at refcount 0 and does the cleanup (free
- * the parked-waiter nodes).  A parked EDT is an acquire the destroy contract
- * excludes, and so is a release still waiting for its publish (a destroy
- * follows the release of every hold), so no wake is attempted. */
+ * dispatched on (CAS value→NULL + drop the install ref), through its self_cb
+ * under the dispatcher's ref; the cb deleter (arts_db_cache_destructor) runs
+ * at refcount 0 and does the cleanup (free the parked-waiter nodes).  A
+ * parked EDT is an acquire the destroy contract excludes, and so is a release
+ * still waiting for its publish (a destroy follows the release of every
+ * hold), so no wake is attempted. */
 void arts_handler_db_cache_destroy(void *item_v, void *args_v) {
   struct arts_db_cache_destroy_args_s *a =
       (struct arts_db_cache_destroy_args_s *)args_v;
-  (void)arts_ooo_retire_item(a->db_guid, item_v);
+  struct arts_db_s *db = (struct arts_db_s *)item_v;
+  (void)arts_ooo_retire(a->db_guid, db->self_cb);
 }
 
 /* The WB SNAPSHOT_REDIRECT handler arts_handler_db_snapshot_redirect lives in

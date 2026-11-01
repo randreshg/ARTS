@@ -53,7 +53,7 @@
 #include "arts.h"
 #include "arts/counter/Preamble.h"
 #include "arts/gas/guid.h"
-#include "arts/ooo.h"           /* arts_ooo_drain / arts_ooo_redrive_all */
+#include "arts/ooo.h"           /* arts_ooo_drain_on / arts_ooo_redrive_all */
 #include "arts/runtime_state.h" /* arts_node_info */
 #include "arts/system/print.h"
 #include "arts/system/schedfuzz.h"
@@ -784,26 +784,11 @@ static route_install_t route_install_empty(arts_route_item_t *slot,
    * unconditional, so either it takes the node or the parker's push reads
    * from it or a later RMW and its re-read sees the install or a later
    * write.  A returned slot can also still carry a node a previous
-   * occupant's parker pushed; the drain sends it on by its own GUID. */
-  arts_ooo_drain(slot);
+   * occupant's parker pushed; the drain sends it on by its own GUID.  The
+   * drain runs the installed GUID's nodes on `cb`, which the caller's own
+   * reference keeps valid through it. */
+  arts_ooo_drain_on(slot, cb);
   return ROUTE_INSTALL_WON;
-}
-
-/* Race install: returns a caller-owned handle only if this caller CAS'd its cb
- * into the slot, NULL otherwise. */
-arts_shared_ptr_t arts_route_table_install_if_absent(void *obj,
-                                                     arts_guid_t key) {
-  arts_shared_ptr_t cb = arts_route_table_make_handle(obj, key);
-  /* The caller's ref, taken before the cb can be published and retired. */
-  arts_shared_ptr_t mine = arts_shared_copy(cb);
-  if (arts_route_table_install_handle_if_absent(cb, key)) {
-    return mine;
-  }
-  /* Occupied under this key: another install won.  The object stays the
-   * caller's. */
-  arts_shared_release(&mine);
-  arts_shared_abandon(&cb);
-  return NULL;
 }
 
 arts_shared_ptr_t arts_route_table_make_handle(void *obj, arts_guid_t key) {
@@ -891,38 +876,6 @@ bool arts_route_table_live(arts_shared_ptr_t h, arts_guid_t key) {
 #define ROUTE_TABLE_AFTER_RETIRE_CLAIM(key) ((void)(key))
 #endif
 
-/* The object `key` publishes, pinned, looking through a retire in flight: a
- * slot of the key's window that is RETIRING hides the key from a search, and
- * if that retire hands the key back, the object it hid is still the key's.
- * The value is taken only while the slot stays RETIRING across the load, so it
- * was in the slot during that retire: either the object being retired (the
- * dispatched-item form then sees its tag cleared) or a hand-back's occupant. */
-static arts_shared_ptr_t route_table_pin_published(arts_guid_t key) {
-  arts_shared_ptr_t h = arts_route_table_lookup(key);
-  if (h != NULL) {
-    return h;
-  }
-  for (arts_route_table_t *t = arts_get_route_table(key); t != NULL;
-       t = route_table_next(t)) {
-    uint64_t pos = get_route_table_key((uint64_t)key, t->shift);
-    for (int i = 0; i < COLLISION_RESOLVES; i++, pos++) {
-      arts_route_item_t *slot = &t->data[pos];
-      if (atomic_load_explicit(&slot->key, memory_order_acquire) !=
-          ARTS_ROUTE_KEY_RETIRING) {
-        continue;
-      }
-      h = arts_shared_slot_load(&slot->value);
-      if (h != NULL && arts_shared_tag(h) == (uint64_t)key &&
-          atomic_load_explicit(&slot->key, memory_order_acquire) ==
-              ARTS_ROUTE_KEY_RETIRING) {
-        return h;
-      }
-      arts_shared_release(&h);
-    }
-  }
-  return NULL;
-}
-
 bool arts_route_table_set_destroyed_if(arts_guid_t key, arts_shared_ptr_t cb) {
   if (cb == NULL) {
     return false;
@@ -958,10 +911,9 @@ bool arts_route_table_set_destroyed_if(arts_guid_t key, arts_shared_ptr_t cb) {
     /* Between the peek and the claim another retire took `cb` and the slot
      * was reserved for the key again, its next generation perhaps installed.
      * Nothing was taken: the slot stays the key's.  Reservers wait out
-     * RETIRING, so none of them publishes a second slot meanwhile; a retire
-     * of the next generation that arrives meanwhile waits the window out
-     * (the dispatched-item form) or finds it through
-     * route_table_pin_published (the object form). */
+     * RETIRING, so none of them publishes a second slot meanwhile, and a
+     * retire of the next generation that arrives meanwhile waits the window
+     * out (the dispatched-item form). */
     atomic_store_explicit(&item->key, key, memory_order_release);
     return false;
   }
@@ -990,9 +942,10 @@ bool arts_route_table_set_destroyed_item(arts_guid_t key,
     if (arts_route_table_set_destroyed_if(key, cb)) {
       return true;
     }
-    /* Still tagged `key`, so still installed in the key's one slot: a
-     * concurrent retire holds that slot, or has taken `cb` and not yet
-     * cleared its tag. */
+    /* Still tagged `key`, and installed by this form's precondition (a cb
+     * made and never installed is tagged too, and would be waited on until
+     * the bound), so still in the key's one slot: a concurrent retire holds
+     * that slot, or has taken `cb` and not yet cleared its tag. */
     arts_route_item_t *slot =
         arts_route_table_search_for_key(arts_get_route_table(key), key);
     const char *why =
@@ -1007,17 +960,6 @@ bool arts_route_table_set_destroyed_item(arts_guid_t key,
                      : atomic_load_explicit(&slot->key, memory_order_acquire);
     route_wait_tick(&w, key, why, seen);
   }
-}
-
-bool arts_route_table_set_destroyed_object(arts_guid_t key, const void *obj) {
-  arts_shared_ptr_t h = route_table_pin_published(key);
-  if (h == NULL) {
-    return false;
-  }
-  bool retired =
-      arts_shared_get(h) == obj && arts_route_table_set_destroyed_item(key, h);
-  arts_shared_release(&h);
-  return retired;
 }
 
 /* Acquire a slot's object, verified by the OBJECT's identity.

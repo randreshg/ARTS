@@ -85,7 +85,7 @@ add_pure_unit_src(mpsc_transient_empty PASS_REGEX "PASS mpsc_transient_empty" TI
 add_pure_unit_src(event_channel_gate PASS_REGEX "PASS event_channel_gate" TIMEOUT 60)
 add_pure_unit_src(shared_compare_exchange SOURCES ${CMAKE_SOURCE_DIR}/libs/src/core/utils/shared.c PASS_REGEX "PASS shared_compare_exchange" TIMEOUT 60)
 add_pure_unit_src(shared_lifecycle_race SOURCES ${CMAKE_SOURCE_DIR}/libs/src/core/utils/shared.c PASS_REGEX "PASS shared_lifecycle_race" TIMEOUT 60)
-add_pure_unit_src(route_table_install_if_absent PASS_REGEX "PASS route_table_install_if_absent" TIMEOUT 60)
+add_pure_unit_src(route_table_install_retire PASS_REGEX "PASS route_table_install_retire" TIMEOUT 60)
 # A control block records the slot it was installed into: liveness, the
 # one-shot install into a known slot, find-or-install, borrow-or-lookup and
 # the identity retire through the recorded slot, with the probes and pins each
@@ -1317,3 +1317,9 @@ function(arts_route_budget_test shape n probes pins)
 endfunction()
 
 arts_route_budget_test(none 8 0 0 REFERENCE_ONLY)
+# create: each of the unit's three creates mints its GUID, reserves its slot
+# on the fresh path (one probe) and installs into the slot the engine found
+# there (none); nothing is parked, so the install's drain pins nothing, and
+# the EDT's completion retires it through its control block's home (none).
+# No cell changes a create that acquires nothing.
+arts_route_budget_test(create 64 3 0 REFERENCE_ONLY)

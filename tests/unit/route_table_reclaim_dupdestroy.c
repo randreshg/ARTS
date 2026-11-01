@@ -13,7 +13,7 @@
  * Oracles (all derived from the public contract, none from comments):
  *  O1  a cb deleter must not run for an object whose owner never asked for a
  *      destroy                        -> "duplicate destroy freed a stranger"
- *  O2  right after install_if_absent() returns a handle, lookup(g) must find that
+ *  O2  right after an install returns a handle, lookup(g) must find that
  *      object                          -> "stale key=0 orphaned a live install"
  *  O3  lookup(g) must never return another GUID's object.
  */
@@ -45,7 +45,11 @@ void arts_sched_fuzz_point(void) {}
 #endif
 
 struct arts_route_item_s;
-void arts_ooo_drain(struct arts_route_item_s *s) { (void)s; }
+struct arts_shared_s;
+void arts_ooo_drain_on(struct arts_route_item_s *s, struct arts_shared_s *h) {
+  (void)s;
+  (void)h;
+}
 void arts_ooo_redrive_all(struct arts_route_item_s *s) { (void)s; }
 void arts_ooo_free_all(struct arts_route_item_s *s) { (void)s; }
 
@@ -54,6 +58,21 @@ void arts_ooo_free_all(struct arts_route_item_s *s) { (void)s; }
 #include "../../libs/src/core/utils/shared.c"
 
 #include "counter_stubs.h"
+
+/* Installs `obj` under `key` as the runtime's creates do: wrapped in its
+ * control block, with a reference of the caller's own held across the
+ * install.  A win returns that reference; a loss abandons the control block
+ * (the object stays the caller's) and returns NULL. */
+static arts_shared_ptr_t install_obj(void *obj, arts_guid_t key) {
+  arts_shared_ptr_t cb = arts_route_table_make_handle(obj, key);
+  arts_shared_ptr_t mine = arts_shared_copy(cb);
+  if (arts_route_table_install_handle_if_absent(cb, key)) {
+    return mine;
+  }
+  arts_shared_release(&mine);
+  arts_shared_abandon(&cb);
+  return NULL;
+}
 
 struct arts_runtime_shared_s arts_node_info;
 ARTS_THREAD_LOCAL struct arts_runtime_private_s arts_thread_info;
@@ -158,9 +177,10 @@ static void *reader(void *vp) {
   return NULL;
 }
 
-/* Two destroyer threads issue the SAME destroy concurrently.  Every duplicate
- * CACHE_DESTROY / completion-vs-wire-destroy pair in the runtime looks
- * exactly like this. */
+/* Two destroyer threads issue the SAME destroy concurrently, each a
+ * key-addressed notice that looks the object up and retires the handle it
+ * found.  Every duplicate CACHE_DESTROY / completion-vs-wire-destroy pair in
+ * the runtime looks exactly like this. */
 static void *destroyer(void *vp) {
   (void)vp;
   for (int r = 0; r < ROUNDS; r++) {
@@ -168,7 +188,7 @@ static void *destroyer(void *vp) {
     arts_guid_t g = atomic_load_explicit(&g_victim, memory_order_acquire);
     arts_shared_ptr_t h = arts_route_table_lookup(g);
     if (h != NULL) {
-      (void)arts_route_table_set_destroyed_object(g, arts_shared_get(h));
+      (void)arts_route_table_set_destroyed_item(g, h);
       arts_shared_release(&h);
     }
     pthread_barrier_wait(&bar);
@@ -188,12 +208,11 @@ static void *churn(void *vp) {
       obj_t *o = (obj_t *)calloc(1, sizeof(obj_t));
       o->guid = g;
       atomic_store_explicit(&o->destroy_requested, 0, memory_order_release);
-      arts_shared_ptr_t ih = arts_route_table_install_if_absent(o, g);
+      arts_shared_ptr_t ih = install_obj(o, g);
       if (ih == NULL) {
         free(o);
         continue;
       }
-      arts_shared_release(&ih);
       atomic_fetch_add_explicit(&n_installs, 1, memory_order_relaxed);
       arts_shared_ptr_t h = arts_route_table_lookup(g);
       void *got = h ? arts_shared_get(h) : NULL;
@@ -204,7 +223,8 @@ static void *churn(void *vp) {
       }
       if (h) { arts_shared_release(&h); }
       atomic_store_explicit(&o->destroy_requested, 1, memory_order_release);
-      (void)arts_route_table_set_destroyed_object(g, o);
+      (void)arts_route_table_set_destroyed_item(g, ih);
+      arts_shared_release(&ih);
       if ((r & 15) == 0 && k == 0) {
         dead_push(g); /* sampled: keeps the reservation growth bounded */
       }
@@ -232,7 +252,7 @@ int main(void) {
     obj_t *o = (obj_t *)calloc(1, sizeof(obj_t));
     o->guid = g;
     atomic_store_explicit(&o->destroy_requested, 1, memory_order_release);
-    arts_shared_ptr_t h = arts_route_table_install_if_absent(o, g);
+    arts_shared_ptr_t h = install_obj(o, g);
     arts_shared_release(&h);
     atomic_store_explicit(&g_victim, g, memory_order_release);
     /* Into the ring BEFORE it dies: the sweep then re-reserves this GUID the

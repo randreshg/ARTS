@@ -231,6 +231,7 @@ static void print_fingerprint(void) {
 
   TYPE(event_t);
   MEMBER(event_t, is_channel);
+  MEMBER(event_t, self_cb);
   MEMBER(event_t, simple);
   MEMBER(event_t, simple.state);
   MEMBER(event_t, simple.counted);
