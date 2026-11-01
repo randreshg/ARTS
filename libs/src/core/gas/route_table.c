@@ -719,16 +719,78 @@ bool arts_route_item_install_data(arts_route_item_t *item, void *obj,
   return false;
 }
 
+typedef enum {
+  ROUTE_INSTALL_WON,
+  ROUTE_INSTALL_OCCUPIED, /* the slot named the key and held an object */
+  ROUTE_INSTALL_AGAIN,    /* it names the key no longer, or its word moved */
+} route_install_t;
+
+#ifndef ROUTE_TABLE_BEFORE_INSTALL_CAS
+/* Runs in an install between its key check and its CAS.  Empty in the
+ * runtime; a whitebox test defines it to move the slot's value word inside
+ * that window. */
+#define ROUTE_TABLE_BEFORE_INSTALL_CAS(key) ((void)(key))
+#endif
+
+#ifndef ROUTE_TABLE_AFTER_INSTALL_CAS
+/* Runs between a won install CAS and its home store. */
+#define ROUTE_TABLE_AFTER_INSTALL_CAS(key)                                     \
+  ((void)(key), arts_sched_fuzz_point())
+#endif
+
+/* One attempt to install `cb` into `slot` as `key`'s object; every install of
+ * the global table is made by it.  The slot's identity and its emptiness are
+ * decided by one atom: the empty value word is snapshotted first, the key is
+ * checked after it, and the install is a CAS on that exact snapshot.  A
+ * teardown retires the key before it exchanges the value, and that exchange
+ * moves the word, so a resolver that saw the slot as the key's before a
+ * retire can no longer install into it.  An object therefore only ever sits
+ * in a slot that named its key when it was installed.  The caller holds a ref
+ * on `cb` of its own across the call: the CAS hands the passed ref to the
+ * slot, and the home store comes after it. */
+static route_install_t route_install_empty(arts_route_item_t *slot,
+                                           arts_shared_ptr_t cb,
+                                           arts_guid_t key) {
+  assert(cb != NULL && arts_shared_tag(cb) == (uint64_t)key);
+  uint64_t ext = 0;
+  bool empty = arts_shared_slot_peek_empty(&slot->value, &ext);
+  if (atomic_load_explicit(&slot->key, memory_order_acquire) != key) {
+    return ROUTE_INSTALL_AGAIN;
+  }
+  if (!empty) {
+    return ROUTE_INSTALL_OCCUPIED;
+  }
+  ROUTE_TABLE_BEFORE_INSTALL_CAS(key);
+#ifndef NDEBUG
+  /* The CAS hands one reference to the slot and the home store follows it. */
+  if (arts_shared_debug_refs(cb) < 2) {
+    ARTS_ERROR("install of GUID %lu without a reference of the caller's own",
+               (unsigned long)key);
+  }
+#endif
+  if (!arts_shared_slot_install_empty(&slot->value, ext, cb)) {
+    return ROUTE_INSTALL_AGAIN;
+  }
+  ROUTE_TABLE_AFTER_INSTALL_CAS(key);
+  /* After the CAS, which a loser never passes, so only the winner writes the
+   * home and every holder that reads it, one whose count predates the
+   * install included, is ordered after the install; before the drain, so
+   * whatever this drain runs finds the cb live.  A thread that pins the cb
+   * from the slot between the CAS and this store finds it installed but not
+   * yet live. */
+  arts_shared_set_home(cb, slot);
+  /* Same-word pairing on ooo_list with a parker's push and re-read in
+   * arts_ooo_dispatch_or_defer: the drain's exchange is acq_rel and
+   * unconditional, so either it takes the node or the parker's push reads
+   * from it or a later RMW and its re-read sees the install or a later
+   * write.  A returned slot can also still carry a node a previous
+   * occupant's parker pushed; the drain sends it on by its own GUID. */
+  arts_ooo_drain(slot);
+  return ROUTE_INSTALL_WON;
+}
+
 /* Race install: returns a caller-owned handle only if this caller CAS'd its cb
- * into the slot, NULL otherwise.
- *
- * The slot's identity and its emptiness are decided by one atom.  The empty
- * value word is snapshotted first, the key is checked after it, and the
- * install is a CAS on that exact snapshot.  A teardown retires the key before
- * it exchanges the value, and that exchange moves the word, so a resolver that
- * saw the slot as the key's before a retire can no longer install into it:
- * its CAS fails and it resolves the key again.  An object therefore only ever
- * sits in a slot that named its key when it was installed. */
+ * into the slot, NULL otherwise. */
 arts_shared_ptr_t arts_route_table_install_if_absent(void *obj,
                                                      arts_guid_t key) {
   arts_shared_ptr_t cb = arts_route_table_make_handle(obj, key);
@@ -756,24 +818,17 @@ bool arts_route_table_install_handle_if_absent(arts_shared_ptr_t cb,
   for (;;) {
     arts_route_item_t *item;
     arts_route_table_reserve_or_lookup(key, &item);
-    uint64_t ext = 0;
-    bool empty = arts_shared_slot_peek_empty(&item->value, &ext);
-    if (atomic_load_explicit(&item->key, memory_order_acquire) != key) {
-      continue;
-    }
-    if (!empty) {
-      return false;
-    }
-    if (arts_shared_slot_install_empty(&item->value, ext, cb)) {
-      /* Same-word pairing on ooo_list with a parker's push and re-read in
-       * arts_ooo_dispatch_or_defer: the drain's exchange is acq_rel and
-       * unconditional, so either it takes the node or the parker's push
-       * reads from it or a later RMW and its re-read sees the install or a
-       * later write. */
-      arts_ooo_drain(item);
-      return true;
+    route_install_t r = route_install_empty(item, cb, key);
+    if (r != ROUTE_INSTALL_AGAIN) {
+      return r == ROUTE_INSTALL_WON;
     }
   }
+}
+
+bool arts_route_table_install_handle_into(arts_route_item_t *slot,
+                                          arts_shared_ptr_t cb,
+                                          arts_guid_t key) {
+  return route_install_empty(slot, cb, key) == ROUTE_INSTALL_WON;
 }
 
 bool arts_route_table_install_handle_fresh(arts_shared_ptr_t cb,
@@ -785,17 +840,45 @@ bool arts_route_table_install_handle_fresh(arts_shared_ptr_t cb,
    * longer names it. */
   arts_route_item_t *item;
   arts_route_table_reserve_fresh(key, &item);
-  uint64_t ext = 0;
-  if (!arts_shared_slot_peek_empty(&item->value, &ext) ||
-      atomic_load_explicit(&item->key, memory_order_acquire) != key ||
-      !arts_shared_slot_install_empty(&item->value, ext, cb)) {
-    return false;
+  return arts_route_table_install_handle_into(item, cb, key);
+}
+
+/* A pass that returns nothing saw the slot change hands or its value word
+ * move.  It cannot repeat on one slot without another thread's install or
+ * retire, since every install checks the key in the same atom as its CAS: a
+ * slot that names `key` never keeps an object of another key. */
+arts_shared_ptr_t arts_route_table_install_or_get(arts_route_item_t *slot,
+                                                  arts_shared_ptr_t cb,
+                                                  arts_guid_t key) {
+  for (;;) {
+    if (atomic_load_explicit(&slot->key, memory_order_acquire) != key) {
+      arts_route_table_reserve_or_lookup(key, &slot);
+      continue;
+    }
+    arts_shared_ptr_t h = arts_shared_slot_load(&slot->value);
+    if (h != NULL) {
+      if (arts_shared_tag(h) == (uint64_t)key) {
+        INCREMENT_NUM_ROUTE_PIN_BY(1);
+        return h;
+      }
+      arts_shared_release(&h);
+      arts_route_table_reserve_or_lookup(key, &slot);
+      continue;
+    }
+    /* Taken before the CAS can publish `cb` to a retire: the caller's
+     * handle on a win, and the ref that keeps `cb` alive across the home
+     * store. */
+    arts_shared_ptr_t mine = arts_shared_copy(cb);
+    if (route_install_empty(slot, cb, key) == ROUTE_INSTALL_WON) {
+      return mine;
+    }
+    arts_shared_release(&mine);
   }
-  /* A returned slot can still carry a node a previous occupant's parker
-   * pushed; the drain's unconditional exchange sends it on by its own GUID,
-   * as install_handle_if_absent's does. */
-  arts_ooo_drain(item);
-  return true;
+}
+
+bool arts_route_table_live(arts_shared_ptr_t h, arts_guid_t key) {
+  return h != NULL && arts_shared_home(h) != NULL &&
+         arts_shared_tag(h) == (uint64_t)key;
 }
 
 #ifndef ROUTE_TABLE_BEFORE_RETIRE_CLAIM
@@ -841,10 +924,18 @@ static arts_shared_ptr_t route_table_pin_published(arts_guid_t key) {
 }
 
 bool arts_route_table_set_destroyed_if(arts_guid_t key, arts_shared_ptr_t cb) {
-  arts_route_table_t *route_table = arts_get_route_table(key);
-  arts_route_item_t *item = arts_route_table_search_for_key(route_table, key);
-  if (item == NULL || cb == NULL) {
+  if (cb == NULL) {
     return false;
+  }
+  /* The slot `cb` was installed into, once its install has recorded it; a cb
+   * is installed at most once, so that slot holds it until its retire.  A cb
+   * with no home yet takes the key's slot by search. */
+  arts_route_item_t *item = (arts_route_item_t *)arts_shared_home(cb);
+  if (item == NULL) {
+    item = arts_route_table_search_for_key(arts_get_route_table(key), key);
+    if (item == NULL) {
+      return false;
+    }
   }
   /* The caller's ref keeps `cb` from being recycled, so these compares are
    * identity. */
@@ -864,11 +955,13 @@ bool arts_route_table_set_destroyed_if(arts_guid_t key, arts_shared_ptr_t cb) {
   }
   ROUTE_TABLE_AFTER_RETIRE_CLAIM(key);
   if (!arts_shared_slot_compare_exchange(&item->value, cb, NULL)) {
-    /* Between the peek and the claim another retire took `cb` and the key's
-     * next generation was installed in this slot.  Nothing was taken: the
-     * slot stays the key's.  Reservers wait out RETIRING, so none of them
-     * publishes a second slot meanwhile, and a retire of the next generation
-     * that arrives meanwhile finds it through route_table_pin_published. */
+    /* Between the peek and the claim another retire took `cb` and the slot
+     * was reserved for the key again, its next generation perhaps installed.
+     * Nothing was taken: the slot stays the key's.  Reservers wait out
+     * RETIRING, so none of them publishes a second slot meanwhile; a retire
+     * of the next generation that arrives meanwhile waits the window out
+     * (the dispatched-item form) or finds it through
+     * route_table_pin_published (the object form). */
     atomic_store_explicit(&item->key, key, memory_order_release);
     return false;
   }
@@ -979,6 +1072,16 @@ arts_shared_ptr_t arts_route_table_lookup(arts_guid_t key) {
   return route_item_acquire_checked(item, key);
 }
 
+void *arts_route_table_borrow_or_lookup(arts_shared_ptr_t h, arts_guid_t key,
+                                        arts_shared_ptr_t *looked) {
+  if (arts_route_table_live(h, key)) {
+    *looked = NULL;
+    return arts_shared_get(h);
+  }
+  *looked = arts_route_table_lookup(key);
+  return arts_shared_get(*looked);
+}
+
 arts_shared_ptr_t arts_route_table_lookup_event(arts_guid_t guid) {
   return arts_route_table_lookup_typed(guid, ARTS_GUID_EVENT);
 }
@@ -1038,6 +1141,8 @@ uint64_t arts_clean_up_route_table(arts_route_table_t *route_table,
        * casing — the deleter is the sole owner. */
       arts_shared_ptr_t old = arts_shared_slot_exchange(&item->value, NULL);
       if (old) {
+        /* Out of the table, so no holder may read it as live. */
+        arts_shared_set_tag(old, 0);
         arts_shared_release(&old);
       }
     }

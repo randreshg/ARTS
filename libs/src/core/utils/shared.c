@@ -58,6 +58,13 @@ struct arts_shared_s {
   void *object;
   void (*deleter)(void *);
   _Atomic(uint64_t) tag; /* identity stamp — see shared.h */
+  /* The route slot this cb was installed into (shared.h).  NULL from make
+   * until the winning install's release store, which follows its install CAS
+   * and precedes its drain; only that winner writes it, and never again.
+   * Every load is acquire, so a reader that sees the slot sees the install
+   * and what preceded it, and a holder whose count predates the install
+   * reads NULL until that store. */
+  _Atomic(void *) home;
 };
 
 /* ext = (generation << 16) | claims. */
@@ -93,6 +100,7 @@ arts_shared_ptr_t arts_shared_make(void *object, void (*deleter)(void *)) {
       (struct arts_shared_s *)arts_calloc(1, sizeof(struct arts_shared_s));
   atomic_store_explicit(&cb->count, SHARED_REF,
                         memory_order_relaxed); /* refs=1 */
+  atomic_store_explicit(&cb->home, NULL, memory_order_relaxed);
   cb->object = object;
   cb->deleter = deleter;
   return cb;
@@ -133,10 +141,13 @@ void (*arts_shared_deleter(arts_shared_ptr_t p))(void *) {
   return p ? p->deleter : NULL;
 }
 
-/* Relaxed on both sides: publication order rides the slot.  The stamp is
- * sequenced before the release-CAS that publishes the cb into a slot, and a
- * reader's tag load is sequenced after the acquire load that pinned the cb
- * out of that slot, so the pairing on the slot carries the stamp across. */
+/* Relaxed on both sides: publication order rides the slot.  The stamp
+ * happens before the release-CAS that publishes the cb into a slot (in the
+ * installing thread's own order, or through the parking of a create that
+ * another thread's drain installs), and a reader's tag load is sequenced
+ * after the acquire load that pinned the cb out of that slot, or after the
+ * acquire load of its home that saw the install's store, so either pairing
+ * carries the stamp across. */
 void arts_shared_set_tag(arts_shared_ptr_t p, uint64_t tag) {
   atomic_store_explicit(&p->tag, tag, memory_order_relaxed);
 }
@@ -144,6 +155,21 @@ void arts_shared_set_tag(arts_shared_ptr_t p, uint64_t tag) {
 uint64_t arts_shared_tag(arts_shared_ptr_t p) {
   return atomic_load_explicit(&p->tag, memory_order_relaxed);
 }
+
+void arts_shared_set_home(arts_shared_ptr_t p, void *home) {
+  atomic_store_explicit(&p->home, home, memory_order_release);
+}
+
+void *arts_shared_home(arts_shared_ptr_t p) {
+  return atomic_load_explicit(&p->home, memory_order_acquire);
+}
+
+#ifndef NDEBUG
+/* An unpublished cb's in_slot bit is clear, so the count is refs alone. */
+int64_t arts_shared_debug_refs(arts_shared_ptr_t p) {
+  return atomic_load_explicit(&p->count, memory_order_relaxed) / SHARED_REF;
+}
+#endif
 
 /* ── Atomic slot API (multi-thread shared) ─────────────────────────────── */
 

@@ -171,10 +171,13 @@ void arts_handler_event_create(void *item, void *args) {
   note_dispatcher(true);
   atomic_fetch_add_explicit(&g_creates, 1, memory_order_relaxed);
   arts_shared_ptr_t cb = arts_route_table_make_handle(g_gen2, g_guid);
+  arts_shared_ptr_t pin = arts_shared_copy(cb);
   if (!arts_route_table_install_handle_if_absent(cb, g_guid)) {
+    arts_shared_release(&pin);
     arts_shared_abandon(&cb);
     error("a create body ran while its GUID's slot was occupied");
   }
+  arts_shared_release(&pin);
 }
 
 void arts_handler_event_satisfy_slot(void *i, void *a) { noncreate(i, a); }
@@ -264,10 +267,13 @@ static void *worker(void *vp) {
       if (sc == SC_A) {
         t_role = ROLE_INSTALLER;
         arts_shared_ptr_t cb = arts_route_table_make_handle(g_gen2, g_guid);
+        arts_shared_ptr_t pin = arts_shared_copy(cb);
         if (!arts_route_table_install_handle_if_absent(cb, g_guid)) {
+          arts_shared_release(&pin);
           arts_shared_abandon(&cb);
           error("the install found the empty GUID occupied");
         }
+        arts_shared_release(&pin);
       } else {
         t_role = ROLE_RETIRER;
         arts_shared_ptr_t h1 = arts_route_table_lookup(g_guid);
@@ -340,10 +346,14 @@ static int run(enum scenario sc, int rounds, const char *name, tally_t *t) {
       g_gen1 = (int *)malloc(sizeof(int));
       *g_gen1 = 1;
       arts_shared_ptr_t cb = arts_route_table_make_handle(g_gen1, g_guid);
+      arts_shared_ptr_t pin = arts_shared_copy(cb);
       if (!arts_route_table_install_handle_if_absent(cb, g_guid)) {
+        arts_shared_release(&pin);
+        arts_shared_abandon(&cb);
         (void)fprintf(stderr, "FAIL %s: setup install\n", name);
         return 1;
       }
+      arts_shared_release(&pin);
     }
     g_scenario = sc;
     barrier(); /* start */

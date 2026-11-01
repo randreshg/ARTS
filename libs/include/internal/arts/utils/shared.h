@@ -110,6 +110,25 @@ void (*arts_shared_deleter(arts_shared_ptr_t p))(void *);
 void arts_shared_set_tag(arts_shared_ptr_t p, uint64_t tag);
 uint64_t arts_shared_tag(arts_shared_ptr_t p);
 
+/* Home: the route slot the cb was installed into, opaque here.  NULL until
+ * the winning install stores it (release), after its install CAS and before
+ * its drain; only that winner writes it, and never again, so a retired cb
+ * keeps it.  The load is acquire: a reader that sees the slot also sees the
+ * install and everything sequenced before it, the tag's stamp included.  A
+ * holder whose count predates the install (a creator whose create parked and
+ * was installed by another thread) reads NULL until the store, so it never
+ * takes the object as installed before it is.  The installer holds a ref of
+ * its own across the store.  A cb no global-table install has taken (a
+ * payload buffer's, a mirror slot's, one not installed yet) reads NULL. */
+void arts_shared_set_home(arts_shared_ptr_t p, void *home);
+void *arts_shared_home(arts_shared_ptr_t p);
+
+#ifndef NDEBUG
+/* Debug only: the references an unpublished cb (one no slot holds) carries.
+ * A value for a check, ordering nothing. */
+int64_t arts_shared_debug_refs(arts_shared_ptr_t p);
+#endif
+
 /* ── Atomic slot API (multi-thread shared) ─────────────────────────────── */
 
 /* Acquire-and-validate load: returns a caller-owned ref (strong already

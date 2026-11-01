@@ -215,16 +215,18 @@ void arts_route_table_delete_unpublished(arts_guid_t key, void *obj);
  * an EMPTY slot that names its key, decided in one atom with the slot's
  * identity, and it never replaces an occupant.  An occupied slot is the
  * caller's to wait for (the OoO engine parks a create there until the occupant
- * is retired).
+ * is retired).  A won install records the slot as the cb's home
+ * (arts_shared_home) after its CAS and before it drains the slot's OoO list.
  *
  * install_if_absent: install `obj` under `key` if the slot is empty, then
  * drain the slot's OoO list.  On a win the slot owns the object through its
  * cb and the call returns a handle holding one strong ref, which the caller
  * owns and must release: the drain may already have retired the object (a
  * destroy parked before the install runs inside it), and that ref keeps the
- * caller's reads valid.  On a loss (the slot holds an object under `key`) it
- * returns NULL, abandons its cb without running the deleter, and `obj` stays
- * the caller's. */
+ * caller's reads valid.  On a loss (the slot held an object under `key` when
+ * the install looked; it may be empty again by the return) it returns NULL,
+ * abandons its cb without running the deleter, and `obj` stays the
+ * caller's. */
 arts_shared_ptr_t arts_route_table_install_if_absent(void *obj,
                                                      arts_guid_t key);
 
@@ -235,9 +237,10 @@ arts_shared_ptr_t arts_route_table_make_handle(void *obj, arts_guid_t key);
 
 /* install_if_absent for a control block made by arts_route_table_make_handle.
  * On a win the slot takes over the ref the caller passed and the slot's OoO
- * list is drained; the caller keeps whatever other refs it holds, and must
- * hold one of its own if it reads the object after the call.  On a loss
- * nothing changes and the passed ref stays the caller's. */
+ * list is drained.  The caller holds a ref of its own across the call (the
+ * install writes the cb's home after handing the passed ref to the slot) and
+ * for as long as it reads the object.  On a loss nothing changes and the
+ * passed ref stays the caller's. */
 bool arts_route_table_install_handle_if_absent(arts_shared_ptr_t cb,
                                                arts_guid_t key);
 
@@ -245,6 +248,40 @@ bool arts_route_table_install_handle_if_absent(arts_shared_ptr_t cb,
  * reserve.  False only when the GUID was not fresh after all. */
 bool arts_route_table_install_handle_fresh(arts_shared_ptr_t cb,
                                            arts_guid_t key);
+
+/* install_handle_if_absent into `slot`, a slot the caller already resolved
+ * for `key`, attempted once: false when the slot is occupied, names `key` no
+ * longer, or its value word moved after the snapshot, and then `cb` stays the
+ * caller's, unpublished and with no home, for the caller to resolve `key`
+ * again.  As for install_handle_if_absent, the caller holds a ref of its own
+ * across the call. */
+bool arts_route_table_install_handle_into(arts_route_item_t *slot,
+                                          arts_shared_ptr_t cb,
+                                          arts_guid_t key);
+
+/* Find or install, from a slot one arts_route_table_reserve_or_lookup of
+ * `key` returned.  `cb` comes from arts_route_table_make_handle, unpublished,
+ * its one ref the caller's.  Returns a counted handle on `key`'s object,
+ * never NULL: on an empty slot it installs `cb` and returns a new ref on it
+ * (the result equals `cb`; the passed ref becomes the slot's); on a slot
+ * holding `key`'s object it returns that occupant pinned and leaves `cb`
+ * untouched, the caller's to abandon with its object; a slot that changed
+ * hands is resolved again.  The install's own drain may retire `cb` before
+ * the call returns; the returned handle keeps its memory. */
+arts_shared_ptr_t arts_route_table_install_or_get(arts_route_item_t *slot,
+                                                  arts_shared_ptr_t cb,
+                                                  arts_guid_t key);
+
+/* The one liveness predicate: `h`'s install has recorded its home (an acquire
+ * load, which orders that install before the caller's later reads, for a
+ * holder whose count predates the install too) and its tag still names
+ * `key`.  Live means the install happened before and no retire's tag clear
+ * happened before the read: the object a resolution would return, or one a
+ * retire is taking at that instant.  Not live does not mean retired: a cb
+ * pinned from its slot between the install's CAS and its home store is
+ * installed but not yet live.  A handle that is not live (NULL included)
+ * takes the GUID path.  The caller holds a ref on `h`. */
+bool arts_route_table_live(arts_shared_ptr_t h, arts_guid_t key);
 
 /* Retires, one teardown.  Each detaches an object, drops the install ref, and
  * RETURNS the slot: the key is zeroed and the slot's parked payloads are
@@ -269,7 +306,8 @@ bool arts_route_table_install_handle_fresh(arts_shared_ptr_t cb,
  * the caller holds a ref; otherwise retires nothing and returns false, without
  * waiting.  For an object retiring itself (a completion): under label reuse
  * the slot may hold the key's next generation by then, which is not the
- * caller's to retire. */
+ * caller's to retire.  It reaches the slot through `cb`'s home once its
+ * install has recorded it, and by a search of `key` before then. */
 bool arts_route_table_set_destroyed_if(arts_guid_t key, arts_shared_ptr_t cb);
 
 /* Dispatched-item form: the object a DISPATCH chose.  As the identity form,
@@ -293,6 +331,14 @@ arts_shared_ptr_t arts_route_table_lookup_edt(arts_guid_t guid);
 
 /* Kind-agnostic handle lookup (no kind validation). */
 arts_shared_ptr_t arts_route_table_lookup(arts_guid_t key);
+
+/* `key`'s object for a flow that may already hold it: when `h` is live it is
+ * borrowed under the caller's ref and *looked is NULL; otherwise (`h` NULL
+ * included) *looked is arts_route_table_lookup(key), which the caller
+ * releases, and the object is held by *looked (NULL on a miss).  `h` is never
+ * released here. */
+void *arts_route_table_borrow_or_lookup(arts_shared_ptr_t h, arts_guid_t key,
+                                        arts_shared_ptr_t *looked);
 
 arts_route_item_t *
 arts_route_table_search_for_key(arts_route_table_t *route_table,

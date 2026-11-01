@@ -197,11 +197,13 @@ static int g_h_other;
 static bool h_install(void *obj, arts_guid_t key) {
   arts_shared_ptr_t cb = arts_shared_make(obj, NULL);
   arts_shared_set_tag(cb, (uint64_t)key);
-  if (arts_route_table_install_handle_if_absent(cb, key)) {
-    return true;
+  arts_shared_ptr_t pin = arts_shared_copy(cb);
+  bool won = arts_route_table_install_handle_if_absent(cb, key);
+  arts_shared_release(&pin);
+  if (!won) {
+    arts_shared_abandon(&cb);
   }
-  arts_shared_abandon(&cb);
-  return false;
+  return won;
 }
 
 static unsigned h_count_sentinels(arts_route_table_t *table) {

@@ -456,11 +456,14 @@ struct arts_ooo_args_db_excl_release_s {
 
 /* g_ooo_table handler, both polarities.  A non-create handler operates on an
  * already-acquired item with the decoded args and performs NO route-table
- * lookup / NULL-check / acquire / push — dispatch_or_defer guarantees `item`
- * is live and ref-pinned for the duration of the call.  A create body gets
+ * lookup / NULL-check / acquire / push — dispatch_or_defer pinned `item` while
+ * it was installed under its GUID, and the pin keeps it valid for the duration
+ * of the call (a concurrent retire may still detach it).  A create body gets
  * `item == NULL`: the engine saw the GUID's slot empty, and the body installs
- * its object there with install_if_absent, re-entering the engine (which parks
- * it) when another install won the slot first. */
+ * its object there through an install of the global table (which checks the
+ * slot's key in the same atom as its CAS and drains the slot after it),
+ * re-entering the engine (which parks it) when another install won the slot
+ * first. */
 typedef void (*arts_ooo_handler_fn_t)(void *item, void *args);
 
 /* Universal entry — wire RX dispatcher, API drivers, and the drain walk all

@@ -86,6 +86,11 @@ add_pure_unit_src(event_channel_gate PASS_REGEX "PASS event_channel_gate" TIMEOU
 add_pure_unit_src(shared_compare_exchange SOURCES ${CMAKE_SOURCE_DIR}/libs/src/core/utils/shared.c PASS_REGEX "PASS shared_compare_exchange" TIMEOUT 60)
 add_pure_unit_src(shared_lifecycle_race SOURCES ${CMAKE_SOURCE_DIR}/libs/src/core/utils/shared.c PASS_REGEX "PASS shared_lifecycle_race" TIMEOUT 60)
 add_pure_unit_src(route_table_install_if_absent PASS_REGEX "PASS route_table_install_if_absent" TIMEOUT 60)
+# A control block records the slot it was installed into: liveness, the
+# one-shot install into a known slot, find-or-install, borrow-or-lookup and
+# the identity retire through the recorded slot, with the probes and pins each
+# spends where the tree captures those counters.
+add_pure_unit_src(route_handle_live PASS_REGEX "PASS route_handle_live" TIMEOUT 60)
 add_pure_unit_src(ooo_park_install_retire PASS_REGEX "PASS ooo_park_install_retire" TIMEOUT 120)
 add_pure_unit_src(route_table_segment_grow PASS_REGEX "PASS route_table_segment_grow" TIMEOUT 60)
 add_pure_unit_src(route_table_growth_residency PASS_REGEX "PASS route_table_growth_residency" TIMEOUT 60)

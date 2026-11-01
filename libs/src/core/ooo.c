@@ -259,10 +259,10 @@ static void ooo_dispatch_create(struct arts_route_item_s *slot,
     }
     /* A value published under another key means the slot changed hands
      * between the key check and the load; resolve again.  This cannot repeat
-     * on one slot: an object is only installed into a slot that named its key
-     * at the install (install_if_absent), so a slot keyed `guid` never keeps
-     * a stranger's value.  This loop terminates only because EVERY install
-     * path checks the key in the same atom as the install. */
+     * on one slot: every install of the global table checks the slot's key in
+     * the same atom as its CAS, so an object is only installed into a slot
+     * that named its key at the install, and a slot keyed `guid` never keeps
+     * a stranger's value.  This loop terminates only because of that. */
     bool ours = arts_shared_tag(h) == (uint64_t)guid;
     arts_shared_release(&h);
     if (ours) {
@@ -375,17 +375,16 @@ void arts_ooo_dispatch_or_defer(struct arts_route_item_s *slot,
   OOO_AFTER_PARK(slot);
 
   /* TOCTOU rescue, against an install and against a teardown: same-word
-   * pairing on ooo_list with arts_route_table_install_handle_if_absent (the
-   * install, then its drain) and arts_route_table_set_destroyed_if (the
-   * value cleared and the key returned, then its re-drive).  The push and
-   * their exchange are acq_rel RMWs of one head, so either the drain or the
-   * re-drive carries our node, or our push reads from it or a later RMW and
-   * the re-read below sees those writes or later ones.  We drain unless the
-   * slot is this GUID's and empty again, whose install drains in turn.
-   * Draining — never re-entering with a copy — keeps the node
-   * single-owner: whichever side detaches it dispatches it (to the installed
-   * object, or on to the slot its GUID names now), and the other finds it
-   * gone. */
+   * pairing on ooo_list with every install of the global table (its CAS,
+   * then its drain) and arts_route_table_set_destroyed_if (the value cleared
+   * and the key returned, then its re-drive).  The push and their exchange
+   * are acq_rel RMWs of one head, so either the drain or the re-drive
+   * carries our node, or our push reads from it or a later RMW and the
+   * re-read below sees those writes or later ones.  We drain unless the slot
+   * is this GUID's and empty again, whose install drains in turn.  Draining
+   * — never re-entering with a copy — keeps the node single-owner: whichever
+   * side detaches it dispatches it (to the installed object, or on to the
+   * slot its GUID names now), and the other finds it gone. */
   h = arts_shared_slot_load(&slot->value);
   bool installed = (h != NULL);
   if (h) {
