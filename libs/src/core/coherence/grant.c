@@ -272,11 +272,11 @@ void arts_db_drain_pending_rw_after_grant(struct arts_db_cache_s *cache) {
 }
 
 /* ===== Shared owner→owner transfer ship (WT + WB) =============
- * Ship the current buffer to new_owner via the GRANT_RESPONSE wire.  VAL WB
+ * Ship the current buffer to new_owner: a GRANT_RESPONSE to another rank; to
+ * this rank, the grant body run on this descriptor (no packet).  VAL WB
  * serializes its owner-side dedup map; WT and INV keep none (cached_version
- * == NULL) and emit an empty map (count=0): the receiver unconditionally
- * reconstructs map_size >= 8, so an omitted header would underflow data_size
- * and corrupt the install.
+ * == NULL) and emit an empty map (count=0): the receiver requires exactly
+ * 8 + 16 * count bytes after the header and refuses anything else.
  *
  * The target is an argument, not a field read: where it comes from is the
  * release policy's, not the ship's.  A revocation round publishes it on the
@@ -290,17 +290,12 @@ void arts_db_send_grant_response(struct arts_db_cache_s *cache,
   arts_shared_ptr_t buf_h = arts_db_buf_acquire(cache);
   struct arts_db_buffer_s *buf =
       (struct arts_db_buffer_s *)arts_shared_get(buf_h);
+  uint64_t version =
+      (buf != NULL) ? atomic_load_explicit(&buf->version, memory_order_acquire)
+                    : 0;
+  uint64_t db_size =
+      atomic_load_explicit(&cache->db_size, memory_order_relaxed);
 
-  /* Serialize the owner-side dedup map — small, and it rides INLINE in the
-   * response packet (the control plane); only the buffer payload moves
-   * one-sided.  An empty count-header is emitted when there is no map: the
-   * receiver unconditionally parses map_size >= 8, so omitting it would
-   * corrupt the parse. */
-  size_t map_max =
-      (sizeof(uint32_t) * 2) + ((size_t)arts_global_rank_count *
-                                sizeof(struct arts_msg_rank_version_pair_s));
-  void *map_buf = arts_malloc(map_max);
-  size_t map_size;
 #ifdef ARTS_WRITE_POLICY_WB
   /* Self-credit before the map migrates: this (ex-)owner keeps its buffer
    * after the ship, and its self-produced version was never "sent" by anyone —
@@ -308,11 +303,70 @@ void arts_db_send_grant_response(struct arts_db_cache_s *cache,
    * ex-owner already holds on its next read.  The slot CAS is safe against the
    * redirect handler. */
   if (buf != NULL && cache->cached_version != NULL) {
-    arts_rank_u64_map_advance(
-        cache->cached_version, arts_global_rank_id,
-        atomic_load_explicit(&buf->version, memory_order_acquire));
+    arts_rank_u64_map_advance(cache->cached_version, arts_global_rank_id,
+                              version);
   }
 #endif
+
+#ifdef ARTS_RELEASE_PURGE
+  /* Every grant here is issued BY the home, and a home serving itself takes
+   * the shortcut that ships nothing at all, so the self-transfer arm below is
+   * unreachable under this release policy. */
+  assert(new_owner != arts_global_rank_id &&
+         "a home that serves itself hands out no bytes");
+#endif
+  if (new_owner == arts_global_rank_id) {
+    /* Self-transfer: ex-owner and new owner are this one descriptor, so the
+     * grant body runs on it directly, with the bytes where they are.  Nothing
+     * writes them until the commit installs the grant: the zero edge this ship
+     * runs on withdrew this rank's write right, so a local write turn opens
+     * only after that install (the fast path or the drain); no other rank
+     * holds the right meanwhile; and an install from elsewhere publishes a
+     * new buffer, never into this one, and only at a version above the one
+     * this rank holds.  The ledger, too, stays where it is: it already
+     * belongs to the new owner.
+     *
+     * The landing this rank advertised in its own request carries nothing it
+     * does not already have, so it goes back to the pool.  A rank that
+     * advertised one holds a buffer here: a request for a zero-sized block
+     * advertises none, and a sized block's holder that ships to itself holds
+     * the bytes a grant or its create left it (the one holder without them, a
+     * NO_ACQUIRE home on its idle seed, gives the grant to another rank before
+     * its own request is served). */
+    if (rdzv.cookie != 0) {
+      assert(buf != NULL &&
+             "a self-transfer that advertised a landing holds a buffer");
+      arts_db_buf_landing_return(
+          (struct arts_db_buffer_s *)(uintptr_t)rdzv.cookie);
+    }
+    if (buf != NULL) {
+      arts_db_buf_release(&buf_h);
+    }
+    struct arts_db_grant_response_args_s self = {
+        .sender = arts_global_rank_id,
+        .version = version,
+        .data_size = db_size,
+        .rdzv_txid = 0,
+        .rdzv_cookie = 0,
+    };
+    /* On the held descriptor even when it is no longer live: its bytes,
+     * waiters and counts are here, while a lookup by GUID would find another
+     * object or none. */
+    arts_db_grant_response_on(
+        arts_shared_copy(arts_db_of_cache(cache)->self_cb), &self);
+    return;
+  }
+
+  /* Serialize the owner-side dedup map — small, and it rides INLINE in the
+   * response packet (the control plane); only the buffer payload moves
+   * one-sided.  An empty count-header is emitted when there is no map: the
+   * receiver requires exactly the count header and its entries after the
+   * packet header and refuses anything else. */
+  size_t map_max =
+      (sizeof(uint32_t) * 2) + ((size_t)arts_global_rank_count *
+                                sizeof(struct arts_msg_rank_version_pair_s));
+  void *map_buf = arts_malloc(map_max);
+  size_t map_size;
   if (buf != NULL && cache->cached_version != NULL) {
     map_size = arts_rank_u64_map_serialize(cache->cached_version, map_buf);
   } else {
@@ -322,17 +376,11 @@ void arts_db_send_grant_response(struct arts_db_cache_s *cache,
     map_size = sizeof(uint32_t) * 2;
   }
 
-  uint64_t version =
-      (buf != NULL) ? atomic_load_explicit(&buf->version, memory_order_acquire)
-                    : 0;
-  uint64_t db_size =
-      atomic_load_explicit(&cache->db_size, memory_order_relaxed);
   /* data_size carries the DB's size ALWAYS (descriptor state — known even
    * when no buffer exists yet): a hinted first-touch requester may have
    * skipped the size CTS, and a data-less grant is its only chance to learn
    * the exact size before its release publishes one.  Payload presence is
-   * signaled by rdzv_txid (wire) / trailing bytes (self), never by
-   * data_size. */
+   * signaled by rdzv_txid alone, never by data_size. */
   uint64_t payload_size = (buf != NULL) ? db_size : 0;
   struct arts_msg_grant_response_packet_s hdr;
   arts_fill_packet_header(&hdr.header, sizeof(hdr) + map_size,
@@ -344,61 +392,6 @@ void arts_db_send_grant_response(struct arts_db_cache_s *cache,
                             ? ((const uint32_t *)map_buf)[0]
                             : 0u;
   hdr.pad = 0;
-
-#ifdef ARTS_RELEASE_PURGE
-  /* Every grant here is issued BY the home, and a home serving itself takes
-   * the shortcut that ships nothing at all — so the self-transfer arm below,
-   * which copies the whole block through a packet, is unreachable.  It is the
-   * only owner→owner data leg this file has left under this release policy,
-   * and it must stay unreachable: reaching it would be two full-size copies
-   * on the path whose whole claim is that it moves no bytes. */
-  assert(new_owner != arts_global_rank_id &&
-         "a home that serves itself hands out no bytes");
-#endif
-  if (new_owner == arts_global_rank_id) {
-    /* Self-transfer: no wire, no RDMA.  Ex-owner and new owner are the same
-     * cache, so the landing this rank advertised in its own request carries
-     * nothing it does not already have — unless there is nothing to have.
-     * With a buffer present the bytes are already in place and the landing
-     * goes back to the pool; with none, this rank is about to take the write
-     * turn on a sized block, so the landing BECOMES its storage (nothing else
-     * on this path would give it any).  The handler then runs inline on a
-     * contiguous same-rank buffer (map + data trailing). */
-    if (rdzv.cookie != 0) {
-      struct arts_db_buffer_s *landing =
-          (struct arts_db_buffer_s *)(uintptr_t)rdzv.cookie;
-      if (buf != NULL) {
-        arts_db_buf_landing_return(landing);
-      } else {
-        /* A first image is stamped at version 1, never 0: on the wire 0 is
-         * ARTS_GRANT_VERSION_NONE, "holds nothing", so a live image carrying
-         * it could not be told from an absent one — and this rank's first
-         * release would then mint 1 for REAL bytes, the same stamp an
-         * invented first image elsewhere already carries, which makes a
-         * genuine install retreat as stale. */
-        (void)arts_db_buf_adopt_landing(cache, version ? version : 1u, landing,
-                                        db_size);
-      }
-    }
-    uint64_t total = sizeof(hdr) + map_size + payload_size;
-    hdr.header.size = total;
-    hdr.data_size = db_size;
-    hdr.rdzv_txid = 0;
-    hdr.rdzv_cookie = 0;
-    char *pkt = (char *)arts_malloc((size_t)total);
-    memcpy(pkt, &hdr, sizeof(hdr));
-    memcpy(pkt + sizeof(hdr), map_buf, map_size);
-    if (buf != NULL && payload_size > 0) {
-      memcpy(pkt + sizeof(hdr) + map_size, buf->data, (size_t)payload_size);
-    }
-    arts_free(map_buf);
-    if (buf != NULL) {
-      arts_db_buf_release(&buf_h);
-    }
-    arts_handler_db_grant_response(pkt, (size_t)total);
-    arts_free(pkt);
-    return;
-  }
 
   if (data_less) {
     /* The new owner already holds these exact bytes, so only the permission

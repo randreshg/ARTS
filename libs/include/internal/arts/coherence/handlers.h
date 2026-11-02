@@ -215,17 +215,27 @@ void arts_db_create_announce_enter(
 
 /* ===== Sharer-side (response) handlers =============================== */
 
-/* GRANT_RESPONSE at new owner C: payload = full contiguous wire buffer
- * (header + map + data); size is total bytes.  One signature for both write
- * policies — WT drains + runs immediately, WB defers the RW drain to
- * CONFIRM_ACK.  The wire entry resolves the block once and runs
- * arts_db_grant_response_on. */
+/* GRANT_RESPONSE at new owner C: payload = the wire packet (header + the
+ * owner-side version map, nothing after it); size is its total bytes.  One
+ * signature for both write policies — WT drains + runs immediately, WB defers
+ * the RW drain to CONFIRM_ACK.  The wire entry resolves the block once, loads
+ * the map (WB) and runs arts_db_grant_response_on. */
 void arts_handler_db_grant_response(void *payload, size_t size);
+/* What the GRANT_RESPONSE body acts on.  No bytes ride with it: a payload
+ * from another rank lands one-sided (rdzv_txid != 0), and a rank granting the
+ * right to itself already holds its bytes in place. */
+struct arts_db_grant_response_args_s {
+  unsigned int sender;  /* the rank that shipped the grant */
+  uint64_t version;     /* the sender's buffer version; 0 = it held none */
+  uint64_t data_size;   /* the block's size, payload or not */
+  uint64_t rdzv_txid;   /* != 0: payload PUT into our landing; pair by txid */
+  uint64_t rdzv_cookie; /* our landing handle, echoed back; 0 = none */
+};
 /* The GRANT_RESPONSE body on this rank's descriptor of the block, which db_h
  * holds; db_h is consumed (released by the commit tail, after a one-sided
  * payload's pairing when one is in flight). */
-void arts_db_grant_response_on(arts_shared_ptr_t db_h, void *payload,
-                               size_t size);
+void arts_db_grant_response_on(arts_shared_ptr_t db_h,
+                               const struct arts_db_grant_response_args_s *a);
 /* Cat-C pure body (SNAPSHOT_RESPONSE): item_v is the db_s the dispatcher acquired
  * (cache is its first member); args_v is an
  * arts_db_snapshot_response_args_s.  NOT OoO-deferrable — the dispatcher

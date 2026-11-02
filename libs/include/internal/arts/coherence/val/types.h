@@ -204,7 +204,8 @@ struct arts_db_cache_s {
    * redundant: whichever actor drives writer_count to 0 (the INVALIDATE, or the
    * last release_rw) reads this field — a non-sentinel value names the target,
    * so that actor ships the grant to it (GRANT_RESPONSE under both write
-   * policies, dispatched inline for a self-transfer).  Single writer per round
+   * policies; a transfer to this rank runs the grant body on this descriptor
+   * instead).  Single writer per round
    * (home baton gate), and the decrement that reaches 0 reads the withdrawal's
    * release sequence, so the field is plain.  Shared by both write policies:
    * the INVALIDATE carries new_owner under each. */

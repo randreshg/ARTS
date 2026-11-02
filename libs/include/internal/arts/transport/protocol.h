@@ -299,11 +299,14 @@ struct ARTS_PACKED arts_msg_grant_cts_packet_s {
  *   rdzv_txid != 0 : `data_size` payload bytes were PUT into the requester's
  *                    landing (named by rdzv_cookie, the requester's own
  *                    echoed handle); install on {packet, txid} pairing.
- *   rdzv_txid == 0 : no payload moved (sentinel DB / pre-publication empty
- *                    transfer, or a same-rank transfer where the data rides
- *                    inline after the map — self-dispatch only, never wire).
- *                    A nonzero rdzv_cookie still echoes the requester's unused
- *                    landing so it can be recycled. */
+ *   rdzv_txid == 0 : no payload moved (sentinel DB, an ex-owner with no
+ *                    bytes yet, or a requester that already holds this
+ *                    version or asked for the permission alone).  A nonzero
+ *                    rdzv_cookie still echoes the requester's unused landing
+ *                    so it can be recycled.
+ *
+ * A rank never sends this to itself: granting the right to itself, it runs
+ * the receiving body on its own descriptor, which keeps the bytes it holds. */
 struct ARTS_PACKED arts_msg_grant_response_packet_s {
   struct arts_msg_header_s header;
   arts_guid_t db_guid;
@@ -312,13 +315,11 @@ struct ARTS_PACKED arts_msg_grant_response_packet_s {
                                follow the header */
   uint32_t pad;
   uint64_t data_size;   /* the DB's size (descriptor state, always set);
-                           payload presence = rdzv_txid / trailing bytes */
+                           payload presence = rdzv_txid */
   uint64_t rdzv_txid;   /* write-completion pairing id (0 = no PUT) */
   uint64_t rdzv_cookie; /* requester's landing handle, echoed verbatim */
-  /* followed by:
-   *   arts_msg_rank_version_pair_s pairs[map_entry_count];
-   *   uint8_t data[data_size];   (self-dispatch only — wire payload is PUT)
-   */
+  /* followed by arts_msg_rank_version_pair_s pairs[map_entry_count], and
+   * nothing after them. */
 };
 
 /* PUBLISH — the dirty payload does NOT ride the wire; it travels one-sided

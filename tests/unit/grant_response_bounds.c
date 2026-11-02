@@ -1,13 +1,16 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
  * A GRANT_RESPONSE is bounded by the bytes that arrived with it.  One shorter
- * than its header, or one whose header declares a version map longer than the
- * bytes that follow the header, is a protocol violation only the receiving
- * rank can see, and it is fatal there (ARTS_ERROR, exit status 1) instead of
- * being read past.  argv[1] names the case:
+ * than its header, or one whose header declares a version map other than the
+ * bytes that follow the header (nothing follows the map: a payload travels
+ * one-sided), is a protocol violation only the receiving rank can see, and it
+ * is fatal there (ARTS_ERROR, exit status 1) instead of being read past or
+ * read as data.  argv[1] names the case:
  *   short -- a packet one byte shorter than the header;
  *   map   -- a header for a live block declaring four map entries, followed
- *            by the eight-byte count field alone.
+ *            by the eight-byte count field alone;
+ *   trail -- a header for a live block declaring no map entries, followed by
+ *            the eight-byte count field and one more byte.
  * Each packet is a heap allocation of exactly the size handed to the handler,
  * so a read past it is a sanitizer report as well.
  */
@@ -15,6 +18,7 @@
 #include "arts/coherence/handlers.h"
 #include "arts/transport/protocol.h"
 
+#include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -34,15 +38,16 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     memcpy(pkt, &hdr, size);
     arts_handler_db_grant_response(pkt, size);
     free(pkt);
-  } else if (strcmp(which, "map") == 0) {
+  } else if (strcmp(which, "map") == 0 || strcmp(which, "trail") == 0) {
+    bool trail = strcmp(which, "trail") == 0;
     void *p = NULL;
     hdr.db_guid =
         arts_db_create(&p, 64, ARTS_DB, ARTS_DB_PROP_NONE, NULL);
     arts_db_release(hdr.db_guid, DB_MODE_RW);
     hdr.header.rank = arts_get_current_rank();
-    hdr.map_entry_count = 4;
+    hdr.map_entry_count = trail ? 0u : 4u;
     hdr.data_size = 64;
-    size_t size = sizeof(hdr) + sizeof(uint32_t) * 2;
+    size_t size = sizeof(hdr) + sizeof(uint32_t) * 2 + (trail ? 1u : 0u);
     unsigned char *pkt = (unsigned char *)calloc(1, size);
     memcpy(pkt, &hdr, sizeof(hdr));
     arts_handler_db_grant_response(pkt, size);

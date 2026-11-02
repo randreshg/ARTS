@@ -19,7 +19,6 @@
 #include <assert.h>
 #include <stdbool.h>
 #include <stdint.h>
-#include <string.h>
 
 #include "arts/coherence/buffer.h"
 #include "arts/coherence/census.h"
@@ -61,10 +60,23 @@ void arts_handler_db_grant_response(void *payload, size_t size) {
   }
   arts_guid_t db_guid = hdr->db_guid;
 
+  /* Wire layout: header | map (count pairs, inline), and nothing after it: the
+   * buffer payload travels one-sided into our advertised landing. */
+  char *map_start = (char *)payload + sizeof(*hdr);
+  size_t map_size =
+      (sizeof(uint32_t) * 2) + ((size_t)hdr->map_entry_count *
+                                sizeof(struct arts_msg_rank_version_pair_s));
+  if (map_size != size - sizeof(*hdr)) {
+    ARTS_ERROR("GRANT_RESPONSE for DB[Guid:%lu] from rank %u: its header "
+               "declares a %zu-byte version map, but %zu bytes follow it",
+               (unsigned long)db_guid, hdr->header.rank, map_size,
+               size - sizeof(*hdr));
+  }
+
   /* The wire's one resolution of the block; the body runs on what it found,
-   * pinned for its whole run (map deserialize + buffer install + snapshot
-   * drains + writer_count RMW, and the pairing wait on the rendezvous path)
-   * and released by the commit tail. */
+   * pinned for its whole run (buffer install + snapshot drains + writer_count
+   * RMW, and the pairing wait on the rendezvous path) and released by the
+   * commit tail. */
   arts_shared_ptr_t db_h = arts_route_table_lookup_db(db_guid);
   if (db_h == NULL) {
     /* Only a program outside the destroy contract gets here: the cache this
@@ -83,59 +95,52 @@ void arts_handler_db_grant_response(void *payload, size_t size) {
       return; /* the install lost to an object already retired — drop. */
     }
   }
-  arts_db_grant_response_on(db_h, payload, size);
-}
 
-void arts_db_grant_response_on(arts_shared_ptr_t db_h, void *payload,
-                               size_t size) {
-  struct arts_msg_grant_response_packet_s *hdr =
-      (struct arts_msg_grant_response_packet_s *)payload;
-  arts_guid_t db_guid = hdr->db_guid;
-  struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(db_h);
-  struct arts_db_cache_s *cache = &db->cache;
-
-  /* A hinted first touch may reach its first grant with the size still
-   * unlearned (no CTS leg ran); the response's data_size is the sender's
-   * descriptor size, valid payload or not. */
-  arts_db_cache_learn_size(cache, hdr->data_size);
-
-  /* Wire layout: header | map (count pairs, inline).  The buffer payload does
-   * not trail on the wire — it travels one-sided into our advertised landing
-   * (a same-rank self-transfer still trails it inline). */
-  char *map_start = (char *)payload + sizeof(*hdr);
-  size_t map_size =
-      (sizeof(uint32_t) * 2) + ((size_t)hdr->map_entry_count *
-                                sizeof(struct arts_msg_rank_version_pair_s));
-  if (map_size > size - sizeof(*hdr)) {
-    ARTS_ERROR("GRANT_RESPONSE for DB[Guid:%lu] from rank %u: its header "
-               "declares a %zu-byte version map, but %zu bytes follow it",
-               (unsigned long)db_guid, hdr->header.rank, map_size,
-               size - sizeof(*hdr));
-  }
-
-  /* Reconstruct the owner-side dedup map so this rank can skip redundant
-   * SNAPSHOT_RESPONSE sends to readers that already hold a sufficiently fresh
-   * copy.  Must happen HERE (the map bytes live in the packet, which is freed
-   * after dispatch) — harmless ahead of the install: the map is only consulted
-   * once this rank serves REDIRECTs, which requires the ownership this round
-   * is still delivering. */
+  /* The owner-side dedup ledger moves with the grant, so this rank can skip
+   * redundant SNAPSHOT_RESPONSE sends to readers that already hold a
+   * sufficiently fresh copy.  Loaded here, from the packet, ahead of the
+   * install.  A redirect served meanwhile from an earlier tenure's buffer can
+   * advance an entry this load overwrites; that only understates what a
+   * reader holds, so it costs a payload send, never a stale reply. */
+  struct arts_db_cache_s *cache =
+      &((struct arts_db_s *)arts_shared_get(db_h))->cache;
   if (!arts_rank_u64_map_load(cache->cached_version, map_start, map_size)) {
     ARTS_ERROR("GRANT_RESPONSE for DB[Guid:%lu] from rank %u: its version map "
                "names more entries than the %u its header declares",
                (unsigned long)db_guid, hdr->header.rank, hdr->map_entry_count);
   }
 
-  if (hdr->rdzv_txid != 0) {
+  struct arts_db_grant_response_args_s a = {
+      .sender = hdr->header.rank,
+      .version = hdr->version,
+      .data_size = hdr->data_size,
+      .rdzv_txid = hdr->rdzv_txid,
+      .rdzv_cookie = hdr->rdzv_cookie,
+  };
+  arts_db_grant_response_on(db_h, &a);
+}
+
+void arts_db_grant_response_on(arts_shared_ptr_t db_h,
+                               const struct arts_db_grant_response_args_s *a) {
+  struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(db_h);
+  struct arts_db_cache_s *cache = &db->cache;
+
+  /* A hinted first touch may reach its first grant with the size still
+   * unlearned (no CTS leg ran); the response's data_size is the sender's
+   * descriptor size, valid payload or not. */
+  arts_db_cache_learn_size(cache, a->data_size);
+
+  if (a->rdzv_txid != 0) {
     /* Payload travels one-sided: pair this packet with the write completion
      * (either order) and install+commit when both are in. */
     struct owner_response_landed_ctx_s *ctx =
         (struct owner_response_landed_ctx_s *)arts_malloc(sizeof(*ctx));
     ctx->db_h = db_h;
-    ctx->landing = (struct arts_db_buffer_s *)(uintptr_t)hdr->rdzv_cookie;
-    ctx->version = hdr->version;
-    ctx->data_size = hdr->data_size;
-    arts_net_rdzv_expect(hdr->rdzv_txid, hdr->data_size,
-                         owner_response_landed_cb, ctx);
+    ctx->landing = (struct arts_db_buffer_s *)(uintptr_t)a->rdzv_cookie;
+    ctx->version = a->version;
+    ctx->data_size = a->data_size;
+    arts_net_rdzv_expect(a->rdzv_txid, a->data_size, owner_response_landed_cb,
+                         ctx);
     return;
   }
 
@@ -145,26 +150,19 @@ void arts_db_grant_response_on(arts_shared_ptr_t db_h, void *payload,
    * about its contents.  A landing was advertised exactly when this rank
    * wanted payload, so it is the storage to use: adopt it when the cache has
    * none, recycle it when the cache already holds a buffer (its bytes are at
-   * least as good as the silence that just arrived).  Then install any inline
-   * same-rank payload and commit. */
-  if (hdr->rdzv_cookie != 0) {
+   * least as good as the silence that just arrived).  Then commit. */
+  if (a->rdzv_cookie != 0) {
     /* Stamped at version 1 when the server held nothing (it sent
      * ARTS_GRANT_VERSION_NONE): a live image may never carry the version that
      * means "holds nothing", or this rank's first release would mint 1 for
      * real bytes against an invented first image at the same stamp and the
      * genuine install would retreat as stale. */
     (void)arts_db_buf_adopt_landing(
-        cache, hdr->version ? hdr->version : 1u,
-        (struct arts_db_buffer_s *)(uintptr_t)hdr->rdzv_cookie,
+        cache, a->version ? a->version : 1u,
+        (struct arts_db_buffer_s *)(uintptr_t)a->rdzv_cookie,
         atomic_load_explicit(&cache->db_size, memory_order_relaxed));
   }
-  char *data_start = map_start + map_size;
-  size_t data_size = size - sizeof(*hdr) - map_size;
-  if (data_size > 0) {
-    arts_db_buf_install(cache, hdr->version, data_start, data_size);
-    arts_db_cache_learn_size(cache, data_size);
-  }
-  uint8_t census = arts_db_census_serving_from(hdr->header.rank);
+  uint8_t census = arts_db_census_serving_from(a->sender);
   owner_response_commit(db_h); /* releases db_h */
   arts_db_census_served(census);
 }
@@ -174,6 +172,7 @@ void arts_db_grant_response_on(arts_shared_ptr_t db_h, void *payload,
  * on the db_s; consumed (released) here. */
 static void owner_response_commit(arts_shared_ptr_t db_h) {
   struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(db_h);
+  assert(db != NULL);
   struct arts_db_cache_s *cache = &db->cache;
 
   /* Install the grant and gate it in ONE atomic publication:
@@ -212,12 +211,13 @@ static void owner_response_commit(arts_shared_ptr_t db_h) {
   arts_db_ro_combine_grant_drain(cache);
 #endif
 
-  /* No racing INVALIDATE can have reached us yet: home targets this rank as an
-   * INVALIDATE recipient only after the rw_holder flip, which needs this
-   * CONFIRM. So incoming_new_owner == NONE here — send CONFIRM
-   * unconditionally.  The request word's write axis stays SENT until
-   * CONFIRM_ACK's drain clears it, so a fresh RW acquire in the gate window
-   * loses the axis claim and parks without issuing a duplicate request. */
+  /* No racing INVALIDATE can have reached us yet: the home holds this round's
+   * baton until this CONFIRM arrives and starts the next round only from it
+   * (the CONFIRM_ACK's piggyback or its own advance).  So incoming_new_owner
+   * == NONE here — send CONFIRM unconditionally.  The request word's write
+   * axis stays SENT until CONFIRM_ACK's drain clears it, so a fresh RW acquire
+   * in the gate window loses the axis claim and parks without issuing a
+   * duplicate request. */
   arts_send_db_grant_confirm(db);
 
   arts_shared_release(&db_h);

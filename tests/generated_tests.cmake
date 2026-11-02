@@ -359,7 +359,7 @@ foreach(_v 2n_9w_1p 2n_8w_2p)
 endforeach()
 endif()
 
-# A GRANT_RESPONSE shorter than its header, or declaring a version map longer
+# A GRANT_RESPONSE shorter than its header, or declaring a version map other
 # than the bytes that follow the header, is fatal on the receiving rank.  The
 # migrating grant exists on VAL and INV, with one handler per write policy.
 if(ARTS_COHERENCE_ARM STREQUAL "VAL" OR ARTS_COHERENCE_ARM STREQUAL "INV")
@@ -369,12 +369,15 @@ arts_add_test(grant_response_bounds_short STATUS 1
               COMMAND grant_response_bounds short)
 arts_add_test(grant_response_bounds_map STATUS 1
               COMMAND grant_response_bounds map)
+arts_add_test(grant_response_bounds_trail STATUS 1
+              COMMAND grant_response_bounds trail)
 set_tests_properties(grant_response_bounds_short PROPERTIES
     PASS_REGULAR_EXPRESSION "GRANT_RESPONSE of [0-9]+ bytes is shorter than")
-set_tests_properties(grant_response_bounds_map PROPERTIES
-    PASS_REGULAR_EXPRESSION
+set_tests_properties(grant_response_bounds_map grant_response_bounds_trail
+    PROPERTIES PASS_REGULAR_EXPRESSION
     "declares a [0-9]+-byte version map, but [0-9]+ bytes follow it")
 set_tests_properties(grant_response_bounds_short grant_response_bounds_map
+    grant_response_bounds_trail
     PROPERTIES LABELS "single_node" TIMEOUT 30 RESOURCE_LOCK "arts_runtime"
     ENVIRONMENT "ARTS_CONFIG=${_cfg}")
 endif()

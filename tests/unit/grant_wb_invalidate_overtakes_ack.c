@@ -75,8 +75,6 @@ UNREACHED(void arts_net_rdzv_expect(uint64_t txid, uint64_t len,
 UNREACHED(bool arts_db_buf_adopt_landing(struct arts_db_cache_s *c, uint64_t v,
                                          struct arts_db_buffer_s *l,
                                          uint64_t s))
-UNREACHED(struct arts_db_buffer_s *arts_db_buf_install(
-    struct arts_db_cache_s *c, uint64_t v, const void *d, uint64_t s))
 UNREACHED(struct arts_db_buffer_s *arts_db_buf_install_landed(
     struct arts_db_cache_s *c, uint64_t v, struct arts_db_buffer_s *l,
     uint64_t s))

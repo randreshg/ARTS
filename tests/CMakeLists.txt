@@ -1032,9 +1032,9 @@ set_tests_properties(grant_purge_word_model PROPERTIES
 endif()
 # The grant plane's home logic driven through the real code: each test TU
 # #includes the coherence sources it exercises and stubs their other callees,
-# so it links no runtime.  With the wire stubbed a release policy's half
-# compiles the same logic in every VAL or INV tree of that policy, so each
-# registers in one cell.
+# so it links no runtime.  Each registers in the cells whose compiled logic
+# it exercises: with the wire stubbed, a release policy's half compiles the
+# same logic in every VAL or INV tree of that policy.
 function(arts_grant_home_unit name timeout)
     add_executable(${name} unit/${name}.c)
     target_include_directories(${name} PRIVATE
@@ -1065,6 +1065,15 @@ endif()
 if(ARTS_TEST_REFERENCE_TREE)
     arts_grant_home_unit(grant_retain_baton 120)
     arts_grant_home_unit(grant_wb_invalidate_overtakes_ack 30)
+endif()
+# A holder the home revokes in favour of itself ships the grant to itself,
+# and the grant body runs on its own descriptor with the bytes in place.  The
+# commit it runs is the write policy's and the drains in it the protocol's
+# (and VAL write-back keeps the ledger the ship credits), so it registers in
+# every RETAIN tree of the migrating grant.
+if((ARTS_COHERENCE_ARM STREQUAL "VAL" OR ARTS_COHERENCE_ARM STREQUAL "INV")
+   AND ARTS_RELEASE_POLICY STREQUAL "RETAIN")
+    arts_grant_home_unit(grant_self_transfer 30)
 endif()
 
 # --- OoO defer/replay engine (ooo.c) ---
