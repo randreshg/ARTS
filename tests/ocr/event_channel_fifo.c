@@ -16,7 +16,7 @@
  * and record the GUID it was delivered in its slot of a results block; once
  * every EDT is done, verify_edt compares each lane's recovered sequence with
  * the order the satisfies were pushed.  A delivery out of order shows as a
- * wrong value or a wrong GUID, a lost one as a never-firing finish scope.
+ * wrong value or a wrong GUID, a lost one as a never-firing group.
  *
  * The receiving EDTs record into one block with no order among them, which the
  * DB-WRF model does not admit.
@@ -100,8 +100,8 @@ static void add_consumer(arts_guid_t ev, int lane, int g,
                          arts_db_access_mode_t mode, arts_guid_t results_db,
                          arts_guid_t fe) {
   uint64_t pv[2] = {(uint64_t)lane, (uint64_t)g};
-  arts_guid_t edt = arts_edt_create(counter_edt, 2, pv, 2,
-                                    &(arts_edt_hint_t){.finish_event = fe});
+  arts_guid_t edt =
+      arts_edt_create(counter_edt, 2, pv, 2, &(arts_edt_hint_t){.group = fe});
   arts_add_dependence(ev, edt, 0, mode);
   arts_add_dependence(results_db, edt, 1, DB_MODE_RW);
 }

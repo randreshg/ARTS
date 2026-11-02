@@ -1,21 +1,21 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * Cross-rank proxy finish DECR reached through arts_owned_finish_cleanup.
+ * Cross-rank proxy group DECR reached through arts_owned_finish_cleanup.
  *
  * Target: the only externally-visible side effect of edt_context.c —
  * arts_owned_finish_cleanup issues arts_event_satisfy_slot(..., DECR) for every
- * un-consumed owned finish token — on the path where the scope the token's
+ * un-consumed owned finish token — on the path where the group the token's
  * event chains to is homed on another rank, so its DECR finally crosses a rank
  * boundary.
  *
  * Structure (needs node_count >= 2; SKIPs cleanly otherwise):
- *   - rank 0 main_edt creates an OUTER finish scope F (homed on rank 0).
+ *   - rank 0 main_edt creates an OUTER group F (homed on rank 0).
  *   - an ORCHESTRATOR EDT is placed on rank 1 and JOINED to F.  F is remote to
  *     rank 1, so the install joins the orchestrator to a local LATCH proxy of
  *     F instead; the proxy's fire carries one DECR to F (rank 1 -> 0).
- *   - the orchestrator, running on rank 1, creates an INNER finish scope f
+ *   - the orchestrator, running on rank 1, creates an INNER group f
  *     (homed rank 1).  The runtime auto-chains f under the orchestrator's
- *     scope, the proxy: it INCRs the proxy (local) and registers f -> proxy
+ *     group, the proxy: it INCRs the proxy (local) and registers f -> proxy
  *     DECR.  f's creator-token is registered in the orchestrator's
  *     owned_finish_list.
  *   - the orchestrator spawns leaves under f (rank 1) and RETURNS HOLDING
@@ -66,7 +66,7 @@ void orchestrator(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_guid_t f = arts_event_create(&fh); /* auto-chains under F's proxy */
 
   arts_edt_hint_t lh = ARTS_EDT_HINT_DEFAULTS;
-  lh.finish_event = f;
+  lh.group = f;
   lh.rank = 1; /* keep leaves local to rank 1 */
   for (int i = 0; i < INNER_LEAVES; i++) {
     uint64_t slot = (uint64_t)i;
@@ -84,7 +84,7 @@ void checker(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depc;
   int *c = (int *)depv[1].ptr;
   if (c == NULL) {
-    arts_printf("FAIL ctx_crossrank_proxy_finish: checker NULL counter DB\n");
+    arts_printf("FAIL ctx_crossrank_proxy_group: checker NULL counter DB\n");
     g_failed = 1;
     arts_shutdown();
     return;
@@ -94,12 +94,12 @@ void checker(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     sum += c[i];
   }
   if (sum != INNER_LEAVES) {
-    arts_printf("FAIL ctx_crossrank_proxy_finish: only %d/%d inner leaves ran "
+    arts_printf("FAIL ctx_crossrank_proxy_group: only %d/%d inner leaves ran "
                 "before F drained (cross-rank cleanup DECR lost?)\n",
                 sum, INNER_LEAVES);
     g_failed = 1;
   } else {
-    arts_printf("PASS ctx_crossrank_proxy_finish: %d inner leaves drained via "
+    arts_printf("PASS ctx_crossrank_proxy_group: %d inner leaves drained via "
                 "cross-rank cleanup proxy DECR before F fired\n",
                 INNER_LEAVES);
   }
@@ -114,7 +114,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depv;
 
   if (arts_get_total_ranks() < 2) {
-    arts_printf("SKIP ctx_crossrank_proxy_finish: needs node_count >= 2\n");
+    arts_printf("SKIP ctx_crossrank_proxy_group: needs node_count >= 2\n");
     arts_shutdown();
     return;
   }
@@ -129,14 +129,14 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
   arts_db_release(cdb, DB_MODE_RW);
 
-  /* Outer finish scope F homed on rank 0 (current rank). */
+  /* Outer group F homed on rank 0 (current rank). */
   arts_event_hint_t Fh = ARTS_EVENT_HINT_FINISH;
   arts_guid_t F = arts_event_create(&Fh);
 
   /* Orchestrator on rank 1, joined to remote F. */
   arts_edt_hint_t oh = ARTS_EDT_HINT_DEFAULTS;
   oh.rank = 1;
-  oh.finish_event = F;
+  oh.group = F;
   arts_guid_t o = arts_edt_create(orchestrator, 0, NULL, 1, &oh);
   arts_add_dependence(cdb, o, 0, DB_MODE_RW);
 

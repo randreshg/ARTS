@@ -123,7 +123,7 @@ if(ARTS_BUILD_TESTS AND ARTS_TEST_REFERENCE_TREE)
 endif()
 
 # A dependence that carries NULL_GUID in the default (read-write) mode: an
-# event satisfied with NULL_GUID on a create-time slot, and an output event
+# event satisfied with NULL_GUID on a create-time slot, and a completion event
 # satisfied with no result.  Neither slot names a data block, so the consumer
 # acquires and releases neither.  No cell changes it, so it is built and
 # registered in the reference tree only.

@@ -229,14 +229,14 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   uint64_t base1 = 1000;
   arts_guid_t w1 =
       arts_edt_create(chain_writer, 1, &base1, 1,
-                      &(arts_edt_hint_t){.rank = other, .finish_event = e_w1});
+                      &(arts_edt_hint_t){.rank = other, .group = e_w1});
   arts_add_dependence(db, w1, 0, DB_MODE_RW);
 
   arts_guid_t e_r1 = arts_event_create(&ARTS_EVENT_HINT_FINISH);
   uint64_t p_r1[2] = {base1, 1};
   arts_guid_t r1 =
       arts_edt_create(chain_reader, 2, p_r1, 2,
-                      &(arts_edt_hint_t){.rank = third, .finish_event = e_r1});
+                      &(arts_edt_hint_t){.rank = third, .group = e_r1});
   arts_add_dependence(db, r1, 0, DB_MODE_RO);
   arts_add_dependence(e_w1, r1, 1, DB_MODE_NULL);
 
@@ -245,7 +245,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   uint64_t base2 = 2000;
   arts_guid_t w2 = arts_edt_create(
       chain_writer, 1, &base2, 2,
-      &(arts_edt_hint_t){.rank = third, .finish_event = e_w2});
+      &(arts_edt_hint_t){.rank = third, .group = e_w2});
   arts_add_dependence(db, w2, 0, DB_MODE_RW);
   arts_add_dependence(e_r1, w2, 1, DB_MODE_NULL);
 
@@ -255,7 +255,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     uint64_t p[3] = {base2, 2, (uint64_t)started};
     arts_guid_t rd = arts_edt_create(
         cohort_reader, 3, p, 2,
-        &(arts_edt_hint_t){.rank = rank, .finish_event = all_done});
+        &(arts_edt_hint_t){.rank = rank, .group = all_done});
     arts_add_dependence(db, rd, 0, DB_MODE_RO);
     arts_add_dependence(e_w2, rd, 1, DB_MODE_NULL);
   }
@@ -264,14 +264,14 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_guid_t e_w3 = arts_event_create(&ARTS_EVENT_HINT_FINISH);
   arts_guid_t w3 =
       arts_edt_create(chain_incrementer, 1, &base2, 2,
-                      &(arts_edt_hint_t){.rank = other, .finish_event = e_w3});
+                      &(arts_edt_hint_t){.rank = other, .group = e_w3});
   arts_add_dependence(db, w3, 0, DB_MODE_RW);
   arts_add_dependence(started, w3, 1, DB_MODE_NULL);
 
   uint64_t p_r3[2] = {base2 + 1, 3};
   arts_guid_t r3 = arts_edt_create(
       chain_reader, 2, p_r3, 2,
-      &(arts_edt_hint_t){.rank = 0, .finish_event = all_done});
+      &(arts_edt_hint_t){.rank = 0, .group = all_done});
   arts_add_dependence(db, r3, 0, DB_MODE_RO);
   arts_add_dependence(e_w3, r3, 1, DB_MODE_NULL);
 }

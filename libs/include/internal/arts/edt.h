@@ -50,8 +50,8 @@ bool arts_edt_create_core(struct arts_edt_s *edt, arts_guid_kind_t guid_kind,
                           arts_guid_t *guid, unsigned int rank,
                           unsigned int edt_space, arts_edt_t func_ptr,
                           uint32_t paramc, const uint64_t *paramv,
-                          uint32_t depc, arts_guid_t hint_finish_event,
-                          arts_guid_t hint_output_event, uint32_t flags);
+                          uint32_t depc, arts_guid_t hint_group,
+                          arts_guid_t hint_completion_event, uint32_t flags);
 void arts_edt_delete(struct arts_edt_s *edt);
 /* deleter pointer for foreign TUs that compare against or install it. */
 void (*arts_edt_get_deleter(void))(void *);
@@ -101,7 +101,7 @@ void arts_send_edt_destroy(unsigned int home_rank, arts_guid_t guid);
 void arts_send_edt_satisfy_slot(arts_guid_t edt, arts_guid_t db, uint32_t slot,
                                 arts_db_access_mode_t mode);
 
-/* Per-worker EDT-execution context (arts_current_edt, owned-finish-events list,
+/* Per-worker EDT-execution context (arts_current_edt, owned-finish list,
  * created-DB tracking) is declared in arts/edt_context.h. */
 
 void *arts_get_depv(void *edt_ptr);

@@ -306,7 +306,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   arts_edt_hint_t h = ARTS_EDT_HINT_DEFAULTS;
   h.rank = arts_get_total_ranks() - 1;
-  h.finish_event = unpacked;
+  h.group = unpacked;
   for (unsigned int k = 0; k < NLISTS; k++) {
     uint64_t *block = pack(&lists[k]);
     if (block == NULL) {

@@ -49,8 +49,8 @@
 ///    nothing the creator does, so it may observe the block before or after
 ///    the creator's write; it asserts only that it got storage;
 ///  - the creator on rank 0 creates the block, writes a per-iteration
-///    sentinel, releases it, and fires its output event;
-///  - a gate on the last rank waits on that output event and only then adds
+///    sentinel, releases it, and fires its completion event;
+///  - a gate on the last rank waits on that completion event and only then adds
 ///    an ORDERED reader's read dependence: that reader is ordered after the
 ///    creator's release and must observe the sentinel.
 /// A stub taken for an occupant parks the create forever (the run times out);
@@ -116,7 +116,7 @@ static void ordered_reader_edt(uint32_t paramc, const uint64_t *paramv,
   }
 }
 
-/// Runs once the creator's output event fired.  paramv: [label, sentinel].
+/// Runs once the creator's completion event fired.  paramv: [label, sentinel].
 static void gate_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                      arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -167,21 +167,20 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
     arts_guid_t reader =
         arts_edt_create(unordered_reader_edt, 0, NULL, 1,
-                        &(arts_edt_hint_t){.rank = 1, .finish_event = outer});
+                        &(arts_edt_hint_t){.rank = 1, .group = outer});
     arts_add_dependence(label, reader, 0, DB_MODE_RO);
 
     arts_guid_t done = arts_event_create(NULL);
     uint64_t gparams[2] = {(uint64_t)label, sentinel};
-    arts_guid_t gate = arts_edt_create(
-        gate_edt, 2, gparams, 1,
-        &(arts_edt_hint_t){.rank = ranks - 1, .finish_event = outer});
+    arts_guid_t gate =
+        arts_edt_create(gate_edt, 2, gparams, 1,
+                        &(arts_edt_hint_t){.rank = ranks - 1, .group = outer});
     arts_add_dependence(done, gate, 0, DB_MODE_NULL);
 
     uint64_t cparams[2] = {(uint64_t)label, sentinel};
     arts_edt_create(creator_edt, 2, cparams, 0,
-                    &(arts_edt_hint_t){.rank = 0,
-                                       .finish_event = outer,
-                                       .output_event = done});
+                    &(arts_edt_hint_t){
+                        .rank = 0, .group = outer, .completion_event = done});
   }
 
   arts_guid_t f =

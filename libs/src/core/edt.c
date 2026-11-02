@@ -74,7 +74,7 @@
 #include "arts/gpu/gpu_internal.h"
 #endif
 
-/* Per-worker EDT-execution context (arts_current_edt, owned-finish-events list,
+/* Per-worker EDT-execution context (arts_current_edt, owned-finish list,
  * created-DB tracking) lives in edt_context.c.
  * edt.c reads `arts_current_edt` directly and calls the run-start/run-end
  * context hooks below via that header. */
@@ -141,7 +141,7 @@ void arts_edt_create_enter(const struct arts_msg_object_blob_packet_s *packet,
 
 /*
  * arts_edt_create_core — build an EDT (header + paramv + depv), assign its
- * GUID, copy its parameters and join its finish scope, then hand it to its
+ * GUID, copy its parameters and join its group, then hand it to its
  * home: a remote home receives the serialized image; on the local home the
  * built object itself enters the OoO engine, where the OOO_EDT_CREATE body
  * installs it (or parks it behind a live occupant of the GUID).
@@ -150,8 +150,8 @@ bool arts_edt_create_core(struct arts_edt_s *edt, arts_guid_kind_t guid_kind,
                           arts_guid_t *guid, unsigned int rank,
                           unsigned int edt_space, arts_edt_t func_ptr,
                           uint32_t paramc, const uint64_t *paramv,
-                          uint32_t depc, arts_guid_t hint_finish_event,
-                          arts_guid_t hint_output_event, uint32_t flags) {
+                          uint32_t depc, arts_guid_t hint_group,
+                          arts_guid_t hint_completion_event, uint32_t flags) {
   if (!edt) {
     edt = (struct arts_edt_s *)arts_calloc_aligned(1, edt_space,
                                                  ARTS_CACHE_LINE_SIZE);
@@ -179,48 +179,48 @@ bool arts_edt_create_core(struct arts_edt_s *edt, arts_guid_kind_t guid_kind,
   edt->paramc = paramc;
   atomic_store_explicit(&edt->depc_needed, depc, memory_order_relaxed);
 
-  /* Determine finish-scope for this EDT.
+  /* Determine group for this EDT.
    *
-   * Finish scopes are created explicitly via arts_event_create(FINISH); an EDT
-   * joins one by passing it in hint.finish_event, otherwise it inherits the
-   * caller's ambient finish_event (transitive membership).  Either way the EDT
-   * INCRs the scope at create and DECRs it on completion (in
+   * Groups are created explicitly via arts_event_create(FINISH); an EDT
+   * joins one by passing it in hint.group, otherwise it inherits the
+   * caller's current group (transitive membership).  Either way the EDT
+   * INCRs the group at create and DECRs it on completion (in
    * arts_unset_thread_local_edt_info), both through one reference to the
-   * scope found here: the running EDT's own (`arts_current_edt`, the
+   * group found here: the running EDT's own (`arts_current_edt`, the
    * thread-local arts_set/unset_thread_local_edt_info maintain), borrowed for
-   * the call, when the scope is its scope; otherwise a lookup of the hint's
-   * scope, counted (`looked`).  A member homed here keeps a reference of its
+   * the call, when the group is its group; otherwise a lookup of the hint's
+   * group, counted (`looked`).  A member homed here keeps a reference of its
    * own, a copy of the borrowed one or the looked-up count itself; a member
-   * homed on another rank keeps none (its image ships finish_ref NULL). */
+   * homed on another rank keeps none (its image ships group_ref NULL). */
   arts_guid_t parent_fe;
-  arts_shared_ptr_t scope = NULL;
+  arts_shared_ptr_t group = NULL;
   arts_shared_ptr_t looked = NULL;
-  if (hint_finish_event != NULL_GUID) {
+  if (hint_group != NULL_GUID) {
 #ifndef NDEBUG
-    /* The join INCR must be local: an INCR shipped to another rank's scope is
+    /* The join INCR must be local: an INCR shipped to another rank's group is
      * not ordered against the member's completion DECR. */
-    if (arts_guid_get_rank(hint_finish_event) != arts_global_rank_id) {
-      ARTS_ERROR("EDT create names finish scope %lu homed on rank %u; a scope "
-                 "in hint.finish_event must be homed on the creating rank %u "
-                 "(create it here or inherit the ambient scope)",
-                 (unsigned long)hint_finish_event,
-                 arts_guid_get_rank(hint_finish_event), arts_global_rank_id);
+    if (arts_guid_get_rank(hint_group) != arts_global_rank_id) {
+      ARTS_ERROR("EDT create names group %lu homed on rank %u; a group "
+                 "in hint.group must be homed on the creating rank %u "
+                 "(create it here or inherit the current group)",
+                 (unsigned long)hint_group,
+                 arts_guid_get_rank(hint_group), arts_global_rank_id);
     }
 #endif
-    parent_fe = hint_finish_event;
-    if (arts_current_edt && arts_current_edt->finish_event == parent_fe) {
-      scope = arts_current_edt->finish_ref;
+    parent_fe = hint_group;
+    if (arts_current_edt && arts_current_edt->group == parent_fe) {
+      group = arts_current_edt->group_ref;
     } else if (arts_guid_get_rank(parent_fe) == arts_global_rank_id) {
       looked = arts_route_table_lookup_event(parent_fe);
-      scope = looked;
+      group = looked;
     }
   } else if (arts_current_edt) {
-    parent_fe = arts_current_edt->finish_event;
-    scope = arts_current_edt->finish_ref;
+    parent_fe = arts_current_edt->group;
+    group = arts_current_edt->group_ref;
   } else {
     parent_fe = NULL_GUID;
   }
-  edt->finish_event = parent_fe;
+  edt->group = parent_fe;
   if (parent_fe != NULL_GUID) {
     /* Join/inherit: INCR completes before the new EDT can reach its own DECR
      * (which runs only after the EDT executes — strictly later in this
@@ -228,19 +228,19 @@ bool arts_edt_create_core(struct arts_edt_s *edt, arts_guid_kind_t guid_kind,
      * there the INCR is held back until the wrapper's drain and goes by GUID,
      * so the member's DECR can overtake it.  The member's reference is taken
      * all the same. */
-    arts_event_satisfy_slot_on(scope, parent_fe, NULL_GUID,
+    arts_event_satisfy_slot_on(group, parent_fe, NULL_GUID,
                                ARTS_EVENT_LATCH_INCR_SLOT);
   }
   if (rank == arts_global_rank_id) {
-    edt->finish_ref = looked != NULL ? looked : arts_shared_copy(scope);
+    edt->group_ref = looked != NULL ? looked : arts_shared_copy(group);
   } else {
-    edt->finish_ref = NULL;
+    edt->group_ref = NULL;
     arts_shared_release(&looked);
   }
-  /* Output event (per-EDT result channel): never inherited — it belongs to
+  /* Completion event (per-EDT result channel): never inherited — it belongs to
    * this EDT only.  The run path satisfies it with the EDT's returned GUID
    * after the EDT's data-block releases. */
-  edt->output_event = hint_output_event;
+  edt->completion_event = hint_completion_event;
   (void)flags;
 
   /* Copy inline parameter values into the EDT's trailing storage.
@@ -317,8 +317,8 @@ arts_guid_t arts_edt_create(arts_edt_t func_ptr, uint32_t paramc,
    *   - if .rank == ARTS_HINT_ANY_RANK (or hint itself is NULL), the rank is
    *     policy-selected below (ARTS_NOHINT_EDT_ROUNDROBIN) rather than taken
    *     from .rank
-   *   - if .finish_event == NULL_GUID, the EDT inherits the caller's ambient
-   *     finish scope (handled inside arts_edt_create_core). */
+   *   - if .group == NULL_GUID, the EDT inherits the caller's current
+   *     group (handled inside arts_edt_create_core). */
   arts_edt_hint_t snap = hint
                              ? *hint
                              : (arts_edt_hint_t){.rank = ARTS_HINT_CURRENT_RANK,
@@ -331,9 +331,9 @@ arts_guid_t arts_edt_create(arts_edt_t func_ptr, uint32_t paramc,
   } else if (hint == NULL || snap.rank == ARTS_HINT_ANY_RANK) {
     /* No placement preference (NULL hint, or an explicit hint that still
      * needs other fields populated but leaves rank unpinned via
-     * ARTS_HINT_ANY_RANK — e.g. the OCR shim's finish/output-event-bearing
-     * hint).  ROUNDROBIN distributes execution rank across all nodes with a
-     * per-node counter (the scheme arts_db_create uses under
+     * ARTS_HINT_ANY_RANK — e.g. the OCR shim's hint for an EDT with a group
+     * or a completion event).  ROUNDROBIN distributes execution rank across
+     * all nodes with a per-node counter (the scheme arts_db_create uses under
      * ARTS_NOHINT_DB_HOME=ROUNDROBIN); CREATOR pins the EDT to its creating
      * rank.  Both arms resolve to a concrete rank — the sentinel never
      * reaches guid encoding. */
@@ -355,18 +355,18 @@ arts_guid_t arts_edt_create(arts_edt_t func_ptr, uint32_t paramc,
                            (depc * sizeof(arts_edt_dep_t));
   bool ok = arts_edt_create_core(
       NULL, ARTS_GUID_EDT, &guid, rank, edt_space, func_ptr, paramc, paramv,
-      depc, snap.finish_event, snap.output_event, snap.flags);
+      depc, snap.group, snap.completion_event, snap.flags);
   TIME_EDT_CREATE_STOP();
   return ok ? guid : NULL_GUID;
 }
 
 /* Register the running EDT's result GUID — delivered as the payload when the
- * run path satisfies the EDT's output_event after its data-block releases.
+ * run path satisfies the EDT's completion_event after its data-block releases.
  * `arts_current_edt` is the worker thread-local; outside a running EDT this is
  * a documented no-op. */
 void arts_edt_set_result(arts_guid_t result_guid) {
   if (arts_current_edt) {
-    arts_current_edt->output_data = result_guid;
+    arts_current_edt->result = result_guid;
   }
 }
 
@@ -375,10 +375,10 @@ static void arts_edt_free(struct arts_edt_s *edt) {
    * allocated once when the acquire phase begins (NULL if the EDT never
    * reached it).  Freeing here — the single canonical struct-free — covers
    * every lifetime end (run completion, cancel, destroy) with no double
-   * free.  The scope reference goes here too, after every frame that borrowed
+   * free.  The group reference goes here too, after every frame that borrowed
    * it (the body, the completion's or a destroy's DECR) has dropped its count
    * on the EDT. */
-  arts_shared_release(&edt->finish_ref);
+  arts_shared_release(&edt->group_ref);
   arts_free(edt->dep_acq);
   arts_free(edt);
 }
@@ -405,12 +405,12 @@ void arts_edt_delete(struct arts_edt_s *edt) {
  * pre-runnable EDTs (depc_needed > 0); destroying a runnable/queued/running EDT
  * is UB and is skipped.  The retire names the EDT's own cb, so it fails when
  * the EDT's own completion retired it first.  A destroyed EDT never
- * completes, so the destroy that wins the retire sends the finish-scope DECR
- * its completion would have, through the scope reference it borrows under
- * the dispatch's count: to the local proxy when the scope is remote (its fire
- * forwards the DECR and reclaims it), else to the scope itself.  The output
+ * completes, so the destroy that wins the retire sends the group DECR
+ * its completion would have, through the group reference it borrows under
+ * the dispatch's count: to the local proxy when the group is remote (its fire
+ * forwards the DECR and reclaims it), else to the group itself.  The completion
  * event is left alone: the programming model does not say what a destroyed
- * EDT's output event does. */
+ * EDT's completion event does. */
 void arts_handler_edt_destroy(void *item_v, void *args_v) {
   struct arts_edt_s *edt = (struct arts_edt_s *)item_v;
   struct arts_ooo_args_edt_destroy_s *a =
@@ -424,9 +424,9 @@ void arts_handler_edt_destroy(void *item_v, void *args_v) {
   }
   ARTS_INFO("EDT destroy [Guid:%lu, Depc:%u, DepcNeeded:%u] on rank %u",
             edt->guid, edt->depc, needed, arts_global_rank_id);
-  arts_guid_t finish_event = edt->finish_event;
-  if (arts_ooo_retire(a->guid, edt->self_cb) && finish_event != NULL_GUID) {
-    arts_event_satisfy_slot_on(edt->finish_ref, finish_event, NULL_GUID,
+  arts_guid_t group = edt->group;
+  if (arts_ooo_retire(a->guid, edt->self_cb) && group != NULL_GUID) {
+    arts_event_satisfy_slot_on(edt->group_ref, group, NULL_GUID,
                                ARTS_EVENT_LATCH_DECR_SLOT);
   }
 }
@@ -447,7 +447,7 @@ void arts_send_edt_destroy(unsigned int home_rank, arts_guid_t guid) {
  * the RX path and the satisfy path's local-home branch). */
 void arts_edt_destroy(arts_guid_t guid) {
   /* A GUID's home rank is authoritative; an EDT homed elsewhere is destroyed
-   * at its home (the route_table entry + finish-scope accounting live there).
+   * at its home (the route_table entry + group accounting live there).
    */
   unsigned int home = arts_guid_get_rank(guid);
   if (home != arts_global_rank_id) {
@@ -651,7 +651,7 @@ void (*arts_edt_installed_hook)(struct arts_edt_s *edt) = NULL;
  * check and its value load), so this one re-enters the engine by GUID with
  * the object it built, ready as it is: it parks behind an occupant, or
  * installs into the slot its GUID names now.  A parked create keeps open the
- * finish-scope INCR its creating rank emitted until it installs. */
+ * group INCR its creating rank emitted until it installs. */
 void arts_handler_edt_create(void *item_v, void *args_v) {
   arts_route_item_t *slot = (arts_route_item_t *)item_v;
   const struct arts_ooo_args_create_blob_s *a =
@@ -680,24 +680,24 @@ void arts_handler_edt_create(void *item_v, void *args_v) {
     edt->dep_acq = NULL;
     edt->rw_sorted = NULL;
     edt->self_cb = NULL;
-    edt->finish_ref = NULL;
+    edt->group_ref = NULL;
   }
-  /* A finish scope homed on another rank is joined through a local LATCH
+  /* A group homed on another rank is joined through a local LATCH
    * proxy whose fire carries the DECR to it; one homed here is decremented
    * directly by the EDT's completion, or by a destroy in its place.  Made
    * once, while the EDT is private: a re-parked create keeps it, and keeps
-   * the proxy's handle, made with it, as its scope reference. */
-  if (edt->finish_event != NULL_GUID &&
-      arts_guid_get_rank(edt->finish_event) != arts_global_rank_id) {
+   * the proxy's handle, made with it, as its group reference. */
+  if (edt->group != NULL_GUID &&
+      arts_guid_get_rank(edt->group) != arts_global_rank_id) {
     arts_event_hint_t proxy_hint = ARTS_EVENT_HINT_LATCH(1);
     proxy_hint.auto_destroy = true;
     arts_guid_t proxy = NULL_GUID;
     arts_shared_ptr_t proxy_ref = arts_event_create_held(&proxy_hint, &proxy);
-    arts_event_add_dependence_on(proxy_ref, proxy, edt->finish_event,
+    arts_event_add_dependence_on(proxy_ref, proxy, edt->group,
                                  ARTS_EVENT_LATCH_DECR_SLOT, DB_MODE_NULL);
-    edt->finish_event = proxy;
-    assert(edt->finish_ref == NULL);
-    edt->finish_ref = proxy_ref;
+    edt->group = proxy;
+    assert(edt->group_ref == NULL);
+    edt->group_ref = proxy_ref;
   }
   /* self_cb is a non-owning alias of the cb this body installs, armed from
    * the handle itself (a lookup could return a later generation's cb) before

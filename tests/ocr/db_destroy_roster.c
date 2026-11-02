@@ -22,7 +22,7 @@
  * version bookkeeping never records: one read by those ranks, one written by
  * them (a write turn with no buffer publishes nothing).
  *
- * The runs are strictly sequential: each runs in a finish scope of its own,
+ * The runs are strictly sequential: each runs in a group of its own,
  * and the next step, which issues any destroy due before its own run, is a
  * continuation gated on that scope.
  */
@@ -98,7 +98,7 @@ enum { P_CASE, P_STEP, P_LABEL, P_COUNT };
 static void step_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                      arts_edt_dep_t depv[]);
 
-/* Runs fn on rank in a finish scope of its own, and the step after `pv`
+/* Runs fn on rank in a group of its own, and the step after `pv`
  * gated on that scope. */
 static void run_on(arts_edt_t fn, unsigned int rank, uint32_t paramc,
                    const uint64_t *paramv, arts_guid_t dep,
@@ -106,7 +106,7 @@ static void run_on(arts_edt_t fn, unsigned int rank, uint32_t paramc,
   arts_guid_t done = arts_event_create(&ARTS_EVENT_HINT_FINISH);
   arts_guid_t e = arts_edt_create(
       fn, paramc, paramv, dep != NULL_GUID ? 1u : 0u,
-      &(arts_edt_hint_t){.rank = rank, .finish_event = done});
+      &(arts_edt_hint_t){.rank = rank, .group = done});
   if (dep != NULL_GUID) {
     arts_add_dependence(dep, e, 0, fn == writer ? DB_MODE_RW : DB_MODE_RO);
   }

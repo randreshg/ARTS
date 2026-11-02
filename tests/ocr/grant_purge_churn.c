@@ -129,7 +129,7 @@ static void round_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     uint64_t tp[2] = {(uint64_t)round, (uint64_t)i};
     arts_guid_t t =
         arts_edt_create(turn_edt, 2, tp, 1,
-                        &(arts_edt_hint_t){.rank = r, .finish_event = fe});
+                        &(arts_edt_hint_t){.rank = r, .group = fe});
     arts_add_dependence(g_db, t, 0, DB_MODE_RW);
   }
   uint64_t np[2] = {(uint64_t)(round + 1u), (uint64_t)nranks};

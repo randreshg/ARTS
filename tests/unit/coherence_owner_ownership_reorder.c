@@ -119,9 +119,8 @@ static void check_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
 static arts_guid_t spawn_inc(arts_guid_t db, unsigned int rank,
                              arts_guid_t fe) {
-  arts_guid_t w =
-      arts_edt_create(inc_edt, 0, NULL, 1,
-                      &(arts_edt_hint_t){.rank = rank, .finish_event = fe});
+  arts_guid_t w = arts_edt_create(
+      inc_edt, 0, NULL, 1, &(arts_edt_hint_t){.rank = rank, .group = fe});
   arts_add_dependence(db, w, 0, DB_MODE_RW);
   return w;
 }
@@ -142,7 +141,7 @@ enum { P_PHASE, P_DB, P_TOTAL, P_COUNT };
 static void phase_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                       arts_edt_dep_t depv[]);
 
-/* One batch or one step in a finish scope of its own, the next phase gated
+/* One batch or one step in a group of its own, the next phase gated
  * on it; after the last step, the check in a scope of its own and the
  * shutdown gated on that. */
 static void phase(const uint64_t *paramv) {
@@ -165,9 +164,8 @@ static void phase(const uint64_t *paramv) {
     spawn_inc(db, r2, fe);
     total += 3;
   } else {
-    arts_guid_t chk =
-        arts_edt_create(check_edt, 1, &total, 1,
-                        &(arts_edt_hint_t){.rank = 0, .finish_event = fe});
+    arts_guid_t chk = arts_edt_create(
+        check_edt, 1, &total, 1, &(arts_edt_hint_t){.rank = 0, .group = fe});
     arts_add_dependence(db, chk, 0, DB_MODE_RO);
     arts_guid_t f =
         arts_edt_create(finale, 0, NULL, 1, &(arts_edt_hint_t){.rank = 0});

@@ -61,8 +61,8 @@
 #define ST_NELEMS (ST_BURST_OFF + P_SAT)
 
 /* paramv: [state_db, latch, first slot of the valid GUID set, set length].
- * depv[0] = channel payload, depv[1] = state block (RW).  Its output event is
- * the LATCH, decremented once its blocks are released, so the verifier gated
+ * depv[0] = channel payload, depv[1] = state block (RW).  Its completion event
+ * is the LATCH, decremented once its blocks are released, so the verifier gated
  * on the LATCH is ordered after every count. */
 static void counter_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                         arts_edt_dep_t depv[]) {
@@ -113,7 +113,7 @@ static void depper_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_guid_t edt = arts_edt_create(
         counter_edt, 4, cpv, 2,
         &(arts_edt_hint_t){.rank = ARTS_HINT_ANY_RANK,
-                           .output_event = (arts_guid_t)paramv[3]});
+                           .completion_event = (arts_guid_t)paramv[3]});
     arts_add_dependence(event, edt, 0, DB_MODE_RW);
     arts_add_dependence((arts_guid_t)paramv[2], edt, 1, DB_MODE_RW);
   }

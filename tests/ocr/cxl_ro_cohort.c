@@ -3,7 +3,7 @@
  * cxl_ro_cohort — one write turn, then a cohort of readers, two of them on one
  * rank.
  *
- * The four readers are gated on the writer's output event, so every one of
+ * The four readers are gated on the writer's completion event, so every one of
  * them is ordered after the write and must see the whole pattern.  Two share a
  * rank on purpose: that rank asks once and both readers are served by the one
  * turn it is granted, which is the join a reader admitted while its rank's copy
@@ -39,7 +39,7 @@ static void writer_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
 }
 
-/* depv[0] = the writer's output event, depv[1] = the block, RO. */
+/* depv[0] = the writer's completion event, depv[1] = the block, RO. */
 static void reader_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                        arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -104,7 +104,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_guid_t written = arts_event_create(&ARTS_EVENT_HINT_LATCH(1));
   arts_guid_t w = arts_edt_create(
       writer_edt, 0, NULL, 1,
-      &(arts_edt_hint_t){.rank = 1u, .output_event = written});
+      &(arts_edt_hint_t){.rank = 1u, .completion_event = written});
   arts_add_dependence(g, w, 0, DB_MODE_RW);
 
   /* Two readers on rank 1, so one rank's cohort is a pair. */
@@ -115,7 +115,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     uint64_t pv[1] = {(uint64_t)i};
     arts_guid_t r = arts_edt_create(
         reader_edt, 1, pv, 2,
-        &(arts_edt_hint_t){.rank = where[i], .output_event = read[i]});
+        &(arts_edt_hint_t){.rank = where[i], .completion_event = read[i]});
     arts_add_dependence(written, r, 0, DB_MODE_NULL);
     arts_add_dependence(g, r, 1, DB_MODE_RO);
   }

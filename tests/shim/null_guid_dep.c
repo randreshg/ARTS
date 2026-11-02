@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /* Dependences that carry NULL_GUID in the model's default mode (read-write):
  * a create-time dependence on an event later satisfied with NULL_GUID, and an
- * EDT's output event, satisfied with no result, feeding a create-time slot.
+ * EDT's completion event, satisfied with no result, feeding a create-time slot.
  * Neither slot names a data block, so neither is acquired, and the consumer's
  * release must skip both. */
 #include "ocr.h"
@@ -36,7 +36,7 @@ ocrGuid_t mainEdt(u32 pc, u64 *pv, u32 dc, ocrEdtDep_t dv[]) {
   ocrGuid_t ev, gate, ptpl, ctpl, prod, out, cons;
   ocrEventCreate(&ev, OCR_EVENT_ONCE_T, EVT_PROP_TAKES_ARG);
   ocrEventCreate(&gate, OCR_EVENT_ONCE_T, EVT_PROP_NONE);
-  /* The producer waits on the gate, so its output event fires after the
+  /* The producer waits on the gate, so its completion event fires after the
    * consumer is registered on it. */
   ocrEdtTemplateCreate(&ptpl, producer, 0, 1);
   ocrEdtCreate(&prod, ptpl, 0, NULL, 1, NULL, EDT_PROP_NONE, NULL_HINT, &out);

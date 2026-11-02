@@ -20,11 +20,11 @@
  *   1. A DB created inside the lib body is tracked into THIS lib EDT's context
  *      (created_db_list length == 1 after one create — the epilogue left it
  *      empty, track appended exactly one).
- *   2. arts_current_finish_event()/arts_current_edt are non-NULL inside the
+ *   2. arts_current_group()/arts_current_edt are non-NULL inside the
  *      lib body (the lib EDT context is established by set before the body
  *      runs).
  *   3. The lib body writes a sentinel into a counter DB (RW dep); a successor
- *      gated on the lib EDT's completion (finish event) reads it back, proving
+ *      gated on the lib EDT's completion (group latch) reads it back, proving
  *      the lib EDT ran to completion through the set/unset bracket.
  *
  * The nested DB the lib body creates exercises the worker-side
@@ -94,7 +94,7 @@ void lib_body(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
 }
 
-/* successor: gated on the lib EDT finish event; depv[0] = counter DB (RO). */
+/* successor: gated on the lib EDT's group latch; depv[0] = counter DB (RO). */
 void successor(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                arts_edt_dep_t depv[]) {
   (void)paramc;

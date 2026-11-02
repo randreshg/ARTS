@@ -16,10 +16,10 @@
  * writer increments the DB's accumulator; the post-condition checks that EVERY
  * scheduled writer ran exactly once (no lost GRANT) by comparing the
  * accumulator to the writer launch count.  A lost rank/GRANT leaves a writer's
- * EDT permanently parked → it never completes → the finish scope never drains →
+ * EDT permanently parked → it never completes → the group never drains →
  * ctest TIMEOUT (no in-test watchdog, no spin).
  *
- * The W/R EDTs all join one finish scope; verify_edt is gated on that scope
+ * The W/R EDTs all join one group; verify_edt is gated on that scope
  * firing.  The finish DECR is emitted at EDT completion — AFTER
  * arts_release_dbs — so verify observes every writer's increment only once its
  * RW grant has been released (committed).  Satisfying a plain latch from the
@@ -47,7 +47,7 @@
 /* DB layout (uint64_t): [0] = writer accumulator. */
 
 /* Writer EDT: RW-acquire the home DB (slot 0), bump accumulator.  Completion
- * (post-release) DECRs the finish scope it joined; no in-body signal. */
+ * (post-release) DECRs the group it joined; no in-body signal. */
 static void writer_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                        arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -61,7 +61,7 @@ static void writer_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
 /* Reader EDT: RO-acquire the home DB (slot 0).  Pure read; interleaves RO
  * phases against the RW churn to exercise rw→ro flips and the D7 RO-extend
- * path.  Completion DECRs the finish scope; no in-body signal. */
+ * path.  Completion DECRs the group; no in-body signal. */
 static void reader_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                        arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -116,7 +116,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
   arts_db_release(db, DB_MODE_RW);
 
-  /* Finish scope joined by every participant; its DECR is emitted at each
+  /* Group joined by every participant; its DECR is emitted at each
    * EDT's completion (after arts_release_dbs), so it fires only once every
    * writer's RW grant has been released — the post-condition then reads
    * committed data. */
@@ -134,19 +134,17 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     unsigned int r = (nranks > 1) ? (unsigned int)(i % nranks) : 0u;
     if (i % 5 == 4) {
       /* every 5th is a reader. */
-      arts_guid_t rd =
-          arts_edt_create(reader_edt, 0, NULL, 1,
-                          &(arts_edt_hint_t){.rank = r, .finish_event = fe});
+      arts_guid_t rd = arts_edt_create(
+          reader_edt, 0, NULL, 1, &(arts_edt_hint_t){.rank = r, .group = fe});
       arts_add_dependence(db, rd, 0, DB_MODE_RO);
     } else {
-      arts_guid_t w =
-          arts_edt_create(writer_edt, 0, NULL, 1,
-                          &(arts_edt_hint_t){.rank = r, .finish_event = fe});
+      arts_guid_t w = arts_edt_create(
+          writer_edt, 0, NULL, 1, &(arts_edt_hint_t){.rank = r, .group = fe});
       arts_add_dependence(db, w, 0, DB_MODE_RW);
     }
   }
 
-  /* verify_edt fires when the finish scope drains (every participant has
+  /* verify_edt fires when the group drains (every participant has
    * completed AND released).  The driver returns without waiting, releasing the
    * scope's creator-token so it can fire. */
   arts_guid_t v =

@@ -33,7 +33,7 @@
 /// WAVE of RO-acquiring EDTs is fanned out across every consumer rank
 /// simultaneously.  Each rank's first acquirer triggers a stub install; the
 /// concurrent acquirers on one rank race the stub install.  The DB is destroyed
-/// only AFTER the wave's finish scope drains (every reader has acquired AND
+/// only AFTER the wave's group drains (every reader has acquired AND
 /// released) — destroying a DB with RO acquires still in flight is undefined in
 /// the OCR memory model (a coherence request that reaches the home after the
 /// destroy is deferred forever), so the destroy is ordered after the readers.
@@ -41,7 +41,7 @@
 /// WHAT IT ASSERTS: (1) no crash / no SIGSEGV on the stub destructor or the
 /// lost-race free; (2) every reader observes the installed value (a leaked /
 /// wrong stub would corrupt the read); (3) progress — every wave drains (a
-/// stranded stub install would hang the finish scope → ctest TIMEOUT).
+/// stranded stub install would hang the group → ctest TIMEOUT).
 ///
 /// Every arm's acquire of a block this rank has never seen goes through the
 /// same stub install, so the test runs under every protocol.  It needs a
@@ -94,7 +94,7 @@ enum { P_ROUND, P_DB, P_VAL, P_COUNT };
 static void wave_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                      arts_edt_dep_t depv[]);
 
-/// Seeds round `rnd`'s DB in a finish scope; its wave is gated on that scope.
+/// Seeds round `rnd`'s DB in a group; its wave is gated on that scope.
 static void start_round(uint64_t rnd) {
   unsigned int nranks = arts_get_total_ranks();
   uint64_t val = 0x1A2B0000u + rnd;
@@ -109,7 +109,7 @@ static void start_round(uint64_t rnd) {
   arts_guid_t e_seed = arts_event_create(&ARTS_EVENT_HINT_FINISH);
   uint64_t seed_pv[2] = {(uint64_t)g, val};
   arts_edt_create(seeder_edt, 2, seed_pv, 0,
-                  &(arts_edt_hint_t){.rank = owner, .finish_event = e_seed});
+                  &(arts_edt_hint_t){.rank = owner, .group = e_seed});
   uint64_t pv[P_COUNT] = {rnd, (uint64_t)g, val};
   arts_guid_t w =
       arts_edt_create(wave_edt, P_COUNT, pv, 1, &(arts_edt_hint_t){.rank = 0});
@@ -122,9 +122,9 @@ static void round_end_edt(uint32_t paramc, const uint64_t *paramv,
   (void)paramc;
   (void)depc;
   (void)depv;
-  /* Destroy only after the whole wave has acquired AND released (the finish
-   * scope drained): no RO acquire is in flight, so the destroy is
-   * well-defined under the OCR model. */
+  /* Destroy only after the whole wave has acquired AND released (the group
+   * drained): no RO acquire is in flight, so the destroy is well-defined under
+   * the OCR model. */
   arts_db_destroy((arts_guid_t)paramv[P_DB]);
   if (paramv[P_ROUND] + 1u < ROUNDS) {
     start_round(paramv[P_ROUND] + 1u);
@@ -152,9 +152,9 @@ static void wave_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   for (unsigned int rank = 0; rank < nranks; rank++) {
     for (unsigned int k = 0; k < ACQUIRERS_PER_RANK; k++) {
       uint64_t rpv[1] = {val};
-      arts_guid_t r = arts_edt_create(
-          reader_edt, 1, rpv, 1,
-          &(arts_edt_hint_t){.rank = rank, .finish_event = e_acq});
+      arts_guid_t r =
+          arts_edt_create(reader_edt, 1, rpv, 1,
+                          &(arts_edt_hint_t){.rank = rank, .group = e_acq});
       arts_add_dependence(g, r, 0, DB_MODE_RO);
     }
   }

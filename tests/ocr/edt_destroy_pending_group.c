@@ -3,24 +3,24 @@
 ** Licensed under the Apache License, Version 2.0 (the "License").           **
 ******************************************************************************/
 
-/* edt_destroy_pending_scope — destroying an EDT that never ran balances the
- * finish scope it joined, as its completion would have.
+/* edt_destroy_pending_group — destroying an EDT that never ran balances the
+ * group it joined, as its completion would have.
  *
- * Two EDTs join one finish scope and each waits on a dependence nobody
- * satisfies: one homed on the first rank (the scope's own rank), one homed on
- * the last rank (on several ranks it joins the scope through a local proxy).
- * Both are destroyed; the scope must then drain, so the continuation gated on
+ * Two EDTs join one group and each waits on a dependence nobody
+ * satisfies: one homed on the first rank (the group's own rank), one homed on
+ * the last rank (on several ranks it joins the group through a local proxy).
+ * Both are destroyed; the group must then drain, so the continuation gated on
  * it runs and the run ends with no work left undone.  A destroy that left the
- * scope's INCR open would leave that continuation unrun.
+ * group's INCR open would leave that continuation unrun.
  *
- * Neither EDT carries an output event: the programming model does not say
- * what a destroyed EDT's output event does, so the runtime leaves it alone.
+ * Neither EDT carries a completion event: the programming model does not say
+ * what a destroyed EDT's completion event does, so the runtime leaves it alone.
  */
 
 #include <stdint.h>
 
-#include "arts.h"
 #include "../test_failure_status.h"
+#include "arts.h"
 
 static void victim(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                    arts_edt_dep_t depv[]) {
@@ -28,7 +28,7 @@ static void victim(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)paramv;
   (void)depc;
   (void)depv;
-  arts_printf("FAIL: edt_destroy_pending_scope: a destroyed EDT ran\n");
+  arts_printf("FAIL: edt_destroy_pending_group: a destroyed EDT ran\n");
   arts_test_fail();
 }
 
@@ -39,7 +39,7 @@ static void finale(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depc;
   (void)depv;
   if (arts_test_status() == 0) {
-    arts_printf("PASS: edt_destroy_pending_scope\n");
+    arts_printf("PASS: edt_destroy_pending_group\n");
   }
   arts_shutdown();
 }
@@ -51,18 +51,16 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depc;
   (void)depv;
   unsigned int last = arts_get_total_ranks() - 1u;
-  arts_guid_t scope = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_guid_t group = arts_event_create(&ARTS_EVENT_HINT_FINISH);
   arts_guid_t here = arts_edt_create(
-      victim, 0, NULL, 1,
-      &(arts_edt_hint_t){.rank = 0u, .finish_event = scope});
+      victim, 0, NULL, 1, &(arts_edt_hint_t){.rank = 0u, .group = group});
   arts_guid_t there = arts_edt_create(
-      victim, 0, NULL, 1,
-      &(arts_edt_hint_t){.rank = last, .finish_event = scope});
+      victim, 0, NULL, 1, &(arts_edt_hint_t){.rank = last, .group = group});
   arts_edt_destroy(here);
   arts_edt_destroy(there);
   arts_guid_t f =
       arts_edt_create(finale, 0, NULL, 1, &(arts_edt_hint_t){.rank = 0u});
-  arts_add_dependence(scope, f, 0, DB_MODE_NULL);
+  arts_add_dependence(group, f, 0, DB_MODE_NULL);
 }
 
 int main(int argc, char **argv) {

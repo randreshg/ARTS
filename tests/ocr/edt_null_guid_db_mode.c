@@ -89,7 +89,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_guid_t e = arts_edt_create(
       body, 1, pv, 4,
       &(arts_edt_hint_t){.rank = arts_get_total_ranks() - 1u,
-                         .finish_event = scope});
+                         .group = scope});
   arts_add_dependence(ev_rw, e, 0, DB_MODE_RW);
   arts_add_dependence(ev_ro, e, 1, DB_MODE_RO);
   arts_add_dependence(NULL_GUID, e, 2, DB_MODE_RW);

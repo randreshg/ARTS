@@ -49,7 +49,7 @@
 /// one, or nothing at all.  That is the gap this test closes.
 ///
 /// SHAPE.  N_DBS DBs, homed round-robin.  The run is a sequence of ROUNDS,
-/// each a finish scope with the next round's EDTs created by a continuation
+/// each a group with the next round's EDTs created by a continuation
 /// gated on it, so round r begins only after every round-(r-1) EDT has
 /// completed and released.  Inside a round, per DB:
 ///   * WRITERS_PER_DB RW EDTs are issued with no ordering among themselves, in
@@ -285,7 +285,7 @@ static void run_round(const uint64_t *paramv) {
             nranks;
         arts_guid_t we =
             arts_edt_create(writer_edt, 2, pv, 1,
-                            &(arts_edt_hint_t){.rank = wr, .finish_event = fe});
+                            &(arts_edt_hint_t){.rank = wr, .group = fe});
         arts_add_dependence(dbs[d], we, 0, DB_MODE_RW);
         w++;
       }
@@ -297,7 +297,7 @@ static void run_round(const uint64_t *paramv) {
             (unsigned int)((unsigned)d + (r / 2u) + (unsigned)(k % 2)) % nranks;
         arts_guid_t re =
             arts_edt_create(reader_edt, 2, pv, 1,
-                            &(arts_edt_hint_t){.rank = rr, .finish_event = fe});
+                            &(arts_edt_hint_t){.rank = rr, .group = fe});
         arts_add_dependence(dbs[d], re, 0, DB_MODE_RO);
         k++;
       }

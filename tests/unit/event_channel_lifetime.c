@@ -29,7 +29,7 @@ static void noop_dep(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depv;
 }
 
-/* Gated on the noop EDTs' finish scope. */
+/* Gated on the noop EDTs' group. */
 static void finale(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                    arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -55,9 +55,8 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   /* Drive N fire generations: pair add_dep + satisfy each iteration. */
   for (int i = 0; i < N_GENS; i++) {
-    arts_guid_t edt =
-        arts_edt_create(noop_dep, 0, NULL, 1,
-                        &(arts_edt_hint_t){.rank = 0, .finish_event = fe});
+    arts_guid_t edt = arts_edt_create(
+        noop_dep, 0, NULL, 1, &(arts_edt_hint_t){.rank = 0, .group = fe});
     arts_add_dependence(ch, edt, 0, DB_MODE_RW);
     arts_event_satisfy_slot(ch, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
   }
@@ -95,9 +94,8 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
    * on the pairs that never come. */
   arts_guid_t ch_sat = arts_event_create(&hint);
   for (int i = 0; i < N_PAIRED; i++) {
-    arts_guid_t edt =
-        arts_edt_create(noop_dep, 0, NULL, 1,
-                        &(arts_edt_hint_t){.rank = 0, .finish_event = fe});
+    arts_guid_t edt = arts_edt_create(
+        noop_dep, 0, NULL, 1, &(arts_edt_hint_t){.rank = 0, .group = fe});
     arts_add_dependence(ch_sat, edt, 0, DB_MODE_RW);
   }
   for (int i = 0; i < N_PAIRED + N_UNPAIRED; i++) {

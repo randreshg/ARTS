@@ -16,7 +16,7 @@
  *     THIRD DECR — without the INCR the latch reaches zero one DECR earlier.
  *   - fire-and-linger: a dependent bound to the first event AFTER it fired is
  *     satisfied at once from the stored fire state, with the same data.
- * Each dependent runs exactly once; a finalizer gated on a finish scope reads
+ * Each dependent runs exactly once; a finalizer gated on a group reads
  * the recorded data back.
  *
  * Config-agnostic single-node public-API check.
@@ -61,7 +61,7 @@ static void expect_seen(const record_t *rec, unsigned int idx, int decr,
   }
 }
 
-/* Finalizer gated on the finish scope: every dependent has run by now. */
+/* Finalizer gated on the group: every dependent has run by now. */
 void check_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -88,7 +88,7 @@ void check_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 static arts_guid_t bind_dependent(arts_guid_t rec_db, arts_guid_t ev,
                                   arts_guid_t fe, uint64_t idx) {
   arts_edt_hint_t dh = ARTS_EDT_HINT_DEFAULTS;
-  dh.finish_event = fe;
+  dh.group = fe;
   arts_guid_t d = arts_edt_create(fire_counter_edt, 1, &idx, 2, &dh);
   arts_add_dependence(rec_db, d, 0, DB_MODE_RW);
   arts_add_dependence(ev, d, 1, DB_MODE_NULL);

@@ -53,7 +53,7 @@
 /// An acquire runs inside the arts_add_dependence call that makes its EDT
 /// ready, so a dependence added by a holder's body is acquired while that
 /// holder's hold is live: every join below is decided by program order, with
-/// no timing.  Each phase runs in a finish scope of its own, the next phase
+/// no timing.  Each phase runs in a group of its own, the next phase
 /// created by a continuation gated on it:
 ///   main_edt:    creates the block (its create hold, released at its
 ///                epilogue) and phase 1, which becomes ready inside main_edt's
@@ -173,13 +173,13 @@ static void read_phase(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   uint64_t final_check = 1u;
   arts_guid_t rd =
       arts_edt_create(reader_edt, 1, &final_check, 1,
-                      &(arts_edt_hint_t){.rank = 0, .finish_event = e_rd});
+                      &(arts_edt_hint_t){.rank = 0, .group = e_rd});
   arts_add_dependence((arts_guid_t)paramv[0], rd, 0, DB_MODE_RO);
   then(finale, paramv, e_rd);
 }
 
 /// Phase 2: the holder, the joiner it admits and the reader the joiner
-/// admits all join one finish scope.  Runs once main_edt and phase 1 have
+/// admits all join one group.  Runs once main_edt and phase 1 have
 /// both completed, so both their releases precede this phase.
 static void join_phase(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                        arts_edt_dep_t depv[]) {
@@ -187,9 +187,8 @@ static void join_phase(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depc;
   (void)depv;
   arts_guid_t e_jn = arts_event_create(&ARTS_EVENT_HINT_FINISH);
-  arts_guid_t h =
-      arts_edt_create(holder_admits_joiner, 1, paramv, 1,
-                      &(arts_edt_hint_t){.rank = 0, .finish_event = e_jn});
+  arts_guid_t h = arts_edt_create(holder_admits_joiner, 1, paramv, 1,
+                                  &(arts_edt_hint_t){.rank = 0, .group = e_jn});
   arts_add_dependence((arts_guid_t)paramv[0], h, 0, DB_MODE_RW);
   then(read_phase, paramv, e_jn);
 }
@@ -218,9 +217,8 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   /* Phase 1: an EDT that holds the DB as an RW dep but writes nothing.  Its
    * epilogue's release must not disturb a write that follows it. */
   arts_guid_t e_cr = arts_event_create(&ARTS_EVENT_HINT_FINISH);
-  arts_guid_t cr =
-      arts_edt_create(writes_nothing, 0, NULL, 1,
-                      &(arts_edt_hint_t){.rank = 0, .finish_event = e_cr});
+  arts_guid_t cr = arts_edt_create(
+      writes_nothing, 0, NULL, 1, &(arts_edt_hint_t){.rank = 0, .group = e_cr});
   arts_add_dependence(db, cr, 0, DB_MODE_RW);
   /* e_cr fires only once this EDT returns (its epilogue releases the create
    * hold and the creator-token) and phase 1 has released its RW hold. */

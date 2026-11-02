@@ -15,8 +15,8 @@
  *                 bytes that turn left, whatever the block held before it.
  *
  * The readers of the first phase are held behind one gate so their turns
- * overlap, and the writer is ordered behind all of them by the phase's finish
- * scope, so no rank can be reading a written block in the first phase.
+ * overlap, and the writer is ordered behind all of them by the phase's group,
+ * so no rank can be reading a written block in the first phase.
  *
  * Portable: it asserts COHERENCE alone and passes under every protocol.
  */
@@ -47,7 +47,7 @@ static void first_read_edt(uint32_t paramc, const uint64_t *paramv,
   }
 }
 
-/* depv[0] = the writer's output event, depv[1] = the block, RO. */
+/* depv[0] = the writer's completion event, depv[1] = the block, RO. */
 static void verify_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                        arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -111,8 +111,8 @@ static void gate_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depv;
 }
 
-/* paramv = {the block, the rank count}.  Gated on the first phase's finish
- * scope, so every first reader has released the block by the time it runs. */
+/* paramv = {the block, the rank count}.  Gated on the first phase's group,
+ * so every first reader has released the block by the time it runs. */
 static void write_phase_edt(uint32_t paramc, const uint64_t *paramv,
                             uint32_t depc, arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -124,14 +124,14 @@ static void write_phase_edt(uint32_t paramc, const uint64_t *paramv,
   arts_guid_t written = arts_event_create(&ARTS_EVENT_HINT_LATCH(1));
   arts_guid_t w = arts_edt_create(
       writer_edt, 0, NULL, 1,
-      &(arts_edt_hint_t){.rank = 1u, .output_event = written});
+      &(arts_edt_hint_t){.rank = 1u, .completion_event = written});
   arts_add_dependence(g, w, 0, DB_MODE_RW);
 
   arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
   for (unsigned int r = 0; r < nranks; r++) {
     arts_guid_t v = arts_edt_create(
         verify_edt, 0, NULL, 2,
-        &(arts_edt_hint_t){.rank = r, .finish_event = fe});
+        &(arts_edt_hint_t){.rank = r, .group = fe});
     arts_add_dependence(written, v, 0, DB_MODE_NULL);
     arts_add_dependence(g, v, 1, DB_MODE_RO);
   }
@@ -173,7 +173,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   for (unsigned int r = 0; r < nranks; r++) {
     arts_guid_t rd = arts_edt_create(
         first_read_edt, 0, NULL, 2,
-        &(arts_edt_hint_t){.rank = r, .finish_event = fe});
+        &(arts_edt_hint_t){.rank = r, .group = fe});
     arts_add_dependence(start, rd, 0, DB_MODE_NULL);
     arts_add_dependence(g, rd, 1, DB_MODE_RO);
   }
@@ -186,7 +186,8 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   /* Wired last, so the gate cannot fire before every reader is waiting on
    * it. */
   (void)arts_edt_create(gate_edt, 0, NULL, 0,
-                        &(arts_edt_hint_t){.rank = 0u, .output_event = start});
+                        &(arts_edt_hint_t){.rank = 0u,
+                                          .completion_event = start});
 }
 
 int main(int argc, char **argv) {

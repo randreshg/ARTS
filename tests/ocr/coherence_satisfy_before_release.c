@@ -177,7 +177,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     /* Consumer A: ON the DB home (home-local acquire against an empty home). */
     arts_guid_t ca =
         arts_edt_create(consumer_edt, 1, &dp, 1,
-                        &(arts_edt_hint_t){.rank = home, .finish_event = fe});
+                        &(arts_edt_hint_t){.rank = home, .group = fe});
     arts_add_dependence(dbs[d], ca, 0, DB_MODE_RO);
     /* Consumer B: a second reader on the next rank; at >= 3 ranks skip the
      * creator (its own cache already holds the written bytes — that serve is
@@ -188,7 +188,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     }
     arts_guid_t cb =
         arts_edt_create(consumer_edt, 1, &dp, 1,
-                        &(arts_edt_hint_t){.rank = other, .finish_event = fe});
+                        &(arts_edt_hint_t){.rank = other, .group = fe});
     arts_add_dependence(dbs[d], cb, 0, DB_MODE_RO);
   }
 

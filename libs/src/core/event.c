@@ -286,18 +286,19 @@ static arts_shared_ptr_t event_create(const arts_event_hint_t *hint,
   if (g != NULL_GUID) {
     h.rank = arts_guid_get_rank(g);
   }
-  /* Mechanism A — a finish event made inside a scope joins the ambient scope:
+  /* Mechanism A — a finish event made inside a group joins the current group:
    * it INCRs it through the running EDT's own reference, which that EDT holds
    * for its whole body, and registers its fire's DECR of it through the
    * handle on the event this create made (always homed here). */
-  arts_guid_t ambient = h.finish ? arts_current_finish_event() : NULL_GUID;
-  arts_shared_ptr_t held = event_install(&g, &h, hold || ambient != NULL_GUID);
+  arts_guid_t current = h.finish ? arts_current_group() : NULL_GUID;
+  arts_shared_ptr_t held =
+      event_install(&g, &h, hold || current != NULL_GUID);
   if (h.finish) {
-    if (ambient != NULL_GUID) {
-      arts_event_satisfy_slot_on(arts_current_edt->finish_ref, ambient,
+    if (current != NULL_GUID) {
+      arts_event_satisfy_slot_on(arts_current_edt->group_ref, current,
                                  NULL_GUID, ARTS_EVENT_LATCH_INCR_SLOT);
-      arts_event_add_dependence_on(held, g, ambient, ARTS_EVENT_LATCH_DECR_SLOT,
-                                   DB_MODE_NULL);
+      arts_event_add_dependence_on(held, g, current,
+                                   ARTS_EVENT_LATCH_DECR_SLOT, DB_MODE_NULL);
       if (!hold) {
         arts_shared_release(&held);
       }

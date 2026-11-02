@@ -39,11 +39,11 @@
 
 /// @file multinode_edt.c
 /// @brief Tests EDT creation and signaling across nodes: remote execution,
-///        a fan-in of several tasks from every node under one finish scope,
-///        multi-hop chains, and paramv delivery.  The finish scope fires once,
+///        a fan-in of several tasks from every node under one group,
+///        multi-hop chains, and paramv delivery.  The group fires once,
 ///        after every member on every node, and shuts the run down: each
-///        check records its verdict in a block that the EDT the scope fires
-///        reads, so a scope that fires before a member finished can leave
+///        check records its verdict in a block that the EDT the group fires
+///        reads, so a group that fires before a member finished can leave
 ///        that check unrecorded, which fails the run when it does.
 ///        Requires multi-node (node_count > 1).
 
@@ -195,7 +195,7 @@ void check_paramv(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
 // ---------------------------------------------------------------------------
 
-/// depv[0] = the finish scope, depv[1] = the verdict block (RO).
+/// depv[0] = the group, depv[1] = the verdict block (RO).
 void shutdown_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                   arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -205,7 +205,7 @@ void shutdown_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   bool all = true;
   for (int i = 0; i < V_COUNT; i++) {
     if (verdicts[i] == V_UNREPORTED) {
-      arts_printf("  FAIL: the finish scope fired before the %s check "
+      arts_printf("  FAIL: the group fired before the %s check "
                   "reported\n",
                   check_names[i]);
       arts_test_fail();
@@ -215,8 +215,8 @@ void shutdown_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     }
   }
   if (all) {
-    arts_printf("PASS: multinode_edt every check reported before the finish "
-                "scope fired\n");
+    arts_printf("PASS: multinode_edt every check reported before the group "
+                "fired\n");
   }
   arts_shutdown();
 }
@@ -251,11 +251,11 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     uint64_t expected_param = 1;
     arts_guid_t checker =
         arts_edt_create(check_remote_edt, 1, &expected_param, 2,
-                        &(arts_edt_hint_t){.rank = 0, .finish_event = fe});
+                        &(arts_edt_hint_t){.rank = 0, .group = fe});
     arts_add_dependence(verdicts, checker, 1, DB_MODE_RW);
     uint64_t coll_param = (uint64_t)checker;
     arts_edt_create(remote_task, 1, &coll_param, 0,
-                    &(arts_edt_hint_t){.rank = 1, .finish_event = fe});
+                    &(arts_edt_hint_t){.rank = 1, .group = fe});
   }
 
   // Test 2: TASKS_PER_NODE EDTs on every node, each reports its rank.
@@ -263,7 +263,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     uint32_t tasks = total * TASKS_PER_NODE;
     arts_guid_t all_coll =
         arts_edt_create(check_all_nodes, 0, NULL, tasks + 1,
-                        &(arts_edt_hint_t){.rank = 0, .finish_event = fe});
+                        &(arts_edt_hint_t){.rank = 0, .group = fe});
     arts_add_dependence(verdicts, all_coll, tasks, DB_MODE_RW);
     for (unsigned int i = 0; i < tasks; i++) {
       uint64_t params[2];
@@ -271,7 +271,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       params[1] = (uint64_t)i;
       arts_edt_create(
           all_nodes_task, 2, params, 0,
-          &(arts_edt_hint_t){.rank = i / TASKS_PER_NODE, .finish_event = fe});
+          &(arts_edt_hint_t){.rank = i / TASKS_PER_NODE, .group = fe});
     }
   }
 
@@ -282,16 +282,16 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     uint64_t exp3 = 120;
     arts_guid_t c =
         arts_edt_create(chain_check, 1, &exp3, 2,
-                        &(arts_edt_hint_t){.rank = 0, .finish_event = fe});
+                        &(arts_edt_hint_t){.rank = 0, .group = fe});
     arts_add_dependence(verdicts, c, 1, DB_MODE_RW);
     uint64_t c_param = (uint64_t)c;
     arts_guid_t b =
         arts_edt_create(chain_hop, 1, &c_param, 1,
-                        &(arts_edt_hint_t){.rank = 1, .finish_event = fe});
+                        &(arts_edt_hint_t){.rank = 1, .group = fe});
     uint64_t b_param = (uint64_t)b;
     arts_guid_t a =
         arts_edt_create(chain_hop, 1, &b_param, 1,
-                        &(arts_edt_hint_t){.rank = 0, .finish_event = fe});
+                        &(arts_edt_hint_t){.rank = 0, .group = fe});
     arts_edt_satisfy_slot(a, 0, (arts_guid_t)(100), DB_MODE_NULL);
   }
 
@@ -300,7 +300,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     uint64_t pv[4] = {0xDEAD, 0xBEEF, 0xCAFE, 0xF00D};
     arts_guid_t chk =
         arts_edt_create(check_paramv, 4, pv, 1,
-                        &(arts_edt_hint_t){.rank = 1, .finish_event = fe});
+                        &(arts_edt_hint_t){.rank = 1, .group = fe});
     arts_add_dependence(verdicts, chk, 0, DB_MODE_RW);
   }
 }

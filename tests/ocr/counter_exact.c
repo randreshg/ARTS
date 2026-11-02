@@ -97,7 +97,7 @@ static arts_guid_t edt_on(arts_edt_t fn, unsigned int rank, uint32_t paramc,
                           arts_guid_t output) {
   arts_edt_hint_t h = ARTS_EDT_HINT_DEFAULTS;
   h.rank = rank;
-  h.output_event = output;
+  h.completion_event = output;
   return arts_edt_create(fn, paramc, paramv, depc, &h);
 }
 

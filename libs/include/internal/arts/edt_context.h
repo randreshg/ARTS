@@ -63,9 +63,9 @@ extern ARTS_THREAD_LOCAL struct arts_edt_s *arts_current_edt;
 
 /* Run-start / run-end context management (called from the EDT run path). */
 void arts_set_thread_local_edt_info(struct arts_edt_s *edt);
-/* `decr_finish`: emit the EDT's own finish-scope DECR here; false when the
+/* `decr_group`: emit the EDT's own group DECR here; false when the
  * caller emits it later, after the EDT's GUID is retired. */
-void arts_unset_thread_local_edt_info(bool decr_finish);
+void arts_unset_thread_local_edt_info(bool decr_group);
 void arts_cleanup_edt_tls(void);
 
 /* Created-DB tracking on the current worker (auto-acquire / release path).
@@ -82,7 +82,7 @@ arts_vector_t *arts_get_created_db_list(void);
 void arts_owned_finish_register(arts_guid_t fe_guid);
 void arts_owned_finish_consume(arts_guid_t fe_guid);
 void arts_owned_finish_cleanup(void);
-/* arts_current_finish_event is declared once in the public header (arts.h);
+/* arts_current_group is declared once in the public header (arts.h);
  * callers include that.  Not re-declared here (redundant declaration). */
 
 #ifdef __cplusplus

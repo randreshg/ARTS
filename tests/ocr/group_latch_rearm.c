@@ -3,15 +3,15 @@
 ** Licensed under the Apache License, Version 2.0 (the "License").           **
 ******************************************************************************/
 
-/* event_finish_latch_rearm.
+/* group_latch_rearm.
  *
  * Target: simple.latch INCR (Mechanism A auto-chain) racing the child DECR —
- * the re-arm-after-fire edge ordering on a finish latch (event.c).
+ * the re-arm-after-fire edge ordering on a group latch (event.c).
  *
  * A finish event is a simple latch=1 (the creator-token).  Mechanism A: when a
- * child finish event F_child is created under an ambient finish F1, the runtime
+ * child finish event F_child is created in the group of F1, the runtime
  * INCRs F1 and wires F_child->DECR F1.  F1 must not drain until every INCR has
- * a matching DECR.  The race of interest: many child finish scopes are created
+ * a matching DECR.  The race of interest: many child groups are created
  * (INCR F1) concurrently while earlier children complete (DECR F1).  If an
  * INCR were ever ordered after the matching child population so the latch
  * transiently hit 0, F1 would fire-and-not-re-fire and the successor would run
@@ -21,7 +21,7 @@
  * running under F1, creates its own child finish F_child (auto-chained: INCR
  * F1) and spawns LEAVES leaf EDTs joined to F_child; each leaf marks a unique
  * slot, and so does each orchestrator and each of OUTER leaves joined to F1
- * directly, so F1's own members are counted beside its child scopes.  F1's
+ * directly, so F1's own members are counted beside its child groups.  F1's
  * creator-token is released when main_edt completes.  Because every
  * child INCR happens-before the child's own leaves can complete (the
  * orchestrator creates the child and its leaves before returning, and the
@@ -45,7 +45,7 @@
 #define ORCHS 8
 #define LEAVES 8
 #define OUTER 3
-/* Slots: the child scopes' leaves, then F1's direct leaves, then one per
+/* Slots: the child groups' leaves, then F1's direct leaves, then one per
  * orchestrator. */
 #define OUTER_BASE (ORCHS * LEAVES)
 #define ORCH_BASE (OUTER_BASE + OUTER)
@@ -81,13 +81,13 @@ static void orchestrator(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                         memory_order_release);
 
   arts_event_hint_t fh = ARTS_EVENT_HINT_FINISH;
-  arts_guid_t fc = arts_event_create(&fh); /* INCRs ambient F1 */
+  arts_guid_t fc = arts_event_create(&fh); /* INCRs the current group F1 */
   if (fc == NULL_GUID) {
     (void)fprintf(stderr, "FAIL: child finish create\n");
     arts_abort(1);
   }
   arts_edt_hint_t ih = ARTS_EDT_HINT_DEFAULTS;
-  ih.finish_event = fc;
+  ih.group = fc;
   for (int i = 0; i < LEAVES; i++) {
     uint64_t slot = base + (uint64_t)i;
     arts_guid_t l = arts_edt_create(leaf_edt, 1, &slot, 1, &ih);
@@ -127,7 +127,7 @@ static void successor(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                   set, N_SLOTS);
     arts_abort(1);
   }
-  printf("event_finish_latch_rearm: %d orchestrators x %d leaves and %d direct "
+  printf("group_latch_rearm: %d orchestrators x %d leaves and %d direct "
          "leaves all drained before single F1 successor — PASS\n",
          ORCHS, LEAVES, OUTER);
   arts_shutdown();
@@ -158,7 +158,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_guid_t f1 = arts_event_create(&fh);
 
   arts_edt_hint_t oh = ARTS_EDT_HINT_DEFAULTS;
-  oh.finish_event = f1;
+  oh.group = f1;
   for (int o = 0; o < ORCHS; o++) {
     uint64_t base = (uint64_t)(o * LEAVES);
     arts_guid_t orch = arts_edt_create(orchestrator, 1, &base, 1, &oh);

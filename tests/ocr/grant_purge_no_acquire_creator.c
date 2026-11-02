@@ -102,7 +102,7 @@ static void wirer_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   arts_guid_t w = arts_edt_create(
       writer_edt, 0, NULL, 1,
-      &(arts_edt_hint_t){.rank = 2u, .output_event = done});
+      &(arts_edt_hint_t){.rank = 2u, .completion_event = done});
   arts_add_dependence(child, w, 0, DB_MODE_RW);
 
   arts_guid_t r =
@@ -135,7 +135,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
   (void)arts_edt_create(creator_edt, 1, &rparam, 0,
-                        &(arts_edt_hint_t){.rank = 1u, .finish_event = fe});
+                        &(arts_edt_hint_t){.rank = 1u, .group = fe});
 
   arts_guid_t wire =
       arts_edt_create(wirer_edt, 1, &rparam, 1, &(arts_edt_hint_t){.rank = 0u});

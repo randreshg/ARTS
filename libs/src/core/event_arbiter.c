@@ -126,7 +126,7 @@ static uint64_t event_compute_next(uint64_t cur, int op, bool counted,
   case EV_OP_SAT_INCR:
     if (fire == EV_FIRE_FIRED) {
       break; /* a fired event never re-arms: firing is once per event, which
-              * is what a finish latch's successor asserts of itself */
+              * is what a group latch's successor asserts of itself */
     }
     latch += 1;
     break;

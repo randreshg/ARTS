@@ -156,7 +156,7 @@ static void creator_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   uint64_t rpv[1] = {(uint64_t)seed};
   arts_guid_t r = arts_edt_create(reader_solo_edt, 1, rpv, 1,
                                   &(arts_edt_hint_t){.rank = reader_rank,
-                                                     .output_event = ev});
+                                                     .completion_event = ev});
   arts_add_dependence(g, r, 0, DB_MODE_RO);
 }
 
@@ -226,7 +226,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     uint64_t wpv[1] = {0x92000000u};
     arts_guid_t w = arts_edt_create(
         writer_edt, 1, wpv, 1,
-        &(arts_edt_hint_t){.rank = rk(nranks, 1u), .output_event = wdone});
+        &(arts_edt_hint_t){.rank = rk(nranks, 1u), .completion_event = wdone});
     arts_add_dependence(g, w, 0, DB_MODE_RW);
 
     ev[1] = arts_event_create(&ARTS_EVENT_HINT_LATCH(1));
@@ -234,7 +234,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_guid_t r = arts_edt_create(
         reader_edt, 1, rpv, 2,
         &(arts_edt_hint_t){.rank = rk(nranks, nranks - 1u),
-                           .output_event = ev[1]});
+                           .completion_event = ev[1]});
     arts_add_dependence(wdone, r, 0, DB_MODE_NULL);
     arts_add_dependence(g, r, 1, DB_MODE_RO);
   }
@@ -248,14 +248,14 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_guid_t w = arts_edt_create(
         writer_edt, 1, wpv, 1,
         &(arts_edt_hint_t){.rank = rk(nranks, nranks - 1u),
-                           .output_event = wdone});
+                           .completion_event = wdone});
     arts_add_dependence(g, w, 0, DB_MODE_RW);
 
     ev[4] = arts_event_create(&ARTS_EVENT_HINT_LATCH(1));
     uint64_t rpv[1] = {0x95000000u};
     arts_guid_t r = arts_edt_create(
         reader_edt, 1, rpv, 2,
-        &(arts_edt_hint_t){.rank = rk(nranks, 0u), .output_event = ev[4]});
+        &(arts_edt_hint_t){.rank = rk(nranks, 0u), .completion_event = ev[4]});
     arts_add_dependence(wdone, r, 0, DB_MODE_NULL);
     arts_add_dependence(g, r, 1, DB_MODE_RO);
   }
@@ -270,20 +270,21 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     uint64_t wpv[1] = {0x93000000u};
     arts_guid_t w = arts_edt_create(
         writer_edt, 1, wpv, 1,
-        &(arts_edt_hint_t){.rank = rk(nranks, 0u), .output_event = wdone});
+        &(arts_edt_hint_t){.rank = rk(nranks, 0u), .completion_event = wdone});
     arts_add_dependence(g, w, 0, DB_MODE_RW);
 
     ev[2] = arts_event_create(&ARTS_EVENT_HINT_LATCH(1));
     arts_guid_t tail =
         arts_edt_create(tail_edt, 0, NULL, 2,
                         &(arts_edt_hint_t){.rank = rk(nranks, 0u),
-                                           .output_event = ev[2]});
+                                           .completion_event = ev[2]});
     for (unsigned int i = 0; i < 2u; i++) {
       arts_guid_t rdone = arts_event_create(&ARTS_EVENT_HINT_LATCH(1));
       uint64_t rpv[1] = {0x93000000u};
       arts_guid_t r = arts_edt_create(
           reader_edt, 1, rpv, 2,
-          &(arts_edt_hint_t){.rank = rk(nranks, 0u), .output_event = rdone});
+          &(arts_edt_hint_t){.rank = rk(nranks, 0u),
+                             .completion_event = rdone});
       arts_add_dependence(wdone, r, 0, DB_MODE_NULL);
       arts_add_dependence(g, r, 1, DB_MODE_RO);
       arts_add_dependence(rdone, tail, i, DB_MODE_NULL);
@@ -301,7 +302,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     uint64_t w1pv[1] = {0x96000000u};
     arts_guid_t w1 = arts_edt_create(
         writer_edt, 1, w1pv, 1,
-        &(arts_edt_hint_t){.rank = rk(nranks, 1u), .output_event = w1done});
+        &(arts_edt_hint_t){.rank = rk(nranks, 1u), .completion_event = w1done});
     arts_add_dependence(g, w1, 0, DB_MODE_RW);
 
     arts_guid_t r1done = arts_event_create(&ARTS_EVENT_HINT_LATCH(1));
@@ -309,7 +310,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_guid_t r1 = arts_edt_create(
         reader_edt, 1, r1pv, 2,
         &(arts_edt_hint_t){.rank = rk(nranks, nranks - 1u),
-                           .output_event = r1done});
+                           .completion_event = r1done});
     arts_add_dependence(w1done, r1, 0, DB_MODE_NULL);
     arts_add_dependence(g, r1, 1, DB_MODE_RO);
 
@@ -317,7 +318,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     uint64_t w2pv[1] = {0x96500000u};
     arts_guid_t w2 = arts_edt_create(
         writer_gated_edt, 1, w2pv, 2,
-        &(arts_edt_hint_t){.rank = rk(nranks, 0u), .output_event = w2done});
+        &(arts_edt_hint_t){.rank = rk(nranks, 0u), .completion_event = w2done});
     arts_add_dependence(r1done, w2, 0, DB_MODE_NULL);
     arts_add_dependence(g, w2, 1, DB_MODE_RW);
 
@@ -325,7 +326,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     uint64_t r2pv[1] = {0x96500000u};
     arts_guid_t r2 = arts_edt_create(
         reader_edt, 1, r2pv, 2,
-        &(arts_edt_hint_t){.rank = rk(nranks, 1u), .output_event = ev[5]});
+        &(arts_edt_hint_t){.rank = rk(nranks, 1u), .completion_event = ev[5]});
     arts_add_dependence(w2done, r2, 0, DB_MODE_NULL);
     arts_add_dependence(g, r2, 1, DB_MODE_RO);
   }

@@ -84,8 +84,8 @@ void arts_owned_finish_cleanup(void) {
   arts_vector_clear(&owned_finish_list);
 }
 
-arts_guid_t arts_current_finish_event(void) {
-  return arts_current_edt ? arts_current_edt->finish_event : NULL_GUID;
+arts_guid_t arts_current_group(void) {
+  return arts_current_edt ? arts_current_edt->group : NULL_GUID;
 }
 
 void arts_track_created_db(arts_shared_ptr_t h) {
@@ -130,20 +130,19 @@ void arts_cleanup_edt_tls() {
   arts_vector_free(&owned_finish_list);
 }
 
-void arts_unset_thread_local_edt_info(bool decr_finish) {
-  /* finish_event tracking: emit DECR on completion of the current EDT.
-   * - Joined/inherited finish_event: balances the INCR emitted at create time.
-   * - Cross-node proxy finish_event: counter==0 fires the latch, propagating
-   *   DECR to the parent's finish_event via the dep registered at allocation.
-   * The DECR runs through the EDT's scope reference (by GUID when it holds
+void arts_unset_thread_local_edt_info(bool decr_group) {
+  /* group tracking: emit DECR on completion of the current EDT.
+   * - Joined/inherited group: balances the INCR emitted at create time.
+   * - Cross-node proxy group: counter==0 fires the latch, propagating
+   *   DECR to the parent's group via the dep registered at allocation.
+   * The DECR runs through the EDT's group reference (by GUID when it holds
    * none), borrowed under the run path's count on the EDT; the EDT's free
-   * releases it.  A DECR that fires the scope, and the auto-destroy retire
+   * releases it.  A DECR that fires the group, and the auto-destroy retire
    * that follows, run on an event the reference keeps.  `arts_current_edt` is
    * still valid here (cleared below). */
-  if (decr_finish && arts_current_edt &&
-      arts_current_edt->finish_event != NULL_GUID) {
-    arts_event_satisfy_slot_on(arts_current_edt->finish_ref,
-                               arts_current_edt->finish_event, NULL_GUID,
+  if (decr_group && arts_current_edt && arts_current_edt->group != NULL_GUID) {
+    arts_event_satisfy_slot_on(arts_current_edt->group_ref,
+                               arts_current_edt->group, NULL_GUID,
                                ARTS_EVENT_LATCH_DECR_SLOT);
   }
   arts_owned_finish_cleanup(); /* creator-tokens not handed back early */

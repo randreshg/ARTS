@@ -21,13 +21,13 @@
  *   extending, rather than queued behind the writer.
  *   The waiting RW is eventually served when the RO phase drains.  All readers
  *   must observe the producer's value and the writer must run — a starved
- *   reader or writer stalls the finish scope → TIMEOUT.
+ *   reader or writer stalls the group → TIMEOUT.
  *
  * To put many participants in the same home phase simultaneously they are
  * launched depc=0 (ready immediately) and contend on the lock; the writers'
  * happens-before is enforced only where the data value is asserted (the seed
  * writer runs first: the D7 storm is created by a continuation gated on its
- * finish scope, so readers have a defined value).
+ * group, so readers have a defined value).
  *
  * Built and registered only in an EXCL tree.
  */
@@ -219,7 +219,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_guid_t e_seed = arts_event_create(&ARTS_EVENT_HINT_FINISH);
   arts_guid_t seed =
       arts_edt_create(seed_writer_edt, 0, NULL, 1,
-                      &(arts_edt_hint_t){.rank = home, .finish_event = e_seed});
+                      &(arts_edt_hint_t){.rank = home, .group = e_seed});
   arts_add_dependence(d7, seed, 0, DB_MODE_RW);
   uint64_t storm_pv[2] = {(uint64_t)d7, (uint64_t)d7_latch};
   arts_guid_t storm =

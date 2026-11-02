@@ -120,7 +120,7 @@ void reader(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_printf("PASS: db_destroy_implicit_release\n");
 }
 
-/// Creates the next phase, gated on the previous phase's finish scope.  Every
+/// Creates the next phase, gated on the previous phase's group.  Every
 /// phase's paramv[0] is the label.
 static void then(arts_edt_t next, const uint64_t *param, arts_guid_t scope) {
   arts_guid_t n =
@@ -143,8 +143,8 @@ static void after_recreate(uint32_t paramc, const uint64_t *paramv,
   (void)depc;
   (void)depv;
   arts_guid_t e_a = arts_event_create(&ARTS_EVENT_HINT_FINISH);
-  arts_guid_t r = arts_edt_create(
-      reader, 0, NULL, 1, &(arts_edt_hint_t){.rank = 0, .finish_event = e_a});
+  arts_guid_t r = arts_edt_create(reader, 0, NULL, 1,
+                                  &(arts_edt_hint_t){.rank = 0, .group = e_a});
   arts_add_dependence((arts_guid_t)paramv[0], r, 0, DB_MODE_RO);
   then(finale, paramv, e_a);
 }
@@ -156,7 +156,7 @@ static void after_destroy(uint32_t paramc, const uint64_t *paramv,
   (void)depv;
   arts_guid_t e_r = arts_event_create(&ARTS_EVENT_HINT_FINISH);
   arts_edt_create(recreator, 1, paramv, 0,
-                  &(arts_edt_hint_t){.rank = 0, .finish_event = e_r});
+                  &(arts_edt_hint_t){.rank = 0, .group = e_r});
   then(after_recreate, paramv, e_r);
 }
 
@@ -174,7 +174,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   arts_guid_t e_c = arts_event_create(&ARTS_EVENT_HINT_FINISH);
   arts_edt_create(creator_destroyer, 1, &param, 0,
-                  &(arts_edt_hint_t){.rank = 0, .finish_event = e_c});
+                  &(arts_edt_hint_t){.rank = 0, .group = e_c});
   then(after_destroy, &param, e_c);
 }
 

@@ -49,7 +49,7 @@
 /// corrupted or took before the release.
 ///
 /// arts_abort() on any mismatch, so ctest sees a non-zero exit; a missed
-/// finish scope manifests as a ctest TIMEOUT.
+/// group manifests as a ctest TIMEOUT.
 
 #include "arts.h"
 
@@ -105,10 +105,10 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   *data = SENTINEL;
   arts_db_release(db, DB_MODE_RW);
 
-  /* Outer finish scope ensures shutdown_edt runs only after every reader has
+  /* Outer group ensures shutdown_edt runs only after every reader has
    * finished — an early arts_shutdown's MSG_SHUTDOWN would otherwise let the
    * runtime exit while readers are still in flight.  The gated EDT must have
-   * depc >= 1 so the finish scope's slot-0 satisfy actually gates it; depc=0
+   * depc >= 1 so the group's slot-0 satisfy actually gates it; depc=0
    * would let it fire before any reader. */
   arts_guid_t shut = arts_edt_create(shutdown_edt, 0, NULL, 1, NULL);
   arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
@@ -116,10 +116,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   unsigned int ranks = arts_get_total_ranks();
   for (int i = 0; i < N_READERS; i++) {
-    arts_guid_t r =
-        arts_edt_create(reader_edt, 0, NULL, 1,
-                        &(arts_edt_hint_t){.rank = (unsigned int)i % ranks,
-                                           .finish_event = fe});
+    arts_guid_t r = arts_edt_create(
+        reader_edt, 0, NULL, 1,
+        &(arts_edt_hint_t){.rank = (unsigned int)i % ranks, .group = fe});
     arts_add_dependence(db, r, 0, DB_MODE_RO);
   }
 }

@@ -10,7 +10,7 @@
  *   ONCE self-destroy      a predicate keyed on "no consumers expected" is
  *                          true at birth for every non-counted flavour
  *   re-fire on re-arm      an INCR that re-arms a fired latch must not run the
- *                          fire path again (a finish latch's successor asserts
+ *                          fire path again (a group latch's successor asserts
  *                          it ran exactly once)
  *   forgotten debt         a DECR that overtakes its INCR must stay negative;
  *                          clamping makes a legal program never fire

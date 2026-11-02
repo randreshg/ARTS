@@ -6,7 +6,7 @@
  * create's write turn and releases it.  Two chains of readers then run on that
  * same rank: each
  * reader acquires the block read-only, checks every byte, and creates its
- * successor gated on its own output event, which is satisfied after its
+ * successor gated on its own completion event, which is satisfied after its
  * release.  With two chains the rank's read count keeps falling to zero while
  * the other chain's next read is being asked for, so one read turn ends while
  * the next begins on the same rank, with the request, the grant and the fetch
@@ -39,8 +39,9 @@ static void fail(const char *what, uint32_t at, unsigned got) {
   arts_shutdown();
 }
 
-/* paramv = {block, index in the chain, this reader's output event}; depv[0]
- * is the block, RO; depv[1], when present, is the predecessor's output event. */
+/* paramv = {block, index in the chain, this reader's completion event}; depv[0]
+ * is the block, RO; depv[1], when present, is the predecessor's completion
+ * event. */
 static void reader_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                        arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -62,7 +63,7 @@ static void reader_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_guid_t r = arts_edt_create(
         reader_edt, 3, pv, 2,
         &(arts_edt_hint_t){.rank = arts_get_current_rank(),
-                           .output_event = out});
+                           .completion_event = out});
     arts_add_dependence((arts_guid_t)paramv[0], r, 0, DB_MODE_RO);
     arts_add_dependence((arts_guid_t)paramv[2], r, 1, DB_MODE_NULL);
   }
@@ -93,7 +94,7 @@ static void creator_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_guid_t r = arts_edt_create(
         reader_edt, 3, pv, 1,
         &(arts_edt_hint_t){.rank = arts_get_current_rank(),
-                           .output_event = out});
+                           .completion_event = out});
     arts_add_dependence(db, r, 0, DB_MODE_RO);
   }
 }
@@ -120,7 +121,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_guid_t scope = arts_event_create(&ARTS_EVENT_HINT_FINISH);
   arts_add_dependence(scope, done, 0, DB_MODE_NULL);
   arts_edt_create(creator_edt, 0, NULL, 0,
-                  &(arts_edt_hint_t){.rank = home, .finish_event = scope});
+                  &(arts_edt_hint_t){.rank = home, .group = scope});
 }
 
 int main(int argc, char **argv) {

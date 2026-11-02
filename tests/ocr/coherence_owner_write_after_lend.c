@@ -89,14 +89,14 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   /* read #1 on the far rank — this is the lend. */
   arts_guid_t e1 = arts_event_create(&ARTS_EVENT_HINT_FINISH);
   uint64_t r1pv[2] = {V1, 1};
-  arts_edt_hint_t h1 = {.finish_event = e1, .rank = 1};
+  arts_edt_hint_t h1 = {.group = e1, .rank = 1};
   arts_guid_t r1 = arts_edt_create(read_edt, 2, r1pv, 1, &h1);
   arts_add_dependence(db, r1, 0, DB_MODE_RO);
 
   /* write #2 back on the owner, ordered after the lend. */
   arts_guid_t e2 = arts_event_create(&ARTS_EVENT_HINT_FINISH);
   uint64_t wpv[1] = {V2};
-  arts_edt_hint_t h2 = {.finish_event = e2, .rank = 0};
+  arts_edt_hint_t h2 = {.group = e2, .rank = 0};
   arts_guid_t w2 = arts_edt_create(write_edt, 1, wpv, 2, &h2);
   arts_add_dependence(db, w2, 0, DB_MODE_RW);
   arts_add_dependence(e1, w2, 1, DB_MODE_NULL);
@@ -104,7 +104,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   /* read #3 on the far rank again, ordered after the write. */
   arts_guid_t e3 = arts_event_create(&ARTS_EVENT_HINT_FINISH);
   uint64_t r2pv[2] = {V2, 2};
-  arts_edt_hint_t h3 = {.finish_event = e3, .rank = 1};
+  arts_edt_hint_t h3 = {.group = e3, .rank = 1};
   arts_guid_t r2 = arts_edt_create(read_edt, 2, r2pv, 2, &h3);
   arts_add_dependence(db, r2, 0, DB_MODE_RO);
   arts_add_dependence(e2, r2, 1, DB_MODE_NULL);

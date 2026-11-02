@@ -85,13 +85,13 @@ struct arts_edt_s {
    * inside the struct.  This is a load-bearing identity carrier, NOT a
    * redundant self-GUID: do not remove. */
   arts_guid_t guid;
-  arts_guid_t finish_event;          /**< LATCH event for finish-scope tracking.
-                                          NULL_GUID = no finish scope.  Final
+  arts_guid_t group;                 /**< LATCH event for group tracking.
+                                          NULL_GUID = no group.  Final
                                           before the EDT is installed: a
                                           destroy on another thread reads it
                                           from then on. */
-  /** A counted reference to the event finish_event names, homed on this rank,
-   * or NULL (no scope, a scope its create could not resolve, or an image
+  /** A counted reference to the event group names, homed on this rank,
+   * or NULL (no group, a group its create could not resolve, or an image
    * received from another rank before its create body sets it).  Written only
    * before the EDT is installed, which orders it before every read; released
    * only by arts_edt_free, after the EDT's last count drops, whose acq_rel
@@ -100,15 +100,15 @@ struct arts_edt_s {
    * members it creates; the completion and a destroy in place of one, for the
    * DECR.  So even a destroy racing the completion never frees the reference
    * under a frame still using it. */
-  arts_shared_ptr_t finish_ref;
-  arts_guid_t output_event;          /**< Per-EDT result channel (OCR-style).
+  arts_shared_ptr_t group_ref;
+  arts_guid_t completion_event;      /**< Per-EDT result channel.
                                           NULL_GUID = none.  The run path
-                                          satisfies this event with output_data
+                                          satisfies this event with result
                                           after the EDT's data-block releases.
-                                          Never inherited (unlike finish_event). */
-  arts_guid_t output_data;           /**< Result GUID the body registered via
+                                          Never inherited (unlike group). */
+  arts_guid_t result;                /**< Result GUID the body registered via
                                           arts_edt_set_result (NULL_GUID if
-                                          none); payload of output_event. */
+                                          none); payload of completion_event. */
   arts_edt_types_t edt_type;         /**< EDT subtype (DEFAULT=CPU, GPU). */
   /** Dependences not yet satisfied.  Every satisfier writes its slot, then
    * decrements acq_rel: the release publishes the slot, the decrement that

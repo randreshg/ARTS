@@ -35,7 +35,7 @@ static void branch(uint32_t pc, const uint64_t *pv, uint32_t dc,
   uint64_t inputs[] = {left, right};
   arts_edt_hint_t hint = ARTS_EDT_HINT_DEFAULTS;
   hint.rank = rank;
-  hint.output_event = pv[1];
+  hint.completion_event = pv[1];
   arts_guid_t continuation = arts_edt_create(sum, 2, inputs, 2, &hint);
   arts_add_dependence(left, continuation, 0, DB_MODE_NULL);
   arts_add_dependence(right, continuation, 1, DB_MODE_NULL);
@@ -49,7 +49,7 @@ static void launch(uint64_t n, arts_guid_t result, unsigned int rank) {
   arts_edt_hint_t hint = ARTS_EDT_HINT_DEFAULTS;
   hint.rank = rank;
   if (n < 2)
-    hint.output_event = result;
+    hint.completion_event = result;
   arts_edt_create(n < 2 ? leaf : branch, 2, args, 0, &hint);
 }
 

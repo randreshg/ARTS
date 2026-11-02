@@ -118,7 +118,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_add_dependence(done, shut, 0, DB_MODE_NULL);
   arts_edt_create(acquire_test, 0, NULL, nranks - 1,
                   &(arts_edt_hint_t){.guid = local_edt_guid,
-                                     .finish_event = done});
+                                     .group = done});
 
   /* One pre-reserved DB guid per non-zero rank, homed on that rank; each
    * rank creates exactly its own guid and signals exactly its own slot. */
@@ -128,7 +128,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     args[1] = (uint64_t)local_edt_guid;
     args[2] = (uint64_t)arts_guid_reserve(ARTS_GUID_DB, n);
     arts_edt_create(node_setup, 3, args, 0,
-                    &(arts_edt_hint_t){.rank = n, .finish_event = done});
+                    &(arts_edt_hint_t){.rank = n, .group = done});
   }
 }
 

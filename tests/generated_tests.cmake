@@ -248,20 +248,20 @@ add_arts_test(dbcreate_matrix)
 register_single_node_test(dbcreate_matrix TIMEOUT 60)
 register_multinode_test(dbcreate_matrix TIMEOUT 60)
 
-# --- EDT context: created-DB list and owned finish scopes ---
+# --- EDT context: created-DB list and owned groups ---
 add_arts_test(ctx_created_db_release_order)
 register_single_node_test(ctx_created_db_release_order TIMEOUT 30)
 set_tests_properties(ctx_created_db_release_order PROPERTIES PASS_REGULAR_EXPRESSION "PASS ctx_created_db_release_order")
 
 # These two record into one block from EDTs with no order among them, which
 # DB-WRF does not admit.  The cross-rank one uses ranks 0 and 1 only, and its
-# scope's proxy is fed by messages local to each rank.
+# group's proxy is fed by messages local to each rank.
 if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
 add_arts_test(ctx_owned_finish_cleanup)
-add_arts_test(ctx_crossrank_proxy_finish)
+add_arts_test(ctx_crossrank_proxy_group)
 register_single_node_test(ctx_owned_finish_cleanup TIMEOUT 30)
-register_multinode_test(ctx_crossrank_proxy_finish TIMEOUT 60 VARIANTS 2n_9w_1p)
-set_tests_properties(ctx_crossrank_proxy_finish_2n_9w_1p PROPERTIES PASS_REGULAR_EXPRESSION "PASS ctx_crossrank_proxy_finish")
+register_multinode_test(ctx_crossrank_proxy_group TIMEOUT 60 VARIANTS 2n_9w_1p)
+set_tests_properties(ctx_crossrank_proxy_group_2n_9w_1p PROPERTIES PASS_REGULAR_EXPRESSION "PASS ctx_crossrank_proxy_group")
 endif()
 
 # ctx_gpu_lib_edt: GPU-only real body (ARTS_TEST_GPU); SKIP stub links CPU libarts otherwise.
@@ -279,7 +279,7 @@ endif()
 if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
 add_arts_test(event_channel_transient_null)
 add_arts_test(event_satisfy_adddep_window)
-add_arts_test(event_finish_latch_rearm)
+add_arts_test(group_latch_rearm)
 register_single_node_test(event_channel_transient_null TIMEOUT 60)
 # On several ranks its satisfies and dependences also reach the channel's home
 # as messages, dispatched by one progress thread or two, which can then hold
@@ -291,8 +291,8 @@ register_multinode_test(event_channel_transient_null TIMEOUT 60)
 endif()
 register_single_node_test(event_satisfy_adddep_window TIMEOUT 60)
 set_tests_properties(event_satisfy_adddep_window PROPERTIES PASS_REGULAR_EXPRESSION "event_satisfy_adddep_window:.*PASS")
-register_single_node_test(event_finish_latch_rearm TIMEOUT 60)
-set_tests_properties(event_finish_latch_rearm PROPERTIES PASS_REGULAR_EXPRESSION "event_finish_latch_rearm:.*PASS")
+register_single_node_test(group_latch_rearm TIMEOUT 60)
+set_tests_properties(group_latch_rearm PROPERTIES PASS_REGULAR_EXPRESSION "group_latch_rearm:.*PASS")
 endif()
 
 if(ARTS_TEST_REFERENCE_TREE)
@@ -345,7 +345,7 @@ endif()
 # holds the right, and the right back at the home, idle, after every turn.
 # Only VAL and INV under PURGE hand a migrating grant back.  2n_8w_2p is the
 # one shape with two progress threads per rank, so the home's handlers for one
-# transfer run on either.  The shutdown waits on a finish scope that covers
+# transfer run on either.  The shutdown waits on a group that covers
 # every task, so the teardown walk must stay silent.
 if((ARTS_COHERENCE_ARM STREQUAL "VAL" OR ARTS_COHERENCE_ARM STREQUAL "INV")
    AND ARTS_RELEASE_POLICY STREQUAL "PURGE")
@@ -756,9 +756,9 @@ set_tests_properties(argv_params argv_params_2n_9w_1p PROPERTIES
     PASS_REGULAR_EXPRESSION "PASS argv_params"
     FAIL_REGULAR_EXPRESSION "FAIL")
 
-add_arts_test(api_current_finish_event_null)
-register_single_node_test(api_current_finish_event_null TIMEOUT 10)
-set_tests_properties(api_current_finish_event_null PROPERTIES PASS_REGULAR_EXPRESSION "PASS api_current_finish_event_null")
+add_arts_test(api_current_group_null)
+register_single_node_test(api_current_group_null TIMEOUT 10)
+set_tests_properties(api_current_group_null PROPERTIES PASS_REGULAR_EXPRESSION "PASS api_current_group_null")
 endif()
 
 # --- counters ---
@@ -1123,26 +1123,26 @@ register_single_node_test(edt_create_single_fire TIMEOUT 30)
 set_tests_properties(edt_create_single_fire PROPERTIES PASS_REGULAR_EXPRESSION "PASS edt_create_single_fire")
 endif()
 
-# edt_output_event: the consumer sits on rank 1 when there is one, and the
-# release that precedes the output event sends nothing a second peer would
+# edt_completion_event: the consumer sits on rank 1 when there is one, and the
+# release that precedes the completion event sends nothing a second peer would
 # see.  Its writers are unordered, which DB-WRF does not admit.
 if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
-add_arts_test(edt_output_event)
-register_single_node_test(edt_output_event TIMEOUT 30)
-register_multinode_test(edt_output_event TIMEOUT 60 VARIANTS 2n_9w_1p)
+add_arts_test(edt_completion_event)
+register_single_node_test(edt_completion_event TIMEOUT 30)
+register_multinode_test(edt_completion_event TIMEOUT 60 VARIANTS 2n_9w_1p)
 foreach(_v "" _2n_9w_1p)
-    set_tests_properties(edt_output_event${_v} PROPERTIES
+    set_tests_properties(edt_completion_event${_v} PROPERTIES
         FAIL_REGULAR_EXPRESSION "FAIL")
 endforeach()
 endif()
 
-# edt_finish_scope_balance: round-robins members across all ranks; one peer
-# already puts members off the scope's rank.
-add_arts_test(edt_finish_scope_balance)
-register_single_node_test(edt_finish_scope_balance TIMEOUT 30)
-register_multinode_test(edt_finish_scope_balance TIMEOUT 60 VARIANTS 2n_9w_1p)
+# edt_group_balance: round-robins members across all ranks; one peer
+# already puts members off the group's rank.
+add_arts_test(edt_group_balance)
+register_single_node_test(edt_group_balance TIMEOUT 30)
+register_multinode_test(edt_group_balance TIMEOUT 60 VARIANTS 2n_9w_1p)
 foreach(_v "" _2n_9w_1p)
-    set_tests_properties(edt_finish_scope_balance${_v} PROPERTIES PASS_REGULAR_EXPRESSION "PASS edt_finish_scope_balance")
+    set_tests_properties(edt_group_balance${_v} PROPERTIES PASS_REGULAR_EXPRESSION "PASS edt_group_balance")
 endforeach()
 
 # edt_remote_create_reordered_satisfy: needs 2+ ranks, so it is multinode
@@ -1387,11 +1387,11 @@ if(ARTS_MALLOC STREQUAL "mimalloc")
     arts_route_budget_test(firsttouch 64 3 1 RANK 1 CFG 2n_9w_1p)
     arts_route_budget_test(rwremote 64 3 1 RANK 1 CFG 2n_9w_1p)
 endif()
-# scope: each of the unit's two EDTs is created inside the finish scope its
+# group: each of the unit's two EDTs is created inside the group its
 # creator holds a counted reference to: the create reserves its minted GUID's
 # slot on the fresh path (one probe), the INCR runs on the creator's
 # reference and the new EDT keeps a copy of it (none), and the completion
 # DECRs through that copy and retires through its control block's home
-# (none).  Joining the parent to the scope resolves it once per run.  No cell
+# (none).  Joining the parent to the group resolves it once per run.  No cell
 # changes an EDT that acquires nothing.
-arts_route_budget_test(scope 64 2 0 REFERENCE_ONLY)
+arts_route_budget_test(group 64 2 0 REFERENCE_ONLY)

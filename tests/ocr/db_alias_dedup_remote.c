@@ -304,7 +304,7 @@ static void mid_release(arts_guid_t db, unsigned int writer_rank) {
   arts_guid_t e_rd = arts_event_create(&ARTS_EVENT_HINT_FINISH);
   arts_guid_t r =
       arts_edt_create(home_checker_edt, 2, want_v, 2,
-                      &(arts_edt_hint_t){.rank = 0, .finish_event = e_rd});
+                      &(arts_edt_hint_t){.rank = 0, .group = e_rd});
   arts_add_dependence(db, r, 0, DB_MODE_RO);
   arts_add_dependence(gate, r, 1, DB_MODE_NULL);
 
@@ -312,7 +312,7 @@ static void mid_release(arts_guid_t db, unsigned int writer_rank) {
   arts_guid_t e_mr = arts_event_create(&ARTS_EVENT_HINT_FINISH);
   arts_guid_t mr = arts_edt_create(
       mid_release_edt, 1, gate_v, 2,
-      &(arts_edt_hint_t){.rank = writer_rank, .finish_event = e_mr});
+      &(arts_edt_hint_t){.rank = writer_rank, .group = e_mr});
   arts_add_dependence(db, mr, 0, DB_MODE_RO);
   arts_add_dependence(db, mr, 1, DB_MODE_RW);
   arts_guid_t f =
@@ -321,7 +321,7 @@ static void mid_release(arts_guid_t db, unsigned int writer_rank) {
   arts_add_dependence(e_rd, f, 1, DB_MODE_NULL);
 }
 
-/* Each step in a finish scope of its own, the next step gated on it. */
+/* Each step in a group of its own, the next step gated on it. */
 static void step(const uint64_t *paramv) {
   uint64_t s = paramv[P_STEP];
   arts_guid_t db = (arts_guid_t)paramv[P_DB];
@@ -336,7 +336,7 @@ static void step(const uint64_t *paramv) {
     /* Runs one aliasing EDT on `writer_rank`. */
     arts_guid_t w = arts_edt_create(
         phases[p].body, 0, NULL, phases[p].slots,
-        &(arts_edt_hint_t){.rank = writer_rank, .finish_event = scope});
+        &(arts_edt_hint_t){.rank = writer_rank, .group = scope});
     for (unsigned int i = 0; i < phases[p].slots; i++) {
       arts_add_dependence(db, w, i, phases[p].modes[i]);
     }
@@ -345,7 +345,7 @@ static void step(const uint64_t *paramv) {
     uint64_t want_v[2] = {(uint64_t)phases[p].want, 0u};
     arts_guid_t r =
         arts_edt_create(home_checker_edt, 2, want_v, 1,
-                        &(arts_edt_hint_t){.rank = 0, .finish_event = scope});
+                        &(arts_edt_hint_t){.rank = 0, .group = scope});
     arts_add_dependence(db, r, 0, DB_MODE_RO);
   }
   uint64_t next[P_COUNT] = {s + 1u, paramv[P_DB], paramv[P_WRITER]};

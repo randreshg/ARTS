@@ -32,7 +32,7 @@ void worker_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depv;
 }
 
-/* Gated on the workers' finish scope. */
+/* Gated on the workers' group. */
 static void done_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                      arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -52,7 +52,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
   for (int i = 0; i < N_EDTS; i++) {
     arts_edt_create(worker_edt, 0, NULL, 0,
-                    &(arts_edt_hint_t){.rank = 0, .finish_event = fe});
+                    &(arts_edt_hint_t){.rank = 0, .group = fe});
   }
   arts_guid_t done =
       arts_edt_create(done_edt, 0, NULL, 1, &(arts_edt_hint_t){.rank = 0});

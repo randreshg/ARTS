@@ -217,10 +217,10 @@ static void print_fingerprint(void) {
   MEMBER(edt_t, paramc);
   MEMBER(edt_t, depc);
   MEMBER(edt_t, guid);
-  MEMBER(edt_t, finish_event);
-  MEMBER(edt_t, finish_ref);
-  MEMBER(edt_t, output_event);
-  MEMBER(edt_t, output_data);
+  MEMBER(edt_t, group);
+  MEMBER(edt_t, group_ref);
+  MEMBER(edt_t, completion_event);
+  MEMBER(edt_t, result);
   MEMBER(edt_t, edt_type);
   MEMBER(edt_t, depc_needed);
   MEMBER(edt_t, rw_cursor);

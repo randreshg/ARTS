@@ -115,7 +115,7 @@ void rw_checker(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 static void check_phase(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                         arts_edt_dep_t depv[]);
 
-/// Iteration `it`: the mixed EDT in a finish scope, its check gated on it.
+/// Iteration `it`: the mixed EDT in a group, its check gated on it.
 static void iteration(uint64_t it) {
   unsigned int nranks = arts_get_total_ranks();
   arts_guid_t ro[NRO];
@@ -141,9 +141,8 @@ static void iteration(uint64_t it) {
   }
 
   arts_guid_t e_m = arts_event_create(&ARTS_EVENT_HINT_FINISH);
-  arts_guid_t m =
-      arts_edt_create(mixed_edt, 0, NULL, NDEP,
-                      &(arts_edt_hint_t){.rank = 0, .finish_event = e_m});
+  arts_guid_t m = arts_edt_create(mixed_edt, 0, NULL, NDEP,
+                                  &(arts_edt_hint_t){.rank = 0, .group = e_m});
   for (unsigned int i = 0; i < NRO; i++) {
     arts_add_dependence(ro[i], m, i, DB_MODE_RO);
   }
@@ -185,9 +184,8 @@ static void check_phase(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_guid_t e_c = arts_event_create(&ARTS_EVENT_HINT_FINISH);
   for (unsigned int i = 0; i < NRW; i++) {
     uint64_t slot = NRO + i;
-    arts_guid_t c =
-        arts_edt_create(rw_checker, 1, &slot, 1,
-                        &(arts_edt_hint_t){.rank = 0, .finish_event = e_c});
+    arts_guid_t c = arts_edt_create(
+        rw_checker, 1, &slot, 1, &(arts_edt_hint_t){.rank = 0, .group = e_c});
     arts_add_dependence((arts_guid_t)paramv[1 + i], c, 0, DB_MODE_RO);
   }
   arts_guid_t n = arts_edt_create(next_iteration, 1, paramv, 1,

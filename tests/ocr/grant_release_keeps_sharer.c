@@ -118,7 +118,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     uint64_t p[2] = {0u, 0u};
     arts_guid_t r = arts_edt_create(
         reader_edt, 2, p, 1,
-        &(arts_edt_hint_t){.rank = y, .finish_event = f_read});
+        &(arts_edt_hint_t){.rank = y, .group = f_read});
     arts_add_dependence(g_db, r, 0, DB_MODE_RO);
   }
 
@@ -130,7 +130,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     uint64_t p[1] = {(uint64_t)ask};
     arts_guid_t w = arts_edt_create(
         holder_writer_edt, 1, p, 2,
-        &(arts_edt_hint_t){.rank = y, .finish_event = f_hold});
+        &(arts_edt_hint_t){.rank = y, .group = f_hold});
     arts_add_dependence(g_db, w, 0, DB_MODE_RW);
     arts_add_dependence(f_read, w, 1, DB_MODE_NULL);
   }
@@ -140,7 +140,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   {
     arts_guid_t w = arts_edt_create(
         next_writer_edt, 0, NULL, 2,
-        &(arts_edt_hint_t){.rank = z, .finish_event = f_next});
+        &(arts_edt_hint_t){.rank = z, .group = f_next});
     arts_add_dependence(g_db, w, 0, DB_MODE_RW);
     arts_add_dependence(ask, w, 1, DB_MODE_NULL);
   }

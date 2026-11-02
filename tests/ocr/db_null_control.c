@@ -3,7 +3,7 @@
  * block is live or already destroyed when the EDT becomes ready, and on every
  * rank.  Beside a real dependence on the same block, releasing the block
  * releases the real slot and leaves the opaque one as it was.  Each case runs
- * in a finish scope of its own, and the next case starts in a continuation
+ * in a group of its own, and the next case starts in a continuation
  * gated on it. */
 
 #include "arts.h"
@@ -75,7 +75,7 @@ static void step(const uint64_t *pv) {
     uint64_t args[] = {(uint64_t)data};
     arts_guid_t sink = arts_edt_create(
         check_control, 1, args, 2,
-        &(arts_edt_hint_t){.rank = rank, .finish_event = finish});
+        &(arts_edt_hint_t){.rank = rank, .group = finish});
     arts_add_dependence(source, sink, 0, DB_MODE_NULL);
     arts_event_satisfy(source, data);
     if (retired)
@@ -90,7 +90,7 @@ static void step(const uint64_t *pv) {
     finish = arts_event_create(&ARTS_EVENT_HINT_FINISH);
     arts_edt_hint_t hint = ARTS_EDT_HINT_DEFAULTS;
     hint.rank = rank;
-    hint.finish_event = finish;
+    hint.group = finish;
     arts_guid_t sink = arts_edt_create(check_release, 0, NULL, 2, &hint);
     arts_edt_satisfy_slot(sink, 0, db, DB_MODE_NULL);
     arts_add_dependence(db, sink, 1, DB_MODE_RW);

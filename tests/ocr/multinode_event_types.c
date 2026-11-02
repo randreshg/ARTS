@@ -99,7 +99,7 @@ void late_dep(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 /// Runs once the event fired; adds a late dependence, then destroys it.
-/// paramv: [event].  The late dependent inherits this EDT's finish scope.
+/// paramv: [event].  The late dependent inherits this EDT's group.
 void late_dep_trampoline(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                          arts_edt_dep_t depv[]) {
   (void)depc;
@@ -142,7 +142,7 @@ void late_dep_off_home(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 /// Runs on rank 1 once the event fired; adds a late dependence there.
-/// paramv: [event].  The late dependent inherits this EDT's finish scope.
+/// paramv: [event].  The late dependent inherits this EDT's group.
 void late_dep_off_home_setup(uint32_t paramc, const uint64_t *paramv,
                              uint32_t depc, arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -177,7 +177,7 @@ void shutdown_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 static void satisfy_from(arts_guid_t ev, unsigned int rank, arts_guid_t fe) {
   uint64_t p = (uint64_t)ev;
   arts_edt_create(remote_satisfy, 1, &p, 0,
-                  &(arts_edt_hint_t){.rank = rank, .finish_event = fe});
+                  &(arts_edt_hint_t){.rank = rank, .group = fe});
 }
 
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
@@ -205,9 +205,8 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_event_hint_t h = ARTS_EVENT_HINT_DEFAULTS;
     h.rank = 0;
     arts_guid_t ev = arts_event_create(&h);
-    arts_guid_t dep =
-        arts_edt_create(fired_dep, 1, &r0, 1,
-                        &(arts_edt_hint_t){.rank = 0, .finish_event = fe});
+    arts_guid_t dep = arts_edt_create(
+        fired_dep, 1, &r0, 1, &(arts_edt_hint_t){.rank = 0, .group = fe});
     arts_add_dependence(ev, dep, 0, DB_MODE_RW);
     satisfy_from(ev, 1, fe);
   }
@@ -220,7 +219,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_guid_t ev = arts_event_create(&h);
     arts_guid_t dep =
         arts_edt_create(early_remote_dep, 1, &r1, 1,
-                        &(arts_edt_hint_t){.rank = 1, .finish_event = fe});
+                        &(arts_edt_hint_t){.rank = 1, .group = fe});
     arts_add_dependence(ev, dep, 0, DB_MODE_RW);
     satisfy_from(ev, 0, fe);
   }
@@ -234,7 +233,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     uint64_t tp[1] = {(uint64_t)ev};
     arts_guid_t tramp =
         arts_edt_create(late_dep_trampoline, 1, tp, 1,
-                        &(arts_edt_hint_t){.rank = 0, .finish_event = fe});
+                        &(arts_edt_hint_t){.rank = 0, .group = fe});
     arts_add_dependence(ev, tramp, 0, DB_MODE_RW);
     satisfy_from(ev, 1, fe);
   }
@@ -244,15 +243,13 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_event_hint_t h = ARTS_EVENT_HINT_DEFAULTS;
     h.rank = 0;
     arts_guid_t ev = arts_event_create(&h);
-    arts_guid_t dep =
-        arts_edt_create(resatisfied_dep, 1, &r0, 1,
-                        &(arts_edt_hint_t){.rank = 0, .finish_event = fe});
+    arts_guid_t dep = arts_edt_create(
+        resatisfied_dep, 1, &r0, 1, &(arts_edt_hint_t){.rank = 0, .group = fe});
     arts_add_dependence(ev, dep, 0, DB_MODE_RW);
     satisfy_from(ev, 1, fe);
     uint64_t rp[1] = {(uint64_t)ev};
-    arts_guid_t re =
-        arts_edt_create(re_satisfy, 1, rp, 1,
-                        &(arts_edt_hint_t){.rank = 0, .finish_event = fe});
+    arts_guid_t re = arts_edt_create(
+        re_satisfy, 1, rp, 1, &(arts_edt_hint_t){.rank = 0, .group = fe});
     arts_add_dependence(ev, re, 0, DB_MODE_RW);
   }
 
@@ -264,7 +261,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     uint64_t sp[1] = {(uint64_t)ev};
     arts_guid_t setup =
         arts_edt_create(late_dep_off_home_setup, 1, sp, 1,
-                        &(arts_edt_hint_t){.rank = 1, .finish_event = fe});
+                        &(arts_edt_hint_t){.rank = 1, .group = fe});
     arts_add_dependence(ev, setup, 0, DB_MODE_RW);
     satisfy_from(ev, 0, fe);
   }
@@ -274,9 +271,8 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_event_hint_t h = ARTS_EVENT_HINT_LATCH(total);
     h.rank = 0;
     arts_guid_t ev = arts_event_create(&h);
-    arts_guid_t dep =
-        arts_edt_create(fan_in_dep, 1, &r0, 1,
-                        &(arts_edt_hint_t){.rank = 0, .finish_event = fe});
+    arts_guid_t dep = arts_edt_create(
+        fan_in_dep, 1, &r0, 1, &(arts_edt_hint_t){.rank = 0, .group = fe});
     arts_add_dependence(ev, dep, 0, DB_MODE_RW);
     for (unsigned int r = 0; r < total; r++) {
       satisfy_from(ev, r, fe);

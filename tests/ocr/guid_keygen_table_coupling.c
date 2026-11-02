@@ -232,7 +232,7 @@ static void final_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 /// Per-rank driver: builds this rank's collection DB, fans out reservers under
-/// an inner finish scope, and chains a checker after they complete.
+/// an inner group, and chains a checker after they complete.
 /// paramv[0]: the collections' range, whose member r is rank r's collection.
 static void rank_driver_edt(uint32_t paramc, const uint64_t *paramv,
                             uint32_t depc, arts_edt_dep_t depv[]) {
@@ -260,12 +260,12 @@ static void rank_driver_edt(uint32_t paramc, const uint64_t *paramv,
   arts_guid_t inner = arts_event_create(&ARTS_EVENT_HINT_FINISH);
   arts_add_dependence(inner, checker, 1, DB_MODE_NULL);
 
-  /* Fan out reservers inside the inner finish scope, all on this rank. */
+  /* Fan out reservers inside the inner group, all on this rank. */
   for (unsigned int k = 0; k < RESERVERS_PER_RANK; k++) {
     uint64_t base = (uint64_t)(k * GUIDS_PER_RESERVER);
     arts_guid_t r =
         arts_edt_create(reserver_edt, 1, &base, 1,
-                        &(arts_edt_hint_t){.rank = me, .finish_event = inner});
+                        &(arts_edt_hint_t){.rank = me, .group = inner});
     arts_add_dependence(coll, r, 0, DB_MODE_RW);
   }
 }
@@ -291,7 +291,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   uint64_t driver_param = (uint64_t)colls;
   for (unsigned int r = 0; r < nrank; r++) {
     arts_edt_create(rank_driver_edt, 1, &driver_param, 0,
-                    &(arts_edt_hint_t){.rank = r, .finish_event = outer});
+                    &(arts_edt_hint_t){.rank = r, .group = outer});
   }
 }
 

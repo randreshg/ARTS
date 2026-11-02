@@ -1,12 +1,12 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * EDT finish-scope INCR/DECR balance (local + remote-create proxy).
+ * EDT group INCR/DECR balance (local + remote-create proxy).
  *
  * Property under test (create_core join INCR + unset DECR; remote proxy)
  * --------------------------------------------------------------------
- * Every EDT that joins a finish scope emits exactly one INCR at create
+ * Every EDT that joins a group emits exactly one INCR at create
  * (arts_edt_create_core) and exactly one DECR at completion
- * (arts_unset_thread_local_edt_info).  The scope (a LATCH(1) finish event with
+ * (arts_unset_thread_local_edt_info).  The group (a LATCH(1) finish event with
  * a creator-token) fires when its counter returns to 0 — i.e. when the creator
  * has completed (its epilogue releases the token) AND every joined EDT has
  * completed.
@@ -15,10 +15,10 @@
  * (against the parent finish event there), and the create body at the EDT's
  * home, finding the parent homed on another rank, installs a local proxy
  * LATCH(1) wired to forward a DECR to the parent when the proxy drains.  So a
- * remote member still contributes a clean +1/-1 to the parent scope.  If any
- * INCR or DECR is dropped (or doubled) the scope never drains and the
+ * remote member still contributes a clean +1/-1 to the parent group.  If any
+ * INCR or DECR is dropped (or doubled) the group never drains and the
  * continuation gated on it never runs (caught by ctest TIMEOUT); an over-DECR
- * would fire the scope early before members ran, which the per-member tally
+ * would fire the group early before members ran, which the per-member tally
  * would expose.
  *
  * Scenario
@@ -27,7 +27,7 @@
  * round-robin across all ranks (local + remote when nranks>1), each marking a
  * block of its own, and a continuation gated on the event; main_edt's return
  * releases the creator-token.  When the continuation runs, every member must
- * have run exactly once — proving the scope drained precisely when (and only
+ * have run exactly once — proving the group drained precisely when (and only
  * when) all members finished.  Then shut down.
  *
  * One block per member: no two write acquisitions of a block ever overlap, so
@@ -79,17 +79,17 @@ void verifier(uint32_t pc, const uint64_t *pv, uint32_t dc,
     once += (n == 1u);
   }
   if (dc == (uint32_t)MEMBERS && once == (unsigned int)MEMBERS) {
-    arts_printf("PASS edt_finish_scope_balance: %d members, scope balanced\n",
+    arts_printf("PASS edt_group_balance: %d members, group balanced\n",
                 MEMBERS);
   } else {
-    arts_printf("FAIL edt_finish_scope_balance: scope drained with %u members "
+    arts_printf("FAIL edt_group_balance: group drained with %u members "
                 "run once, %u runs in all (want %d) — INCR/DECR imbalance\n",
                 once, runs, MEMBERS);
     arts_abort(1);
   }
 }
 
-/* Gated on the verifier's scope. */
+/* Gated on the verifier's group. */
 static void finale(uint32_t pc, const uint64_t *pv, uint32_t dc,
                    arts_edt_dep_t dv[]) {
   (void)pc;
@@ -99,19 +99,18 @@ static void finale(uint32_t pc, const uint64_t *pv, uint32_t dc,
   arts_shutdown();
 }
 
-/* Gated on the members' scope: every member's DECR landed, which happens only
+/* Gated on the members' group: every member's DECR landed, which happens only
  * after each member body ran.  Reads the marks back through a verifier EDT
  * (RO acquires) rather than the stale create-time pointers, then shuts down
- * once that second scope drains.  pv[i] = member i's block. */
+ * once that second group drains.  pv[i] = member i's block. */
 static void after_members(uint32_t pc, const uint64_t *pv, uint32_t dc,
                           arts_edt_dep_t dv[]) {
   (void)pc;
   (void)dc;
   (void)dv;
   arts_guid_t fe2 = arts_event_create(&ARTS_EVENT_HINT_FINISH);
-  arts_guid_t v =
-      arts_edt_create(verifier, 0, NULL, MEMBERS,
-                      &(arts_edt_hint_t){.rank = 0, .finish_event = fe2});
+  arts_guid_t v = arts_edt_create(verifier, 0, NULL, MEMBERS,
+                                  &(arts_edt_hint_t){.rank = 0, .group = fe2});
   for (int i = 0; i < MEMBERS; i++) {
     arts_add_dependence((arts_guid_t)pv[i], v, (uint32_t)i, DB_MODE_RO);
   }
@@ -127,7 +126,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depc;
   (void)depv;
 
-  arts_printf("=== edt_finish_scope_balance ===\n");
+  arts_printf("=== edt_group_balance ===\n");
 
   unsigned int nranks = arts_get_total_ranks();
 
@@ -140,8 +139,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     blocks[i] = arts_db_create(&p, sizeof(mark_t), ARTS_DB, ARTS_DB_PROP_NONE,
                                &(arts_db_hint_t){.rank = 0});
     if (p == NULL) {
-      arts_printf("FAIL edt_finish_scope_balance: create %d handed no "
-                  "storage\n", i);
+      arts_printf("FAIL edt_group_balance: create %d handed no "
+                  "storage\n",
+                  i);
       arts_abort(1);
     }
     ((mark_t *)p)->ran = 0u;
@@ -150,18 +150,18 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
 
-  /* M members joined to the finish scope, round-robin across all ranks, each
+  /* M members joined to the group, round-robin across all ranks, each
    * writing its own block. */
   for (int i = 0; i < MEMBERS; i++) {
     unsigned int rank = (unsigned int)i % nranks;
     arts_guid_t m = arts_edt_create(
-        member, 0, NULL, 1, &(arts_edt_hint_t){.rank = rank, .finish_event = fe});
+        member, 0, NULL, 1, &(arts_edt_hint_t){.rank = rank, .group = fe});
     arts_add_dependence(blocks[i], m, 0, DB_MODE_RW);
   }
 
-  /* The continuation runs once the scope drains (all members completed and
+  /* The continuation runs once the group drains (all members completed and
    * this EDT returned, releasing the creator-token).  If any INCR/DECR is
-   * dropped the scope never reaches 0 and it never runs — caught by the ctest
+   * dropped the group never reaches 0 and it never runs — caught by the ctest
    * TIMEOUT. */
   uint64_t bv[MEMBERS];
   for (int i = 0; i < MEMBERS; i++) {

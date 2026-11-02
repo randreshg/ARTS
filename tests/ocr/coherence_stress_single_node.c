@@ -44,12 +44,12 @@
 ///   - creates M DBs initialized to a known per-DB value and released,
 ///   - spawns N EDTs, each RO- or RW-acquiring one of the DBs, so that every
 ///     block gets two read and two write acquisitions.
-/// Every iteration is issued at once, under one finish scope, so every
+/// Every iteration is issued at once, under one group, so every
 /// iteration's blocks see read and write turns contend at the same time; the
 /// scope drains to the shutdown only once every worker has run.  The write
 /// acquisitions of a block are unordered, which DB-WRF does not admit.
 ///
-/// Correctness: each worker calls arts_abort(1) on NULL ptr; the finish scope
+/// Correctness: each worker calls arts_abort(1) on NULL ptr; the group
 /// draining to shutdown_edt is proof all workers completed without abort.
 /// A stranded waiter surfaces as a ctest TIMEOUT.  No global cross-EDT state.
 
@@ -101,7 +101,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
               "%d DBs/iter) ===\n",
               K_ITERS, N_EDTS, M_DBS);
 
-  /* Finish-EDT must have depc >= 1 so the finish scope's slot-0 satisfy
+  /* Finish-EDT must have depc >= 1 so the group's slot-0 satisfy
    * actually gates it; depc=0 would let it fire before any worker. */
   arts_guid_t shut = arts_edt_create(shutdown_edt, 0, NULL, 1, NULL);
   arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
@@ -123,7 +123,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       int db_idx = i % M_DBS;
       arts_db_access_mode_t mode = ((i / M_DBS) & 1) ? DB_MODE_RW : DB_MODE_RO;
       arts_guid_t w = arts_edt_create(worker_edt, 0, NULL, 1,
-                                      &(arts_edt_hint_t){.finish_event = fe});
+                                      &(arts_edt_hint_t){.group = fe});
       arts_add_dependence(dbs[db_idx], w, 0, mode);
     }
   }

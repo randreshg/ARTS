@@ -41,7 +41,7 @@
 /// @brief Tests event-to-event chaining and event-to-EDT dependence wiring.
 ///        Event A → Event B → EDT: when A fires, B should also fire,
 ///        which triggers the final EDT.  A dependent the chain fails to fire
-///        leaves the finish scope undrained (ctest TIMEOUT).
+///        leaves the group undrained (ctest TIMEOUT).
 
 #include "arts.h"
 
@@ -77,7 +77,7 @@ void already_fired_end(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_printf("  PASS: already-fired event triggered EDT immediately\n");
 }
 
-/// Gated on the finish scope every chain end joined.
+/// Gated on the group every chain end joined.
 static void finale(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                    arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -102,7 +102,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_guid_t ev1 = arts_event_create(NULL);
   arts_guid_t ev2 = arts_event_create(NULL);
   arts_guid_t edt1 = arts_edt_create(
-      chain_end, 0, NULL, 1, &(arts_edt_hint_t){.rank = 0, .finish_event = fe});
+      chain_end, 0, NULL, 1, &(arts_edt_hint_t){.rank = 0, .group = fe});
 
   // Wire: ev1 fires → satisfies ev2 slot 0 → ev2 fires → satisfies edt1 slot 0.
   arts_add_dependence(ev1, ev2, ARTS_EVENT_LATCH_DECR_SLOT, DB_MODE_RW);
@@ -117,9 +117,8 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_event_hint_t fan_in_hint = ARTS_EVENT_HINT_DEFAULTS;
   fan_in_hint.latch = 2;
   arts_guid_t ev_c = arts_event_create(&fan_in_hint);
-  arts_guid_t edt2 =
-      arts_edt_create(fan_in_end, 0, NULL, 1,
-                      &(arts_edt_hint_t){.rank = 0, .finish_event = fe});
+  arts_guid_t edt2 = arts_edt_create(
+      fan_in_end, 0, NULL, 1, &(arts_edt_hint_t){.rank = 0, .group = fe});
 
   arts_add_dependence(ev_a, ev_c, ARTS_EVENT_LATCH_DECR_SLOT, DB_MODE_RW);
   arts_add_dependence(ev_b, ev_c, ARTS_EVENT_LATCH_DECR_SLOT, DB_MODE_RW);
@@ -136,7 +135,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   // Now wire after fire — fast path self-signals.
   arts_guid_t edt4 =
       arts_edt_create(already_fired_end, 0, NULL, 1,
-                      &(arts_edt_hint_t){.rank = 0, .finish_event = fe});
+                      &(arts_edt_hint_t){.rank = 0, .group = fe});
   arts_add_dependence(ev4, edt4, 0, DB_MODE_RW);
   arts_event_destroy(ev4);
 

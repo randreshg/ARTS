@@ -53,7 +53,7 @@
 /// that still arrives posts into live memory.
 ///
 /// First a warmup of completed cross-rank write hand-offs of one block, every
-/// hop gated on the previous hop's output event, in which each release off
+/// hop gated on the previous hop's completion event, in which each release off
 /// the home that waits for the home's answer gets it.  Then, waited for by
 /// nothing, while an EDT on the home starts the shutdown:
 ///   - a burst of blocks homed on rank 0, each written once on another rank
@@ -154,7 +154,7 @@ static unsigned int away_rank(unsigned int h, unsigned int nranks) {
 static void write_once(arts_guid_t db, unsigned int rank, arts_guid_t scope) {
   arts_guid_t e =
       arts_edt_create(rw_bump_edt, 0, NULL, 1,
-                      &(arts_edt_hint_t){.rank = rank, .finish_event = scope});
+                      &(arts_edt_hint_t){.rank = rank, .group = scope});
   arts_add_dependence(db, e, 0, DB_MODE_RW);
 }
 
@@ -167,7 +167,7 @@ static void start_shutdown(void) {
 /* Gated on the pre-burst writes' scope.  paramv = the BURST blocks.  The
  * burst: one more write per block, off its home, interleaved with the away
  * creators, so both kinds of release are in flight when the shutdown comes.
- * No finish scope: shutdown_edt is its own. */
+ * No group: shutdown_edt is its own. */
 static void burst_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                       arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -189,7 +189,7 @@ static void warmup_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                        arts_edt_dep_t depv[]);
 
 /* Warmup: completed write hand-offs around the ranks, one round at a time,
- * each in a finish scope of its own and the next round gated on it.  A
+ * each in a group of its own and the next round gated on it.  A
  * release off the home that waits for the home's answer gets it here, before
  * the shutdown, and where an acknowledgement leaves a landing every rank
  * keeps the one its last acknowledgement left.  After the last round, the
@@ -205,7 +205,7 @@ static void warmup(const uint64_t *paramv) {
       arts_guid_t e = arts_edt_create(
           rw_bump_edt, 0, NULL, (prev == NULL_GUID) ? 1u : 2u,
           &(arts_edt_hint_t){
-              .rank = h % nranks, .finish_event = fe, .output_event = oe});
+              .rank = h % nranks, .group = fe, .completion_event = oe});
       arts_add_dependence(db, e, 0, DB_MODE_RW);
       if (prev != NULL_GUID) {
         arts_add_dependence(prev, e, 1, DB_MODE_NULL);
@@ -222,7 +222,7 @@ static void warmup(const uint64_t *paramv) {
 
   if (paramv[P_CONTENDED]) {
     /* Every writer of the warmup's block at once, several per rank.  No
-     * finish scope: shutdown_edt is its own. */
+     * group: shutdown_edt is its own. */
     for (unsigned int h = 0; h < BURST; h++) {
       write_once(db, h % nranks, NULL_GUID);
     }

@@ -1,16 +1,16 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * edt_create_remote_finish_scope_rejected — a create's hint.finish_event must
- * name a scope homed on the creating rank: the join INCR is local, and an
- * INCR shipped to another rank's scope is not ordered against the new EDT's
+ * edt_create_remote_group_rejected — a create's hint.group must
+ * name a group homed on the creating rank: the join INCR is local, and an
+ * INCR shipped to another rank's group is not ordered against the new EDT's
  * completion DECR.  arts_edt_create_core raises a fatal error instead of
  * silently shipping such an INCR.
  *
  * Debug-only (the check is an assertion, compiled out of a Release build):
- * rank 0 creates a finish scope homed on itself and hands its GUID to an EDT
+ * rank 0 creates a group homed on itself and hands its GUID to an EDT
  * it places on rank 1.  That EDT, running on rank 1, tries to create a
- * further EDT naming the rank-0 scope as hint.finish_event — the mismatch
- * (scope home 0 != creating rank 1) raises the error on rank 1 and that
+ * further EDT naming the rank-0 group as hint.group — the mismatch
+ * (group home 0 != creating rank 1) raises the error on rank 1 and that
  * process exits non-zero.  The master's arts_rt() reports the failed rank,
  * so the test passes when it exits 1 and the error text names the guard.
  */
@@ -34,16 +34,14 @@ static void prober_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)paramc;
   (void)depc;
   (void)depv;
-  arts_guid_t remote_scope = (arts_guid_t)paramv[0];
-  /* This call runs on rank 1; remote_scope is homed on rank 0, so
-   * arts_edt_create_core's remote-scope check must reject it. */
-  (void)arts_edt_create(
-      dummy_edt, 0, NULL, 0,
-      &(arts_edt_hint_t){.rank = 1, .finish_event = remote_scope});
+  arts_guid_t remote_group = (arts_guid_t)paramv[0];
+  /* This call runs on rank 1; remote_group is homed on rank 0, so
+   * arts_edt_create_core's remote-group check must reject it. */
+  (void)arts_edt_create(dummy_edt, 0, NULL, 0,
+                        &(arts_edt_hint_t){.rank = 1, .group = remote_group});
   /* Unreached if the check fires as expected. */
-  arts_printf(
-      "FAIL: edt_create_remote_finish_scope_rejected accepted a scope "
-      "homed on another rank\n");
+  arts_printf("FAIL: edt_create_remote_group_rejected accepted a group "
+              "homed on another rank\n");
   arts_test_fail();
 }
 
@@ -55,16 +53,15 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depv;
 
   if (arts_get_total_ranks() < 2) {
-    arts_printf(
-        "SKIP: edt_create_remote_finish_scope_rejected requires "
-        "node_count >= 2\n");
+    arts_printf("SKIP: edt_create_remote_group_rejected requires "
+                "node_count >= 2\n");
     arts_shutdown();
     return;
   }
 
   /* Homed on rank 0 (the creating rank here, via ARTS_HINT_CURRENT_RANK). */
-  arts_guid_t scope = arts_event_create(&ARTS_EVENT_HINT_FINISH);
-  uint64_t param = (uint64_t)scope;
+  arts_guid_t group = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  uint64_t param = (uint64_t)group;
   arts_edt_create(prober_edt, 1, &param, 0, &(arts_edt_hint_t){.rank = 1});
 }
 

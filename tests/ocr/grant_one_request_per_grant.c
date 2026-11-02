@@ -8,7 +8,7 @@
  * They find no write right there and park, and the first of them asks the home
  * for it; a waiter that parks while that request is outstanding is covered
  * by the grant it will bring, and one that parks after the grant has taken
- * the waiting set must open a request of its own.  A finish scope per round
+ * the waiting set must open a request of its own.  A group per round
  * lets the next round start only after every turn of this one has been
  * released, so the coalescing window opens afresh every round.
  *
@@ -86,7 +86,7 @@ static void round_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   for (unsigned int k = 0; k < WRITERS; ++k) {
     arts_guid_t w = arts_edt_create(
         writer_edt, 0, NULL, 1,
-        &(arts_edt_hint_t){.rank = away, .finish_event = scope});
+        &(arts_edt_hint_t){.rank = away, .group = scope});
     arts_add_dependence(db, w, 0, DB_MODE_RW);
   }
 }
@@ -120,7 +120,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   uint64_t pv[3] = {(uint64_t)db, 0u, (uint64_t)away};
   arts_edt_create(round_edt, 3, pv, 0,
-                  &(arts_edt_hint_t){.rank = away, .finish_event = all});
+                  &(arts_edt_hint_t){.rank = away, .group = all});
 }
 
 int main(int argc, char **argv) {

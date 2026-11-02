@@ -7,7 +7,7 @@
  * Value lane: a single-fire event on each rank carries values of every shape
  * — zero, small, the GUID of a data block and of an event (neither of which
  * the sink may acquire), all ones, a value with high bits set — and the sink
- * on the same rank sees each one unchanged.  Each case runs in a finish scope
+ * on the same rank sees each one unchanged.  Each case runs in a group
  * of its own, and the next case starts in a continuation gated on it. */
 
 #include "arts.h"
@@ -43,7 +43,7 @@ static arts_guid_t policy_case(unsigned int rank, unsigned int discard,
   uint64_t expected = discard ? NULL_GUID : UINT64_MAX;
   arts_edt_hint_t edt_hint = ARTS_EDT_HINT_DEFAULTS;
   edt_hint.rank = (rank + 1) % arts_get_total_ranks();
-  edt_hint.finish_event = finish;
+  edt_hint.group = finish;
   arts_guid_t sink = arts_edt_create(check, 1, &expected, 1, &edt_hint);
   if (!late)
     arts_add_dependence(event, sink, 0, DB_MODE_NULL);
@@ -61,9 +61,8 @@ static arts_guid_t value_case(unsigned int rank, uint64_t payload,
   arts_event_hint_t hint = ARTS_EVENT_HINT_DEFAULTS;
   hint.rank = rank;
   arts_guid_t source = arts_event_create(&hint);
-  arts_guid_t sink =
-      arts_edt_create(check, 1, &payload, 2,
-                      &(arts_edt_hint_t){.rank = rank, .finish_event = finish});
+  arts_guid_t sink = arts_edt_create(
+      check, 1, &payload, 2, &(arts_edt_hint_t){.rank = rank, .group = finish});
   arts_add_dependence(source, sink, 0, DB_MODE_NULL);
   arts_event_satisfy(source, (arts_guid_t)payload);
   arts_edt_satisfy_slot(sink, 1, NULL_GUID, DB_MODE_NULL);

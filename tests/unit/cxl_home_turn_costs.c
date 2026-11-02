@@ -10,7 +10,7 @@
 /// The turns are counted, not merely non-zero: the writer's RW turn is one
 /// fetch and one purge, and the checker's own RO turn is one more fetch taken
 /// before its body runs, because the copy precedes admission.  The two EDTs
-/// are ordered by the writer's output event, so nothing else is in flight
+/// are ordered by the writer's completion event, so nothing else is in flight
 /// while the tallies are read.
 
 #include "arts.h"
@@ -40,7 +40,7 @@ static void writer_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   p[0] = 7u;
 }
 
-/* depv[0] = the writer's output event, depv[1] = the block, RO. */
+/* depv[0] = the writer's completion event, depv[1] = the block, RO. */
 static void check_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                       arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -93,11 +93,11 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_guid_t oe = arts_event_create(&ARTS_EVENT_HINT_LATCH(1));
   arts_guid_t w = arts_edt_create(
       writer_edt, 0, NULL, 1,
-      &(arts_edt_hint_t){.rank = 0u, .output_event = oe});
+      &(arts_edt_hint_t){.rank = 0u, .completion_event = oe});
   arts_add_dependence(db, w, 0, DB_MODE_RW);
 
   /* The chain is explicit -- the checker's DB dependence is slot 1 behind the
-   * writer's output event in slot 0 -- because dependence ORDER is not an
+   * writer's completion event in slot 0 -- because dependence ORDER is not an
    * ordering. */
   arts_guid_t c =
       arts_edt_create(check_edt, 0, NULL, 2, &(arts_edt_hint_t){.rank = 0u});

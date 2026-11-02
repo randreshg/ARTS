@@ -47,15 +47,16 @@ static arts_guid_t latch_one(void) {
   return arts_event_create(&h);
 }
 
-/* A turn of g on `rank`, ordered after the release of the turn whose output
- * event is `after` (none for the first); its own output event goes in pv[5]. */
+/* A turn of g on `rank`, ordered after the release of the turn whose completion
+ * event is `after` (none for the first); its own completion event goes in
+ * pv[5]. */
 static void turn(arts_edt_t fn, unsigned int rank, uint64_t *pv, arts_guid_t g,
                  arts_db_access_mode_t mode, arts_guid_t after) {
   arts_guid_t out = latch_one();
   pv[5] = (uint64_t)out;
   arts_edt_hint_t h = ARTS_EDT_HINT_DEFAULTS;
   h.rank = rank;
-  h.output_event = out;
+  h.completion_event = out;
   arts_guid_t e = arts_edt_create(fn, 6, pv, after == NULL_GUID ? 1u : 2u, &h);
   arts_add_dependence(g, e, 0, mode);
   if (after != NULL_GUID) {
@@ -63,7 +64,7 @@ static void turn(arts_edt_t fn, unsigned int rank, uint64_t *pv, arts_guid_t g,
   }
 }
 
-/* paramv: g, step, steps, all, reads, this turn's output event */
+/* paramv: g, step, steps, all, reads, this turn's completion event */
 static void step(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                  arts_edt_dep_t depv[]) {
   (void)paramc;

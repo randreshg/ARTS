@@ -85,7 +85,7 @@ static void consume(arts_guid_t g, uint64_t size, unsigned int id,
   uint64_t pv[3] = {(uint64_t)g, size, id};
   arts_guid_t e =
       arts_edt_create(check_bytes, 3, pv, 1,
-                      &(arts_edt_hint_t){.rank = 0, .finish_event = scope});
+                      &(arts_edt_hint_t){.rank = 0, .group = scope});
   arts_add_dependence(g, e, 0, mode);
 }
 

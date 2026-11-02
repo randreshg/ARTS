@@ -135,14 +135,14 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
     arts_guid_t wr = arts_edt_create(
         writer, 1, &id, 1,
-        &(arts_edt_hint_t){.rank = (home + 1u) % n, .finish_event = written});
+        &(arts_edt_hint_t){.rank = (home + 1u) % n, .group = written});
     arts_add_dependence(db, wr, 0, DB_MODE_RW);
 
     for (unsigned int r = 0; r < READERS; r++) {
       unsigned int rank = (home + 1u + (r % (n - 1u))) % n;
       arts_guid_t rd = arts_edt_create(
           reader, 1, &id, 2,
-          &(arts_edt_hint_t){.rank = rank, .finish_event = read});
+          &(arts_edt_hint_t){.rank = rank, .group = read});
       arts_add_dependence(db, rd, 0, DB_MODE_RO);
       arts_add_dependence(written, rd, 1, DB_MODE_NULL);
     }
@@ -150,7 +150,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     uint64_t g = (uint64_t)db;
     arts_guid_t ds = arts_edt_create(
         destroyer, 1, &g, 1,
-        &(arts_edt_hint_t){.rank = home, .finish_event = all});
+        &(arts_edt_hint_t){.rank = home, .group = all});
     arts_add_dependence(read, ds, 0, DB_MODE_NULL);
   }
 }

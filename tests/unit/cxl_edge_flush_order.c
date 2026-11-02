@@ -199,7 +199,7 @@ static void reader_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 /* paramv = {block, slot}; depv[0] = the block, RW; depv[1..writers()] = the
- * workers' output events. */
+ * workers' completion events. */
 static void rewrite_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                         arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -272,7 +272,7 @@ static void creator_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     uint64_t pv[3] = {db, slot, i};
     arts_guid_t t = arts_edt_create(
         worker_edt, 3, pv, 2,
-        &(arts_edt_hint_t){.rank = rank_b(), .output_event = worked[i]});
+        &(arts_edt_hint_t){.rank = rank_b(), .completion_event = worked[i]});
     arts_add_dependence(db, t, 0, DB_MODE_RW);
     arts_add_dependence(made, t, 1, DB_MODE_NULL);
   }
@@ -281,7 +281,7 @@ static void creator_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_guid_t rewritten = arts_event_create(NULL);
   arts_guid_t a2 = arts_edt_create(
       rewrite_edt, 2, pv, 1u + writers(),
-      &(arts_edt_hint_t){.rank = rank_a(), .output_event = rewritten});
+      &(arts_edt_hint_t){.rank = rank_a(), .completion_event = rewritten});
   arts_add_dependence(db, a2, 0, DB_MODE_RW);
   for (unsigned i = 0; i < writers(); i++) {
     arts_add_dependence(worked[i], a2, 1u + i, DB_MODE_NULL);
@@ -290,7 +290,7 @@ static void creator_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_guid_t read = arts_event_create(NULL);
   arts_guid_t r = arts_edt_create(
       reader_edt, 2, pv, 2,
-      &(arts_edt_hint_t){.rank = rank_b(), .output_event = read});
+      &(arts_edt_hint_t){.rank = rank_b(), .completion_event = read});
   arts_add_dependence(db, r, 0, DB_MODE_RO);
   arts_add_dependence(rewritten, r, 1, DB_MODE_NULL);
 
@@ -327,8 +327,8 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   uint64_t pv[1] = {made};
   arts_edt_create(creator_edt, 1, pv, 0,
                   &(arts_edt_hint_t){.rank = rank_a(),
-                                     .finish_event = scope,
-                                     .output_event = made});
+                                     .group = scope,
+                                     .completion_event = made});
 }
 
 int main(int argc, char **argv) {

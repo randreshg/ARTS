@@ -106,7 +106,7 @@ static void destroy_then_check_next(arts_guid_t g, const char *what,
   arts_guid_t c = arts_edt_create(
       next_generation_check_edt, 2, pv, 1,
       &(arts_edt_hint_t){.rank = arts_get_current_rank(),
-                         .finish_event = finish});
+                         .group = finish});
   arts_add_dependence(g, c, 0, DB_MODE_RO);
 }
 
@@ -234,7 +234,7 @@ static void creator_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_guid_t consumer =
       arts_edt_create(mark_reader_edt, 0, NULL, 1,
                       &(arts_edt_hint_t){.rank = arts_get_current_rank(),
-                                         .output_event = read});
+                                         .completion_event = read});
   arts_add_dependence(lg, consumer, 0, DB_MODE_RO);
   void *lp = arts_db_create_with_guid(lg, N * sizeof(unsigned int), ARTS_DB,
                                       ARTS_DB_PROP_NONE, NULL);
@@ -264,7 +264,7 @@ static void creator_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_add_dependence(lg, check, 4, DB_MODE_RW);
 
   /* The waiting-create leg needs a third rank: a home, this creator, and a
-   * rank the block is granted to.  Its output event fires only after it has
+   * rank the block is granted to.  Its completion event fires only after it has
    * run, and that is what the home's check waits on; with fewer ranks there
    * is no such leg and nothing to wait for. */
   if (arts_get_total_ranks() >= 3u) {
@@ -272,7 +272,7 @@ static void creator_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     uint64_t dpv[1] = {(uint64_t)lg};
     arts_guid_t again = arts_edt_create(
         recreate_edt, 1, dpv, 1,
-        &(arts_edt_hint_t){.rank = 2u, .output_event = done});
+        &(arts_edt_hint_t){.rank = 2u, .completion_event = done});
     arts_add_dependence(done, check, 2, DB_MODE_NULL);
     arts_add_dependence(lg, again, 0, DB_MODE_RO);
   } else {

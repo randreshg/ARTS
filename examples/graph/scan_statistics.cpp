@@ -50,7 +50,7 @@
 
 // This rank's copies of main_edt's distribution and max_reducer's GUID,
 // written only by the rank's init_node; every reader runs after the loaders'
-// finish scope.
+// group.
 arts_block_dist_t distribution;
 char *file = NULL;
 arts_guid_t max_reducer_guid = NULL_GUID;
@@ -355,7 +355,7 @@ extern "C" void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   for (unsigned int i = 0; i < arts_get_total_ranks(); i++) {
     arts_edt_hint_t node_hint = {};
     node_hint.rank = i;
-    node_hint.finish_event = init_done;
+    node_hint.group = init_done;
     arts_edt_create(init_node, (uint32_t)init_paramv.size(), init_paramv.data(),
                     0, &node_hint);
   }

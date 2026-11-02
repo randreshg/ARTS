@@ -100,7 +100,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_guid_t touched0 = arts_event_create(&ARTS_EVENT_HINT_FINISH);
   arts_guid_t t0 =
       arts_edt_create(toucher_edt, 0, NULL, 1,
-                      &(arts_edt_hint_t){.finish_event = touched0, .rank = 0u});
+                      &(arts_edt_hint_t){.group = touched0, .rank = 0u});
   arts_add_dependence(g_round_db[0], t0, 0, DB_MODE_RO);
   unsigned int *p0 = (unsigned int *)arts_db_create_with_guid(
       g_round_db[0], sizeof(unsigned int), ARTS_DB, ARTS_DB_PROP_NONE, NULL);
@@ -113,9 +113,8 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
   arts_db_release(g_round_db[0], DB_MODE_RW);
   arts_guid_t prev = arts_event_create(&ARTS_EVENT_HINT_FINISH);
-  arts_guid_t k0 =
-      arts_edt_create(checker_edt, 0, NULL, 2,
-                      &(arts_edt_hint_t){.finish_event = prev, .rank = 0u});
+  arts_guid_t k0 = arts_edt_create(
+      checker_edt, 0, NULL, 2, &(arts_edt_hint_t){.group = prev, .rank = 0u});
   arts_add_dependence(g_round_db[0], k0, 0, DB_MODE_RO);
   arts_add_dependence(touched0, k0, 1, DB_MODE_NULL);
 
@@ -124,15 +123,15 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
     arts_guid_t touched = arts_event_create(&ARTS_EVENT_HINT_FINISH);
     arts_guid_t made = arts_event_create(&ARTS_EVENT_HINT_FINISH);
-    arts_edt_hint_t th = {.finish_event = touched, .rank = creator_rank};
+    arts_edt_hint_t th = {.group = touched, .rank = creator_rank};
     arts_guid_t t = arts_edt_create(toucher_edt, 0, NULL, 2, &th);
 
     uint64_t cpv[1] = {(uint64_t)g_round_db[r]};
-    arts_edt_hint_t ch = {.finish_event = made, .rank = creator_rank};
+    arts_edt_hint_t ch = {.group = made, .rank = creator_rank};
     arts_guid_t c = arts_edt_create(creator_edt, 1, cpv, 1, &ch);
 
     arts_guid_t seen = arts_event_create(&ARTS_EVENT_HINT_FINISH);
-    arts_edt_hint_t kh = {.finish_event = seen, .rank = creator_rank};
+    arts_edt_hint_t kh = {.group = seen, .rank = creator_rank};
     arts_guid_t k = arts_edt_create(checker_edt, 0, NULL, 3, &kh);
 
     /* The checker is ordered after BOTH racers, so its read is not a race. */

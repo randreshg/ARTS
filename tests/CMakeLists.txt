@@ -110,7 +110,7 @@ set(ARTS_REFERENCE_TREE_PROGRAMS
     multinode_event_types
     multinode_stdout_forward
     edt_create_oversize_guard
-    finish_event_stress
+    group_stress
     term_shutdown
     term_abort
     edt_satisfy_out_of_range
@@ -133,12 +133,12 @@ set(ARTS_REFERENCE_TREE_PROGRAMS
     rdzv_payload_flood
 )
 
-# Pins an assertion of the runtime (edt.c's remote finish-scope guard), which
+# Pins an assertion of the runtime (edt.c's remote group guard), which
 # a Debug build checks and a Release build compiles out: built and registered
 # only in a Debug tree.
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     list(APPEND ARTS_REFERENCE_TREE_PROGRAMS
-         edt_create_remote_finish_scope_rejected)
+         edt_create_remote_group_rejected)
 endif()
 
 # Driven by the pool's injected exhaustion (ARTS_REGPOOL_FORCE_FULL_NODES and
@@ -1008,9 +1008,9 @@ set_tests_properties(edt_satisfy_over_count_2n_9w_1p PROPERTIES
 # that rank, so the master's arts_rt() reports a failed rank and the test
 # exits 1, and the error text names the guard that ended it.
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-    register_multinode_test(edt_create_remote_finish_scope_rejected
+    register_multinode_test(edt_create_remote_group_rejected
         VARIANTS 2n_9w_1p STATUS 1)
-    set_tests_properties(edt_create_remote_finish_scope_rejected_2n_9w_1p PROPERTIES
+    set_tests_properties(edt_create_remote_group_rejected_2n_9w_1p PROPERTIES
         PASS_REGULAR_EXPRESSION "must be homed on the creating rank"
         ARTS_EXPECTS_RANK_FAILURE 1)
 endif()
@@ -1660,19 +1660,19 @@ register_pure_unit_test(per_db_buf_pool)
 set_tests_properties(per_db_buf_pool PROPERTIES
     PASS_REGULAR_EXPRESSION "RECYCLE_OK")
 
-# Finish scopes nested and crossing ranks, in a loop.  Two ranks and four
-# separate a scope's members by one and by several hops.
-register_multinode_test(finish_event_stress TIMEOUT 60
+# Groups nested and crossing ranks, in a loop.  Two ranks and four
+# separate a group's members by one and by several hops.
+register_multinode_test(group_stress TIMEOUT 60
                         VARIANTS 2n_9w_1p 4n_4w_1p)
 foreach(_v 2n_9w_1p 4n_4w_1p)
-    set_tests_properties(finish_event_stress_${_v} PROPERTIES
+    set_tests_properties(group_stress_${_v} PROPERTIES
         FAIL_REGULAR_EXPRESSION "FAIL")
 endforeach()
 
 register_multinode_test(multinode_edt VARIANTS 2n_9w_1p)
 set_tests_properties(multinode_edt_2n_9w_1p PROPERTIES
     PASS_REGULAR_EXPRESSION
-    "PASS: multinode_edt every check reported before the finish scope fired")
+    "PASS: multinode_edt every check reported before the group fired")
 register_multinode_test(event_scalar_return TIMEOUT 30 VARIANTS 2n_9w_1p)
 # Four ranks put the creator, the home and the sink on three different ranks.
 register_multinode_test(event_payload_policy TIMEOUT 15
@@ -2327,9 +2327,9 @@ endforeach()
 # create parks, and the create's install replays it, retiring the EDT inside
 # the install; on the home the GUID's next generation then installs and runs.
 # The destroyed EDT's messages from another rank are fire-and-forget, so the
-# shutdown is not covered by a finish scope and markers are counted from -V.
+# shutdown is not covered by a group and markers are counted from -V.
 # Two progress threads would let the destroy reach the home after the create,
-# which edt_destroy_pending_scope drives.
+# which edt_destroy_pending_group drives.
 add_arts_test(edt_destroy_before_create)
 register_single_node_test(edt_destroy_before_create TIMEOUT 30)
 register_multinode_test(edt_destroy_before_create TIMEOUT 60 VARIANTS 2n_9w_1p)
@@ -2339,24 +2339,24 @@ foreach(_t edt_destroy_before_create edt_destroy_before_create_2n_9w_1p)
         FAIL_REGULAR_EXPRESSION "FAIL:")
 endforeach()
 
-# edt_destroy_pending_scope: destroying an EDT that never ran sends the
-# finish-scope DECR its completion would have, directly or through the remote
-# scope's proxy, so the scope drains and the shutdown is quiescent.  Two
+# edt_destroy_pending_group: destroying an EDT that never ran sends the
+# group DECR its completion would have, directly or through the remote
+# group's proxy, so the group drains and the shutdown is quiescent.  Two
 # progress threads are what let the destroy reach the home before the create.
-add_arts_test(edt_destroy_pending_scope)
-register_single_node_test(edt_destroy_pending_scope TIMEOUT 30)
-register_multinode_test(edt_destroy_pending_scope TIMEOUT 60
+add_arts_test(edt_destroy_pending_group)
+register_single_node_test(edt_destroy_pending_group TIMEOUT 30)
+register_multinode_test(edt_destroy_pending_group TIMEOUT 60
                         VARIANTS 2n_9w_1p 2n_8w_2p)
-foreach(_t edt_destroy_pending_scope edt_destroy_pending_scope_2n_9w_1p
-        edt_destroy_pending_scope_2n_8w_2p)
+foreach(_t edt_destroy_pending_group edt_destroy_pending_group_2n_9w_1p
+        edt_destroy_pending_group_2n_8w_2p)
     set_tests_properties(${_t} PROPERTIES
-        PASS_REGULAR_EXPRESSION "PASS: edt_destroy_pending_scope"
+        PASS_REGULAR_EXPRESSION "PASS: edt_destroy_pending_group"
         FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
 endforeach()
 
 # edt_create_destroy_proxy: a destroy on another thread of an EDT's home,
 # while the create body that installed the EDT is held right after the
-# install by the runtime's injection hook, finds the remote finish scope's
+# install by the runtime's injection hook, finds the remote group's
 # proxy already in place and the proxy fires.  The hook exists only where the
 # injection hooks are compiled; one variant also runs under the scheduler
 # fuzz.
@@ -2381,7 +2381,7 @@ if(ARTS_DEBUG_INJECTION AND ARTS_TEST_REFERENCE_TREE)
     endforeach()
 endif()
 
-# finish_scope_creator_token: a finish scope whose creator hands its token back
+# finish_scope_creator_token: a group whose creator hands its token back
 # (arts_event_release_creator_token) fires when its members, a remote worker
 # and that worker's child, finish, while the creator is still running.
 add_arts_test(finish_scope_creator_token)
@@ -2684,7 +2684,7 @@ if(ARTS_TEST_REFERENCE_TREE)
 endif()
 
 # quiescent_shutdown_no_residue: a shutdown that leaves no work undone -- every
-# EDT touching a block inside a finish scope the shutting-down EDT is gated on,
+# EDT touching a block inside a group the shutting-down EDT is gated on,
 # and that EDT holding nothing -- must leave the teardown walk silent, so any
 # QUIESCENCE-DEBUG marker fails it.  The shapes are the ones whose interrupted
 # forms leave residue: on one rank, home-local write turns and write holders
@@ -3051,13 +3051,13 @@ endif()
 set(_arts_fail_token_tests
     cat_c_ref_balance coherence_rwro_phase
     csr_graph ctx_created_db_release_order
-    ctx_crossrank_proxy_finish ctx_owned_finish_cleanup db_acquire_all_bias
+    ctx_crossrank_proxy_group ctx_owned_finish_cleanup db_acquire_all_bias
     db_create_claims_first_touch_stub db_create_with_data_bytes
     dbcreate_matrix dep_slot_resolved_once edt_create_basic
     edt_create_single_fire event_chain
     event_channel_fifo event_channel_lifetime event_channel_transient_null
     event_destroy_before_create excl_multiconsumer_queue excl_purge_grant_d6_d7
-    excl_request_coalesce excl_samerank_rw_grant_race finish_event_stress
+    excl_request_coalesce excl_samerank_rw_grant_race group_stress
     grant_purge_churn grant_purge_handback_regrant
     grant_purge_no_acquire_creator guid_keygen_table_coupling
     launcher_no_respawn multinode_edt

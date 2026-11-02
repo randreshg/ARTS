@@ -48,8 +48,7 @@
 #include "arts/graph.h"
 
 /* This rank's copies of main_edt's distribution and reducer GUIDs, written
- * only by the rank's init_node; every reader runs after the loaders' finish
- * scope. */
+ * only by the rank's init_node; every reader runs after the loaders' group. */
 arts_block_dist_t distribution;
 arts_guid_t start_reduce_guid = NULL_GUID;
 arts_guid_t final_reduce_guid = NULL_GUID;
@@ -61,7 +60,7 @@ uint64_t block_size = 0;
 uint64_t over_sub = 16;
 
 /* Added to by this rank's concurrent visit_vertex EDTs; local_reduce reads them
- * once the counting finish scope has closed. */
+ * once the counting group has closed. */
 _Atomic(uint64_t) other_count = 0;
 _Atomic(uint64_t) local_triangle_count = 0;
 uint64_t timer = 0;
@@ -343,7 +342,7 @@ void main_continue(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_guid_t work_done = arts_event_create(&ARTS_EVENT_HINT_FINISH);
   for (unsigned int i = 0; i < arts_get_total_ranks(); i++) {
     arts_edt_create(start_work, 0, NULL, 0,
-                    &(arts_edt_hint_t){.rank = i, .finish_event = work_done});
+                    &(arts_edt_hint_t){.rank = i, .group = work_done});
   }
   arts_add_dependence(work_done, start_reduce_guid, 0, DB_MODE_NULL);
 }
@@ -389,7 +388,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_guid_t init_done = arts_event_create(&ARTS_EVENT_HINT_FINISH);
   for (unsigned int i = 0; i < arts_get_total_ranks(); i++) {
     arts_edt_create(init_node, init_paramc, init_paramv, 0,
-                    &(arts_edt_hint_t){.rank = i, .finish_event = init_done});
+                    &(arts_edt_hint_t){.rank = i, .group = init_done});
   }
   free(init_paramv);
   arts_guid_t cont = arts_edt_create(main_continue, paramc, paramv, 1,

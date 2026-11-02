@@ -95,19 +95,19 @@ static void check_other(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
 static arts_guid_t edt_on(arts_edt_t fn, unsigned int rank, uint32_t paramc,
                           const uint64_t *paramv, uint32_t depc,
-                          arts_guid_t guid, arts_guid_t scope) {
+                          arts_guid_t guid, arts_guid_t group) {
   arts_edt_hint_t h = ARTS_EDT_HINT_DEFAULTS;
   h.rank = rank;
   h.guid = guid;
-  h.finish_event = scope;
+  h.group = group;
   return arts_edt_create(fn, paramc, paramv, depc, &h);
 }
 
 static void check_later(arts_guid_t g, int path, uint64_t kind,
-                        unsigned int rank, arts_guid_t scope, bool destroy) {
+                        unsigned int rank, arts_guid_t group, bool destroy) {
   uint64_t pv[5] = {(uint64_t)g, (uint64_t)path, kind, destroy ? 1u : 0u,
                     (uint64_t)NULL_GUID};
-  (void)edt_on(check_other, rank, 5, pv, 0, NULL_GUID, scope);
+  (void)edt_on(check_other, rank, 5, pv, 0, NULL_GUID, group);
 }
 
 static void finish(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
@@ -130,26 +130,26 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   unsigned int here = arts_get_current_rank();
   unsigned int n = arts_get_total_ranks();
   arts_event_hint_t fh = ARTS_EVENT_HINT_FINISH;
-  arts_guid_t scope = arts_event_create(&fh);
+  arts_guid_t group = arts_event_create(&fh);
   arts_guid_t fin = edt_on(finish, here, 0, NULL, 1, NULL_GUID, NULL_GUID);
-  arts_add_dependence(scope, fin, 0, DB_MODE_NULL);
+  arts_add_dependence(group, fin, 0, DB_MODE_NULL);
 
   /* EDTs: minted for this rank, and created under a reserved GUID. */
   uint64_t fresh_pv[2] = {FRESH, 0u};
   uint64_t general_pv[2] = {GENERAL, 1u};
-  (void)edt_on(self_check, here, 2, fresh_pv, 0, NULL_GUID, scope);
+  (void)edt_on(self_check, here, 2, fresh_pv, 0, NULL_GUID, group);
   (void)edt_on(self_check, here, 2, general_pv, 0,
-               arts_guid_reserve(ARTS_GUID_EDT, here), scope);
+               arts_guid_reserve(ARTS_GUID_EDT, here), group);
 
   /* Events: minted, and labeled from a reserved range. */
   arts_event_hint_t eh = ARTS_EVENT_HINT_DEFAULTS;
-  check_later(arts_event_create(&eh), FRESH, 1u, here, scope, true);
+  check_later(arts_event_create(&eh), FRESH, 1u, here, group, true);
   arts_guid_t range =
       arts_guid_reserve_range(ARTS_GUID_EVENT, 4, ARTS_HINT_CURRENT_RANK);
   for (unsigned int i = 0; i < 4; i++) {
     arts_event_hint_t lh = ARTS_EVENT_HINT_DEFAULTS;
     lh.guid = arts_guid_from_index(range, i);
-    check_later(arts_event_create(&lh), GENERAL, 1u, here, scope, true);
+    check_later(arts_event_create(&lh), GENERAL, 1u, here, group, true);
   }
 
   /* Data blocks: minted (acquiring and NO_ACQUIRE), and reserved. */
@@ -158,15 +158,15 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   dh.rank = here;
   arts_guid_t d1 = arts_db_create(&p, 64, ARTS_DB, ARTS_DB_PROP_NONE, &dh);
   arts_db_release(d1, DB_MODE_RW);
-  check_later(d1, FRESH, 2u, here, scope, true);
+  check_later(d1, FRESH, 2u, here, group, true);
   arts_guid_t d2 =
       arts_db_create(&p, 64, ARTS_DB, ARTS_DB_PROP_NO_ACQUIRE, &dh);
-  check_later(d2, FRESH, 2u, here, scope, true);
+  check_later(d2, FRESH, 2u, here, group, true);
   arts_db_hint_t rh = ARTS_DB_HINT_DEFAULTS;
   rh.guid = arts_guid_reserve(ARTS_GUID_DB, here);
   arts_guid_t d3 = arts_db_create(&p, 64, ARTS_DB, ARTS_DB_PROP_NONE, &rh);
   arts_db_release(d3, DB_MODE_RW);
-  check_later(d3, GENERAL, 2u, here, scope, true);
+  check_later(d3, GENERAL, 2u, here, group, true);
 
   /* Every other rank: a minted EDT, event and data block homed there. */
   for (unsigned int r = 0; r < n; r++) {
@@ -174,7 +174,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       continue;
     }
     uint64_t remote_pv[2] = {GENERAL, 0u};
-    (void)edt_on(self_check, r, 2, remote_pv, 0, NULL_GUID, scope);
+    (void)edt_on(self_check, r, 2, remote_pv, 0, NULL_GUID, group);
 
     arts_event_hint_t reh = ARTS_EVENT_HINT_DEFAULTS;
     reh.rank = r;
@@ -182,7 +182,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     /* Checked at its home once it fired there, so its create has
      * installed it. */
     uint64_t epv[5] = {(uint64_t)ev, GENERAL, 1u, 1u, (uint64_t)NULL_GUID};
-    arts_guid_t chk = edt_on(check_other, r, 5, epv, 1, NULL_GUID, scope);
+    arts_guid_t chk = edt_on(check_other, r, 5, epv, 1, NULL_GUID, group);
     arts_add_dependence(ev, chk, 0, DB_MODE_NULL);
     arts_event_satisfy(ev, NULL_GUID);
 
@@ -198,11 +198,11 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     ah.rank = r;
     arts_guid_t after = arts_event_create(&ah);
     uint64_t hpv[5] = {(uint64_t)dr, GENERAL, 2u, 1u, (uint64_t)NULL_GUID};
-    arts_guid_t home = edt_on(check_other, r, 5, hpv, 2, NULL_GUID, scope);
+    arts_guid_t home = edt_on(check_other, r, 5, hpv, 2, NULL_GUID, group);
     arts_add_dependence(after, home, 0, DB_MODE_NULL);
     arts_add_dependence(dr, home, 1, DB_MODE_RO);
     uint64_t cpv[5] = {(uint64_t)dr, FRESH, 2u, 0u, (uint64_t)after};
-    (void)edt_on(check_other, here, 5, cpv, 0, NULL_GUID, scope);
+    (void)edt_on(check_other, here, 5, cpv, 0, NULL_GUID, group);
   }
 }
 

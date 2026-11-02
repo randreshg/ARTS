@@ -12,7 +12,7 @@
  *
  *   2. One entry per hold: the list grows by one per acquiring create and
  *      shrinks by one per explicit release, and registering a NULL_GUID owned
- *      finish scope is a no-op that leaves it alone.
+ *      group is a no-op that leaves it alone.
  *
  *   3. Drain: a successor EDT on the SAME worker observes a list holding only
  *      its own creations — the producer's entries are gone — and reads, through
@@ -114,7 +114,7 @@ void producer(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   arts_owned_finish_register(NULL_GUID);
   if (arts_vector_count(list) != (uint64_t)NDB) {
-    fail("registering a NULL owned finish scope changed the list");
+    fail("registering a NULL owned group changed the list");
     return;
   }
 

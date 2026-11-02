@@ -1,25 +1,25 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
  * A destroy that acts on an EDT while the create body that installed it is
- * still running must see the EDT's final finish scope.
+ * still running must see the EDT's final group.
  *
- * An EDT created on another rank, inside a finish scope homed on its creator,
- * joins that scope through a local proxy event on its home, whose fire
+ * An EDT created on another rank, inside a group homed on its creator,
+ * joins that group through a local proxy event on its home, whose fire
  * carries the completion's DECR back.  The create body that installs the EDT
  * on its home runs on a progress thread; from the install on, a destroy
  * dispatched on any other thread can retire the EDT and send its DECR to
- * whatever finish_event it reads.  So finish_event must already name the
- * proxy when the EDT is installed: a destroy that read the creator's scope
- * there would DECR the scope directly, and a proxy made afterwards would never
+ * whatever group it reads.  So group must already name the
+ * proxy when the EDT is installed: a destroy that read the creator's group
+ * there would DECR the group directly, and a proxy made afterwards would never
  * fire.
  *
  * The run holds the create body right after the install (the runtime's
  * injection hook) and has a task on the home's worker destroy the EDT in that
  * window, from another thread:
- *   - at the install, finish_event names an event of the home (the proxy);
+ *   - at the install, group names an event of the home (the proxy);
  *   - the destroy runs while the body is held, and the proxy it DECRs fires
  *     and is reclaimed before the body goes on;
- *   - the scope drains, and the shutdown is quiescent.
+ *   - the group drains, and the shutdown is quiescent.
  * The destroyer is started, and seen running, before the EDT is created, so
  * the held body waits on no thread of its own rank's progress engine.
  *
@@ -69,11 +69,11 @@ static void installed_hook(struct arts_edt_s *edt) {
   if (edt->func_ptr != victim) {
     return;
   }
-  arts_guid_t proxy = edt->finish_event;
+  arts_guid_t proxy = edt->group;
   bool proxy_here = proxy != NULL_GUID &&
                     arts_guid_get_rank(proxy) == arts_get_current_rank();
   if (!proxy_here) {
-    fail("finish_event does not name the home's proxy at the install");
+    fail("group does not name the home's proxy at the install");
   }
   atomic_store_explicit(&g_victim, edt->guid, memory_order_release);
   uint64_t deadline = now_ns() + WAIT_NS;
@@ -132,14 +132,14 @@ static void creator(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)paramc;
   (void)depc;
   (void)depv;
-  arts_guid_t scope = (arts_guid_t)paramv[0];
+  arts_guid_t group = (arts_guid_t)paramv[0];
   unsigned int home = (unsigned int)paramv[1];
   (void)arts_edt_create(
       victim, 0, NULL, 1,
-      &(arts_edt_hint_t){.rank = home, .finish_event = scope});
+      &(arts_edt_hint_t){.rank = home, .group = group});
 }
 
-/* Gated on the scope.  paramv[0] = the event the destroyer satisfied. */
+/* Gated on the group.  paramv[0] = the event the destroyer satisfied. */
 static void finale(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                    arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -159,21 +159,21 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depc;
   (void)depv;
   unsigned int home = arts_get_total_ranks() - 1u;
-  arts_guid_t scope = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_guid_t group = arts_event_create(&ARTS_EVENT_HINT_FINISH);
   arts_guid_t running = arts_event_create(NULL);
   uint64_t dp[1] = {(uint64_t)running};
   (void)arts_edt_create(
       destroyer, 1, dp, 0,
-      &(arts_edt_hint_t){.rank = home, .finish_event = scope});
-  uint64_t cp[2] = {(uint64_t)scope, home};
+      &(arts_edt_hint_t){.rank = home, .group = group});
+  uint64_t cp[2] = {(uint64_t)group, home};
   arts_guid_t c = arts_edt_create(
       creator, 2, cp, 1,
       &(arts_edt_hint_t){.rank = arts_get_current_rank(),
-                         .finish_event = scope});
+                         .group = group});
   arts_add_dependence(running, c, 0, DB_MODE_NULL);
   arts_guid_t f = arts_edt_create(
       finale, 1, dp, 1, &(arts_edt_hint_t){.rank = arts_get_current_rank()});
-  arts_add_dependence(scope, f, 0, DB_MODE_NULL);
+  arts_add_dependence(group, f, 0, DB_MODE_NULL);
 }
 
 int main(int argc, char **argv) {

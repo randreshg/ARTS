@@ -68,10 +68,10 @@ static arts_guid_t latch_on(unsigned int rank, int32_t n) {
 
 static arts_guid_t edt_on(arts_edt_t fn, unsigned int rank, uint32_t paramc,
                           const uint64_t *paramv, uint32_t depc,
-                          arts_guid_t output_event) {
+                          arts_guid_t completion_event) {
   arts_edt_hint_t h = ARTS_EDT_HINT_DEFAULTS;
   h.rank = rank;
-  h.output_event = output_event;
+  h.completion_event = completion_event;
   return arts_edt_create(fn, paramc, paramv, depc, &h);
 }
 

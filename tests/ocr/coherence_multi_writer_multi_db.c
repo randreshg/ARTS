@@ -69,8 +69,8 @@
 #define N_WRITERS 8
 #define M_DBS 4
 
-/// writer_edt -- atomic-increment each of the M RW DB deps.  Its output event
-/// is the LATCH, which the runtime decrements once this EDT's blocks are
+/// writer_edt -- atomic-increment each of the M RW DB deps.  Its completion
+/// event is the LATCH, which the runtime decrements once this EDT's blocks are
 /// released, so the verifier gated on the LATCH is ordered after every write.
 static void writer_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                        arts_edt_dep_t depv[]) {
@@ -139,9 +139,10 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
    * the RW deps in one global (GUID-sorted) order, holding each acquired DB
    * while it acquires the next. */
   for (int i = 0; i < N_WRITERS; i++) {
-    arts_guid_t w = arts_edt_create(
-        writer_edt, /*paramc=*/0, NULL, /*depc=*/M_DBS,
-        &(arts_edt_hint_t){.rank = ARTS_HINT_ANY_RANK, .output_event = latch});
+    arts_guid_t w =
+        arts_edt_create(writer_edt, /*paramc=*/0, NULL, /*depc=*/M_DBS,
+                        &(arts_edt_hint_t){.rank = ARTS_HINT_ANY_RANK,
+                                           .completion_event = latch});
     for (int j = 0; j < M_DBS; j++) {
       arts_add_dependence(dbs[j], w, /*slot=*/(uint32_t)j, DB_MODE_RW);
     }

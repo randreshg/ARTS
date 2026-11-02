@@ -60,8 +60,8 @@
 /// on an RW release, GRANT_CONFIRM[_ACK] on an ownership transfer) where the
 /// protocol uses them.  Each generation's DB is explicitly destroyed; if any
 /// path leaked a ref or a count, the cb would never reach refcount 0 and the
-/// finish scope would never drain → ctest TIMEOUT FAIL.  The HIT-path UAF
-/// would surface as an ASan use-after-free / SIGSEGV.
+/// group would never drain → ctest TIMEOUT FAIL.  The HIT-path UAF would
+/// surface as an ASan use-after-free / SIGSEGV.
 ///
 /// Config-agnostic: every protocol has its own Cat-C set; the loop drives
 /// whichever ones the build compiles.  The write turns of one generation are
@@ -125,14 +125,12 @@ static void generation(const uint64_t *paramv) {
    * release. */
   arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
   for (unsigned int r = 0; r < nranks; r++) {
-    arts_guid_t w =
-        arts_edt_create(rw_writer_edt, 0, NULL, 1,
-                        &(arts_edt_hint_t){.rank = r, .finish_event = fe});
+    arts_guid_t w = arts_edt_create(rw_writer_edt, 0, NULL, 1,
+                                    &(arts_edt_hint_t){.rank = r, .group = fe});
     arts_add_dependence(db, w, 0, DB_MODE_RW);
 
-    arts_guid_t ro =
-        arts_edt_create(ro_reader_edt, 0, NULL, 1,
-                        &(arts_edt_hint_t){.rank = r, .finish_event = fe});
+    arts_guid_t ro = arts_edt_create(
+        ro_reader_edt, 0, NULL, 1, &(arts_edt_hint_t){.rank = r, .group = fe});
     arts_add_dependence(db, ro, 0, DB_MODE_RO);
   }
   uint64_t next[2] = {it + 1u, (uint64_t)db};

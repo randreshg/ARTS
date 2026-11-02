@@ -48,12 +48,12 @@
 #include "arts/graph.h"
 
 /* This rank's copy of main_edt's distribution, written only by the rank's
- * init_node; every reader runs after the loaders' finish scope. */
+ * init_node; every reader runs after the loaders' group. */
 arts_block_dist_t distribution;
 
 /* The levels of this rank's vertices: relax EDTs on the rank lower them
  * concurrently, each by CAS, and exit_program reads rank 0's once the search's
- * finish scope has closed. */
+ * group has closed. */
 _Atomic(uint64_t) *level;
 
 void bfs_output() {
@@ -214,7 +214,7 @@ void main_continue(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_guid_t search_done = arts_event_create(&ARTS_EVENT_HINT_FINISH);
   arts_add_dependence(search_done, exit_guid, 0, DB_MODE_NULL);
   arts_edt_create(kickoff_termination, 1, (uint64_t *)&source, 0,
-                  &(arts_edt_hint_t){.rank = 0, .finish_event = search_done});
+                  &(arts_edt_hint_t){.rank = 0, .group = search_done});
 }
 
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
@@ -248,7 +248,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_guid_t init_done = arts_event_create(&ARTS_EVENT_HINT_FINISH);
   for (unsigned int i = 0; i < arts_get_total_ranks(); i++) {
     arts_edt_create(init_node, init_paramc, init_paramv, 0,
-                    &(arts_edt_hint_t){.rank = i, .finish_event = init_done});
+                    &(arts_edt_hint_t){.rank = i, .group = init_done});
   }
   free(init_paramv);
   arts_guid_t cont = arts_edt_create(main_continue, paramc, paramv, 1,

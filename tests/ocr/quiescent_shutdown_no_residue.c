@@ -1,6 +1,6 @@
 /* A shutdown that leaves no work undone must leave no coherence residue.
  *
- * Every EDT that touches a data block belongs to a finish scope the shutting
+ * Every EDT that touches a data block belongs to a group the shutting
  * down EDT is gated on, and that EDT holds no block, so when the runtime tears
  * down nothing is owed to anyone: every release has completed, every parked
  * acquirer has been granted, every hold has been released.  The runtime's
@@ -101,7 +101,7 @@ static void round_step(const uint64_t *paramv) {
        * both counters and each counter is written from off its home. */
       arts_guid_t e = arts_edt_create(
           bump, 0, NULL, 1,
-          &(arts_edt_hint_t){.rank = (h >> 1) % nranks, .finish_event = fe});
+          &(arts_edt_hint_t){.rank = (h >> 1) % nranks, .group = fe});
       arts_add_dependence(ctr[h & 1u], e, 0, DB_MODE_RW);
     }
     uint64_t next[P_COUNT] = {r + 1u, paramv[P_CTR0], paramv[P_CTR1]};
@@ -119,14 +119,14 @@ static void round_step(const uint64_t *paramv) {
                        ARTS_DB_PROP_NO_ACQUIRE, &(arts_db_hint_t){.rank = k});
     arts_guid_t e = arts_edt_create(
         bump, 0, NULL, 1,
-        &(arts_edt_hint_t){.rank = (k + 1u) % nranks, .finish_event = fe});
+        &(arts_edt_hint_t){.rank = (k + 1u) % nranks, .group = fe});
     arts_add_dependence(t, e, 0, DB_MODE_RW);
   }
   for (unsigned int k = 0; k < 2u; k++) {
     uint64_t want = (uint64_t)(BURST / 2u) * ROUNDS;
     arts_guid_t c = arts_edt_create(
         check, 1, &want, 1,
-        &(arts_edt_hint_t){.rank = last, .finish_event = fe});
+        &(arts_edt_hint_t){.rank = last, .group = fe});
     arts_add_dependence(ctr[k], c, 0, DB_MODE_RO);
   }
   arts_guid_t f =

@@ -39,7 +39,7 @@
 
 /// @file edt_create_basic.c
 /// @brief Tests basic EDT creation variants: arts_edt_create, with_guid,
-///        with finish scope, _dep, with multiple paramv sizes, zero depc, etc.
+///        with group, _dep, with multiple paramv sizes, zero depc, etc.
 
 #include "arts.h"
 #include <stdatomic.h>
@@ -114,13 +114,13 @@ void guid_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   report(depv, paramv, "create_with_guid matches", my_guid == expected, 2);
 }
 
-/// 4) EDT created in a finish scope.
+/// 4) EDT created in a group.
 ///    depv[0] = counter_db (RW)
 void scope_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                arts_edt_dep_t depv[]) {
   (void)depc;
   (void)paramc;
-  report(depv, paramv, "scope_edt fires in finish scope", true, 3);
+  report(depv, paramv, "scope_edt fires in group", true, 3);
 }
 
 /// 5) EDT with has_depv=true — verify depv storage exists.
@@ -207,12 +207,12 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_add_dependence(ctr_db, e, 0, DB_MODE_RW);
   }
 
-  /* 4) Create in a finish scope: paramv = [coll, ctr]. */
+  /* 4) Create in a group: paramv = [coll, ctr]. */
   {
     arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
     arts_guid_t e =
         arts_edt_create(scope_edt, 2, base, 1,
-                        &(arts_edt_hint_t){.rank = 0, .finish_event = fe});
+                        &(arts_edt_hint_t){.rank = 0, .group = fe});
     arts_add_dependence(ctr_db, e, 0, DB_MODE_RW);
   }
 

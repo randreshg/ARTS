@@ -540,7 +540,7 @@ void read_phase_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depv;
   arts_guid_t readers = arts_event_create(&ARTS_EVENT_HINT_FINISH);
   arts_edt_hint_t h = ARTS_EDT_HINT_DEFAULTS;
-  h.finish_event = readers;
+  h.group = readers;
   for (unsigned int i = 0; i < NCASES; ++i) {
     for (arts_partition_t p = 0; p < g_dist[i].num_blocks; ++p) {
       uint64_t pv[2 + ARTS_BLOCK_DIST_PARAMC] = {i, p};
@@ -622,7 +622,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
   arts_guid_t loaders = arts_event_create(&ARTS_EVENT_HINT_FINISH);
   arts_edt_hint_t h = ARTS_EDT_HINT_DEFAULTS;
-  h.finish_event = loaders;
+  h.group = loaders;
   for (unsigned int r = 0; r < arts_get_total_ranks(); ++r) {
     h.rank = r;
     arts_edt_create(load_edt, NCASES * ARTS_BLOCK_DIST_PARAMC, dists, 0, &h);

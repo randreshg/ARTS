@@ -124,14 +124,14 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   uint64_t pv[1] = {(uint64_t)ctr};
 
-  /* Finish scope: the collector waits until every scenario drains (a fired
+  /* Group: the collector waits until every scenario drains (a fired
    * EDT's completion balances its INCR). */
   arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
 
   /* --- Scenario A: fresh GUID; the counters dep is its only dependency. --- */
   {
-    arts_guid_t a = arts_edt_create(
-        fire_a, 1, pv, 1, &(arts_edt_hint_t){.rank = 0, .finish_event = fe});
+    arts_guid_t a = arts_edt_create(fire_a, 1, pv, 1,
+                                    &(arts_edt_hint_t){.rank = 0, .group = fe});
     arts_add_dependence(ctr, a, 0, DB_MODE_RW);
   }
 
@@ -148,7 +148,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_add_dependence(ctr, b, 0, DB_MODE_RW);
     /* Now create with the pre-reserved GUID; depc=3. */
     arts_edt_create(fire_b, 1, pv, 3,
-                    &(arts_edt_hint_t){.guid = b, .finish_event = fe});
+                    &(arts_edt_hint_t){.guid = b, .group = fe});
   }
 
   /* --- Scenario C: pre-reserved GUID where the LAST real satisfy lands after
@@ -159,12 +159,12 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_guid_t cg = arts_guid_reserve(ARTS_GUID_EDT, 0);
     arts_add_dependence(ctr, cg, 0, DB_MODE_RW);
     arts_edt_create(fire_c, 1, pv, 2,
-                    &(arts_edt_hint_t){.guid = cg, .finish_event = fe});
+                    &(arts_edt_hint_t){.guid = cg, .group = fe});
     /* Trailing satisfy that drives readiness to 0 after the install. */
     arts_edt_satisfy_slot(cg, 1, NULL_GUID, DB_MODE_NULL);
   }
 
-  /* Collector gated on the finish scope: created last, depends on fe firing. */
+  /* Collector gated on the group: created last, depends on fe firing. */
   arts_guid_t coll =
       arts_edt_create(collector, 1, pv, 2, &(arts_edt_hint_t){.rank = 0});
   arts_add_dependence(fe, coll, 0, DB_MODE_NULL);

@@ -154,7 +154,7 @@ static void probe_step_edt(uint32_t paramc, const uint64_t *paramv,
                            uint32_t depc, arts_edt_dep_t depv[]);
 
 /* paramv: the next probe's rank, the marker block.  One probe at a time,
- * each in a finish scope of its own and the next gated on it, so each write
+ * each in a group of its own and the next gated on it, so each write
  * turn is ordered before the next; then the verifier, and the end of the run
  * gated on it. */
 static void probe_step(const uint64_t *paramv) {
@@ -165,18 +165,16 @@ static void probe_step(const uint64_t *paramv) {
   arts_guid_t n;
   if (r < total) {
     uint64_t params[2] = {(uint64_t)r, (uint64_t)total};
-    arts_guid_t p =
-        arts_edt_create(rank_probe_edt, 2, params, 1,
-                        &(arts_edt_hint_t){.rank = r, .finish_event = fe});
+    arts_guid_t p = arts_edt_create(rank_probe_edt, 2, params, 1,
+                                    &(arts_edt_hint_t){.rank = r, .group = fe});
     arts_add_dependence(db, p, 0, DB_MODE_RW);
     uint64_t next[2] = {(uint64_t)r + 1u, (uint64_t)db};
     n = arts_edt_create(probe_step_edt, 2, next, 1,
                         &(arts_edt_hint_t){.rank = 0});
   } else {
     uint64_t vparams[1] = {(uint64_t)total};
-    arts_guid_t v =
-        arts_edt_create(verify_edt, 1, vparams, 1,
-                        &(arts_edt_hint_t){.rank = 0, .finish_event = fe});
+    arts_guid_t v = arts_edt_create(verify_edt, 1, vparams, 1,
+                                    &(arts_edt_hint_t){.rank = 0, .group = fe});
     arts_add_dependence(db, v, 0, DB_MODE_RO);
     n = arts_edt_create(finale_edt, 0, NULL, 1, &(arts_edt_hint_t){.rank = 0});
   }

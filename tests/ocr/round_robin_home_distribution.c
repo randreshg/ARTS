@@ -319,7 +319,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
   arts_add_dependence(fe, shut, 0, DB_MODE_NULL);
   arts_edt_hint_t in_fe = ARTS_EDT_HINT_DEFAULTS;
-  in_fe.finish_event = fe;
+  in_fe.group = fe;
 
   uint64_t nlist = ndb + nev;
   arts_guid_t judge = arts_edt_create(judge_edt, 1, &nlist, nrank, &in_fe);
@@ -342,7 +342,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                         (uint64_t)judge};
   for (unsigned int r = 0; r < nrank; r++) {
     arts_edt_create(checker_edt, 4, params, 0,
-                    &(arts_edt_hint_t){.rank = r, .finish_event = creators});
+                    &(arts_edt_hint_t){.rank = r, .group = creators});
   }
 }
 

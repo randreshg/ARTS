@@ -113,7 +113,7 @@ static void second_creator(uint32_t paramc, const uint64_t *paramv,
   arts_guid_t read = arts_event_create(&ARTS_EVENT_HINT_FINISH);
   arts_guid_t r = arts_edt_create(
       reader, P_COUNT, paramv, 1,
-      &(arts_edt_hint_t){.rank = last_rank(), .finish_event = read});
+      &(arts_edt_hint_t){.rank = last_rank(), .group = read});
   arts_add_dependence(label, r, 0, DB_MODE_RO);
   arts_guid_t c =
       arts_edt_create(closer, P_COUNT, paramv, 2, &(arts_edt_hint_t){.rank = 0u});
@@ -137,7 +137,7 @@ static void first_creator(uint32_t paramc, const uint64_t *paramv,
   arts_guid_t destroyed = arts_event_create(&ARTS_EVENT_HINT_FINISH);
   (void)arts_edt_create(
       destroyer, P_COUNT, paramv, 0,
-      &(arts_edt_hint_t){.rank = last_rank(), .finish_event = destroyed});
+      &(arts_edt_hint_t){.rank = last_rank(), .group = destroyed});
   arts_guid_t s = arts_edt_create(second_creator, P_COUNT, paramv, 1,
                                   &(arts_edt_hint_t){.rank = 0u});
   arts_add_dependence(destroyed, s, 0, DB_MODE_NULL);
@@ -169,7 +169,7 @@ static void finale(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_shutdown();
 }
 
-/* The chain belongs to no finish scope: its last task signals the home, where
+/* The chain belongs to no group: its last task signals the home, where
  * the only scope the finale is gated on lives with its one member. */
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
               arts_edt_dep_t depv[]) {
@@ -181,7 +181,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_guid_t done = arts_event_create(&ARTS_EVENT_HINT_DEFAULTS);
   arts_guid_t finish = arts_event_create(&ARTS_EVENT_HINT_FINISH);
   arts_guid_t t = arts_edt_create(
-      tail, 0, NULL, 1, &(arts_edt_hint_t){.rank = 0u, .finish_event = finish});
+      tail, 0, NULL, 1, &(arts_edt_hint_t){.rank = 0u, .group = finish});
   arts_add_dependence(done, t, 0, DB_MODE_NULL);
   uint64_t pv[P_COUNT] = {(uint64_t)label, (uint64_t)done};
   (void)arts_edt_create(first_creator, P_COUNT, pv, 0,

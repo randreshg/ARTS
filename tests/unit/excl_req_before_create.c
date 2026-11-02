@@ -111,7 +111,7 @@ static void consumer_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
 }
 
-/// Finish-EDT for the outer finish scope — runs on rank 0 after every
+/// Finish-EDT for the outer group — runs on rank 0 after every
 /// iteration's EDTs have completed and released their DB references.  Clean
 /// shutdown.
 static void shutdown_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
@@ -141,7 +141,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_printf("=== excl_req_before_create (%d iterations, ranks=%u) ===\n",
               N_ITERATIONS, rank_count);
 
-  /* Outer finish scope: shutdown_edt fires only after every iteration's writer
+  /* Outer group: shutdown_edt fires only after every iteration's writer
    * + consumer have run AND released their DB refs.  Without this fence we
    * would race shutdown against the in-flight cross-node RW hand-offs. */
   arts_guid_t shut =
@@ -170,7 +170,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     uint64_t writer_paramv[1] = {(uint64_t)evt};
     arts_guid_t writer =
         arts_edt_create(writer_edt, /*paramc=*/1, writer_paramv, /*depc=*/1,
-                        &(arts_edt_hint_t){.rank = 1, .finish_event = fe});
+                        &(arts_edt_hint_t){.rank = 1, .group = fe});
     arts_add_dependence(db, writer, /*slot=*/0, DB_MODE_RW);
 
     /* Step 4: consumer on rank 2.  Slot 0 = DB (RW), slot 1 = LATCH
@@ -179,7 +179,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
      * hand-off end to end. */
     arts_guid_t consumer =
         arts_edt_create(consumer_edt, /*paramc=*/0, NULL, /*depc=*/2,
-                        &(arts_edt_hint_t){.rank = 2, .finish_event = fe});
+                        &(arts_edt_hint_t){.rank = 2, .group = fe});
     arts_add_dependence(db, consumer, /*slot=*/0, DB_MODE_RW);
     arts_add_dependence(evt, consumer, /*slot=*/1, DB_MODE_NULL);
   }

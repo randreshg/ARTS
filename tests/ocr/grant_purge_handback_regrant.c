@@ -5,15 +5,15 @@
  *
  * On every rank but the home, several writer CHAINS advance one block: each
  * chain is a strictly sequential run of RW turns (the next turn depends on the
- * previous turn's output event).  Independent chains may hold RW concurrently
- * on one rank, so each increment is atomic.  A turn that finds itself the rank's
- * only holder hands the write right back with its own publish; the rank's
- * other chain then re-requests it, and the home re-grants it to the same rank
- * as soon as the hand-back has landed — while the first turn's releaser may
- * not have run its post-publish bookkeeping yet.  Every non-home rank does
- * this at once, so the right also moves between ranks under the same
- * conditions.  The home rank holds no chain: its idle edge serves rather than
- * hands back, and that path is exercised elsewhere.
+ * previous turn's completion event).  Independent chains may hold RW
+ * concurrently on one rank, so each increment is atomic.  A turn that finds
+ * itself the rank's only holder hands the write right back with its own
+ * publish; the rank's other chain then re-requests it, and the home re-grants
+ * it to the same rank as soon as the hand-back has landed — while the first
+ * turn's releaser may not have run its post-publish bookkeeping yet.  Every
+ * non-home rank does this at once, so the right also moves between ranks
+ * under the same conditions.  The home rank holds no chain: its idle edge
+ * serves rather than hands back, and that path is exercised elsewhere.
  *
  * The oracle is an exact sum: every turn adds exactly one, so a hand-back
  * that lets the next holder start from a stale copy shows as a short count,
@@ -94,8 +94,8 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
         arts_guid_t oe = arts_event_create(&ARTS_EVENT_HINT_LATCH(1));
         arts_guid_t t = arts_edt_create(
             turn_edt, 0, NULL, (prev == NULL_GUID) ? 1u : 2u,
-            &(arts_edt_hint_t){.rank = r, .output_event = oe,
-                               .finish_event = fe});
+            &(arts_edt_hint_t){.rank = r, .completion_event = oe,
+                               .group = fe});
         arts_add_dependence(db, t, 0, DB_MODE_RW);
         if (prev != NULL_GUID) {
           arts_add_dependence(prev, t, 1, DB_MODE_NULL);

@@ -157,7 +157,7 @@ static void wire_consumers(arts_guid_t db, unsigned int cell_idx, axis_t axis,
    * released (publish).  A bare DB->consumer dep satisfies immediately, so
    * the consumer's RO acquire would race ahead of that publish and read the
    * home's v1 placeholder -- an UNDEFINED RO/RW overlap per the OCR
-   * model, not a coherence bug.  The gate event (the writer's OUTPUT EVENT,
+   * model, not a coherence bug.  The gate event (the writer's COMPLETION EVENT,
    * satisfied strictly AFTER the writer's DBs are released) is added as an
    * extra consumer pre-slot so the consumer becomes runnable -- and thus does
    * its RO acquire -- only happens-after the publish.  ACQUIRE cells pass
@@ -190,8 +190,8 @@ static void wire_consumers(arts_guid_t db, unsigned int cell_idx, axis_t axis,
 
 /* ---- writer_edt (NO_ACQUIRE cells only): paramv = {cellIdx}; depv[0]=target
  * DB (RW).  Writes the payload and returns; the runtime satisfies this EDT's
- * output event (see run_cell) only after this EDT's RW hold is released, so a
- * consumer gated on that event is happens-after the publish. ------------
+ * completion event (see run_cell) only after this EDT's RW hold is released,
+ * so a consumer gated on that event is happens-after the publish. ------------
  */
 static void writer_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                        arts_edt_dep_t depv[]) {
@@ -237,7 +237,7 @@ static void run_cell(unsigned int cell_idx, axis_t axis, unsigned int home_idx,
      * gets released before the real writer's RW acquire proceeds, so the
      * data can end up correct despite the contract violation). */
     uint64_t create_ok = (addr == NULL) ? 1 : 0;
-    /* Writer's output event: satisfied by the runtime strictly AFTER the
+    /* Writer's completion event: satisfied by the runtime strictly AFTER the
      * writer's RW hold is released (publish published).  The consumer(s)
      * gate on it so their RO read is happens-after the write.  Wire the
      * consumer(s) to the event BEFORE the writer's DB-dep satisfy below
@@ -247,7 +247,7 @@ static void run_cell(unsigned int cell_idx, axis_t axis, unsigned int home_idx,
     uint64_t wparam[1] = {cell_idx};
     arts_guid_t writer = arts_edt_create(
         writer_edt, 1, wparam, 1,
-        &(arts_edt_hint_t){.output_event = writer_done});
+        &(arts_edt_hint_t){.completion_event = writer_done});
     wire_consumers(db, cell_idx, axis, home_idx, n, create_ok, writer_done);
     arts_add_dependence(db, writer, 0, DB_MODE_RW);
   }
@@ -306,11 +306,11 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   uint64_t d0[1] = {0};
   arts_edt_create(driver_edt, 1, d0, 0,
-                  &(arts_edt_hint_t){.rank = 0, .finish_event = outer});
+                  &(arts_edt_hint_t){.rank = 0, .group = outer});
   if (n > 1) {
     uint64_t d1[1] = {1};
     arts_edt_create(driver_edt, 1, d1, 0,
-                    &(arts_edt_hint_t){.rank = 1, .finish_event = outer});
+                    &(arts_edt_hint_t){.rank = 1, .group = outer});
   }
 }
 

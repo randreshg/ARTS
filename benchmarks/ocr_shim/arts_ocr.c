@@ -265,16 +265,16 @@ static void ocr_els_reset(void);
  *   paramv[2..2+paramc-1] = original paramv values
  *
  * Non-finish EDTs with an OCR outputEvent are created with
- * hint.output_event; the trampoline registers the OCR return value via
- * arts_edt_set_result, and the ARTS runtime satisfies the output event
+ * hint.completion_event; the trampoline registers the OCR return value via
+ * arts_edt_set_result, and the ARTS runtime satisfies the completion event
  * with it after the EDT's data-block releases (OCR rule: an EDT completes
  * the release of all of its data blocks before its post-event is
  * satisfied).
  *
  * For finish EDTs (EDT_PROP_FINISH), ocrEdtCreate pre-creates a FINISH event
- * (via ARTS_EVENT_HINT_FINISH), passes it to the EDT via hint.finish_event,
+ * (via ARTS_EVENT_HINT_FINISH), passes it to the EDT via hint.group,
  * and chains it to the OCR outputEvent.  The trampoline itself is
- * scope-agnostic.
+ * group-agnostic.
  * ========================================================================= */
 
 static void ocr_edt_trampoline(uint32_t paramc, const uint64_t *paramv,
@@ -309,7 +309,7 @@ static void ocr_edt_trampoline(uint32_t paramc, const uint64_t *paramv,
 
   ocrGuid_t returnGuid = func(origParamc, origParamv, depc, ocrDepv);
   /* Output-event payload: registered with the runtime, delivered after the
-   * EDT's releases.  Unused (and harmless) when the EDT has no output
+   * EDT's releases.  Unused (and harmless) when the EDT has no completion
    * event. */
   arts_edt_set_result(returnGuid.guid);
 }
@@ -413,7 +413,7 @@ u8 ocrEdtCreate(ocrGuid_t *guid, ocrGuid_t templateGuid, u32 paramc,
   u32 actualDepc = (depc == EDT_PARAM_DEF) ? templ->depc : depc;
 
   /* hint affinity → ARTS rank, else self-rank.  This `rank` places the
-   * output/finish event created below (kept local to the creator regardless
+   * completion/finish event created below (kept local to the creator regardless
    * of where the EDT itself executes); the EDT's own execution rank is
    * `edtRank`, computed separately near its arts_edt_create call below. */
   int aff = extract_edt_affinity(hint);
@@ -446,11 +446,11 @@ u8 ocrEdtCreate(ocrGuid_t *guid, ocrGuid_t templateGuid, u32 paramc,
   artsParamv[1] = (uint64_t)actualParamc;
   ocr_copy_paramv_safe(&artsParamv[2], paramv, actualParamc);
 
-  /* A finish EDT's scope is a finish event created here, on the creating
-   * rank, and handed to the finish EDT as its scope; its descendants inherit
+  /* A finish EDT's group is a finish event created here, on the creating
+   * rank, and handed to the finish EDT as its group; its descendants inherit
    * it.  Once the finish EDT has joined and the event is chained to outEvt,
    * the shim hands the creator-token back: the finish EDT's own join holds the
-   * scope open, so the token would only delay the fire until the creating task
+   * group open, so the token would only delay the fire until the creating task
    * returns, which OCR does not require.  The event then fires when the finish
    * EDT and every descendant have completed, satisfying outEvt.  The
    * dependence carries no data (ARTS_MODE_NULL). */
@@ -463,13 +463,13 @@ u8 ocrEdtCreate(ocrGuid_t *guid, ocrGuid_t templateGuid, u32 paramc,
 
   /* No affinity hint: ARTS_HINT_ANY_RANK lets arts_edt_create's own no-hint
    * placement policy decide.  The hint struct must stay populated either
-   * way — it also carries finish_event/output_event below — so unlike
+   * way — it also carries group/completion_event below — so unlike
    * arts_db_create's no-hint path this cannot simply pass a NULL hint;
    * ARTS_HINT_ANY_RANK is the struct-preserving equivalent. */
   unsigned int edtRank = (aff < 0) ? ARTS_HINT_ANY_RANK : rank;
 
-  /* Non-finish EDTs deliver the OCR return value through the ARTS output
-   * event (hint.output_event; the trampoline registers the value via
+  /* Non-finish EDTs deliver the OCR return value through the ARTS completion
+   * event (hint.completion_event; the trampoline registers the value via
    * arts_edt_set_result): the runtime satisfies it after the EDT's
    * data-block releases.  Finish EDTs get their outputEvent chained to the
    * finish event below instead. */
@@ -483,9 +483,9 @@ u8 ocrEdtCreate(ocrGuid_t *guid, ocrGuid_t templateGuid, u32 paramc,
     edtHint.guid = guid->guid;
   }
   if (isFinishEdt) {
-    edtHint.finish_event = fe;
+    edtHint.group = fe;
   } else {
-    edtHint.output_event = outEvt;
+    edtHint.completion_event = outEvt;
   }
   arts_guid_t edtGuid = arts_edt_create(ocr_edt_trampoline, artsParamc,
                                         artsParamv, actualDepc, &edtHint);

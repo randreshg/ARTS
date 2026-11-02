@@ -65,7 +65,7 @@ static void writer_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
 }
 
-/* depv[0] = the writer's output event, depv[1] = the block, RO. */
+/* depv[0] = the writer's completion event, depv[1] = the block, RO. */
 static void reader_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                        arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -134,14 +134,14 @@ static void turn_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   uint64_t wpv[1] = {(uint64_t)iter};
   arts_guid_t w = arts_edt_create(
       writer_edt, 1, wpv, 1,
-      &(arts_edt_hint_t){.rank = writer_rank, .output_event = written});
+      &(arts_edt_hint_t){.rank = writer_rank, .completion_event = written});
   arts_add_dependence(g, w, 0, DB_MODE_RW);
 
   arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
   for (unsigned int r = 0; r < nranks; r++) {
     arts_guid_t rd = arts_edt_create(
         reader_edt, 1, wpv, 2,
-        &(arts_edt_hint_t){.rank = r, .finish_event = fe});
+        &(arts_edt_hint_t){.rank = r, .group = fe});
     arts_add_dependence(written, rd, 0, DB_MODE_NULL);
     arts_add_dependence(g, rd, 1, DB_MODE_RO);
   }
@@ -152,7 +152,8 @@ static void turn_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   uint64_t dpv[1] = {(uint64_t)g};
   arts_guid_t d =
       arts_edt_create(destroy_edt, 1, dpv, 1,
-                      &(arts_edt_hint_t){.rank = 0u, .output_event = ddone});
+                      &(arts_edt_hint_t){.rank = 0u,
+                                         .completion_event = ddone});
   arts_add_dependence(fe, d, 0, DB_MODE_NULL);
 
   if (iter + 1u < CYCLES) {
@@ -181,7 +182,7 @@ static void iter_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   uint64_t cpv[1] = {(uint64_t)arts_guid_from_index(base, iter)};
   (void)arts_edt_create(
       create_edt, 1, cpv, 0,
-      &(arts_edt_hint_t){.rank = iter % nranks, .finish_event = fe});
+      &(arts_edt_hint_t){.rank = iter % nranks, .group = fe});
   uint64_t tpv[3] = {(uint64_t)base, (uint64_t)iter, (uint64_t)nranks};
   arts_guid_t t = arts_edt_create(turn_edt, 3, tpv, 1,
                                   &(arts_edt_hint_t){.rank = 0u});

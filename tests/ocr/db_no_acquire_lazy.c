@@ -12,9 +12,9 @@
  *     deferred allocation produced the block's ONE storage rather than a
  *     private copy per acquirer.
  *
- * The reader that checks the write waits on the writer's output event, which
- * the runtime satisfies only after that EDT's datablocks are released — so
- * "later" is an ordering the programming model guarantees, not a race the
+ * The reader that checks the write waits on the writer's completion event,
+ * which the runtime satisfies only after that EDT's datablocks are released,
+ * so "later" is an ordering the programming model guarantees, not a race the
  * scheduler usually wins.  The block's GUID travels in paramv: an EDT body
  * runs on whichever rank the placement hint named, and a file-scope variable
  * assigned by the creating EDT exists only in that rank's process image.
@@ -35,7 +35,7 @@ static void fail(const char *what) {
   arts_shutdown();
 }
 
-/* depv[0] = the writer's output event, depv[1] = the block, RO. */
+/* depv[0] = the writer's completion event, depv[1] = the block, RO. */
 void verify_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                 arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -99,7 +99,7 @@ void first_read_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   arts_edt_hint_t wh = ARTS_EDT_HINT_DEFAULTS;
   wh.rank = (home + ((n > 2u) ? 2u : (n - 1u))) % n;
-  wh.output_event = written;
+  wh.completion_event = written;
   arts_guid_t w = arts_edt_create(write_edt, 0, NULL, 1, &wh);
   arts_add_dependence(db, w, 0, DB_MODE_RW);
 

@@ -49,7 +49,7 @@
 /// the create's hold goes in.  Each lane, on a non-home rank: the dependence
 /// is dispatched first (it touches the DB and asks the home), then the
 /// label's single create on that rank, then a writer ORDERED AFTER that
-/// dependence (its output event), and last a reader ordered after the
+/// dependence (its completion event), and last a reader ordered after the
 /// writer.  The write chain has
 /// to be ordered end to end for the read to have one legal value — unordered
 /// writers of one block may land in either order.
@@ -91,7 +91,7 @@ static void fail(const char *what) {
  * exist yet, which is what leaves the cache the create then finds.  Its own
  * value is unordered against the create, so nothing is asserted about it —
  * a NULL pointer for a sized block IS a failure, because every acquire of a
- * block that exists is owed storage.  Its output event orders the writer
+ * block that exists is owed storage.  Its completion event orders the writer
  * after it, so the sentinel is the last write and the final read has one
  * legal value. */
 void early_rw_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
@@ -148,7 +148,8 @@ void late_creator_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 /* The write the program DOES order: after the early acquirer (slot 0 is that
- * acquirer's output event) and before the reader (its own output event). */
+ * acquirer's completion event) and before the reader (its own completion
+ * event). */
 void writer_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                 arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -161,7 +162,7 @@ void writer_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   *(uint32_t *)depv[1].ptr = SENTINEL;
 }
 
-/* paramv = { done event }.  depv[0] = the writer's output event, depv[1] =
+/* paramv = { done event }.  depv[0] = the writer's completion event, depv[1] =
  * the block, RO — ordered after the write, so the VALUE is asserted. */
 void ordered_reader_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                         arts_edt_dep_t depv[]) {
@@ -230,7 +231,8 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_guid_t asked = arts_event_create(&ARTS_EVENT_HINT_LATCH(1));
     arts_guid_t early =
         arts_edt_create(lane == 0 ? early_rw_edt : early_ro_edt, 0, NULL, 1,
-                        &(arts_edt_hint_t){.rank = r, .output_event = asked});
+                        &(arts_edt_hint_t){.rank = r,
+                                           .completion_event = asked});
     arts_add_dependence(child, early, 0,
                         lane == 0 ? DB_MODE_RW : DB_MODE_RO);
     arts_edt_create(late_creator_edt, 1, cpv, 0,
@@ -242,7 +244,8 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_guid_t written = arts_event_create(&ARTS_EVENT_HINT_LATCH(1));
     arts_guid_t w =
         arts_edt_create(writer_edt, 0, NULL, 2,
-                        &(arts_edt_hint_t){.rank = r, .output_event = written});
+                        &(arts_edt_hint_t){.rank = r,
+                                           .completion_event = written});
     arts_add_dependence(asked, w, 0, DB_MODE_NULL);
     arts_add_dependence(child, w, 1, DB_MODE_RW);
 

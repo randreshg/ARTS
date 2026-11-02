@@ -17,7 +17,7 @@
  * predecessor's resolved pointer is not otherwise visible, and it has to
  * arrive in an order the PROGRAM states rather than one a protocol's
  * admission rule happens to enforce today: each carrier's incoming pointer
- * is delivered through the previous stage's OUTPUT EVENT
+ * is delivered through the previous stage's COMPLETION EVENT
  * (arts_edt_set_result), which the runtime fires only after that stage's own
  * data-block release -- so the value compared can never be one a release has
  * not yet published.  A carrier compares that delivered value against its
@@ -27,13 +27,13 @@
  * A second value threads the same path -- a plain running count -- and needs
  * release ordering only where it feeds the READER's own gate, never between
  * two carriers: a next carrier cannot become ready before its predecessor's
- * OUTPUT EVENT delivers the pointer (depv[2]), and that event fires only
+ * COMPLETION EVENT delivers the pointer (depv[2]), and that event fires only
  * after the predecessor's release, so an intermediate hop's count can travel
  * by a direct slot satisfy the instant its body computes it -- arriving
  * early gates nothing.  The reader compares no carried value, though, so
  * nothing but this count gates it; on every rank count the stage immediately
  * before the reader (the writer alone on one rank, otherwise the last
- * carrier) delivers it through ITS OWN output event too, so the reader's
+ * carrier) delivers it through ITS OWN completion event too, so the reader's
  * readiness never rides on a protocol's admission rule standing in for a
  * signal the program never actually sent.  The count itself is how many
  * carriers ran, and the reader requires it equal nranks - 1: a chain that
@@ -67,7 +67,7 @@ static uint64_t g_first_ptr;
 
 /* depv[0] = the block, RW.  paramv[0] = the GUID of the next stage (the
  * first carrier, or the reader directly on one rank).  paramv[1] = nonzero
- * when that next stage IS the reader, in which case this EDT's own output
+ * when that next stage IS the reader, in which case this EDT's own completion
  * event carries the hop count (0) instead of the pointer -- nothing
  * downstream of the reader ever reads a carried pointer. */
 static void writer_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
@@ -111,13 +111,13 @@ static void writer_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
 /* depv[0] = the block, RO; depv[1] = the running hop count (a plain forward
  * from a carrier that is not immediately before the reader, since the next
- * carrier's readiness is also gated by this carrier's output event, which
+ * carrier's readiness is also gated by this carrier's completion event, which
  * fires only after this carrier's release); depv[2] = the previous stage's
- * own resolved pointer, delivered through that stage's output event (so only
- * after its release).
+ * own resolved pointer, delivered through that stage's completion event (so
+ * only after its release).
  * paramv[0] = the GUID of the next stage.  paramv[1] = nonzero when that next
  * stage IS the reader, in which case this carrier is the last one and its
- * own output event carries the hop count instead of a pointer -- nothing
+ * own completion event carries the hop count instead of a pointer -- nothing
  * downstream of the reader ever reads a carried pointer. */
 static void carrier_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                         arts_edt_dep_t depv[]) {
@@ -156,7 +156,7 @@ static void carrier_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   uint64_t count = (uint64_t)depv[1].guid + 1u;
   if (paramv[1] != 0u) {
     /* Last carrier: the reader's only incoming edge from this chain, so it
-     * travels through this stage's own output event exactly like a
+     * travels through this stage's own completion event exactly like a
      * carried pointer would, never by a mid-body satisfy. */
     arts_edt_set_result((arts_guid_t)count);
   } else {
@@ -252,7 +252,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
    * from the rank closest to the reader down to rank 1: each stage's paramv
    * names the GUID it must hand its own hop count to once it runs, which has
    * to already exist by the time an earlier stage is created.  Every stage
-   * gets its own output event -- every non-tail carrier's carries its
+   * gets its own completion event -- every non-tail carrier's carries its
    * pointer to the next carrier; the tail's carries the hop count to the
    * reader instead (wired here, since the tail is only ever visited once,
    * on this loop's first iteration), because nothing downstream of the
@@ -263,7 +263,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   for (unsigned int rank = nranks - 1; rank >= 1; rank--) {
     bool is_tail = (rank == nranks - 1u);
     arts_guid_t out_ev = arts_event_create(&ARTS_EVENT_HINT_LATCH(1));
-    arts_edt_hint_t hh = {.rank = rank, .output_event = out_ev};
+    arts_edt_hint_t hh = {.rank = rank, .completion_event = out_ev};
     uint64_t hp[2] = {(uint64_t)next_stage, is_tail ? 1u : 0u};
     arts_guid_t hop = arts_edt_create(carrier_edt, 2, hp, 3, &hh);
     arts_add_dependence(g_db, hop, 0, DB_MODE_RO);
@@ -276,11 +276,11 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
 
   /* On one rank the writer is the stage immediately before the reader, so
-   * its own output event carries the hop count (0) there instead of a
+   * its own completion event carries the hop count (0) there instead of a
    * pointer, exactly like a tail carrier would. */
   bool writer_next_is_reader = (nranks == 1u);
   arts_guid_t w_out = arts_event_create(&ARTS_EVENT_HINT_LATCH(1));
-  arts_edt_hint_t wh = {.rank = 0, .output_event = w_out};
+  arts_edt_hint_t wh = {.rank = 0, .completion_event = w_out};
   uint64_t wp[2] = {(uint64_t)next_stage, writer_next_is_reader ? 1u : 0u};
   arts_guid_t w = arts_edt_create(writer_edt, 2, wp, 1, &wh);
   arts_add_dependence(g_db, w, 0, DB_MODE_RW);
@@ -288,8 +288,8 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_add_dependence(w_out, r, 1, DB_MODE_NULL);
   }
 
-  /* Wire each non-tail stage's own output event to the next stage's
-   * carried-pointer slot -- forward order, since a stage's output event
+  /* Wire each non-tail stage's own completion event to the next stage's
+   * carried-pointer slot -- forward order, since a stage's completion event
    * does not exist until that stage has been created above.  0 iterations
    * on one rank, where w_out was just wired to the reader's count slot
    * instead. */

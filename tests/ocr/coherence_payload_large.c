@@ -52,15 +52,15 @@
 ///   Phase 1 — N_DBS DBs (one per rung of the size ladder) are created
 ///     round-robin across ranks; a home-rank RW init writer stamps
 ///     DB[j] = PATTERN(j) for every element.  All init writers run inside one
-///     finish scope.
-///   Phase 2 — gated on that finish scope (so every init writer has RELEASED
+///     group.
+///   Phase 2 — gated on that group (so every init writer has RELEASED
 ///     its RW grant first), WORKERS_PER_DB RO readers per DB, each pinned to a
 ///     rank != the DB home, acquire RO (which pulls the whole payload
 ///     cross-rank as one snapshot) and verify every element equals PATTERN(j)
 ///     (arts_abort on any mismatch).  RO (not concurrent RW) keeps the flow
 ///     well-defined under every protocol while still moving the whole payload
 ///     across ranks.
-///   * A second finish scope gates a shutdown EDT that prints PASS once every
+///   * A second group gates a shutdown EDT that prints PASS once every
 ///     reader has completed.
 ///
 /// The phase barrier matters: without it a remotely-homed DB's init writer must
@@ -144,7 +144,7 @@ static void shutdown_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_shutdown();
 }
 
-/* Phase 2: gated on the init finish scope (so every init writer has released
+/* Phase 2: gated on the init group (so every init writer has released
  * its RW grant and the pattern is durably at each DB's owner), fan out the
  * cross-rank RO verify readers.  The N_DBS DB GUIDs arrive via paramv. */
 static void phase2_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
@@ -172,7 +172,7 @@ static void phase2_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                              db_bytes[d] / sizeof(int)};
       arts_guid_t wk = arts_edt_create(
           verify_worker_edt, 2, wparams, 1,
-          &(arts_edt_hint_t){.rank = worker_rank, .finish_event = fe_work});
+          &(arts_edt_hint_t){.rank = worker_rank, .group = fe_work});
       arts_add_dependence(db, wk, 0, DB_MODE_RO);
     }
   }
@@ -197,7 +197,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
               N_DBS, WORKERS_PER_DB, nnodes);
 
   /* Phase 1: create the DBs, then a phase-2 EDT carrying their GUIDs that is
-   * gated on the init finish scope, then the home-rank init writers.  The
+   * gated on the init group, then the home-rank init writers.  The
    * barrier guarantees every init writer has stamped-and-released its DB before
    * a single verify worker acquires it — so a failure can only be payload
    * corruption, never the init-vs-worker acquire race a remotely-homed DB would
@@ -225,7 +225,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     uint64_t n_ints = db_bytes[d] / sizeof(int);
     arts_guid_t init = arts_edt_create(
         init_writer_edt, 1, &n_ints, 1,
-        &(arts_edt_hint_t){.rank = home, .finish_event = fe_init});
+        &(arts_edt_hint_t){.rank = home, .group = fe_init});
     arts_add_dependence(dbs[d], init, 0, DB_MODE_RW);
   }
 }

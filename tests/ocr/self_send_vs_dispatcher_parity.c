@@ -121,15 +121,14 @@ static void write_turn(arts_guid_t db, uint64_t *value, unsigned int rank,
                        arts_guid_t scope) {
   arts_guid_t w =
       arts_edt_create(writer_edt, 1, value, 1,
-                      &(arts_edt_hint_t){.rank = rank, .finish_event = scope});
+                      &(arts_edt_hint_t){.rank = rank, .group = scope});
   arts_add_dependence(db, w, 0, DB_MODE_RW);
 }
 
 static void read_turn(arts_edt_t body, arts_guid_t db, uint64_t *value,
                       unsigned int rank, arts_guid_t scope) {
-  arts_guid_t r =
-      arts_edt_create(body, 1, value, 1,
-                      &(arts_edt_hint_t){.rank = rank, .finish_event = scope});
+  arts_guid_t r = arts_edt_create(
+      body, 1, value, 1, &(arts_edt_hint_t){.rank = rank, .group = scope});
   arts_add_dependence(db, r, 0, DB_MODE_RO);
 }
 

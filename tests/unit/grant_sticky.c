@@ -183,7 +183,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     uint64_t seq = i;
     arts_guid_t e = arts_event_create(&ARTS_EVENT_HINT_FINISH);
     arts_guid_t w = arts_edt_create(writer_edt, 1, &seq, prev == NULL_GUID ? 1 : 2,
-                                    &(arts_edt_hint_t){.finish_event = e});
+                                    &(arts_edt_hint_t){.group = e});
     arts_add_dependence(g_db, w, 0, DB_MODE_RW);
     if (prev != NULL_GUID) {
       arts_add_dependence(prev, w, 1, DB_MODE_NULL);

@@ -1,9 +1,9 @@
-/* finish_event_stress.c — stress recursive cross-node finish-EDT.
+/* group_stress.c — stress recursive cross-node group.
  *
- * Each iteration creates a finish-EDT that spawns a depth-DEPTH tree of
+ * Each iteration creates a group that spawns a depth-DEPTH tree of
  * children, each fanning out to FANOUT children on cycling rank targets.
- * The finish_event must drain to zero on every iteration, and each iteration
- * starts only from the previous one's finish EDT, so an iteration that stalls
+ * The group must drain to zero on every iteration, and each iteration
+ * starts only from the previous one's drain, so an iteration that stalls
  * hangs the chain (caught by ctest TIMEOUT).
  *
  * The iteration counter lives in paramv (passed through the EDT chain) —
@@ -26,8 +26,8 @@ void recursive_spawn(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)paramc;
   (void)depc;
   (void)depv;
-  /* Children inherit the enclosing finish scope automatically (ARTS
-   * runtime semantics).  No explicit finish-scope wiring needed here. */
+  /* Children inherit the enclosing group automatically (ARTS
+   * runtime semantics).  No explicit group wiring needed here. */
   unsigned int depth = (unsigned int)paramv[0];
   if (depth == 0) {
     return; /* leaf */
@@ -45,7 +45,7 @@ void recursive_spawn(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 /* iter_term: paramv[0] = completed iteration count (1-based after increment).
- * Called when the finish event for one iteration fires. */
+ * Called when the group of one iteration drains. */
 void iter_term(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -54,13 +54,13 @@ void iter_term(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   /* paramv[0] carries the 1-based iteration number for this term. */
   unsigned int iter = (unsigned int)paramv[0];
   if ((iter % 10) == 0) {
-    arts_printf("finish_event_stress: iter %u/%u\n", iter, ITERATIONS);
+    arts_printf("group_stress: iter %u/%u\n", iter, ITERATIONS);
   }
   if (iter < ITERATIONS) {
     uint64_t npv[1] = {(uint64_t)(iter + 1)};
     arts_edt_create(start_iter, 1, npv, 0, NULL);
   } else {
-    arts_printf("PASS: %u iterations of recursive cross-node finish-EDT\n",
+    arts_printf("PASS: %u iterations of recursive cross-node group\n",
                 ITERATIONS);
     arts_shutdown();
   }
@@ -77,7 +77,7 @@ void start_iter(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_event_hint_t fh = ARTS_EVENT_HINT_FINISH;
   arts_guid_t fe = arts_event_create(&fh);
   arts_edt_hint_t hint = ARTS_EDT_HINT_DEFAULTS;
-  hint.finish_event = fe;
+  hint.group = fe;
   uint64_t init_paramv[1] = {DEPTH};
   arts_edt_create(recursive_spawn, 1, init_paramv, 0, &hint);
   arts_add_dependence(fe, term, 0, DB_MODE_NULL);

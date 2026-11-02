@@ -17,7 +17,7 @@
  * may be what the next generation is allocated in.)
  *
  * EDT lane: the occupant's completion retires the GUID, which admits the
- * parked create, and the occupant's completion signal (its finish scope) is
+ * parked create, and the occupant's completion signal (its group) is
  * observed only after that install.  The next generation then runs with the
  * satisfy issued after that signal.  Generations are told apart by a tag in
  * their parameters, read from the EDT the route slot holds.
@@ -154,7 +154,7 @@ static void done(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_shutdown();
 }
 
-/* Gated on the first generation's finish scope. */
+/* Gated on the first generation's group. */
 static void check(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                   arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -187,15 +187,13 @@ static void edt_lane(void) {
 
   uint64_t tag0 = 0u;
   uint64_t tag1 = 1u;
-  (void)arts_edt_create(
-      member, 1, &tag0, 1,
-      &(arts_edt_hint_t){.guid = g, .finish_event = first_scope});
+  (void)arts_edt_create(member, 1, &tag0, 1,
+                        &(arts_edt_hint_t){.guid = g, .group = first_scope});
   expect(installed_tag(g) == 0u, lane, "the first create installed nothing");
   expect(parked_on(g) == 0u, lane, "the first create parked");
 
-  (void)arts_edt_create(
-      member, 1, &tag1, 1,
-      &(arts_edt_hint_t){.guid = g, .finish_event = second_scope});
+  (void)arts_edt_create(member, 1, &tag1, 1,
+                        &(arts_edt_hint_t){.guid = g, .group = second_scope});
   expect(parked_on(g) == 1u, lane, "the create of a live GUID did not park");
   expect(installed_tag(g) == 0u, lane,
          "the parked create displaced the occupant");

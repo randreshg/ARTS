@@ -125,7 +125,7 @@ void rng_sampler(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 /// Runs after every sampler has folded in (created by the continuation gated
-/// on the samplers' finish scope).  Evaluates the two properties and prints the
+/// on the samplers' group).  Evaluates the two properties and prints the
 /// verdict.
 void rng_check(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                arts_edt_dep_t depv[]) {
@@ -195,7 +195,7 @@ void rng_check(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_shutdown();
 }
 
-/// Gated on the samplers' finish scope: runs the checker, which reads the
+/// Gated on the samplers' group: runs the checker, which reads the
 /// fully-aggregated record RO and shuts the runtime down.  paramv[0] = the
 /// aggregation DB.
 static void after_samplers(uint32_t paramc, const uint64_t *paramv,
@@ -235,7 +235,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     uint64_t slot = (uint64_t)i;
     arts_guid_t s =
         arts_edt_create(rng_sampler, 1, &slot, 1,
-                        &(arts_edt_hint_t){.rank = 0, .finish_event = fe});
+                        &(arts_edt_hint_t){.rank = 0, .group = fe});
     arts_add_dependence(db, s, 0, DB_MODE_RW);
   }
 

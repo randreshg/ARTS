@@ -60,7 +60,7 @@ struct roster_probe_s {
   bool found;
 };
 
-/* depv[0] = the creator's output event, depv[1] = the block, RO — the read
+/* depv[0] = the creator's completion event, depv[1] = the block, RO — the read
  * dependence is the ordering against the create: the home serves it only once
  * the announce has installed the object here.  paramv = {the block, the
  * creator's rank}. */
@@ -182,13 +182,13 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   uint64_t cpv[1] = {(uint64_t)g};
   (void)arts_edt_create(
       creator_edt, 1, cpv, 0,
-      &(arts_edt_hint_t){.rank = creator, .output_event = made});
+      &(arts_edt_hint_t){.rank = creator, .completion_event = made});
 
   arts_guid_t checked = arts_event_create(&ARTS_EVENT_HINT_LATCH(1));
   uint64_t hpv[2] = {(uint64_t)g, (uint64_t)creator};
   arts_guid_t hc = arts_edt_create(
       home_check_edt, 2, hpv, 2,
-      &(arts_edt_hint_t){.rank = 0u, .output_event = checked});
+      &(arts_edt_hint_t){.rank = 0u, .completion_event = checked});
   arts_add_dependence(made, hc, 0, DB_MODE_NULL);
   arts_add_dependence(g, hc, 1, DB_MODE_RO);
 
@@ -198,7 +198,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_guid_t gone = arts_event_create(&ARTS_EVENT_HINT_LATCH(1));
   arts_guid_t d = arts_edt_create(
       destroy_edt, 1, cpv, 1,
-      &(arts_edt_hint_t){.rank = 0u, .output_event = gone});
+      &(arts_edt_hint_t){.rank = 0u, .completion_event = gone});
   arts_add_dependence(checked, d, 0, DB_MODE_NULL);
 
   arts_guid_t cc = arts_edt_create(creator_check_edt, 1, cpv, 1,

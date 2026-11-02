@@ -59,11 +59,11 @@ static void start_generation(arts_guid_t label, arts_guid_t finish,
   uint64_t pv[P_COUNT] = {(uint64_t)label, (uint64_t)finish, k};
   arts_guid_t c = arts_edt_create(
       consumer, P_COUNT, pv, 1,
-      &(arts_edt_hint_t){.rank = 0u, .finish_event = finish});
+      &(arts_edt_hint_t){.rank = 0u, .group = finish});
   arts_add_dependence(label, c, 0, DB_MODE_NULL);
   (void)arts_edt_create(
       producer, P_COUNT, pv, 0,
-      &(arts_edt_hint_t){.rank = last, .finish_event = finish});
+      &(arts_edt_hint_t){.rank = last, .group = finish});
 }
 
 static void consumer(uint32_t paramc, const uint64_t *paramv, uint32_t depc,

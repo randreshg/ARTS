@@ -148,7 +148,7 @@ arts_guid_t arts_block_dist_guid_for_partition(const arts_block_dist_t *dist,
  *   - Load from an EDT on each rank (arts_csr_load_*): the loader creates the
  *     partitions homed on its rank, and that EDT holds each RW until it ends.
  *   - Order every reader after every loader, e.g. loaders as members of one
- *     finish scope and readers created by its continuation.
+ *     group and readers created by its continuation.
  *   - Read a partition only through an acquisition: a dependence slot on its
  *     GUID, normally RO, whose depv[i].ptr is the arts_csr_graph_t that
  *     arts_csr_get_neighbors and arts_csr_get_local_index take.

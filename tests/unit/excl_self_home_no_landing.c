@@ -103,9 +103,8 @@ static arts_guid_t chain(arts_guid_t db, arts_edt_t body, uint64_t value,
                          unsigned int rank, arts_guid_t prev,
                          arts_db_access_mode_t mode) {
   arts_guid_t e = arts_event_create(&ARTS_EVENT_HINT_FINISH);
-  arts_guid_t w =
-      arts_edt_create(body, 1, &value, prev == NULL_GUID ? 1 : 2,
-                      &(arts_edt_hint_t){.rank = rank, .finish_event = e});
+  arts_guid_t w = arts_edt_create(body, 1, &value, prev == NULL_GUID ? 1 : 2,
+                                  &(arts_edt_hint_t){.rank = rank, .group = e});
   arts_add_dependence(db, w, 0, mode);
   if (prev != NULL_GUID) {
     arts_add_dependence(prev, w, 1, DB_MODE_NULL);

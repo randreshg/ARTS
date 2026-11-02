@@ -5,7 +5,7 @@
  * release writes back into it, so a value written by one ordered writer is
  * what the next acquirer sees, wherever each of them runs.
  *
- * Cases, each on its own block, run side by side under one finish scope:
+ * Cases, each on its own block, run side by side under one group:
  *   - chain: a long strictly ordered chain of remote write acquisitions, each
  *     reading the counter and writing it back one higher; a write-back that is
  *     dropped, applied twice or applied out of turn shows in the total;
@@ -93,9 +93,8 @@ static void expect_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 static arts_guid_t expect_after(arts_guid_t db, arts_guid_t gate, uint64_t want,
                                 uint64_t which, arts_guid_t scope) {
   uint64_t pv[2] = {want, which};
-  arts_guid_t e =
-      arts_edt_create(expect_edt, 2, pv, 2,
-                      &(arts_edt_hint_t){.rank = 0, .finish_event = scope});
+  arts_guid_t e = arts_edt_create(
+      expect_edt, 2, pv, 2, &(arts_edt_hint_t){.rank = 0, .group = scope});
   arts_add_dependence(db, e, 0, DB_MODE_RO);
   arts_add_dependence(gate, e, 1, DB_MODE_NULL);
   return e;
@@ -135,7 +134,7 @@ static void case_chain(unsigned int away, arts_guid_t scope) {
     arts_guid_t e = arts_edt_create(
         link_edt, 0, NULL, 2,
         &(arts_edt_hint_t){
-            .rank = away, .finish_event = scope, .output_event = done[i]});
+            .rank = away, .group = scope, .completion_event = done[i]});
     arts_add_dependence(db, e, 0, DB_MODE_RW);
     arts_add_dependence((i == 0) ? start : done[i - 1], e, 1, DB_MODE_NULL);
   }
@@ -173,12 +172,12 @@ static void case_racing_readers(unsigned int ranks, arts_guid_t scope) {
     arts_guid_t e = arts_edt_create(
         link_edt, 0, NULL, 2,
         &(arts_edt_hint_t){
-            .rank = writer, .finish_event = scope, .output_event = done[i]});
+            .rank = writer, .group = scope, .completion_event = done[i]});
     arts_add_dependence(db, e, 0, DB_MODE_RW);
     arts_add_dependence(gate, e, 1, DB_MODE_NULL);
-    arts_guid_t r = arts_edt_create(
-        race_reader_edt, 0, NULL, 2,
-        &(arts_edt_hint_t){.rank = reader, .finish_event = scope});
+    arts_guid_t r =
+        arts_edt_create(race_reader_edt, 0, NULL, 2,
+                        &(arts_edt_hint_t){.rank = reader, .group = scope});
     arts_add_dependence(db, r, 0, DB_MODE_RO);
     arts_add_dependence(gate, r, 1, DB_MODE_NULL);
   }
@@ -203,8 +202,8 @@ static void case_volume(unsigned int ranks, arts_guid_t scope) {
       arts_guid_t e = arts_edt_create(
           link_edt, 0, NULL, 2,
           &(arts_edt_hint_t){.rank = (b + (unsigned int)j + 1u) % ranks,
-                             .finish_event = scope,
-                             .output_event = done[j]});
+                             .group = scope,
+                             .completion_event = done[j]});
       arts_add_dependence(db, e, 0, DB_MODE_RW);
       arts_add_dependence((j == 0) ? start : done[j - 1], e, 1, DB_MODE_NULL);
     }
@@ -251,7 +250,7 @@ static void case_creator_away(unsigned int home, arts_guid_t scope) {
   arts_guid_t rew = arts_edt_create(
       step_writer_edt, 2, rpv, 2,
       &(arts_edt_hint_t){
-          .rank = 0, .finish_event = scope, .output_event = after_rewrite});
+          .rank = 0, .group = scope, .completion_event = after_rewrite});
   arts_add_dependence(db, rew, 0, DB_MODE_RW);
   arts_add_dependence(after_read, rew, 1, DB_MODE_NULL);
 
@@ -259,7 +258,7 @@ static void case_creator_away(unsigned int home, arts_guid_t scope) {
   arts_guid_t rdr = arts_edt_create(
       expect_edt, 2, epv, 2,
       &(arts_edt_hint_t){
-          .rank = 0, .finish_event = scope, .output_event = after_read});
+          .rank = 0, .group = scope, .completion_event = after_read});
   arts_add_dependence(db, rdr, 0, DB_MODE_RO);
   arts_add_dependence(after_home, rdr, 1, DB_MODE_NULL);
 
@@ -267,7 +266,7 @@ static void case_creator_away(unsigned int home, arts_guid_t scope) {
   arts_guid_t hw = arts_edt_create(
       step_writer_edt, 2, hpv, 1,
       &(arts_edt_hint_t){
-          .rank = home, .finish_event = scope, .output_event = after_home});
+          .rank = home, .group = scope, .completion_event = after_home});
   arts_add_dependence(db, hw, 0, DB_MODE_RW);
 }
 
@@ -329,7 +328,7 @@ static void case_private_copy(unsigned int away, arts_guid_t scope) {
 
   arts_guid_t rdr =
       arts_edt_create(overlap_reader_edt, 0, NULL, 2,
-                      &(arts_edt_hint_t){.rank = away, .finish_event = scope});
+                      &(arts_edt_hint_t){.rank = away, .group = scope});
   arts_add_dependence(db, rdr, 0, DB_MODE_RO);
   arts_add_dependence(go, rdr, 1, DB_MODE_NULL);
 
@@ -337,7 +336,7 @@ static void case_private_copy(unsigned int away, arts_guid_t scope) {
   arts_guid_t wtr = arts_edt_create(
       overlap_writer_edt, 1, pv, 1,
       &(arts_edt_hint_t){
-          .rank = away, .finish_event = scope, .output_event = written});
+          .rank = away, .group = scope, .completion_event = written});
   arts_add_dependence(db, wtr, 0, DB_MODE_RW);
 }
 
@@ -357,17 +356,16 @@ static void zero_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 static void case_zero_size(unsigned int away, arts_guid_t scope) {
   arts_guid_t db = make_block(0, 0, 0);
   arts_guid_t after_ro = arts_event_create(&ARTS_EVENT_HINT_DEFAULTS);
-  /* Chained by an output event, so the write acquisition is a turn of its
+  /* Chained by a completion event, so the write acquisition is a turn of its
    * own. */
-  arts_guid_t w =
-      arts_edt_create(zero_edt, 0, NULL, 2,
-                      &(arts_edt_hint_t){.rank = away, .finish_event = scope});
+  arts_guid_t w = arts_edt_create(
+      zero_edt, 0, NULL, 2, &(arts_edt_hint_t){.rank = away, .group = scope});
   arts_add_dependence(db, w, 0, DB_MODE_RW);
   arts_add_dependence(after_ro, w, 1, DB_MODE_NULL);
-  arts_guid_t r = arts_edt_create(zero_edt, 0, NULL, 1,
-                                  &(arts_edt_hint_t){.rank = away,
-                                                     .finish_event = scope,
-                                                     .output_event = after_ro});
+  arts_guid_t r = arts_edt_create(
+      zero_edt, 0, NULL, 1,
+      &(arts_edt_hint_t){
+          .rank = away, .group = scope, .completion_event = after_ro});
   arts_add_dependence(db, r, 0, DB_MODE_RO);
 }
 
@@ -450,24 +448,22 @@ static void case_size_discovery(arts_guid_t scope) {
   uint64_t final_pv[1] = {1};
   arts_guid_t fin =
       arts_edt_create(discovery_reader_edt, 1, final_pv, 2,
-                      &(arts_edt_hint_t){.rank = 0, .finish_event = scope});
+                      &(arts_edt_hint_t){.rank = 0, .group = scope});
   arts_add_dependence(label, fin, 0, DB_MODE_RO);
   arts_add_dependence(write_done, fin, 1, DB_MODE_NULL);
 
-  arts_guid_t wtr =
-      arts_edt_create(discovery_writer_edt, 0, NULL, 2,
-                      &(arts_edt_hint_t){.rank = writer_rank,
-                                         .finish_event = scope,
-                                         .output_event = write_done});
+  arts_guid_t wtr = arts_edt_create(
+      discovery_writer_edt, 0, NULL, 2,
+      &(arts_edt_hint_t){
+          .rank = writer_rank, .group = scope, .completion_event = write_done});
   arts_add_dependence(label, wtr, 0, DB_MODE_RW);
   arts_add_dependence(read_done, wtr, 1, DB_MODE_NULL);
 
   uint64_t first_pv[1] = {0};
-  arts_guid_t rdr =
-      arts_edt_create(discovery_reader_edt, 1, first_pv, 1,
-                      &(arts_edt_hint_t){.rank = reader_rank,
-                                         .finish_event = scope,
-                                         .output_event = read_done});
+  arts_guid_t rdr = arts_edt_create(
+      discovery_reader_edt, 1, first_pv, 1,
+      &(arts_edt_hint_t){
+          .rank = reader_rank, .group = scope, .completion_event = read_done});
   arts_add_dependence(label, rdr, 0, DB_MODE_RO);
 }
 
@@ -511,7 +507,7 @@ static void case_spent_credit(unsigned int away, arts_guid_t scope) {
   arts_guid_t wtr = arts_edt_create(
       credit_writer_edt, 1, pv, 1,
       &(arts_edt_hint_t){
-          .rank = away, .finish_event = scope, .output_event = written});
+          .rank = away, .group = scope, .completion_event = written});
   arts_add_dependence(db, wtr, 0, DB_MODE_RW);
 }
 

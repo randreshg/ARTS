@@ -531,7 +531,7 @@ void arts_schedule_to_gpu_internal(arts_edt_t fn_ptr, uint32_t paramc,
 
     host_gc_ptr->edt->func_ptr(paramc, host_paramv, depc, host_depv);
 
-    /* The EDT's own finish DECR is a completion signal, so it leaves from the
+    /* The EDT's own group DECR is a completion signal, so it leaves from the
      * wrap-up after the GUID is retired, not from here. */
     arts_unset_thread_local_edt_info(false);
     /* Release DBs created during the lib function NOW, on the worker thread.
@@ -854,8 +854,8 @@ void arts_gpu_host_wrap_up(void *edt_packet, arts_guid_t to_signal,
   arts_shared_ptr_t sref = ((struct arts_edt_s *)edt_packet)->self_cb;
   arts_edt_delete((struct arts_edt_s *)edt_packet);
 
-  if (edt->wrapper_edt.finish_event != NULL_GUID) {
-    arts_event_satisfy_slot(edt->wrapper_edt.finish_event, NULL_GUID,
+  if (edt->wrapper_edt.group != NULL_GUID) {
+    arts_event_satisfy_slot(edt->wrapper_edt.group, NULL_GUID,
                             ARTS_EVENT_LATCH_DECR_SLOT);
   }
 

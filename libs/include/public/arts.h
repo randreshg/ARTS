@@ -192,7 +192,7 @@ typedef enum {
  *  arts_edt_create's hint==NULL behavior, which this is equivalent to).
  *  Distinct from @c ARTS_HINT_CURRENT_RANK (explicit self) and from passing
  *  a NULL hint pointer: usable by callers that must still populate other
- *  hint fields (finish_event, output_event, flags) while leaving
+ *  hint fields (group, completion_event, flags) while leaving
  *  placement itself unpinned. */
 #define ARTS_HINT_ANY_RANK ((unsigned int)-3)
 
@@ -203,8 +203,8 @@ typedef enum {
  *  @{ */
 
 /** Bit flags for arts_edt_hint_t.flags.  Reserved for future EDT-create flags;
- *  a finish scope is an ARTS_EVENT_HINT_FINISH event named in
- *  arts_edt_hint_t.finish_event. */
+ *  a group is an ARTS_EVENT_HINT_FINISH event named in
+ *  arts_edt_hint_t.group. */
 #define ARTS_EDT_FLAG_NONE 0x0000u
 
 /** Hint passed to @c arts_edt_create.  Optional fields:
@@ -212,7 +212,7 @@ typedef enum {
  *    - @c guid   when non-NULL_GUID pre-reserves the EDT GUID; the home
  *                rank is then taken from that GUID and @c rank is ignored,
  *                and a create of a live GUID parks until it ends.
- *    - @c finish_event when non-NULL_GUID joins this EDT to that finish scope.
+ *    - @c group when non-NULL_GUID joins this EDT to that group.
  *    - @c flags  bitfield of ARTS_EDT_FLAG_* (default ARTS_EDT_FLAG_NONE). */
 typedef struct {
   /** Target node rank.  ARTS_HINT_CURRENT_RANK = current node (default) |
@@ -226,20 +226,21 @@ typedef struct {
    *  GUID's next EDT.  Two creates of one GUID with no end of life between
    *  them are undefined: one of them stays parked. */
   arts_guid_t guid;
-  /** Finish event to join (bulk sync).  NULL_GUID = inherit the caller's
-   *  ambient finish scope (default).  When set, this EDT (and its descendants)
-   *  join that finish event: INCR at create, DECR at completion.  The event
-   *  must be homed on the creating rank (a finish event created here), since
-   *  the join INCR is local and only a local INCR is ordered before the
-   *  member's DECR; naming another rank's scope is undefined. */
-  arts_guid_t finish_event;
-  /** Output event (per-EDT result channel; OCR-style).  NULL_GUID = none
+  /** Group to join (bulk sync).  NULL_GUID = inherit the caller's current
+   *  group (default).  When set, this EDT (and its descendants) join that
+   *  group: INCR at create, DECR at completion.  The group's event must be
+   *  homed on the creating rank (an event homed here: created here with the
+   *  default rank), since the join INCR is local and only a local INCR is
+   *  ordered before the member's DECR; naming another rank's group is
+   *  undefined. */
+  arts_guid_t group;
+  /** Completion event (per-EDT result channel; OCR-style).  NULL_GUID = none
    *  (default).  When set, the runtime satisfies this event (DECR slot)
    *  after the EDT's data blocks have been released, carrying the result
    *  GUID the EDT body registered via @c arts_edt_set_result (NULL_GUID if
-   *  it registered none).  Unlike @c finish_event this is never inherited —
+   *  it registered none).  Unlike @c group this is never inherited —
    *  it belongs to this EDT only. */
-  arts_guid_t output_event;
+  arts_guid_t completion_event;
   /** Bitfield of ARTS_EDT_FLAG_*.  uint32_t for future flag growth.  Default
    * ARTS_EDT_FLAG_NONE (0). */
   uint32_t flags;
@@ -250,8 +251,8 @@ typedef struct {
 #define ARTS_EDT_HINT_DEFAULTS                                                 \
   ((arts_edt_hint_t){.rank = ARTS_HINT_CURRENT_RANK,                           \
                      .guid = NULL_GUID,                                        \
-                     .finish_event = NULL_GUID,                                \
-                     .output_event = NULL_GUID,                                \
+                     .group = NULL_GUID,                                       \
+                     .completion_event = NULL_GUID,                            \
                      .flags = ARTS_EDT_FLAG_NONE})
 
 /** Hint passed to @c arts_db_create.
@@ -404,10 +405,10 @@ typedef struct {
   /** If true, this is a FINISH event: a bulk-synchronization latch. All other
    *  fields (latch, channel, guid) are ignored — forced to a simple
    *  latch=1 (creator-token), current rank, auto-allocated GUID, auto_destroy.
-   *  The runtime auto-chains it to the ambient finish scope and tracks its
+   *  The runtime auto-chains it to the current group and tracks its
    *  creator-token for cleanup.  Act on its fire with a continuation EDT
    *  wired by arts_add_dependence; the continuation must not name this
-   *  event as its own finish_event, or the scope would wait for it and
+   *  event as its own group, or the group would wait for it and
    *  never drain.  Default false.
    */
   bool finish;
@@ -627,18 +628,18 @@ int64_t arts_guid_index_from(arts_guid_t range_guid, arts_guid_t guid);
  *
  * The EDT will execute @p func_ptr once all @p depc dependency slots have
  * been satisfied via arts_add_dependence().  All optional fields (target
- * rank, pre-reserved GUID, finish scope, profiling id) are carried in the
+ * rank, pre-reserved GUID, group, profiling id) are carried in the
  * hint struct.  Pass @c NULL, or a hint with @c rank == ARTS_HINT_ANY_RANK,
  * for "no placement preference": the runtime's compile-time no-hint EDT
  * placement policy (ARTS_NOHINT_EDT_PLACEMENT: ROUNDROBIN default, or
  * CREATOR, which keeps the EDT on its creating rank) picks the execution rank.
- * A NULL hint also inherits the caller's ambient finish scope.
+ * A NULL hint also inherits the caller's current group.
  *
  * @param func_ptr Function to execute.
  * @param paramc   Number of static parameters.
  * @param paramv   Array of @p paramc uint64_t values copied into the closure.
  * @param depc     Number of dependency slots.
- * @param hint     Advisory metadata (rank, guid, finish_event, output_event).
+ * @param hint     Advisory metadata (rank, guid, group, completion_event).
  *                 NULL = defaults.
  * @return GUID of the EDT (== hint->guid when pre-reserved), whether the
  *         create installed at once or parked behind the GUID's live EDT;
@@ -679,17 +680,17 @@ int arts_argv_from_params(const uint64_t *paramv, uint32_t paramc,
 /** @} */
 
 /**
- * @brief Register the calling EDT's output-event payload.
+ * @brief Register the calling EDT's result.
  *
- * Call from inside an EDT body.  The runtime delivers the registered payload
- * by satisfying the EDT's output event (@c arts_edt_hint_t.output_event) —
- * strictly after the EDT's data blocks have been released, so a consumer
- * woken by the output event can never acquire one of this EDT's data
- * blocks before the writes are published.  A later call replaces the
- * value; without a call the output event fires with NULL_GUID.  No-op for
- * EDTs created without an output event, or outside a running EDT.
- * A DB_MODE_NULL consumer receives opaque bits; RO/RW consumers acquire the
- * payload as a DB GUID.
+ * Call from inside an EDT body.  The runtime delivers the registered result
+ * by satisfying the EDT's completion event
+ * (@c arts_edt_hint_t.completion_event) strictly after the EDT's data blocks
+ * have been released, so a consumer woken by the completion event can never
+ * acquire one of this EDT's data blocks before the writes are published.  A
+ * later call replaces the value; without a call the completion event fires
+ * with NULL_GUID.  No-op for EDTs created without a completion event, or
+ * outside a running EDT.  A DB_MODE_NULL consumer receives opaque bits; RO/RW
+ * consumers acquire the payload as a DB GUID.
  */
 void arts_edt_set_result(arts_guid_t result_guid);
 
@@ -816,24 +817,24 @@ void arts_event_destroy(arts_guid_t guid);
 /**
  * @brief Hand a FINISH event's creator-token back before the creator returns.
  *
- * The creator of a finish event holds one token that keeps the scope open
- * until the creator completes.  Releasing it here lets the scope fire as soon
+ * The creator of a finish event holds one token that keeps the group open
+ * until the creator completes.  Releasing it here lets the group fire as soon
  * as its members finish, while the creator keeps running.
  * Call it only from the token's owner — the EDT that created @p event_guid,
  * on the thread running that EDT — at most once, and only after that EDT has
- * joined every member it wants the scope to cover (a join after the release
- * may find the scope already fired).  Calling it twice, or from any other
- * EDT, decrements the scope one time too many and is undefined.
+ * joined every member it wants the group to cover (a join after the release
+ * may find the group already fired).  Calling it twice, or from any other
+ * EDT, decrements the group one time too many and is undefined.
  */
 void arts_event_release_creator_token(arts_guid_t event_guid);
 
 /**
- * @brief Return the finish event the calling EDT currently belongs to.
+ * @brief Return the group the calling EDT currently belongs to.
  *
- * Returns the ambient finish-scope GUID inherited or joined by the running
- * EDT, or NULL_GUID if it belongs to no finish scope.
+ * Returns the current group GUID inherited or joined by the running
+ * EDT, or NULL_GUID if it belongs to no group.
  */
-arts_guid_t arts_current_finish_event(void);
+arts_guid_t arts_current_group(void);
 
 /**
  * @brief Wire a source (event or DB) to a destination (EDT or event).

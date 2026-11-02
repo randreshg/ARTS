@@ -48,7 +48,7 @@
 /// after the home's MSG_DB_GRANT_CONFIRM_ACK, which closes the window.
 ///
 /// Per iteration (a clean write -> read happens-before chain), each EDT in a
-/// finish scope of its own:
+/// group of its own:
 ///   reset  (rank 0, RW): re-own on the home, write vprev   [e_reset]
 ///   writer (rank W, RW): transfer 0->W, write vnew         [e_writer]
 ///   reader (rank 0, RO): MUST read vnew                    [e_reader]
@@ -124,9 +124,8 @@ static void writer_phase(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 static void reset_phase(const uint64_t *paramv) {
   uint64_t vprev = (uint64_t)(RESET_BASE + paramv[P_IT]);
   arts_guid_t e_reset = arts_event_create(&ARTS_EVENT_HINT_FINISH);
-  arts_guid_t rst =
-      arts_edt_create(reset_edt, 1, &vprev, 1,
-                      &(arts_edt_hint_t){.rank = 0, .finish_event = e_reset});
+  arts_guid_t rst = arts_edt_create(
+      reset_edt, 1, &vprev, 1, &(arts_edt_hint_t){.rank = 0, .group = e_reset});
   arts_add_dependence((arts_guid_t)paramv[P_DB], rst, 0, DB_MODE_RW);
   /* The writer phase runs once the reset EDT has completed and e_reset has
    * fired, meaning ownership is back on rank 0. */
@@ -163,7 +162,7 @@ static void writer_phase(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_guid_t e_writer = arts_event_create(&ARTS_EVENT_HINT_FINISH);
   arts_guid_t wr =
       arts_edt_create(writer_edt, 1, &vnew, 1,
-                      &(arts_edt_hint_t){.rank = W, .finish_event = e_writer});
+                      &(arts_edt_hint_t){.rank = W, .group = e_writer});
   arts_add_dependence((arts_guid_t)paramv[P_DB], wr, 0, DB_MODE_RW);
   /* The writer EDT acquires RW ownership (home redirects 0->W) and writes
    * vnew.  The window the gate closes: the home flips rw_holder only on W's
@@ -185,7 +184,7 @@ static void reader_phase(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_guid_t e_reader = arts_event_create(&ARTS_EVENT_HINT_FINISH);
   arts_guid_t rd =
       arts_edt_create(reader_edt, 1, &vnew, 1,
-                      &(arts_edt_hint_t){.rank = 0, .finish_event = e_reader});
+                      &(arts_edt_hint_t){.rank = 0, .group = e_reader});
   arts_add_dependence((arts_guid_t)paramv[P_DB], rd, 0, DB_MODE_RO);
   then(next_iteration, paramv, e_reader);
 }

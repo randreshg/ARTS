@@ -160,14 +160,14 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       unsigned int db_idx = (iter * 7u + i * 13u) % N_DBS;
       arts_guid_t w = arts_edt_create(
           rw_worker_edt, 0, NULL, 1,
-          &(arts_edt_hint_t){.rank = i % nranks, .finish_event = writers});
+          &(arts_edt_hint_t){.rank = i % nranks, .group = writers});
       arts_add_dependence(dbs[db_idx], w, 0, DB_MODE_RW);
     }
 
     uint64_t pv[1] = {iter};
     arts_guid_t v =
         arts_edt_create(verify_edt, 1, pv, 1u + N_DBS,
-                        &(arts_edt_hint_t){.rank = 0u, .finish_event = all});
+                        &(arts_edt_hint_t){.rank = 0u, .group = all});
     arts_add_dependence(writers, v, 0, DB_MODE_NULL);
     for (unsigned int i = 0; i < N_DBS; i++) {
       arts_add_dependence(dbs[i], v, 1u + i, DB_MODE_RO);

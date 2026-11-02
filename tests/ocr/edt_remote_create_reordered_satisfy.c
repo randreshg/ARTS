@@ -12,8 +12,8 @@
  *   - installs the EDT, replaying the queued satisfies under the sentinel,
  *   - removes the sentinel; exactly one party observes the 0 transition, so
  *     the EDT fires exactly once (no double dispatch, no lost fire),
- *   - chains the EDT's finish scope to the remote parent through a proxy
- *     latch, so the parent scope drains once the EDT has run.
+ *   - chains the EDT's group to the remote parent through a proxy
+ *     latch, so the parent group drains once the EDT has run.
  *
  * Scenario (deterministic, single driver rank)
  * --------------------------------------------
@@ -21,10 +21,10 @@
  *   1) Pre-satisfy the EDT's one real dep (a VAL) against the still-RESERVED
  *      remote GUID, and wire its counter dep — both reach W ahead of the
  *      create and queue OoO there.
- *   2) Create that GUID, targeting W under a finish scope.  On W the install
+ *   2) Create that GUID, targeting W under a group.  On W the install
  *      replays both, and the EDT fires exactly once under the sentinel.
  * A finish event gates a collector; main_edt waits on it.  The member bumps a
- * shared counter exactly once.  A lost fire → the scope never drains →
+ * shared counter exactly once.  A lost fire → the group never drains →
  * TIMEOUT; a double fire → counter == 2 → FAIL.
  *
  * A second create of a live GUID parks until the occupant is destroyed, so
@@ -113,13 +113,13 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   /* Wire the counter dep (slot 1, RW) — delivered when the EDT installs. */
   arts_add_dependence(cdb, mguid, 1, DB_MODE_RW);
 
-  /* (2) Create the migrated GUID, targeting rank W under the finish scope.
+  /* (2) Create the migrated GUID, targeting rank W under the group.
    * On W the install replays both queued satisfies, and the EDT fires once
    * under the sentinel. */
   arts_edt_create(member, 1, pv, 2,
-                  &(arts_edt_hint_t){.guid = mguid, .finish_event = fe});
+                  &(arts_edt_hint_t){.guid = mguid, .group = fe});
 
-  /* Collector gated on the finish scope. */
+  /* Collector gated on the group. */
   arts_guid_t coll =
       arts_edt_create(collector, 1, pv, 2, &(arts_edt_hint_t){.rank = 0});
   arts_add_dependence(fe, coll, 0, DB_MODE_NULL);

@@ -108,7 +108,7 @@ static void start_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_guid_t e = arts_edt_create(
         hop_edt, 4, pv, 1,
         &(arts_edt_hint_t){.rank = (unsigned int)((home + 1u) % nranks),
-                           .finish_event = work});
+                           .group = work});
     arts_add_dependence((arts_guid_t)paramv[d], e, 0, DB_MODE_RW);
   }
 }
@@ -139,7 +139,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     uint64_t pv[1] = {d};
     arts_guid_t e = arts_edt_create(
         init_edt, 1, pv, 1,
-        &(arts_edt_hint_t){.rank = d % nranks, .finish_event = stamps});
+        &(arts_edt_hint_t){.rank = d % nranks, .group = stamps});
     arts_add_dependence((arts_guid_t)dbs[d], e, 0, DB_MODE_RW);
   }
 }

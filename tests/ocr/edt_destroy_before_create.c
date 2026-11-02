@@ -14,8 +14,8 @@
  *     install on the retired slot and run.  A destroy that failed to retire
  *     the first generation would leave the second parked behind it forever.
  *
- * The destroyed EDTs carry a dependence nobody satisfies and join no finish
- * scope, so they never run and owe no scope a decrement.
+ * The destroyed EDTs carry a dependence nobody satisfies and join no group,
+ * so they never run and owe no group a decrement.
  */
 
 #include <stdint.h>

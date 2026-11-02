@@ -190,7 +190,7 @@ void arts_run_edt(struct arts_edt_s *edt) {
   arts_release_created_dbs();
 
   /* Retire the GUID before any completion signal leaves: whoever observes the
-   * completion (output event, finish scope) may create the GUID's next
+   * completion (completion event, group) may create the GUID's next
    * generation and satisfy it at once, and those messages must find this
    * generation gone rather than run against it.  The runnable-phase ref taken
    * in arts_handle_ready_edt keeps the EDT alive past the detach, and its
@@ -198,14 +198,14 @@ void arts_run_edt(struct arts_edt_s *edt) {
   arts_shared_ptr_t sref = edt->self_cb;
   arts_edt_delete(edt);
 
-  /* Output event: satisfied only now, after every release above, so a
+  /* Completion event: satisfied only now, after every release above, so a
    * consumer it wakes cannot acquire one of this EDT's data blocks before
    * the writes are published (a satisfy sent from the EDT body would
    * precede the version bump and a remote reader could be served its stale
    * cached copy).  The payload is whatever the body registered via
    * arts_edt_set_result (NULL_GUID if it registered none). */
-  if (edt->output_event != NULL_GUID) {
-    arts_event_satisfy_slot(edt->output_event, edt->output_data,
+  if (edt->completion_event != NULL_GUID) {
+    arts_event_satisfy_slot(edt->completion_event, edt->result,
                             ARTS_EVENT_LATCH_DECR_SLOT);
   }
 

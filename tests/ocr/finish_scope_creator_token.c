@@ -3,13 +3,13 @@
 ** Licensed under the Apache License, Version 2.0 (the "License").           **
 ******************************************************************************/
 
-/* finish_scope_creator_token — a finish scope whose creator hands its token
+/* finish_scope_creator_token — a group whose creator hands its token
  * back fires when its members finish, while the creator still runs.
  *
  * The OCR finish EDT's sequence through the native API: the creating EDT makes
- * a finish scope on its own rank, creates a worker on the last rank in it,
- * binds a continuation to the scope, and releases its creator-token.  The
- * worker creates a child on the first rank, which inherits the scope.  The
+ * a group on its own rank, creates a worker on the last rank in it,
+ * binds a continuation to the group, and releases its creator-token.  The
+ * worker creates a child on the first rank, which inherits the group.  The
  * creator then keeps running; the continuation must observe the child done
  * and run before the creator returns.  A token held until the creator
  * completes would delay the fire past that point, and the creator gives up
@@ -59,7 +59,7 @@ static void continuation(uint32_t paramc, const uint64_t *paramv,
   (void)depc;
   (void)depv;
   if (atomic_load_explicit(&g_child_done, memory_order_acquire) != 1u) {
-    arts_printf("FAIL: finish_scope_creator_token: the scope fired before "
+    arts_printf("FAIL: finish_scope_creator_token: the group fired before "
                 "the worker's child finished\n");
     arts_test_fail();
   }
@@ -73,21 +73,21 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depc;
   (void)depv;
   unsigned int last = arts_get_total_ranks() - 1u;
-  arts_guid_t scope = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_guid_t group = arts_event_create(&ARTS_EVENT_HINT_FINISH);
   (void)arts_edt_create(
       worker, 0, NULL, 0,
-      &(arts_edt_hint_t){.rank = last, .finish_event = scope});
+      &(arts_edt_hint_t){.rank = last, .group = group});
   arts_guid_t cont =
       arts_edt_create(continuation, 0, NULL, 1, &(arts_edt_hint_t){.rank = 0u});
-  arts_add_dependence(scope, cont, 0, DB_MODE_NULL);
-  arts_event_release_creator_token(scope);
+  arts_add_dependence(group, cont, 0, DB_MODE_NULL);
+  arts_event_release_creator_token(group);
 
   uint64_t start = now_ns();
   while (atomic_load_explicit(&g_fired, memory_order_acquire) == 0u &&
          now_ns() - start < WAIT_NS) {
   }
   if (atomic_load_explicit(&g_fired, memory_order_acquire) == 0u) {
-    arts_printf("FAIL: finish_scope_creator_token: the scope did not fire "
+    arts_printf("FAIL: finish_scope_creator_token: the group did not fire "
                 "while its creator ran\n");
     arts_test_fail();
   } else if (arts_test_status() == 0) {

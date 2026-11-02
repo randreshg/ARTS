@@ -56,7 +56,7 @@
 #define STATE_ROSEEN 1
 #define STATE_NELEMS 2
 
-/* Every acquirer's output event is the LATCH, decremented once the EDT's
+/* Every acquirer's completion event is the LATCH, decremented once the EDT's
  * blocks are released, so the verifier gated on it is ordered after every
  * write to the state block. */
 
@@ -164,7 +164,8 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
      * frequently in flight when an RW acquire arrives (RW must still request)
      * and vice-versa (RO must coalesce).  depc=0 → all hit the not-held path
      * concurrently. */
-    arts_edt_hint_t eh = {.rank = ARTS_HINT_ANY_RANK, .output_event = latch};
+    arts_edt_hint_t eh = {.rank = ARTS_HINT_ANY_RANK,
+                          .completion_event = latch};
     for (int k = 0; k < PER_ITER; k++) {
       if (k % 2 == 0 && (k / 2) < N_RW) {
         arts_guid_t e = arts_edt_create(rw_edt, 0, NULL, 2, &eh);

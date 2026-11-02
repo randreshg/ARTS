@@ -1,40 +1,41 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * EDT output_event + arts_edt_set_result delivery and ordering.
+ * EDT completion_event + arts_edt_set_result delivery and ordering.
  *
- * Property under test (arts_edt_set_result + run-end output_event satisfy)
+ * Property under test (arts_edt_set_result + run-end completion_event satisfy)
  * ----------------------------------------------------------------------
- * An EDT created with hint.output_event has a per-EDT result channel.  The run
- * path satisfies that event AFTER the EDT's data blocks have been released,
+ * An EDT created with hint.completion_event has a per-EDT result channel.  The
+ * run path satisfies that event AFTER the EDT's data blocks have been released,
  * carrying the GUID the body registered via arts_edt_set_result (NULL_GUID if
  * it registered none).  Two facts must hold:
  *
- *   1) Result delivery: a consumer wired on the producer's output_event
+ *   1) Result delivery: a consumer wired on the producer's completion_event
  *      receives the exact GUID the producer passed to arts_edt_set_result.
  *   2) NULL-result default: a producer that never calls arts_edt_set_result
- *      still fires its output_event, delivering NULL_GUID.
+ *      still fires its completion_event, delivering NULL_GUID.
  *   3) Release-before-satisfy ordering (load-bearing for any consumer wired
- *      through an output event): when
- *      the producer registers a DB as its result and the consumer acquires that
- *      DB RO via the output-event dependency, the consumer must observe the
- *      producer's writes — the output event fires only after the producer's DB
- *      release published them.
+ *      through a completion event): when the producer registers a DB as its
+ *      result and the consumer acquires that DB RO via the completion-event
+ *      dependency, the consumer must observe the producer's writes — the
+ *      completion event fires only after the producer's DB release published
+ *      them.
  *
  * Topology
  * --------
- *   producer (rank 0): writes a result DB, registers it via set_result, has an
- *     output_event OE_RESULT; the consumer acquires the result DB RO via OE.
- *   producer_null (rank 0 or remote): no set_result; output_event OE_NULL must
- *     fire with NULL_GUID, verified by the null-consumer.
+ *   producer (rank 0): writes a result DB, registers it via set_result, has a
+ *     completion_event OE_RESULT; the consumer acquires the result DB RO via
+ *     OE.
+ *   producer_null (rank 0 or remote): no set_result; completion_event OE_NULL
+ *     must fire with NULL_GUID, verified by the null-consumer.
  * Multinode: when >1 rank, the result consumer is placed on a remote rank so
- * the output-event satisfy + DB acquire cross the wire.
+ * the completion-event satisfy + DB acquire cross the wire.
  *
- * Both consumers join a finish scope; a collector gated on it verifies a shared
+ * Both consumers join a group; a collector gated on it verifies a shared
  * pass/fail tally and shuts down.  A stranded wait is caught by ctest TIMEOUT.
  */
 
-#include "arts.h"
 #include "../test_failure_status.h"
+#include "arts.h"
 
 #include <stdatomic.h>
 #include <stdint.h>
@@ -51,8 +52,8 @@ typedef struct {
 #define PV_TALLY 0
 
 /* Producer with a result: depv[0]=result DB (RW), writes magic + registers it
- * as the result GUID.  The runtime releases the DB then satisfies output_event
- * with this GUID. */
+ * as the result GUID.  The runtime releases the DB then satisfies
+ * completion_event with this GUID. */
 void producer(uint32_t pc, const uint64_t *pv, uint32_t dc,
               arts_edt_dep_t dv[]) {
   (void)pc;
@@ -62,11 +63,13 @@ void producer(uint32_t pc, const uint64_t *pv, uint32_t dc,
   if (d) {
     d[0] = RESULT_MAGIC;
   }
-  /* Register the result DB as this EDT's result; delivered via output_event. */
+  /* Register the result DB as this EDT's result; delivered via
+   * completion_event. */
   arts_edt_set_result(dv[0].guid);
 }
 
-/* Producer that registers no result: output_event must deliver NULL_GUID. */
+/* Producer that registers no result: completion_event must deliver NULL_GUID.
+ */
 void producer_null(uint32_t pc, const uint64_t *pv, uint32_t dc,
                    arts_edt_dep_t dv[]) {
   (void)pc;
@@ -77,7 +80,7 @@ void producer_null(uint32_t pc, const uint64_t *pv, uint32_t dc,
 }
 
 /* Consumer of the result: depv[0] = the result DB delivered via the producer's
- * output_event (RO).  Must observe the magic (release-before-satisfy). */
+ * completion_event (RO).  Must observe the magic (release-before-satisfy). */
 void result_consumer(uint32_t pc, const uint64_t *pv, uint32_t dc,
                      arts_edt_dep_t dv[]) {
   (void)pc;
@@ -95,7 +98,7 @@ void result_consumer(uint32_t pc, const uint64_t *pv, uint32_t dc,
   (void)pv;
 }
 
-/* Consumer of the NULL output: depv[0] = output-event payload (must be
+/* Consumer of the NULL output: depv[0] = completion-event payload (must be
  * NULL_GUID). */
 void null_consumer(uint32_t pc, const uint64_t *pv, uint32_t dc,
                    arts_edt_dep_t dv[]) {
@@ -120,11 +123,11 @@ void collector(uint32_t pc, const uint64_t *pv, uint32_t dc,
   tally_t *t = (tally_t *)dv[1].ptr;
   unsigned int r = atomic_load_explicit(&t->result_ok, memory_order_relaxed);
   unsigned int n = atomic_load_explicit(&t->null_ok, memory_order_relaxed);
-  arts_printf("edt_output_event: result_ok=%u null_ok=%u\n", r, n);
+  arts_printf("edt_completion_event: result_ok=%u null_ok=%u\n", r, n);
   if (r == 1u && n == 1u) {
-    arts_printf("PASS edt_output_event\n");
+    arts_printf("PASS edt_completion_event\n");
   } else {
-    arts_printf("FAIL edt_output_event\n");
+    arts_printf("FAIL edt_completion_event\n");
     arts_abort(1);
   }
   arts_shutdown();
@@ -137,7 +140,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depc;
   (void)depv;
 
-  arts_printf("=== edt_output_event ===\n");
+  arts_printf("=== edt_completion_event ===\n");
 
   unsigned int nranks = arts_get_total_ranks();
   unsigned int consumer_rank = (nranks > 1) ? 1u : 0u;
@@ -169,13 +172,14 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
     arts_guid_t prod = arts_edt_create(
         producer, 1, pv, 1,
-        &(arts_edt_hint_t){.rank = 0, .output_event = oe, .finish_event = fe});
+        &(arts_edt_hint_t){.rank = 0, .completion_event = oe, .group = fe});
     arts_add_dependence(rdb, prod, 0, DB_MODE_RW);
 
-    /* Consumer: slot0 = result DB via output event (RO), slot1 = tally (RW). */
-    arts_guid_t cons = arts_edt_create(
-        result_consumer, 1, pv, 2,
-        &(arts_edt_hint_t){.rank = consumer_rank, .finish_event = fe});
+    /* Consumer: slot0 = result DB via completion event (RO), slot1 = tally
+     * (RW). */
+    arts_guid_t cons =
+        arts_edt_create(result_consumer, 1, pv, 2,
+                        &(arts_edt_hint_t){.rank = consumer_rank, .group = fe});
     arts_add_dependence(oe, cons, 0, DB_MODE_RO);
     arts_add_dependence(tally, cons, 1, DB_MODE_RW);
   }
@@ -186,17 +190,16 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
     arts_guid_t prod = arts_edt_create(
         producer_null, 1, pv, 0,
-        &(arts_edt_hint_t){.rank = 0, .output_event = oe, .finish_event = fe});
+        &(arts_edt_hint_t){.rank = 0, .completion_event = oe, .group = fe});
     (void)prod;
 
-    arts_guid_t cons =
-        arts_edt_create(null_consumer, 1, pv, 2,
-                        &(arts_edt_hint_t){.rank = 0, .finish_event = fe});
+    arts_guid_t cons = arts_edt_create(
+        null_consumer, 1, pv, 2, &(arts_edt_hint_t){.rank = 0, .group = fe});
     arts_add_dependence(oe, cons, 0, DB_MODE_NULL);
     arts_add_dependence(tally, cons, 1, DB_MODE_RW);
   }
 
-  /* Collector gated on the finish scope. */
+  /* Collector gated on the group. */
   arts_guid_t coll =
       arts_edt_create(collector, 1, pv, 2, &(arts_edt_hint_t){.rank = 0});
   arts_add_dependence(fe, coll, 0, DB_MODE_NULL);

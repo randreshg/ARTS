@@ -21,7 +21,7 @@
  *     names a rank that has already given the block up — and one more from
  *     inside the writer, which fixes the shape where the writer provably got
  *     the block first;
- *   - an ORDERED reader, gated on the writer's output event, which the
+ *   - an ORDERED reader, gated on the writer's completion event, which the
  *     runtime satisfies only after the writer's datablocks are released.  It
  *     must see the sentinel: if a first image were minted at the version the
  *     writer's release goes on to use, the release's install would retreat as
@@ -99,7 +99,7 @@ void wb_unordered_reader_edt(uint32_t paramc, const uint64_t *paramv,
   arts_event_satisfy(done, NULL_GUID);
 }
 
-/* paramv = { done event }.  depv[0] = the writer's output event,
+/* paramv = { done event }.  depv[0] = the writer's completion event,
  * depv[1] = the block, RO — ordered after the write, so the VALUE is
  * asserted. */
 void wb_ordered_reader_edt(uint32_t paramc, const uint64_t *paramv,
@@ -190,7 +190,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_guid_t written = arts_event_create(&ARTS_EVENT_HINT_LATCH(1));
   arts_edt_hint_t wh = ARTS_EDT_HINT_DEFAULTS;
   wh.rank = (home + 1u) % n;
-  wh.output_event = written;
+  wh.completion_event = written;
   uint64_t wpv[3] = {(uint64_t)db, (uint64_t)done, (uint64_t)home};
   arts_guid_t w = arts_edt_create(wb_writer_edt, 3, wpv, 1, &wh);
   arts_add_dependence(db, w, 0, DB_MODE_RW);
