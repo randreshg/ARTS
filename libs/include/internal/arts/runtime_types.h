@@ -78,11 +78,12 @@ struct arts_edt_s {
   arts_edt_t func_ptr; /**< User function to execute. */
   uint32_t paramc;     /**< Number of static parameters. */
   uint32_t depc;       /**< Number of dependency slots. */
-  /* The EDT's own GUID.  Unlike DB/Event (always reached via a route_table
-   * lookup whose key already IS the GUID), an EDT is dispatched by raw pointer
-   * through the lock-free work-stealing deques — at dispatch there is no key
-   * and no handler args, so the GUID must travel inside the struct.  This is a
-   * load-bearing identity carrier, NOT a redundant self-GUID: do not remove. */
+  /* The EDT's own GUID.  Unlike DB/Event (reached by a route_table lookup
+   * whose key already IS the GUID, or by a held reference), an EDT is
+   * dispatched by raw pointer through the lock-free work-stealing deques — at
+   * dispatch there is no key and no handler args, so the GUID must travel
+   * inside the struct.  This is a load-bearing identity carrier, NOT a
+   * redundant self-GUID: do not remove. */
   arts_guid_t guid;
   arts_guid_t finish_event;          /**< LATCH event for finish-scope tracking.
                                           NULL_GUID = no finish scope.  Final

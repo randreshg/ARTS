@@ -136,8 +136,9 @@ What a create returns does not depend on whether it waited:
   ``ARTS_DB_PROP_NO_ACQUIRE``), which becomes the block's content when the
   create installs.  The creator's hold is on that image, and the creator's
   own operations name it.  A release that reaches the block's home as a
-  message, one the home rank sends itself included, is looked up by GUID
-  there and so meets whatever the slot holds meanwhile (see `Reuse and
+  message is looked up by GUID there, and so is one the home rank sends
+  itself while its image is not yet installed or no longer live; either
+  meets whatever the slot holds meanwhile (see `Reuse and
   generations`_).
 
 The OCR standard's two checked properties have no native counterpart, and

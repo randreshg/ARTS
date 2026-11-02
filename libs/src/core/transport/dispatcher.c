@@ -934,9 +934,10 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
 #endif /* ARTS_PROTOCOL_EXCL */
 #ifdef ARTS_PROTOCOL_INV
   /* INV wire arm.  REQUEST is Cat-B (a message can reach home before the home
-   * db_s installs on a remote-create stub-install path); the rest are Cat-C
-   * with per-message MISS actions that must never strand a round, a blocked
-   * releaser, or a parked requester. */
+   * db_s installs on a remote-create stub-install path); the rest are
+   * answers on the descriptor their token names (CTS, DELIVER,
+   * INVALIDATE_ACK) or are answered on a miss (INVALIDATE, REDIRECT): none is
+   * parked, and a miss never strands a round or a parked requester. */
   case MSG_DB_INV_REQUEST: {
     ARTS_DEBUG("Coh INV_REQUEST Received");
     struct arts_msg_inv_request_packet_s *pack =

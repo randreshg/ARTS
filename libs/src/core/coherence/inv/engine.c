@@ -210,20 +210,11 @@ void arts_db_cache_destructor(struct arts_db_cache_s *cache) {
   arts_db_cache_common_destroy_post(cache);
 }
 
-/* The reader plane's VALID is a claim to durable bytes, and it dies exactly
- * one way — an INVALIDATE arrives.  A create that takes no hold is given no
- * bytes, so seeding VALID there would leave a claim nothing can retire until
- * some later round happens to name this rank: its own reads would be answered
- * from a copy it never held, and the ensure that materializes a first image
- * would do so on a rank with no right to one.  Retract the claim instead, and
- * only the claim: an in-flight fetch and a parked reader chain live in the
- * same word and must survive (this runs on a create that claims a cache
- * readers already reached). */
 /* The hold is possession plus this create's own writer, from a word that
  * holds nothing.  It is a write permission landing on this rank: every EDT
  * parked on the first-touch cache is served under it -- readers whose fetch
- * is still out included (the fetch stays open until its reply) -- and the
- * requests that cache sent are the home's to absorb. */
+ * is still out included (the claim closes that fetch and its count drops
+ * with it) -- and the requests that cache sent are the home's to absorb. */
 bool arts_db_create_take_hold(struct arts_db_cache_s *cache, uint8_t *owed) {
   *owed = 0u;
   unsigned int none = 0u;
@@ -257,6 +248,15 @@ bool arts_db_create_take_hold(struct arts_db_cache_s *cache, uint8_t *owed) {
   return true;
 }
 
+/* The reader plane's VALID is a claim to durable bytes, and it dies exactly
+ * one way — an INVALIDATE arrives.  A create that takes no hold is given no
+ * bytes, so seeding VALID there would leave a claim nothing can retire until
+ * some later round happens to name this rank: its own reads would be answered
+ * from a copy it never held, and the ensure that materializes a first image
+ * would do so on a rank with no right to one.  Retract the claim instead, and
+ * only the claim: an in-flight fetch and a parked reader chain live in the
+ * same word and must survive (this runs on a create that claims a cache
+ * readers already reached). */
 void arts_db_create_retract_creator_copy(struct arts_db_s *db) {
   struct arts_db_cache_s *cache = &db->cache;
   uint64_t cur, next;
@@ -725,7 +725,7 @@ void arts_handler_db_publish(void *item_v, void *args_v) {
   inv_round_submit(db, e);
 }
 
-/* ===== Cat-C handler bodies ============================================= */
+/* ===== Answers on tokens: INV_CTS, DELIVER, INVALIDATE_ACK ============== */
 
 void arts_handler_db_inv_cts(struct arts_msg_inv_cts_packet_s *p) {
   struct arts_db_s *db = arts_db_from_token(p->token, p->db_guid);

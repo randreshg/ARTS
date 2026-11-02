@@ -40,25 +40,28 @@
 /// @file cat_c_ref_balance.c
 /// @brief Cat-C self-send / dispatcher ref get/release balance.
 ///
-/// Every Cat-C coherence handler that resolves its block (SNAPSHOT_RESPONSE /
-/// CACHE_DESTROY / PUBLISH_ACK / SNAPSHOT_REDIRECT / GRANT_CONFIRM /
-/// GRANT_CONFIRM_ACK, and each arm's own) pins the home/owner db_s with a
-/// ref-counted `arts_route_table_lookup_db` + `arts_shared_get` and MUST
-/// `arts_shared_release` on EVERY path — HIT and every early-return MISS.  An
-/// early-return that skips the release leaks a ref: the route-table cb (and
-/// hence the DB) is never destroyed.  Conversely the HIT path must keep the
-/// ref pinned across the handler body so a concurrent destroy cannot free the
-/// db_s mid-handler (no UAF).
+/// Every Cat-C coherence handler that resolves its block (CACHE_DESTROY /
+/// SNAPSHOT_REDIRECT / GRANT_INVALIDATE, and each arm's own) pins the
+/// home/owner db_s with a ref-counted `arts_route_table_lookup_db` +
+/// `arts_shared_get` and MUST `arts_shared_release` on EVERY path — HIT and
+/// every early-return MISS.  An answer (SNAPSHOT_RESPONSE / PUBLISH_ACK /
+/// GRANT_CONFIRM / GRANT_CONFIRM_ACK) looks nothing up: it acts on the
+/// descriptor its token names, under the count its open request or round
+/// holds, and drops that count when its request or round ends, a retired
+/// descriptor included.  A path that skips either release leaks a ref: the
+/// route-table cb (and hence the DB) is never destroyed.  Conversely a
+/// handler keeps its ref or count across its body so a concurrent destroy
+/// cannot free the db_s mid-handler (no UAF).
 ///
 /// Black-box driver: a high-churn create→acquire(RO+RW across ranks)→destroy
-/// loop on a fresh DB GUID every generation.  It drives the HIT path of each
-/// Cat-C family: the CACHE_DESTROY fan-out, SNAPSHOT_RESPONSE (RO acquire),
-/// PUBLISH_ACK / PUBLISH_CTS (RW release), and SNAPSHOT_REDIRECT /
-/// GRANT_CONFIRM[_ACK] (ownership transfer) where the protocol uses them.
-/// Each generation's DB is explicitly destroyed; if any Cat-C path leaked a
-/// ref, the cb would never reach refcount 0 and the finish scope would never
-/// drain → ctest TIMEOUT FAIL.  The HIT-path UAF would surface as an ASan
-/// use-after-free / SIGSEGV.
+/// loop on a fresh DB GUID every generation.  It drives the lookups' HIT paths
+/// (the CACHE_DESTROY fan-out, SNAPSHOT_REDIRECT) and the answers
+/// (SNAPSHOT_RESPONSE on an RO acquire, PUBLISH_ACK and the PUBLISH_CTS wake
+/// on an RW release, GRANT_CONFIRM[_ACK] on an ownership transfer) where the
+/// protocol uses them.  Each generation's DB is explicitly destroyed; if any
+/// path leaked a ref or a count, the cb would never reach refcount 0 and the
+/// finish scope would never drain → ctest TIMEOUT FAIL.  The HIT-path UAF
+/// would surface as an ASan use-after-free / SIGSEGV.
 ///
 /// Config-agnostic: every protocol has its own Cat-C set; the loop drives
 /// whichever ones the build compiles.  The write turns of one generation are

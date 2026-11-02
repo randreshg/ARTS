@@ -407,7 +407,8 @@ static void drain_simple_chain(struct arts_event_s *e, arts_guid_t event_guid) {
 /* ── arts_event_satisfy_slot ───────────────────────────────────────── */
 
 /* Home-routed handler (OOO_EVENT_SATISFY_SLOT): item is the installed event,
- * held by its caller.  Pure core — no lookup / acquire / release. */
+ * held by its dispatch (dispatch_or_defer, or a holder's dispatch_on).  Pure
+ * core — no lookup / acquire / release. */
 void arts_handler_event_satisfy_slot(void *item, void *vargs) {
   struct arts_event_s *event = (struct arts_event_s *)item;
   struct arts_ooo_args_event_satisfy_s *a =
@@ -495,9 +496,10 @@ static void event_simple_step(struct arts_event_s *e, arts_guid_t guid, int op,
 }
 
 /* arts_event_satisfy_slot — entity-specific API: satisfy an event's slot.
- *   home == self → dispatch_or_defer (acquire → arts_handler_event_satisfy_slot
- *                  or defer until the event installs), or inline on a live
- *                  handle the caller holds;
+ *   home == self → arts_ooo_dispatch_on: inline on a live handle the caller
+ *                  holds, otherwise the GUID path (acquire →
+ *                  arts_handler_event_satisfy_slot, or defer until the event
+ *                  installs);
  *   home != self → MSG_EVENT_SATISFY_SLOT wire;
  *   GPU LC invalidation drain → force-defer on the GPU wrapper's slot. */
 void arts_event_satisfy_slot_on(arts_shared_ptr_t h, arts_guid_t event_guid,
@@ -528,7 +530,7 @@ void arts_event_satisfy(arts_guid_t event_guid, arts_guid_t data_guid) {
 /* ── arts_event_add_dependence ─────────────────────────────────────── */
 
 /* Home-routed handler (OOO_EVENT_ADD_DEPENDENCE): item is the installed source
- * event, held by its caller.  Pure core — register the dependent on
+ * event, held by its dispatch.  Pure core — register the dependent on
  * the event (CHANNEL queue / fire-and-linger immediate deliver / Treiber
  * waiter).  No lookup / acquire / release. */
 void arts_handler_event_add_dependence(void *item, void *vargs) {
@@ -613,9 +615,9 @@ void arts_handler_event_add_dependence(void *item, void *vargs) {
 }
 
 /* arts_event_add_dependence — entity-specific API: register a dependent on an
- * event source.  home==self → dispatch_or_defer (acquire → handler, or defer
- * until the event installs), or inline on a live handle the caller holds;
- * home!=self → MSG_EVENT_ADD_DEPENDENCE wire. */
+ * event source.  home==self → arts_ooo_dispatch_on: inline on a live handle
+ * the caller holds, otherwise the GUID path (acquire → handler, or defer until
+ * the event installs); home!=self → MSG_EVENT_ADD_DEPENDENCE wire. */
 void arts_event_add_dependence_on(arts_shared_ptr_t h, arts_guid_t source,
                                   arts_guid_t destination, uint32_t slot,
                                   arts_db_access_mode_t mode) {

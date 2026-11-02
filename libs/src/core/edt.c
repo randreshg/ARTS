@@ -515,8 +515,8 @@ static void edt_over_satisfied(const struct arts_edt_s *edt, uint32_t slot) {
 }
 
 /* Pure core — apply a satisfy to an already-acquired, valid EDT.  No lookup /
- * acquire / defer: the caller (arts_handler_edt_satisfy_slot via
- * dispatch_or_defer) guarantees `edt` is live.  Writes depv[slot], decrements
+ * acquire / defer: the caller (arts_handler_edt_satisfy_slot via its
+ * dispatch) guarantees `edt` is live.  Writes depv[slot], decrements
  * depc_needed, and schedules the EDT when the last dependency lands. */
 static void edt_apply_satisfy(struct arts_edt_s *edt, uint32_t slot,
                               arts_guid_t data_guid,
