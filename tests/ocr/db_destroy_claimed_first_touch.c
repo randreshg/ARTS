@@ -13,13 +13,26 @@
  * modes at once -- so their acquires find no copy on C and ask H for the
  * block; only then does it create g on C, whose hold serves those consumers
  * while their requests are still on their way to H.  The setup EDT and every
- * consumer count down a latch, and a destroyer on H or on C (alternating)
- * destroys g.  With the argument `wave2` a second wave of consumers acquires
- * g on C after the first wave and the create have released, so requests sent
- * after the claim travel beside the ones sent before it.  Sizes cycle through
- * sized blocks and a zero-sized one.  A consumer's read races the setup EDT's
- * write, so no value is checked: the verdict is the exit status, no FAIL
- * line, and a quiescent shutdown (no QUIESCENCE-DEBUG marker).
+ * consumer count down a latch; a reader on H then acquires g, and once it
+ * has released, a destroyer on H or on C (alternating) destroys g.  With the
+ * argument `wave2` a second wave of consumers acquires g on C after the first
+ * wave and the create have released, so requests sent after the claim travel
+ * beside the ones sent before it.  Sizes cycle through sized blocks and a
+ * zero-sized one.  A consumer's read races the setup EDT's write, so no value
+ * is checked: the verdict is the exit status, no FAIL line, and a quiescent
+ * shutdown (no QUIESCENCE-DEBUG marker).
+ *
+ * The reader on H makes the block's install precede its destroy.  The create's
+ * announce travels fire-and-forget beside C's requests, releases and destroy;
+ * a request or a destroy that reaches H, or is issued on H, before the
+ * announce waits there for the block's install; and nothing orders their
+ * delivery before the shutdown.  An acquire at the home waits for the install
+ * (and, where a write turn excludes readers, for that turn to come back, so on
+ * those arms a claimed block is destroyed with its turn at home), so once the
+ * reader has run, every message for g parked at H before the reader's acquire
+ * has been replayed, and whatever is still travelling (a covered request,
+ * which the home was told to expect, a release, the destroy) finds the block
+ * installed or marked and waits behind nothing.
  *
  * Needs two ranks.  Its read-write consumers share one rank's turn with the
  * creator unordered, which DB-WRF does not admit.
@@ -90,8 +103,31 @@ static void destroyer(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_event_satisfy((arts_guid_t)paramv[1], NULL_GUID);
 }
 
+/* The reader on the home (depv[1] is g, read-only). */
+static void home_reader(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                        arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)paramv;
+  (void)depc;
+  (void)depv;
+}
+
+/* Once `gate` fires, a reader of g on its home h, then the destroyer of g on
+ * `where`, which follows the reader's release through its output event. */
+static void destroy_after_home_read(arts_guid_t g, unsigned int h,
+                                    unsigned int where, arts_guid_t gate,
+                                    arts_guid_t all) {
+  arts_guid_t read = latch_on(where, 1);
+  arts_guid_t r = edt_on(home_reader, h, 0, NULL, 2, read);
+  arts_add_dependence(gate, r, 0, DB_MODE_NULL);
+  arts_add_dependence(g, r, 1, DB_MODE_RO);
+  uint64_t dpv[2] = {(uint64_t)g, (uint64_t)all};
+  arts_guid_t d = edt_on(destroyer, where, 2, dpv, 1, NULL_GUID);
+  arts_add_dependence(read, d, 0, DB_MODE_NULL);
+}
+
 /* runs on C after the first wave. paramv: g, size, nconsumers, cohort,
- * destroyer rank, all */
+ * destroyer rank, all, home */
 static void wave2(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                   arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -108,13 +144,12 @@ static void wave2(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_guid_t x = edt_on(consumer, here, 2, cpv, 1, latch2);
     arts_add_dependence(g, x, 0, cohort_mode(cohort, i));
   }
-  uint64_t dpv[2] = {(uint64_t)g, paramv[5]};
-  arts_guid_t d = edt_on(destroyer, where, 2, dpv, 1, NULL_GUID);
-  arts_add_dependence(latch2, d, 0, DB_MODE_NULL);
+  destroy_after_home_read(g, (unsigned int)paramv[6], where, latch2,
+                          (arts_guid_t)paramv[5]);
 }
 
 /* paramv: g, size, nconsumers, cohort (0 RO, 1 RW, 2 both), latch,
- *         destroyer rank, all, wave2 */
+ *         destroyer rank, all, wave2, home */
 static void setup(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                   arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -143,16 +178,14 @@ static void setup(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                           memory_order_relaxed);
   }
   if (paramv[7] != 0u) {
-    uint64_t wpv[6] = {(uint64_t)g, size, nc, (cohort + 1u) % 3u, paramv[5],
-                       paramv[6]};
-    arts_guid_t w2 = edt_on(wave2, here, 6, wpv, 1, NULL_GUID);
+    uint64_t wpv[7] = {(uint64_t)g, size,      nc,       (cohort + 1u) % 3u,
+                       paramv[5],   paramv[6], paramv[8]};
+    arts_guid_t w2 = edt_on(wave2, here, 7, wpv, 1, NULL_GUID);
     arts_add_dependence(latch, w2, 0, DB_MODE_NULL);
     return;
   }
-  uint64_t dpv[2] = {(uint64_t)g, paramv[6]};
-  arts_guid_t d = edt_on(destroyer, (unsigned int)paramv[5], 2, dpv, 1,
-                         NULL_GUID);
-  arts_add_dependence(latch, d, 0, DB_MODE_NULL);
+  destroy_after_home_read(g, (unsigned int)paramv[8], (unsigned int)paramv[5],
+                          latch, (arts_guid_t)paramv[6]);
 }
 
 static void terminal(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
@@ -196,10 +229,10 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_guid_t g = arts_guid_reserve(ARTS_GUID_DB, h);
     /* The setup EDT's own release counts too. */
     arts_guid_t latch = latch_on(where, (int32_t)(nc + 1u));
-    uint64_t pv[8] = {(uint64_t)g,      sizes[b % 4u], nc,
-                      cohort,           (uint64_t)latch, where,
-                      (uint64_t)all,    g_wave2 ? 1u : 0u};
-    (void)edt_on(setup, c, 8, pv, 0, latch);
+    uint64_t pv[9] = {(uint64_t)g,   sizes[b % 4u],     nc,
+                      cohort,        (uint64_t)latch,   where,
+                      (uint64_t)all, g_wave2 ? 1u : 0u, h};
+    (void)edt_on(setup, c, 9, pv, 0, latch);
   }
 }
 

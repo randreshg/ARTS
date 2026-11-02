@@ -13,13 +13,21 @@
  * The acquires run beside the create's claim: each is served by the claim's
  * hold or by a request of its own, and a request the claim found already sent
  * is discarded by the home, which the create's announce told it to expect.
- * After every block is destroyed, each rank polls the route table for its
- * own homes of the blocks until none is installed and, where the build counts
- * rendezvous landings (ARTS_DEBUG_LANDING_BALANCE), until it has none
- * outstanding: a request no acquire waits on, or any count too many, keeps a
- * home installed, and a rank still holding one after 20 s fails the run.  Run
- * with ARTS_SCHED_FUZZ, the acquires and the claim interleave at every
- * decision point.
+ * A reader on H acquires each block once its acquirers and the create have
+ * released, and the destroy follows the reader's release.  After every block
+ * is destroyed, each rank polls the route table for its own homes of the
+ * blocks until none is installed and, where the build counts rendezvous
+ * landings (ARTS_DEBUG_LANDING_BALANCE), until it has none outstanding: a
+ * request no acquire waits on, or any count too many, keeps a home
+ * installed, and a rank still holding one after 20 s fails the run.  Run with
+ * ARTS_SCHED_FUZZ, the acquires and the claim interleave at every decision
+ * point.
+ *
+ * A home that is not installed reads the same before the create's announce
+ * lands as after its teardown, and nothing else orders the announce before
+ * the destroy: it travels fire-and-forget beside the requests that reached H
+ * ahead of it.  The reader on H is that order (an acquire at the home waits
+ * for the install), so the poll's "not installed" means torn down.
  *
  * Arguments: [readers writers [blocks]] (0, 6, 32); with `wfirst` before them
  * the writers are made ready first.  Needs two ranks.
@@ -125,7 +133,17 @@ static void destroyer(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_event_satisfy((arts_guid_t)paramv[1], NULL_GUID);
 }
 
-/* paramv: g, latch, destroyer rank, all, spin_us, readers, writers, wfirst */
+/* The reader on the home (depv[1] is g, read-only). */
+static void home_reader(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                        arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)paramv;
+  (void)depc;
+  (void)depv;
+}
+
+/* paramv: g, latch, destroyer rank, all, spin_us, readers, writers, wfirst,
+ *         home */
 static void setup(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                   arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -157,10 +175,15 @@ static void setup(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     return;
   }
   atomic_store_explicit((_Atomic(uint32_t) *)p, 0u, memory_order_relaxed);
+  unsigned int where = (unsigned int)paramv[2];
+  arts_guid_t read = latch_on(where, 1);
+  arts_guid_t hr =
+      edt_on(home_reader, (unsigned int)paramv[8], 0, NULL, 2, read);
+  arts_add_dependence(latch, hr, 0, DB_MODE_NULL);
+  arts_add_dependence(g, hr, 1, DB_MODE_RO);
   uint64_t dpv[2] = {(uint64_t)g, paramv[3]};
-  arts_guid_t d = edt_on(destroyer, (unsigned int)paramv[2], 2, dpv, 1,
-                         NULL_GUID);
-  arts_add_dependence(latch, d, 0, DB_MODE_NULL);
+  arts_guid_t d = edt_on(destroyer, where, 2, dpv, 1, NULL_GUID);
+  arts_add_dependence(read, d, 0, DB_MODE_NULL);
 }
 
 /* runs on the block's home. paramv: g */
@@ -277,18 +300,19 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_guid_t g = arts_guid_reserve(ARTS_GUID_DB, h);
     /* The acquirers, the trigger and the setup. */
     arts_guid_t latch = latch_on(where, (int32_t)(readers + writers + 2u));
-    uint64_t pv[8] = {(uint64_t)g,
+    uint64_t pv[9] = {(uint64_t)g,
                       (uint64_t)latch,
                       where,
                       (uint64_t)all,
                       (uint64_t)(SPIN_US + (long)(b % 4u) * SPIN_US / 2),
                       readers,
                       writers,
-                      wfirst};
+                      wfirst,
+                      h};
     arts_guid_t noted = latch_on(c, 1);
     uint64_t npv[1] = {(uint64_t)g};
     (void)edt_on(note_homed, h, 1, npv, 0, noted);
-    arts_guid_t su = edt_on(setup, c, 8, pv, 1, latch);
+    arts_guid_t su = edt_on(setup, c, 9, pv, 1, latch);
     arts_add_dependence(noted, su, 0, DB_MODE_NULL);
   }
 }

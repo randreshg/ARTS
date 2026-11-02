@@ -14,9 +14,10 @@
  * can serve the reader while C's read request is still on its way.  `t1`: C's
  * reader and writer first touch a reserved GUID homed on H, then C creates
  * it, so the create's hold serves both while their requests are on their way.
- * Each block is destroyed by H or by C once every hold is released.  After
- * the last round every rank polls the route table for its own homes of those
- * blocks until none is installed and, where the build counts rendezvous
+ * Each block is destroyed by H or by C once every hold is released; in `t1` a
+ * reader on H acquires the block first and the destroy follows its release.
+ * After the last round every rank polls the route table for its own homes of
+ * those blocks until none is installed and, where the build counts rendezvous
  * landings (ARTS_DEBUG_LANDING_BALANCE), until it has none outstanding; a
  * rank still holding one after 20 s fails the run.  A healthy transport
  * delivers every request eventually, so the deadline detects a hang and makes
@@ -25,6 +26,13 @@
  * H while D holds the block and H's answer is a hop (a redirect or forward to
  * D); held with ARTS_REQUEST_DELAY_MS=<n>:hop, that hop lands after the
  * teardown.
+ *
+ * A home that is not installed reads the same before its create's announce
+ * lands as after its teardown, and in `t1` nothing else orders the announce
+ * before the destroy: the announce travels fire-and-forget beside the
+ * requests that reached H ahead of it.  The reader on H is that order (an
+ * acquire at the home waits for the install), so the poll's "not installed"
+ * means torn down.
  *
  * Arguments: t2|t1 [hop] [rounds [blocks]] (t2, 8, 32).  Needs two ranks.
  */
@@ -118,7 +126,16 @@ static void destroyer(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_event_satisfy((arts_guid_t)paramv[1], NULL_GUID);
 }
 
-/* runs on C. paramv: g, destroyer rank, round latch, first touch */
+/* The reader on the home (depv[1] is g, read-only). */
+static void home_reader(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                        arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)paramv;
+  (void)depc;
+  (void)depv;
+}
+
+/* runs on C. paramv: g, destroyer rank, round latch, first touch, home */
 static void pair(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                  arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -137,7 +154,16 @@ static void pair(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_add_dependence(g, w, 0, DB_MODE_RW);
   uint64_t dpv[2] = {(uint64_t)g, paramv[2]};
   arts_guid_t d = edt_on(destroyer, where, 2, dpv, 1, NULL_GUID);
-  arts_add_dependence(latch, d, 0, DB_MODE_NULL);
+  if (first_touch) {
+    arts_guid_t read = latch_on(where, 1);
+    arts_guid_t hr =
+        edt_on(home_reader, (unsigned int)paramv[4], 0, NULL, 2, read);
+    arts_add_dependence(latch, hr, 0, DB_MODE_NULL);
+    arts_add_dependence(g, hr, 1, DB_MODE_RO);
+    arts_add_dependence(read, d, 0, DB_MODE_NULL);
+  } else {
+    arts_add_dependence(latch, d, 0, DB_MODE_NULL);
+  }
   if (first_touch) {
     void *p =
         arts_db_create_with_guid(g, 64u, ARTS_DB, ARTS_DB_PROP_NONE, NULL);
@@ -168,10 +194,10 @@ static void maker(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
   note_homed(g);
   unsigned int c = (unsigned int)paramv[0];
-  uint64_t ppv[4] = {(uint64_t)g, paramv[1], paramv[2],
-                     paramv[3] != 0u ? 1u : 0u};
   unsigned int n = arts_get_total_ranks();
   unsigned int here = arts_get_current_rank();
+  uint64_t ppv[5] = {(uint64_t)g, paramv[1], paramv[2],
+                     paramv[3] != 0u ? 1u : 0u, here};
   unsigned int d = (c + 1u) % n;
   if (paramv[4] != 0u && paramv[3] == 0u && n >= 3u) {
     if (d == here) {
@@ -182,11 +208,11 @@ static void maker(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     uint64_t upv[1] = {(uint64_t)g};
     arts_guid_t pre = edt_on(user, d, 1, upv, 1, after_d);
     arts_add_dependence(g, pre, 0, DB_MODE_RW);
-    arts_guid_t pr = edt_on(pair, c, 4, ppv, 1, NULL_GUID);
+    arts_guid_t pr = edt_on(pair, c, 5, ppv, 1, NULL_GUID);
     arts_add_dependence(after_d, pr, 0, DB_MODE_NULL);
     return;
   }
-  (void)edt_on(pair, c, 4, ppv, 0, NULL_GUID);
+  (void)edt_on(pair, c, 5, ppv, 0, NULL_GUID);
 }
 
 /* paramv: started_ms, done latch */

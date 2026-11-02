@@ -124,8 +124,9 @@ arts_tsan_residue(lulesh_example
 # A create on a rank other than the home claims the first-touch cache its own
 # dependences made: the create's hold and those dependences' write turns share
 # the rank's turn, unordered, so under write-through a release publishes while
-# another writer of that rank writes.  Their readers run on the same rank, so
-# no read is served from a written buffer.
+# another writer of that rank writes.  Their readers run on the same rank,
+# and the reader on the block's home runs after every writer, so no read is
+# served from a written buffer.
 arts_tsan_residue(db_destroy_claimed_first_touch
     CELLS VAL/WT/RETAIN VAL/WT/PURGE INV/WT/RETAIN INV/WT/PURGE SHAPES R2)
 arts_tsan_residue(db_destroy_claimed_first_touch_delay
