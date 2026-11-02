@@ -1965,6 +1965,20 @@ void arts_db_sweep_open_items(struct arts_db_s *db, arts_shared_ptr_t cb) {
                 ? 1u
                 : 0u;
   }
+#elif defined(ARTS_PROTOCOL_EXCL)
+  uint64_t s =
+      atomic_load_explicit(&db->cache.cache_state, memory_order_relaxed);
+  open += (CACHE_RO_ST(s) == CACHE_ST_REQ) ? 1u : 0u;
+  open += (CACHE_RW_ST(s) == CACHE_ST_REQ) ? 1u : 0u;
+#ifdef ARTS_RELEASE_RETAIN
+  /* The home's count, held while w is above zero: after the join, a write
+   * request the home took in whose CONFIRM the shutdown cut. */
+  if (db->home_initialized &&
+      LOCK_W(atomic_load_explicit(&db->lock_state, memory_order_relaxed)) !=
+          0u) {
+    open += 1u;
+  }
+#endif
 #else
   (void)db;
 #endif

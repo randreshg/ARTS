@@ -442,15 +442,8 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
         .rdzv_cookie = pack->rdzv_cookie, .line_addr = pack->line_addr,
         .line_rkey = pack->line_rkey, .flush_txid = pack->flush_txid};
     ARTS_DEP_WAITER_COPY(&args, pack);
-    arts_shared_ptr_t h = arts_route_table_lookup_db(pack->db_guid);
-    struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(h);
-    if (db != NULL) {
-      arts_handler_db_fetch_response(db, &args);
-    } else {
-      arts_db_flush_discard_landing(pack->rdzv_txid, pack->db_size,
-                                    pack->rdzv_cookie);
-    }
-    arts_shared_release(&h);
+    /* An answer: it reaches the block through the parked EDT it names. */
+    arts_handler_db_fetch_response(&args);
     break;
   }
   case MSG_DB_FLUSH_COMMIT: {
@@ -469,9 +462,7 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
         (struct arts_msg_flush_ack_packet_s *)(packet);
     struct arts_db_flush_ack_args_s args = {.sem = pack->sem,
                                             .next_txid = pack->next_txid};
-    arts_shared_ptr_t h = arts_route_table_lookup_db(pack->db_guid);
-    arts_handler_db_flush_ack(arts_shared_get(h), &args); /* NULL = no refill, still post */
-    arts_shared_release(&h);
+    arts_handler_db_flush_ack(&args);
     break;
   }
   case MSG_DB_FLUSH_ANNOUNCE: {
@@ -493,9 +484,7 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
     struct arts_db_flush_cts_args_s args = {
         .sem = pack->sem, .line_addr = pack->line_addr,
         .line_rkey = pack->line_rkey, .txid = pack->txid};
-    arts_shared_ptr_t h = arts_route_table_lookup_db(pack->db_guid);
-    arts_handler_db_flush_cts(arts_shared_get(h), &args);
-    arts_shared_release(&h);
+    arts_handler_db_flush_cts(&args);
     break;
   }
 #else
@@ -841,6 +830,7 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
                  .key = pack->rdzv.key,
                  .txid = pack->rdzv.txid,
                  .cookie = pack->rdzv.cookie},
+        .token = pack->token,
     };
     arts_ooo_dispatch_or_defer_guid(pack->db_guid, OOO_DB_EXCL_REQUEST, &args,
                                     sizeof(args));
@@ -848,16 +838,8 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
   }
   case MSG_DB_EXCL_CTS: {
     ARTS_DEBUG("Coh EXCL_CTS Received");
-    struct arts_msg_excl_cts_packet_s *pack =
-        (struct arts_msg_excl_cts_packet_s *)(packet);
-    /* Cat-C lookup-acquire-or-drop: HIT learns db_size + re-issues the
-     * request with a landing; MISS (DB destroyed) silently drops. */
-    arts_shared_ptr_t h = arts_route_table_lookup_db(pack->db_guid);
-    struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(h);
-    if (db != NULL) {
-      arts_handler_db_excl_cts(db, pack);
-    }
-    arts_shared_release(&h);
+    /* An answer: it acts on the descriptor its token names. */
+    arts_handler_db_excl_cts((struct arts_msg_excl_cts_packet_s *)(packet));
     break;
   }
 #ifdef ARTS_RELEASE_PURGE
@@ -865,9 +847,8 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
    * acknowledges a release. */
   case MSG_DB_EXCL_GRANT: {
     ARTS_DEBUG("Coh EXCL_GRANT Received");
-    /* Cat-C: the grant receiver always sent its own REQUEST first, so its cache
-     * exists.  Payload (data) follows the header in the contiguous buffer; the
-     * handler parses it from the full packet. */
+    /* An answer: it acts on the descriptor its token names, which the
+     * request's count keeps. */
     arts_handler_db_excl_grant((void *)packet, (size_t)packet->size);
     break;
   }
@@ -916,13 +897,14 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
 
 #endif /* ARTS_RELEASE_PURGE */
 #ifdef ARTS_RELEASE_RETAIN
-  /* RETAIN-only: async migration/serve protocol.
-   * All four are Cat-C (direct): their target was installed before the
-   * message was sent — FORWARD/DELIVER targets a cache built at acquire;
-   * CONFIRM/RORET reach home only after home sent FORWARD.  A CONFIRM or
-   * RORET is fire-and-forget, so one can arrive after the block's destroy has
-   * torn the home down; its handler then finds no home and drops it.
-   */
+  /* RETAIN-only: async migration/serve protocol, each handler called on the
+   * packet.  FORWARD, RORET and RECALL resolve the block once where they
+   * arrive (a FORWARD is a hop, a RORET a release at the home, a RECALL
+   * unsolicited); a RORET can arrive after the block's destroy has torn the
+   * home down, and is then dropped.  DELIVER and CONFIRM are answers and act
+   * on the descriptor their token names: DELIVER the requester's, CONFIRM the
+   * home's, which the home's count, held while w is above zero, keeps however
+   * late the CONFIRM lands. */
   case MSG_DB_EXCL_FORWARD: {
     ARTS_DEBUG("Coh EXCL_FORWARD Received");
     arts_handler_db_excl_forward((void *)packet);

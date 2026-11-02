@@ -42,8 +42,9 @@ static uint64_t excl_compute_next(uint64_t cur, int op, uint32_t *out_grant) {
    * unserved, or a read request its rank's write turn covered that was still
    * inside its handler when that turn ended and the destroy tore the block
    * down; neither is owed a grant, and a grant would hand out a block whose
-   * teardown has run.  It is neither counted nor granted; a refused request's
-   * queued node, RW or RO, goes with the descriptor. */
+   * teardown has run.  It is neither counted nor granted: a refused write
+   * request's queued node goes with the descriptor, and the caller dismisses
+   * a refused read request its rank's write turn covered. */
   if (td && w == 0 && r == 0 && owed == 0 &&
       (op == EXCL_OP_RW_ACQ || op == EXCL_OP_RO_ACQ)) {
     *out_grant = LOCK_GRANT_NONE;

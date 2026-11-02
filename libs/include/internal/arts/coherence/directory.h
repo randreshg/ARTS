@@ -69,30 +69,30 @@ void arts_home_grantreq_queue_destroy(struct arts_home_grantreq_queue_s *q);
  * a data-less / sentinel round), the version of the copy it already holds
  * (ARTS_GRANT_VERSION_NONE when it holds none), which travels with it so a
  * server can decide at serve time whether any bytes need to move, and its
- * answer token, which the grant echoes (0 where the arm's answers carry
- * none). */
+ * answer token, which the answer to the request echoes. */
 void arts_home_grantreq_queue_push(struct arts_home_grantreq_queue_s *q,
                                    unsigned int rank,
                                    const struct arts_rdzv_landing_s *rdzv,
                                    uint64_t have_version, uint64_t token);
 /* Pop the front requester (single consumer).  Returns true and sets *out_rank
- * (+ *out_rdzv / *out_have when non-NULL) on success; false when empty.  Waits
- * out a producer caught between its exchange and its link store. */
+ * (+ *out_rdzv / *out_have / *out_token when non-NULL) on success; false when
+ * empty.  Waits out a producer caught between its exchange and its link
+ * store. */
 bool arts_home_grantreq_queue_pop(struct arts_home_grantreq_queue_s *q,
-                                 unsigned int *out_rank,
-                                 struct arts_rdzv_landing_s *out_rdzv,
-                                 uint64_t *out_have);
-/* Peek the front (oldest) requester without popping. Single consumer (the
- * turn holder). Returns true + sets *out_rank (+ *out_rdzv / *out_have when
- * non-NULL) when non-empty; waits as pop does. */
-bool arts_home_grantreq_queue_peek(const struct arts_home_grantreq_queue_s *q,
                                   unsigned int *out_rank,
                                   struct arts_rdzv_landing_s *out_rdzv,
-                                  uint64_t *out_have);
+                                  uint64_t *out_have, uint64_t *out_token);
+/* Peek the front (oldest) requester without popping. Single consumer (the
+ * turn holder). Returns true + sets *out_rank (+ *out_rdzv / *out_have /
+ * *out_token when non-NULL) when non-empty; waits as pop does. */
+bool arts_home_grantreq_queue_peek(const struct arts_home_grantreq_queue_s *q,
+                                   unsigned int *out_rank,
+                                   struct arts_rdzv_landing_s *out_rdzv,
+                                   uint64_t *out_have, uint64_t *out_token);
 /* pop and peek of a front whose producer has linked it; false, at once, when
  * there is none, including a front caught between its producer's exchange and
- * link store (and every node behind it).  They also hand out the front's
- * token (*out_token when non-NULL).  Single consumer, as above. */
+ * link store (and every node behind it).  The outputs are pop's and peek's.
+ * Single consumer, as above. */
 bool arts_home_grantreq_queue_pop_linked(struct arts_home_grantreq_queue_s *q,
                                          unsigned int *out_rank,
                                          struct arts_rdzv_landing_s *out_rdzv,

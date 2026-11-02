@@ -323,21 +323,45 @@ _Static_assert(sizeof(struct arts_msg_grant_return_packet_s) == 32,
 _Static_assert(sizeof(struct arts_msg_publish_cts_packet_s) == 64,
                "publish_cts sizeof drifted");
 #ifdef ARTS_PROTOCOL_EXCL
-_Static_assert(sizeof(struct arts_msg_excl_request_packet_s) == 64,
+/* The answer token follows the fields every EXCL cell has. */
+_Static_assert(sizeof(struct arts_msg_excl_request_packet_s) == 72,
                "lock_request sizeof drifted");
-_Static_assert(sizeof(struct arts_msg_excl_grant_packet_s) == 96,
+_Static_assert(offsetof(struct arts_msg_excl_request_packet_s, token) == 64,
+               "lock_request token drifted");
+_Static_assert(sizeof(struct arts_msg_excl_grant_packet_s) == 104,
                "lock_grant sizeof drifted");
+_Static_assert(offsetof(struct arts_msg_excl_grant_packet_s, token) == 96,
+               "lock_grant token drifted");
 _Static_assert(sizeof(struct arts_msg_excl_release_packet_s) == 72,
                "lock_release sizeof drifted");
-_Static_assert(sizeof(struct arts_msg_excl_cts_packet_s) == 40,
+_Static_assert(sizeof(struct arts_msg_excl_cts_packet_s) == 48,
                "lock_cts sizeof drifted");
+_Static_assert(offsetof(struct arts_msg_excl_cts_packet_s, token) == 40,
+               "lock_cts token drifted");
 #ifdef ARTS_RELEASE_RETAIN
-_Static_assert(sizeof(struct arts_msg_excl_forward_packet_s) == 72,
+_Static_assert(sizeof(struct arts_msg_excl_forward_packet_s) == 88,
                "lock_forward sizeof drifted");
-_Static_assert(sizeof(struct arts_msg_excl_deliver_packet_s) == 56,
+_Static_assert(offsetof(struct arts_msg_excl_forward_packet_s, cover) == 36,
+               "lock_forward cover drifted");
+_Static_assert(offsetof(struct arts_msg_excl_forward_packet_s, token) == 72,
+               "lock_forward token drifted");
+_Static_assert(offsetof(struct arts_msg_excl_forward_packet_s, home_token) ==
+                   80,
+               "lock_forward home_token drifted");
+_Static_assert(sizeof(struct arts_msg_excl_deliver_packet_s) == 72,
                "lock_deliver sizeof drifted");
-_Static_assert(sizeof(struct arts_msg_excl_confirm_packet_s) == 24,
+_Static_assert(offsetof(struct arts_msg_excl_deliver_packet_s, token) == 56,
+               "lock_deliver token drifted");
+_Static_assert(offsetof(struct arts_msg_excl_deliver_packet_s, home_token) ==
+                   64,
+               "lock_deliver home_token drifted");
+_Static_assert(sizeof(struct arts_msg_excl_confirm_packet_s) == 32,
                "lock_confirm sizeof drifted");
+_Static_assert(offsetof(struct arts_msg_excl_confirm_packet_s, home_token) ==
+                   24,
+               "lock_confirm home_token drifted");
+_Static_assert(sizeof(struct arts_msg_excl_notice_packet_s) == 24,
+               "lock_notice sizeof drifted");
 #endif /* ARTS_RELEASE_RETAIN */
 #endif
 #ifdef ARTS_PROTOCOL_FLUSH

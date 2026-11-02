@@ -117,9 +117,11 @@ enum arts_ooo_kind {
                      local dep; pushed by the acquire's resolution on the slot
                      its one reservation found) */
   OOO_DB_EXCL_REQUEST, /* → arts_handler_db_excl_request @ home */
-/* NO OOO_DB_EXCL_RELEASE: the RETAIN release policy has no synchronous publish release; the
- * DELIVER/CONFIRM/RORET messages are all direct-dispatched (Cat-C, target
- * provably installed by the time these messages arrive). */
+/* NO OOO_DB_EXCL_RELEASE: the RETAIN release policy has no synchronous publish
+ * release.  DELIVER and CONFIRM are answers that act on the descriptor their
+ * token names; FORWARD, RO_RETURN and RECALL are whole-packet entries that look
+ * the block up once, never deferred (an RO_RETURN that trails the teardown
+ * misses and is dropped). */
 #elif defined(ARTS_PROTOCOL_INV)
   OOO_DB_ACQUIRE, /* → arts_db_acquire_replay_dep (re-attempts the one deferred
                      local dep; pushed by the acquire's resolution on the slot
@@ -140,14 +142,14 @@ enum arts_ooo_kind {
    * and replays on the install's drain like any other home-side body. */
   OOO_DB_GRANT_RETURN, /* → arts_handler_db_grant_return @ home */
 #endif
-/* GRANT_INVALIDATE / RESPONSE / CONFIRM, and DELIVER / INVALIDATE /
- * INV_ACK / CTS / REDIRECT, are Cat-C: their targets are either provably
- * installed (a revoking home names a holder only after that rank installed; a
- * requester pinned its cache when it sent the request; home for the acks) or
- * the MISS action is part of the protocol (INVALIDATE MISS → ACK; DELIVER MISS
- * → landing discard; REDIRECT MISS → the requester is dismissed).  A home
- * whose grants come back unasked sends no GRANT_INVALIDATE and receives no
- * CONFIRM. */
+/* GRANT_INVALIDATE, INVALIDATE and REDIRECT are Cat-C: their targets are
+ * provably installed (a revoking home names a holder only after that rank
+ * installed) or the MISS action is part of the protocol (INVALIDATE MISS →
+ * ACK; REDIRECT MISS → the requester is dismissed).  GRANT_RESPONSE, DELIVER,
+ * CTS and CONFIRM_ACK answer this rank's own request through its token, and
+ * CONFIRM and INV_ACK answer the home's round through the home token; none is
+ * looked up or deferred.  A home whose grants come back unasked sends no
+ * GRANT_INVALIDATE and receives no CONFIRM. */
 #elif defined(ARTS_PROTOCOL_VAL) && defined(ARTS_WRITE_POLICY_WT)
   OOO_DB_ACQUIRE, /* → arts_db_acquire_replay_dep (re-attempts the one deferred
                      local dep; pushed by the acquire's resolution on the slot
@@ -450,6 +452,7 @@ struct arts_ooo_args_db_excl_request_s {
   arts_db_access_mode_t mode; /* DB_MODE_RO or DB_MODE_RW */
   uint32_t cover;                  /* EXCL_COVER_* */
   struct arts_rdzv_landing_s rdzv; /* requester's grant/deliver landing */
+  uint64_t token;                  /* the requester's answer token */
 };
 /* EXCL_RELEASE: data_size is an RW release's byte count (0 for RO releases).
  * cv: nonzero only on an RW release's landing-less announce — the address of

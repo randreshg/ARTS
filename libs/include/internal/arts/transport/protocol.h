@@ -118,8 +118,11 @@ enum arts_msg_type {
                            a landing-less EXCL PURGE release; the releaser PUTs
                            then sends the final PUBLISH (EXCL_RELEASE)
                            carrying the txid. */
-  MSG_DB_EXCL_CTS,      /* EXCL home → requester: db_size for a first-touch
-                           EXCL_REQUEST that carried no landing. */
+  MSG_DB_EXCL_CTS,    /* EXCL home (or, under RETAIN, an owner a read
+                         FORWARD finds without the block) → requester: a
+                         size round (db_size for a first-touch EXCL_REQUEST
+                         that carried no landing) or a read request's
+                         dismiss. */
 
   /* INV-protocol coherence messages.  Only sent/received in
    * ARTS_COHERENCE_PROTOCOL=INV builds; the dispatcher's INV cases are
@@ -143,7 +146,7 @@ enum arts_msg_type {
                          * publish credit.  Pure hint (Cat-C lookup-or-drop
                          * at the creator). */
   /* EXCL RETAIN-only: home -> retainer, "give the RO grant back".  Data-less;
-   * shares arts_msg_excl_confirm_packet_s with CONFIRM/RORET.  Appended at the
+   * shares arts_msg_excl_notice_packet_s with RORET.  Appended at the
    * end so no existing ordinal moves.  There is no ack: the completion signal
    * is the ordinary RO_RETURN this provokes, and the home's r==0 edge is the
    * continuation that fires the RO->RW flip. */
@@ -603,6 +606,14 @@ struct ARTS_PACKED arts_msg_db_create_return_packet_s {
 };
 
 #ifdef ARTS_PROTOCOL_EXCL
+/* Answer tokens (EXCL), as on VAL and INV: a request names the requester's
+ * descriptor in `token`, which the home stores with the request (and under
+ * RETAIN a FORWARD carries to the owner that serves it) and every answer
+ * echoes: EXCL_CTS, EXCL_GRANT, EXCL_DELIVER.  Under RETAIN a migration also
+ * carries the home's own descriptor as `home_token`, on FORWARD, DELIVER and
+ * EXCL_CONFIRM: the home holds a count on it while a write request it took in
+ * is unconfirmed (w above zero), which the CONFIRM that returns w to zero
+ * drops. */
 struct ARTS_PACKED arts_msg_excl_request_packet_s {
   struct arts_msg_header_s header;
   arts_guid_t db_guid;
@@ -613,21 +624,25 @@ struct ARTS_PACKED arts_msg_excl_request_packet_s {
    * does not yet know db_size (first touch): home answers EXCL_CTS and the
    * requester re-issues with a landing (sentinel DBs grant data-less). */
   struct arts_msg_rdzv_landing_s rdzv;
+  uint64_t token; /* the requester's answer token */
 };
 
-/* EXCL_CTS — home → requester: db_size for a first-touch EXCL_REQUEST that
- * carried no landing.  Echoes the mode so the requester re-issues the same
- * request.  The landing-less request was NOT queued/granted. */
-/* An answer without data: a size round (the request carried no landing) or,
- * for a read request, a dismiss (a write turn of the requester's rank covers
- * it).  cover echoes the answered request's cover word, whose parity the
- * requester checks against its open read request. */
+/* EXCL_CTS — to the requester: an answer without data.  A size round, from the
+ * home: the request carried no landing, so it was not queued; it echoes the
+ * mode, and the requester re-issues the same request with a landing (a read
+ * one only for readers that still wait on it, ride no write request or turn of
+ * the requester's own and, under RETAIN, find no bytes resident there).  Or,
+ * for a read request, a dismiss: from the home, when a write turn of the
+ * requester's rank covers it, or (RETAIN) from an owner a read FORWARD finds
+ * without the block.  cover echoes the answered request's cover word, whose
+ * parity the requester checks against its open read request. */
 struct ARTS_PACKED arts_msg_excl_cts_packet_s {
   struct arts_msg_header_s header;
   arts_guid_t db_guid;
   uint64_t db_size;
   uint32_t mode;
   uint32_t cover;
+  uint64_t token; /* the request's, echoed */
 };
 
 struct ARTS_PACKED arts_msg_excl_grant_packet_s {
@@ -651,6 +666,7 @@ struct ARTS_PACKED arts_msg_excl_grant_packet_s {
    * releases pair 1:1): the releaser PUTs its dirty bytes here and echoes
    * {txid, cookie} in EXCL_RELEASE.  txid==0 for RO grants / sentinel DBs. */
   struct arts_msg_rdzv_landing_s pub;
+  uint64_t token; /* the request's, echoed */
 };
 
 struct ARTS_PACKED arts_msg_excl_release_packet_s {
@@ -689,8 +705,12 @@ struct ARTS_PACKED arts_msg_excl_forward_packet_s {
    * today, so a stuffed bit would land in the serve arm by accident rather than
    * by contract, and `target` is copied unmasked into the serve node's rank. */
   uint32_t tag;
-  uint32_t tag_pad;
+  /* serve: the read request's cover word, which a dismiss echoes when the
+   * owner no longer has the block; migrate: 0. */
+  uint32_t cover;
   struct arts_msg_rdzv_landing_s rdzv; /* target's landing, forwarded */
+  uint64_t token;      /* the target's request's, for the DELIVER */
+  uint64_t home_token; /* migrate: the home's, for the DELIVER; serve: 0 */
 };
 
 /* EXCL_DELIVER: owner → target.  The DB data travels by PUT into the target's
@@ -707,12 +727,22 @@ struct ARTS_PACKED arts_msg_excl_deliver_packet_s {
   uint64_t data_size;
   uint64_t rdzv_txid;
   uint64_t rdzv_cookie;
+  uint64_t token;      /* the target's request's, echoed */
+  uint64_t home_token; /* RW: the home's, for the CONFIRM; RO: 0 */
 };
 
-/* EXCL_CONFIRM / EXCL_RORET share one struct: both are data-less
- * db_guid-only messages (new-owner→home confirm, and reader→home RO release).
- */
+/* EXCL_CONFIRM: new owner → home, the migration is complete.  An answer to
+ * the round the home started, named by the home's token. */
 struct ARTS_PACKED arts_msg_excl_confirm_packet_s {
+  struct arts_msg_header_s header;
+  arts_guid_t db_guid;
+  uint64_t home_token;
+};
+
+/* EXCL_RORET (reader → home, a read grant returned) and EXCL_RECALL (home →
+ * retainer): data-less notices naming the block, resolved by GUID where they
+ * arrive. */
+struct ARTS_PACKED arts_msg_excl_notice_packet_s {
   struct arts_msg_header_s header;
   arts_guid_t db_guid;
 };

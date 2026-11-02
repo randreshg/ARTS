@@ -14,22 +14,29 @@
  *     (ref-pinned) and hands a pure (item, args) body the live cache on a
  *     HIT, or DEFERS the args and replays them once DB_CREATE installs.
  *   - Cat-C (non-deferrable, no OOO_* kind — e.g. CACHE_DESTROY /
- *     SNAPSHOT_REDIRECT / GRANT_INVALIDATE / CREATE_RETURN / EXCL_CTS): the
- *     wire dispatcher does the ref-pinned lookup-acquire; on a HIT it calls
- *     the pure (item, args) body, and on a MISS it applies that handler's
- *     exact miss-action (silent drop or a dismiss reply — see each body).
+ *     SNAPSHOT_REDIRECT / GRANT_INVALIDATE / CREATE_RETURN / FLUSH_COMMIT):
+ *     the wire dispatcher does the ref-pinned lookup-acquire; on a HIT it
+ *     calls the pure (item, args) body, and on a MISS it applies that
+ *     handler's exact miss-action (a silent drop, a dismiss, or the reply its
+ *     round still needs, such as an ACK — see each body).
  * Either way an (item, args) body operates on the already-acquired,
  * ref-pinned cache (the FIRST member of the db_s the caller hands it) and
  * does not look it up to operate on it.  A message handed over as the whole
- * packet (EXCL_GRANT and the EXCL RETAIN messages) has a wire entry that
- * looks its block up once and a body on the object.
- *   - Answers to this rank's own requests (VAL, INV): the entry takes the
- *     requester's descriptor from the token the answer echoes, under the
- *     count the open request holds, and either runs the body on it or, when
- *     its tag shows it retired, ends the landing and drops that count
- *     (coherence.h).  The answers to a round the home started (an INV
- *     round's acks, a transfer's CONFIRM) take the home's descriptor from
- *     the home token the same way, under the round's count.
+ * packet (the EXCL RETAIN FORWARD, RO_RETURN and RECALL) has a wire entry
+ * that looks its block up once and a body on the object.
+ *   - Answers to this rank's own requests (VAL, INV; EXCL: EXCL_CTS,
+ *     EXCL_GRANT, EXCL_DELIVER): the entry takes the requester's descriptor
+ *     from the token the answer echoes, under the count the open request
+ *     holds, and either runs the body on it or, when its tag shows it
+ *     retired, commits nothing, ends the landing and drops that count
+ *     (coherence.h; on EXCL, whose landing is the descriptor's own stable
+ *     buffer, once any bytes in flight have landed).  The answers to a round
+ *     the home started (an INV round's acks, a transfer's CONFIRM, the
+ *     EXCL_CONFIRM that ends a migration) take the home's descriptor from
+ *     the home token the same way, under the round's count.  FLUSH's answers
+ *     resolve nothing: a fetch response reaches the block through the parked
+ *     EDT it names, and an ACK or a CTS wakes the releaser, which holds its
+ *     pin.
  *
  * Self-sends.  On this rank a block has one descriptor, which the sending
  * caller holds, so a sender whose target is this rank acts on it rather than

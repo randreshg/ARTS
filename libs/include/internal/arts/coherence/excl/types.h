@@ -262,6 +262,15 @@ extern "C" {
  *                     w:24 (47..24) | r:24 (23..0) ]
  * (= 2+14+24+24 = 64 bits, no spare)
  *
+ * While w != 0 the home holds one count on its own descriptor: every
+ * migration it starts is answered by an EXCL_CONFIRM, which may legally
+ * arrive after the block's teardown and acts on the descriptor the round's
+ * home token names.  The write request whose CAS lifts w off zero takes the
+ * count before that CAS (each request takes one and gives it back when its
+ * CAS found w above zero), so the take happens before any CONFIRM's drop;
+ * the CONFIRM whose CAS returns w to zero drops it, at the end of its
+ * frame.
+ *
  *   phase  ∈ {IDLE=0, RW=1, RO=2} — current arbitration phase.
  *   owner  = 14-bit rank of the current data-owning node (ARTS_GUID_RANK_BITS).
  *            Packing owner here lets CONFIRM set owner+w--+phase in ONE CAS.
@@ -478,6 +487,7 @@ struct arts_lock_ro_node_s {
   unsigned int rank;
   uint32_t cover;                  /* the request's cover word (its parity) */
   struct arts_rdzv_landing_s rdzv; /* the requester's grant/serve landing */
+  uint64_t token;                  /* the requester's answer token */
 };
 
 /* Per-rank DB cache for the EXCL protocol.
@@ -510,11 +520,15 @@ struct arts_db_cache_s {
    * FORWARD; the owner drains (DELIVER copy to each reader) when wc reaches 0.
    * This list cannot be packed into the single cache_state word. */
   arts_lf_stack_t ro_serve;
-  /* The pending migrate target's landing (its stable buffer), written by the
-   * FORWARD(migrate) handler BEFORE the CAS that publishes migrate_target
-   * (single in-flight migration per owner — home serializes by CONFIRM), read
-   * by whichever actor ships the DELIVER on the wc 0-edge. */
+  /* The pending migrate target's landing (its stable buffer) and the two
+   * tokens its DELIVER carries (the target's request's and the home's),
+   * written by the FORWARD(migrate) handler BEFORE the CAS that publishes
+   * migrate_target (single in-flight migration per owner — home serializes by
+   * CONFIRM), read by whichever actor ships the DELIVER on the wc 0-edge, or
+   * grants the write turn here when the target is this rank. */
   struct arts_rdzv_landing_s migrate_rdzv;
+  uint64_t migrate_token;
+  uint64_t migrate_home_token;
 #elif !defined(ARTS_USE_CXL)
   /* Home's publish landing for THIS grant's release (advertised in the
    * grant, 1:1 with the eventual RW release).  Written by the grant handler

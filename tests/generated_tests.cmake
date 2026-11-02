@@ -1368,10 +1368,22 @@ arts_route_budget_test(rw 64 1 0)
 #     the release's round, acknowledged by PUBLISH_ACK (after PUBLISH_CTS
 #     under WT).  No round targets rank 1: it is the round's releaser, and no
 #     other rank writes the block.
-# 3 probes, 1 pin in each VAL and INV cell.  Two ranks move one-sided
-# payloads, which an ARTS_MALLOC=system tree refuses.
-if((ARTS_COHERENCE_ARM STREQUAL "VAL" OR ARTS_COHERENCE_ARM STREQUAL "INV")
-   AND ARTS_MALLOC STREQUAL "mimalloc")
+#   EXCL x PURGE, both modes: EXCL_GRANT from the home (one-sided bytes in
+#     rank memory; on the CXL stores a grant naming the block's slot, which
+#     the grantee reads itself).  The release is an EXCL_RELEASE to the home,
+#     which nothing answers.
+#   EXCL x RETAIN, read: EXCL_DELIVER from the owner the home forwarded the
+#     request to (the creator, rank 0), whose read grant rank 1 retains; its
+#     release sends nothing.  Write: the migration's EXCL_DELIVER, after which
+#     rank 1 CONFIRMs to the home and keeps the write grant; its release sends
+#     nothing.
+#   FLUSH, both modes: FETCH_RESPONSE, which reaches the block through the
+#     parked EDT its cookie names; under rwremote the release's write-back,
+#     with the credit that response carried, is answered by FLUSH_ACK, which
+#     only wakes the releaser.
+# 3 probes, 1 pin in every cell.  Two ranks move one-sided payloads, which an
+# ARTS_MALLOC=system tree refuses.
+if(ARTS_MALLOC STREQUAL "mimalloc")
     arts_route_budget_test(firsttouch 64 3 1 RANK 1 CFG 2n_9w_1p)
     arts_route_budget_test(rwremote 64 3 1 RANK 1 CFG 2n_9w_1p)
 endif()

@@ -281,23 +281,6 @@ static void copy_drop(struct arts_db_buffer_s *copy) {
   }
 }
 
-/* The pairing and a teardown that finds the write never landed drop the copy
- * alike, the expectation's one possession. */
-static void discard_cb(void *arg) { copy_drop((struct arts_db_buffer_s *)arg); }
-
-void arts_db_flush_discard_landing(uint64_t txid, uint64_t len,
-                                   uint64_t cookie) {
-  struct arts_db_buffer_s *copy = (struct arts_db_buffer_s *)(uintptr_t)cookie;
-  if (copy == NULL) {
-    return;
-  }
-  if (txid == 0) {
-    copy_drop(copy);
-    return;
-  }
-  arts_net_rdzv_expect(txid, len, discard_cb, discard_cb, copy);
-}
-
 struct fetch_landed_ctx_s {
   struct arts_db_buffer_s *copy;
   struct arts_edt_s *edt;
@@ -341,18 +324,23 @@ static void learn_line(struct arts_db_cache_s *cache, uint64_t addr,
   }
 }
 
-void arts_handler_db_fetch_response(void *item_v, void *args_v) {
-  struct arts_db_cache_s *cache = &((struct arts_db_s *)item_v)->cache;
-  struct arts_db_fetch_response_args_s *a =
-      (struct arts_db_fetch_response_args_s *)args_v;
+/* An answer to this rank's own fetch.  It reaches the block through the
+ * parked EDT its cookie names: the slot it resolves holds the descriptor's
+ * pin from its firing until its release, and the EDT cannot run, let alone
+ * release, before this answer resolves the slot.  The waiter check precedes
+ * every read through the cookie. */
+void arts_handler_db_fetch_response(
+    const struct arts_db_fetch_response_args_s *a) {
+  struct arts_edt_s *edt = (struct arts_edt_s *)(uintptr_t)a->edt_cookie;
+  ARTS_DEP_WAITER_CHECK(edt, a->edt_guid, a->slot);
+  struct arts_db_cache_s *cache =
+      &((struct arts_db_s *)arts_shared_get(edt->dep_acq[a->slot].pin))->cache;
   arts_db_cache_learn_size(cache, a->db_size);
   learn_line(cache, a->line_addr, a->line_rkey, a->flush_txid);
   struct arts_db_buffer_s *copy = (struct arts_db_buffer_s *)(uintptr_t)a->rdzv_cookie;
-  struct arts_edt_s *edt = (struct arts_edt_s *)(uintptr_t)a->edt_cookie;
   if (a->kind == 2) {
     copy_drop(copy);
-    /* The re-request carries the same waiter, copied from the echo: nothing
-     * is read through the cookie before the slot's resolution. */
+    /* The re-request carries the same waiter, copied from the echo. */
     struct fetch_waiter_s w = {.edt = edt, .slot = a->slot};
     ARTS_DEP_WAITER_COPY(&w, a);
     fetch_send(cache, w);
@@ -362,7 +350,6 @@ void arts_handler_db_fetch_response(void *item_v, void *args_v) {
     copy_drop(copy);
     /* Only a rank other than the home fetches. */
     uint8_t census = arts_db_census_serving(true);
-    ARTS_DEP_WAITER_CHECK(edt, a->edt_guid, a->slot);
     arts_db_resolve_slot(edt, a->slot, NULL);
     arts_db_census_served(census);
     return;
@@ -381,6 +368,10 @@ void arts_handler_db_fetch_response(void *item_v, void *args_v) {
 
 void arts_db_release_ro(struct arts_db_cache_s *cache) { (void)cache; }
 
+/* A releaser's wait for the home: the answer (a CTS, an ACK) writes its
+ * fields and posts, and the woken releaser, which holds its pin on the
+ * descriptor, carries them into the cache.  txid is the credit the round
+ * writes with, and after the ACK the refill it returns. */
 struct flush_wait_s {
   sem_t sem;
   uint64_t line_addr;
@@ -451,6 +442,7 @@ static bool flush_write_back(struct arts_db_cache_s *cache, void *payload) {
       arts_free(w);
       return false;
     }
+    learn_line(cache, w->line_addr, w->line_rkey, 0);
     if (w->txid == 0) {
       /* The home no longer has the block: nothing to write back to. */
       sem_destroy(&w->sem);
@@ -464,6 +456,9 @@ static bool flush_write_back(struct arts_db_cache_s *cache, void *payload) {
   send_flush_commit(home, cache->db_guid, w->txid, w);
   if (!arts_db_await_ack(&w->sem)) {
     return false;
+  }
+  if (w->txid != 0) {
+    atomic_store_explicit(&cache->flush_txid, w->txid, memory_order_release);
   }
   sem_destroy(&w->sem);
   arts_free(w);
@@ -585,13 +580,10 @@ void arts_handler_db_flush_commit(void *item_v, void *args_v) {
       flush_landed_cb, flush_landed_discard, ctx);
 }
 
-void arts_handler_db_flush_ack(void *item_v, void *args_v) {
-  struct arts_db_flush_ack_args_s *a = (struct arts_db_flush_ack_args_s *)args_v;
-  if (item_v != NULL && a->next_txid != 0) {
-    atomic_store_explicit(&((struct arts_db_s *)item_v)->cache.flush_txid,
-                          a->next_txid, memory_order_release);
-  }
-  sem_post(&((struct flush_wait_s *)(uintptr_t)a->sem)->sem);
+void arts_handler_db_flush_ack(const struct arts_db_flush_ack_args_s *a) {
+  struct flush_wait_s *w = (struct flush_wait_s *)(uintptr_t)a->sem;
+  w->txid = a->next_txid;
+  sem_post(&w->sem);
 }
 
 /* The credit-less release's first leg.  It is the one message of this arm a
@@ -628,15 +620,11 @@ void arts_handler_db_flush_announce(void *item_v, void *args_v) {
   arts_transport_send_async((int)a->releaser, (char *)&p, sizeof(p));
 }
 
-void arts_handler_db_flush_cts(void *item_v, void *args_v) {
-  struct arts_db_flush_cts_args_s *a = (struct arts_db_flush_cts_args_s *)args_v;
+void arts_handler_db_flush_cts(const struct arts_db_flush_cts_args_s *a) {
   struct flush_wait_s *w = (struct flush_wait_s *)(uintptr_t)a->sem;
   w->line_addr = a->line_addr;
   w->line_rkey = a->line_rkey;
   w->txid = a->txid;
-  if (item_v != NULL) {
-    learn_line(&((struct arts_db_s *)item_v)->cache, a->line_addr, a->line_rkey, 0);
-  }
   sem_post(&w->sem);
 }
 

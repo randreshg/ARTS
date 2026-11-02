@@ -243,6 +243,7 @@ static void print_fingerprint(void) {
   MEMBER(lock_ro_node_t, link);
   MEMBER(lock_ro_node_t, rank);
   MEMBER(lock_ro_node_t, rdzv);
+  MEMBER(lock_ro_node_t, token);
   TYPE(excl_waiter_t);
   MEMBER(excl_waiter_t, link);
   MEMBER(excl_waiter_t, edt);
@@ -255,6 +256,8 @@ static void print_fingerprint(void) {
 #if defined(ARTS_RELEASE_RETAIN)
   MEMBER(cache_t, ro_serve);
   MEMBER(cache_t, migrate_rdzv);
+  MEMBER(cache_t, migrate_token);
+  MEMBER(cache_t, migrate_home_token);
 #elif !defined(ARTS_USE_CXL)
   MEMBER(cache_t, home_pub_rdzv);
 #endif

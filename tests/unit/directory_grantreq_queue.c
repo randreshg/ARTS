@@ -10,8 +10,9 @@
  *
  * Properties exercised:
  *   1. Functional single-thread: empty on init, peek/pop false on empty,
- *      FIFO order (oldest popped first = next ownership target), peek
- *      non-destructive, empty() tracks pop draining.
+ *      FIFO order (oldest popped first = next ownership target), each node's
+ *      token handed back with it, peek non-destructive, empty() tracks pop
+ *      draining.
  *   2. Stub never freed: drain-to-empty then re-push then drain again works
  *      (the embedded sentinel stays usable; ASan would catch a stub free).
  *   3. Concurrent N producers + 1 consumer: no loss, no dup, and per-producer
@@ -67,18 +68,19 @@ static int part1_functional(void) {
     (void)fprintf(stderr, "FAIL: fresh queue not empty\n");
     rc = 1;
   }
-  if (arts_home_grantreq_queue_peek(&q, &r, NULL, NULL)) {
+  if (arts_home_grantreq_queue_peek(&q, &r, NULL, NULL, NULL)) {
     (void)fprintf(stderr, "FAIL: peek on empty returned true\n");
     rc = 1;
   }
-  if (arts_home_grantreq_queue_pop(&q, &r, NULL, NULL)) {
+  if (arts_home_grantreq_queue_pop(&q, &r, NULL, NULL, NULL)) {
     (void)fprintf(stderr, "FAIL: pop on empty returned true\n");
     rc = 1;
   }
 
-  /* Push 0..9 — FIFO: pop must yield 0,1,...,9. */
+  /* Push 0..9 — FIFO: pop must yield 0,1,...,9, each with its token. */
   for (unsigned int i = 0; i < 10; i++) {
-    arts_home_grantreq_queue_push(&q, i, NULL, ARTS_GRANT_VERSION_NONE, 0u);
+    arts_home_grantreq_queue_push(&q, i, NULL, ARTS_GRANT_VERSION_NONE,
+                                  0x100u + i);
   }
   if (arts_home_grantreq_queue_empty(&q)) {
     (void)fprintf(stderr, "FAIL: queue empty after 10 pushes\n");
@@ -86,8 +88,10 @@ static int part1_functional(void) {
   }
   /* peek is non-destructive: two peeks return the same front (oldest). */
   unsigned int p1 = 0, p2 = 0;
-  if (!arts_home_grantreq_queue_peek(&q, &p1, NULL, NULL) ||
-      !arts_home_grantreq_queue_peek(&q, &p2, NULL, NULL) || p1 != 0 || p2 != 0) {
+  uint64_t t1 = 0, t2 = 0;
+  if (!arts_home_grantreq_queue_peek(&q, &p1, NULL, NULL, &t1) ||
+      !arts_home_grantreq_queue_peek(&q, &p2, NULL, NULL, &t2) || p1 != 0 ||
+      p2 != 0 || t1 != 0x100u || t2 != 0x100u) {
     (void)fprintf(stderr,
                   "FAIL: peek not non-destructive / not FIFO front "
                   "(p1=%u p2=%u)\n",
@@ -96,14 +100,16 @@ static int part1_functional(void) {
   }
   for (unsigned int i = 0; i < 10; i++) {
     unsigned int got = 0xffffffff;
-    if (!arts_home_grantreq_queue_pop(&q, &got, NULL, NULL)) {
+    uint64_t tok = 0;
+    if (!arts_home_grantreq_queue_pop(&q, &got, NULL, NULL, &tok)) {
       (void)fprintf(stderr, "FAIL: pop %u returned false\n", i);
       rc = 1;
       break;
     }
-    if (got != i) {
-      (void)fprintf(stderr, "FAIL: FIFO violated, expected %u got %u\n", i,
-                    got);
+    if (got != i || tok != 0x100u + i) {
+      (void)fprintf(stderr,
+                    "FAIL: FIFO violated, expected %u got %u (token %llx)\n", i,
+                    got, (unsigned long long)tok);
       rc = 1;
     }
   }
@@ -111,7 +117,7 @@ static int part1_functional(void) {
     (void)fprintf(stderr, "FAIL: queue not empty after draining all\n");
     rc = 1;
   }
-  if (arts_home_grantreq_queue_pop(&q, &r, NULL, NULL)) {
+  if (arts_home_grantreq_queue_pop(&q, &r, NULL, NULL, NULL)) {
     (void)fprintf(stderr, "FAIL: pop after drain returned true\n");
     rc = 1;
   }
@@ -131,7 +137,7 @@ static int part2_stub_reuse(void) {
     }
     for (unsigned int i = 0; i < 5; i++) {
       unsigned int got = 0;
-      if (!arts_home_grantreq_queue_pop(&q, &got, NULL, NULL) ||
+      if (!arts_home_grantreq_queue_pop(&q, &got, NULL, NULL, NULL) ||
           got != (unsigned int)(round * 100 + i)) {
         (void)fprintf(stderr, "FAIL: stub-reuse round %d idx %u got %u\n",
                       round, i, got);
@@ -198,7 +204,7 @@ static int part3_mpsc(int linked) {
     unsigned int v;
     bool got =
         linked ? arts_home_grantreq_queue_pop_linked(&g_q, &v, NULL, NULL, NULL)
-               : arts_home_grantreq_queue_pop(&g_q, &v, NULL, NULL);
+               : arts_home_grantreq_queue_pop(&g_q, &v, NULL, NULL, NULL);
     if (!got) {
       /* Empty, or (pop_linked) a front not linked yet — retry. */
       continue;

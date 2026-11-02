@@ -244,7 +244,7 @@ struct arts_home_grantreq_node_s {
   unsigned int rank;
   uint64_t have_version; /* version the requester already holds */
   struct arts_rdzv_landing_s rdzv; /* the requester's transfer landing */
-  uint64_t token; /* the requester's answer token (protocol.h), or 0 */
+  uint64_t token; /* the requester's answer token (protocol.h) */
 };
 
 struct arts_home_grantreq_queue_s {

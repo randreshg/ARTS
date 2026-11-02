@@ -1107,6 +1107,18 @@ endif()
 if(ARTS_COHERENCE_ARM STREQUAL "VAL" OR ARTS_COHERENCE_ARM STREQUAL "INV")
     arts_grant_home_unit(token_axis_pairing_valinv 30)
 endif()
+# The same accounting on EXCL, whose two axes ride the cache word: the
+# release policies close them at different sites (PURGE's grant, RETAIN's
+# DELIVER and the resident owner's grant to itself), the CXL store changes
+# the grant's commit (no one-sided answer; the fetch before the CAS), and only
+# RETAIN's home holds a count of its own, while a write request it took in
+# awaits its CONFIRM (w above zero).  The two residencies differ only in the
+# fetch and purge bodies, which the test's size-less blocks never enter, so
+# one CXL tree carries it: the EXCL trees but the DIRECT one.
+if(ARTS_COHERENCE_ARM STREQUAL "EXCL" AND
+   NOT ARTS_CXL_TREE_RESIDENCY STREQUAL "DIRECT")
+    arts_grant_home_unit(token_pairing_excl 30)
+endif()
 # A round the home starts for answers it waits on owns one count on the
 # home's descriptor, taken where the round starts and dropped once where it
 # ends (the last ack, the put-down, or the teardown sweep); its answers reach

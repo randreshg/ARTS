@@ -43,20 +43,21 @@ extern "C" {
 
 #include <assert.h>
 
-#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
+#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV) ||                \
+    defined(ARTS_PROTOCOL_EXCL)
 /*--- Request axes and their answer tokens ----------------------------------
  * A rank has at most one request out per axis of a block -- the read request,
- * the write request and the publish flight -- and each open axis owns one
- * count on the requester's descriptor.  The CAS that opens the axis takes it,
- * after it commits and before the request leaves; whichever frame commits a
- * transition that closes the axis drops it at its own end, after its last
- * access: the answer, a size round or dismiss that closes, a create's claim,
- * or, for an axis a cut shutdown left open on a descriptor still installed at
- * teardown, the teardown sweep (arts_db_sweep_open_items, in a sanitizer build
- * whose runtime threads all joined); a descriptor retired with an axis open
- * keeps that count to the process exit.  A re-send, a size round that re-sends,
- * a hop or a relaunch leaves the count where it is: it belongs to the axis,
- * never to a message.
+ * the write request and, on VAL and INV, the publish flight -- and each open
+ * axis owns one count on the requester's descriptor.  The CAS that opens the
+ * axis takes it, after it commits and before the request leaves; whichever
+ * frame commits a transition that closes the axis drops it at its own end,
+ * after its last access: the answer, a size round or dismiss that closes, a
+ * create's claim, or, for an axis a cut shutdown left open on a descriptor
+ * still installed at teardown, the teardown sweep (arts_db_sweep_open_items, in
+ * a sanitizer build whose runtime threads all joined); a descriptor retired
+ * with an axis open keeps that count to the process exit.  A re-send, a size
+ * round that re-sends, a hop or a relaunch leaves the count where it is: it
+ * belongs to the axis, never to a message.
  *
  * The request names the descriptor as its token (protocol.h) and the answer
  * acts on it.  The count keeps the descriptor's memory, so the one question
@@ -65,7 +66,12 @@ extern "C" {
  * descriptor retired only ends its landing and drops the count, since a
  * teardown resumes nothing.  A rendezvous pairing context of an answer
  * borrows the count; its callback decides "retired" the same way, and its
- * discard never reads the descriptor.
+ * discard never reads the descriptor.  On EXCL, whose landing is the
+ * descriptor's own stable buffer, an answer that finds it retired while its
+ * bytes may still be in flight does not drop: the pairing context it
+ * registers owns the count instead, and its callback, once the bytes have
+ * landed, or its discard drops it through the descriptor, whose memory that
+ * count keeps.
  *
  * A round the home starts for answers it waits on is an axis of the home's
  * descriptor under the same rule, its messages carrying the home's token:
@@ -73,39 +79,59 @@ extern "C" {
  * dropped by the ack that ends the round, after the round's finish), and,
  * where the home revokes the write right, the transfer baton's tenure (taken
  * by the claim that lifts the baton off zero, carried across every pop of
- * the tenure, dropped by the put-down that ends it).  An answer to a round
- * that finds the home retired still takes the round's counting step on the
- * descriptor (an ack's decrement, a CONFIRM's put-down) and nothing else:
- * it finishes, serves, sends and resumes nothing, and the step that ends the
- * round drops its count.  As for a request axis, the teardown sweep drops the
- * count of a round a cut shutdown left open only on a home still installed at
+ * the tenure, dropped by the put-down that ends it); on EXCL x RETAIN, the
+ * home's unconfirmed write requests, queued or migrating, while w is above zero
+ * (taken by every write request before the CAS that may lift w off zero and
+ * given back by one whose CAS found w above zero, dropped by the EXCL_CONFIRM
+ * whose CAS returns w to zero).  An answer to a round that finds the home
+ * retired still takes the round's counting step on the descriptor (an ack's
+ * decrement, a CONFIRM's put-down, an EXCL_CONFIRM's w decrement) and nothing
+ * else: it finishes, serves, sends and resumes nothing (but the dismiss an
+ * EXCL_CONFIRM sends to a held read request its rank's write turn covered,
+ * whose count closes only with an answer), and the step that ends the round
+ * drops its count.  As for a request axis, the teardown sweep drops the count
+ * of a round a cut shutdown left open only on a home still installed at
  * teardown; a retired home keeps it to the process exit, as when the shutdown
  * cuts a write-through CONFIRM that legally trails the home's teardown.
  *
- * Self-sends.  A request whose home is this rank runs its body inline, and
- * the body can answer this rank's own request inline too, dropping that
- * request's count and running on after it, while the caller may be running
- * under that very count (an answer that re-sends, a flight's relaunch).  So
- * every self-sent request runs its body under a count of its own, released
- * once the body returns: a copy of the descriptor's control block while it is
- * live (arts_route_table_copy_live).  A dispatch onto a descriptor that is
- * not live takes the engine's GUID path, which may defer the body to the
- * install's drain, whose handle holds it.  The home's INVALIDATE to its own
- * rank is such a request (its holder body can ship a whole transfer to this
- * rank inline, whose CONFIRM may end the tenure the caller runs under); it
- * calls its handler directly and looks the block up when it is not live.  A
- * self-sent answer takes none: it drops its count as its last access, and its
- * caller runs under another count: a request's body under such a count, a
- * lookup's or a drain's; an answer frame that reaches it (an INV CTS that
- * closes, a deliver whose copy a round killed) under its own axis count.  The
- * new owner's CONFIRM to its own rank, an answer to the home's own tenure,
- * takes none either: its body is reached through the home token and runs
- * under the tenure's count.  Under write-back the CONFIRM_ACK it sends inline
- * drops the count of the write request its committing caller runs under, so
- * that caller sends the CONFIRM as its last access.  Nor do the self branches
- * whose bodies drop no count their caller runs under: a DESTROY (on the
- * caller's own reference), a snapshot redirect, an INV invalidate and its ack
- * (whose body runs under the round's count and drops it last).
+ * Self-sends.  A request whose home is this rank runs inline the body that,
+ * from the wire, runs under the pin the dispatcher's lookup takes; here the
+ * descriptor is the caller's own.  The body can answer this rank's own request
+ * inline too, dropping that request's count and running on after it, and the
+ * caller may be running under that very count (an answer that re-sends, a
+ * flight's relaunch).  So every self-sent request runs its body under a count
+ * of its own, released once the body returns, which stands in for that pin and
+ * leaves the body depending on nothing its caller holds: a copy of the
+ * descriptor's control block while it is live (arts_route_table_copy_live).  A
+ * dispatch onto a descriptor that is not live takes the engine's GUID path,
+ * which may defer the body to the install's drain, whose handle holds it.
+ * EXCL's request to its own home is one (a CTS's re-send runs under the read
+ * request's count, which the body's grant or dismiss can close).  The home's
+ * INVALIDATE to its own rank is such a request (its holder body can ship a
+ * whole transfer to this rank inline, whose CONFIRM may end the tenure the
+ * caller runs under), and so is the EXCL x RETAIN home's FORWARD to itself as
+ * owner, a hop whose wire entry pins the block by its lookup (a migrate to this
+ * rank can grant the write turn and CONFIRM it inline, dropping the write
+ * request's count and, when w returns to zero, the home's); each calls its
+ * handler directly and looks the block up when it is not live.  The new owner's
+ * CONFIRM to its own rank, an answer to the home's own tenure, takes none: its
+ * body is reached through the home token and runs under the tenure's count.
+ * Under write-back the CONFIRM_ACK it sends inline drops the count of the write
+ * request its committing caller runs under, so that caller sends the CONFIRM as
+ * its last access.  An EXCL_CONFIRM to its own home takes none: its body never
+ * drops the write request's count its callers run under (it drops the home's
+ * count, and its read drain can dismiss this rank's own covered read, dropping
+ * that request's count), and they drop it after it returns.  A self-sent answer
+ * (on EXCL also the PURGE home's grant and a CTS to its own rank) takes none:
+ * it drops its count as its last access, and its caller runs under another
+ * count: a request's body under such a count, a lookup's or a drain's; an
+ * answer frame that reaches it (an INV CTS that closes, a deliver whose copy a
+ * round killed) under its own axis count.  Nor do the self branches whose
+ * bodies drop no count their caller runs under: a DESTROY (on the caller's own
+ * reference), a snapshot redirect, an INV invalidate and its ack (whose body
+ * runs under the round's count and drops it last), EXCL x RETAIN's RECALL and
+ * RO_RETURN (whose callers, a request body, a recall body and a read release,
+ * run under a pin or a count no body drops).
  *
  * Orders.  The take is a relaxed increment made before the send, so the
  * deliveries that cause the answer order it before the answer's acq_rel
@@ -120,9 +146,15 @@ extern "C" {
  * covered request until that request arrives, and the destroy contract keeps it
  * behind an uncovered one, whose waiters cannot complete before its answer, so
  * no legal destroy precedes the take.  A decrement that precedes the take (a
- * claim's, which holds a count of its own) therefore never reaches zero.  A
- * home round's take runs under the frame that starts the round: the request
- * body whose claim lifts the baton, the release body that runs the round, or a
+ * claim's, which holds a count of its own) therefore never reaches zero.  The
+ * EXCL x RETAIN home's count is the exception: another frame can start the
+ * migration a write request's CAS counted, and its EXCL_CONFIRM can legally
+ * reach the home retired meanwhile and drop the count, so the take precedes the
+ * CAS that lifts w; every write of that word is an acq_rel read-modify-write,
+ * so the CAS that returns w to zero reads from the lifting CAS's release
+ * sequence and the take happens before its drop.  A home round's take runs
+ * under the frame that starts the round: the request body whose claim lifts the
+ * baton or whose CAS lifts w, the release body that runs the round, or a
  * finisher, under the count of the round it ends, for a round it re-arms.  The
  * tag load is relaxed: the descriptor stays valid either way, and a body that
  * runs while a retire is under way copes with it as one a lookup pinned before
@@ -163,7 +195,7 @@ static inline unsigned int arts_db_claim_closed_axes(uint8_t owed) {
   return ((owed & ARTS_CREATE_OWED_RO) != 0u ? 1u : 0u) +
          ((owed & ARTS_CREATE_OWED_RW) != 0u ? 1u : 0u);
 }
-#endif /* VAL, INV */
+#endif /* VAL, INV, EXCL */
 
 /*--- Pending RW Treiber-stack lifecycle helpers --------------------------
  * The per-cache RW waiter chain belongs to the shared grant plane, so it
