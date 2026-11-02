@@ -89,6 +89,17 @@ struct arts_edt_s {
                                           before the EDT is installed: a
                                           destroy on another thread reads it
                                           from then on. */
+  /** A counted reference to the event finish_event names, homed on this rank,
+   * or NULL (no scope, a scope its create could not resolve, or an image
+   * received from another rank before its create body sets it).  Written only
+   * before the EDT is installed, which orders it before every read; released
+   * only by arts_edt_free, after the EDT's last count drops, whose acq_rel
+   * decrement orders every read before it.  Every other access reads it under
+   * a count on the EDT its frame already holds: the body, for the INCRs of the
+   * members it creates; the completion and a destroy in place of one, for the
+   * DECR.  So even a destroy racing the completion never frees the reference
+   * under a frame still using it. */
+  arts_shared_ptr_t finish_ref;
   arts_guid_t output_event;          /**< Per-EDT result channel (OCR-style).
                                           NULL_GUID = none.  The run path
                                           satisfies this event with output_data

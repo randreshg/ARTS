@@ -1341,3 +1341,11 @@ arts_route_budget_test(create 64 3 0 REFERENCE_ONLY)
 # creator stays the sticky owner and sends nothing; FLUSH's home writes nothing
 # back.  1 probe, 0 pins, every cell.
 arts_route_budget_test(rw 64 1 0)
+# scope: each of the unit's two EDTs is created inside the finish scope its
+# creator holds a counted reference to: the create reserves its minted GUID's
+# slot on the fresh path (one probe), the INCR runs on the creator's
+# reference and the new EDT keeps a copy of it (none), and the completion
+# DECRs through that copy and retires through its control block's home
+# (none).  Joining the parent to the scope resolves it once per run.  No cell
+# changes an EDT that acquires nothing.
+arts_route_budget_test(scope 64 2 0 REFERENCE_ONLY)

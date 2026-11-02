@@ -39,6 +39,7 @@
 #include "arts/edt_context.h"
 
 #include "arts.h"
+#include "arts/event.h" /* arts_event_satisfy_slot_on */
 #include "arts/system/print.h"
 #include "arts/utils/shared.h"
 #include "arts/utils/vector.h"
@@ -134,11 +135,16 @@ void arts_unset_thread_local_edt_info(bool decr_finish) {
    * - Joined/inherited finish_event: balances the INCR emitted at create time.
    * - Cross-node proxy finish_event: counter==0 fires the latch, propagating
    *   DECR to the parent's finish_event via the dep registered at allocation.
-   * `arts_current_edt` is still valid here (cleared on the next line). */
+   * The DECR runs through the EDT's scope reference (by GUID when it holds
+   * none), borrowed under the run path's count on the EDT; the EDT's free
+   * releases it.  A DECR that fires the scope, and the auto-destroy retire
+   * that follows, run on an event the reference keeps.  `arts_current_edt` is
+   * still valid here (cleared below). */
   if (decr_finish && arts_current_edt &&
       arts_current_edt->finish_event != NULL_GUID) {
-    arts_event_satisfy_slot(arts_current_edt->finish_event, NULL_GUID,
-                            ARTS_EVENT_LATCH_DECR_SLOT);
+    arts_event_satisfy_slot_on(arts_current_edt->finish_ref,
+                               arts_current_edt->finish_event, NULL_GUID,
+                               ARTS_EVENT_LATCH_DECR_SLOT);
   }
   arts_owned_finish_cleanup(); /* creator-tokens not handed back early */
   arts_current_edt = NULL;

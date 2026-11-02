@@ -218,6 +218,7 @@ static void print_fingerprint(void) {
   MEMBER(edt_t, depc);
   MEMBER(edt_t, guid);
   MEMBER(edt_t, finish_event);
+  MEMBER(edt_t, finish_ref);
   MEMBER(edt_t, output_event);
   MEMBER(edt_t, output_data);
   MEMBER(edt_t, edt_type);

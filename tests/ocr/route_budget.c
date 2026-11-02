@@ -21,6 +21,9 @@
 ///           an EDT with no dependence, whose body ends the unit.
 ///   rw      A block created with the creator's hold, written through the
 ///           pointer the create hands out, and destroyed by the same run.
+///   scope   Once per run, an EDT joined to a finish scope; per unit, a child
+///           it creates inside that scope and a grandchild the child creates,
+///           both members by inheritance; the grandchild ends the unit.
 
 #include "arts.h"
 
@@ -101,6 +104,63 @@ static void shape_rw(uint64_t n) {
   }
 }
 
+static const arts_edt_hint_t g_here = {.rank = ARTS_HINT_CURRENT_RANK,
+                                       .guid = NULL_GUID,
+                                       .finish_event = NULL_GUID,
+                                       .output_event = NULL_GUID,
+                                       .flags = ARTS_EDT_FLAG_NONE};
+
+static void scope_grandchild(uint32_t paramc, const uint64_t *paramv,
+                             uint32_t depc, arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)paramv;
+  (void)depc;
+  (void)depv;
+  unit_done();
+}
+
+static void scope_child(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                        arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)paramv;
+  (void)depc;
+  (void)depv;
+  if (arts_edt_create(scope_grandchild, 0, NULL, 0, &g_here) == NULL_GUID) {
+    printf("FAIL: route_budget scope: a grandchild create failed\n");
+    arts_test_fail();
+    unit_done();
+  }
+}
+
+static void scope_parent(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                         arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)depc;
+  (void)depv;
+  for (uint64_t i = 0; i < paramv[0]; i++) {
+    if (arts_edt_create(scope_child, 0, NULL, 0, &g_here) == NULL_GUID) {
+      printf("FAIL: route_budget scope: a child create failed\n");
+      arts_test_fail();
+      unit_done();
+    }
+  }
+}
+
+static void shape_scope(uint64_t n) {
+  arts_event_hint_t eh = ARTS_EVENT_HINT_FINISH;
+  arts_guid_t scope = arts_event_create(&eh);
+  arts_edt_hint_t join = g_here;
+  join.finish_event = scope;
+  if (scope == NULL_GUID ||
+      arts_edt_create(scope_parent, 1, &n, 0, &join) == NULL_GUID) {
+    printf("FAIL: route_budget scope: the scope or its parent failed\n");
+    arts_test_fail();
+    for (uint64_t i = 0; i < n; i++) {
+      unit_done();
+    }
+  }
+}
+
 static const struct {
   const char *name;
   shape_fn run;
@@ -108,6 +168,7 @@ static const struct {
     {"none", shape_none},
     {"create", shape_create},
     {"rw", shape_rw},
+    {"scope", shape_scope},
 };
 
 static shape_fn g_run;

@@ -40,12 +40,13 @@
 #include "arts/db.h"
 #include "arts/utils/malloc.h"
 
+#include <assert.h>
 #include <stdalign.h>
 #include <stddef.h>
 #include <string.h>
 
 #include "arts/edt_context.h" /* arts_current_edt + run-start/end ctx hooks */
-#include "arts/event.h"       /* arts_event_create (finish-scope proxy) */
+#include "arts/event.h"       /* arts_event_create_held, arts_event_*_on */
 #include "arts/gas/guid.h"
 #include "arts/gas/route_table.h"
 #include "arts/ooo.h"
@@ -184,10 +185,16 @@ bool arts_edt_create_core(struct arts_edt_s *edt, arts_guid_kind_t guid_kind,
    * joins one by passing it in hint.finish_event, otherwise it inherits the
    * caller's ambient finish_event (transitive membership).  Either way the EDT
    * INCRs the scope at create and DECRs it on completion (in
-   * arts_unset_thread_local_edt_info).  `arts_current_edt` is the thread-local
-   * arts_set/unset_thread_local_edt_info maintain, read directly with no
-   * route-table lookup. */
+   * arts_unset_thread_local_edt_info), both through one reference to the
+   * scope found here: the running EDT's own (`arts_current_edt`, the
+   * thread-local arts_set/unset_thread_local_edt_info maintain), borrowed for
+   * the call, when the scope is its scope; otherwise a lookup of the hint's
+   * scope, counted (`looked`).  A member homed here keeps a reference of its
+   * own, a copy of the borrowed one or the looked-up count itself; a member
+   * homed on another rank keeps none (its image ships finish_ref NULL). */
   arts_guid_t parent_fe;
+  arts_shared_ptr_t scope = NULL;
+  arts_shared_ptr_t looked = NULL;
   if (hint_finish_event != NULL_GUID) {
 #ifndef NDEBUG
     /* The join INCR must be local: an INCR shipped to another rank's scope is
@@ -201,8 +208,15 @@ bool arts_edt_create_core(struct arts_edt_s *edt, arts_guid_kind_t guid_kind,
     }
 #endif
     parent_fe = hint_finish_event;
+    if (arts_current_edt && arts_current_edt->finish_event == parent_fe) {
+      scope = arts_current_edt->finish_ref;
+    } else if (arts_guid_get_rank(parent_fe) == arts_global_rank_id) {
+      looked = arts_route_table_lookup_event(parent_fe);
+      scope = looked;
+    }
   } else if (arts_current_edt) {
     parent_fe = arts_current_edt->finish_event;
+    scope = arts_current_edt->finish_ref;
   } else {
     parent_fe = NULL_GUID;
   }
@@ -210,8 +224,18 @@ bool arts_edt_create_core(struct arts_edt_s *edt, arts_guid_kind_t guid_kind,
   if (parent_fe != NULL_GUID) {
     /* Join/inherit: INCR completes before the new EDT can reach its own DECR
      * (which runs only after the EDT executes — strictly later in this
-     * thread). */
-    arts_event_satisfy_slot(parent_fe, NULL_GUID, ARTS_EVENT_LATCH_INCR_SLOT);
+     * thread), except under a GPU wrapper with invalidations outstanding:
+     * there the INCR is held back until the wrapper's drain and goes by GUID,
+     * so the member's DECR can overtake it.  The member's reference is taken
+     * all the same. */
+    arts_event_satisfy_slot_on(scope, parent_fe, NULL_GUID,
+                               ARTS_EVENT_LATCH_INCR_SLOT);
+  }
+  if (rank == arts_global_rank_id) {
+    edt->finish_ref = looked != NULL ? looked : arts_shared_copy(scope);
+  } else {
+    edt->finish_ref = NULL;
+    arts_shared_release(&looked);
   }
   /* Output event (per-EDT result channel): never inherited — it belongs to
    * this EDT only.  The run path satisfies it with the EDT's returned GUID
@@ -351,7 +375,10 @@ static void arts_edt_free(struct arts_edt_s *edt) {
    * allocated once when the acquire phase begins (NULL if the EDT never
    * reached it).  Freeing here — the single canonical struct-free — covers
    * every lifetime end (run completion, cancel, destroy) with no double
-   * free. */
+   * free.  The scope reference goes here too, after every frame that borrowed
+   * it (the body, the completion's or a destroy's DECR) has dropped its count
+   * on the EDT. */
+  arts_shared_release(&edt->finish_ref);
   arts_free(edt->dep_acq);
   arts_free(edt);
 }
@@ -379,10 +406,11 @@ void arts_edt_delete(struct arts_edt_s *edt) {
  * is UB and is skipped.  The retire names the EDT's own cb, so it fails when
  * the EDT's own completion retired it first.  A destroyed EDT never
  * completes, so the destroy that wins the retire sends the finish-scope DECR
- * its completion would have: to the local proxy when the scope is remote (its
- * fire forwards the DECR and reclaims it), else to the scope itself.  The
- * output event is left alone: the programming model does not say what a
- * destroyed EDT's output event does. */
+ * its completion would have, through the scope reference it borrows under
+ * the dispatch's count: to the local proxy when the scope is remote (its fire
+ * forwards the DECR and reclaims it), else to the scope itself.  The output
+ * event is left alone: the programming model does not say what a destroyed
+ * EDT's output event does. */
 void arts_handler_edt_destroy(void *item_v, void *args_v) {
   struct arts_edt_s *edt = (struct arts_edt_s *)item_v;
   struct arts_ooo_args_edt_destroy_s *a =
@@ -398,8 +426,8 @@ void arts_handler_edt_destroy(void *item_v, void *args_v) {
             edt->guid, edt->depc, needed, arts_global_rank_id);
   arts_guid_t finish_event = edt->finish_event;
   if (arts_ooo_retire(a->guid, edt->self_cb) && finish_event != NULL_GUID) {
-    arts_event_satisfy_slot(finish_event, NULL_GUID,
-                            ARTS_EVENT_LATCH_DECR_SLOT);
+    arts_event_satisfy_slot_on(edt->finish_ref, finish_event, NULL_GUID,
+                               ARTS_EVENT_LATCH_DECR_SLOT);
   }
 }
 
@@ -652,19 +680,24 @@ void arts_handler_edt_create(void *item_v, void *args_v) {
     edt->dep_acq = NULL;
     edt->rw_sorted = NULL;
     edt->self_cb = NULL;
+    edt->finish_ref = NULL;
   }
   /* A finish scope homed on another rank is joined through a local LATCH
    * proxy whose fire carries the DECR to it; one homed here is decremented
    * directly by the EDT's completion, or by a destroy in its place.  Made
-   * once, while the EDT is private: a re-parked create keeps it. */
+   * once, while the EDT is private: a re-parked create keeps it, and keeps
+   * the proxy's handle, made with it, as its scope reference. */
   if (edt->finish_event != NULL_GUID &&
       arts_guid_get_rank(edt->finish_event) != arts_global_rank_id) {
     arts_event_hint_t proxy_hint = ARTS_EVENT_HINT_LATCH(1);
     proxy_hint.auto_destroy = true;
-    arts_guid_t proxy = arts_event_create(&proxy_hint);
-    arts_add_dependence(proxy, edt->finish_event, ARTS_EVENT_LATCH_DECR_SLOT,
-                        DB_MODE_NULL);
+    arts_guid_t proxy = NULL_GUID;
+    arts_shared_ptr_t proxy_ref = arts_event_create_held(&proxy_hint, &proxy);
+    arts_event_add_dependence_on(proxy_ref, proxy, edt->finish_event,
+                                 ARTS_EVENT_LATCH_DECR_SLOT, DB_MODE_NULL);
     edt->finish_event = proxy;
+    assert(edt->finish_ref == NULL);
+    edt->finish_ref = proxy_ref;
   }
   /* self_cb is a non-owning alias of the cb this body installs, armed from
    * the handle itself (a lookup could return a later generation's cb) before

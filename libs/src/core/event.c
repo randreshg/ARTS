@@ -286,13 +286,21 @@ static arts_shared_ptr_t event_create(const arts_event_hint_t *hint,
   if (g != NULL_GUID) {
     h.rank = arts_guid_get_rank(g);
   }
-  arts_shared_ptr_t held = event_install(&g, &h, hold);
+  /* Mechanism A — a finish event made inside a scope joins the ambient scope:
+   * it INCRs it through the running EDT's own reference, which that EDT holds
+   * for its whole body, and registers its fire's DECR of it through the
+   * handle on the event this create made (always homed here). */
+  arts_guid_t ambient = h.finish ? arts_current_finish_event() : NULL_GUID;
+  arts_shared_ptr_t held = event_install(&g, &h, hold || ambient != NULL_GUID);
   if (h.finish) {
-    /* Mechanism A — auto-chain to the ambient finish scope (if any). */
-    arts_guid_t ambient = arts_current_finish_event();
     if (ambient != NULL_GUID) {
-      arts_event_satisfy_slot(ambient, NULL_GUID, ARTS_EVENT_LATCH_INCR_SLOT);
-      arts_add_dependence(g, ambient, ARTS_EVENT_LATCH_DECR_SLOT, DB_MODE_NULL);
+      arts_event_satisfy_slot_on(arts_current_edt->finish_ref, ambient,
+                                 NULL_GUID, ARTS_EVENT_LATCH_INCR_SLOT);
+      arts_event_add_dependence_on(held, g, ambient, ARTS_EVENT_LATCH_DECR_SLOT,
+                                   DB_MODE_NULL);
+      if (!hold) {
+        arts_shared_release(&held);
+      }
     }
     /* Mechanism B — register creator-token for completion cleanup. */
     arts_owned_finish_register(g);
@@ -488,22 +496,28 @@ static void event_simple_step(struct arts_event_s *e, arts_guid_t guid, int op,
 
 /* arts_event_satisfy_slot — entity-specific API: satisfy an event's slot.
  *   home == self → dispatch_or_defer (acquire → arts_handler_event_satisfy_slot
- *                  or defer until the event installs);
+ *                  or defer until the event installs), or inline on a live
+ *                  handle the caller holds;
  *   home != self → MSG_EVENT_SATISFY_SLOT wire;
  *   GPU LC invalidation drain → force-defer on the GPU wrapper's slot. */
-void arts_event_satisfy_slot(arts_guid_t event_guid, arts_guid_t data_guid,
-                             uint32_t slot) {
+void arts_event_satisfy_slot_on(arts_shared_ptr_t h, arts_guid_t event_guid,
+                                arts_guid_t data_guid, uint32_t slot) {
   struct arts_ooo_args_event_satisfy_s a = {
       .event_guid = event_guid, .data_guid = data_guid, .slot = slot};
   if (arts_current_edt && arts_current_edt->invalidate_count > 0) {
     arts_ooo_push_guid(arts_current_edt->guid, OOO_EVENT_SATISFY_SLOT, &a,
                        sizeof(a));
   } else if (arts_guid_get_rank(event_guid) != arts_global_rank_id) {
+    assert(h == NULL);
     arts_send_event_satisfy_slot(event_guid, data_guid, slot);
   } else {
-    arts_ooo_dispatch_or_defer_guid(event_guid, OOO_EVENT_SATISFY_SLOT, &a,
-                                    sizeof(a));
+    arts_ooo_dispatch_on(h, OOO_EVENT_SATISFY_SLOT, event_guid, &a, sizeof(a));
   }
+}
+
+void arts_event_satisfy_slot(arts_guid_t event_guid, arts_guid_t data_guid,
+                             uint32_t slot) {
+  arts_event_satisfy_slot_on(NULL, event_guid, data_guid, slot);
 }
 
 /* OCR-aligned convenience wrapper: satisfy slot 0 (LATCH_DECR). */
@@ -600,18 +614,25 @@ void arts_handler_event_add_dependence(void *item, void *vargs) {
 
 /* arts_event_add_dependence — entity-specific API: register a dependent on an
  * event source.  home==self → dispatch_or_defer (acquire → handler, or defer
- * until the event installs); home!=self → MSG_EVENT_ADD_DEPENDENCE wire. */
-void arts_event_add_dependence(arts_guid_t source, arts_guid_t destination,
-                               uint32_t slot, arts_db_access_mode_t mode) {
+ * until the event installs), or inline on a live handle the caller holds;
+ * home!=self → MSG_EVENT_ADD_DEPENDENCE wire. */
+void arts_event_add_dependence_on(arts_shared_ptr_t h, arts_guid_t source,
+                                  arts_guid_t destination, uint32_t slot,
+                                  arts_db_access_mode_t mode) {
   unsigned int rank = arts_guid_get_rank(source);
   if (rank != arts_global_rank_id) {
+    assert(h == NULL);
     arts_send_event_add_dependence(source, destination, slot, rank, mode);
     return;
   }
   struct arts_ooo_args_event_add_dep_s a = {
       .source = source, .destination = destination, .slot = slot, .mode = mode};
-  arts_ooo_dispatch_or_defer_guid(source, OOO_EVENT_ADD_DEPENDENCE, &a,
-                                  sizeof(a));
+  arts_ooo_dispatch_on(h, OOO_EVENT_ADD_DEPENDENCE, source, &a, sizeof(a));
+}
+
+void arts_event_add_dependence(arts_guid_t source, arts_guid_t destination,
+                               uint32_t slot, arts_db_access_mode_t mode) {
+  arts_event_add_dependence_on(NULL, source, destination, slot, mode);
 }
 
 /* ── arts_add_dependence ──────────────────────────────────────────── */

@@ -80,6 +80,18 @@ void arts_handler_event_create(void *item, void *args);
 arts_shared_ptr_t arts_event_create_held(const arts_event_hint_t *hint,
                                          arts_guid_t *guid);
 
+/* arts_event_satisfy_slot and arts_event_add_dependence (whose source is an
+ * event) acting through `h`, a counted handle the caller holds on the event
+ * (the source) and keeps across the call: it runs inline while `h` is live
+ * and takes the GUID path otherwise, NULL included.  A non-NULL `h` names an
+ * event homed on this rank.  The satisfy is held back on the GPU wrapper's
+ * slot first, as the GUID entry holds it back. */
+void arts_event_satisfy_slot_on(arts_shared_ptr_t h, arts_guid_t event_guid,
+                                arts_guid_t data_guid, uint32_t slot);
+void arts_event_add_dependence_on(arts_shared_ptr_t h, arts_guid_t source,
+                                  arts_guid_t destination, uint32_t slot,
+                                  arts_db_access_mode_t mode);
+
 /* Cross-rank wire TX/RX for event ops. */
 void arts_send_event_add_dependence(arts_guid_t source, arts_guid_t destination,
                                     uint32_t slot, unsigned int rank,
