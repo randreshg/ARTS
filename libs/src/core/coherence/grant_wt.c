@@ -54,8 +54,9 @@
 /* Post-install tail of the GRANT_RESPONSE (GRANT) handler — everything
  * that must run only once the transferred bytes are in place.  It runs under
  * the count of the write request the grant answers; its drain closes that
- * request, and the count goes last. */
-static void home_response_commit(struct arts_db_s *db) {
+ * request, and the count goes last.  home_token is the transfer's, which the
+ * CONFIRM answers. */
+static void home_response_commit(struct arts_db_s *db, uint64_t home_token) {
   struct arts_db_cache_s *cache = &db->cache;
 
   /* Possession + drain guard in one transition: the guard keeps a hold on the
@@ -89,7 +90,9 @@ static void home_response_commit(struct arts_db_s *db) {
   /* Tell the home we installed: it names this rank as the holder only now,
    * so a revocation never reaches a rank that has not installed, and the
    * round it advances may revoke this rank at once. */
-  arts_send_db_grant_confirm(db);
+  arts_send_db_grant_confirm(db, home_token);
+#else
+  (void)home_token;
 #endif
 
   /* Close the commit.  Whether that means dropping a hold the commit kept for
@@ -112,6 +115,7 @@ struct home_response_landed_ctx_s {
   struct arts_db_buffer_s *landing;
   uint64_t version;
   uint64_t data_size;
+  uint64_t home_token; /* the transfer's, for the CONFIRM */
 };
 
 static void home_response_landed_cb(void *arg) {
@@ -128,10 +132,11 @@ static void home_response_landed_cb(void *arg) {
   }
   arts_db_buf_install_landed(&db->cache, ctx->version, ctx->landing,
                              ctx->data_size);
+  uint64_t home_token = ctx->home_token;
   arts_free(ctx);
   /* A one-sided payload comes from another rank. */
   uint8_t census = arts_db_census_serving(true);
-  home_response_commit(db); /* drops the count */
+  home_response_commit(db, home_token); /* drops the count */
   arts_db_census_served(census);
 }
 
@@ -185,6 +190,7 @@ void arts_handler_db_grant_response(void *payload, size_t size) {
       .data_size = hdr->data_size,
       .rdzv_txid = hdr->rdzv_txid,
       .rdzv_cookie = hdr->rdzv_cookie,
+      .home_token = hdr->home_token,
   };
   arts_db_grant_response_on(db, &a);
 }
@@ -208,6 +214,7 @@ void arts_db_grant_response_on(struct arts_db_s *db,
     ctx->landing = (struct arts_db_buffer_s *)(uintptr_t)a->rdzv_cookie;
     ctx->version = a->version;
     ctx->data_size = a->data_size;
+    ctx->home_token = a->home_token;
     arts_net_rdzv_expect(a->rdzv_txid, a->data_size, home_response_landed_cb,
                          home_response_landed_discard, ctx);
     return;
@@ -231,24 +238,30 @@ void arts_db_grant_response_on(struct arts_db_s *db,
         atomic_load_explicit(&cache->db_size, memory_order_relaxed));
   }
   uint8_t census = arts_db_census_serving_from(a->sender);
-  home_response_commit(db); /* drops the count */
+  home_response_commit(db, a->home_token); /* drops the count */
   arts_db_census_served(census);
 }
 
 /* ===== WT CONFIRM handler (home A) =============================== */
 
 #ifndef ARTS_RELEASE_PURGE
-/* Cat-C pure body (CONFIRM, home side).  item_v is the home db_s (cache is
- * its FIRST member), held by the wire dispatcher's lookup or, on a self-send,
- * by the count the sender takes for the body.  args_v (the new owner's token
- * and rank) is unused here — the new owner is
- * read from db->pending_install_owner (stored by the baton holder).  WT does
- * NOT send CONFIRM_ACK (the new owner already drained + ran at
- * GRANT_RESPONSE); it only flips rw_holder + advances the next round. */
-void arts_handler_db_grant_confirm(void *item_v, void *args_v) {
-  (void)args_v;
-  struct arts_db_cache_s *cache = &((struct arts_db_s *)item_v)->cache;
-  struct arts_db_s *db = arts_db_of_cache(cache);
+/* CONFIRM at the home, the answer to its transfer: on the home descriptor the
+ * home token names, under the baton tenure's count.  The new owner's token
+ * is unused here — the new owner is read from db->pending_install_owner
+ * (stored by the baton holder).  WT does NOT send CONFIRM_ACK (the new owner
+ * already drained its writers at GRANT_RESPONSE); it only flips rw_holder +
+ * advances the next round.  Nothing gates on this message, so it can trail
+ * the block's teardown, legally: the new owner's writers, drained before it
+ * leaves, may run, release, and be followed by the destroy before it lands.
+ * On a retired home it only ends the tenure. */
+void arts_handler_db_grant_confirm(
+    const struct arts_msg_grant_confirm_packet_s *p) {
+  struct arts_db_s *db = arts_db_from_token(p->home_token, p->db_guid);
+  if (arts_db_token_retired(db, p->db_guid)) {
+    arts_db_grant_end_tenure(db);
+    return;
+  }
+  struct arts_db_cache_s *cache = &db->cache;
 
   unsigned int new_owner =
       atomic_load_explicit(&db->pending_install_owner, memory_order_relaxed);
@@ -256,7 +269,8 @@ void arts_handler_db_grant_confirm(void *item_v, void *args_v) {
 
   /* Advance the queue by revoking the new owner again, or put the baton
    * down.  This handler inherits the hold, so it reads the claim count before
-   * it looks (the argument is evaluated before the call). */
+   * it looks (the argument is evaluated before the call).  The tenure's count
+   * may go inside, so nothing follows. */
   arts_db_grant_advance(
       cache, db, false,
       atomic_load_explicit(&db->grant_baton, memory_order_acquire));
@@ -266,8 +280,8 @@ void arts_handler_db_grant_confirm(void *item_v, void *args_v) {
 
 /* Pure (cache, args) body.  item_v is the holder's db_s (cache is its FIRST
  * member, offset 0), held by the wire dispatcher's lookup or, on a self-send,
- * the home's live descriptor (borrowed) or what a lookup finds when it is not
- * live; the target is rw_holder, published
+ * by a copy of the home's descriptor while it is live, or by what a lookup
+ * finds otherwise; the target is rw_holder, published
  * only at the post-install CONFIRM owner-swap, so the cache is provably
  * installed when INVALIDATE arrives.  No OoO defer is needed: rw_holder
  * flips post-install in both write policies, so no INVALIDATE can reach a
@@ -288,6 +302,7 @@ void arts_handler_db_grant_invalidate(void *item_v, void *args_v) {
   cache->incoming_new_owner_rdzv = a->new_owner_rdzv;
   cache->incoming_new_owner_have = a->new_owner_have;
   cache->incoming_new_owner_token = a->new_owner_token;
+  cache->incoming_new_owner_home_token = a->home_token;
   cache->incoming_new_owner = a->new_owner_rank;
   /* Sentinel withdrawal (writer_count -= 1).  The home's baton sends AT MOST
    * ONE GRANT_INVALIDATE to this rank per transfer round, after

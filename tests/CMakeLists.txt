@@ -1107,6 +1107,19 @@ endif()
 if(ARTS_COHERENCE_ARM STREQUAL "VAL" OR ARTS_COHERENCE_ARM STREQUAL "INV")
     arts_grant_home_unit(token_axis_pairing_valinv 30)
 endif()
+# A round the home starts for answers it waits on owns one count on the
+# home's descriptor, taken where the round starts and dropped once where it
+# ends (the last ack, the put-down, or the teardown sweep); its answers reach
+# the home through the home token the round's messages carry, and an answer on
+# a retired home takes only the round's counting step.  The invalidation round
+# is INV's, in every INV tree; the baton's tenure exists where the home
+# revokes the write right, the RETAIN trees of VAL and INV: a tenure is
+# carried to its next transfer by the next INVALIDATE or, under write-back, by
+# the CONFIRM_ACK's piggyback, and both write policies end it at the put-down.
+if(ARTS_COHERENCE_ARM STREQUAL "INV" OR
+   (ARTS_COHERENCE_ARM STREQUAL "VAL" AND ARTS_RELEASE_POLICY STREQUAL "RETAIN"))
+    arts_grant_home_unit(token_home_rounds_valinv 30)
+endif()
 
 # --- OoO defer/replay engine (ooo.c) ---
 # Standalone like the SYNC_*/deque tests: each test TU #includes the runtime's

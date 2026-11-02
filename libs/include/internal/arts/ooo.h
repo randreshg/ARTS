@@ -391,7 +391,7 @@ struct arts_ooo_args_db_publish_s {
 /* DB ownership invalidate: the fields the wire
  * arts_msg_grant_invalidate_packet_s delivers.  Under both write policies the
  * holder ships its GRANT_RESPONSE to new_owner_rank, into its landing, echoing
- * its token. */
+ * its token and the home's. */
 struct arts_ooo_args_db_grant_invalidate_s {
   arts_guid_t db_guid;
   unsigned int new_owner_rank;
@@ -399,6 +399,7 @@ struct arts_ooo_args_db_grant_invalidate_s {
   uint64_t new_owner_have; /* version the new owner reported holding */
 #if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
   uint64_t new_owner_token; /* the new owner's request's answer token */
+  uint64_t home_token;      /* the transfer's, for the new owner's CONFIRM */
 #endif
 };
 

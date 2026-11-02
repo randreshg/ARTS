@@ -155,8 +155,12 @@ bool arts_rank_u64_map_advance(struct arts_rank_to_u64_map_s *m,
  *     nobody looked behind.  The release half carries the holder's writes
  *     (the FIFO's head, pending_install_owner, rw_holder) to the next holder,
  *     and the hold passes through a round's messages where the home revokes.
- *     64 bits: a hold lasts as long as claims keep arriving.  Loads outside
- *     the baton (the quiescence walk) carry only its value.
+ *     There a hold is a tenure that owns one count on the home's descriptor
+ *     (coherence.h): the winning claim takes it, the put-down drops it, and
+ *     a CONFIRM finds the descriptor through the home token its round's
+ *     messages carry.  64 bits: a hold lasts as long as claims keep
+ *     arriving.  Loads outside the baton (the quiescence walk, the teardown
+ *     sweep) carry only its value.
  *   rw_holder  the write holder a revocation targets.  Stored with release
  *     under the baton, by the confirm that flips it; loaded with acquire
  *     under the baton.  Loads outside it (a read redirect, the destroy, the

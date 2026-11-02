@@ -23,9 +23,12 @@
  *
  * Checks: every request is popped once and each producer's in order; one
  * round at a time, each under a held baton; the round's target reaches the
- * CONFIRM through pending_install_owner; at the end the baton is down and the
- * FIFO empty; nothing waits for ever (a watchdog); in an injection tree some
- * put-down met a newer claim and looked again.
+ * CONFIRM through pending_install_owner; each tenure of the baton takes one
+ * count on the home's descriptor at its winning claim and drops it at its
+ * put-down, never more (the count never goes below zero, and none is left);
+ * at the end the baton is down and the FIFO empty; nothing waits for ever (a
+ * watchdog); in an injection tree some put-down met a newer claim and looked
+ * again.
  *
  * PURE test: no arts_rt, no ports.
  */
@@ -104,10 +107,8 @@ UNREACHED(void arts_db_rdzv_discard_landing(uint64_t t, uint64_t s, uint64_t c))
 UNREACHED(void *arts_route_table_borrow_or_lookup(arts_shared_ptr_t h,
                                                   arts_guid_t g,
                                                   arts_shared_ptr_t *l))
-UNREACHED(void arts_send_db_grant_confirm(struct arts_db_s *db))
+UNREACHED(void arts_send_db_grant_confirm(struct arts_db_s *db, uint64_t h))
 UNREACHED(void *arts_shared_get(arts_shared_ptr_t h))
-UNREACHED(void arts_shared_release(arts_shared_ptr_t *p))
-UNREACHED(uint64_t arts_shared_tag(arts_shared_ptr_t p))
 UNREACHED(bool arts_rank_u64_map_load(struct arts_rank_to_u64_map_s *m,
                                       const void *in, size_t size))
 UNREACHED(void arts_net_rdzv_expect(uint64_t txid, uint64_t len,
@@ -130,6 +131,31 @@ static void fail(const char *what) {
     printf("FAIL grant_retain_baton: %s\n", what);
     fflush(stdout);
   }
+}
+
+/* The home descriptor's control block: the counts the tenures take on it,
+ * beyond the install's, which this test does not model. */
+#define DB_GUID ((arts_guid_t)0x6b6bu)
+static struct arts_shared_s *const g_cb = (struct arts_shared_s *)0x2000;
+static _Atomic(int64_t) g_counts;
+arts_shared_ptr_t arts_shared_copy(arts_shared_ptr_t b) {
+  if (b != g_cb) {
+    fail("a count taken on another control block");
+  }
+  atomic_fetch_add_explicit(&g_counts, 1, memory_order_relaxed);
+  return b;
+}
+void arts_shared_release(arts_shared_ptr_t *p) {
+  if (*p != g_cb) {
+    fail("a count dropped on another control block");
+  }
+  if (atomic_fetch_sub_explicit(&g_counts, 1, memory_order_acq_rel) <= 0) {
+    fail("a tenure dropped a count it never took");
+  }
+  *p = NULL;
+}
+uint64_t arts_shared_tag(arts_shared_ptr_t p) {
+  return p == g_cb ? (uint64_t)DB_GUID : 0u;
 }
 
 /* ---- what the holders popped ---- */
@@ -219,8 +245,12 @@ static void *confirm(void *arg) {
     unsigned int target = g_round_target;
     atomic_store_explicit(&g_round_out, 0, memory_order_release);
     if (g_wb_shape) {
-      struct arts_db_grant_confirm_args_s ca = {.token = 0u, .sender = target};
-      arts_handler_db_grant_confirm(g_db, &ca);
+      struct arts_msg_grant_confirm_packet_s cp;
+      memset(&cp, 0, sizeof(cp));
+      cp.header.rank = target;
+      cp.db_guid = DB_GUID;
+      cp.home_token = arts_db_token(g_db);
+      arts_handler_db_grant_confirm(&cp);
       continue;
     }
     /* arts_handler_db_grant_confirm of the write-through policy. */
@@ -306,6 +336,9 @@ static void *watchdog(void *arg) {
 
 static int run(int wb_shape) {
   g_db = calloc(1, sizeof(*g_db));
+  g_db->cache.db_guid = DB_GUID;
+  g_db->self_cb = g_cb;
+  atomic_store_explicit(&g_counts, 0, memory_order_relaxed);
   arts_home_grantreq_queue_init(&g_db->pending_rw);
   atomic_init(&g_db->grant_baton, 0u);
   atomic_init(&g_db->rw_holder, 0u);
@@ -347,6 +380,10 @@ static int run(int wb_shape) {
       atomic_load_explicit(&g_round_out, memory_order_acquire) != 0 ||
       !arts_home_grantreq_queue_empty(&g_db->pending_rw)) {
     fail("the home does not rest with the baton down and the FIFO empty");
+    rc = 1;
+  }
+  if (atomic_load_explicit(&g_counts, memory_order_acquire) != 0) {
+    fail("a tenure's count was left behind");
     rc = 1;
   }
   arts_home_grantreq_queue_destroy(&g_db->pending_rw);

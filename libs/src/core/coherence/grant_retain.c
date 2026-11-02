@@ -38,6 +38,10 @@ void arts_db_grant_request_arrived(struct arts_db_cache_s *cache,
    * looks at the FIFO again, and a claim that reads 0 serves itself. */
   if (atomic_fetch_add_explicit(&db->grant_baton, 1u, memory_order_acq_rel) ==
       0u) {
+    /* The tenure's count, under the request handler's own: the CONFIRMs of
+     * the tenure's transfers reach the home through its token, and the
+     * put-down that ends the tenure drops it. */
+    arts_db_axis_take(db);
     arts_db_grant_advance(cache, db, false, 1u);
   }
 }
@@ -61,6 +65,7 @@ void arts_db_grant_advance(struct arts_db_cache_s *cache, struct arts_db_s *db,
     if (atomic_compare_exchange_strong_explicit(&db->grant_baton, &seen, 0u,
                                                 memory_order_acq_rel,
                                                 memory_order_acquire)) {
+      arts_db_axis_drop(db, 1u); /* the tenure ends; nothing after it */
       return;
     }
     INCREMENT_NUM_GRANT_BATON_RECLAIM_BY(1);
@@ -76,6 +81,19 @@ void arts_db_grant_advance(struct arts_db_cache_s *cache, struct arts_db_s *db,
   arts_send_db_grant_invalidate(
       db, atomic_load_explicit(&db->rw_holder, memory_order_acquire),
       next_owner, &next_rdzv, next_have, next_token);
+}
+
+/* The CONFIRM of a transfer whose home was torn down meanwhile: where the
+ * write policy gates nothing on it, the new owner's writers, drained before
+ * it leaves, may run, release, and be followed by the destroy before it
+ * lands.  The tenure ends here with nothing popped, since a teardown serves
+ * nothing (outside the destroy contract a request can still be queued; it
+ * goes with the descriptor).  The exchange is the put-down's RMW, so a claim
+ * that came in meanwhile reads either the held count, whose request is then
+ * the teardown's, or 0, and holds a tenure of its own. */
+void arts_db_grant_end_tenure(struct arts_db_s *db) {
+  (void)atomic_exchange_explicit(&db->grant_baton, 0u, memory_order_acq_rel);
+  arts_db_axis_drop(db, 1u);
 }
 
 /* A grant is never handed back unasked here, so there is no obligation to

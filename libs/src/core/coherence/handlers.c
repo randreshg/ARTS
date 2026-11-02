@@ -14,11 +14,10 @@
  *     (ref-pinned) and hands a pure (item, args) body the live cache on a
  *     HIT, or DEFERS the args and replays them once DB_CREATE installs.
  *   - Cat-C (non-deferrable, no OOO_* kind — e.g. CACHE_DESTROY /
- *     SNAPSHOT_REDIRECT / GRANT_INVALIDATE / GRANT_CONFIRM / CREATE_RETURN
- *     / EXCL_CTS): the wire dispatcher does the ref-pinned lookup-acquire;
- *     on a HIT it calls the pure (item, args) body, and on a MISS it applies
- *     that handler's exact miss-action (silent drop or a dismiss reply — see
- *     each body).
+ *     SNAPSHOT_REDIRECT / GRANT_INVALIDATE / CREATE_RETURN / EXCL_CTS): the
+ *     wire dispatcher does the ref-pinned lookup-acquire; on a HIT it calls
+ *     the pure (item, args) body, and on a MISS it applies that handler's
+ *     exact miss-action (silent drop or a dismiss reply — see each body).
  * Either way an (item, args) body operates on the already-acquired,
  * ref-pinned cache (the FIRST member of the db_s the caller hands it) and
  * does not look it up to operate on it.  A message handed over as the whole
@@ -28,7 +27,9 @@
  *     requester's descriptor from the token the answer echoes, under the
  *     count the open request holds, and either runs the body on it or, when
  *     its tag shows it retired, ends the landing and drops that count
- *     (coherence.h).
+ *     (coherence.h).  The answers to a round the home started (an INV
+ *     round's acks, a transfer's CONFIRM) take the home's descriptor from
+ *     the home token the same way, under the round's count.
  *
  * Self-sends.  On this rank a block has one descriptor, which the sending
  * caller holds, so a sender whose target is this rank acts on it rather than
@@ -37,7 +38,9 @@
  * coherence kind is one of the satisfies the GPU LC holds back, so none needs
  * that check first), a Cat-C body on what arts_route_table_borrow_or_lookup
  * returns (the descriptor while it is live, else a lookup, whose miss is the
- * body's miss action, as on the wire).
+ * body's miss action, as on the wire), or under a copy of its own
+ * (arts_route_table_copy_live) where the body can drop the count its caller
+ * runs under.
  *
  * Memory ordering: handlers run concurrently on every progress thread, and a
  * self-send's handler runs inline on the sending thread, a worker included,

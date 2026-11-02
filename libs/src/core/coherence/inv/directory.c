@@ -76,12 +76,14 @@ void arts_db_home_teardown(struct arts_db_s *db) {
     return;
   }
   arts_home_grantreq_queue_destroy(&db->pending_rw);
-  /* Free the releases still queued and an armed round's batch.  Under the
-   * destroy contract both are empty; outside it a round can still be armed
-   * here (its acks lost to the destroy), while a held, unarmed one cannot:
-   * its running holder pins the descriptor.  Relaxed: the descriptor's
-   * last-reference decrement orders this after every pusher, each of which
-   * pushed under a reference it released after. */
+  /* Free the releases still queued and the batch of a round that never
+   * finished.  Under the destroy contract both are empty.  Outside it the
+   * round can be held here, unarmed with its batch, when its last ack found
+   * the home retired and dropped the round's count instead of finishing it,
+   * or still armed, when the teardown sweep dropped that count after a
+   * shutdown cut its acks.  Relaxed: the descriptor's last-reference
+   * decrement orders this after every pusher, each of which pushed under a
+   * reference it released after. */
   struct arts_db_inv_pub_s *e =
       (struct arts_db_inv_pub_s *)(atomic_exchange_explicit(
                                        &db->round_queue, (uintptr_t)0,

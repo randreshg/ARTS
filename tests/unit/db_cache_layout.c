@@ -200,6 +200,7 @@ static void print_fingerprint(void) {
   MEMBER(cache_t, incoming_new_owner_rdzv);
   MEMBER(cache_t, incoming_new_owner_have);
   MEMBER(cache_t, incoming_new_owner_token);
+  MEMBER(cache_t, incoming_new_owner_home_token);
 #endif
   MEMBER(cache_t, cached_version);
 #if defined(ARTS_WRITE_POLICY_WT)
@@ -222,6 +223,9 @@ static void print_fingerprint(void) {
 #endif
 #if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
   MEMBER(cache_t, reader_pool);
+#ifdef ARTS_PROTOCOL_INV
+  MEMBER(cache_t, owed_ack_token);
+#endif
   TYPE(reader_pool_t);
   MEMBER(reader_pool_t, chunks);
   MEMBER(reader_pool_t, next_fresh);

@@ -222,6 +222,10 @@ struct arts_db_cache_s {
    * above under the same discipline; the 0-edge actor's GRANT_RESPONSE
    * echoes it. */
   uint64_t incoming_new_owner_token;
+  /* The transfer's home token, published with the fields above under the
+   * same discipline; the GRANT_RESPONSE carries it to the new owner's
+   * CONFIRM. */
+  uint64_t incoming_new_owner_home_token;
 #endif
   /* The request word (VREQ_* above).  Every write after init is an acq_rel
    * CAS: a reader's park carries its node's fields to the CAS that takes the

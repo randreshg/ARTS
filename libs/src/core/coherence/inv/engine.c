@@ -186,12 +186,14 @@ void arts_db_cache_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
   atomic_init(&c->grant_generation, 0u);
 #endif
   arts_pending_rw_queue_init(&c->pending_rw);
+  c->owed_ack_token = 0u;
 
 #ifndef ARTS_RELEASE_PURGE
   c->incoming_new_owner = ARTS_NO_PENDING_OWNER;
   c->incoming_new_owner_rdzv = (struct arts_rdzv_landing_s){0, 0, 0, 0};
   c->incoming_new_owner_have = ARTS_GRANT_VERSION_NONE;
   c->incoming_new_owner_token = 0u;
+  c->incoming_new_owner_home_token = 0u;
 #endif
   /* INV's sharer plane carries no version ledger by construction; NULL selects
    * the shared transfer helper's empty-map branch. */
@@ -334,8 +336,10 @@ void arts_db_destroy_arrived(struct arts_db_s *db) {
  * and a legitimately destroyed DB has no outstanding acquires.  No release is
  * waited for: every release that sends the home anything (a round, a
  * hand-back) blocks until the home ACKs it, so under the destroy contract none
- * arrives after the destroy; a transfer's CONFIRM that does finds no home and
- * is dropped. */
+ * arrives after the destroy; a transfer's CONFIRM that does (where the home
+ * revokes and nothing gates on it) reaches the retired descriptor through its
+ * home token, which the baton tenure's count keeps, and only ends the
+ * tenure. */
 void arts_db_home_destroy_now(struct arts_db_s *db) {
   struct arts_db_cache_s *cache = &db->cache;
   arts_guid_t guid = cache->db_guid;
@@ -487,6 +491,10 @@ inv_round_run(struct arts_db_s *db, struct arts_db_inv_pub_s *batch) {
     return batch;
   }
   db->round_entries = batch;
+  /* The round's count, under the caller's own: every ack reaches this
+   * descriptor through the home token its INVALIDATE carries, and the one
+   * that ends the round drops the count after the finish. */
+  arts_db_axis_take(db);
   /* ARM, before the first INVALIDATE leaves.  From here on nothing of the
    * round's state is read, only locals and the descriptor's fixed GUID and
    * self_cb: the last ack can finish this round, and start the next, before
@@ -745,8 +753,8 @@ void arts_handler_db_inv_cts(struct arts_msg_inv_cts_packet_s *p) {
   if (act == INV_CACHE_ACT_RESEND) {
     arts_send_db_inv_request(cache, DB_MODE_RO, arts_inv_read_cover(post));
   } else if (act == INV_CACHE_ACT_CLOSE_ACK) {
-    arts_send_db_inv_invalidate_ack(
-        db->self_cb, arts_guid_get_rank(cache->db_guid), cache->db_guid);
+    arts_send_db_inv_invalidate_ack(arts_guid_get_rank(cache->db_guid),
+                                    cache->db_guid, cache->owed_ack_token);
   }
   /* Anything but a re-send closed the fetch: its count goes last. */
   arts_db_axis_drop(db, act == INV_CACHE_ACT_RESEND ? 0u : 1u);
@@ -798,9 +806,9 @@ static void inv_deliver_commit(struct arts_db_s *db, uint64_t version,
     } while (!atomic_compare_exchange_weak_explicit(
         &cache->cache_state, &cur, next, memory_order_acq_rel,
         memory_order_acquire));
-    arts_send_db_inv_invalidate_ack(db->self_cb,
-                                    arts_guid_get_rank(cache->db_guid),
-                                    cache->db_guid); /* owed ack, LAST */
+    arts_send_db_inv_invalidate_ack(arts_guid_get_rank(cache->db_guid),
+                                    cache->db_guid,
+                                    cache->owed_ack_token); /* owed ack, LAST */
   }
   arts_db_axis_drop(db, 1u);
 }
@@ -910,7 +918,7 @@ static void inv_deliver_on(struct arts_db_s *db,
   arts_db_census_served(census);
 }
 
-void arts_handler_db_inv_invalidate(struct arts_db_s *db) {
+void arts_handler_db_inv_invalidate(struct arts_db_s *db, uint64_t home_token) {
   struct arts_db_cache_s *cache = &db->cache;
   unsigned int home_rank = arts_guid_get_rank(cache->db_guid);
   uint32_t act;
@@ -926,19 +934,29 @@ void arts_handler_db_inv_invalidate(struct arts_db_s *db) {
       ARTS_ERROR("inv: invalidate hit the grant holder");
     }
     next = arts_inv_cache_compute_next(cur, INV_CACHE_OP_INVALIDATE, 0u, &act);
+    if (act == INV_CACHE_ACT_KILL_MARKED) {
+      /* Published by the CAS that commits the mark. */
+      cache->owed_ack_token = home_token;
+    }
   } while (!atomic_compare_exchange_weak_explicit(&cache->cache_state, &cur,
                                                   next, memory_order_acq_rel,
                                                   memory_order_acquire));
   if (act == INV_CACHE_ACT_PURGE_ACK || act == INV_CACHE_ACT_NOOP_ACK) {
-    arts_send_db_inv_invalidate_ack(db->self_cb, home_rank, cache->db_guid);
+    arts_send_db_inv_invalidate_ack(home_rank, cache->db_guid, home_token);
   }
   /* KILL_MARKED: the ack is owed — the doomed DELIVER fires it after its
    * serve-once, keeping every pre-ack serve legally racy. */
 }
 
-void arts_handler_db_inv_invalidate_ack(struct arts_db_s *db,
-                                        unsigned int sharer_rank) {
-  (void)sharer_rank;
+/* An answer to the home's round: the home token names the descriptor that
+ * armed it, and the round's count keeps it.  The decrement is the round's
+ * counting step, taken whether or not the home was retired since; the one
+ * that ends the round finishes it on a live home, and on a retired one
+ * finishes nothing (a teardown resumes no releaser; the batch goes with the
+ * descriptor), then drops the round's count, the frame's last access. */
+void arts_handler_db_inv_invalidate_ack(
+    const struct arts_msg_inv_invalidate_ack_packet_s *p) {
+  struct arts_db_s *db = arts_db_from_token(p->home_token, p->db_guid);
   INCREMENT_NUM_INVALIDATE_ACK_BY(1);
   uint32_t prev =
       atomic_fetch_sub_explicit(&db->round_acks, 1u, memory_order_acq_rel);
@@ -947,14 +965,17 @@ void arts_handler_db_inv_invalidate_ack(struct arts_db_s *db,
      * until its last ack: an ack that finds none outstanding breaks the
      * protocol. */
     ARTS_ERROR("inv: invalidate ack for DB[Guid:%lu] with no outstanding ack",
-               (unsigned long)db->cache.db_guid);
+               (unsigned long)p->db_guid);
   }
   if (prev != 1u) {
     return;
   }
-  struct arts_db_inv_pub_s *batch = db->round_entries;
-  db->round_entries = NULL;
-  inv_round_finish(db, batch);
+  if (!arts_db_token_retired(db, p->db_guid)) {
+    struct arts_db_inv_pub_s *batch = db->round_entries;
+    db->round_entries = NULL;
+    inv_round_finish(db, batch);
+  }
+  arts_db_axis_drop(db, 1u);
 }
 
 /* ===== senders ========================================================== */
@@ -987,10 +1008,11 @@ void arts_send_db_inv_cts(unsigned int requester_rank, uint64_t token,
 
 /* One message per sharer in the roster snapshot: the multicast whose width is
  * what the round costs.  db is the home's descriptor, which the caller
- * holds. */
+ * holds; it is the round's home token. */
 void arts_send_db_inv_invalidate(struct arts_db_s *db,
                                  unsigned int sharer_rank) {
   arts_guid_t db_guid = db->cache.db_guid;
+  uint64_t home_token = arts_db_token(db);
   if (sharer_rank == arts_global_rank_id) {
     /* Local hit: run the retirement inline, on the home's descriptor, which
      * is this sharer's cache, while it is live, and on what a lookup finds
@@ -1004,12 +1026,12 @@ void arts_send_db_inv_invalidate(struct arts_db_s *db,
         (struct arts_db_s *)arts_route_table_borrow_or_lookup(db->self_cb,
                                                               db_guid, &looked);
     if (sharer != NULL) {
-      arts_handler_db_inv_invalidate(sharer);
+      arts_handler_db_inv_invalidate(sharer, home_token);
     } else {
-      /* The home's descriptor was not live and the lookup missed: the ack
-       * resolves by GUID alone. */
-      arts_send_db_inv_invalidate_ack(NULL, arts_guid_get_rank(db_guid),
-                                      db_guid);
+      /* The home's descriptor was not live and the lookup missed: a sharer
+       * that misses still owes the round its ack. */
+      arts_send_db_inv_invalidate_ack(arts_guid_get_rank(db_guid), db_guid,
+                                      home_token);
     }
     arts_shared_release(&looked);
     return;
@@ -1018,32 +1040,24 @@ void arts_send_db_inv_invalidate(struct arts_db_s *db,
   arts_fill_packet_header(&p.header, sizeof(p), MSG_DB_INV_INVALIDATE);
   p.header.rank = arts_global_rank_id;
   p.db_guid = db_guid;
+  p.home_token = home_token;
   arts_transport_send_async((int)sharer_rank, (char *)&p, sizeof(p));
 }
 
-void arts_send_db_inv_invalidate_ack(arts_shared_ptr_t held,
-                                     unsigned int home_rank,
-                                     arts_guid_t db_guid) {
-  if (home_rank == arts_global_rank_id) {
-    /* Local hit: account the ack inline, on the sharer's descriptor, which is
-     * the home's, while it is live, and on what a lookup finds otherwise.  A
-     * MISS drops — the round's other acks still finish it, and a destroyed DB
-     * has no round to finish.  No count of its own: the body drops no count
-     * its caller runs under. */
-    arts_shared_ptr_t looked = NULL;
-    struct arts_db_s *home =
-        (struct arts_db_s *)arts_route_table_borrow_or_lookup(held, db_guid,
-                                                              &looked);
-    if (home != NULL) {
-      arts_handler_db_inv_invalidate_ack(home, arts_global_rank_id);
-    }
-    arts_shared_release(&looked);
-    return;
-  }
+void arts_send_db_inv_invalidate_ack(unsigned int home_rank,
+                                     arts_guid_t db_guid, uint64_t home_token) {
   struct arts_msg_inv_invalidate_ack_packet_s p;
   arts_fill_packet_header(&p.header, sizeof(p), MSG_DB_INV_INVALIDATE_ACK);
   p.header.rank = arts_global_rank_id;
   p.db_guid = db_guid;
+  p.home_token = home_token;
+  if (home_rank == arts_global_rank_id) {
+    /* The answer, as on the wire, on the home descriptor the token names,
+     * under the round's count, which the body drops last.  No count of its
+     * own: the body drops no count its caller runs under. */
+    arts_handler_db_inv_invalidate_ack(&p);
+    return;
+  }
   arts_transport_send_async((int)home_rank, (char *)&p, sizeof(p));
 }
 

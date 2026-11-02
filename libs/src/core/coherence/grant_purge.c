@@ -224,8 +224,10 @@ serve: {
        * to keep, so "equal" would be equal to nothing. */
       bool data_less = (target_has != ARTS_GRANT_VERSION_NONE &&
                         target_has == arts_db_grant_serve_version(db));
+      /* The home serves the grant itself and asks for no CONFIRM, so no
+       * home token rides. */
       arts_db_send_grant_response(cache, target, &target_rdzv, data_less,
-                                  target_token);
+                                  target_token, 0u);
       /* The home now holds nothing and is owed nothing but the hand-back, so
        * the baton goes down at once: a request arriving meanwhile finds no
        * possession and waits on the FIFO for that hand-back's acceptance, and

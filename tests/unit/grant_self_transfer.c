@@ -20,10 +20,11 @@
  * into a packet, or to install a snapshot of them) faults; the writer wakes
  * once, its hold counted, on the same buffer at the same version holding the
  * bytes the last turn wrote; the advertised landing goes back once; the CONFIRM
- * leaves once, in the write policy's order; the descriptor's pins balance, the
- * write request's count going once with the grant that closes it; the grant
- * stays here once the writer releases; under VAL write-back the self-credit is
- * made and a concurrent advance of another rank's ledger entry survives.
+ * leaves once, in the write policy's order, naming the home's descriptor by the
+ * home token the INVALIDATE carried; the descriptor's pins balance, the write
+ * request's count going once with the grant that closes it; the grant stays
+ * here once the writer releases; under VAL write-back the self-credit is made
+ * and a concurrent advance of another rank's ledger entry survives.
  *
  * PURE test: no arts_rt, no ports, no threads.
  */
@@ -53,6 +54,7 @@
 #define VERSION 7u
 #define HOME_SEEN 3u     /* the version the ledger says the home holds */
 #define HOME_ADVANCED 9u /* a concurrent serve's advance of that entry */
+#define HOME_TOKEN ((uint64_t)0x40c0ffeeu) /* the home's, opaque here */
 
 unsigned int arts_global_rank_id = SELF;
 unsigned int arts_global_rank_count = 2u;
@@ -275,6 +277,9 @@ void arts_transport_send_async(int rank, char *message, unsigned int length) {
       (unsigned int)rank != HOME || p->db_guid != DB_GUID) {
     fail("a message other than the CONFIRM to the home left");
   }
+  if (p->home_token != HOME_TOKEN) {
+    fail("the CONFIRM does not echo the transfer's home token");
+  }
   g_confirms++;
   g_confirm_step = ++g_step;
 }
@@ -391,6 +396,7 @@ int main(void) {
                          .cookie = (uint64_t)(uintptr_t)g_landing},
       .new_owner_have = VERSION,
       .new_owner_token = (uint64_t)(uintptr_t)g_db,
+      .home_token = HOME_TOKEN,
   };
   payload_protect(PROT_NONE);
   arts_handler_db_grant_invalidate(g_db, &inv);

@@ -237,6 +237,7 @@ void arts_db_cache_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
   c->incoming_new_owner_rdzv = (struct arts_rdzv_landing_s){0, 0, 0, 0};
   c->incoming_new_owner_have = ARTS_GRANT_VERSION_NONE;
   c->incoming_new_owner_token = 0u;
+  c->incoming_new_owner_home_token = 0u;
 #endif
   /* WT has no owner-side dedup map (home serves RO via SNAPSHOT_REQUEST): the
    * owner→owner transfer always ships an empty map.  NULL so the shared ship
@@ -599,25 +600,24 @@ void arts_handler_db_publish(void *item_v, void *args_v) {
                        pub_landed_discard, ctx);
 }
 
-/* The coherent destroy at the home (arts_handler_db_destroy, under its
- * caller's ref on the home db_s).  Order: roster fan-out, then
- * arts_ooo_retire LAST (detach the slot cb + drop the install ref); a waiter
- * left parked at destroy (UB) is never woken and keeps the descriptor through
- * its slot's pin, and the cb deleter frees the cache once every ref drains.
- * A second DESTROY_REQ parks on the empty slot (a second destroy is a program
- * error).  WT roster source = home->cached_ranks.  The teardown is immediate:
- * every release that sends the home anything (a publish, a hand-back) blocks
- * until the home ACKs it, so under the destroy contract none arrives after the
- * destroy; a transfer's CONFIRM that does finds no home and is dropped. */
 void arts_db_destroy_arrived(struct arts_db_s *db) {
   arts_db_cover_destroy(db);
 }
 
 /* The teardown, run by whichever of the destroy and the last request the home
- * was told is coming reaches the gate's edge.  Roster fan-out, then the slot
- * return.  The queued ownership requesters are NOT drained for the roster:
- * the FIFO has exactly one consumer — the rank holding the transfer baton —
- * and the roster is complete without them. */
+ * was told is coming reaches the gate's edge.  Roster fan-out
+ * (cached_ranks), then the slot return; a waiter left parked at the destroy
+ * (outside the destroy contract) is never woken, and the cb deleter frees the
+ * cache once every count drains.  The queued ownership requesters are NOT
+ * drained for the roster: the FIFO has exactly one consumer — the rank
+ * holding the transfer baton — and the roster is complete without them.  No
+ * release is waited for: every release that sends the home anything (a
+ * publish, a hand-back) blocks until the home ACKs it, so under the destroy
+ * contract none arrives after the destroy.  Where the home revokes, a
+ * transfer's CONFIRM can: nothing gates on it, so the new owner's writers
+ * may run, release, and be followed by the destroy before it lands.  It
+ * reaches the retired descriptor through its home token, which the baton
+ * tenure's count keeps, and only ends the tenure. */
 void arts_db_home_destroy_now(struct arts_db_s *db) {
   arts_guid_t guid = db->cache.db_guid;
   struct arts_rank_bitset_cursor_s c =

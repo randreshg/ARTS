@@ -1099,6 +1099,7 @@ static void holder_ships_to_home(int nth) {
   m.hdr.data_size = SIZE;
   m.hdr.rdzv_cookie = iv->new_owner_rdzv.cookie;
   m.hdr.token = iv->new_owner_token;
+  m.hdr.home_token = iv->home_token;
   arts_handler_db_grant_response(&m, sizeof(m));
 }
 #endif
@@ -1258,8 +1259,18 @@ static void home_read_served_retired(void) {
 
 #if PUBLISHES
 #ifdef ARTS_PROTOCOL_INV
+/* REQ's ack to the INVALIDATE that just left, echoing the round's home
+ * token. */
 static void ack_remote_invalidate(void) {
-  arts_handler_db_inv_invalidate_ack(g_db, REQ);
+  const struct arts_msg_inv_invalidate_packet_s *inv =
+      (const struct arts_msg_inv_invalidate_packet_s *)g_sent[g_nsent - 1].buf;
+  struct arts_msg_inv_invalidate_ack_packet_s p;
+  memset(&p, 0, sizeof(p));
+  p.header.message_type = MSG_DB_INV_INVALIDATE_ACK;
+  p.header.rank = REQ;
+  p.db_guid = inv->db_guid;
+  p.home_token = inv->home_token;
+  arts_handler_db_inv_invalidate_ack(&p);
 }
 #endif
 

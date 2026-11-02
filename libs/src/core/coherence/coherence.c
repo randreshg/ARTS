@@ -1935,8 +1935,9 @@ void arts_db_debug_quiescence_check(void) {
 }
 
 /* After every thread joined, the words read relaxed.  Each item below is an
- * open request axis (coherence.h): its count is the one its cut answer would
- * have dropped. */
+ * open request axis or an open round of the home (coherence.h): its count is
+ * the one its cut answer would have dropped.  The home's rows read home
+ * fields, which a cache-only stub does not carry. */
 void arts_db_sweep_open_items(struct arts_db_s *db, arts_shared_ptr_t cb) {
   unsigned int open = 0u;
 #if defined(ARTS_PROTOCOL_VAL)
@@ -1958,8 +1959,24 @@ void arts_db_sweep_open_items(struct arts_db_s *db, arts_shared_ptr_t cb) {
       atomic_load_explicit(&db->cache.pub_flight, memory_order_relaxed) != 0u
           ? 1u
           : 0u;
+  if (db->home_initialized) {
+    /* An armed invalidation round. */
+    open += atomic_load_explicit(&db->round_acks, memory_order_relaxed) != 0u
+                ? 1u
+                : 0u;
+  }
 #else
   (void)db;
+#endif
+#if (defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)) &&              \
+    !defined(ARTS_RELEASE_PURGE)
+  if (db->home_initialized) {
+    /* A held baton: once every thread has joined, a tenure whose transfer
+     * awaits its CONFIRM. */
+    open += atomic_load_explicit(&db->grant_baton, memory_order_relaxed) != 0u
+                ? 1u
+                : 0u;
+  }
 #endif
   while (open-- != 0u) {
     arts_shared_ptr_t h = cb;

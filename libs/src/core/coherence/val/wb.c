@@ -161,6 +161,7 @@ void arts_db_cache_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
   c->incoming_new_owner_rdzv = (struct arts_rdzv_landing_s){0, 0, 0, 0};
   c->incoming_new_owner_have = ARTS_GRANT_VERSION_NONE;
   c->incoming_new_owner_token = 0u;
+  c->incoming_new_owner_home_token = 0u;
   arts_db_cache_common_init(c, db_guid, db_size, kind, creator_rank);
 }
 
@@ -239,9 +240,9 @@ void arts_handler_db_snapshot_request(void *item_v, void *args_v) {
    * applying the owner-side cached_version dedup.
    *
    * Record the requester in the cached-ranks set, then redirect to the current
-   * owner.  A destroyed DB is handled by the route_table lookup miss (slot
-   * value NULL-stored before destroy) + the handler single-actor invariant —
-   * no per-home destroy flag. */
+   * owner.  A request reaching a home its destroy marked but did not yet tear
+   * down is settled by the cover step above; one arriving after the teardown
+   * finds the slot empty. */
   struct arts_db_s *db = arts_db_of_cache(cache);
   arts_rank_bitset_note(&db->cached_ranks, requester);
   /* Forward to the current owner unconditionally: even mid-transfer, rw_holder
@@ -267,24 +268,21 @@ void arts_handler_db_snapshot_request(void *item_v, void *args_v) {
                                  a->token);
 }
 
-/* The coherent destroy at the home (arts_handler_db_destroy, under its
- * caller's ref on the home db_s).  Order: roster fan-out, then
- * arts_ooo_retire LAST (a parked waiter at destroy = UB, never woken: its
- * slot's pin keeps it).  WB roster source = the cached-ranks bit-set: the
- * creator joins it at create and every requester when its request arrives,
- * so it names rw_holder and, during a transfer, pending_install_owner too.
- * The teardown is immediate: no release on this arm sends the home anything,
- * and a transfer's CONFIRM is answered before the new owner's writers run, so
- * under the destroy contract nothing owed to the home can arrive after the
- * destroy. */
 void arts_db_destroy_arrived(struct arts_db_s *db) {
   arts_db_cover_destroy(db);
 }
 
 /* The teardown, run by whichever of the destroy and the last request the home
  * was told is coming reaches the gate's edge: roster fan-out, then the slot
- * return.  The request FIFO is not read: its one consumer is the baton holder,
- * and every queued requester is already on the bit-set. */
+ * return; a waiter left parked at the destroy (outside the destroy contract)
+ * is never woken.  The roster is the cached-ranks bit-set: the creator joins
+ * it at create and every requester when its request arrives, so it names
+ * rw_holder and, during a transfer, pending_install_owner too.  The request
+ * FIFO is not read: its one consumer is the baton holder, and every queued
+ * requester is already on the bit-set.  Nothing else is waited for: no
+ * release on this arm sends the home anything, and a transfer's CONFIRM is
+ * answered before the new owner's writers run, so under the destroy contract
+ * nothing owed to the home arrives after the destroy. */
 void arts_db_home_destroy_now(struct arts_db_s *db) {
   struct arts_rank_bitset_cursor_s c =
       arts_rank_bitset_cursor(&db->cached_ranks);

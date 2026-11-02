@@ -267,6 +267,13 @@ struct arts_db_cache_s {
    * waiter is woken regardless of order, so a LIFO stack suffices. */
   arts_lf_stack_t pending_rw;
   struct arts_db_reader_pool_s reader_pool; /* nodes of the reader chain */
+  /* The home token of the round whose ack a kill-marked fetch owes.  Written
+   * by the INVALIDATE that marks the fetch, before its cache_state CAS
+   * commits the mark; read, to send the ack, by the frame whose cache_state
+   * CAS finds the mark (the doomed DELIVER, or the size round or dismiss
+   * that closes the fetch).  Plain, ordered by cache_state: a block runs one
+   * round at a time, and the next round's INVALIDATE follows this ack. */
+  uint64_t owed_ack_token;
   /* The write request's axis lives in cache_state (rw), beside the read
    * plane, so a reader and a writer decide against each other in one CAS. */
 #ifndef ARTS_RELEASE_PURGE
@@ -285,6 +292,9 @@ struct arts_db_cache_s {
   /* The pending new owner's answer token, published with the three fields
    * above; the 0-edge actor's GRANT_RESPONSE echoes it. */
   uint64_t incoming_new_owner_token;
+  /* The transfer's home token, published with the fields above; the
+   * GRANT_RESPONSE carries it to the new owner's CONFIRM. */
+  uint64_t incoming_new_owner_home_token;
 #endif
 #if defined(ARTS_WRITE_POLICY_WB) && ARTS_DB_CENSUS
   /* Whether the grant this rank installed last was shipped by another rank:

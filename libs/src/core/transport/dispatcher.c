@@ -292,6 +292,7 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
                            .cookie = pack->new_owner_rdzv.cookie},
         .new_owner_have = pack->new_owner_have,
         .new_owner_token = pack->new_owner_token,
+        .home_token = pack->home_token,
     };
     /* Pin the db_s for the handler's duration (the embedded cache is its FIRST
      * member, offset 0) so a concurrent DESTROY on another progress thread
@@ -300,7 +301,9 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
      * program within the destroy contract.  A destroy issued while the
      * requester's acquire was pending may have NULLed the route slot first;
      * the teardown frees the waiters, so an orphaned INVALIDATE for a
-     * torn-down DB is simply dropped. */
+     * torn-down DB is simply dropped, and the home, whose teardown sent that
+     * destroy, keeps the count of the tenure the INVALIDATE carried to the
+     * process exit (the teardown sweep reaches installed descriptors only). */
     arts_shared_ptr_t db_h = arts_route_table_lookup_db(pack->db_guid);
     struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(db_h);
     if (db != NULL) {
@@ -811,17 +814,10 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
     ARTS_DEBUG("Coh GRANT_CONFIRM Received");
     struct arts_msg_grant_confirm_packet_s *pack =
         (struct arts_msg_grant_confirm_packet_s *)(packet);
-    /* Cat-C lookup-acquire-or-drop: HIT advances the transfer round on the
-     * ref-pinned home db_s; MISS (DB destroyed) silently drops.  The new owner
+    /* An answer to the home's transfer, on the home descriptor the home token
+     * names; on a retired one it only ends the baton's tenure.  The new owner
      * is pending_install_owner; its token rides for the CONFIRM_ACK. */
-    struct arts_db_grant_confirm_args_s args = {.token = pack->token,
-                                                .sender = pack->header.rank};
-    arts_shared_ptr_t h = arts_route_table_lookup_db(pack->db_guid);
-    struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(h);
-    if (db != NULL) {
-      arts_handler_db_grant_confirm(db, &args);
-    }
-    arts_shared_release(&h);
+    arts_handler_db_grant_confirm(pack);
     break;
   }
 #endif /* GRANT_CONFIRM model dispatch */
@@ -1021,17 +1017,18 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
     ARTS_DEBUG("Coh INV_INVALIDATE Received");
     struct arts_msg_inv_invalidate_packet_s *pack =
         (struct arts_msg_inv_invalidate_packet_s *)(packet);
-    /* Cat-C; MISS (cache already destroyed) MUST still ack — the round's
-     * close is gated on every roster member answering. */
+    /* Cat-C; MISS (cache already destroyed) MUST still ack, echoing the
+     * round's home token — the round's close is gated on every roster member
+     * answering. */
     arts_shared_ptr_t h = arts_route_table_lookup_db(pack->db_guid);
     struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(h);
     if (db != NULL) {
-      arts_handler_db_inv_invalidate(db);
+      arts_handler_db_inv_invalidate(db, pack->home_token);
       arts_shared_release(&h);
     } else {
       arts_shared_release(&h);
-      arts_send_db_inv_invalidate_ack(/*held=*/NULL, pack->header.rank,
-                                      pack->db_guid);
+      arts_send_db_inv_invalidate_ack(pack->header.rank, pack->db_guid,
+                                      pack->home_token);
     }
     break;
   }
@@ -1039,14 +1036,10 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
     ARTS_DEBUG("Coh INV_INVALIDATE_ACK Received");
     struct arts_msg_inv_invalidate_ack_packet_s *pack =
         (struct arts_msg_inv_invalidate_ack_packet_s *)(packet);
-    /* Cat-C at home; a MISS means the DB was destroyed with a round open —
-     * outside the destroy contract — drop. */
-    arts_shared_ptr_t h = arts_route_table_lookup_db(pack->db_guid);
-    struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(h);
-    if (db != NULL) {
-      arts_handler_db_inv_invalidate_ack(db, pack->header.rank);
-    }
-    arts_shared_release(&h);
+    /* An answer to the home's round, on the home descriptor the home token
+     * names; on a retired one (the block destroyed with a round open,
+     * outside the destroy contract) it only takes the round's count step. */
+    arts_handler_db_inv_invalidate_ack(pack);
     break;
   }
 #ifdef ARTS_WRITE_POLICY_WB

@@ -178,16 +178,19 @@ _Static_assert(sizeof(struct arts_msg_time_sync_req_packet_s) == 24,
 _Static_assert(sizeof(struct arts_msg_time_sync_resp_packet_s) == 32,
                "time_sync_resp sizeof drifted");
 #if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
-/* The answer token follows the fields every cell has; GRANT_RESPONSE's map
- * trails the token. */
+/* The answer token follows the fields every cell has, and a home round's
+ * home token follows it; GRANT_RESPONSE's map trails both. */
 _Static_assert(sizeof(struct arts_msg_grant_request_packet_s) == 72,
                "ownership_request sizeof drifted");
 _Static_assert(offsetof(struct arts_msg_grant_request_packet_s, token) == 64,
                "ownership_request token drifted");
-_Static_assert(sizeof(struct arts_msg_grant_response_packet_s) == 72,
+_Static_assert(sizeof(struct arts_msg_grant_response_packet_s) == 80,
                "ownership_response sizeof drifted");
 _Static_assert(offsetof(struct arts_msg_grant_response_packet_s, token) == 64,
                "ownership_response token drifted");
+_Static_assert(offsetof(struct arts_msg_grant_response_packet_s,
+                        home_token) == 72,
+               "ownership_response home_token drifted");
 _Static_assert(sizeof(struct arts_msg_publish_packet_s) == 80,
                "publish sizeof drifted");
 _Static_assert(offsetof(struct arts_msg_publish_packet_s, token) == 72,
@@ -196,12 +199,15 @@ _Static_assert(sizeof(struct arts_msg_publish_ack_packet_s) == 72,
                "publish_ack sizeof drifted");
 _Static_assert(offsetof(struct arts_msg_publish_ack_packet_s, token) == 64,
                "publish_ack token drifted");
-_Static_assert(sizeof(struct arts_msg_grant_invalidate_packet_s) == 80,
+_Static_assert(sizeof(struct arts_msg_grant_invalidate_packet_s) == 88,
                "ownership_invalidate sizeof drifted");
 _Static_assert(offsetof(struct arts_msg_grant_invalidate_packet_s,
                         new_owner_token) == 72,
                "ownership_invalidate new_owner_token drifted");
-_Static_assert(sizeof(struct arts_msg_grant_confirm_ack_packet_s) == 88,
+_Static_assert(offsetof(struct arts_msg_grant_invalidate_packet_s,
+                        home_token) == 80,
+               "ownership_invalidate home_token drifted");
+_Static_assert(sizeof(struct arts_msg_grant_confirm_ack_packet_s) == 96,
                "ownership_confirm_ack sizeof drifted");
 _Static_assert(offsetof(struct arts_msg_grant_confirm_ack_packet_s, token) ==
                    24,
@@ -209,14 +215,20 @@ _Static_assert(offsetof(struct arts_msg_grant_confirm_ack_packet_s, token) ==
 _Static_assert(offsetof(struct arts_msg_grant_confirm_ack_packet_s,
                         new_owner_token) == 80,
                "ownership_confirm_ack new_owner_token drifted");
+_Static_assert(offsetof(struct arts_msg_grant_confirm_ack_packet_s,
+                        home_token) == 88,
+               "ownership_confirm_ack home_token drifted");
 _Static_assert(sizeof(struct arts_msg_grant_cts_packet_s) == 40,
                "ownership_cts sizeof drifted");
 _Static_assert(offsetof(struct arts_msg_grant_cts_packet_s, token) == 32,
                "ownership_cts token drifted");
-_Static_assert(sizeof(struct arts_msg_grant_confirm_packet_s) == 32,
+_Static_assert(sizeof(struct arts_msg_grant_confirm_packet_s) == 40,
                "ownership_confirm sizeof drifted");
 _Static_assert(offsetof(struct arts_msg_grant_confirm_packet_s, token) == 24,
                "ownership_confirm token drifted");
+_Static_assert(offsetof(struct arts_msg_grant_confirm_packet_s, home_token) ==
+                   32,
+               "ownership_confirm home_token drifted");
 #else
 _Static_assert(sizeof(struct arts_msg_grant_request_packet_s) == 64,
                "ownership_request sizeof drifted");
@@ -271,10 +283,16 @@ _Static_assert(sizeof(struct arts_msg_inv_deliver_packet_s) == 64,
                "inv_deliver sizeof drifted");
 _Static_assert(offsetof(struct arts_msg_inv_deliver_packet_s, token) == 56,
                "inv_deliver token drifted");
-_Static_assert(sizeof(struct arts_msg_inv_invalidate_packet_s) == 24,
+_Static_assert(sizeof(struct arts_msg_inv_invalidate_packet_s) == 32,
                "inv_invalidate sizeof drifted");
-_Static_assert(sizeof(struct arts_msg_inv_invalidate_ack_packet_s) == 24,
+_Static_assert(offsetof(struct arts_msg_inv_invalidate_packet_s, home_token) ==
+                   24,
+               "inv_invalidate home_token drifted");
+_Static_assert(sizeof(struct arts_msg_inv_invalidate_ack_packet_s) == 32,
                "inv_invalidate_ack sizeof drifted");
+_Static_assert(offsetof(struct arts_msg_inv_invalidate_ack_packet_s,
+                        home_token) == 24,
+               "inv_invalidate_ack home_token drifted");
 _Static_assert(sizeof(struct arts_msg_inv_redirect_packet_s) == 72,
                "inv_redirect sizeof drifted");
 _Static_assert(offsetof(struct arts_msg_inv_redirect_packet_s, token) == 64,

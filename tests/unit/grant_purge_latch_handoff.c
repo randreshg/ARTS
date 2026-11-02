@@ -236,11 +236,16 @@ static void *helper_main(void *arg) {
 
 void arts_db_send_grant_response(struct arts_db_cache_s *c, unsigned int t,
                                  const struct arts_rdzv_landing_s *l, bool dl,
-                                 uint64_t token) {
+                                 uint64_t token, uint64_t home_token) {
   (void)c;
   (void)l;
   (void)dl;
   (void)token;
+  if (home_token != 0u) {
+    printf("FAIL grant_purge_latch_handoff: a home that serves the grant "
+           "itself named a home token\n");
+    exit(1);
+  }
   g_granted[g_grants++ % QCAP] = t;
 #ifdef ARTS_DEBUG_INJECTION
   if (t == g_helper_for) {

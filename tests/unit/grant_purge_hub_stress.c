@@ -225,10 +225,13 @@ static _Atomic(uint64_t) g_acks_to[RANKS + 1];
 
 void arts_db_send_grant_response(struct arts_db_cache_s *c, unsigned int t,
                                  const struct arts_rdzv_landing_s *l, bool dl,
-                                 uint64_t token) {
+                                 uint64_t token, uint64_t home_token) {
   (void)l;
   (void)dl;
   (void)token;
+  if (home_token != 0u) {
+    fail("a home that serves the grant itself named a home token");
+  }
   if (t == 0u || t > RANKS) {
     fail("a grant to a rank that never asked remotely");
     return;

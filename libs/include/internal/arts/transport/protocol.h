@@ -258,7 +258,11 @@ struct ARTS_PACKED arts_msg_rdzv_landing_s {
  * store with the request and echo verbatim in every answer to it.  Only the
  * requester dereferences it: the answer acts on that descriptor instead of
  * resolving the GUID again, the open request holding a count that keeps it
- * valid (coherence.h).  The cookie stays the landing alone. */
+ * valid (coherence.h).  The cookie stays the landing alone.  A round the home
+ * itself starts for answers it waits on (the INV invalidation round, the
+ * transfer of the write right where the home revokes) names the home's
+ * descriptor the same way, as a `home_token` the round's messages carry to
+ * the answer, which only the home dereferences. */
 
 struct ARTS_PACKED arts_msg_grant_request_packet_s {
   struct arts_msg_header_s header;
@@ -332,7 +336,9 @@ struct ARTS_PACKED arts_msg_grant_response_packet_s {
   uint64_t rdzv_txid;   /* write-completion pairing id (0 = no PUT) */
   uint64_t rdzv_cookie; /* requester's landing handle, echoed verbatim */
 #if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
-  uint64_t token; /* the new owner's request's, echoed */
+  uint64_t token;      /* the new owner's request's, echoed */
+  uint64_t home_token; /* the transfer's, for the CONFIRM; 0 where the home
+                          serves the grant itself and asks for none */
 #endif
   /* followed by arts_msg_rank_version_pair_s pairs[map_entry_count], and
    * nothing after them. */
@@ -408,7 +414,8 @@ struct ARTS_PACKED arts_msg_publish_ack_packet_s {
 
 /* GRANT_INVALIDATE: both write policies name the new owner, its landing, the
  * version it holds and its answer token, so the current holder ships the
- * owner→owner GRANT_RESPONSE without a round trip to the home. */
+ * owner→owner GRANT_RESPONSE without a round trip to the home; and the home's
+ * token, which the GRANT_RESPONSE carries on to the new owner's CONFIRM. */
 struct ARTS_PACKED arts_msg_grant_invalidate_packet_s {
   struct arts_msg_header_s header;
   arts_guid_t db_guid;
@@ -424,6 +431,7 @@ struct ARTS_PACKED arts_msg_grant_invalidate_packet_s {
   uint64_t new_owner_have;
 #if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
   uint64_t new_owner_token; /* the new owner's request's */
+  uint64_t home_token;      /* the transfer's */
 #endif
 };
 
@@ -462,6 +470,7 @@ struct ARTS_PACKED arts_msg_grant_confirm_ack_packet_s {
   uint64_t new_owner_have;
 #if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
   uint64_t new_owner_token; /* piggybacked next owner's request's */
+  uint64_t home_token;      /* the piggybacked transfer's; 0 on a plain ack */
 #endif
 };
 
@@ -569,14 +578,16 @@ struct ARTS_PACKED arts_msg_rank_version_pair_s {
 };
 
 /* GRANT_CONFIRM — VAL and INV, both write policies, where the home revokes:
- * new owner C confirms installation of the transferred DB to home A.  The home
- * takes the new owner from pending_install_owner; C's answer token rides for
- * the write-back home's CONFIRM_ACK, which answers C's request. */
+ * new owner C confirms installation of the transferred DB to home A.  It
+ * answers the home's transfer, on the home descriptor `home_token` names.  The
+ * home takes the new owner from pending_install_owner; C's answer token rides
+ * for the write-back home's CONFIRM_ACK, which answers C's request. */
 struct ARTS_PACKED arts_msg_grant_confirm_packet_s {
   struct arts_msg_header_s header;
   arts_guid_t db_guid;
 #if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
   uint64_t token;
+  uint64_t home_token; /* the transfer's, echoed from its GRANT_RESPONSE */
 #endif
 };
 
@@ -836,14 +847,18 @@ struct ARTS_PACKED arts_msg_inv_deliver_packet_s {
   uint64_t token; /* the request's, echoed */
 };
 
+/* The round's INVALIDATE and its ACK: the ACK answers the home's round, on
+ * the home descriptor `home_token` names. */
 struct ARTS_PACKED arts_msg_inv_invalidate_packet_s {
   struct arts_msg_header_s header;
   arts_guid_t db_guid;
+  uint64_t home_token; /* the round's */
 };
 
 struct ARTS_PACKED arts_msg_inv_invalidate_ack_packet_s {
   struct arts_msg_header_s header;
   arts_guid_t db_guid;
+  uint64_t home_token; /* the round's, echoed */
 };
 
 /* WB write policy only: the home forwards a read it cannot answer. */

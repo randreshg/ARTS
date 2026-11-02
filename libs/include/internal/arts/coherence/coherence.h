@@ -67,31 +67,51 @@ extern "C" {
  * borrows the count; its callback decides "retired" the same way, and its
  * discard never reads the descriptor.
  *
+ * A round the home starts for answers it waits on is an axis of the home's
+ * descriptor under the same rule, its messages carrying the home's token:
+ * the INV invalidation round (taken just before its ack count is armed,
+ * dropped by the ack that ends the round, after the round's finish), and,
+ * where the home revokes the write right, the transfer baton's tenure (taken
+ * by the claim that lifts the baton off zero, carried across every pop of
+ * the tenure, dropped by the put-down that ends it).  An answer to a round
+ * that finds the home retired still takes the round's counting step on the
+ * descriptor (an ack's decrement, a CONFIRM's put-down) and nothing else:
+ * it finishes, serves, sends and resumes nothing, and the step that ends the
+ * round drops its count.  As for a request axis, the teardown sweep drops the
+ * count of a round a cut shutdown left open only on a home still installed at
+ * teardown; a retired home keeps it to the process exit, as when the shutdown
+ * cuts a write-through CONFIRM that legally trails the home's teardown.
+ *
  * Self-sends.  A request whose home is this rank runs its body inline, and
  * the body can answer this rank's own request inline too, dropping that
  * request's count and running on after it, while the caller may be running
- * under that very count (an answer that re-sends, a flight's relaunch, a
- * commit that confirms).  So every self-sent request runs its body under a
- * count of its own, released once the body returns: a copy of the
- * descriptor's control block while it is live (arts_route_table_copy_live).
- * A dispatch onto a descriptor that is not live takes the engine's GUID path,
- * which may defer the body to the install's drain, whose handle holds it;
- * only CONFIRM's sender, which calls its handler directly, looks the block up
- * instead.  A self-sent answer takes none: it drops its count as its last
- * access, and its caller runs under another count: a request's body under
- * such a count, a lookup's or a drain's; an answer frame that reaches it (an
- * INV CTS that closes, a deliver whose copy a round killed) under its own
- * axis count.  Nor do the self branches whose bodies drop no count their
- * caller runs under: a DESTROY (on the caller's own reference), a snapshot
- * redirect, a GRANT_INVALIDATE (its self-transfer can drop the count of the
- * home's own write request, never one its caller runs under), an INV
- * invalidate and its ack.
+ * under that very count (an answer that re-sends, a flight's relaunch).  So
+ * every self-sent request runs its body under a count of its own, released
+ * once the body returns: a copy of the descriptor's control block while it is
+ * live (arts_route_table_copy_live).  A dispatch onto a descriptor that is
+ * not live takes the engine's GUID path, which may defer the body to the
+ * install's drain, whose handle holds it.  The home's INVALIDATE to its own
+ * rank is such a request (its holder body can ship a whole transfer to this
+ * rank inline, whose CONFIRM may end the tenure the caller runs under); it
+ * calls its handler directly and looks the block up when it is not live.  A
+ * self-sent answer takes none: it drops its count as its last access, and its
+ * caller runs under another count: a request's body under such a count, a
+ * lookup's or a drain's; an answer frame that reaches it (an INV CTS that
+ * closes, a deliver whose copy a round killed) under its own axis count.  The
+ * new owner's CONFIRM to its own rank, an answer to the home's own tenure,
+ * takes none either: its body is reached through the home token and runs
+ * under the tenure's count.  Under write-back the CONFIRM_ACK it sends inline
+ * drops the count of the write request its committing caller runs under, so
+ * that caller sends the CONFIRM as its last access.  Nor do the self branches
+ * whose bodies drop no count their caller runs under: a DESTROY (on the
+ * caller's own reference), a snapshot redirect, an INV invalidate and its ack
+ * (whose body runs under the round's count and drops it last).
  *
  * Orders.  The take is a relaxed increment made before the send, so the
  * deliveries that cause the answer order it before the answer's acq_rel
- * decrement.  The window between the CAS that opens the axis and the take
- * is covered by the count the opener runs under (the slot's pin under a walk's
- * or a drain's account, the dispatcher's pin for a replay off the walk, a grant
+ * decrement.  The window between the CAS that opens the axis and the take is
+ * covered by the count the opener runs under (the slot's pin under a walk's or
+ * a drain's account, the dispatcher's pin for a replay off the walk, a grant
  * frame's or a create's count for a rearm, the releasing EDT's pin for a
  * flight) and, beneath that count, by the install's hold (the control block's
  * in_slot bit) and the cover gate.  The install's only retire is the home's
@@ -100,10 +120,13 @@ extern "C" {
  * covered request until that request arrives, and the destroy contract keeps it
  * behind an uncovered one, whose waiters cannot complete before its answer, so
  * no legal destroy precedes the take.  A decrement that precedes the take (a
- * claim's, which holds a count of its own) therefore never reaches zero.
- * The tag load is relaxed: the descriptor stays valid either way, and a body
- * that runs while a retire is under way copes with it as one a lookup pinned
- * before the retire does. */
+ * claim's, which holds a count of its own) therefore never reaches zero.  A
+ * home round's take runs under the frame that starts the round: the request
+ * body whose claim lifts the baton, the release body that runs the round, or a
+ * finisher, under the count of the round it ends, for a round it re-arms.  The
+ * tag load is relaxed: the descriptor stays valid either way, and a body that
+ * runs while a retire is under way copes with it as one a lookup pinned before
+ * the retire does. */
 static inline uint64_t arts_db_token(struct arts_db_s *db) {
   return (uint64_t)(uintptr_t)db;
 }
@@ -376,7 +399,8 @@ void arts_db_debug_quiescence_check(void);
  * shutdown left open (a request or round whose answer it cut) that owns a
  * count of `cb`, the descriptor's own cb, would have dropped it with that
  * answer; the rows drop it, one release per such item.  An arm whose open
- * items own none has no row. */
+ * items own none has no row.  A descriptor retired before the sweep is not
+ * among them: its open items keep their counts to the process exit. */
 void arts_db_sweep_open_items(struct arts_db_s *db, arts_shared_ptr_t cb);
 
 /* Take the EDT's strong buffer ref and return buf->data (NULL when no buffer is
@@ -676,7 +700,12 @@ arts_db_acquire_remote_rw(struct arts_db_cache_s *cache, struct arts_edt_s *edt,
  *               behind: 1 for the claim that won it, and for a CONFIRM, which
  *               inherits the hold through the round's messages, a value it
  *               loaded with acquire before its own look; `looked` says the
- *               caller has just found no linked requester.
+ *               caller has just found no linked requester.  The put-down
+ *               drops the tenure's count, so the caller touches nothing of
+ *               the descriptor after this returns.
+ * end_tenure:   a CONFIRM's step on a home retired meanwhile (RETAIN only):
+ *               the baton goes down with nothing popped, and the tenure's
+ *               count goes last.
  * release_skip: release_rw's defensive entry guard (true = nothing to drop).
  * release_commit: the count-dropping edge of a writer's own release; the
  *               install's own hold is closed by commit_drain / commit_finish
@@ -689,6 +718,7 @@ void arts_db_grant_request_arrived(struct arts_db_cache_s *cache,
 #ifndef ARTS_RELEASE_PURGE
 void arts_db_grant_advance(struct arts_db_cache_s *cache, struct arts_db_s *db,
                            bool looked, uint64_t seen);
+void arts_db_grant_end_tenure(struct arts_db_s *db);
 #endif
 bool arts_db_grant_release_skip(struct arts_db_cache_s *cache);
 void arts_db_grant_release_commit(struct arts_db_cache_s *cache);

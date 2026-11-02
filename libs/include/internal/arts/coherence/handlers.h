@@ -18,11 +18,11 @@
  *     a live cache on HIT, or defers the args for replay once DB_CREATE
  *     installs.
  *   Cat-C (non-deferrable, no OOO_* kind — e.g. CACHE_DESTROY /
- *     SNAPSHOT_REDIRECT / GRANT_INVALIDATE / GRANT_CONFIRM / CREATE_RETURN
- *     / EXCL_CTS): the wire dispatcher does a
- *     ref-pinned lookup via arts_route_table_lookup_db; on HIT it calls the
- *     pure (item, args) body, on MISS it applies the handler's exact
- *     miss-action (silent drop, a dismiss, or sem-post — see each body).
+ *     SNAPSHOT_REDIRECT / GRANT_INVALIDATE / CREATE_RETURN / EXCL_CTS): the
+ *     wire dispatcher does a ref-pinned lookup via arts_route_table_lookup_db;
+ *     on HIT it calls the pure (item, args) body, on MISS it applies the
+ *     handler's exact miss-action (silent drop, a dismiss, or sem-post — see
+ *     each body).
  *   Either way an (item, args) body is handed its block already acquired
  *   and ref-pinned and does not look it up to operate on it.  A message
  *   handed over as the whole packet (EXCL_GRANT and the EXCL RETAIN
@@ -37,12 +37,14 @@
  *     entry takes the requester's descriptor from the token the answer
  *     echoes, under the count its open request holds, and runs the body on
  *     it unless its tag shows it retired, when it only ends the landing and
- *     drops that count (coherence.h).  SNAPSHOT_RESPONSE, GRANT_CONFIRM_ACK,
- *     PUBLISH_ACK and INV_CTS each have one entry that the wire and a
- *     self-send both call.  A self-transfer runs the GRANT_RESPONSE body
- *     (arts_db_grant_response_on) directly on the descriptor it holds,
- *     retired or not; an INV self-serve checks the token's descriptor for a
- *     retire itself and runs the INV_DELIVER body (inv_deliver_on); a
+ *     drops that count (coherence.h).  The answers to a round the home
+ *     started (INV_INVALIDATE_ACK, GRANT_CONFIRM) take the home's descriptor
+ *     from the home token the same way, under the round's count, and on a
+ *     retired one take only the round's counting step.  The wire and a
+ *     self-send call the same entry, except that a self-transfer runs the
+ *     GRANT_RESPONSE body (arts_db_grant_response_on) directly on the
+ *     descriptor it holds, an INV self-serve checks the token's descriptor for
+ *     a retire itself and runs the INV_DELIVER body (inv_deliver_on), and a
  *     GRANT_CTS is never self-sent. */
 
 #ifndef ARTS_COHERENCE_HANDLERS_H
@@ -252,11 +254,14 @@ struct arts_db_grant_response_args_s {
   uint64_t data_size;   /* the block's size, payload or not */
   uint64_t rdzv_txid;   /* != 0: payload PUT into our landing; pair by txid */
   uint64_t rdzv_cookie; /* our landing handle, echoed back; 0 = none */
+  uint64_t home_token;  /* the transfer's, for the CONFIRM; 0 = none owed */
 };
 /* The GRANT_RESPONSE body on this rank's descriptor of the block, under the
  * count of the write request it answers (a one-sided payload's pairing
  * borrows it).  Under WT the commit closes the write axis and drops that
- * count; under WB the CONFIRM_ACK does. */
+ * count; under WB the CONFIRM_ACK does, on the home rank inside the commit
+ * (in this call, or in a one-sided payload's pairing callback), so no caller
+ * runs on that count after the commit. */
 void arts_db_grant_response_on(struct arts_db_s *db,
                                const struct arts_db_grant_response_args_s *a);
 /* SNAPSHOT_RESPONSE (an answer; the wire and a self-serve): the read window's
@@ -308,27 +313,23 @@ void arts_handler_db_snapshot_redirect(void *item_v, void *args_v);
 
 #if (defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)) &&              \
     !defined(ARTS_RELEASE_PURGE)
-/* Cat-C pure body (CONFIRM, home side; both write policies of the revoking
- * release policy — a voluntarily returned grant names no holder, so it has no
- * CONFIRM): item_v is the db_s the dispatcher acquired, or on a self-send the
- * one its sender holds a count of its own on (cache is its first member);
- * args_v is an arts_db_grant_confirm_args_s (the new owner itself is read
- * from db->pending_install_owner).  NOT OoO-deferrable — the
- * dispatcher looks the cache up with a held ref and, on a MISS (DB destroyed),
- * SILENTLY DROPS.  Records the new rw_holder, then starts the next transfer
- * round or puts the baton down.  WB additionally replies
- * with CONFIRM_ACK, echoing the new owner's token; WT does not (the new owner
- * already drained at GRANT_RESPONSE). */
-struct arts_db_grant_confirm_args_s {
-  uint64_t token;      /* the new owner's request's answer token */
-  unsigned int sender; /* the new owner: the rank the CONFIRM came from */
-};
-void arts_handler_db_grant_confirm(void *item_v, void *args_v);
+/* CONFIRM at the home (both write policies of the revoking release policy —
+ * a voluntarily returned grant names no holder, so it has no CONFIRM): the
+ * answer to the home's transfer, on the home descriptor the packet's
+ * home_token names, under the baton tenure's count.  Records the new
+ * rw_holder (read from db->pending_install_owner), then starts the next
+ * transfer round or puts the baton down.  WB additionally replies with
+ * CONFIRM_ACK, echoing the new owner's token; WT does not (the new owner
+ * already drained at GRANT_RESPONSE).  On a retired home it only ends the
+ * tenure (arts_db_grant_end_tenure). */
+void arts_handler_db_grant_confirm(
+    const struct arts_msg_grant_confirm_packet_s *p);
 
 /* Send CONFIRM from new owner C back to home A once the ownership transfer is
  * complete (both write policies; home flips rw_holder + advances the round).
- * db is the new owner's descriptor, which the caller holds. */
-void arts_send_db_grant_confirm(struct arts_db_s *db);
+ * db is the new owner's descriptor, which the caller holds; home_token the
+ * transfer's, from its GRANT_RESPONSE. */
+void arts_send_db_grant_confirm(struct arts_db_s *db, uint64_t home_token);
 #endif /* shared grant plane, revoking release policy */
 
 /* ===== Sender helpers ================================================ */
@@ -385,11 +386,12 @@ void arts_send_db_publish_ack(unsigned int releaser_rank, struct arts_db_s *db,
  * announce leg. */
 void arts_send_db_create_return(unsigned int creator_rank,
                                 struct arts_db_cache_s *home_cache);
-/* db: the home's descriptor, which the caller holds; new_owner_rank: rank
- * home selected as next owner; new_owner_rdzv: that rank's transfer landing
- * (from its queued request), forwarded so the current holder can PUT the
- * transfer payload directly (NULL = zero landing — sentinel/data-less
- * round); new_owner_token: that request's token, which the grant echoes. */
+/* db: the home's descriptor, which the caller holds, named by the message's
+ * home token; new_owner_rank: rank home selected as next owner;
+ * new_owner_rdzv: that rank's transfer landing (from its queued request),
+ * forwarded so the current holder can PUT the transfer payload directly
+ * (NULL = zero landing — sentinel/data-less round); new_owner_token: that
+ * request's token, which the grant echoes. */
 void arts_send_db_grant_invalidate(
     struct arts_db_s *db, unsigned int owner_rank, unsigned int new_owner_rank,
     const struct arts_rdzv_landing_s *new_owner_rdzv, uint64_t new_owner_have,
@@ -448,9 +450,9 @@ void arts_send_db_snapshot_redirect(struct arts_db_s *db,
  * new_owner_token C's request's token, from its CONFIRM.  Self-send runs the
  * handler inline.  piggyback_new_owner == ARTS_NO_PENDING_OWNER ⇒ plain
  * CONFIRM_ACK (no pending requester).  Otherwise the round advances and the
- * ack carries the next transfer target and its token, so the new owner's
- * handler applies the INVALIDATE effect in the same message (no separate
- * INVALIDATE, no reorder window). */
+ * ack carries the next transfer target, its token and the home's (db's), so
+ * the new owner's handler applies the INVALIDATE effect in the same message
+ * (no separate INVALIDATE, no reorder window). */
 void arts_send_db_grant_confirm_ack(
     struct arts_db_s *db, unsigned int new_owner_rank, uint64_t new_owner_token,
     unsigned int piggyback_new_owner,
@@ -478,7 +480,8 @@ void arts_handler_db_grant_confirm_ack(
 void arts_db_send_grant_response(struct arts_db_cache_s *cache,
                                  unsigned int new_owner,
                                  const struct arts_rdzv_landing_s *new_rdzv,
-                                 bool data_less, uint64_t token);
+                                 bool data_less, uint64_t token,
+                                 uint64_t home_token);
 #ifndef ARTS_RELEASE_PURGE
 /* Ship to the target published on this cache by a revocation round, re-arming
  * the field to the sentinel before the send.  Called on the 0-edge of
@@ -502,6 +505,7 @@ uint64_t arts_db_grant_serve_version(struct arts_db_s *db);
 /* ===== INV protocol handlers / senders ================================= */
 
 struct arts_msg_inv_cts_packet_s;
+struct arts_msg_inv_invalidate_ack_packet_s;
 
 /* Cat-B bodies @home.  Both write policies run the same set; what differs is
  * what a read request is answered WITH (the home's own bytes, or a redirect to
@@ -512,9 +516,16 @@ void arts_handler_db_publish(void *item_v, void *args_v);
  * one only gets its landing back and drops the read request's count. */
 void arts_handler_db_inv_cts(struct arts_msg_inv_cts_packet_s *p);
 void arts_handler_db_inv_deliver(void *payload, size_t size);
-void arts_handler_db_inv_invalidate(struct arts_db_s *db);
-void arts_handler_db_inv_invalidate_ack(struct arts_db_s *db,
-                                        unsigned int sharer_rank);
+/* INVALIDATE at a sharer (resolved by GUID, or the home's descriptor on a
+ * self-send); home_token is the round's, which the ack echoes or, when the
+ * ack is owed to a kill-marked fetch, the cache keeps until it is sent. */
+void arts_handler_db_inv_invalidate(struct arts_db_s *db, uint64_t home_token);
+/* INVALIDATE_ACK at the home (an answer to its round) on the descriptor the
+ * home token names, under the round's count: the decrement that ends the
+ * round finishes it, unless the home was retired meanwhile, and drops the
+ * count. */
+void arts_handler_db_inv_invalidate_ack(
+    const struct arts_msg_inv_invalidate_ack_packet_s *p);
 #ifdef ARTS_WRITE_POLICY_WB
 /* The home holds no bytes, so a read request is forwarded to the holder; a
  * holder that no longer has the bytes bounces it back rather than queueing. */
@@ -555,13 +566,10 @@ void arts_send_db_inv_deliver(unsigned int requester_rank,
 /* db: the home's descriptor, which the caller holds. */
 void arts_send_db_inv_invalidate(struct arts_db_s *db,
                                  unsigned int sharer_rank);
-/* held: the self_cb of the sharer's descriptor of db_guid, borrowed under a
- * count the caller holds, or NULL when the caller holds no live one (an
- * INVALIDATE that missed); a home on this rank accounts the ack on it while
- * it is live, and on what a lookup finds otherwise. */
-void arts_send_db_inv_invalidate_ack(arts_shared_ptr_t held,
-                                     unsigned int home_rank,
-                                     arts_guid_t db_guid);
+/* home_token: the round's, from its INVALIDATE; a home on this rank
+ * accounts the ack inline on the descriptor it names. */
+void arts_send_db_inv_invalidate_ack(unsigned int home_rank,
+                                     arts_guid_t db_guid, uint64_t home_token);
 #endif /* ARTS_PROTOCOL_INV */
 
 #ifdef ARTS_PROTOCOL_EXCL

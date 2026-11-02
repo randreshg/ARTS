@@ -53,7 +53,7 @@
 #include "arts/coherence/directory.h" /* arts_home_grantreq_queue_push */
 #include "arts/db.h"
 #include "arts/edt.h"
-#include "arts/gas/route_table.h" /* borrow_or_lookup, copy_live, lookup */
+#include "arts/gas/route_table.h" /* copy_live, lookup */
 #include "arts/ooo.h"
 #include "arts/runtime_state.h"
 #include "arts/runtime_types.h"
@@ -291,7 +291,8 @@ void arts_db_drain_pending_rw_after_grant(struct arts_db_cache_s *cache) {
 void arts_db_send_grant_response(struct arts_db_cache_s *cache,
                                  unsigned int new_owner,
                                  const struct arts_rdzv_landing_s *new_rdzv,
-                                 bool data_less, uint64_t token) {
+                                 bool data_less, uint64_t token,
+                                 uint64_t home_token) {
   struct arts_rdzv_landing_s rdzv = *new_rdzv;
   arts_shared_ptr_t buf_h = arts_db_buf_acquire(cache);
   struct arts_db_buffer_s *buf =
@@ -354,6 +355,7 @@ void arts_db_send_grant_response(struct arts_db_cache_s *cache,
         .data_size = db_size,
         .rdzv_txid = 0,
         .rdzv_cookie = 0,
+        .home_token = home_token,
     };
     /* On the held descriptor even when it is no longer live: its bytes,
      * waiters and counts are here, while a lookup by GUID would find another
@@ -401,6 +403,7 @@ void arts_db_send_grant_response(struct arts_db_cache_s *cache,
                             : 0u;
   hdr.pad = 0;
   hdr.token = token;
+  hdr.home_token = home_token;
 
   if (data_less) {
     /* The new owner already holds these exact bytes, so only the permission
@@ -455,10 +458,12 @@ void arts_db_grant_ship_pending(struct arts_db_cache_s *cache) {
   struct arts_rdzv_landing_s rdzv = cache->incoming_new_owner_rdzv;
   uint64_t have = cache->incoming_new_owner_have;
   uint64_t token = cache->incoming_new_owner_token;
+  uint64_t home_token = cache->incoming_new_owner_home_token;
   cache->incoming_new_owner = ARTS_NO_PENDING_OWNER;
   cache->incoming_new_owner_rdzv = (struct arts_rdzv_landing_s){0, 0, 0, 0};
   cache->incoming_new_owner_have = ARTS_GRANT_VERSION_NONE;
   cache->incoming_new_owner_token = 0u;
+  cache->incoming_new_owner_home_token = 0u;
   bool data_less = false;
 #ifdef ARTS_WRITE_POLICY_WB
   /* The new owner's copy is current when it carries this buffer's version:
@@ -478,7 +483,8 @@ void arts_db_grant_ship_pending(struct arts_db_cache_s *cache) {
 #else
   (void)have;
 #endif
-  arts_db_send_grant_response(cache, new_owner, &rdzv, data_less, token);
+  arts_db_send_grant_response(cache, new_owner, &rdzv, data_less, token,
+                              home_token);
 }
 #endif /* !ARTS_RELEASE_PURGE */
 
@@ -716,6 +722,7 @@ void arts_send_db_grant_invalidate(
   p.new_owner_rdzv.cookie = rdzv.cookie;
   p.new_owner_have = new_owner_have;
   p.new_owner_token = new_owner_token;
+  p.home_token = arts_db_token(db);
   if (owner_rank == arts_global_rank_id) {
     /* Self-send: under both write policies the INVALIDATE handler runs
      * directly.
@@ -742,18 +749,23 @@ void arts_send_db_grant_invalidate(
         .new_owner_rdzv = rdzv,
         .new_owner_have = new_owner_have,
         .new_owner_token = new_owner_token,
+        .home_token = p.home_token,
     };
-    /* The holder's cache is the home's descriptor, which the caller holds:
-     * the body runs on it while it is live, and on what a lookup finds
-     * otherwise.  The target is rw_holder, published only post-install, so
-     * the cache is present either way. */
-    arts_shared_ptr_t looked = NULL;
-    struct arts_db_s *holder =
-        (struct arts_db_s *)arts_route_table_borrow_or_lookup(db->self_cb,
-                                                              db_guid, &looked);
+    /* The holder's cache is the home's descriptor, which the caller holds.
+     * The body runs under a count of its own (coherence.h, "Self-sends"): its
+     * ship can run a whole transfer to this rank inline, whose CONFIRM may end
+     * the tenure whose count the caller runs under.  A copy while the
+     * descriptor is live, and what a lookup finds otherwise; the target is
+     * rw_holder, published only post-install, so the cache is present either
+     * way. */
+    arts_shared_ptr_t held = arts_route_table_copy_live(db->self_cb, db_guid);
+    if (held == NULL) {
+      held = arts_route_table_lookup(db_guid);
+    }
+    struct arts_db_s *holder = (struct arts_db_s *)arts_shared_get(held);
     assert(holder != NULL);
     arts_handler_db_grant_invalidate(holder, &args);
-    arts_shared_release(&looked);
+    arts_shared_release(&held);
     return;
   }
   arts_transport_send_async((int)owner_rank, (char *)&p, sizeof(p));
@@ -763,7 +775,7 @@ void arts_send_db_grant_invalidate(
  * rw_holder and advances the next round; under WB its handler also replies
  * CONFIRM_ACK, echoing C's token, under WT it does not.  The handler reads
  * the new owner from pending_install_owner. */
-void arts_send_db_grant_confirm(struct arts_db_s *db) {
+void arts_send_db_grant_confirm(struct arts_db_s *db, uint64_t home_token) {
   arts_guid_t db_guid = db->cache.db_guid;
   unsigned int home_rank = arts_guid_get_rank(db_guid);
   struct arts_msg_grant_confirm_packet_s p;
@@ -771,24 +783,13 @@ void arts_send_db_grant_confirm(struct arts_db_s *db) {
   p.header.rank = arts_global_rank_id;
   p.db_guid = db_guid;
   p.token = arts_db_token(db);
+  p.home_token = home_token;
   if (home_rank == arts_global_rank_id) {
-    /* Self-send: the new owner's cache is the home's descriptor.  The caller
-     * runs under its write request's count, which the body may drop: under
-     * write-back the CONFIRM_ACK it sends answers that request inline, and
-     * the round it advances runs after.  So the body runs under a count of
-     * its own, a copy while the descriptor is live and what a lookup finds
-     * otherwise; a miss (DB destroyed) silently drops, as on the wire. */
-    arts_shared_ptr_t held = arts_route_table_copy_live(db->self_cb, db_guid);
-    if (held == NULL) {
-      held = arts_route_table_lookup(db_guid);
-    }
-    struct arts_db_s *home = (struct arts_db_s *)arts_shared_get(held);
-    if (home != NULL) {
-      struct arts_db_grant_confirm_args_s args = {
-          .token = p.token, .sender = arts_global_rank_id};
-      arts_handler_db_grant_confirm(home, &args);
-    }
-    arts_shared_release(&held);
+    /* The answer, as on the wire, on the home descriptor the token names,
+     * under the tenure's count (coherence.h, "Self-sends").  Under write-back
+     * the CONFIRM_ACK it sends inline drops the write request's count the
+     * caller runs under, so the caller touches nothing after this send. */
+    arts_handler_db_grant_confirm(&p);
     return;
   }
   arts_transport_send_async((int)home_rank, (char *)&p, sizeof(p));
