@@ -328,14 +328,22 @@ What the report can see is what mimalloc detects:
 
 - a Release build detects a cross-thread double free only when both frees
   come from threads other than the block's owner, the owner did not collect
-  that page between them and the page is not full, plus a double or invalid
-  free of a whole arena block;
-- a Debug build adds a same-thread double free, an owner-involved
-  cross-thread double free (reported as heap metadata corruption, through
-  mimalloc's free-list entry and padding checks), an invalid or unaligned
-  free and a write into a block's padding;
-- neither sees a double free into a full page, nor one of a block allocated
-  again between the two frees.
+  that page between them and the page is not full, and reports it as heap
+  metadata corruption when the owner collects the page; plus a double or
+  invalid free of a whole arena block;
+- a Debug build marks a freed block in its padding and reports a second
+  free of it as a double free at that free, whichever threads make the two
+  frees, while the block's page is in use.  Once the page has been released
+  (at the first free always for a block above 512 KiB, which has a page of
+  its own, and at or after it for any block whose page that free emptied)
+  the second is reported as an invalid pointer, or, when the page's memory
+  already serves another page, as whatever that page's state makes of it, if
+  anything, unrelated to the double free.
+  It adds an invalid or unaligned free and a write into a block's padding;
+  a padding write that leaves the padding's check word intact may be
+  reported as a double free;
+- neither sees a double free of a block allocated again between the two
+  frees.
 
 Not covered by the report:
 
@@ -347,8 +355,8 @@ Not covered by the report:
 - a CXL slot is outside every allocator.
 
 The backtrace is the detecting thread's, which is not always the thread
-that freed twice: a cross-thread double free is often found by the owner's
-later allocation, sweep or exit.  To decode it:
+that freed twice: in a Release build a cross-thread double free is often
+found by the owner's later allocation, sweep or exit.  To decode it:
 
 - every ARTS program is non-PIE, so ``addr2line -f -e <program>`` decodes
   each address; a frame inside ``libarts.so`` is decoded with

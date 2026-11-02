@@ -49,18 +49,20 @@
  * (alignment at most 64 KiB).  The allocator draws such a request from at
  * most two of its page queues: its size's (a block there that happens to be
  * aligned, or any block when that block size is naturally aligned for the
- * alignment) and its over-allocated size's.  Which one decides is a function
- * of the size against the alignment, the size's block size and the
- * alignment, so these, with the over-allocated size's block size, name the
- * class: an arena serves or refuses two requests of one class alike, except
- * that a request may also take an aligned block that happens to head its own
- * size's queue.  A block above the largest binned size takes a page of its
- * own, carved from the arena's shared contiguous slices, and one class per
- * alignment covers those: a run that holds a larger one holds a smaller.
- * Guarded sampling, compiled only into a debug allocator and off unless its
- * sample rate is set, sends a sampled request to another queue.  This is the
- * allocator's behaviour, to re-audit whenever the allocator changes; the
- * regpool_request_classes test pins it. */
+ * alignment) and its over-allocated size's.  An allocator built without
+ * block padding first raises a request smaller than an alignment of at most
+ * 4 KiB to the alignment's size, whose queue is then its size's.  Which
+ * queue decides is a function of the size against the alignment, the size's
+ * block size and the alignment, so these, with the over-allocated size's
+ * block size, name the class: an arena serves or refuses two requests of one
+ * class alike, except that a request may also take an aligned block that
+ * happens to head its own size's queue.  A block above the largest binned
+ * size takes a page of its own, carved from the arena's shared contiguous
+ * slices, and one class per alignment covers those: a run that holds a
+ * larger one holds a smaller.  The allocator is built without sampling (no
+ * guarded objects, no heap profiler), which would send a sampled request to
+ * another queue.  This is the allocator's behaviour, to re-audit whenever the
+ * allocator changes; the regpool_request_classes test pins it. */
 #define ARTS_REGPOOL_CLASS_SINGLETON ((uint64_t)0xFFFFF)
 _Static_assert(MI_LARGE_MAX_OBJ_SIZE < ARTS_REGPOOL_CLASS_SINGLETON,
                "a binned block size must fit a class key's 20-bit field");

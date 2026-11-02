@@ -172,8 +172,9 @@ size_t arts_regpool_parse_node_avail(FILE *f) {
 
 #define REGPOOL_MAX_SLABS 4096u
 #define REGPOOL_MAX_NODES 64u /* single-word NUMA bitmask covers node < 64 */
-/* Base alignment for every mapping: >= the allocator's arena slice alignment
- * (so a slab is used in full) and huge-page friendly. */
+/* Base alignment for every mapping, huge-page friendly.  An arena slab's base
+ * is aligned further, to the allocator's arena alignment
+ * (regpool_arena_align). */
 #define REGPOOL_BASE_ALIGN ((size_t)2 * 1024 * 1024)
 _Static_assert(REGPOOL_BASE_ALIGN == (size_t)1
                                          << ARTS_REGPOOL_ENTRY_GRANULE_SHIFT,
@@ -559,11 +560,11 @@ static size_t regpool_put_uint(char *b, size_t n, size_t cap, unsigned v) {
 }
 
 /* Runs on, and prints the backtrace of, the thread that detected the error,
- * which is not always the thread whose call caused it: a double free is often
- * found by the owner's later collection.  It runs inside the allocator,
- * possibly with the allocator's locks held and its metadata corrupt, so it
- * allocates nothing from that allocator and takes no allocator or stdio lock:
- * write, a backtrace warmed up at installation, abort. */
+ * which is not always the thread whose call caused it: in a release build a
+ * double free is often found by the owner's later collection.  It runs inside
+ * the allocator, possibly with the allocator's locks held and its metadata
+ * corrupt, so it allocates nothing from that allocator and takes no allocator
+ * or stdio lock: write, a backtrace warmed up at installation, abort. */
 _Noreturn static void regpool_allocator_abort(int err) {
   /* write is a cancellation point, and a thread that missed the shutdown's
    * join deadline is cancelled: the report must reach abort. */
@@ -616,11 +617,19 @@ static void regpool_allocator_error(int err, void *arg) {
  * NULL return it would print as an error.  What reaches the report is what the
  * allocator detects.  A release build of it detects a cross-thread double free
  * only when both frees come from threads other than the block's owner, the
- * owner did not collect the page between them and the page is not full, plus
- * a double or invalid free of a whole arena block.  A debug build adds a
- * same-thread or owner-involved double free, an invalid or unaligned free and
- * a write into a block's padding.  Neither sees a double free into a full
- * page, nor one of a block allocated again between the two frees. */
+ * owner did not collect the page between them and the page is not full, and
+ * reports it when the owner collects the page; plus a double or invalid free
+ * of a whole arena block.  A debug build marks a freed block in its padding
+ * and reports a second free of it at that free, whichever threads make the
+ * two, while the block's page is in use.  Once the page is released (at the
+ * first free always for a block above the largest binned size, which has a
+ * page of its own, and at or after it for any block whose page that free
+ * emptied) the second is an invalid pointer, or, when the page's memory
+ * already serves another page, whatever that page's state makes of it, if
+ * anything, unrelated to the double free.  It adds an invalid or unaligned
+ * free and a write into a block's padding, which it may report as a double
+ * free when the write leaves the padding's check word intact.  Neither sees
+ * a double free of a block allocated again between the two frees. */
 __attribute__((constructor)) static void regpool_install_error_report(void) {
   /* The first backtrace loads the unwinder, which allocates: not inside the
    * report. */
@@ -636,6 +645,15 @@ __attribute__((constructor)) static void regpool_install_error_report(void) {
 
 static inline size_t align_up_sz(size_t v, size_t a) {
   return (v + a - 1) & ~(a - 1);
+}
+
+/* An arena slab's base alignment.  The allocator moves the start of a range
+ * it manages up to its arena alignment, giving up the head, and refuses the
+ * range when less than that alignment is left; a slab based on it is used in
+ * full.  A power of two, from the linked allocator itself. */
+static size_t regpool_arena_align(void) {
+  size_t a = mi_arena_min_alignment();
+  return a > REGPOOL_BASE_ALIGN ? a : REGPOOL_BASE_ALIGN;
 }
 
 /* Count NUMA nodes from sysfs; fall back to 1 (single node / no sysfs). */
@@ -870,10 +888,13 @@ static bool regpool_mr_close(struct fid_mr *mr) {
 
 /* Map `len` bytes aligned to `align`, apply the NUMA placement preference
  * (`set` non-empty interleaves over it, else `node` is preferred — see
- * regpool_place), populate, and (when a domain is set) register.  Over-maps
- * by `align` and trims so the base is aligned regardless of what the kernel
- * hands back.  On success fills *out_* and returns true; on any failure
- * unwinds and returns false.
+ * regpool_place), populate, and (when a domain is set) register.  Reserves
+ * `len + align` of address space with no access and no commit charge, trims
+ * it to the aligned `len` whatever the kernel hands back, and only then makes
+ * that range writable; that range is commit-charged only under strict
+ * overcommit, and the slab sizing, not the map, keeps it within memory.  On
+ * success fills *out_* and returns true; on any failure unwinds and returns
+ * false.
  *
  * Runs WITHOUT g_lock — it is tens of milliseconds of syscalls per slab, and
  * no allocation, free or grow may queue behind it — so everything it reads
@@ -882,8 +903,8 @@ static bool regpool_map_slab(int node, uint64_t set, size_t len, size_t align,
                              void **out_base, struct fid_mr **out_mr,
                              uint64_t *out_rkey) {
   size_t over = len + align;
-  void *raw = mmap(NULL, over, PROT_READ | PROT_WRITE,
-                   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  void *raw = mmap(NULL, over, PROT_NONE,
+                   MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
   if (raw == MAP_FAILED) {
     ARTS_WARN("regpool: mmap(%zu MiB) failed: %s", over >> 20,
               strerror(errno));
@@ -898,6 +919,12 @@ static bool regpool_map_slab(int node, uint64_t set, size_t len, size_t align,
   if (tail)
     munmap((void *)(aligned + len), tail);
   void *base = (void *)aligned;
+  if (mprotect(base, len, PROT_READ | PROT_WRITE) != 0) {
+    ARTS_WARN("regpool: mprotect(%zu MiB) failed: %s", len >> 20,
+              strerror(errno));
+    munmap(base, len);
+    return false;
+  }
 
   /* Must run before fi_mr_reg() (which faults every page while pinning) or
    * any allocator first-touch — a policy set after pages are already
@@ -1263,11 +1290,12 @@ typedef enum {
  * was asked, so it maps whenever the machine can still give a slab.
  *
  * The allocator's arena table refuses a slab only when it is full (the
- * range is granule-sized, aligned, committed and at most one slot's worth,
- * so nothing else about it can be refused), and a full table never gets a
- * slot back.  The first refusal is therefore latched: no later grow maps,
- * populates or registers anything, and the caller's cascade either finds
- * room in an existing arena or fails the allocation loudly. */
+ * range is granule-sized, based on the arena alignment, committed and at
+ * most one slot's worth, so nothing else about it can be refused), and a
+ * full table never gets a slot back.  The first refusal is therefore
+ * latched: no later grow maps, populates or registers anything, and the
+ * caller's cascade either finds room in an existing arena or fails the
+ * allocation loudly. */
 static bool regpool_grow_node(int node, size_t seen_slabs, bool carve,
                               regpool_grow_mode_t mode) {
   pthread_mutex_lock(&g_lock);
@@ -1395,12 +1423,13 @@ static bool regpool_grow_node(int node, size_t seen_slabs, bool carve,
   struct fid_mr *mr = NULL;
   uint64_t rkey = 0;
   mi_arena_id_t arena = NULL;
+  size_t align = regpool_arena_align();
   bool mapped = false;
   bool managed = false;
   bool refused = false;
   while (map) {
-    if (regpool_map_slab(placed, /*set=*/0, want, REGPOOL_BASE_ALIGN, &base,
-                         &mr, &rkey)) {
+    if (regpool_map_slab(placed, /*set=*/0, want, align, &base, &mr,
+                         &rkey)) {
       /* Hand the pinned range to an exclusive arena.  is_committed=true
        * (committed by mmap and already populated), is_pinned=true (the
        * arena must never decommit/purge/reset a registered range),
@@ -1454,7 +1483,7 @@ static bool regpool_grow_node(int node, size_t seen_slabs, bool carve,
   }
   if (mapped) {
     if (regpool_append(base, want, mr, rkey, placed, /*interleaved=*/false,
-                       false, arena, node, REGPOOL_BASE_ALIGN) == NULL) {
+                       false, arena, node, align) == NULL) {
       (void)regpool_mr_close(mr);
       /* Arena metadata now references this range; the OS reclaims it at
        * exit. */
@@ -2130,6 +2159,12 @@ static void *regpool_alloc_arena(size_t size, size_t align, int node) {
 bool arts_regpool_init(struct fid_domain *domain_or_null,
                        struct fid_ep *ep_or_null, size_t slab_bytes,
                        unsigned int numa_nodes) {
+  /* regpool_map_slab's trim needs a power of two. */
+  size_t arena_align = regpool_arena_align();
+  if ((arena_align & (arena_align - 1)) != 0)
+    ARTS_ERROR("regpool: arena alignment %zu is not a power of two",
+               arena_align);
+
   pthread_mutex_lock(&g_lock);
   if (g_inited) {
     pthread_mutex_unlock(&g_lock);

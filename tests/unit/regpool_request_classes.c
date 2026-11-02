@@ -10,8 +10,8 @@
  * a fresh heap confined to an exclusive arena, as the pool's heaps are,
  * serves the request alone, so its only page's block size names the queue
  * that decided.  Two requests of one class key must name one queue (or both
- * a singleton page).  Guarded sampling sends a sampled request elsewhere, so
- * the premise and this test assume it off.
+ * a singleton page).  The allocator is built without sampling (no guarded
+ * objects, no heap profiler), which would send a sampled request elsewhere.
  *
  * Whitebox unit test: links the allocator alone; no pool, no runtime. */
 #ifndef _GNU_SOURCE
@@ -94,19 +94,16 @@ static void around(size_t s, size_t align) {
 }
 
 int main(void) {
-  if (mi_option_get(mi_option_guarded_sample_rate) != 0) {
-    printf("FAIL regpool_request_classes: guarded sampling is on "
-           "(MIMALLOC_GUARDED_SAMPLE_RATE); the classes assume it off\n");
-    return 1;
-  }
-  size_t align32 = (size_t)32 << 20;
-  void *raw = mmap(NULL, ARENA_BYTES + align32, PROT_READ | PROT_WRITE,
+  /* The allocator refuses a range it cannot base on its arena alignment. */
+  size_t arena_align = mi_arena_min_alignment();
+  void *raw = mmap(NULL, ARENA_BYTES + arena_align, PROT_READ | PROT_WRITE,
                    MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
   if (raw == MAP_FAILED) {
     printf("FAIL regpool_request_classes: mmap\n");
     return 1;
   }
-  uintptr_t base = ((uintptr_t)raw + align32 - 1) & ~(uintptr_t)(align32 - 1);
+  uintptr_t base =
+      ((uintptr_t)raw + arena_align - 1) & ~(uintptr_t)(arena_align - 1);
   if (!mi_manage_os_memory_ex((void *)base, ARENA_BYTES, true, false, true, -1,
                               true, &g_arena)) {
     printf("FAIL regpool_request_classes: no exclusive arena\n");

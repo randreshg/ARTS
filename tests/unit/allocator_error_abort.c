@@ -15,10 +15,14 @@
  *
  * Modes, and the end each expects:
  *   1   a pool block freed twice by a thread that does not own it, the
- *       owner collecting its page later: SIGABRT, heap metadata
- *   2   as 1, after an ordinary exhaustion of the first arena, the
- *       detection falling in the exhaustion cascade of the second: SIGABRT,
- *       heap metadata (an earlier refusal excuses nothing later)
+ *       owner collecting its page later: SIGABRT, heap metadata, found at
+ *       that collection (a debug build of the allocator: double free, found
+ *       at the second free)
+ *   2   a corruption after an ordinary exhaustion of the first arena:
+ *       SIGABRT, heap metadata (an earlier refusal excuses nothing later).
+ *       Release: as 1, found in the exhaustion cascade of the second arena;
+ *       debug, where that is a double free at once: a write over a pool
+ *       block's padding, check word included, found at its free
  *   3   an oversize block freed twice: the pool's fatal error, no live slab
  *   3b  an oversize block freed by two threads at once: the pool's fatal
  *       error, whichever free comes second
@@ -32,9 +36,12 @@
  *   9   a C library block freed to the allocator: SIGABRT, invalid pointer
  *   10  a default-heap block freed by another thread, then by its owner:
  *       SIGABRT, double free
- *   11  freed by its owner, then by another thread: SIGABRT, heap metadata
+ *   11  freed by its owner, then by another thread: SIGABRT, double free
  *   12  freed by another thread, collected by the owner, freed by another
- *       thread again: SIGABRT, heap metadata
+ *       thread again: SIGABRT, double free
+ *   13  a pool block above the largest binned size, which has a page of its
+ *       own, freed twice by one thread: the first free releases the page,
+ *       so SIGABRT, invalid pointer
  *
  * Whitebox unit test: no ARTS runtime, no ports, no config.  It links the
  * pool's object and the allocator directly, so the pool, the allocator calls
@@ -78,6 +85,7 @@ void arts_abort(uint8_t code) {
 #define OVERSIZE ((size_t)20 << 20) /* above half the slab: a mapping */
 #define FILL_BLOCK ((size_t)4 << 10)
 #define SMALL ((size_t)1 << 10)
+#define LARGE ((size_t)1 << 20) /* above the largest binned block size */
 #define MAX_FILL 200000u
 
 /* ------------------------------------------------------------------------- */
@@ -172,7 +180,26 @@ static void provoke(const char *mode) {
   } else if (!strcmp(mode, "2")) {
     owned_pool_block();
     fill_until(2);
+#ifdef ARTS_TEST_DEBUG_ALLOCATOR
+    {
+      /* The largest request whose block is SMALL, a power of two: served
+       * from its block's start, so its usable size is the request.
+       * Everything past the request, the padding's check word included, is
+       * overwritten, so the free's padding check finds no valid check word
+       * and reports an overflow. */
+      size_t s = SMALL;
+      while (mi_good_size(s) > SMALL)
+        s--;
+      unsigned char *q = (unsigned char *)arts_regpool_alloc_aligned(s, 64);
+      size_t used = mi_usable_size(q);
+      if (used != s)
+        _exit(2);
+      memset(q + used, 0xFF, mi_good_size(s) - used);
+      arts_regpool_free(q);
+    }
+#else
     on_other_thread(pool_free_twice);
+#endif
     fill_until(3);
   } else if (!strcmp(mode, "3")) {
     void *p = arts_regpool_alloc_aligned(OVERSIZE, 64);
@@ -230,6 +257,10 @@ static void provoke(const char *mode) {
     mi_collect(false);
     on_other_thread(mi_free_block);
     owner_collects_default();
+  } else if (!strcmp(mode, "13")) {
+    void *p = arts_regpool_alloc_aligned(LARGE, 64);
+    arts_regpool_free(p);
+    arts_regpool_free(p);
   } else {
     _exit(2);
   }
@@ -261,8 +292,18 @@ typedef struct {
   const char *expect2; /* another acceptable fatal error text, or NULL */
 } abort_mode_t;
 
+/* A debug build of the allocator marks a freed block in its padding and
+ * reports the second free of it at once, while the block's page is in use;
+ * a release build finds a block that other threads freed twice when the
+ * owner collects its page. */
+#ifdef ARTS_TEST_DEBUG_ALLOCATOR
+#define CROSS_THREAD_DOUBLE_FREE "double free"
+#else
+#define CROSS_THREAD_DOUBLE_FREE "heap metadata corrupted or unobtainable"
+#endif
+
 static const abort_mode_t g_modes[] = {
-    {"1", true, "heap metadata corrupted or unobtainable", NULL},
+    {"1", true, CROSS_THREAD_DOUBLE_FREE, NULL},
     {"2", true, "heap metadata corrupted or unobtainable", NULL},
     {"3", false, "which no live slab holds", NULL},
     {"3b", false, "not a live oversize block's start",
@@ -274,8 +315,9 @@ static const abort_mode_t g_modes[] = {
     {"8", true, "invalid pointer or argument", NULL},
     {"9", true, "invalid pointer or argument", NULL},
     {"10", true, "double free", NULL},
-    {"11", true, "heap metadata corrupted or unobtainable", NULL},
-    {"12", true, "heap metadata corrupted or unobtainable", NULL},
+    {"11", true, "double free", NULL},
+    {"12", true, "double free", NULL},
+    {"13", true, "invalid pointer or argument", NULL},
 };
 
 static const abort_mode_t *find_mode(const char *name) {

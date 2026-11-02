@@ -1280,8 +1280,9 @@ if(ARTS_MALLOC STREQUAL "mimalloc")
     # error report, and every pool misuse the pool sees in its fatal error, one
     # forked child per mode.  It links the pool's object and the allocator
     # directly, so the pool, the test's own allocator calls and the report
-    # share one allocator.  The modes a debug build of the allocator alone
-    # checks run only in a Debug tree.
+    # share one allocator.  A Debug tree has a debug build of the allocator
+    # (ARTS_TEST_DEBUG_ALLOCATOR): it runs the modes only that build checks,
+    # and modes 1 and 2 provoke and expect what that build reports.
     add_executable(allocator_error_abort unit/allocator_error_abort.c
         $<TARGET_OBJECTS:arts_regpool>)
     target_include_directories(allocator_error_abort PRIVATE
@@ -1295,8 +1296,10 @@ if(ARTS_MALLOC STREQUAL "mimalloc")
     arts_add_test(allocator_error_abort
                   COMMAND allocator_error_abort 1 2 3 3b 4 5)
     if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+        target_compile_definitions(allocator_error_abort PRIVATE
+            ARTS_TEST_DEBUG_ALLOCATOR=1)
         arts_add_test(allocator_error_abort_debug
-                      COMMAND allocator_error_abort 6 7 8 9 10 11 12)
+                      COMMAND allocator_error_abort 6 7 8 9 10 11 12 13)
         list(APPEND _allocator_error_tests allocator_error_abort_debug)
     endif()
     set_tests_properties(${_allocator_error_tests} PROPERTIES

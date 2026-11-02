@@ -583,7 +583,53 @@ if(ARTS_MALLOC STREQUAL "mimalloc")
   # No architecture flag of its own: on arm64 it would add -march=armv8.1-a,
   # whose inline LSE atomics fault on an ARMv8.0 host.
   set(MI_NO_OPT_ARCH  ON  CACHE BOOL "" FORCE)
+  # No facility the runtime does not use: no heap profiler and no guarded
+  # sampling, so nothing samples (a sampled request leaves its size's page
+  # queue), and a Release build keeps no statistics.
+  set(MI_PROFILE OFF CACHE STRING "" FORCE)
+  set(MI_GUARDED OFF CACHE STRING "" FORCE)
+  # The allocator's checks follow the build type: a Debug tree's tests rely
+  # on its debug build (block padding, double-free reports).
+  set(MI_DEBUG DEFAULT CACHE STRING "" FORCE)
+  if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    set(MI_STATS DEFAULT CACHE STRING "" FORCE)
+  else()
+    set(MI_STATS OFF CACHE STRING "" FORCE)
+  endif()
+  # Transparent huge pages allowed, and the general heap's purge may split
+  # them (it purges at its own granularity, not in whole huge pages).
+  set(MI_ALLOW_THP ON CACHE STRING "" FORCE)
   add_subdirectory(mimalloc EXCLUDE_FROM_ALL)
+  # The options above reach the allocator as its compile definitions; an
+  # option it no longer honours fails the configure, not the runtime.
+  get_target_property(_arts_mi_defs mimalloc-static COMPILE_DEFINITIONS)
+  if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    set(_arts_mi_stats MI_STATS=2)
+    set(_arts_mi_debug MI_DEBUG=2)
+  else()
+    set(_arts_mi_stats MI_STATS=0)
+    set(_arts_mi_debug NDEBUG=1)
+  endif()
+  # Every miss is named: a Debug MI_STATS=2 follows from MI_DEBUG, so a lost
+  # MI_DEBUG also loses it.
+  set(_arts_mi_missing "")
+  foreach(_arts_mi_want MI_DEBUG:${_arts_mi_debug} MI_STATS:${_arts_mi_stats}
+          MI_PROFILE:MI_PROFILE=0 MI_GUARDED:MI_GUARDED=0
+          MI_ALLOW_THP:MI_DEFAULT_ALLOW_THP=1)
+    string(REPLACE ":" ";" _arts_mi_want "${_arts_mi_want}")
+    list(GET _arts_mi_want 0 _arts_mi_opt)
+    list(GET _arts_mi_want 1 _arts_mi_def)
+    if(NOT _arts_mi_def IN_LIST _arts_mi_defs)
+      list(APPEND _arts_mi_missing "${_arts_mi_opt} (${_arts_mi_def})")
+    endif()
+  endforeach()
+  if(_arts_mi_missing)
+    string(JOIN ", " _arts_mi_missing ${_arts_mi_missing})
+    message(FATAL_ERROR
+      "The vendored mimalloc ignored the forced options ${_arts_mi_missing}: "
+      "mimalloc-static's compile definitions lack them "
+      "(they are: ${_arts_mi_defs})")
+  endif()
   list(APPEND ARTS_VENDORED_ARCHIVES "$<TARGET_FILE:mimalloc-static>")
 endif()
 
