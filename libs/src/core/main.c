@@ -51,12 +51,20 @@
 #include "arts/transport/socket.h"
 #include "arts/transport/stdio_forward.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 
-int arts_rt_start(int argc, char **argv, arts_edt_t entry) {
-  if (entry == NULL) {
-    ARTS_ERROR("arts_rt_start: no entry EDT (a program calls arts_rt, which "
-               "passes its main_edt)");
+/* A weak reference: a binary that links the runtime without starting it needs
+ * no entry, and arts_rt refuses to start a program no main_edt reached. */
+#pragma weak main_edt
+
+int arts_rt(int argc, char **argv) {
+  if (main_edt == NULL) {
+    (void)fputs("[ARTS] arts_rt: no main_edt reached the runtime: none is "
+                "defined, or it is hidden, or it is only in an archive member "
+                "the link did not pull\n",
+                stderr);
+    return 1;
   }
   struct arts_config_s config;
   arts_config_load(&config);
@@ -111,7 +119,7 @@ int arts_rt_start(int argc, char **argv, arts_edt_t entry) {
   }
 
   arts_thread_init(&config);
-  arts_thread_zero_node_start(argc, argv, entry);
+  arts_thread_zero_node_start(argc, argv, main_edt);
 
   arts_thread_main_join();
 

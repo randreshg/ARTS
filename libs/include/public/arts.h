@@ -333,8 +333,14 @@ typedef void (*arts_edt_t)(uint32_t paramc, const uint64_t *paramv,
  * @c paramv[0] = @c argc and @c paramv[1] = @c argv (rank 0's process
  * arguments, a pointer valid on rank 0 only).  Everything else, on every
  * rank, starts from EDTs it creates (see "Program Structure" in
- * @c docs/getting_started/quickstart.rst).  A program that calls @c arts_rt
- * without defining it does not link.
+ * @c docs/getting_started/quickstart.rst).
+ *
+ * The program defines it with default visibility in an object file the link
+ * includes.  The runtime library refers to it by a weak reference, so a
+ * program that calls @c arts_rt with no definition links, and arts_rt refuses
+ * to start it.  A definition the link does not export (hidden visibility,
+ * with the shared library) or one only in an archive member nothing else
+ * pulls (a weak reference pulls none) is refused the same way.
  *
  * @param paramc Number of static parameters (2).
  * @param paramv Parameter array: paramv[0]=argc, paramv[1]=(uint64_t)argv.
@@ -472,23 +478,20 @@ int arts_printf(const char *format, ...);
 /** @defgroup runtime Runtime Lifecycle
  *  @{ */
 
-/** The entry @c arts_rt calls; a program calls @c arts_rt. */
-int arts_rt_start(int argc, char **argv, arts_edt_t entry);
-
 /**
  * @brief Entry point to the ARTS runtime.
  *
  * Reads @c arts.cfg, initializes threading and networking, schedules
- * main_edt() on rank 0, and blocks until arts_shutdown() is called.
+ * main_edt() on rank 0, and blocks until arts_shutdown() is called.  A
+ * program defines main_edt() as described there; arts_rt refuses one the
+ * runtime sees none of, with a non-zero return.
  *
  * @param argc Argument count from main().
  * @param argv Argument vector from main().
  * @return 0 on success.
  * @see arts_shutdown
  */
-static inline int arts_rt(int argc, char **argv) {
-  return arts_rt_start(argc, argv, main_edt);
-}
+int arts_rt(int argc, char **argv);
 
 /**
  * @brief Shut down the ARTS runtime.

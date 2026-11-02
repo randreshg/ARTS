@@ -1933,11 +1933,14 @@ if(ARTS_TEST_REFERENCE_TREE)
         FAIL_REGULAR_EXPRESSION "FAIL cxl_arm64_refusal")
 endif()
 
-# A program must define main_edt: one without it does not link, one whose
-# main_edt sits in a static archive member or that is built with hidden
-# visibility does, and the runtime libraries name no main_edt.  The programs
-# are built against this tree's libraries, as an installed consumer links
-# them, with the tree's flags and link options (a sanitizer tree's included).
+# A program must define main_edt with default visibility in an object file
+# the link includes.  The script checks that a program without one links and
+# arts_rt refuses it before any runtime state exists, that one defining it
+# links and runs, and that the runtime libraries refer to main_edt only by a
+# weak undefined symbol and define arts_rt.  The programs are built against
+# this tree's libraries, as an installed consumer links them, with the tree's
+# flags and link options (a sanitizer tree's included), and run on the
+# one-node cfg with two workers.
 # No cell changes the entry: the reference tree runs it.
 if(ARTS_TEST_REFERENCE_TREE)
     set(_system_libs -lpthread)
@@ -1969,7 +1972,6 @@ if(ARTS_TEST_REFERENCE_TREE)
     file(GENERATE OUTPUT ${_work}.inputs.cmake CONTENT
         "set(C_COMPILER [[${CMAKE_C_COMPILER}]])
 set(NM [[${CMAKE_NM}]])
-set(AR [[${CMAKE_AR}]])
 set(STATIC_LIB [[$<TARGET_FILE:arts_static>]])
 set(SHARED_LIB [[${_shared_lib}]])
 set(INCLUDE_DIR [[${ARTS_PUBLIC_INCLUDE_DIR}]])
@@ -1981,12 +1983,15 @@ set(NON_PIE_LINK_OPTIONS [[${ARTS_NON_PIE_LINK_OPTIONS}]])
 set(SYSTEM_LIBS [[${_system_libs}]])
 set(WORK_DIR [[${_work}]])
 ")
-    add_test(NAME main_edt_required
-             COMMAND ${CMAKE_COMMAND} -DINPUTS=${_work}.inputs.cmake
-                     -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/main_edt_required.cmake)
+    arts_test_cfg(_cfg 1n_20w)
+    arts_add_test(main_edt_required
+        COMMAND ${CMAKE_COMMAND} -DINPUTS=${_work}.inputs.cmake
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/main_edt_required.cmake)
     set_tests_properties(main_edt_required PROPERTIES
         LABELS "single_node"
         TIMEOUT 120
+        RESOURCE_LOCK "arts_runtime"
+        ENVIRONMENT "ARTS_CONFIG=${_cfg}"
         PASS_REGULAR_EXPRESSION "PASS main_edt_required"
         FAIL_REGULAR_EXPRESSION "FAIL main_edt_required")
 endif()

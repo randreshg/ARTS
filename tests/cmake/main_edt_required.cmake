@@ -1,13 +1,15 @@
-# Run by ctest, not compiled.  main_edt is the one entry a program defines:
-# arts_rt, an inline function of arts.h, hands the runtime main_edt's address
-# from the program's own unit, so the program holds the only reference and the
-# library names no main_edt at all.  A program without it therefore fails to
-# link, and the reference pulls a main_edt out of a static archive and binds
-# within a program built with hidden visibility.  Links alone cannot tell this
-# from a library that refers to main_edt weakly (such a library links in both
-# positive shapes too), so the symbol tables are read as well.
+# Run by ctest, not compiled.  main_edt is the one entry a program defines.
+# The library defines arts_rt and refers to main_edt only as a weak undefined
+# symbol, so a binary that links the runtime without starting it needs no
+# entry, and arts_rt refuses to start a program that defines none.  Links and
+# runs cannot tell a weak reference from a strong one or from a definition in
+# the library, so the symbol tables are read as well.
 #
-# INPUTS names the file that sets the compiler, nm and ar, the tree's runtime
+# The runs take their cfg from ARTS_CONFIG, which the test sets; two workers
+# are enough for them.  Their output is printed, so the sweeps that judge every
+# runtime test see it.
+#
+# INPUTS names the file that sets the compiler and nm, the tree's runtime
 # libraries (SHARED_LIB empty when the tree builds none), the public include
 # directory, the tree's C flags, directory link options, executable linker
 # flags and non-PIE options, the toolchain libraries an installed consumer
@@ -16,7 +18,7 @@ if(NOT DEFINED INPUTS OR NOT EXISTS "${INPUTS}")
     message(FATAL_ERROR "FAIL main_edt_required: no inputs file '${INPUTS}'")
 endif()
 include("${INPUTS}")
-foreach(_v C_COMPILER NM AR STATIC_LIB INCLUDE_DIR WORK_DIR)
+foreach(_v C_COMPILER NM STATIC_LIB INCLUDE_DIR WORK_DIR)
     if(NOT DEFINED ${_v} OR "${${_v}}" STREQUAL "")
         message(FATAL_ERROR "FAIL main_edt_required: ${INPUTS} sets no ${_v}")
     endif()
@@ -26,6 +28,11 @@ foreach(_lib IN LISTS STATIC_LIB SHARED_LIB)
         message(FATAL_ERROR "FAIL main_edt_required: ${_lib} is not built")
     endif()
 endforeach()
+
+set(LIB_DIR "")
+if(SHARED_LIB)
+    get_filename_component(LIB_DIR "${SHARED_LIB}" DIRECTORY)
+endif()
 
 file(REMOVE_RECURSE "${WORK_DIR}")
 file(MAKE_DIRECTORY "${WORK_DIR}")
@@ -85,21 +92,24 @@ function(_nm out_var file symbol)
     set(${out_var} "${_found}" PARENT_SCOPE)
 endfunction()
 
+# Runs WORK_DIR/<exe> on two workers; sets <rc_var> and <out_var> and prints
+# the output.
+function(_run exe rc_var out_var)
+    execute_process(
+        COMMAND "${CMAKE_COMMAND}" -E env LD_LIBRARY_PATH=${LIB_DIR}
+                worker_threads=2 "${WORK_DIR}/${exe}"
+        WORKING_DIRECTORY "${WORK_DIR}" TIMEOUT 60
+        RESULT_VARIABLE _rc OUTPUT_VARIABLE _out ERROR_VARIABLE _out)
+    message("${exe}:\n${_out}")
+    set(${rc_var} "${_rc}" PARENT_SCOPE)
+    set(${out_var} "${_out}" PARENT_SCOPE)
+endfunction()
+
 set(_signature "uint32_t paramc, const uint64_t *paramv, uint32_t depc,
               arts_edt_dep_t depv[]")
 file(WRITE "${WORK_DIR}/main_only.c" "#include \"arts.h\"
 
 int main(int argc, char **argv) { return arts_rt(argc, argv); }
-")
-file(WRITE "${WORK_DIR}/entry_member.c" "#include \"arts.h\"
-
-void main_edt(${_signature}) {
-  (void)paramc;
-  (void)paramv;
-  (void)depc;
-  (void)depv;
-  arts_shutdown();
-}
 ")
 file(WRITE "${WORK_DIR}/whole.c" "#include \"arts.h\"
 
@@ -114,76 +124,53 @@ void main_edt(${_signature}) {
 int main(int argc, char **argv) { return arts_rt(argc, argv); }
 ")
 _compile(main_only.c main_only.o)
-_compile(entry_member.c entry_member.o)
+_compile(whole.c whole.o)
 
-set(_undefined "undefined reference to [`']main_edt'|undefined symbol: main_edt")
-
-# (1) No main_edt: the link fails, naming it.
+# (1) No main_edt: the program links, and arts_rt refuses it with exit status
+# 1 and the refusal line as its only output, so nothing of the runtime ran.
 foreach(_lib IN LISTS STATIC_LIB SHARED_LIB)
     get_filename_component(_name "${_lib}" NAME)
     _link(no_entry_${_name} _rc _out "${WORK_DIR}/main_only.o" "${_lib}")
-    if(_rc EQUAL 0)
-        _fail("(1) a program without main_edt linked against ${_name}")
-    elseif(NOT _out MATCHES "${_undefined}")
-        _fail("(1) the failed link against ${_name} names no main_edt:\n${_out}")
-    else()
-        message("main_edt_required: (1) no main_edt does not link against "
-                "${_name}")
-    endif()
-endforeach()
-
-# (2) main_edt only in a static archive member: the program's own reference
-# pulls the member, whichever side of the runtime the archive sits on.
-execute_process(
-    COMMAND "${AR}" rcs "${WORK_DIR}/libentry.a" "${WORK_DIR}/entry_member.o"
-    RESULT_VARIABLE _rc OUTPUT_VARIABLE _out ERROR_VARIABLE _out)
-if(NOT _rc EQUAL 0)
-    message(FATAL_ERROR "FAIL main_edt_required: ${AR} failed:\n${_out}")
-endif()
-set(_orders "archive_first;archive_last")
-foreach(_order IN LISTS _orders)
-    if(_order STREQUAL "archive_first")
-        set(_inputs "${WORK_DIR}/main_only.o" "${WORK_DIR}/libentry.a"
-            "${STATIC_LIB}")
-    else()
-        set(_inputs "${WORK_DIR}/main_only.o" "${STATIC_LIB}"
-            "${WORK_DIR}/libentry.a")
-    endif()
-    _link(member_${_order} _rc _out ${_inputs})
     if(NOT _rc EQUAL 0)
-        _fail("(2) main_edt in an archive member (${_order}) does not "
-              "link:\n${_out}")
+        _fail("(1) a program without main_edt does not link against "
+              "${_name}:\n${_out}")
         continue()
     endif()
-    _nm(_syms "${WORK_DIR}/member_${_order}" main_edt)
-    if(NOT _syms STREQUAL "T main_edt")
-        _fail("(2) the program linked with the archive (${_order}) defines "
-              "no main_edt of its own: '${_syms}'")
+    _run(no_entry_${_name} _rc _out)
+    if(NOT _rc STREQUAL "1")
+        _fail("(1) a program without main_edt ended with '${_rc}' against "
+              "${_name}, not 1:\n${_out}")
+    elseif(NOT _out MATCHES
+            "^\\[ARTS\\] arts_rt: no main_edt reached the runtime[^\n]*\n$")
+        _fail("(1) the refusal against ${_name} is not the one line alone:"
+              "\n${_out}")
     else()
-        message("main_edt_required: (2) the archive member (${_order}) links "
-                "and the program defines T main_edt")
+        message("main_edt_required: (1) a program without main_edt links "
+                "against ${_name} and is refused with that line alone")
     endif()
 endforeach()
 
-# (3) A program built with hidden visibility binds main_edt within itself.
-if(SHARED_LIB)
-    _compile(whole.c whole_hidden.o -fvisibility=hidden)
-    _link(hidden_shared _rc _out "${WORK_DIR}/whole_hidden.o" "${SHARED_LIB}")
+# (2) A program defining main_edt in its own unit links and runs.
+foreach(_lib IN LISTS STATIC_LIB SHARED_LIB)
+    get_filename_component(_name "${_lib}" NAME)
+    _link(own_${_name} _rc _out "${WORK_DIR}/whole.o" "${_lib}")
     if(NOT _rc EQUAL 0)
-        _fail("(3) a -fvisibility=hidden program does not link against "
-              "the shared library:\n${_out}")
-    else()
-        message("main_edt_required: (3) a -fvisibility=hidden program links "
-                "against the shared library")
+        _fail("(2) a program defining main_edt does not link against "
+              "${_name}:\n${_out}")
+        continue()
     endif()
-else()
-    message("main_edt_required: (3) not checked: the tree builds no shared "
-            "library")
-endif()
+    _run(own_${_name} _rc _out)
+    if(NOT _rc EQUAL 0)
+        _fail("(2) a program defining main_edt does not run against "
+              "${_name} (${_rc}):\n${_out}")
+    else()
+        message("main_edt_required: (2) a program defining main_edt links "
+                "and runs against ${_name}")
+    endif()
+endforeach()
 
-# (4) The library names no main_edt, in any form: no definition, no undefined
-# or weak reference.  (5) It defines the entry arts_rt calls, and arts_rt,
-# being inline, is no symbol of it.
+# (3) The library refers to main_edt only as a weak undefined symbol.
+# (4) It defines arts_rt globally.
 foreach(_lib IN LISTS STATIC_LIB SHARED_LIB)
     get_filename_component(_name "${_lib}" NAME)
     if(_lib STREQUAL STATIC_LIB)
@@ -192,21 +179,17 @@ foreach(_lib IN LISTS STATIC_LIB SHARED_LIB)
         set(_nm_args -D)
     endif()
     _nm(_syms "${_lib}" main_edt ${_nm_args})
-    if(_syms)
-        _fail("(4) ${_name} names main_edt: '${_syms}'")
+    if(NOT _syms STREQUAL "w main_edt")
+        _fail("(3) ${_name} does not refer to main_edt only as a weak "
+              "undefined symbol: '${_syms}'")
     else()
-        message("main_edt_required: (4) ${_name} names no main_edt")
+        message("main_edt_required: (3) ${_name} has w main_edt only")
     endif()
-    _nm(_entry "${_lib}" arts_rt_start ${_nm_args})
-    _nm(_inline "${_lib}" arts_rt ${_nm_args})
-    if(NOT _entry STREQUAL "T arts_rt_start")
-        _fail("(5) ${_name} does not define the global arts_rt_start: "
-              "'${_entry}'")
-    elseif(_inline)
-        _fail("(5) ${_name} has an arts_rt symbol: '${_inline}'")
+    _nm(_entry "${_lib}" arts_rt ${_nm_args})
+    if(NOT _entry STREQUAL "T arts_rt")
+        _fail("(4) ${_name} does not define the global arts_rt: '${_entry}'")
     else()
-        message("main_edt_required: (5) ${_name} defines T arts_rt_start and "
-                "no arts_rt")
+        message("main_edt_required: (4) ${_name} defines T arts_rt")
     endif()
 endforeach()
 

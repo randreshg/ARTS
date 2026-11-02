@@ -19,7 +19,11 @@ Every ARTS program consists of three parts:
    arguments, a pointer valid on rank 0 only).  Everything else, on every
    rank, starts from EDTs it creates.
 3. ``main()`` — calls :c:func:`arts_rt` to start the runtime.  A program
-   that calls ``arts_rt`` without defining ``main_edt`` does not link.
+   that calls ``arts_rt`` without defining ``main_edt`` links, and
+   ``arts_rt`` refuses to start it.  Define ``main_edt`` with default
+   visibility in an object file the link includes: a hidden definition (with
+   the shared library) or one only in an archive member nothing else pulls
+   is not seen by the runtime and is refused the same way.
 
 .. code-block:: c
 
@@ -141,11 +145,18 @@ into your ``arts.cfg``). Ready-to-run localhost shapes live in
 Building and Running
 --------------------
 
-Link your program against ``arts_shared`` (or ``arts_static``):
+Link your program against ``libarts.so`` (or ``libarts.a``).  Every ARTS
+program is non-PIE, because task function pointers cross ranks as addresses:
 
 .. code-block:: bash
 
-   gcc -std=c17 -o hello hello.c -larts_shared -lpthread
+   gcc -std=c17 -fno-pie -fno-PIE -no-pie -I<arts-root>/libs/include/public \
+       -o hello hello.c -L<build-dir>/libs/src -Wl,-rpath,<build-dir>/libs/src \
+       -larts -lpthread
+
+With ``libarts.a`` in place of ``-larts``, add ``-lrt -lm -ldl -latomic``.  A
+CMake project gets the same through ``find_package(ARTS)`` and
+``ARTS::shared`` or ``ARTS::static``.
 
 Run with the config file in the same directory:
 
