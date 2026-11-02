@@ -718,9 +718,10 @@ foreach(_v 2n_9w_1p 4n_4w_1p)
 endforeach()
 
 # A SIGTERM to rank 0 while every other rank keeps satisfies in flight to it:
-# the signal watcher initiates the shutdown and waits for its broadcast's sends
-# to complete while those satisfies arrive, and the run ends gracefully.  Where
-# the build prints INFO, the wait's own completion line is part of the oracle.
+# the signal watcher initiates the shutdown and drains its rank's counted
+# fabric sends in progress (bounded) while those satisfies arrive, and the run
+# ends gracefully.  Where the build prints INFO, the drain's own completion
+# line is part of the oracle.
 add_arts_test(shutdown_sigterm_inflight_drain)
 register_multinode_test(shutdown_sigterm_inflight_drain TIMEOUT 120)
 if(ARTS_LOG_LEVEL GREATER_EQUAL 2)

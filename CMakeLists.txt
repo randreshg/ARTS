@@ -441,11 +441,11 @@ endif()
 # Each hook stays inert until its own environment variable is set, so one
 # switch compiles them all and the run chooses which to use.
 option(ARTS_DEBUG_INJECTION
-    "Compile the run-time injection hooks, each inert until its environment variable is set: ARTS_SCHED_FUZZ, ARTS_WRITE_COMPLETION_DELAY_MS, ARTS_NET_MAX_MSG, ARTS_REGPOOL_FORCE_FULL_NODES, ARTS_REQUEST_DELAY_MS" OFF)
+    "Compile the run-time injection hooks, each inert until its environment variable is set: ARTS_SCHED_FUZZ, ARTS_WRITE_COMPLETION_DELAY_MS, ARTS_NET_MAX_MSG, ARTS_REGPOOL_FORCE_FULL_NODES, ARTS_REQUEST_DELAY_MS, ARTS_NET_RDZV_CUT, ARTS_NET_REFUSE_EP_CLOSE" OFF)
 # Holds every freed coherent descriptor back, filled, and checks the fill when
 # it leaves: active in every run of the tree, since it watches all of them.
 option(ARTS_DEBUG_DB_QUARANTINE
-    "Fill each freed coherent data-block descriptor and hold it back for the next 1024 frees by the same thread, reporting a write through a reference that outlived it" OFF)
+    "Fill each freed coherent data-block descriptor and hold it back for the next 1024 frees by the same thread, reporting a write through a reference that outlived it; count the descriptors ended, which the teardown reports" OFF)
 # One atomic per rendezvous landing drawn and per landing ended, so a test can
 # wait for every landing it caused to end.
 option(ARTS_DEBUG_LANDING_BALANCE

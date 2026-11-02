@@ -257,6 +257,12 @@ typedef struct regpool_slab_s {
                            * placement, or the node it was made for when the
                            * kernel placed it; -1 for a direct slab        */
   size_t align;           /* alignment the mapping was created with           */
+  /* The registration's close failed, so it may still take a write at its
+   * key: the range is never unmapped, evicted or closed again, and the
+   * process exit reclaims both.  Written under g_lock (false whenever the
+   * entry is written, true when arts_regpool_unregister's close fails); read
+   * under g_lock. */
+  bool mr_kept;
 } regpool_slab_t;
 
 /* --- module state (guarded by g_lock except where marked atomic) --------- */
@@ -844,6 +850,24 @@ static bool regpool_populate(void *base, size_t len) {
   return true;
 }
 
+/* Close a slab's registration (NULL, an unregistered slab, closes trivially).
+ * A close the provider refuses leaves the registration live, able to take a
+ * write at its key, so on false the caller keeps the range mapped and never
+ * closes it again: the process exit reclaims both. */
+static bool regpool_mr_close(struct fid_mr *mr) {
+  if (mr == NULL) {
+    return true;
+  }
+  int rc = fi_close(&mr->fid);
+  if (rc != 0) {
+    ARTS_WARN("regpool: fi_close(mr) failed: %s; its range stays mapped and "
+              "registered until the process exits",
+              fi_strerror(-rc));
+    return false;
+  }
+  return true;
+}
+
 /* Map `len` bytes aligned to `align`, apply the NUMA placement preference
  * (`set` non-empty interleaves over it, else `node` is preferred — see
  * regpool_place), populate, and (when a domain is set) register.  Over-maps
@@ -927,8 +951,9 @@ static bool regpool_map_slab(int node, uint64_t set, size_t len, size_t align,
       if (rc != 0) {
         ARTS_WARN("regpool: fi_mr_bind/enable(%zu MiB) failed: %s", len >> 20,
                   fi_strerror((int)-rc));
-        fi_close(&mr->fid);
-        munmap(base, len);
+        if (regpool_mr_close(mr)) {
+          munmap(base, len);
+        }
         return false;
       }
     }
@@ -961,6 +986,7 @@ static void regpool_write_slot_locked(regpool_slab_t *s, void *base, size_t len,
   s->mr.numa_node = node;
   s->interleaved = interleaved;
   s->align = align;
+  s->mr_kept = false;
   atomic_store_explicit(&g_slab_word[s - g_slabs], w, memory_order_release);
 }
 
@@ -1022,7 +1048,7 @@ static regpool_slab_t *regpool_claim_retired_locked(size_t len, size_t align,
     if (arts_regpool_entry_state(atomic_load_explicit(
             &g_slab_word[i], memory_order_relaxed)) != REGPOOL_SLOT_RETIRED)
       continue;
-    if (s->mr.len != len || s->align < align)
+    if (s->mr.len != len || s->align < align || s->mr_kept)
       continue;
     hit = s;
     if (s->mr.numa_node == node)
@@ -1051,12 +1077,15 @@ static size_t regpool_evict_retired_locked(size_t need) {
   for (size_t i = 0; i < n && freed < need; i++) {
     regpool_slab_t *s = &g_slabs[i];
     if (arts_regpool_entry_state(atomic_load_explicit(
-            &g_slab_word[i], memory_order_relaxed)) != REGPOOL_SLOT_RETIRED)
+            &g_slab_word[i], memory_order_relaxed)) != REGPOOL_SLOT_RETIRED ||
+        s->mr_kept)
       continue;
-    if (s->mr.mr != NULL)
-      fi_close(&s->mr.mr->fid);
-    munmap(s->mr.base, s->mr.len);
-    freed += s->mr.len;
+    /* A registration that does not close keeps its range mapped: the slot is
+     * released, the range forgotten and left to the process exit. */
+    if (regpool_mr_close(s->mr.mr)) {
+      munmap(s->mr.base, s->mr.len);
+      freed += s->mr.len;
+    }
     atomic_store_explicit(&g_slab_word[i], 0, memory_order_release);
   }
   return freed;
@@ -1078,7 +1107,8 @@ static size_t regpool_evict_retired(size_t need) {
   for (size_t i = 0; i < n && freed < need; i++) {
     regpool_slab_t *s = &g_slabs[i];
     if (arts_regpool_entry_state(atomic_load_explicit(
-            &g_slab_word[i], memory_order_relaxed)) != REGPOOL_SLOT_RETIRED)
+            &g_slab_word[i], memory_order_relaxed)) != REGPOOL_SLOT_RETIRED ||
+        s->mr_kept)
       continue;
     void *base = s->mr.base;
     size_t len = s->mr.len;
@@ -1086,10 +1116,12 @@ static size_t regpool_evict_retired(size_t need) {
     atomic_store_explicit(&g_slab_word[i], 0, memory_order_release);
     g_evicting++;
     pthread_mutex_unlock(&g_lock);
-    if (mr != NULL)
-      fi_close(&mr->fid);
-    munmap(base, len);
-    freed += len;
+    /* As in the locked form: a range whose registration does not close stays
+     * mapped, forgotten by the table. */
+    if (regpool_mr_close(mr)) {
+      munmap(base, len);
+      freed += len;
+    }
     pthread_mutex_lock(&g_lock);
     if (--g_evicting == 0)
       pthread_cond_broadcast(&g_grow_cv);
@@ -1380,9 +1412,9 @@ static bool regpool_grow_node(int node, size_t seen_slabs, bool carve,
                                        /*is_pinned=*/true, /*is_zero=*/true,
                                        placed, /*exclusive=*/true, &arena);
       if (!managed) {
-        if (mr != NULL)
-          fi_close(&mr->fid);
-        munmap(base, want);
+        if (regpool_mr_close(mr)) {
+          munmap(base, want);
+        }
         refused = true;
       }
       mapped = managed;
@@ -1414,8 +1446,7 @@ static bool regpool_grow_node(int node, size_t seen_slabs, bool carve,
      * race the protocol handles — but the mapping must not be published
      * into a pool that no longer exists.  The arena's metadata references
      * the range, so it is left to the process exit like every arena slab. */
-    if (mr != NULL)
-      fi_close(&mr->fid);
+    (void)regpool_mr_close(mr);
     g_node_growing[node] = false;
     pthread_cond_broadcast(&g_grow_cv);
     pthread_mutex_unlock(&g_lock);
@@ -1424,8 +1455,7 @@ static bool regpool_grow_node(int node, size_t seen_slabs, bool carve,
   if (mapped) {
     if (regpool_append(base, want, mr, rkey, placed, /*interleaved=*/false,
                        false, arena, node, REGPOOL_BASE_ALIGN) == NULL) {
-      if (mr != NULL)
-        fi_close(&mr->fid);
+      (void)regpool_mr_close(mr);
       /* Arena metadata now references this range; the OS reclaims it at
        * exit. */
       mapped = false;
@@ -1696,9 +1726,9 @@ static void *regpool_alloc_direct(size_t size, size_t align, int node) {
   }
   pthread_mutex_unlock(&g_lock);
   if (s == NULL) {
-    if (mr != NULL)
-      fi_close(&mr->fid);
-    munmap(base, len);
+    if (regpool_mr_close(mr)) {
+      munmap(base, len);
+    }
     return NULL;
   }
   /* base is aligned to `a` >= requested align, so it satisfies the request. */
@@ -2409,20 +2439,24 @@ void arts_regpool_cleanup(void) {
   size_t n = atomic_load_explicit(&g_slab_count, memory_order_acquire);
   for (size_t i = 0; i < n; i++) {
     regpool_slab_t *s = &g_slabs[i];
-    /* A free slot was already closed and unmapped by the eviction that
-     * released it; its mr/base/len are stale and must not be touched
-     * again.  A retired one is still mapped and registered. */
+    /* A free slot's mr/base/len are stale and must not be touched again: the
+     * eviction that released it closed and unmapped the range, or, when the
+     * provider refused that close, left it mapped, registered and forgotten
+     * until the process exit.  A retired one is still mapped and
+     * registered. */
     if (arts_regpool_entry_state(atomic_load_explicit(
             &g_slab_word[i], memory_order_relaxed)) == REGPOOL_SLOT_FREE)
       continue;
-    if (s->mr.mr != NULL)
-      fi_close(&s->mr.mr->fid);
+    /* A registration whose close failed, at unregister or here, may still
+     * take a write: it is not closed again and its range is not unmapped,
+     * both left to the process exit. */
+    bool closed = !s->mr_kept && regpool_mr_close(s->mr.mr);
     /* Direct slabs are the pool's own mappings and are unmapped here.  Arena
      * slabs are owned by the allocator's arena registry; the vendored allocator
      * exposes no public arena-unload, so unmapping one out from under it would
      * dangle its metadata.  The OS reclaims those ranges at process exit — the
      * pool's lifetime is the process lifetime. */
-    if (s->is_direct)
+    if (s->is_direct && closed)
       munmap(s->mr.base, s->mr.len);
     atomic_store_explicit(&g_slab_word[i], 0, memory_order_release);
   }
@@ -2473,27 +2507,35 @@ void arts_regpool_report_if_requested(void) {
   pthread_mutex_unlock(&g_lock);
 }
 
-void arts_regpool_unregister(void) {
+bool arts_regpool_unregister(void) {
   pthread_mutex_lock(&g_lock);
   size_t n = atomic_load_explicit(&g_slab_count, memory_order_acquire);
   size_t closed = 0;
+  bool all_closed = true;
   for (size_t i = 0; i < n; i++) {
     regpool_slab_t *s = &g_slabs[i];
-    /* A retired mapping is still registered — only a free slot has nothing
-     * left to close. */
+    /* A retired mapping is still registered.  A free slot names nothing to
+     * close: its range was closed at its eviction, or forgotten there when the
+     * provider refused the close. */
     if (arts_regpool_entry_state(atomic_load_explicit(
             &g_slab_word[i], memory_order_relaxed)) == REGPOOL_SLOT_FREE) {
       continue;
     }
-    if (s->mr.mr != NULL) {
-      int rc = fi_close(&s->mr.mr->fid);
-      if (rc != 0) {
-        ARTS_WARN("regpool: unregister fi_close(mr) failed: %s",
-                  fi_strerror(-rc));
-      }
+    if (s->mr_kept) {
+      all_closed = false;
+      continue;
+    }
+    if (s->mr.mr == NULL) {
+      continue;
+    }
+    if (regpool_mr_close(s->mr.mr)) {
       s->mr.mr = NULL;
       s->mr.rkey = 0;
       closed++;
+    } else {
+      /* Kept with its handle and key: it is still registered. */
+      s->mr_kept = true;
+      all_closed = false;
     }
   }
   /* Detach from the fabric: a slab mapped after this point registers
@@ -2507,6 +2549,7 @@ void arts_regpool_unregister(void) {
               "teardown",
               closed);
   }
+  return all_closed;
 }
 
 bool arts_regpool_grow(int numa_node) {
@@ -2648,7 +2691,7 @@ bool arts_regpool_init(struct fid_domain *domain_or_null,
   return true;
 }
 void arts_regpool_cleanup(void) {}
-void arts_regpool_unregister(void) {}
+bool arts_regpool_unregister(void) { return true; }
 void arts_regpool_report_if_requested(void) {}
 void arts_regpool_report(FILE *out) {
   /* No slabs, no nodes, no direct mappings to describe — say so rather than

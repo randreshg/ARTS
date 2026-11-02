@@ -49,6 +49,7 @@ struct owner_response_landed_ctx_s {
 };
 static void owner_response_commit(arts_shared_ptr_t db_h);
 static void owner_response_landed_cb(void *arg);
+static void owner_response_landed_discard(void *arg);
 
 void arts_handler_db_grant_response(void *payload, size_t size) {
   struct arts_msg_grant_response_packet_s *hdr =
@@ -140,7 +141,7 @@ void arts_db_grant_response_on(arts_shared_ptr_t db_h,
     ctx->version = a->version;
     ctx->data_size = a->data_size;
     arts_net_rdzv_expect(a->rdzv_txid, a->data_size, owner_response_landed_cb,
-                         ctx);
+                         owner_response_landed_discard, ctx);
     return;
   }
 
@@ -236,6 +237,16 @@ static void owner_response_landed_cb(void *arg) {
   uint8_t census = arts_db_census_serving(true);
   owner_response_commit(ctx->db_h); /* releases */
   arts_db_census_served(census);
+  arts_free(ctx);
+}
+
+/* The teardown found the payload never landed: end the landing and drop the
+ * pin, both the context's own, and commit nothing. */
+static void owner_response_landed_discard(void *arg) {
+  struct owner_response_landed_ctx_s *ctx =
+      (struct owner_response_landed_ctx_s *)arg;
+  arts_db_buf_landing_return(ctx->landing);
+  arts_shared_release(&ctx->db_h);
   arts_free(ctx);
 }
 

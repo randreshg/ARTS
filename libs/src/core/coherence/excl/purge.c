@@ -562,6 +562,15 @@ static void lock_release_landed_cb(void *arg) {
   arts_shared_release(&ctx->db_h);
   arts_free(ctx);
 }
+
+/* The teardown found the bytes never landed: drop the pin, the context's
+ * own; the release is not committed. */
+static void lock_release_landed_discard(void *arg) {
+  struct lock_release_landed_ctx_s *ctx =
+      (struct lock_release_landed_ctx_s *)arg;
+  arts_shared_release(&ctx->db_h);
+  arts_free(ctx);
+}
 #endif /* ARTS_USE_CXL */
 
 void arts_handler_db_excl_release(void *item_v, void *args_v) {
@@ -622,7 +631,7 @@ void arts_handler_db_excl_release(void *item_v, void *args_v) {
         (struct lock_release_landed_ctx_s *)arts_malloc(sizeof(*ctx));
     ctx->db_h = arts_shared_copy(db->self_cb);
     arts_net_rdzv_expect(a->rdzv_txid, a->data_size, lock_release_landed_cb,
-                         ctx);
+                         lock_release_landed_discard, ctx);
     return;
   }
   /* Anything else carries no bytes: the home's own write release commits
@@ -1425,6 +1434,15 @@ static void lock_grant_landed_cb(void *arg) {
   arts_db_census_served(census);
   arts_free(ctx);
 }
+
+/* The teardown found the bytes never landed: drop the pin, the context's
+ * own (the landing is the stable buffer, and `pub` names the home's); the
+ * grant is not committed. */
+static void lock_grant_landed_discard(void *arg) {
+  struct lock_grant_landed_ctx_s *ctx = (struct lock_grant_landed_ctx_s *)arg;
+  arts_shared_release(&ctx->db_h);
+  arts_free(ctx);
+}
 #endif /* ARTS_USE_CXL */
 
 #ifdef ARTS_USE_CXL
@@ -1500,7 +1518,8 @@ static void excl_grant_on(arts_shared_ptr_t db_h,
     ctx->db_guid = p->db_guid;
     ctx->mode = mode;
     ctx->pub = pub;
-    arts_net_rdzv_expect(p->rdzv_txid, p->data_size, lock_grant_landed_cb, ctx);
+    arts_net_rdzv_expect(p->rdzv_txid, p->data_size, lock_grant_landed_cb,
+                         lock_grant_landed_discard, ctx);
     return;
   }
 

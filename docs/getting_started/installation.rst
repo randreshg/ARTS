@@ -250,7 +250,14 @@ All options are set with ``-D<NAME>=<VALUE>`` on the cmake line.
        each read request right behind its rank's write request for the same
        block, or after n ms when none follows; ``:drain`` holds each read
        request until as many EDT bodies have returned on its rank as EDTs had
-       been made runnable there when it was held, or n ms).
+       been made runnable there when it was held, or n ms),
+       ``ARTS_NET_RDZV_CUT=<n>`` (raise no one-sided payload's arrival on any
+       rank, so no pairing completes; the rank that has taken in n arrivals
+       and registered n expectations starts the shutdown, whose teardown
+       discards them),
+       ``ARTS_NET_REFUSE_EP_CLOSE=<rank>`` (that rank's teardown takes its
+       endpoint's close as refused and keeps the endpoint, the registered pool,
+       the domain and the fabric).
        The tests that need a hook register only where this is on.
    * - ``ARTS_DEBUG_DB_QUARANTINE``
      - OFF
@@ -259,7 +266,10 @@ All options are set with ``-D<NAME>=<VALUE>`` on the cmake line.
        reporting a write through a reference that outlived it when the
        descriptor leaves the quarantine and at teardown, and refusing a second
        free; under ``ARTS_DEBUG_SANITIZER=ADDRESS`` the held memory is
-       poisoned as well.
+       poisoned as well.  It also counts the descriptors ended (their
+       destructor ran): the teardown's ``TEARDOWN-INFO`` line reports how many
+       its rendezvous discards ended, beside the discards it ran and, with
+       ``ARTS_DEBUG_LANDING_BALANCE``, the landings still out.
    * - ``ARTS_DEBUG_LANDING_BALANCE``
      - OFF
      - Debug builds only: count each rank's rendezvous landings drawn and not

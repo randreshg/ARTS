@@ -108,7 +108,8 @@ UNREACHED(void arts_net_put_payload(int r, uint64_t a, uint64_t k, uint64_t t,
                                     const void *d, uint64_t s,
                                     void (*cb)(void *), void *arg))
 UNREACHED(void arts_net_rdzv_expect(uint64_t txid, uint64_t len,
-                                    void (*on_data)(void *), void *arg))
+                                    void (*on_data)(void *),
+                                    void (*on_discard)(void *), void *arg))
 UNREACHED(void arts_db_buf_ref_release_cb(void *arg))
 UNREACHED(bool arts_db_buf_adopt_landing(struct arts_db_cache_s *c, uint64_t v,
                                          struct arts_db_buffer_s *l,

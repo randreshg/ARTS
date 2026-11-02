@@ -190,12 +190,17 @@ void arts_regpool_report_if_requested(void);
 /* Close every live slab registration and detach the pool from the fabric
  * (domain and endpoint references cleared): later allocations still succeed
  * but are no longer fabric-registered, and later cleanup skips the closed
- * handles.  Exists for endpoint-bound registrations, whose MRs hold
- * references the endpoint cannot close under — the transport calls this
- * before closing its endpoint.  No thread may allocate from the pool or read
- * a slab's registration while it runs; frees may run concurrently, since the
- * free path reads neither the registration nor the domain or endpoint. */
-void arts_regpool_unregister(void);
+ * handles.  Returns whether every registration the table still names closed
+ * (a range a live eviction could not close was already forgotten, mapped and
+ * registered, until the process exit).  One whose close fails
+ * keeps its handle and key, since it may still take a write: it is never
+ * closed again, its range is never unmapped, and the process exit reclaims
+ * both.  Exists for endpoint-bound registrations, whose MRs hold references
+ * the endpoint cannot close under — the transport calls this before closing
+ * its endpoint.  No thread may allocate from the pool or read a slab's
+ * registration while it runs; frees may run concurrently, since the free path
+ * reads neither the registration nor the domain or endpoint. */
+bool arts_regpool_unregister(void);
 
 /* Allocate `size` bytes aligned to at least `align` (floored to the payload
  * alignment invariant; above it, an alignment that is not a power of two is a

@@ -234,10 +234,11 @@ int main(void) {
     arts_net_progress();
   }
 
-  /* Two-phase teardown mirrors the runtime: quiesce the fabric (close ep/cq/av,
-   * return recv buffers) while the pool is still live, then free the pool, then
-   * close the domain/fabric. */
+  /* The teardown's three phases mirror the runtime: quiesce the fabric (close
+   * ep/cq/av), reclaim (return the recv buffers) while the pool is still live,
+   * then free the pool, then close the domain/fabric. */
   arts_net_quiesce();
+  arts_net_reclaim();
   arts_regpool_cleanup();
   arts_net_teardown();
 

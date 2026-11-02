@@ -148,8 +148,8 @@ with defaults lives in [README.md](README.md#build-options); the most common are
 | `ARTS_BUILD_HPX_APPS` | `ON` | Section: the HPX originals on HPX and their OCR mirrors (benchmark tree only). |
 | `ARTS_BUILD_EXAMPLES` | `ON` | Section: the native ARTS examples (`examples/{basics,dense,graph,stream,random_access,proxy}`; `gpu/` is not ported and not built), built in every tree for its own cell and smoke-tested with `ARTS_BUILD_TESTS`; a benchmark tree also builds them on every ARTS variant. |
 | `ARTS_DEBUG_SANITIZER` | `OFF` | Debug builds only: `ADDRESS` (ASan + UBSan + LSan) or `THREAD` (TSan + UBSan). |
-| `ARTS_DEBUG_INJECTION` | `OFF` | Debug builds only: compile the run-time injection hooks (`ARTS_SCHED_FUZZ`, `ARTS_WRITE_COMPLETION_DELAY_MS`, `ARTS_NET_MAX_MSG`, `ARTS_REGPOOL_FORCE_FULL_NODES`, `ARTS_REQUEST_DELAY_MS`), each inert until its environment variable is set. |
-| `ARTS_DEBUG_DB_QUARANTINE` | `OFF` | Debug builds only: hold every freed coherent data-block descriptor back, filled, and report a write through a reference that outlived it. |
+| `ARTS_DEBUG_INJECTION` | `OFF` | Debug builds only: compile the run-time injection hooks (`ARTS_SCHED_FUZZ`, `ARTS_WRITE_COMPLETION_DELAY_MS`, `ARTS_NET_MAX_MSG`, `ARTS_REGPOOL_FORCE_FULL_NODES`, `ARTS_REQUEST_DELAY_MS`, `ARTS_NET_RDZV_CUT`, `ARTS_NET_REFUSE_EP_CLOSE`), each inert until its environment variable is set. |
+| `ARTS_DEBUG_DB_QUARANTINE` | `OFF` | Debug builds only: hold every freed coherent data-block descriptor back, filled, and report a write through a reference that outlived it; count the descriptors ended, which the teardown's `TEARDOWN-INFO` line reports for its rendezvous discards. |
 | `ARTS_DEBUG_LANDING_BALANCE` | `OFF` | Debug builds only: count each rank's rendezvous landings drawn and not yet ended (returned, adopted or installed). |
 | `ARTS_DEBUG_WAKE_GUID` | `OFF` | Debug builds only: keep the parked EDT's GUID beside each waiting entry's pointer to it and check it at every wake through the entry; the validation trees turn it on. |
 

@@ -209,6 +209,13 @@ static struct {
    * that reads it set stands down and reads nothing the store published, so
    * every load is relaxed.  Beside the init-only fields every send reads. */
   _Atomic(bool) quiescing;
+  /* Quiesce could not shut inbound writes out: the endpoint's close failed,
+   * or a registration bound to it did not close.  The provider may then still
+   * place bytes in memory this rank advertised, so reclaim keeps every landing
+   * and recv buffer instead of returning it (quiesce's result tells the
+   * runtime to keep the rest).  Written and read only by the thread that runs
+   * the teardown. */
+  bool writes_may_land;
   /* First completion error seen while no shutdown was recognized here, as a
    * monotonic stamp (0 = none) and the provider's text.  A lost transfer is
    * fatal on a live run, but a peer already shutting down flushes this rank's
@@ -249,6 +256,21 @@ static struct {
   /* Posts the provider refused with EAGAIN: only its own value. */
   _Atomic(uint64_t) eagain_count;
 } g_net;
+
+#ifndef NDEBUG
+/* Set on the thread that runs the teardown when its quiesce begins.  Nothing
+ * that thread runs afterwards sends (a rendezvous discard releases what its
+ * context owns and nothing else), so a send it attempts is a defect. */
+static ARTS_THREAD_LOCAL bool t_net_quiesced;
+#define NET_CHECK_NOT_QUIESCED(what)                                           \
+  do {                                                                         \
+    if (t_net_quiesced) {                                                      \
+      ARTS_ERROR("arts_net: %s after this thread began the teardown", what);   \
+    }                                                                          \
+  } while (0)
+#else
+#define NET_CHECK_NOT_QUIESCED(what) ((void)0)
+#endif
 
 /* The stamp's value while its election winner writes the text: a monotonic
  * time stamp is never 0 and never this. */
@@ -617,6 +639,7 @@ void arts_net_send_core(int rank, char *message, unsigned int length,
    * barrier): drop the send, but still run its completion-gated free so the
    * caller payload is not leaked. */
   if (atomic_load_explicit(&g_net.quiescing, memory_order_relaxed)) {
+    NET_CHECK_NOT_QUIESCED("a message send");
     if (free_method != NULL) {
       free_method(payload);
     }
@@ -847,18 +870,20 @@ static inline uint64_t net_rdzv_word_taken(uint64_t w) {
          ((w + 1) & NET_RDZV_GEN_MASK);
 }
 
-/* One slot.  `word` decides; cb, arg and len are an expectation's, written by
- * its XP claimant before the publish CAS releases them and read by the
- * arrival after an acquire load of the X word it then takes by a CAS against
- * that exact word (relaxed atomics, so that a duplicate's read is defined and
- * its CAS fails). */
+/* One slot.  `word` decides; cb, arg, len and discard are an expectation's,
+ * written by its XP claimant before the publish CAS releases them and read by
+ * the arrival after an acquire load of the X word it then takes by a CAS
+ * against that exact word (relaxed atomics, so that a duplicate's read is
+ * defined and its CAS fails); `discard` is read only by the teardown, after
+ * every event of the run. */
 struct net_rdzv_slot_s {
   /* Aligned to its size, so no slot of a line-aligned level straddles two
    * lines. */
-  _Alignas(32) _Atomic(uint64_t) word;
+  _Alignas(64) _Atomic(uint64_t) word;
   _Atomic(uintptr_t) cb;
   _Atomic(uintptr_t) arg;
   _Atomic(uint64_t) len;
+  _Atomic(uintptr_t) discard;
 };
 
 /* One level of the chain.  `next` is grow-only: every thread that finds it
@@ -870,7 +895,7 @@ struct net_rdzv_level_s {
 };
 
 /* Level 0, made by arts_net_init before any runtime thread exists and freed
- * by quiesce once every runtime thread has passed the ready_to_clean barrier,
+ * by reclaim once every runtime thread has passed the ready_to_clean barrier,
  * so a plain pointer: thread creation and the barrier order every use. */
 static struct net_rdzv_level_s *g_rdzv_level0;
 
@@ -882,6 +907,9 @@ static _Atomic(uint64_t) g_rdzv_txid_ctr = 1;
 static inline unsigned net_rdzv_level_log2(unsigned level) {
   return level == 0 ? ARTS_NET_RDZV_LEVEL0_LOG2 : ARTS_NET_RDZV_LEVEL_LOG2;
 }
+
+_Static_assert(ARTS_CACHE_LINE_SIZE % _Alignof(struct net_rdzv_slot_s) == 0,
+               "a line-aligned level must align each rendezvous slot");
 
 static struct net_rdzv_level_s *net_rdzv_level_new(unsigned level) {
   return (struct net_rdzv_level_s *)arts_calloc_aligned(
@@ -972,11 +1000,104 @@ static void net_rdzv_unpass(uint32_t txid, unsigned depth, uint64_t delta) {
   }
 }
 
-/* The callback a completed pairing runs. */
+static void net_selfcheck_arrived(void *arg);
+
+#ifdef ARTS_DEBUG_INJECTION
+/* ARTS_NET_RDZV_CUT=<n>: no rank raises a one-sided payload's arrival, so no
+ * pairing completes and every expectation stays unpaired.  A rank that has
+ * taken in n arrivals and registered n expectations starts the shutdown on
+ * the thread of the event that completed the count, through
+ * arts_net_rdzv_cut_done; the teardown then finds the n expectations
+ * unpaired.  ARTS_NET_REFUSE_EP_CLOSE=<rank>: that rank's quiesce takes its
+ * endpoint's close as refused. */
+void (*arts_net_rdzv_cut_done)(void);
+static uint32_t g_rdzv_cut_n; /* 0: off.  Set at init, before any thread. */
+/* Arrivals in the high half, expectations in the low half: one word, so
+ * exactly one event finds both counts complete. */
+static _Atomic(uint64_t) g_rdzv_cut_events;
+static long g_refuse_ep_close_rank = -1;
+
+static void net_cut_hooks_init(void) {
+  const char *v = getenv("ARTS_NET_RDZV_CUT");
+  if (v != NULL && v[0] != '\0') {
+    char *end = NULL;
+    errno = 0;
+    unsigned long n = (v[0] >= '0' && v[0] <= '9') ? strtoul(v, &end, 10) : 0;
+    if (end == NULL || *end != '\0' || n == 0 || n > 0x7fffffffUL ||
+        errno == ERANGE) {
+      ARTS_ERROR("arts_net: ARTS_NET_RDZV_CUT=\"%s\" is not a positive count",
+                 v);
+    }
+    g_rdzv_cut_n = (uint32_t)n;
+  }
+  v = getenv("ARTS_NET_REFUSE_EP_CLOSE");
+  if (v != NULL && v[0] != '\0') {
+    char *end = NULL;
+    errno = 0;
+    unsigned long r =
+        (v[0] >= '0' && v[0] <= '9') ? strtoul(v, &end, 10) : ~0UL;
+    if (end == NULL || *end != '\0' || errno == ERANGE ||
+        r >= arts_global_rank_count) {
+      ARTS_ERROR("arts_net: ARTS_NET_REFUSE_EP_CLOSE=\"%s\" is not a rank of "
+                 "this run (0-%u)",
+                 v, arts_global_rank_count - 1u);
+    }
+    g_refuse_ep_close_rank = (long)r;
+  }
+}
+
+/* Relaxed: only its own value.  The thread that completes the count was
+ * created after initialization, which orders before it everything the
+ * shutdown reads. */
+static void net_rdzv_cut_count(uint64_t inc) {
+  uint64_t target = ((uint64_t)g_rdzv_cut_n << 32) | g_rdzv_cut_n;
+  uint64_t now =
+      atomic_fetch_add_explicit(&g_rdzv_cut_events, inc, memory_order_relaxed) +
+      inc;
+  if (now == target) {
+    ARTS_INFO("arts_net: ARTS_NET_RDZV_CUT withheld %u pairing(s); starting "
+              "the shutdown",
+              g_rdzv_cut_n);
+    if (arts_net_rdzv_cut_done != NULL) {
+      arts_net_rdzv_cut_done();
+    }
+  }
+}
+
+/* True when the arrival is withheld. */
+static bool net_rdzv_cut_arrival(void) {
+  if (g_rdzv_cut_n == 0) {
+    return false;
+  }
+  net_rdzv_cut_count((uint64_t)1 << 32);
+  return true;
+}
+
+/* Every expectation counts but the selfcheck's probe, whose arrival is never
+ * withheld. */
+static void net_rdzv_cut_expect(void (*on_data)(void *)) {
+  if (g_rdzv_cut_n != 0 && on_data != net_selfcheck_arrived) {
+    net_rdzv_cut_count(1);
+  }
+}
+
+static bool net_refuse_ep_close(void) {
+  return g_refuse_ep_close_rank == (long)arts_global_rank_id;
+}
+#else
+#define net_cut_hooks_init() ((void)0)
+#define net_rdzv_cut_arrival() false
+#define net_rdzv_cut_expect(d) ((void)(d))
+#define net_refuse_ep_close() false
+#endif
+
+/* The callback a completed pairing runs, and the one the teardown runs
+ * instead for an expectation it finds unpaired. */
 struct net_rdzv_fire_s {
   void (*cb)(void *);
   void *arg;
   uint64_t len;
+  void (*discard)(void *);
 };
 
 /* Raise one event of `txid`: an expectation when `exp` is non-NULL (its
@@ -1050,6 +1171,8 @@ static bool net_rdzv_event(uint64_t txid64, const struct net_rdzv_fire_s *exp,
       atomic_store_explicit(&sl->arg, (uintptr_t)exp->arg,
                             memory_order_relaxed);
       atomic_store_explicit(&sl->len, exp->len, memory_order_relaxed);
+      atomic_store_explicit(&sl->discard, (uintptr_t)exp->discard,
+                            memory_order_relaxed);
       arts_sched_fuzz_point(); /* widen the claim<->publish window */
       w = atomic_load_explicit(&sl->word, memory_order_acquire);
       for (;;) {
@@ -1088,14 +1211,17 @@ uint64_t arts_net_rdzv_txid_peek(void) {
   return atomic_load_explicit(&g_rdzv_txid_ctr, memory_order_relaxed);
 }
 
-void arts_net_rdzv_expect(uint64_t txid, uint64_t len,
-                          void (*on_data)(void *), void *arg) {
-  const struct net_rdzv_fire_s exp = {.cb = on_data, .arg = arg, .len = len};
+void arts_net_rdzv_expect(uint64_t txid, uint64_t len, void (*on_data)(void *),
+                          void (*on_discard)(void *), void *arg) {
+  const struct net_rdzv_fire_s exp = {
+      .cb = on_data, .arg = arg, .len = len, .discard = on_discard};
   struct net_rdzv_fire_s fire;
   if (net_rdzv_event(txid, &exp, &fire)) {
     INCREMENT_BYTES_REMOTE_RECEIVED_BY(fire.len);
     fire.cb(fire.arg); /* data already landed: fire inline */
+    return;
   }
+  net_rdzv_cut_expect(on_data);
 }
 
 /* Dispatch-side processing of a remote-write completion (imm == txid).  Runs
@@ -1107,6 +1233,42 @@ static void net_rdzv_data_arrived(uint64_t txid) {
     INCREMENT_BYTES_REMOTE_RECEIVED_BY(fire.len);
     fire.cb(fire.arg);
   }
+}
+
+/* Teardown: run the discard of every expectation still unpaired (an X
+ * record), then free the levels.  An arrival marker (an A record: data whose
+ * metadata never came) holds nothing to release.  Every runtime thread has
+ * passed the ready_to_clean barrier, whose arrivals order each event's last
+ * access to the table before this, so no record is mid-claim and every load is
+ * relaxed. */
+static size_t net_rdzv_teardown(void) {
+  size_t discarded = 0;
+  unsigned level = 0;
+  for (struct net_rdzv_level_s *lv = g_rdzv_level0; lv != NULL; level++) {
+    size_t n = (size_t)1 << net_rdzv_level_log2(level);
+    for (size_t k = 0; k < n; k++) {
+      struct net_rdzv_slot_s *sl = &lv->slot[k];
+      unsigned state = net_rdzv_word_state(
+          atomic_load_explicit(&sl->word, memory_order_relaxed));
+      assert(state != NET_RDZV_XP && state != NET_RDZV_XPA &&
+             "a rendezvous expectation was still registering at teardown");
+      if (state != NET_RDZV_X) {
+        continue;
+      }
+      void (*discard)(void *) = (void (*)(void *))atomic_load_explicit(
+          &sl->discard, memory_order_relaxed);
+      if (discard != NULL) {
+        discard((void *)atomic_load_explicit(&sl->arg, memory_order_relaxed));
+        discarded++;
+      }
+    }
+    struct net_rdzv_level_s *next =
+        atomic_load_explicit(&lv->next, memory_order_relaxed);
+    arts_free(lv);
+    lv = next;
+  }
+  g_rdzv_level0 = NULL;
+  return discarded;
 }
 
 bool arts_net_rdzv_local(const void *p, uint64_t len, uint64_t *raddr,
@@ -1167,6 +1329,7 @@ static bool net_put(int rank, uint64_t raddr, uint64_t rkey, uint64_t txid,
    * source buffer's completion-gated release is not leaked (mirrors
    * arts_net_send_core's quiescing contract). */
   if (atomic_load_explicit(&g_net.quiescing, memory_order_relaxed)) {
+    NET_CHECK_NOT_QUIESCED("a one-sided write");
     if (on_local_done != NULL) {
       on_local_done(arg);
     }
@@ -1866,7 +2029,9 @@ static bool net_reap_and_dispatch(void) {
   while (head != NULL) {
     struct net_pending_s *next = head->next;
     if (head->rdzv_txid != 0) {
-      net_rdzv_data_arrived(head->rdzv_txid);
+      if (!net_rdzv_cut_arrival()) {
+        net_rdzv_data_arrived(head->rdzv_txid);
+      }
     } else {
       INCREMENT_BYTES_REMOTE_RECEIVED_BY(head->len);
       INCREMENT_NUM_REMOTE_RECEIVE_BY(1);
@@ -1977,8 +2142,9 @@ void arts_net_selfcheck(void) {
   /* Set by the expectation's callback on this thread: the selfcheck runs
    * before any other thread can reap or pair. */
   bool done = false;
-  /* A probe of the plane, not a datablock payload: no counter sees it. */
-  arts_net_rdzv_expect(txid, 0, net_selfcheck_arrived, &done);
+  /* A probe of the plane, not a datablock payload: no counter sees it.  No
+   * discard: `done` owns nothing, and the probe pairs or the process ends. */
+  arts_net_rdzv_expect(txid, 0, net_selfcheck_arrived, NULL, &done);
   (void)net_put((int)arts_global_rank_id, raddr, rkey, txid, src,
                 SELFCHECK_LEN, NULL, NULL, /*timed=*/false);
   struct timespec start;
@@ -2059,6 +2225,7 @@ void arts_net_init(const char *provider, const char *fabric_domain,
                    const char *net_interface, bool one_host) {
   net_write_delay_init();
   net_req_delay_init();
+  net_cut_hooks_init();
   if (g_rdzv_level0 == NULL) {
     g_rdzv_level0 = net_rdzv_level_new(0);
   }
@@ -2450,19 +2617,21 @@ void arts_net_rx_arm(void) {
   }
 }
 
-void arts_net_quiesce(void) {
-  /* Phase 1 of teardown, run BEFORE the registered pool is torn down, once
-   * every runtime thread has passed the ready_to_clean barrier: none touches
-   * the fabric again, joined or not, and the barrier's arrivals order each
-   * one's last access before this.  Discarding sends that were
-   * never accepted by the provider at final teardown is deliberate — it mirrors
-   * a bounded drain-then-exit and must never block shutdown on a peer that has
-   * already gone.  The ordering matters: everything that references a slab MR
-   * (send bounces still queued, and the recv buffers themselves) is released
-   * here, while the pool is still live, so the pool cleanup that follows can
-   * close those MRs without any outstanding reference — and no desc ever names
-   * a closed MR. */
+bool arts_net_quiesce(void) {
+  /* Phase 1 of teardown, run once every runtime thread has passed the
+   * ready_to_clean barrier: none touches the fabric again, joined or not, and
+   * the barrier's arrivals order each one's last access before this.
+   * Discarding sends that were never accepted by the provider at final
+   * teardown is deliberate — it mirrors a bounded drain-then-exit and must
+   * never block shutdown on a peer that has already gone.  The ordering
+   * matters: send bounces still queued are released here and the recv
+   * buffers by reclaim, both while the pool is still live, so the pool
+   * cleanup that follows can close those MRs without any outstanding
+   * reference — and no desc ever names a closed MR. */
   atomic_store_explicit(&g_net.quiescing, true, memory_order_relaxed);
+#ifndef NDEBUG
+  t_net_quiesced = true;
+#endif
 
   /* Discard queued-but-unposted retry txns.  These never reached the provider,
    * so they are not outstanding; run their completion-gated frees (caller
@@ -2489,18 +2658,6 @@ void arts_net_quiesce(void) {
     g_pending_head = next;
   }
   g_pending_tail = NULL;
-
-  /* Drop unpaired rendezvous records (an expectation whose data never landed,
-   * or data whose metadata never arrived — both only possible when a peer died
-   * or shutdown cut a transfer mid-flight) with the levels that hold them.
-   * Quiescent: no callback runs. */
-  for (struct net_rdzv_level_s *lv = g_rdzv_level0; lv != NULL;) {
-    struct net_rdzv_level_s *next =
-        atomic_load_explicit(&lv->next, memory_order_relaxed);
-    arts_free(lv);
-    lv = next;
-  }
-  g_rdzv_level0 = NULL;
 
   /* Reap already-posted sends so their completion-gated frees run (bounces back
    * to the still-live pool).  TX-only: inbound completions are ignored and no
@@ -2530,20 +2687,40 @@ void arts_net_quiesce(void) {
    * endpoint close below already creates.  Providers WITH FI_MR_LOCAL keep
    * today's order: their posted recvs hold MR descriptors until the endpoint
    * close cancels them, so their MRs must outlive the endpoint. */
-  if ((g_net.mr_mode & FI_MR_ENDPOINT) != 0) {
-    arts_regpool_unregister();
+  if ((g_net.mr_mode & FI_MR_ENDPOINT) != 0 && !arts_regpool_unregister()) {
+    /* A registration that did not close stays remotely writable while the
+     * endpoint lives (and keeps it from closing): the same verdict as a
+     * failed endpoint close. */
+    g_net.writes_may_land = true;
   }
 
-  /* Close the endpoint (cancels the posted recvs), then the CQ and AV.  The
-   * returns are checked: a -FI_EBUSY here means a close-ordering invariant
-   * broke and the object (and everything behind it) leaks. */
-  if (g_net.ep != NULL) {
-    int crc = fi_close(&g_net.ep->fid);
-    if (crc != 0) {
-      ARTS_WARN("arts_net: fi_close(ep) failed: %s", fi_strerror(-crc));
+  /* Close the endpoint (cancels the posted recvs), then the CQ and AV.  When
+   * inbound writes cannot be shut out -- a registration bound to the endpoint
+   * did not close, or the endpoint refuses its close -- the endpoint stays
+   * open and keeps the CQ and AV bound to it, so none of the three is closed
+   * and all three stay named, left to the process exit. */
+  int ecrc = 0;
+  if (!g_net.writes_may_land && g_net.ep != NULL) {
+    ecrc = net_refuse_ep_close() ? -FI_EBUSY : fi_close(&g_net.ep->fid);
+    if (ecrc == 0) {
+      g_net.ep = NULL;
+    } else {
+      g_net.writes_may_land = true;
     }
-    g_net.ep = NULL;
   }
+  if (g_net.writes_may_land) {
+    if (ecrc != 0) {
+      ARTS_WARN("arts_net: fi_close(ep) failed: %s; the endpoint, its CQ and "
+                "its AV are kept open",
+                fi_strerror(-ecrc));
+    } else {
+      ARTS_WARN("arts_net: a registration bound to the endpoint did not "
+                "close; the endpoint, its CQ and its AV are kept open");
+    }
+    return false;
+  }
+  /* The endpoint closed, so a failed close here means a close-ordering
+   * invariant broke and the object (and everything behind it) leaks. */
   if (g_net.cq != NULL) {
     int crc = fi_close(&g_net.cq->fid);
     if (crc != 0) {
@@ -2558,6 +2735,32 @@ void arts_net_quiesce(void) {
     }
     g_net.av = NULL;
   }
+  return true;
+}
+
+size_t arts_net_reclaim(void) {
+  /* Phase 2 of teardown, run after quiesce closed the endpoint and before
+   * arts_regpool_cleanup.  With the endpoint closed no write lands in what is
+   * returned here; when quiesce could not shut writes out (a failed endpoint
+   * or registration close) that no longer holds, so the levels, their
+   * contexts and the recv buffers are kept for the process exit. */
+  if (g_net.writes_may_land) {
+    ARTS_WARN("arts_net: the endpoint or a registration bound to it did not "
+              "close, so its landings and recv buffers are kept: a write may "
+              "still land in them");
+    return 0;
+  }
+
+  /* Unpaired rendezvous records (an expectation whose data never landed, or
+   * data whose metadata never arrived: a transfer the shutdown cut, or a
+   * peer's death) go now, and each expectation's discard releases what its
+   * context owns.  The runtime calls this after its teardown sweep of the
+   * route tables, which may already have dropped a count a context only
+   * borrows, so a discard reads nothing through one.  No pairing can race a
+   * discard: no runtime thread raises an event after the ready_to_clean
+   * barrier, and quiesce dispatched no inbound completion before closing the
+   * endpoint. */
+  size_t discarded = net_rdzv_teardown();
 
   /* Return the recv landing buffers to the pool while it is still live; their
    * slab MR is closed by the pool cleanup that follows. */
@@ -2568,10 +2771,11 @@ void arts_net_quiesce(void) {
     }
     g_net.rxdesc[i] = NULL;
   }
+  return discarded;
 }
 
 void arts_net_teardown(void) {
-  /* Phase 2 of teardown, run AFTER arts_regpool_cleanup: the pool has closed
+  /* Phase 3 of teardown, run AFTER arts_regpool_cleanup: the pool has closed
    * every slab MR (which backed both sends and the recv buffers), so nothing
    * registered outlives its domain — close the domain, then the fabric. */
   if (g_net.domain != NULL) {
@@ -2600,13 +2804,16 @@ void arts_net_teardown(void) {
 }
 
 void arts_net_drain_outstanding(unsigned int deadline_ms) {
-  /* Bounded wait for accepted fabric sends to complete, so the shutdown
-   * broadcast's frames leave this node before teardown.  The progress threads
-   * are still running: they reap completions and dispatch what arrives.  This
-   * assists with the transmit side only -- it posts queued sends, reaps the
-   * completion queue without dispatching and polls the outstanding count --
-   * since a handler run here could ready an EDT on a thread that owns no
-   * deque.  Single-node never brought the fabric up. */
+  /* Bounded wait until no counted send of any thread is in progress: a post
+   * not yet completed, or one the provider keeps refusing while each attempt
+   * runs.  A send that left by fi_inject is never counted, so an injected
+   * SHUTDOWN frame is not waited for.  This assists with the transmit side
+   * only -- it posts queued sends, reaps the completion queue without
+   * dispatching and polls the outstanding count -- since a handler run here
+   * could ready an EDT on a thread that owns no deque.  So the counted sends
+   * complete through its own reaps, and any thread may call it, a progress
+   * thread too: when that is the only one, nothing is dispatched on this rank
+   * until the drain returns.  Single-node never brought the fabric up. */
   if (arts_global_rank_count <= 1) {
     return;
   }

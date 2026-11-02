@@ -62,15 +62,19 @@
  *   arts_net_quiesce()           — refuse new sends, discard/reap in-flight TX;
  *                                  under endpoint-bound registration, close the
  *                                  slab MRs FIRST (they hold endpoint refs);
- *                                  close ep/cq/av, return recv buffers to the pool
+ *                                  close ep/cq/av, or keep all three when
+ *                                  inbound writes cannot be shut out
+ *   arts_net_reclaim()           — discard unpaired rendezvous expectations,
+ *                                  return recv buffers to the pool
  *   arts_regpool_cleanup()       — (caller) closes slab MRs (those still open)
  *   arts_net_teardown()          — closes domain/fabric
  *
  * The RX landing buffers are drawn from the registered pool (hence arming them
  * AFTER regpool_init) rather than a module-private registration: one MR-key
  * namespace, and no duplicate requested_key on a provider that requires
- * FI_MR_LOCAL without FI_MR_PROV_KEY.  Teardown is two-phase around the pool
- * cleanup so no send desc or recv buffer references a slab MR after it closes.
+ * FI_MR_LOCAL without FI_MR_PROV_KEY.  The teardown's phases straddle the
+ * pool cleanup so no send desc or recv buffer references a slab MR after it
+ * closes.
  */
 
 #ifdef __cplusplus
@@ -139,10 +143,13 @@ void arts_transport_send_payload_async_free(int rank, char *message,
 #define ARTS_NET_MIN_MULTI_RECV (ARTS_NET_RECV_BUF_SIZE / 2)
 #define ARTS_NET_MSG_MAX ARTS_NET_MIN_MULTI_RECV
 
-/* Bounded wait for accepted fabric sends to complete, so the shutdown-broadcast
- * frames leave this node before teardown.  It reaps completions but dispatches
- * nothing, so any thread may call it: the progress threads dispatch what
- * arrives meanwhile.  No-op single-node. */
+/* Bounded wait until no counted fabric send of any thread is in progress (a
+ * post not yet completed, or one the provider keeps refusing while each
+ * attempt runs; a send that left by fi_inject is never counted, so an
+ * injected SHUTDOWN frame is not waited for).  It reaps completions but
+ * dispatches nothing, so any thread may call it, a progress thread included:
+ * the counted sends complete through its own reaps, and what arrives waits for
+ * a progress thread that is not draining.  No-op single-node. */
 void arts_net_drain_outstanding(unsigned int deadline_ms);
 
 /* ==========================================================================
@@ -189,9 +196,15 @@ bool arts_net_rdzv_local(const void *p, uint64_t len, uint64_t *raddr,
  * progress thread); otherwise it fires when the immediate arrives.  Exactly
  * one expectation per txid.  `len` is the payload's whole length, which the
  * pairing adds to BYTES_REMOTE_RECEIVED: the completion reports only the last
- * piece of a payload the sender's ceiling cut apart. */
-void arts_net_rdzv_expect(uint64_t txid, uint64_t len,
-                          void (*on_data)(void *), void *arg);
+ * piece of a payload the sender's ceiling cut apart.
+ *
+ * `on_discard` runs with `arg` instead of `on_data` when the teardown
+ * (arts_net_reclaim) finds the expectation still unpaired, so at most one of
+ * the two ever runs.  It releases what `arg` owns and reads nothing through a
+ * reference `arg` only borrows: the teardown may already have dropped the
+ * count that kept such an object.  NULL where `arg` owns nothing. */
+void arts_net_rdzv_expect(uint64_t txid, uint64_t len, void (*on_data)(void *),
+                          void (*on_discard)(void *), void *arg);
 
 /* One-sided PUT of `len` bytes from the registered buffer `src` into the
  * peer's advertised landing {raddr, rkey}, delivering `txid` as the immediate.
@@ -313,16 +326,39 @@ void arts_net_exchange_addresses(void);
  * caller is the progress thread; safe from any thread (e.g. a test's main). */
 bool arts_net_progress(void);
 
-/* Teardown phase 1, run BEFORE arts_regpool_cleanup: refuse new sends, discard
- * queued-but-unposted retry txns (their completion-gated frees still run, so no
- * caller payload leaks and bounces return to the still-live pool), reap
- * already-posted sends within a bound, then close ep/cq/av (cancelling posted
- * recvs) and return the recv landing buffers to the pool.  After this, no send
- * desc or recv buffer references a slab MR — so the pool cleanup that follows
- * can close those MRs safely. */
-void arts_net_quiesce(void);
+/* Teardown phase 1, run once every runtime thread has passed the
+ * ready_to_clean barrier: refuse new sends, discard queued-but-unposted retry
+ * txns (their completion-gated frees still run, so no caller payload leaks
+ * and bounces return to the still-live pool), reap already-posted sends
+ * within a bound, close the pool's endpoint-bound registrations where the
+ * provider binds them, then close ep/cq/av (cancelling posted recvs).
+ * Returns whether inbound writes are shut out: the endpoint closed, and so
+ * did every registration bound to it that the pool still names.  When they
+ * are, no inbound write lands on this rank afterwards and no send desc
+ * references a slab MR; when they are not, the endpoint stays open and keeps
+ * its CQ and AV, so none of the three is closed or forgotten, a peer's write
+ * may still land anywhere this rank registered, and the caller leaves the
+ * pool, the domain and the fabric to the process exit (no pool cleanup, no
+ * phase 3).  The calling thread sends nothing from here on: in a Debug build
+ * a send it attempts after this call began stops the run. */
+bool arts_net_quiesce(void);
 
-/* Teardown phase 2, run AFTER arts_regpool_cleanup: close the domain and
+/* Teardown phase 2, run after phase 1 and BEFORE arts_regpool_cleanup: run the
+ * discard of every rendezvous expectation still unpaired and return the recv
+ * landing buffers to the pool, so no recv buffer references a slab MR when the
+ * pool cleanup closes it.  When phase 1 could not shut inbound writes out,
+ * both are kept instead, and with the pool the caller then keeps, left to the
+ * process exit.  Returns how many discards it ran. */
+size_t arts_net_reclaim(void);
+
+#ifdef ARTS_DEBUG_INJECTION
+/* ARTS_NET_RDZV_CUT calls it once, on the thread of the event that completes
+ * the hook's count, to start the shutdown.  Set before any runtime thread
+ * exists; NULL, the hook only withholds. */
+extern void (*arts_net_rdzv_cut_done)(void);
+#endif
+
+/* Teardown phase 3, run AFTER arts_regpool_cleanup: close the domain and
  * fabric.  The registered slab pool's MRs (which back both sends and the recv
  * buffers) are already closed by then, so nothing registered outlives its
  * domain. */

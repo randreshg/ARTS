@@ -1172,6 +1172,15 @@ static void lock_deliver_landed_cb(void *arg) {
   arts_free(ctx);
 }
 
+/* The teardown found the bytes never landed: drop the pin, the context's
+ * own (the landing is the stable buffer); the deliver is not committed. */
+static void lock_deliver_landed_discard(void *arg) {
+  struct lock_deliver_landed_ctx_s *ctx =
+      (struct lock_deliver_landed_ctx_s *)arg;
+  arts_shared_release(&ctx->db_h);
+  arts_free(ctx);
+}
+
 void arts_handler_db_excl_deliver(void *payload, size_t size) {
   struct arts_msg_excl_deliver_packet_s *p =
       (struct arts_msg_excl_deliver_packet_s *)payload;
@@ -1209,7 +1218,7 @@ static void excl_deliver_on(arts_shared_ptr_t db_h,
     ctx->data_size = p->data_size;
     ctx->tag = p->tag;
     arts_net_rdzv_expect(p->rdzv_txid, p->data_size, lock_deliver_landed_cb,
-                         ctx);
+                         lock_deliver_landed_discard, ctx);
     return;
   }
 

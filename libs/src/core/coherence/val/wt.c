@@ -527,6 +527,14 @@ static void pub_landed_cb(void *arg) {
   arts_free(ctx);
 }
 
+/* The teardown found the payload never landed: drop the pin, the context's
+ * own; nothing is stamped or acknowledged. */
+static void pub_landed_discard(void *arg) {
+  struct pub_landed_ctx_s *ctx = (struct pub_landed_ctx_s *)arg;
+  arts_shared_release(&ctx->db_h);
+  arts_free(ctx);
+}
+
 void arts_handler_db_publish(void *item_v, void *args_v) {
   struct arts_db_cache_s *cache = &((struct arts_db_s *)item_v)->cache;
   struct arts_ooo_args_db_publish_s *a =
@@ -580,7 +588,8 @@ void arts_handler_db_publish(void *item_v, void *args_v) {
   ctx->releaser = a->releaser;
   ctx->cv = a->cv;
   ctx->returns_grant = (a->returns_grant != 0u);
-  arts_net_rdzv_expect(a->rdzv_txid, a->data_size, pub_landed_cb, ctx);
+  arts_net_rdzv_expect(a->rdzv_txid, a->data_size, pub_landed_cb,
+                       pub_landed_discard, ctx);
 }
 
 /* The coherent destroy at the home (arts_handler_db_destroy, under its

@@ -869,7 +869,9 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug" AND NOT ARTS_DEBUG_INJECTION)
             ARTS_WRITE_COMPLETION_DELAY_MS
             ARTS_NET_MAX_MSG
             ARTS_REGPOOL_FORCE_FULL_NODES
-            ARTS_REQUEST_DELAY_MS)
+            ARTS_REQUEST_DELAY_MS
+            ARTS_NET_RDZV_CUT
+            ARTS_NET_REFUSE_EP_CLOSE)
         arts_add_test(injection_hook_refused_${_hook} STATUS 1
                       COMMAND term_shutdown)
         set_tests_properties(injection_hook_refused_${_hook} PROPERTIES
@@ -920,11 +922,30 @@ if(ARTS_DEBUG_INJECTION)
         ENVIRONMENT "ARTS_CONFIG=${_mn_cfg};ARTS_REQUEST_DELAY_MS=5:rw"
         PASS_REGULAR_EXPRESSION
         "ARTS_REQUEST_DELAY_MS=\"5:rw\" is not a delay of 0-60000 ms")
+    arts_add_test(injection_value_refused_rdzv_cut STATUS 1
+                  COMMAND multinode_edt)
+    set_tests_properties(injection_value_refused_rdzv_cut PROPERTIES
+        LABELS "multinode"
+        TIMEOUT 30
+        RESOURCE_LOCK "arts_runtime"
+        ENVIRONMENT "ARTS_CONFIG=${_mn_cfg};ARTS_NET_RDZV_CUT=0"
+        PASS_REGULAR_EXPRESSION "ARTS_NET_RDZV_CUT=\"0\" is not a positive count")
+    arts_add_test(injection_value_refused_refuse_ep_close STATUS 1
+                  COMMAND multinode_edt)
+    set_tests_properties(injection_value_refused_refuse_ep_close PROPERTIES
+        LABELS "multinode"
+        TIMEOUT 30
+        RESOURCE_LOCK "arts_runtime"
+        ENVIRONMENT "ARTS_CONFIG=${_mn_cfg};ARTS_NET_REFUSE_EP_CLOSE=2"
+        PASS_REGULAR_EXPRESSION
+        "ARTS_NET_REFUSE_EP_CLOSE=\"2\" is not a rank of this run \\(0-1\\)")
     # A one-rank run brings no fabric up, so it refuses a fabric hook.
     foreach(_hook
             ARTS_NET_MAX_MSG
             ARTS_WRITE_COMPLETION_DELAY_MS
-            ARTS_REQUEST_DELAY_MS)
+            ARTS_REQUEST_DELAY_MS
+            ARTS_NET_RDZV_CUT
+            ARTS_NET_REFUSE_EP_CLOSE)
         arts_add_test(injection_fabric_hook_refused_${_hook} STATUS 1
                       COMMAND term_shutdown)
         set_tests_properties(injection_fabric_hook_refused_${_hook} PROPERTIES
@@ -1371,6 +1392,45 @@ if(ARTS_MALLOC STREQUAL "mimalloc")
     register_pure_unit_test(net_rdzv_slots TIMEOUT 120)
     set_tests_properties(net_rdzv_slots PROPERTIES
         PASS_REGULAR_EXPRESSION "PASS net_rdzv_slots")
+
+    # net_rdzv_discard — whitebox for the teardown's end of the pairing table:
+    # after quiesce closes the endpoint, reclaim runs the discard of each
+    # unpaired expectation once, releasing the landing and the counted handle
+    # its context owns before the pool's cleanup, and no callback for anything
+    # else; after a failed endpoint close it releases nothing.  Same standalone
+    # harness shape as net_rendezvous (shared.c included for the counted
+    # handles).
+    add_executable(net_rdzv_discard unit/net_rdzv_discard.c $<TARGET_OBJECTS:arts_regpool>)
+    target_include_directories(net_rdzv_discard PRIVATE
+        ${ARTS_PUBLIC_INCLUDE_DIR} ${ARTS_INTERNAL_INCLUDE_DIR}
+        ${ARTS_BUILD_INTERNAL_INCLUDE_DIR})
+    arts_apply_protocol(net_rdzv_discard ${ARTS_COHERENCE_ARM} ${ARTS_WRITE_POLICY} ${ARTS_RELEASE_POLICY})
+    set_test_log_level(net_rdzv_discard 2)
+    target_link_libraries(net_rdzv_discard PRIVATE
+        Threads::Threads mimalloc-static arts::libfabric ${RT_LIBRARY})
+    register_pure_unit_test(net_rdzv_discard TIMEOUT 60)
+    set_tests_properties(net_rdzv_discard PROPERTIES
+        ENVIRONMENT "FI_PROVIDER=tcp"
+        PASS_REGULAR_EXPRESSION "PASS net_rdzv_discard")
+
+    # regpool_mr_close_kept — whitebox for a registration whose close fails at
+    # teardown: unregister keeps its handle and key and reports it, quiesce
+    # then reports inbound writes not shut out, reclaim keeps the recv
+    # buffers, and neither a second unregister nor the cleanup retries the
+    # close or unmaps the range.  Same standalone harness shape as
+    # net_rendezvous.
+    add_executable(regpool_mr_close_kept unit/regpool_mr_close_kept.c $<TARGET_OBJECTS:arts_regpool>)
+    target_include_directories(regpool_mr_close_kept PRIVATE
+        ${ARTS_PUBLIC_INCLUDE_DIR} ${ARTS_INTERNAL_INCLUDE_DIR}
+        ${ARTS_BUILD_INTERNAL_INCLUDE_DIR})
+    arts_apply_protocol(regpool_mr_close_kept ${ARTS_COHERENCE_ARM} ${ARTS_WRITE_POLICY} ${ARTS_RELEASE_POLICY})
+    set_test_log_level(regpool_mr_close_kept 2)
+    target_link_libraries(regpool_mr_close_kept PRIVATE
+        Threads::Threads mimalloc-static arts::libfabric ${RT_LIBRARY})
+    register_pure_unit_test(regpool_mr_close_kept TIMEOUT 60)
+    set_tests_properties(regpool_mr_close_kept PROPERTIES
+        ENVIRONMENT "FI_PROVIDER=tcp"
+        PASS_REGULAR_EXPRESSION "PASS regpool_mr_close_kept")
 
     # net_tx_accounting — whitebox for the outstanding-transmit count: the
     # posting threads' per-ring counts against the CQ token holder's
@@ -1946,7 +2006,7 @@ if(ARTS_DEBUG_INJECTION AND ARTS_DEBUG_DB_QUARANTINE AND
         set_tests_properties(coherence_late_write_completion_${_v} PROPERTIES
             PASS_REGULAR_EXPRESSION "PASS: coherence_late_write_completion"
             FAIL_REGULAR_EXPRESSION
-            "FAIL:;QUIESCENCE-DEBUG:;left unchecked;left unrun;left unfreed")
+            "FAIL:;QUIESCENCE-DEBUG:;left unchecked;left unfreed")
     endforeach()
 endif()
 
@@ -2013,6 +2073,102 @@ if(ARTS_DEBUG_INJECTION AND NOT ARTS_CXL_TREE_RESIDENCY)
             PASS_REGULAR_EXPRESSION "PASS: 4 DBs"
             FAIL_REGULAR_EXPRESSION "FAIL:")
     endforeach()
+endif()
+
+# A teardown that finds rendezvous expectations unpaired runs each one's
+# discard.  ARTS_NET_RDZV_CUT=<n> withholds every pairing and has the rank
+# that took in n arrivals and registered n expectations start the shutdown;
+# the teardown's TEARDOWN-INFO line, a DEBUG-level message, reports the
+# discards, the descriptors they ended and the landings still out.
+# The requester shape cuts the answers of a read and a write acquisition on
+# rank 1, the home shape a release's payload on its home, rank 0, in the arms
+# whose release moves one there.  Only a sanitizer build sweeps the route
+# tables before reclaim, so only there does a home discard end its
+# descriptor; a requester's stays pinned by its stalled EDT.  The program
+# needs the fabric's registered pool.
+if(ARTS_DEBUG_INJECTION AND ARTS_DEBUG_DB_QUARANTINE AND
+   ARTS_DEBUG_LANDING_BALANCE AND NOT ARTS_CXL_TREE_RESIDENCY AND
+   ARTS_MALLOC STREQUAL "mimalloc" AND ARTS_LOG_LEVEL GREATER_EQUAL 3)
+    add_arts_test(rdzv_cut_teardown)
+    if(NOT ARTS_DEBUG_SANITIZER STREQUAL "OFF")
+        set(_home_f 1)
+    else()
+        set(_home_f 0)
+    endif()
+    set(_info "[^\n]*TEARDOWN-INFO: reclaim discarded")
+    set(_cut_fail "FAIL:" "QUIESCENCE-DEBUG: ([1-9]|[^0-9 ])"
+        "left unchecked" "left unfreed")
+    foreach(_v 2n_9w_1p 2n_8w_2p)
+        arts_test_cfg(_cfg ${_v})
+        arts_add_test(rdzv_cut_requester_${_v}
+                      COMMAND rdzv_cut_teardown requester)
+        set_tests_properties(rdzv_cut_requester_${_v} PROPERTIES
+            LABELS "multinode"
+            TIMEOUT 120
+            RESOURCE_LOCK "arts_runtime"
+            ENVIRONMENT "ARTS_CONFIG=${_cfg};ARTS_NET_RDZV_CUT=2"
+            PASS_REGULAR_EXPRESSION
+            "\\[1:[0-9]+\\] ${_info} 2 unpaired rendezvous expectation\\(s\\) \\(descriptors ended 0, landings out 0\\)"
+            FAIL_REGULAR_EXPRESSION "${_cut_fail};\\[0:[0-9]+\\] ${_info}")
+        if((ARTS_COHERENCE_ARM MATCHES "^(VAL|INV)$" AND
+            ARTS_WRITE_POLICY STREQUAL "WT") OR
+           (ARTS_COHERENCE_ARM STREQUAL "EXCL" AND
+            ARTS_RELEASE_POLICY STREQUAL "PURGE") OR
+           ARTS_COHERENCE_ARM STREQUAL "FLUSH")
+            arts_add_test(rdzv_cut_home_${_v} COMMAND rdzv_cut_teardown home)
+            set_tests_properties(rdzv_cut_home_${_v} PROPERTIES
+                LABELS "multinode"
+                TIMEOUT 120
+                RESOURCE_LOCK "arts_runtime"
+                ENVIRONMENT "ARTS_CONFIG=${_cfg};ARTS_NET_RDZV_CUT=1"
+                PASS_REGULAR_EXPRESSION
+                "\\[0:[0-9]+\\] ${_info} 1 unpaired rendezvous expectation\\(s\\) \\(descriptors ended ${_home_f}, landings out 0\\)"
+                FAIL_REGULAR_EXPRESSION
+                "${_cut_fail};\\[1:[0-9]+\\] ${_info} [1-9]")
+        endif()
+    endforeach()
+endif()
+
+# A rank whose endpoint does not close keeps the registered pool, the domain
+# and the fabric (ARTS_NET_REFUSE_EP_CLOSE refuses the named rank's close):
+# cleaned under the open endpoint, the domain's close would be refused, which
+# the fail list catches.  The run itself succeeds; the verdict is in WARN
+# lines.  rdzv_cut_kept adds two unpaired expectations on that rank: reclaim
+# keeps them and their landings, which its DEBUG-level TEARDOWN-INFO reports.
+if(ARTS_TEST_REFERENCE_TREE AND ARTS_DEBUG_INJECTION AND
+   ARTS_MALLOC STREQUAL "mimalloc" AND ARTS_LOG_LEVEL GREATER_EQUAL 1)
+    arts_test_cfg(_cfg 2n_9w_1p)
+    set(_kept "registered pool, domain and fabric left unfreed: ")
+    string(APPEND _kept "the fabric may still write")
+    set(_verdict "PASS: multinode_edt every check reported")
+    foreach(_r 0 1)
+        math(EXPR _o "1 - ${_r}")
+        set(_chain "\\[${_r}:[0-9]+\\] [^\n]*fi_close\\(ep\\) failed.*\\[${_r}:[0-9]+\\] [^\n]*${_kept}")
+        arts_add_test(teardown_endpoint_kept_r${_r} COMMAND multinode_edt)
+        set_tests_properties(teardown_endpoint_kept_r${_r} PROPERTIES
+            LABELS "multinode"
+            TIMEOUT 60
+            RESOURCE_LOCK "arts_runtime"
+            ENVIRONMENT "ARTS_CONFIG=${_cfg};ARTS_NET_REFUSE_EP_CLOSE=${_r}"
+            PASS_REGULAR_EXPRESSION
+            "${_verdict}.*${_chain}|${_chain}.*${_verdict}"
+            FAIL_REGULAR_EXPRESSION
+            "FAIL:;fi_close\\((domain|fabric)\\) failed;\\[${_o}:[0-9]+\\] [^\n]*left unfreed")
+    endforeach()
+    if(ARTS_DEBUG_DB_QUARANTINE AND ARTS_DEBUG_LANDING_BALANCE AND
+       ARTS_LOG_LEVEL GREATER_EQUAL 3)
+        arts_add_test(rdzv_cut_kept COMMAND rdzv_cut_teardown requester)
+        set_tests_properties(rdzv_cut_kept PROPERTIES
+            LABELS "multinode"
+            TIMEOUT 60
+            RESOURCE_LOCK "arts_runtime"
+            ENVIRONMENT
+            "ARTS_CONFIG=${_cfg};ARTS_NET_RDZV_CUT=2;ARTS_NET_REFUSE_EP_CLOSE=1"
+            PASS_REGULAR_EXPRESSION
+            "\\[1:[0-9]+\\] [^\n]*fi_close\\(ep\\) failed.*\\[1:[0-9]+\\] [^\n]*TEARDOWN-INFO: reclaim discarded 0 unpaired rendezvous expectation\\(s\\) \\(descriptors ended 0, landings out 2\\).*\\[1:[0-9]+\\] [^\n]*${_kept}"
+            FAIL_REGULAR_EXPRESSION
+            "FAIL:;QUIESCENCE-DEBUG: ([1-9]|[^0-9 ]);fi_close\\((domain|fabric)\\) failed;\\[0:[0-9]+\\] [^\n]*left unfreed")
+    endif()
 endif()
 
 # One-sided payloads in flight both ways at once: every block's chain of

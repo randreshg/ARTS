@@ -282,6 +282,14 @@ void arts_db_descriptor_quarantine_drain(void) {
 }
 #endif
 
+#ifdef ARTS_DEBUG_DB_QUARANTINE
+/* Relaxed: only its own value. */
+static _Atomic(uint64_t) g_db_descriptors_ended;
+uint64_t arts_db_descriptors_ended(void) {
+  return atomic_load_explicit(&g_db_descriptors_ended, memory_order_relaxed);
+}
+#endif
+
 void arts_db_free(void *ptr) {
   struct arts_db_s *db = (struct arts_db_s *)ptr;
   /* Chain into coherence cache teardown if this DB has one.  Only ARTS_DB
@@ -290,6 +298,10 @@ void arts_db_free(void *ptr) {
    * destructor tears down its sub-resources (the buffer slot's shared_ptr ref +
    * home_s) in place, and the storage release reclaims the db_s. */
   if (db->db_type == ARTS_DB) {
+#ifdef ARTS_DEBUG_DB_QUARANTINE
+    atomic_fetch_add_explicit(&g_db_descriptors_ended, 1u,
+                              memory_order_relaxed);
+#endif
     arts_db_cache_destructor(&db->cache);
     arts_db_buf_storage_release(&db->cache);
     return;
@@ -321,6 +333,16 @@ void arts_db_free(void *ptr) {
  * linkage so route_table.c references it directly.  `self` is the cb object
  * pointer = &db->cache (cache is the first member), which aliases arts_db_s. */
 void arts_db_deleter(void *self) { arts_db_free(self); }
+
+void arts_db_sweep_detach(arts_shared_ptr_t h) {
+  if (arts_shared_deleter(h) != arts_db_deleter) {
+    return;
+  }
+  struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(h);
+  if (db->db_type == ARTS_DB) {
+    arts_db_sweep_open_items(db, h);
+  }
+}
 
 /* Publish the DB cb deleter into the route_table's per-kind table at startup
  * (decoupled registration — see arts_route_table_register_deleter). */

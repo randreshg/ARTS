@@ -112,7 +112,9 @@ UNREACHED(void arts_shared_release(arts_shared_ptr_t *p))
 UNREACHED(bool arts_rank_u64_map_load(struct arts_rank_to_u64_map_s *m,
                                       const void *in, size_t size))
 UNREACHED(void arts_net_rdzv_expect(uint64_t txid, uint64_t len,
-                                    void (*on_data)(void *), void *arg))
+                                    void (*on_data)(void *),
+                                    void (*on_discard)(void *), void *arg))
+UNREACHED(void arts_db_buf_landing_return(struct arts_db_buffer_s *b))
 UNREACHED(bool arts_db_buf_adopt_landing(struct arts_db_cache_s *c, uint64_t v,
                                          struct arts_db_buffer_s *l,
                                          uint64_t s))

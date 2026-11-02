@@ -1949,6 +1949,11 @@ void arts_db_debug_quiescence_check(void) {
 #endif /* ARTS_LOG_LEVEL >= 3 */
 }
 
+void arts_db_sweep_open_items(struct arts_db_s *db, arts_shared_ptr_t cb) {
+  (void)db;
+  (void)cb;
+}
+
 #if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV) ||               \
     defined(ARTS_PROTOCOL_EXCL)
 /* Free the read waiters a destroy found still parked, then tear down the

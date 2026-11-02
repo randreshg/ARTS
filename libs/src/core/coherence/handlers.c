@@ -341,6 +341,8 @@ struct rdzv_discard_ctx_s {
   struct arts_db_buffer_s *landing;
 };
 
+/* The pairing and a teardown that finds the write never landed end the
+ * landing alike, the context's one possession. */
 static void rdzv_discard_cb(void *arg) {
   struct rdzv_discard_ctx_s *ctx = (struct rdzv_discard_ctx_s *)arg;
   arts_db_buf_landing_return(ctx->landing);
@@ -358,7 +360,7 @@ void arts_db_rdzv_discard_landing(uint64_t txid, uint64_t len,
   struct rdzv_discard_ctx_s *ctx =
       (struct rdzv_discard_ctx_s *)arts_malloc(sizeof(*ctx));
   ctx->landing = (struct arts_db_buffer_s *)(uintptr_t)cookie;
-  arts_net_rdzv_expect(txid, len, rdzv_discard_cb, ctx);
+  arts_net_rdzv_expect(txid, len, rdzv_discard_cb, rdzv_discard_cb, ctx);
 }
 
 #if defined(ARTS_PROTOCOL_VAL)
@@ -395,6 +397,15 @@ static void snapshot_landed_cb(void *arg) {
   uint8_t census = arts_db_census_serving(true);
   arts_db_ro_combine_on_terminal(cache, ctx->cover);
   arts_db_census_served(census);
+  arts_shared_release(&ctx->db_h);
+  arts_free(ctx);
+}
+
+/* The teardown found the payload never landed: end the landing and drop the
+ * pin, the context's own, and resume nothing. */
+static void snapshot_landed_discard(void *arg) {
+  struct snapshot_landed_ctx_s *ctx = (struct snapshot_landed_ctx_s *)arg;
+  arts_db_buf_landing_return(ctx->landing);
   arts_shared_release(&ctx->db_h);
   arts_free(ctx);
 }
@@ -446,7 +457,8 @@ void arts_handler_db_snapshot_response(void *item_v, void *args_v) {
     ctx->version = a->version;
     ctx->data_size = a->db_size;
     ctx->cover = a->cover;
-    arts_net_rdzv_expect(a->rdzv_txid, a->db_size, snapshot_landed_cb, ctx);
+    arts_net_rdzv_expect(a->rdzv_txid, a->db_size, snapshot_landed_cb,
+                         snapshot_landed_discard, ctx);
     return;
   }
 

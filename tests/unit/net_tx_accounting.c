@@ -241,6 +241,7 @@ int main(void) {
            (unsigned long long)twice);
     failures++;
   }
+  arts_net_reclaim();
   arts_regpool_cleanup();
   arts_net_teardown();
   printf("INFO net_tx_accounting: %lu samples, %llu outstanding at quiesce\n",

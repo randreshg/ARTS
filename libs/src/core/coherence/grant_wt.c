@@ -128,6 +128,16 @@ static void home_response_landed_cb(void *arg) {
   arts_free(ctx);
 }
 
+/* The teardown found the payload never landed: end the landing and drop the
+ * pin, both the context's own, and commit nothing. */
+static void home_response_landed_discard(void *arg) {
+  struct home_response_landed_ctx_s *ctx =
+      (struct home_response_landed_ctx_s *)arg;
+  arts_db_buf_landing_return(ctx->landing);
+  arts_shared_release(&ctx->db_h);
+  arts_free(ctx);
+}
+
 void arts_handler_db_grant_response(void *payload, size_t size) {
   struct arts_msg_grant_response_packet_s *hdr =
       (struct arts_msg_grant_response_packet_s *)payload;
@@ -204,7 +214,7 @@ void arts_db_grant_response_on(arts_shared_ptr_t db_h,
     ctx->version = a->version;
     ctx->data_size = a->data_size;
     arts_net_rdzv_expect(a->rdzv_txid, a->data_size, home_response_landed_cb,
-                         ctx);
+                         home_response_landed_discard, ctx);
     return;
   }
 

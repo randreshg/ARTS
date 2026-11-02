@@ -36,6 +36,7 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
+#include "arts/coherence/buffer.h"    /* arts_db_landings_outstanding */
 #include "arts/coherence/coherence.h" /* terminal quiescence sweep */
 #include "arts/runtime_state.h"
 #include "arts/system/schedfuzz.h"
@@ -79,15 +80,23 @@
 
 struct arts_runtime_shared_s arts_node_info;
 
+#ifdef ARTS_DEBUG_INJECTION
+/* ARTS_NET_RDZV_CUT's end: the shutdown starts on the thread whose event
+ * completed the hook's count, as an arts_shutdown call there would. */
+static void runtime_rdzv_cut_done(void) { arts_enter_shutdown_state(true); }
+#endif
+
 void arts_runtime_node_init(struct arts_config_s *config) {
 #ifdef ARTS_DEBUG_INJECTION
+  arts_net_rdzv_cut_done = runtime_rdzv_cut_done;
   arts_sched_fuzz_init();
 #elif !defined(NDEBUG)
   /* A hook's variable set where the hooks are not compiled would leave the
    * run unchanged, and the run would read as one that exercised the hook. */
   static const char *const hook_vars[] = {
       "ARTS_SCHED_FUZZ", "ARTS_WRITE_COMPLETION_DELAY_MS", "ARTS_NET_MAX_MSG",
-      "ARTS_REGPOOL_FORCE_FULL_NODES", "ARTS_REQUEST_DELAY_MS"};
+      "ARTS_REGPOOL_FORCE_FULL_NODES", "ARTS_REQUEST_DELAY_MS",
+      "ARTS_NET_RDZV_CUT", "ARTS_NET_REFUSE_EP_CLOSE"};
   for (size_t i = 0; i < sizeof(hook_vars) / sizeof(hook_vars[0]); i++) {
     const char *v = getenv(hook_vars[i]);
     if (v != NULL && v[0] != '\0') {
@@ -141,7 +150,8 @@ void arts_runtime_node_init(struct arts_config_s *config) {
      * leave the run unchanged. */
     static const char *const fabric_hook_vars[] = {
         "ARTS_NET_MAX_MSG", "ARTS_WRITE_COMPLETION_DELAY_MS",
-        "ARTS_REQUEST_DELAY_MS"};
+        "ARTS_REQUEST_DELAY_MS", "ARTS_NET_RDZV_CUT",
+        "ARTS_NET_REFUSE_EP_CLOSE"};
     for (size_t i = 0;
          i < sizeof(fabric_hook_vars) / sizeof(fabric_hook_vars[0]); i++) {
       const char *v = getenv(fabric_hook_vars[i]);
@@ -342,6 +352,22 @@ static void arts_count_abandoned_edts(struct arts_deque_s *dq) {
   }
 }
 
+/* Information, never a verdict: the discards reclaim ran, the descriptors
+ * they ended (under the quarantine) and the landings still out after them
+ * (under the landing count).  A test that cuts expectations on purpose reads
+ * it; any shutdown may leave non-zero values. */
+static void runtime_reclaim_report(size_t discarded, uint64_t ended) {
+  long long landings = 0;
+#ifdef ARTS_DEBUG_LANDING_BALANCE
+  landings = (long long)arts_db_landings_outstanding();
+#endif
+  if (discarded != 0 || ended != 0 || landings != 0) {
+    ARTS_DEBUG("TEARDOWN-INFO: reclaim discarded %zu unpaired rendezvous "
+               "expectation(s) (descriptors ended %llu, landings out %lld)",
+               discarded, (unsigned long long)ended, landings);
+  }
+}
+
 void arts_runtime_global_cleanup() {
   /* Write all counter outputs (thread, node, and cluster levels).  A thread
    * the shutdown gave up joining may still be writing its own row, so it has
@@ -371,7 +397,9 @@ void arts_runtime_global_cleanup() {
    * residue is the process exit's to reclaim, so when one stays, every route
    * table is kept and the residue stays reachable through them.  A thread the
    * shutdown gave up joining may still reach the route tables, so then they
-   * are neither swept nor freed, and the process exit reclaims them. */
+   * are neither swept nor freed, and the process exit reclaims them.  Before
+   * a coherent descriptor's install count goes, the sweep hands it to its
+   * arm's rows (arts_db_sweep_open_items). */
   uint64_t abandoned_edts = 0;
   bool tables_reachable =
       atomic_load_explicit(&arts_shutdown_abandon.unjoined_threads,
@@ -382,7 +410,7 @@ void arts_runtime_global_cleanup() {
 #if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__) ||           \
     __has_feature(address_sanitizer) || __has_feature(thread_sanitizer)
   if (!tables_reachable) {
-    abandoned_edts = arts_clean_up_dbs(arts_edt_admitted);
+    abandoned_edts = arts_clean_up_dbs(arts_edt_admitted, arts_db_sweep_detach);
   }
 #endif
 
@@ -449,35 +477,55 @@ void arts_runtime_global_cleanup() {
   /* Socket server global arrays (safe to call even for single-node) */
   arts_socket_cleanup();
 
-  /* Fabric teardown is two-phase around the pool cleanup.  Phase 1 always
-   * runs, joined or not: every runtime thread has passed the ready_to_clean
-   * barrier, so none touches the fabric again.  It refuses new sends,
-   * discards/reaps in-flight txns (their bounces return to the still-live
-   * pool) and closes ep/cq/av while returning the recv landing buffers to the
-   * pool — so afterward no send desc or recv buffer references a slab MR the
-   * pool cleanup is about to close.  Only the pool cleanup and phase 2 depend
-   * on every thread having joined. */
+  /* Fabric teardown, phases 1 and 2, joined or not: every runtime thread has
+   * passed the ready_to_clean barrier, so none touches the fabric again.
+   * Phase 1 refuses new sends, discards or reaps in-flight txns (their
+   * bounces return to the still-live pool) and closes the endpoint and the
+   * registrations bound to it.  Phase 2, after that close so no write lands
+   * in what it returns, runs the discard of every rendezvous expectation left
+   * unpaired, which releases only what its context owns (the sweep above may
+   * already have dropped a count a context only borrows; a discard reads
+   * nothing through one), and returns the recv landing buffers; quiesce
+   * dispatched no completion, so no late pairing races a discard.  Both run
+   * before the pool cleanup, so what they return goes back to a live pool and
+   * no recv buffer references a slab MR it closes.
+   * Gap: nothing orders a peer's last one-sided write before the frees above,
+   * so a write the shutdown cut can land in a buffer they freed. */
+  bool writes_shut_out = true;
   if (arts_global_rank_count > 1) {
-    arts_net_quiesce();
+    writes_shut_out = arts_net_quiesce();
+    uint64_t ended = 0;
+#ifdef ARTS_DEBUG_DB_QUARANTINE
+    ended = arts_db_descriptors_ended();
+#endif
+    size_t discarded = arts_net_reclaim();
+#ifdef ARTS_DEBUG_DB_QUARANTINE
+    ended = arts_db_descriptors_ended() - ended;
+#endif
+    runtime_reclaim_report(discarded, ended);
   }
 #ifdef ARTS_DEBUG_DB_QUARANTINE
   arts_db_descriptor_quarantine_drain();
 #endif
 
   /* Registered-slab pool and the domain: torn down last when every runtime
-   * thread has joined.  With one unjoined, its post-barrier tail may still
-   * free DB buffers into the pool, and closing the domain could rewrite the C
-   * library's mapping functions under it (a provider's memory monitor
-   * restores the code it patched), so both are left to the process exit. */
-  if (tables_reachable) {
+   * thread has joined and the endpoint closed.  With a thread unjoined, its
+   * post-barrier tail may still free DB buffers into the pool, and closing the
+   * domain could rewrite the C library's mapping functions under it (a
+   * provider's memory monitor restores the code it patched); with the
+   * endpoint or a registration bound to it still open, a peer's write may
+   * still land in a slab.  Either way both are left to the process exit. */
+  const char *kept_by = tables_reachable   ? "a thread never joined"
+                        : !writes_shut_out ? "the fabric may still write"
+                                           : NULL;
+  if (kept_by != NULL) {
     arts_regpool_report_if_requested();
-    ARTS_WARN("registered pool, domain and fabric left unfreed: a thread "
-              "never joined");
+    ARTS_WARN("registered pool, domain and fabric left unfreed: %s", kept_by);
     return;
   }
   arts_regpool_cleanup();
 
-  /* Phase 2: the pool's slab MRs (backing both sends and the recv buffers) are
+  /* Phase 3: the pool's slab MRs (backing both sends and the recv buffers) are
    * now closed, so the net module can close the domain and fabric — no memory
    * registration outlives its domain. */
   if (arts_global_rank_count > 1) {

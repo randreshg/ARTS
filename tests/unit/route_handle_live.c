@@ -44,6 +44,10 @@
  *   J. The teardown sweep (arts_clean_up_route_table) clears the tag of each
  *      cb it detaches: a holder's copy of an installed cb is not live after
  *      it, and the object is freed at the holder's release.
+ *   K. The sweep hands each object it retires to its detach hook once, with
+ *      the tag already cleared and the install's count still held, and never
+ *      one `keep` answers for: an object only the install held is freed after
+ *      its hook returns, not before.
  * The drain stub checks that every install's drain finds the installed cb
  * with its home already stored, and counts those drains.
  * Where the tree captures NUM_ROUTE_PROBE and NUM_ROUTE_PIN, the probes and
@@ -583,7 +587,7 @@ static int run_e(void) {
     FAIL("E: a mirror slot's install_data recorded a home\n");
   }
   arts_shared_release(&hm);
-  (void)arts_clean_up_route_table(mirror, NULL);
+  (void)arts_clean_up_route_table(mirror, NULL, NULL);
   arts_delete_route_table(mirror);
 
   if (!arts_route_table_set_destroyed_if(g1, h1) ||
@@ -842,7 +846,7 @@ static int run_j(void) {
       !arts_route_table_live(holder, g)) {
     FAIL("J: the install into the swept table's slot failed\n");
   }
-  if (arts_clean_up_route_table(table, NULL) != 0) {
+  if (arts_clean_up_route_table(table, NULL, NULL) != 0) {
     FAIL("J: the sweep kept an object\n");
   }
   if (arts_route_table_live(holder, g)) {
@@ -854,6 +858,76 @@ static int run_j(void) {
   arts_shared_release(&holder);
   if (deletes() != 1) {
     FAIL("J: %d frees at the holder's release, want 1\n", deletes());
+  }
+  arts_delete_route_table(table);
+  return 0;
+}
+
+/* ── K: the sweep's detach hook ─────────────────────────────────────────── */
+#define K_HELD 23 /* a holder keeps a copy besides the install's */
+#define K_KEPT 25
+static int k_calls;
+static int k_seen[4];
+static int k_bad;
+/* Frees the hooked objects may account for: one per object the install alone
+ * held, whose free follows its hook. */
+static int k_frees_owed;
+static bool k_keep(arts_shared_ptr_t h) {
+  return *(int *)arts_shared_get(h) == K_KEPT;
+}
+static void k_detach(arts_shared_ptr_t h) {
+  int v = *(int *)arts_shared_get(h);
+  if (arts_shared_tag(h) != 0 || deletes() != k_frees_owed || k_calls >= 4) {
+    k_bad++;
+    return;
+  }
+  k_seen[k_calls++] = v;
+  if (v != K_HELD) {
+    k_frees_owed++;
+  }
+}
+
+static int run_k(void) {
+  atomic_store_explicit(&g_deletes, 0, memory_order_relaxed);
+  arts_route_table_t *table = arts_new_route_table(64, 6);
+  arts_shared_ptr_t holder = NULL;
+  for (int v = K_HELD; v <= K_KEPT; v++) {
+    arts_guid_t g = arts_guid_reserve(ARTS_GUID_DB, 0);
+    arts_route_item_t *item = arts_route_table_search_for_empty(table, g);
+    arts_shared_ptr_t cb = arts_route_table_make_handle(new_obj(v), g);
+    arts_shared_ptr_t mine = arts_shared_copy(cb);
+    if (!arts_route_table_install_handle_into(item, cb, g)) {
+      FAIL("K: the install of object %d failed\n", v);
+    }
+    if (v == K_HELD) {
+      holder = mine;
+    } else {
+      arts_shared_release(&mine); /* the install's count alone */
+    }
+  }
+  if (arts_clean_up_route_table(table, k_keep, k_detach) != 1) {
+    FAIL("K: the sweep did not keep exactly the kept object\n");
+  }
+  if (k_bad != 0) {
+    FAIL("K: a hook ran with the tag still set, after a free, or too often\n");
+  }
+  if (k_calls != 2 || k_seen[0] == k_seen[1] || k_seen[0] == K_KEPT ||
+      k_seen[1] == K_KEPT) {
+    FAIL("K: %d hook call(s), not one for each retired object\n", k_calls);
+  }
+  if (deletes() != 1) {
+    FAIL("K: %d frees after the sweep, want the install-only object's\n",
+         deletes());
+  }
+  arts_shared_release(&holder);
+  if (deletes() != 2) {
+    FAIL("K: %d frees at the holder's release, want 2\n", deletes());
+  }
+  atomic_store_explicit(&g_deletes, 0, memory_order_relaxed);
+  k_frees_owed = 0;
+  if (arts_clean_up_route_table(table, NULL, k_detach) != 0 || k_bad != 0 ||
+      k_calls != 3 || k_seen[2] != K_KEPT || deletes() != 1) {
+    FAIL("K: a second sweep did not hand over and free the kept object\n");
   }
   arts_delete_route_table(table);
   return 0;
@@ -934,7 +1008,7 @@ int main(void) {
 #endif
   if (run_a() != 0 || run_b() != 0 || run_c() != 0 || run_d() != 0 ||
       run_e() != 0 || run_f() != 0 || run_g() != 0 || run_h() != 0 ||
-      run_j() != 0) {
+      run_j() != 0 || run_k() != 0) {
     return 1;
   }
 
@@ -950,6 +1024,7 @@ int main(void) {
       "borrows a live handle, the identity retire goes through the home, "
       "only a won install CAS writes the home, a retire inside the install's "
       "window goes through the search, an unheld install is caught in "
-      "Debug\n");
+      "Debug, the sweep hands each retired object to its hook before the "
+      "install's count goes\n");
   return 0;
 }

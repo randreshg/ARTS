@@ -276,6 +276,15 @@ bool arts_db_await_ack(sem_t *cv);
  * is always legal, the walk only exists where its messages do. */
 void arts_db_debug_quiescence_check(void);
 
+/* The teardown sweep's per-arm rows, run once for each coherent descriptor it
+ * retires, after every runtime thread joined and while the install's count is
+ * still held, so none of the rows' releases is the last.  An item the
+ * shutdown left open (a request or round whose answer it cut) that owns a
+ * count of `cb`, the descriptor's own cb, would have dropped it with that
+ * answer; the rows drop it, one release per such item.  An arm whose open
+ * items own none has no row. */
+void arts_db_sweep_open_items(struct arts_db_s *db, arts_shared_ptr_t cb);
+
 /* Take the EDT's strong buffer ref and return buf->data (NULL when no buffer is
  * installed).  Used by the per-protocol acquire bodies. */
 void *arts_db_acquire_local(struct arts_db_cache_s *cache);

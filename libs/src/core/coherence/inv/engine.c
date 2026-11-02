@@ -623,6 +623,15 @@ static void inv_pub_landed_cb(void *arg) {
   arts_shared_release(&ctx->db_h);
   arts_free(ctx);
 }
+
+/* The teardown found the payload never landed: the entry was never queued,
+ * so it and the pin are the context's own; nothing is submitted. */
+static void inv_pub_landed_discard(void *arg) {
+  struct inv_pub_landed_ctx_s *ctx = (struct inv_pub_landed_ctx_s *)arg;
+  arts_free(ctx->entry);
+  arts_shared_release(&ctx->db_h);
+  arts_free(ctx);
+}
 #endif
 
 void arts_handler_db_publish(void *item_v, void *args_v) {
@@ -692,7 +701,8 @@ void arts_handler_db_publish(void *item_v, void *args_v) {
         (struct inv_pub_landed_ctx_s *)arts_malloc(sizeof(*ctx));
     ctx->db_h = arts_shared_copy(db->self_cb);
     ctx->entry = e;
-    arts_net_rdzv_expect(a->rdzv_txid, a->data_size, inv_pub_landed_cb, ctx);
+    arts_net_rdzv_expect(a->rdzv_txid, a->data_size, inv_pub_landed_cb,
+                         inv_pub_landed_discard, ctx);
     return;
   }
 #endif
@@ -800,6 +810,15 @@ static void inv_landed_cb(void *arg) {
   arts_free(ctx);
 }
 
+/* The teardown found the payload never landed: end the landing and drop the
+ * pin, both the context's own, and commit nothing. */
+static void inv_landed_discard(void *arg) {
+  struct inv_landed_ctx_s *ctx = (struct inv_landed_ctx_s *)arg;
+  arts_db_buf_landing_return(ctx->landing);
+  arts_shared_release(&ctx->db_h);
+  arts_free(ctx);
+}
+
 void arts_handler_db_inv_deliver(void *payload, size_t size) {
   (void)size;
   struct arts_msg_inv_deliver_packet_s *p =
@@ -827,7 +846,8 @@ static void inv_deliver_on(arts_shared_ptr_t db_h,
     ctx->landing = (struct arts_db_buffer_s *)(uintptr_t)p->rdzv_cookie;
     ctx->version = p->version;
     ctx->data_size = p->data_size;
-    arts_net_rdzv_expect(p->rdzv_txid, p->data_size, inv_landed_cb, ctx);
+    arts_net_rdzv_expect(p->rdzv_txid, p->data_size, inv_landed_cb,
+                         inv_landed_discard, ctx);
     return;
   }
   /* Data-less reply.  The commit below turns this rank's copy VALID and

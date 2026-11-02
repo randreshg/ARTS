@@ -281,6 +281,8 @@ static void copy_drop(struct arts_db_buffer_s *copy) {
   }
 }
 
+/* The pairing and a teardown that finds the write never landed drop the copy
+ * alike, the expectation's one possession. */
 static void discard_cb(void *arg) { copy_drop((struct arts_db_buffer_s *)arg); }
 
 void arts_db_flush_discard_landing(uint64_t txid, uint64_t len,
@@ -293,7 +295,7 @@ void arts_db_flush_discard_landing(uint64_t txid, uint64_t len,
     copy_drop(copy);
     return;
   }
-  arts_net_rdzv_expect(txid, len, discard_cb, copy);
+  arts_net_rdzv_expect(txid, len, discard_cb, discard_cb, copy);
 }
 
 struct fetch_landed_ctx_s {
@@ -314,6 +316,14 @@ static void fetch_landed_cb(void *arg) {
    * block's descriptor for its release. */
   arts_db_resolve_slot(ctx->edt, ctx->slot, ctx->copy->cb);
   arts_db_census_served(census);
+  arts_free(ctx);
+}
+
+/* The teardown found the payload never landed: drop the copy, the context's
+ * own, and read nothing through the parked EDT, which it only names. */
+static void fetch_landed_discard(void *arg) {
+  struct fetch_landed_ctx_s *ctx = (struct fetch_landed_ctx_s *)arg;
+  copy_drop(ctx->copy);
   arts_free(ctx);
 }
 
@@ -363,7 +373,8 @@ void arts_handler_db_fetch_response(void *item_v, void *args_v) {
   ctx->edt = edt;
   ARTS_DEP_WAITER_COPY(ctx, a);
   ctx->slot = a->slot;
-  arts_net_rdzv_expect(a->rdzv_txid, a->db_size, fetch_landed_cb, ctx);
+  arts_net_rdzv_expect(a->rdzv_txid, a->db_size, fetch_landed_cb,
+                       fetch_landed_discard, ctx);
 }
 
 /* ===== release: the home does nothing, everyone else writes back ======== */
@@ -546,6 +557,14 @@ static void flush_landed_cb(void *arg) {
   arts_free(ctx);
 }
 
+/* The teardown found the write-back never landed: drop the pin, the
+ * context's own; nothing is credited or acknowledged. */
+static void flush_landed_discard(void *arg) {
+  struct flush_landed_ctx_s *ctx = (struct flush_landed_ctx_s *)arg;
+  arts_shared_release(&ctx->db_h);
+  arts_free(ctx);
+}
+
 void arts_handler_db_flush_commit(void *item_v, void *args_v) {
   struct arts_db_flush_commit_args_s *a = (struct arts_db_flush_commit_args_s *)args_v;
   if (item_v == NULL) {
@@ -563,7 +582,7 @@ void arts_handler_db_flush_commit(void *item_v, void *args_v) {
       a->txid,
       atomic_load_explicit(&((struct arts_db_s *)item_v)->cache.db_size,
                            memory_order_relaxed),
-      flush_landed_cb, ctx);
+      flush_landed_cb, flush_landed_discard, ctx);
 }
 
 void arts_handler_db_flush_ack(void *item_v, void *args_v) {

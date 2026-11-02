@@ -64,9 +64,10 @@
  * arts_transport_broadcast_shutdown — First step of the shutdown protocol.
  *
  * Inject a header-only MSG_SHUTDOWN onto the fabric to every other rank (same
- * path as every other message).  The caller then waits (bounded) on
- * arts_net_drain_outstanding for those sends to complete before proceeding to
- * local shutdown.
+ * path as every other message).  The caller then drains, bounded, the counted
+ * fabric sends still in progress (arts_net_drain_outstanding) before
+ * proceeding to local shutdown; a frame that leaves by fi_inject is never
+ * counted, so the drain does not wait for these frames as such.
  */
 void arts_transport_broadcast_shutdown(void) {
   if (arts_global_rank_count <= 1) {

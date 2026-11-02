@@ -1062,7 +1062,8 @@ arts_route_item_t *arts_route_table_iterate(arts_route_table_iterator_t *iter) {
 }
 
 uint64_t arts_clean_up_route_table(arts_route_table_t *route_table,
-                                   bool (*keep)(arts_shared_ptr_t)) {
+                                   bool (*keep)(arts_shared_ptr_t),
+                                   void (*detach)(arts_shared_ptr_t)) {
   arts_route_table_iterator_t iter;
   arts_reset_route_table_iterator(&iter, route_table);
 
@@ -1085,6 +1086,9 @@ uint64_t arts_clean_up_route_table(arts_route_table_t *route_table,
       if (old) {
         /* Out of the table, so no holder may read it as live. */
         arts_shared_set_tag(old, 0);
+        if (detach != NULL) {
+          detach(old);
+        }
         arts_shared_release(&old);
       }
     }
@@ -1127,14 +1131,16 @@ void arts_delete_route_table(arts_route_table_t *route_table) {
   }
 }
 
-uint64_t arts_clean_up_dbs(bool (*keep)(arts_shared_ptr_t)) {
+uint64_t arts_clean_up_dbs(bool (*keep)(arts_shared_ptr_t),
+                           void (*detach)(arts_shared_ptr_t)) {
   uint64_t kept = 0;
   for (unsigned int i = 0; i < arts_node_info.total_thread_count; i++) {
-    kept += arts_clean_up_route_table(arts_node_info.route_table[i], keep);
+    kept +=
+        arts_clean_up_route_table(arts_node_info.route_table[i], keep, detach);
   }
   for (int s = 0; s < ARTS_REMOTE_ROUTE_SHARDS; s++) {
-    kept +=
-        arts_clean_up_route_table(arts_node_info.remote_route_table[s], keep);
+    kept += arts_clean_up_route_table(arts_node_info.remote_route_table[s],
+                                      keep, detach);
   }
   return kept;
 }

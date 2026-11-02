@@ -379,10 +379,13 @@ arts_route_item_t *arts_route_table_iterate(arts_route_table_iterator_t *iter);
 
 /* Retire every object installed in `route_table` for which `keep` (NULL:
  * none) answers false, free every slot's parked payloads, and return how many
- * objects stayed installed.  Only meaningful once no thread can reach the
- * table. */
+ * objects stayed installed.  Each object it retires is handed to `detach`
+ * (NULL: none) once, after its cb's tag is cleared and before the install's
+ * count is dropped, so the object outlives the call.  Only meaningful once no
+ * thread can reach the table. */
 uint64_t arts_clean_up_route_table(arts_route_table_t *route_table,
-                                   bool (*keep)(arts_shared_ptr_t));
+                                   bool (*keep)(arts_shared_ptr_t),
+                                   void (*detach)(arts_shared_ptr_t));
 /* Payloads parked on the OoO lists of every slot of `route_table` (its whole
  * segment chain), read in place without consuming them.  Only meaningful once
  * no thread can push or drain. */
@@ -390,7 +393,8 @@ unsigned int arts_route_table_parked_count(arts_route_table_t *route_table);
 /* Frees a chain no thread can reach any more, with its parked payloads. */
 void arts_delete_route_table(arts_route_table_t *route_table);
 /* arts_clean_up_route_table over every table of this rank. */
-uint64_t arts_clean_up_dbs(bool (*keep)(arts_shared_ptr_t));
+uint64_t arts_clean_up_dbs(bool (*keep)(arts_shared_ptr_t),
+                           void (*detach)(arts_shared_ptr_t));
 
 #ifdef __cplusplus
 }

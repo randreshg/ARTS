@@ -114,6 +114,8 @@ _Noreturn void arts_abort(uint8_t error_code) {
  *   - the liveness sentinel (arts_socket_sentinel_check) when a peer's
  *     bootstrap connection closes before this rank's shutdown began
  *     (initiator = false)
+ *   - arts_net_rdzv_cut_done, the ARTS_NET_RDZV_CUT injection hook's end,
+ *     on the thread of the event that completed its count (initiator = true)
  *
  * Idempotent: repeated calls after the first are no-ops. The CAS on
  * shutdown_state ensures exactly one caller performs the broadcast and
@@ -143,11 +145,15 @@ void arts_enter_shutdown_state(bool initiator) {
     /* Phase A.1: broadcast MSG_SHUTDOWN to every other rank (over the fabric,
      * like every other message). */
     arts_transport_broadcast_shutdown();
-    /* Phase A.2: wait (bounded) for those fabric sends to complete so the
-     * SHUTDOWN frames leave this node before teardown.  The progress threads
-     * are still running and dispatch what arrives; the drain only reaps
-     * completions and polls the outstanding-TX count, since a handler it
-     * dispatched could ready an EDT on a thread that owns no deque. */
+    /* Phase A.2: wait (bounded) until no counted fabric send of this rank is
+     * in progress: every thread's posts not yet completed, and a post the
+     * provider keeps refusing while each attempt runs.  It does not wait for
+     * the SHUTDOWN frames as such: a frame that left by fi_inject is never
+     * counted.  The drain only reaps completions and polls the count, since
+     * a handler it dispatched could ready an EDT on a thread that owns no
+     * deque, so the counted sends complete through its own reaps; what
+     * arrives meanwhile waits for a progress thread that is not draining,
+     * none when the drain runs on a rank's only progress thread. */
     arts_net_drain_outstanding(500U /* SHUTDOWN_DRAIN_MS */);
   }
   /* Phase A.3: stop worker threads.  Progress threads remain alive so they
