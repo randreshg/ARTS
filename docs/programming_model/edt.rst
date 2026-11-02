@@ -54,7 +54,7 @@ Creating an EDT
 The returned GUID identifies the EDT.  The ``hint`` parameter carries
 all optional creation features in :c:type:`arts_edt_hint_t`: pass
 ``NULL`` for the defaults (current node, auto-allocated GUID, inherit
-the ambient finish scope), or set ``.rank`` to place the EDT on another
+the creator's current group), or set ``.rank`` to place the EDT on another
 node.  If ``depc > 0``, the EDT will not run until all slots are
 signaled.
 
@@ -102,10 +102,12 @@ in :c:type:`arts_edt_hint_t`:
   auto-allocate; when set, the GUID's rank overrides ``rank``).  A
   create of a GUID whose EDT is live waits, parked at the home, until
   that EDT completes or is destroyed (see :doc:`guids`).
-- ``finish_event`` — join a finish scope for termination detection
-  (see :doc:`finish_events`).
-- ``output_event`` — per-EDT result channel satisfied after the EDT's
-  DBs are released (payload set via :c:func:`arts_edt_set_result`).
+- ``group`` — the group (a latch event) this EDT is a member of, for
+  termination detection; ``NULL_GUID`` inherits the creator's current group
+  (see :doc:`task_groups`).
+- ``completion_event`` — an event satisfied once when this EDT completes,
+  after its DBs are released, carrying the result set via
+  :c:func:`arts_edt_set_result` (see :doc:`task_groups`).
 
 See :doc:`/api/public_api` for the full list.
 

@@ -39,7 +39,7 @@ benchmark**: the interesting cost is the per-timestep six-way channel handshake
 and the refinement rounds that tear the wiring down and rebuild it.
 
 `wrapupEdt` prints `miniAMR complete!` after the `EDT_PROP_FINISH`
-`realMainEdt`'s finish event fires, i.e. once every descendant has ended; that is
+`realMainEdt`'s output event fires, i.e. once every descendant has ended; that is
 the catalog's marker. The catalog records `scalar_kind: bool` — correctly, because
 the initial value is `srand(time(0)); rand()/RAND_MAX` (`mainOCR.c:329`) and the
 refinement dice are `srand(time(NULL) * id)` (`refineOCR.h:1539`), so no printed
@@ -102,7 +102,7 @@ them, its own send at its own id and a neighbour's send as its receive.
 Output events add one per `stencilEdt` (`&stencilOutEVT`) and one per
 `haloRcv` (`&rcvOUT`) — i.e. `7` per block per timestep, `7RT` in total, the
 dominant term. `realMainEdt` is the only `EDT_PROP_FINISH` EDT and also takes
-an output event, so it contributes one finish event plus one output event;
+an output event, so it contributes one group latch plus one output event;
 every other create passes `NULL`.
 
 Setup totals `3+3R` EDTs, `3+8R` DBs, `2+18R` events — at
@@ -175,7 +175,7 @@ per-block latency, not width, sets the wall clock once `R` ≤ worker count.
 Serial points: `realMainEdt`'s single-threaded argv parse, its `6R` labeled
 creates and its `R`-iteration fork loop; each refinement round, which is a
 global-ish barrier only among a block and its six neighbours (not across the
-mesh); and termination, which waits for the finish event of every descendant
+mesh); and termination, which waits for the finish EDT's output event, which fires once every descendant has ended
 before `wrapupEdt` runs. Blocks are otherwise
 free-running — there is no timestep barrier across the mesh, only the pairwise
 channel dependences, so blocks drift apart by up to `maxGen = 2` generations.

@@ -97,7 +97,7 @@ partitions, ≈ `L/b`).
 | EDTs: `rankLookup` + `macroxs` + `microxsAggregator` | `3L` | — |
 | **EDTs total** | `12 + n + m + 2P + 2·G_total + 3L` | — |
 | explicit STICKY events (5 phase events + the count-pre-pass event + the compute-spawner event + one per batch) | `7 + G_total` | — |
-| shim-materialized events (finish events for `EDT_PROP_FINISH` creates, output events for creates naming one) | `13 + n + m + 2·G_total` | — |
+| shim-materialized events (group latches for `EDT_PROP_FINISH` creates, output events for creates naming one) | `13 + n + m + 2·G_total` | — |
 | **Events total** | `20 + n + m + 3·G_total` | — |
 
 The counts are derived from the creates in `main.c`, not yet cross-checked

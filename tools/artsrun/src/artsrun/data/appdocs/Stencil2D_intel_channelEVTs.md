@@ -88,10 +88,10 @@ Each round's 11 events are the `OCR_EVENT_COUNTED_T` helper that
 *extra* event is materialized beyond the one `createEventHelper` already
 made) plus `timestepLoopEdt`'s own loop-continuation `COUNTED` join, plus
 `timestepEdt`'s own creation: `EDT_PROP_FINISH` with a *freshly materialized*
-(non-`OEVT_VALID`) output event, so it costs 2 more (output + finish) on top
+(non-`OEVT_VALID`) output event, so it costs 2 more (output event + group latch) on top
 of the explicit `COUNTED` already counted — 8+1+2 = 11, not the 9 the
 original count found by only tallying `createEventHelper` calls and missing
-`timestepEdt`'s own FINISH/output pair. The `12·NR` one-time setup figure is
+`timestepEdt`'s own FINISH group-latch/output pair. The `12·NR` one-time setup figure is
 4 labeled sticky events per tile, one per direction, which `mainEdt` creates
 before the fork, plus 8 `OCR_EVENT_CHANNEL_T` from `STENCIL_WITH_DBUF_CHRECV`
 that the tile creates itself. The published program created each handshake
@@ -126,7 +126,7 @@ plus an event slope of 11 instead of the previously-claimed 9 per
 tile-round. A later `NR=16` re-check (`NP=2048 NT=100/400`, also on the
 earlier program) confirms the
 EDT/DB formulas and the per-tile-round slopes exactly (11 events created,
-10 destroyed — the surviving one is the `timestepEdt` FINISH/output pair's
+10 destroyed — the surviving one is the `timestepEdt` FINISH group-latch/output pair's
 runtime-minted half), but finds the event TOTAL under-predicted by a flat,
 NT-independent 72: the setup/reduction terms vary with the grid's actual
 corner/edge/interior neighbor mix, which the `NR=4` (2×2, all-corner)
@@ -426,7 +426,7 @@ Measured RSS at `31104 13824 400` was `RSS_KB=50,870,080` = **48.51 GiB**
 `track.txt:159`), i.e. **3.22× the payload** — that is the one multiplier this
 row has on record, and it is the figure both this document and the unit notes
 use. The 33.4 GiB residual is runtime-side — 442,361 live DBs plus one
-surviving FINISH/output event per tile-round (`NR·(NT+1)`, measured slope
+surviving FINISH group-latch/output event per tile-round (`NR·(NT+1)`, measured slope
 exactly 1.0) — and it is **object-count driven, not payload driven**: it does
 not grow with `NP`, and its event half falls 4× when the height drops from 400
 to 100. So a multiplicative extrapolation of 3.22× to a larger edge

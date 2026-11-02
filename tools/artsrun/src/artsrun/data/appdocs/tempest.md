@@ -111,7 +111,7 @@ Each slot is created once, before either endpoint's `patchInit` exists: the
 panels by `realmain`, before it forks the panels (`6·4(k−1)(2k−1) + 72k − 48
 = E(k)`). Exactly one
 `ocrEdtCreate` passes a non-NULL `outputEvent` (`realmain`, feeding `wrapup`)
-and that same EDT is the only `EDT_PROP_FINISH`, whose finish event the shim
+and that same EDT is the only `EDT_PROP_FINISH`, whose group latch the shim
 pre-creates: `+2`. Every other `ocrEdtCreate` passes NULL and creates nothing.
 
 Worked numbers at the local-trend geometry `96 100` — 55,296 patches, 442,344
@@ -165,7 +165,7 @@ Steady-state DB concurrency is uniformly exclusive — one accessor at a time,
 no block takes RW from more than two patches (halo) or one (patch state). The
 remaining contention points are (a) the **6 panel DBs**, read by `6k²+6` tasks
 during init — shared reads, but a fan-out from wherever the block lives — and
-(b) the **single global finish-scope latch**, which every EDT create INCRs and
+(b) the **single global group latch** (the finish EDT's), which every EDT create INCRs and
 every completion DECRs: `2·(6k²·duration + 12k² + 8)` satisfies on one event,
 11.3 M at `96 100`.
 

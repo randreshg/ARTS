@@ -18,7 +18,7 @@ counters:
   TIME_EDT_CREATE:
     group: 'EDT time'
     unit: ns
-    help: 'Wall time of arts_edt_create on the creating thread: placement, allocation, GUID, finish-scope join, and the ship to a remote home or the local install (readying the EDT and starting its DB acquires when its dependences are already met)'
+    help: 'Wall time of arts_edt_create on the creating thread: placement, allocation, GUID, task-group join, and the ship to a remote home or the local install (readying the EDT and starting its DB acquires when its dependences are already met)'
 
   TIME_EDT_SIGNAL:
     group: 'EDT time'
@@ -163,7 +163,7 @@ counters:
   NUM_EVENT_CREATE:
     group: 'Event counts'
     unit: count
-    help: 'Event creates issued on this rank, including the finish-scope proxies the runtime makes on an EDT''s home when its scope is homed elsewhere'
+    help: 'Event creates issued on this rank, including the task-group proxies the runtime makes on an EDT''s home when its group is homed elsewhere'
 
   NUM_EVENT_DESTROY:
     group: 'Event counts'

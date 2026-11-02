@@ -57,7 +57,7 @@ On `N` ranks, with `n₀` vertices that have no neighbour:
 | `find_intersection` | `n − n₀`, `N` slots each |
 | `visit_one_hop_neighbor_on_rank`, source-information blocks | `N · (n − n₀)` each; a block holds the vertex, its neighbour list and its `find_intersection`'s GUID |
 | per-vertex blocks | `N · (n − n₀)` intersection counts, plus `n` statistics |
-| finish events | 1: the loaders' |
+| group latches | 1: the loaders' |
 
 ## Wiring
 
@@ -75,7 +75,7 @@ partitions, which `max_reducer` destroys, are released by their readers
 before the satisfy that leads to it: `visit_source` once it has copied the
 source's row for every rank (at once for a vertex with no neighbour),
 `visit_one_hop_neighbor_on_rank` once its intersections are done. The
-loaders are members of the one finish scope, on which `main_continue` waits
+loaders are members of the one group, on whose latch `main_continue` waits
 through its control slot. `max_reducer` is created under a GUID that
 `main_edt` reserves and every `init_node` copies into its rank's memory, so an
 EDT on any rank names it.
@@ -83,13 +83,14 @@ EDT on any rank names it.
 ## Flow
 
 `main_edt` on rank 0 refuses missing counts; otherwise it builds the
-distribution from its arguments, reserving the partitions' GUIDs once,
-reserves `max_reducer`'s GUID and creates the scope, one `init_node` per
-rank, each given the distribution, `max_reducer`'s GUID and `main_edt`'s
-arguments as parameters, and `main_continue`. Each `init_node` writes its
-rank's copies of the distribution and `max_reducer`'s GUID, which every later
-EDT on the rank reads, loads the partition homed on its rank, which it holds
-until it ends, and, if the load failed, prints its message and shuts down.
+distribution from its arguments, reserving the partitions' GUIDs once, and
+reserves `max_reducer`'s GUID. It opens the group and creates one
+`init_node` per rank, each given the distribution, `max_reducer`'s GUID and
+`main_edt`'s arguments as parameters. It then creates `main_continue` and
+releases the opener's count. Each `init_node` writes its rank's copies of
+the distribution and `max_reducer`'s GUID, which every later EDT on the rank
+reads, loads the partition homed on its rank, which it holds until it ends,
+and, if the load failed, prints its message and shuts down.
 `main_continue` on rank 0 creates `max_reducer`, records the start time and
 creates every vertex's `visit_source`. `max_reducer` scans the statistics in
 vertex order, prints the maximum and the time, destroys every partition and

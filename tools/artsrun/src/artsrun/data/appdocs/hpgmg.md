@@ -22,7 +22,7 @@ solver's iteration count, so it moves with the arguments (hence `expect` is
 pinned to `expect_args`).  It is reduced per box and then maxed, so it is exact
 and identical at every node count.  What the program stresses is a
 **bulk-synchronous DAG with collapsing parallel width**: every operator is a
-fan-out of `num_boxes` short EDTs joined by a finish event and the level chain is
+fan-out of `num_boxes` short EDTs joined by a finish EDT's output event and the level chain is
 strictly serial, so the solve is a long sequence of barriers whose width falls 8×
 per agglomeration step down to a single box.  The arithmetic is real (a 7-point
 variable-coefficient stencil), but at the coarse end the cost is entirely barrier
@@ -148,7 +148,7 @@ Events: `ocrEventCreate` (`2L+4`: the init start, one per Gershgorin level
 box hand-off of `restrict_all` and one per V-cycle's last restriction (`L−1`),
 and the error reduction), the output event of every
 `ocrEdtCreate` with a non-NULL `outputEvent` — which now includes each per-box
-Gershgorin and error task — and one finish event per `EDT_PROP_FINISH`.
+Gershgorin and error task — and one group latch per `EDT_PROP_FINISH`.
 Dependence slots resolved are dominated by the solve's 26-neighbour exchanges;
 initialization adds one 28-slot task per box per level for the diagonal exchange.
 
@@ -172,7 +172,7 @@ start event by reference for exactly this reason.
 The initialization chain is a dependence rope of one phase per level per kind:
 `prep(0..L−1)`, then for each level `coeff(l)` (`l > 0`), `gersh(l)` →
 `eigen_final(l)`, `diag(l)`.  Each phase task takes its level DB CONST and the
-previous phase's finish event on its last slot.  Its children take the level DB
+previous phase's finish-EDT output event on its last slot.  Its children take the level DB
 CONST and their own box **RW**; the coefficient task adds the finer level DB CONST
 and its `count` fine boxes CONST; the diagonal-exchange task adds the 26
 neighbour boxes CONST (out-of-domain neighbours resolve to the level's
@@ -180,12 +180,12 @@ neighbour boxes CONST (out-of-domain neighbours resolve to the level's
 16-byte datablock holding `{eigenvalue bound, dot(α,α) term}`; a merge with one
 slot per box takes the elementwise max, destroys the inputs and satisfies a ONCE
 event with the pair; `eigen_final` takes the level DB **RW**, that pair, and the
-phase's finish event, and writes `dominant_eigenvalue_of_DinvA` and
+phase's finish-EDT output event, and writes `dominant_eigenvalue_of_DinvA` and
 `alpha_is_zero`.  No task ever writes a shared datablock slot concurrently with
 another, which is what makes the two scalars node-count invariant.
 
 The solve's level chain is the published rope: every level EDT takes its
-predecessor's finish event on its last slot, so phase `k+1` cannot start until
+predecessor's finish-EDT output event on its last slot, so phase `k+1` cannot start until
 every child of phase `k` has completed and released.  Its other events are one
 ONCE event per restriction sequence, which `restrict_edt` satisfies **with the
 coarsest box's GUID** (`ocrDbRelease` then `ocrEventSatisfy`) — that is how the

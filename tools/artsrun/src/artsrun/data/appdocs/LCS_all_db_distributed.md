@@ -70,7 +70,7 @@ bands-per-rank knob: the band count *is* the rank count (see Placement
 | `scoreInitEdt` | `2L+1` — fills the boundary row-0/col-0 tiles and the single corner tile; the `L²` interior score tiles are created **empty** (written only by `seqLCSEdt`) | — |
 | `mainEdt` / `wrapupEdt` / `shutDownEdt` | 1 each | — |
 | DBs | `(L+2)²` — 3 pointer-array DBs (`S`,`T`,`score`) + `2L` labeled `S`/`T` tiles + `(L+1)²` labeled score tiles (1 corner + `2L` boundary + `L²` interior) | pointer arrays: `8L`/`8L`/`8·(L+1)²` B; `S`/`T` tiles: `4·(base+1)` B (tile 0), `4·base` B (others); score tiles: `4` B (corner), `4·base` B (boundary), `4·base²` B (interior — the dominant term) |
-| Events | `6L² + 3` (`= 6·4^d + 3`) — every `recLCSEdt` create *and* the single `InitEdt` create are `EDT_PROP_FINISH` with a non-NULL output event, costing 3 events apiece (1 app STICKY + 1 runtime finish + 1 runtime output); every `seqLCSEdt` create (count `L²`) costs 2 (app STICKY + output event, no finish); `wrapupEdt`'s output event costs 1; `randInitEdt`/`scoreInitEdt`/`shutDownEdt` cost 0 | — |
+| Events | `6L² + 3` (`= 6·4^d + 3`) — every `recLCSEdt` create *and* the single `InitEdt` create are `EDT_PROP_FINISH` with a non-NULL output event, costing 3 events apiece (1 app STICKY + 1 shim group latch + 1 shim output event); every `seqLCSEdt` create (count `L²`) costs 2 (app STICKY + the shim's completion event, no group); `wrapupEdt`'s output event costs 1; `randInitEdt`/`scoreInitEdt`/`shutDownEdt` cost 0 | — |
 
 Worked numbers at the calibrated `args = ['131072', '1024']` (`L = 128`,
 `d = 7`): `recLCSEdt` = 21,845; `seqLCSEdt` = 16,384; `randInitEdt` = 256;
@@ -107,7 +107,7 @@ recursion call and never destroyed.
   diagonal tile, whose three readers have all completed by construction —
   a base adaptation that trims the resident tail (never the peak) and adds
   `L²` destroys to the measured window of both tiers.
-- `wrapupEdt` takes the root's finish event and the final score tile RO,
+- `wrapupEdt` takes the root finish EDT's output event and the final score tile RO,
   prints the answer and the digest; `shutDownEdt` is a separate task gated
   on `wrapupEdt`'s output event, so the digest and the final release are
   inside the measured window and no dependence is held across

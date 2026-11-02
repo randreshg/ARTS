@@ -51,7 +51,7 @@ Let `T = numThreads`, `K = nTimes`, `pts = perThreadSize`.
 |--------|-------|------|
 | EDTs total | `T·(2 + 5K) + 2` — per chain: `mainLet`, `K` `loop`s, `4K` kernels, one `check`; plus `mainEdt` and `finalize` | — |
 | DBs | `T·4` — three persistent arrays per chain plus its 16-byte result record. **Node-count invariant and sweep-count invariant**: the sweep creates and destroys nothing | `pts·8` bytes each; the record is 16 B |
-| Events | `T·(4 + 4K)` — per chain: the ONCE completion event, the first `loop`'s output event, its finish event, one output event per kernel per sweep, and `check`'s output event | — |
+| Events | `T·(4 + 4K)` — per chain: the ONCE completion event, the first `loop`'s output event, its group latch, one output event per kernel per sweep, and `check`'s output event | — |
 | EDT templates | 8 (`mainLet`, `loop`, `copy`, `scale`, `add`, `triad`, `check`, `finalize`) | — |
 
 Against the base row at the same arguments: identical EDT and event counts,

@@ -98,7 +98,7 @@ shipped `Ix` is a multiple of 400 and `B` divides it) and `N = ⌊√Nc⌋ = 60`
 Closed forms: `EDT = 3876 + 5g²`, `DB = 10 824 + 7g²`, and **20 events
 regardless of size** — the app never calls `ocrEventCreate`, and the 10
 `ocrEdtCreate` calls that pass a non-NULL `outputEvent` are exactly the 10 that
-carry `EDT_PROP_FINISH`, giving 10 output + 10 finish events.
+carry `EDT_PROP_FINISH`, giving 10 output events + 10 group latches.
 
 The live set is also the *total* allocated set: `main.c`, `back_proj.c` and
 `registration.c` each `#define` `bsm_free`/`dram_free`/`spad_free` to nothing;
@@ -108,9 +108,9 @@ image, by the node that runs that image's `ReadData`.
 
 ## Wiring
 
-There is not one explicit event in the program: stages chain through **finish
-events**, each head a finish EDT whose fan-out lives in its scope and whose
-event lands on the next head's last dependence slot.  `post_FormImage` closes
+There is not one explicit event in the program: stages chain through **finish-EDT
+output events**, each head a finish EDT whose fan-out lives in its scope and whose
+output event lands on the next head's last dependence slot.  `post_FormImage` closes
 an imaging round by wiring the refilled `X`/`Pt`/`Tp` into the next `ReadData`
 (first round) or `curImage` into `Affine` (second).
 
@@ -149,7 +149,7 @@ declared `RW`.  The whole-image `RW` *writers* — the exhibit — are untouched
 ## Flow
 
 Strictly serial stages, each a one-EDT head fanning out to a tile family and
-joining on its own finish event:
+joining on its own output event:
 
 1. `mainEdt` (rank 0, serial) — reads the parameter file, validates the three
    input paths by opening them, 14 `ocrDbCreate`s, axis vectors.

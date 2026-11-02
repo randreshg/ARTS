@@ -110,7 +110,7 @@ What the dials are set to, and why, is under **Sizing**.
   a merge, replacing a single serial layout pass; the fill/operator-build phases
   are the same per-box bodies the base row runs, sliced per rank instead of
   fanned out centrally.
-- **Events**: +2 lingering (FINISH + output) per subphase and ~R ONCE events per
+- **Events**: +2 events (group latch + output event) per subphase and ~R ONCE events per
   reduction — all bounded by the phase count (`TIMED = 1`).
 
 ## Wiring

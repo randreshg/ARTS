@@ -12,4 +12,4 @@ from the Open Community Runtime (OCR) specification.
    coherence_protocols
    events
    guids
-   finish_events
+   task_groups

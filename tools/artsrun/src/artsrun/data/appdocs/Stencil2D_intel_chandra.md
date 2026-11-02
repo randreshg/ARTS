@@ -70,7 +70,7 @@ trees together: `6·NR + 4·C(NR) - 2` EDTs, `6·NR - 4` DBs,
 | Events | `7 + 32·NR + 25·NR·(NT+1) + 2·C(NR)` | `25` fresh events per tile per round (not 22 — see below) plus `24·NR` one-time per-tile phase-buffer events at init, plus the two reduction trees' `8·NR+2·C(NR)-8` |
 
 Each round's 25 events are 13 from EDT creation (`timestep`'s
-explicit+output+finish = 3; the 8 halo EDTs' (`Lsend`/`Rsend`/`Bsend`/
+explicit+output+group latch = 3; the 8 halo EDTs' (`Lsend`/`Rsend`/`Bsend`/
 `Tsend`/`Lrecv`/`Rrecv`/`Brecv`/`Trecv`) output events; `update`'s
 explicit+output = 2) plus 12 more from `update`'s own body, which destroys
 and recreates the tile's 12 phase-buffered sticky events (the 1-D port's 6

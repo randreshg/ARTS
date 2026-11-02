@@ -143,7 +143,7 @@ timestep gives `1 + S·(16 + 2V)`.
 
 Events come from three sources and all three are on the steady-state path.
 Every `EDT_PROP_FINISH` create that also takes an output event contributes
-**two** (its finish event and the materialized output event); every such site is
+**two** (its group latch and the materialized output event); every such site is
 immediately followed by a `createEventHelper` counted event that the successor
 waits on, so the loop drivers cost **three** events per link. Per stage:
 `stage`, `varsLoop`, `vars` 3 each, `vars` again for the `calcLoop` link 3, each

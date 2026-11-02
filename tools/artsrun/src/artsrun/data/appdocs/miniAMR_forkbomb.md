@@ -102,7 +102,7 @@ events add exactly one per `stencilEdt` (`ocrEdtCreate(…, &stencilOutEVT)`),
 i.e. one per chain per timestep — the dominant and essentially only
 steady-state event source. Every other create passes `NULL` for the output
 event, and **no EDT is created with `EDT_PROP_FINISH`**, so there are no
-finish events at all. A refinement checkpoint (every 50th timestep) creates
+group latches at all. A refinement checkpoint (every 50th timestep) creates
 no `stencilEdt` and therefore no event, so `NUM_EVENT_CREATE ≈ 12G +
 Σ_chains (normal timesteps executed)` — `12G` is one-time setup, the sum is
 `T − ⌈T/50⌉` per chain.

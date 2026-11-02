@@ -41,19 +41,21 @@ selects between the two event kinds and their parameters:
        otherwise it preserves the firing satisfy's payload (the default).
        Ignored for CHANNEL events.  The OCR shim sets this for OCR latch
        events, whose output carries no data.
+   * - ``auto_destroy``
+     - ``true`` reclaims a latch at its fire instead of letting it linger,
+       so every dependence and every other satisfy must arrive before the
+       fire; it cannot be combined with ``nb_deps`` (COUNTED, below).
+       Whether and how an event is reclaimed is the program's choice.
    * - ``guid``
      - Pre-reserved GUID from :c:func:`arts_guid_reserve`
        (``NULL_GUID`` = auto-allocate).  The GUID's rank field then
        overrides ``rank``.  A create of a GUID whose event is live
        waits, parked at the home, until that event is destroyed, and
        then installs as the GUID's next event (see :doc:`guids`).
-   * - ``finish``
-     - ``true`` selects a FINISH event (see below); all other fields
-       are ignored.
 
 Convenience macros build the common hints:
 ``ARTS_EVENT_HINT_LATCH(counter_init)``, ``ARTS_EVENT_HINT_DEFAULTS``,
-``ARTS_EVENT_HINT_CHANNEL``, and ``ARTS_EVENT_HINT_FINISH``.
+and ``ARTS_EVENT_HINT_CHANNEL``.
 
 Latch Events (Fire-and-Linger)
 ------------------------------
@@ -69,10 +71,9 @@ and a decrement brings it back.
 Firing is a state transition — *fire is not destroy*.  A fired event
 **lingers**: any :c:func:`arts_add_dependence` registered after the fire is
 satisfied immediately from the stored fire data, until the event is reclaimed:
-by :c:func:`arts_event_destroy`, at the fire for an ``auto_destroy`` event (a
-finish event), or once a declared consumer count has registered (COUNTED,
-below).  A satisfy arriving past the fire is silently absorbed while the event
-lingers.
+by :c:func:`arts_event_destroy`, at the fire for an ``auto_destroy`` event, or
+once a declared consumer count has registered (COUNTED, below).  A satisfy
+arriving past the fire is silently absorbed while the event lingers.
 
 The lingering single-fire OCR event flavors (ONCE, IDEMPOTENT, STICKY) are
 all subsumed by this unified fire-and-linger + silent-over-satisfy model:
@@ -139,21 +140,21 @@ satisfies and as many unmatched dependences; one more is a fatal error.
 Channel events suit iterative algorithms where data is produced in
 rounds and each round has a dedicated consumer.
 
-Finish Events
--------------
+Latches as Task Groups
+----------------------
 
-A FINISH event (``ARTS_EVENT_HINT_FINISH``) is a latch used for
-hierarchical termination detection: its counter tracks the live EDTs of
-a *finish scope*, and it fires when the scope has fully drained.  Act
-on it by chaining a continuation EDT with :c:func:`arts_add_dependence`.
-See :doc:`finish_events` for scope membership, inheritance, and
-nesting.
+A latch whose counter tracks the live EDTs of a *task group* gives
+hierarchical termination detection: it fires when the group has fully
+drained.  It is an ordinary latch event, with no hint of its own; EDTs join it
+through ``arts_edt_hint_t.group``, and an EDT's ``completion_event`` names an
+event the same way.  See :doc:`task_groups`.
 
 Destroying Events
 -----------------
 
-Because fired events linger, every non-finish event must eventually be
-released with:
+Because fired events linger, an event is eventually released with
+:c:func:`arts_event_destroy`, unless it reclaims itself (``auto_destroy``, a
+declared consumer count):
 
 .. code-block:: c
 
@@ -169,8 +170,8 @@ generation, so a message meant for the next generation can meet this one; a
 program written to ARTS's model gives every lifetime a fresh GUID, and an
 OCR program that reuses a label is fixed in the program (see
 :ref:`labeled-guid-reuse`).
-Finish events auto-destroy when they fire and must not be destroyed
-manually.
+An ``auto_destroy`` event is reclaimed when it fires and must not be
+destroyed manually.
 
 Minimal Example
 ---------------

@@ -171,7 +171,7 @@ reaches the slot before the destroy waits for it (on a creating rank other
 than the home, a dependence's cache of the GUID that kept no right to the
 block is claimed instead, see `Data blocks: the block and a rank's cache`_).  An
 EDT's completion ends its life the same way — the runtime retires the EDT's
-GUID before its output event or its finish scope is signalled, so a task
+GUID before its completion event or its group is signalled, so a task
 gated on either can create the GUID's next generation.  The create is the
 only message the runtime holds back for a destroy (see `Reuse and
 generations`_).
@@ -182,7 +182,7 @@ Concurrent creates are undefined
 Two creates of one GUID with no end of life between them are **undefined**:
 exactly one installs, and every other one parks for a destroy the program
 may never issue.  The runtime does not arbitrate them, report them, or carry
-logic to survive them.  A parked EDT create holds open the finish scope its
+logic to survive them.  A parked EDT create holds open the group its
 creator joined it to; a parked event or data-block create keeps its payload
 until a destroy of the occupant admits it, or to shutdown if none comes.  A
 defined program has at most one create of a GUID pending at any time.

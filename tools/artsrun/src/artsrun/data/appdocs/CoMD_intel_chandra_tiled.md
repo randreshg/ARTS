@@ -130,7 +130,7 @@ formulas did not move:
 That takes the per-rank event constant from `89` to `81`.  The epilogue fires
 exactly once per run (at whichever boundary has `itimestep == nSteps`), not once
 per boundary: `finalizeEdt` (`timestep.c`, in that boundary's branch) runs on
-every rank (+1 EDT, +3 events: output + finish + `createEventHelper`), and
+every rank (+1 EDT, +3 events: output event + group latch + `createEventHelper`), and
 `printPerformanceResultsEdt` (`timestep.c`, same branch) runs on rank 0 only
 (+1 EDT, +2 events) plus one `createEventHelper` shared by both branches (+1
 event, every rank) — `+(R+1)` EDTs and `+(4R+2)` events, whose per-rank part

@@ -75,7 +75,7 @@ EDT.
 |--------|-------|------|
 | EDTs total | `T·(2 + 5K) + 2` (per-chain chain + `check` + `mainEdt` + `finalize`) | — |
 | DBs | `T·(2 + 4K)` — one initial `a`, then `copy`/`scale`/`add`/`triad` each create one fresh DB per sweep, plus one 16-byte result record per chain | `pts·8` bytes each; the record is 16 B |
-| Events | `T·(4 + 4K)` — per chain: the ONCE completion event, the first `loop`'s output event, its finish event (it is the `FINISH` EDT), one output event per kernel EDT per sweep, and `check`'s output event | — |
+| Events | `T·(4 + 4K)` — per chain: the ONCE completion event, the first `loop`'s output event, its group latch (it is the `FINISH` EDT), one output event per kernel EDT per sweep, and `check`'s output event | — |
 | EDT templates | 8 (`mainLet`, `loop`, `copy`, `scale`, `add`, `triad`, `check`, `finalize`), created once, reused for every instance | — |
 
 Worked numbers: calibration pending — the orchestrator sizes `argv[1]` and

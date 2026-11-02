@@ -56,7 +56,7 @@ the number of `S` (and of `T`) tiles.
 | `seqLCSEdt` (leaf) | `4^d` | — |
 | `mainEdt` / `initEdt` / `fillStringEdt` / `wrapupEdt` / `shutDownEdt` | 1 / 1 / `2L` / 1 / 1 | — |
 | DBs | `1 + 2L` — 1 shared `score` (ordinary, RW) + `L` labeled `S` tiles + `L` labeled `T` tiles | `score` = `16·(N+1)` B; `S`/`T` tile 0 = `4·(base+1)` B, tiles `1..L-1` = `4·base` B each |
-| Events | `6·4^d + 3` — same closed form as `LCS_shared` (identical recursive wiring): 3 events per `recLCSEdt` create (app STICKY + runtime finish + runtime output), 2 per `seqLCSEdt` create, 3 for the FINISH `initEdt`, 1 for `wrapupEdt`'s output event, 0 for the fill tasks and `shutDownEdt` | — |
+| Events | `6·4^d + 3` — same closed form as `LCS_shared` (identical recursive wiring): 3 events per `recLCSEdt` create (app STICKY + shim group latch + shim output event), 2 per `seqLCSEdt` create, 3 for the FINISH `initEdt`, 1 for `wrapupEdt`'s output event, 0 for the fill tasks and `shutDownEdt` | — |
 | EDT templates | `2·4^d + 4`, none destroyed | — |
 
 Worked numbers at the calibrated `args = ['409600', '1600']`
@@ -83,7 +83,7 @@ As in `LCS_shared`, the upstream orphan STICKY event per leaf and per
   which the argument validation makes exactly the tile width — then wires
   `seqLCSEdt`'s 3 slots: `S` (RO, slot 0), `T` (RO, slot 1), `score` (RW,
   slot 2, the same single shared DB as `LCS_shared`).
-- `wrapupEdt` takes the root's finish event and `score` RO; `shutDownEdt`
+- `wrapupEdt` takes the root finish EDT's output event and `score` RO; `shutDownEdt`
   is a separate task gated on `wrapupEdt`'s output event, so the digest and
   the final release sit inside the measured window.
 - **DB concurrency**: `score` is unchanged from `LCS_shared` — RW is

@@ -60,7 +60,7 @@ On `N` ranks, with `W` workers in all:
 | `main_continue`, `start_reduce`, `final_reduce` | 1 each; `final_reduce` has `N` slots |
 | local `visit_vertex` | per rank, one per chunk of `max(1, ⌊(bᵣ − 1) / 16W⌋)` vertices, `bᵣ` the rank's own block size |
 | remote `visit_vertex`, neighbour-list blocks | one each per vertex and other rank that holds a neighbour of it past its first at or above it |
-| finish events | 2: the loaders' and the counting's |
+| group latches | 2: the loaders' and the counting's |
 
 ## Wiring
 
@@ -69,8 +69,8 @@ one takes the neighbour-list copy on slot 0 and its rank's partition on
 slot 1, both RO; the two forms are told apart by their slot count. The
 sender creates the copy, fills it and releases it before it wires it, and
 the remote form destroys it after its merge. The loaders are members of the
-first finish scope and the `start_work` EDTs of the second; every
-`visit_vertex` joins its creator's scope, so the second fires once the last
+first group and the `start_work` EDTs of the second; every
+`visit_vertex` joins its creator's group, so the second fires once the last
 count has finished, and `start_reduce`'s control slot is wired on it.
 `start_reduce` creates one `local_reduce` per rank, each of which sends its
 rank's count to `final_reduce`'s slot of that rank as a slot value.
@@ -78,25 +78,26 @@ rank's count to `final_reduce`'s slot of that rank as a slot value.
 reserves and every `init_node` copies into its rank's memory, so a
 `local_reduce` on any rank names `final_reduce`. The counters are C11 atomic
 words in each rank's memory, added to with relaxed adds by that rank's
-`visit_vertex` EDTs and read by its `local_reduce` after the second scope
+`visit_vertex` EDTs and read by its `local_reduce` after the second group
 has fired.
 
 ## Flow
 
 `main_edt` on rank 0 refuses missing counts; otherwise it builds the
-distribution from its arguments, reserving the partitions' GUIDs once,
-reserves the two reducers' GUIDs and creates the first scope, one `init_node`
-per rank, each given the distribution, the reducers' GUIDs and `main_edt`'s
-arguments as parameters, and `main_continue`. Each `init_node` writes its
-rank's copies of the distribution and the reducers' GUIDs, which every later
-EDT on the rank reads, loads the partition homed on its rank, which it holds
-until it ends, sets its rank's vertex range and chunk size and, if the load
-failed, prints its message and shuts down. `main_continue` on rank 0 starts
-the timer, creates the two reducers, the second scope with one `start_work`
-per rank in it, and wires `start_reduce`. Each `start_work` creates its
-rank's local `visit_vertex` EDTs over the whole of its block. `final_reduce`
-sums the counts, prints the result, destroys every partition, whose readers
-have all finished, and shuts the runtime down.
+distribution from its arguments, reserving the partitions' GUIDs once, and
+reserves the two reducers' GUIDs. It opens the first group and creates one
+`init_node` per rank, each given the distribution, the reducers' GUIDs and
+`main_edt`'s arguments as parameters. It then creates `main_continue` and
+releases the opener's count. Each `init_node` writes its rank's copies of
+the distribution and the reducers' GUIDs, which every later EDT on the rank
+reads, loads the partition homed on its rank, which it holds until it ends,
+sets its rank's vertex range and chunk size and, if the load failed, prints
+its message and shuts down. `main_continue` on rank 0 starts the timer,
+creates the two reducers, the second group with one `start_work` per rank in
+it, releases the opener's count, and wires `start_reduce`. Each `start_work`
+creates its rank's local `visit_vertex` EDTs over the whole of its block.
+`final_reduce` sums the counts, prints the result, destroys every partition,
+whose readers have all finished, and shuts the runtime down.
 
 ## Placement
 
@@ -105,8 +106,8 @@ local `visit_vertex` EDTs and `local_reduce` `r` run on rank `r`; a remote
 `visit_vertex` runs on the rank that holds the neighbours it merges, so
 every partition read is local. A neighbour-list copy is created with no
 hint, so the build's no-hint data-block policy homes it, on the sender's
-rank by default, and the remote rank reads it. `main_continue`, `start_reduce` and `final_reduce` run on
-rank 0.
+rank by default, and the remote rank reads it. `main_continue`,
+`start_reduce` and `final_reduce` run on rank 0.
 
 ## Sizing
 

@@ -36,7 +36,7 @@ concepts.
    programming_model/coherence_protocols
    programming_model/events
    programming_model/guids
-   programming_model/finish_events
+   programming_model/task_groups
 
 .. toctree::
    :maxdepth: 2

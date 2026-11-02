@@ -3,7 +3,7 @@
 *An asynchronous label-correcting breadth-first search over a graph split
 into vertex blocks, one per rank: a `relax` EDT per message lowers one
 vertex's level by compare-and-swap and, when it wins, messages every
-neighbour; a finish scope tells when no message is left.*
+neighbour; a task group tells when no message is left.*
 Source: `examples/graph/bfs.c`, written against the public `arts.h` and
 `arts/graph.h` alone.
 
@@ -61,33 +61,34 @@ On `N` ranks:
 | `init_node` | `N`, the loaders |
 | `main_continue`, `kickoff_termination`, `exit_program` | 1 each |
 | `relax` | one per message, plus the start: a vertex messages all its neighbours each time its level is lowered, at least once per vertex the search reaches |
-| finish events | 2: the loaders' and the search's |
+| group latches | 2: the loaders' and the search's |
 
 ## Wiring
 
 Every `relax` takes the partition that holds its vertex on slot 0, RO, and
 is created on that partition's rank. The loaders are members of the first
-finish scope, which `main_edt` creates on rank 0; `main_continue` waits on it
-through its one control slot. `main_continue` creates the second scope,
-wires `exit_program`'s control slot on it and creates `kickoff_termination`
-as its member; every `relax` is created by `kickoff_termination` or by
-another `relax` with no scope of its own named, so it joins its creator's,
-and the scope fires only when the last `relax` has finished. The level
+group, which `main_edt` opens on rank 0; `main_continue` waits on its latch
+through its one control slot. `main_continue` opens the second group,
+wires `exit_program`'s control slot on its latch, creates
+`kickoff_termination` as its member and releases the opener's count; every
+`relax` is created by `kickoff_termination` or by another `relax` with no
+group of its own named, so it joins its creator's, and the group fires only
+when the last `relax` has finished. The level
 arrays are no data blocks: each is an array of C11 atomic words in its
 rank's memory, lowered only by that rank's `relax` EDTs, each with a relaxed
 compare-and-swap loop (a level is a value and orders nothing), and read by
-`exit_program` after the second scope has fired.
+`exit_program` after the second group has fired.
 
 ## Flow
 
 `main_edt` on rank 0 refuses missing counts; otherwise it builds the
 distribution from its arguments, reserving the partitions' GUIDs once, and
-creates the first scope, one `init_node` per rank, each given the
+opens the first group, creates one `init_node` per rank, each given the
 distribution and `main_edt`'s arguments as parameters, and `main_continue`.
 Each `init_node` writes its rank's copy of the distribution, which every
 later EDT on the rank reads, and loads the partition homed on its rank, which
 it holds until it ends, so its completion publishes the partition before the
-scope fires; it allocates its rank's level array and, if the load failed,
+group fires; it allocates its rank's level array and, if the load failed,
 prints its message and shuts down. `main_continue` reads `--source` from
 `main_edt`'s arguments, refuses an out-of-range source, and starts the
 search. `exit_program` prints rank 0's levels, frees rank 0's array, destroys

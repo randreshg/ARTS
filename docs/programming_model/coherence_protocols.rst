@@ -92,7 +92,7 @@ Its skeleton:
 
 * *sequenced-before* orders operations within one EDT (host C semantics).
 * *synchronized-with* is established **only through events** (including each
-  EDT's output event). Three release rules apply: (1) all loads/stores by an
+  EDT's completion event). Three release rules apply: (1) all loads/stores by an
   EDT to a DB complete before that DB's release completes; (2) an EDT releases
   **all** of its DBs before its post-slot is satisfied; (3) before an EDT
   explicitly satisfies an event, any DB potentially exposed by that

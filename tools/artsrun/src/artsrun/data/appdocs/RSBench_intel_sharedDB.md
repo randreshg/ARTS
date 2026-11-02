@@ -114,7 +114,7 @@ cross-section dataset is a handful of contiguous arrays regardless of `n`.
 | EDTs: per (thread, generation) — `lookUpKernelPerThreadEdt` + `iterationsPerThreadEdt` | `2tGp` | — |
 | EDTs: reduction-tree fringe | **+8 EDTs**, measured at `t=2, p=1`; not closed-form — see notes | — |
 | STICKY/COUNTED events: global + per-rank | `1 + 4p` | — |
-| events: per (thread, generation) — `iterationsPerThreadEdt` create (`EDT_PROP_FINISH` + non-NULL `outputEvent`, so 2 shim events) **plus** `createEventHelper(&iterationsPerThreadOEVTS, 1)` (an explicit `OCR_EVENT_COUNTED_T` create) — 3 events per (thread,generation), not 2 | `3tGp` | — |
+| events: per (thread, generation) — `iterationsPerThreadEdt` create (`EDT_PROP_FINISH` + non-NULL `outputEvent`, so 2 shim events: group latch + output event) **plus** `createEventHelper(&iterationsPerThreadOEVTS, 1)` (an explicit `OCR_EVENT_COUNTED_T` create) — 3 events per (thread,generation), not 2 | `3tGp` | — |
 | events: reduction-tree fringe | **+6 events**, measured at `t=2, p=1`; not closed-form — see notes | — |
 
 At `p=1` the totals are: `DB = (2+17+5t) + 5tG + fringe`,

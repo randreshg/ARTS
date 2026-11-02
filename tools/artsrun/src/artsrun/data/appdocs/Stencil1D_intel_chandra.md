@@ -79,7 +79,7 @@ gesture at without deriving.
 | Events | `7 + 20·NR + 15·NR·(NT+1) + 2·C(NR)` | `15` fresh events per tile per round (not 12 — see below) plus `12·NR` one-time per-tile phase-buffer events at init, plus the two reduction trees' `8·NR+2·C(NR)-8` |
 
 Each round's 15 events are 9 from EDT creation (`timestep`'s explicit STICKY
-plus its FINISH output+finish pair = 3; `Lsend`/`Rsend`/`Lrecv`/`Rrecv` each
+plus its FINISH output-event + group-latch pair = 3; `Lsend`/`Rsend`/`Lrecv`/`Rrecv` each
 carry one output event = 4; `update`'s explicit STICKY plus its output event
 = 2) plus 6 more from `update`'s own body, which destroys and recreates the
 tile's 6 phase-buffered sticky events (`EVT_Lsend_fin`/`EVT_Rsend_fin`/

@@ -193,7 +193,7 @@ the release of every hold that any other EDT has on the block: every ``RO``
 and ``RW`` dependence hold and every creator hold, under every coherence
 protocol.  The destroying EDT's own hold is the one exception:
 :c:func:`arts_db_destroy` releases it first.  An EDT releases what it still
-holds before its output event fires and before it leaves its finish scope,
+holds before its completion event fires and before it leaves its group,
 so a destroy ordered after an EDT's completion is ordered after its
 releases.  An EDT that, in its body, hands the block onward or starts work
 that leads to its destroyer (by satisfying an event, creating an EDT or

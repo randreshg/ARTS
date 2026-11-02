@@ -97,7 +97,7 @@ EDT Lifecycle — Time
        before the body or the releases after it.
    * - ``TIME_EDT_CREATE``
      - Wall time of ``arts_edt_create()`` on the creating thread:
-       placement, allocation, GUID, finish-scope join, and either the ship
+       placement, allocation, GUID, task-group join, and either the ship
        to a remote home or the local install, which readies the EDT and
        starts its DB acquires when its dependences are already met.
    * - ``TIME_EDT_SIGNAL``
@@ -360,8 +360,8 @@ Event — Count
    * - Counter
      - Description
    * - ``NUM_EVENT_CREATE``
-     - Event creates issued on this rank, including the finish-scope
-       proxies the runtime makes on an EDT's home when the EDT's scope is
+     - Event creates issued on this rank, including the task-group
+       proxies the runtime makes on an EDT's home when the EDT's group is
        homed elsewhere.
    * - ``NUM_EVENT_DESTROY``
      - Events retired on their home: an explicit destroy, an auto-destroy

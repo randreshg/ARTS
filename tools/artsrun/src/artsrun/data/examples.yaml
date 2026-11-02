@@ -149,7 +149,7 @@ apps:
   bfs_example:
     binary: bfs_example
     class: task
-    provenance: 'ARTS example: asynchronous label-correcting BFS over a block-distributed CSR graph, one relax EDT per message, ended by a finish scope'
+    provenance: 'ARTS example: asynchronous label-correcting BFS over a block-distributed CSR graph, one relax EDT per message, ended by a task group'
     # The program prints the levels of rank 0's vertices only, a set that
     # changes with the node count, so the row is completion only: the marker
     # heads that list.

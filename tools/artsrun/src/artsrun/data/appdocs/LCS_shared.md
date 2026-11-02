@@ -61,7 +61,7 @@ perfect 4-ary tree of depth `d`:
 | `seqLCSEdt` (leaf DP kernel) | `4^d` — one per level-`d` node | — |
 | `mainEdt` / `initEdt` / `fillStringEdt` / `wrapupEdt` / `shutDownEdt` | 1 / 1 / 2 / 1 / 1 | — |
 | DBs | **3, fixed** — `S`, `T`, `score`; never depth-dependent | `S`=`T`=`4·(N+1)` B; `score`=`16·(N+1)` B (2 longs per position) |
-| Events | `6·4^d + 3` — every `recLCSEdt` create (root + `x11`/`x12`/`x21`/`x22`, count `(4^(d+1)-1)/3`) is `EDT_PROP_FINISH` with a non-NULL output-event argument, so each costs 3 events (1 app `ocrEventCreate` STICKY + 1 runtime finish event + 1 runtime output event); every `seqLCSEdt` create (count `4^d`) costs 2 (app STICKY + output event, no finish); the FINISH `initEdt` costs 3 and `wrapupEdt`'s output event 1; the two fill tasks and `shutDownEdt` cost 0 | — |
+| Events | `6·4^d + 3` — every `recLCSEdt` create (root + `x11`/`x12`/`x21`/`x22`, count `(4^(d+1)-1)/3`) is `EDT_PROP_FINISH` with a non-NULL output-event argument, so each costs 3 events (1 app `ocrEventCreate` STICKY + 1 shim group latch + 1 shim output event); every `seqLCSEdt` create (count `4^d`) costs 2 (app STICKY + the shim's completion event, no group); the FINISH `initEdt` costs 3 and `wrapupEdt`'s output event 1; the two fill tasks and `shutDownEdt` cost 0 | — |
 | EDT templates | `2·4^d + 4`, none ever destroyed (3 per internal node + 1 per leaf + 4 top-level + 1 for the fill tasks) | — |
 
 Worked numbers at the calibrated `args = ['409600', '1600']`: `409600/1600
@@ -93,7 +93,7 @@ EDT template is ever destroyed.
 - Each leaf `seqLCSEdt` (3-slot template) is wired `S` (RO, slot 0), `T`
   (RO, slot 1), `score` (RW, slot 2) — this is where all real DB traffic
   happens, once per leaf, `4^d` times total.
-- `wrapupEdt` takes the root's finish event (slot 0) and `score` RO
+- `wrapupEdt` takes the root finish EDT's output event (slot 0) and `score` RO
   (slot 1); `shutDownEdt` is a separate task gated on `wrapupEdt`'s output
   event, so the digest and the final release are inside the measured
   window and `ocrShutdown` is not called while a dependence is still held.

@@ -107,7 +107,7 @@ destroying it (`DBK_nuclide_grids`/`DBK_nuclide_grid_ptrs`, immediately
 `load_mats`×2 + `load_concs`×2), not the 9 the original count assumed. Each
 generation's 3 events are `iterationsPerThreadEdt`'s FINISH-scoped output
 event pair (`ocrEdtCreate(...,EDT_PROP_FINISH,...,&iterationsPerThreadOEVT)`
-→ output + finish) plus `createEventHelper`'s `OCR_EVENT_COUNTED_T` join —
+→ output event + group latch) plus `createEventHelper`'s `OCR_EVENT_COUNTED_T` join —
 the original `2·P·T·G` term missed the third.
 
 Smoke-sized example (`-s small -g 10 -l 100`, `P=T=1`): `N_i=68`, `N_g=10`,

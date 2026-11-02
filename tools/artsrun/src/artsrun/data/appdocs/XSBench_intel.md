@@ -105,17 +105,17 @@ below) plus the 16-deep scaffolding chain
 `init_uEnergy`→`init_materials`→`globalCompute`→
 `globalComputeSpawner`→`globalFinalize`, plus `timer`) that runs regardless of
 `nprocs` (hardcoded to 1, so none of this chain's own loops contribute a
-second factor). The event total's `27` fixed events are the output/finish
-events the accounting rule attaches to those same 17 EDTs (`mainEdt`'s four
+second factor). The event total's `27` fixed events are the output-event/group-latch
+pairs the accounting rule attaches to those same 17 EDTs (`mainEdt`'s four
 FINISH-scoped children `settingsInit`/`globalInit`/`globalCompute`/
-`globalFinalize` alone contribute 4 explicit STICKY events + 8 output/finish
+`globalFinalize` alone contribute 4 explicit STICKY events + 8 output-event/group-latch
 events) plus the always-present `init_InputsH`/`globalComputeSpawner`/`timer`
 output events, the `init_dataH`-spawned `init_uEnergy`/`init_materials`
-finish events, and the two init join points: `init_gridsSpawner` (FINISH with
+group latches, and the two init join points: `init_gridsSpawner` (FINISH with
 an output event, plus its explicit STICKY = 3) and `init_uEnergy_union`
 (output event plus its explicit STICKY = 2); `3·NB` is `rankCompute`'s explicit
 `rankMultiLookupSpawner`-completion STICKY event plus that spawner's own
-output+finish events, once per sync batch. `init_uEnergy_i`,
+output-event + group-latch pair, once per sync batch. `init_uEnergy_i`,
 `rankLookup`/`macroxs`/`microxsAggregator` all pass a NULL output event and
 carry no FINISH scope, so the per-lookup and per-gridpoint fan-out contributes
 zero events regardless of `U` or `L`.

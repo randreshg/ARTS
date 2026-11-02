@@ -84,22 +84,25 @@ the EDT, so the block reads the same on every rank.
    }
 
 **Work on every rank is one EDT per rank.**  ``main_edt`` creates one EDT
-per rank as members of a finish scope, and wires the scope to a continuation
-on rank 0.  A per-rank EDT may leave state in its rank's memory for later
-EDTs on that rank; each such word has one writer, that rank's EDT, and the
-scope and message delivery order every later reader after it.  What other
-ranks need travels as parameters or data blocks.
+per rank as members of a task group, and wires the group's latch to a
+continuation on rank 0 (see :doc:`/programming_model/task_groups`).  A
+per-rank EDT may leave state in its rank's memory for later EDTs on that
+rank; each such word has one writer, that rank's EDT, and the group and
+message delivery order every later reader after it.  What other ranks need
+travels as parameters or data blocks.
 
 .. code-block:: c
 
-   arts_guid_t done = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+   arts_guid_t done = arts_event_create(&ARTS_EVENT_HINT_LATCH(1));
    for (unsigned int r = 0; r < arts_get_total_ranks(); r++) {
        arts_edt_create(init_rank, n, words, 0,
-                       &(arts_edt_hint_t){.rank = r, .finish_event = done});
+                       &(arts_edt_hint_t){.rank = r, .group = done});
    }
    arts_guid_t cont = arts_edt_create(after_init, 0, NULL, 1,
                                       &(arts_edt_hint_t){.rank = 0});
    arts_add_dependence(done, cont, 0, DB_MODE_NULL);
+   /* the opener's own count of the latch, released last */
+   arts_event_satisfy_slot(done, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 
 **Names shared across ranks come from a range that one EDT reserves.**
 ``main_edt`` (or any one EDT) reserves a range and passes the range GUID on;

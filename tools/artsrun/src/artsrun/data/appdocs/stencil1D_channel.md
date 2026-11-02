@@ -60,7 +60,7 @@ Let `N=nrank`, `M=npoints`, `T=maxt`.
 | EDTs total | `N·T + 4N + 3` — `mainEdt`, `realMainEdt` (FINISH), `N` `stencilInitDBsEdt`, `N` `stencilInitEdt`, `N·(T+1)` `stencilEdt` chain generations (single clone per iteration, no grandchild lookahead), `N` `stencilReportEdt` (one per chain, at the final timestep), 1 `wrapupEdt` | — |
 | EDT templates | `3N+3` — `realMainTML`/`wrapupTML`/`stencilInitDBsTML` created once centrally; `stencilInitTML`, `stencilTML`, and `reportTML` are each (re-)created once per chain rather than shared | — |
 | DBs | `3N-1` — 1 shared + `N` private (data embedded via `dataOffset`, same single-DB layout as lineage A) + `2(N-1)` halo buffer | shared ≈ 40 B (`nrank`/`npoints`/`maxt` + `startDirs[2]`); private ≈ 72 B (`private_t`: 5×`u32` + `dataOffset` + 5×`ocrGuid_t`) + `M×8` B data; buffer = 16 B |
-| Events | `4(N-1)+2` `ocrEventCreate`/`ocrEventCreateParams` calls, **all made once at bootstrap, none during the `T`-iteration steady state**: `2(N-1)` labeled STICKY events (one per boundary direction, each created once by `realMainEdt` before it launches any chain, never destroyed) used solely to exchange channel-event GUIDs, plus `2(N-1)` CHANNEL events (one per rank-side that has a neighbor), each satisfied/consumed `T` times over the run without being recreated, plus a constant **+2** from `mainEdt`'s single `ocrEdtCreate` of `realMainEdt` as a FINISH EDT with a non-NULL `outputEvent` (`&finishEVT`) — per the runtime's event-accounting rule this materializes *two* separate event objects, the output event itself and the internal FINISH-latch event `EDT_PROP_FINISH` always creates (chained together by the shim), independent of `N`/`T` | — |
+| Events | `4(N-1)+2` `ocrEventCreate`/`ocrEventCreateParams` calls, **all made once at bootstrap, none during the `T`-iteration steady state**: `2(N-1)` labeled STICKY events (one per boundary direction, each created once by `realMainEdt` before it launches any chain, never destroyed) used solely to exchange channel-event GUIDs, plus `2(N-1)` CHANNEL events (one per rank-side that has a neighbor), each satisfied/consumed `T` times over the run without being recreated, plus a constant **+2** from `mainEdt`'s single `ocrEdtCreate` of `realMainEdt` as a FINISH EDT with a non-NULL `outputEvent` (`&finishEVT`) — per the runtime's event-accounting rule this materializes *two* separate event objects, the output event itself and the group latch the shim always creates for an `EDT_PROP_FINISH` EDT (wired to the output event by the shim), independent of `N`/`T` | — |
 
 Worked numbers at the calibrated args (`48 50 340000`): EDTs ≈
 `48×340000 + 4×48 + 3 = 16,320,195`; DBs = `3×48-1 = 143`, ≈24 KB payload;
@@ -74,7 +74,7 @@ Counter cross-check: verified (1 node, `4 4 5` vs `6 4 8`): NUM_EDT_CREATE
 `N·T+4N+3` / `3N-1` / `6(N-1)+2` (app values 39/75, 11/17, 20/32) plus the
 runtime's constant +1 EDT/+1 DB/+0 EVT baseline. `EDTs`/`DBs` were
 already exact; the `6(N-1)` event formula was short by a constant +2 —
-the FINISH-EDT output/latch pair above accounts for it. Those events were
+the FINISH-EDT output/group-latch pair above accounts for it. Those events were
 measured while both neighbours created each label; with one create per label
 `4(N-1)+2` predicts 14 → 22, not re-measured.
 

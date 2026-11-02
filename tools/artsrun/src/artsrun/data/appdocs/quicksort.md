@@ -74,7 +74,7 @@ above the balanced estimate.
 | `qsortTask` | `Q(N)` (every node, leaf or internal) | — |
 | `mainEdt` / `finishEdt` | 1 each | — |
 | DBs | **exactly 1** for the whole run — the original array DB; no sub-DB is ever created | `8·arraySize` bytes |
-| Events | 2 per created child (its ONCE data event and the runtime finish event every child opens), plus `fillTasks` generator output events, plus the root's finish and output events and the STICKY `coordEvt` | — |
+| Events | 2 per created child (its ONCE data event and the group latch the shim opens for every child), plus `fillTasks` generator output events, plus the root's group latch and output event and the STICKY `coordEvt` | — |
 | Templates | `qsortTemplate` (reused across the whole tree), a second one-off template for the root (which carries the generation's completion on its extra slots), `fillTemplate`, `finishTemplate` | — |
 
 Counter cross-check (counter build, 2 ranks): `Q(N)`, the number of qsort tasks

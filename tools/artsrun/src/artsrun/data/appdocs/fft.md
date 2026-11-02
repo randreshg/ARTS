@@ -81,7 +81,7 @@ the number of split levels (`d = 0` when `N ≤ serialBlockSize`).
 | `mainEdt` / `fftInitEdt` / `fftIterationEdt` / `finalPrintEdt` | 1 each; `fftVerifyEdt` only when the reference is asked for | — |
 | EDTs total | `3 + 4·2^d + d·2^(d-1)` (`= 7` when `d = 0`), plus 1 with the reference | — |
 | Datablocks | **1, constant regardless of `N`** — plus 2 verify blocks when the reference is asked for | data block `12N` bytes plus one `double` per top-level combine slave; each verify block `4N` bytes |
-| Events | `5·2^d + 1` (`= 6` when `d = 0`) — finish latches + idempotent output events per FINISH create, plus 1 when the verify EDT runs | — |
+| Events | `5·2^d + 1` (`= 6` when `d = 0`) — group latches + output events per FINISH create, plus 1 when the verify EDT runs | — |
 | EDT templates | 8 created (7 app + 1 verify), all destroyed | — |
 
 Worked numbers with the reference off, which is how the row runs: `power = 6`
@@ -92,7 +92,7 @@ Worked numbers with the reference off, which is how the row runs: `power = 6`
 
 Counter cross-check: **pending** — the previously verified pair (1 node,
 `power=6` vs `power=15`) predates the parallel generation phase, which adds
-`2^d + 1` EDTs and one FINISH pair of events. Re-measure against the formulas
+`2^d + 1` EDTs and one FINISH pair of events (group latch and output event). Re-measure against the formulas
 above before quoting counter absolutes.
 
 ## Wiring
