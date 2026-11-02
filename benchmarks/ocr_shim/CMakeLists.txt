@@ -68,6 +68,9 @@ if(ARTS_BUILD_TESTS)
     register_multinode_test(ocr_shim_event_payload TIMEOUT 30)
 endif()
 
+# A finish EDT's output event fires once the finish EDT and its descendants
+# have completed, while the task that created it still runs.  No cell changes
+# it, so it is built and registered in the reference tree only.
 add_executable(ocr_shim_finish_release EXCLUDE_FROM_ALL
     ${CMAKE_SOURCE_DIR}/tests/shim/finish_release.c
     $<TARGET_OBJECTS:ocr_arts_objects>)
@@ -80,7 +83,7 @@ set_property(TARGET ocr_shim_finish_release PROPERTY
 target_compile_options(ocr_shim_finish_release PRIVATE ${ARTS_NON_PIE_COMPILE_OPTIONS})
 target_link_options(ocr_shim_finish_release PRIVATE ${ARTS_NON_PIE_LINK_OPTIONS})
 target_link_libraries(ocr_shim_finish_release PRIVATE arts_static)
-if(ARTS_BUILD_TESTS)
+if(ARTS_BUILD_TESTS AND ARTS_TEST_REFERENCE_TREE)
     set_target_properties(ocr_shim_finish_release PROPERTIES
         EXCLUDE_FROM_ALL FALSE)
     register_single_node_test(ocr_shim_finish_release TIMEOUT 60)
@@ -90,6 +93,34 @@ if(ARTS_BUILD_TESTS)
             ocr_shim_finish_release_2n_8w_2p)
         set_tests_properties(${_t} PROPERTIES
             PASS_REGULAR_EXPRESSION "PASS: finish EDT output fired"
+            FAIL_REGULAR_EXPRESSION "FAIL")
+    endforeach()
+endif()
+
+# An outer finish EDT's output event waits for an inner finish EDT's subtree.
+# No cell changes it, so it is built and registered in the reference tree
+# only.
+add_executable(ocr_shim_finish_nested EXCLUDE_FROM_ALL
+    ${CMAKE_SOURCE_DIR}/tests/shim/finish_nested.c
+    $<TARGET_OBJECTS:ocr_arts_objects>)
+target_include_directories(ocr_shim_finish_nested PRIVATE
+    ${OCR_ROOT}/inc ${SHIM_OCR_OPTIONS_DIR})
+target_compile_definitions(ocr_shim_finish_nested PRIVATE
+    ENABLE_EXTENSION_AFFINITY ${SHIM_OCR_TYPE_DEFINE})
+set_property(TARGET ocr_shim_finish_nested PROPERTY
+    POSITION_INDEPENDENT_CODE OFF)
+target_compile_options(ocr_shim_finish_nested PRIVATE ${ARTS_NON_PIE_COMPILE_OPTIONS})
+target_link_options(ocr_shim_finish_nested PRIVATE ${ARTS_NON_PIE_LINK_OPTIONS})
+target_link_libraries(ocr_shim_finish_nested PRIVATE arts_static)
+if(ARTS_BUILD_TESTS AND ARTS_TEST_REFERENCE_TREE)
+    set_target_properties(ocr_shim_finish_nested PROPERTIES
+        EXCLUDE_FROM_ALL FALSE)
+    register_single_node_test(ocr_shim_finish_nested TIMEOUT 30)
+    register_multinode_test(ocr_shim_finish_nested TIMEOUT 60
+                            VARIANTS 2n_9w_1p)
+    foreach(_t ocr_shim_finish_nested ocr_shim_finish_nested_2n_9w_1p)
+        set_tests_properties(${_t} PROPERTIES
+            PASS_REGULAR_EXPRESSION "PASS: the outer finish EDT waited"
             FAIL_REGULAR_EXPRESSION "FAIL")
     endforeach()
 endif()

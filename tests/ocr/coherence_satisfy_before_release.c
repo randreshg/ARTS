@@ -150,8 +150,10 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   arts_guid_t shut =
       arts_edt_create(shutdown_edt, 0, NULL, 1, &(arts_edt_hint_t){.rank = 0});
-  arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
-  arts_add_dependence(fe, shut, 0, DB_MODE_NULL);
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t group = arts_event_create(&gh);
+  arts_add_dependence(group, shut, 0, DB_MODE_NULL);
 
   /* Step 1: create every DB with a NON-creator home and WRITE the pattern —
    * the write happens-before every satisfy below, so no legal snapshot may
@@ -177,7 +179,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     /* Consumer A: ON the DB home (home-local acquire against an empty home). */
     arts_guid_t ca =
         arts_edt_create(consumer_edt, 1, &dp, 1,
-                        &(arts_edt_hint_t){.rank = home, .group = fe});
+                        &(arts_edt_hint_t){.rank = home, .group = group});
     arts_add_dependence(dbs[d], ca, 0, DB_MODE_RO);
     /* Consumer B: a second reader on the next rank; at >= 3 ranks skip the
      * creator (its own cache already holds the written bytes — that serve is
@@ -188,7 +190,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     }
     arts_guid_t cb =
         arts_edt_create(consumer_edt, 1, &dp, 1,
-                        &(arts_edt_hint_t){.rank = other, .group = fe});
+                        &(arts_edt_hint_t){.rank = other, .group = group});
     arts_add_dependence(dbs[d], cb, 0, DB_MODE_RO);
   }
 
@@ -201,6 +203,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   for (uint32_t d = 0; d < N_DBS; d++) {
     arts_db_release(dbs[d], DB_MODE_RW);
   }
+  arts_event_satisfy_slot(group, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 int main(int argc, char **argv) {

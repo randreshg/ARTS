@@ -57,8 +57,8 @@
 ///       require at least one sample whose high word is NEITHER of those two
 ///       values: impossible in either degenerate case, near-certain otherwise.
 ///
-/// Single-node test; protocol-agnostic.  Completion is driven by a finish event
-/// and a continuation gated on it, never by spinning.
+/// Single-node test; protocol-agnostic.  Completion is driven by a group and a
+/// continuation gated on it, never by spinning.
 
 #include <stdint.h>
 
@@ -229,20 +229,23 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
   arts_db_release(db, DB_MODE_RW);
 
-  arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t group = arts_event_create(&gh);
 
   for (uint32_t i = 0; i < NUM_SAMPLER_EDTS; i++) {
     uint64_t slot = (uint64_t)i;
     arts_guid_t s =
         arts_edt_create(rng_sampler, 1, &slot, 1,
-                        &(arts_edt_hint_t){.rank = 0, .group = fe});
+                        &(arts_edt_hint_t){.rank = 0, .group = group});
     arts_add_dependence(db, s, 0, DB_MODE_RW);
   }
 
   uint64_t pv[1] = {(uint64_t)db};
   arts_guid_t then =
       arts_edt_create(after_samplers, 1, pv, 1, &(arts_edt_hint_t){.rank = 0});
-  arts_add_dependence(fe, then, 0, DB_MODE_NULL);
+  arts_add_dependence(group, then, 0, DB_MODE_NULL);
+  arts_event_satisfy_slot(group, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 int main(int argc, char **argv) {

@@ -11,8 +11,7 @@
  *   4. swap_remove: the last element fills the hole (order NOT preserved,
  *      by contract), the count drops, removing the last element moves
  *      nothing, and an out-of-range index is a no-op.
- *   5. clear: count -> 0, block retained (same data pointer on next push).
- *   6. free: block released, count zeroed, element_size and capacity KEPT —
+ *   5. free: block released, count zeroed, element_size and capacity KEPT —
  *      element_size doubles as callers' "initialised" sentinel and the next
  *      push reallocates at the retained capacity.
  */
@@ -74,15 +73,8 @@ int main(void) {
   arts_vector_swap_remove(&v, 12345);
   CHECK(arts_vector_count(&v) == N - 2, "out-of-range remove not a no-op");
 
-  /* (5) clear keeps the block */
-  void *block = v.data;
-  arts_vector_clear(&v);
-  CHECK(arts_vector_count(&v) == 0 && v.data == block, "clear dropped block");
+  /* (5) free keeps element_size + capacity, releases the block */
   uint64_t x = 7;
-  arts_vector_push(&v, &x);
-  CHECK(v.data == block, "push after clear reallocated");
-
-  /* (6) free keeps element_size + capacity, releases the block */
   uint64_t cap_before = v.capacity;
   arts_vector_free(&v);
   CHECK(v.data == NULL && arts_vector_count(&v) == 0, "free left state");

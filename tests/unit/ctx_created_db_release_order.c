@@ -11,8 +11,7 @@
  *      capacity, so the doubling is actually exercised, not just permitted.
  *
  *   2. One entry per hold: the list grows by one per acquiring create and
- *      shrinks by one per explicit release, and registering a NULL_GUID owned
- *      group is a no-op that leaves it alone.
+ *      shrinks by one per explicit release.
  *
  *   3. Drain: a successor EDT on the SAME worker observes a list holding only
  *      its own creations — the producer's entries are gone — and reads, through
@@ -23,7 +22,7 @@
 #include "arts.h"
 #include "arts/utils/vector.h"
 
-#include "arts/edt_context.h" /* created-DB list, owned finish list */
+#include "arts/edt_context.h" /* created-DB list */
 
 #include <stdint.h>
 
@@ -109,12 +108,6 @@ void producer(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
   if (arts_vector_count(list) != (uint64_t)NDB) {
     fail("the list does not hold one entry per acquiring create");
-    return;
-  }
-
-  arts_owned_finish_register(NULL_GUID);
-  if (arts_vector_count(list) != (uint64_t)NDB) {
-    fail("registering a NULL owned group changed the list");
     return;
   }
 

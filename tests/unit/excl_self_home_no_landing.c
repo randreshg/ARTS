@@ -98,11 +98,13 @@ static void take_ro_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 /* An EDT on `rank` taking `db` in `mode`, after `prev` when there is one;
- * returns the finish event that its completion satisfies. */
+ * returns its group, which the caller DECRs once the next link is wired. */
 static arts_guid_t chain(arts_guid_t db, arts_edt_t body, uint64_t value,
                          unsigned int rank, arts_guid_t prev,
                          arts_db_access_mode_t mode) {
-  arts_guid_t e = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t e = arts_event_create(&gh);
   arts_guid_t w = arts_edt_create(body, 1, &value, prev == NULL_GUID ? 1 : 2,
                                   &(arts_edt_hint_t){.rank = rank, .group = e});
   arts_add_dependence(db, w, 0, mode);
@@ -116,11 +118,17 @@ static arts_guid_t chain(arts_guid_t db, arts_edt_t body, uint64_t value,
  * held before it, so a payload that never arrives is read as a mismatch. */
 static void phase_c(void) {
   arts_guid_t db = make_db(0);
-  arts_guid_t e = chain(db, write_edt, SEED, 0, NULL_GUID, DB_MODE_RW);
-  e = chain(db, write_edt, MAGIC, g_far, e, DB_MODE_RW);
-  e = chain(db, take_rw_edt, MAGIC, 0, e, DB_MODE_RW);
-  e = chain(db, write_edt, MAGIC + 1u, g_far, e, DB_MODE_RW);
-  (void)chain(db, take_ro_edt, MAGIC + 1u, 0, e, DB_MODE_RO);
+  arts_guid_t e[5];
+  e[0] = chain(db, write_edt, SEED, 0, NULL_GUID, DB_MODE_RW);
+  e[1] = chain(db, write_edt, MAGIC, g_far, e[0], DB_MODE_RW);
+  e[2] = chain(db, take_rw_edt, MAGIC, 0, e[1], DB_MODE_RW);
+  e[3] = chain(db, write_edt, MAGIC + 1u, g_far, e[2], DB_MODE_RW);
+  e[4] = chain(db, take_ro_edt, MAGIC + 1u, 0, e[3], DB_MODE_RO);
+  /* Last link first: e[0]'s DECR, which every later link waits on, comes
+   * last. */
+  for (unsigned int i = 5u; i-- > 0u;) {
+    arts_event_satisfy_slot(e[i], NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
+  }
 }
 
 static void phase_b_done(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
@@ -148,13 +156,18 @@ static void phase_a_done(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   check(drew == 0, "a request to this rank's own home advertised a landing");
   g_base = arts_net_rdzv_txid_peek();
   arts_guid_t db = make_db(g_far);
+  arts_guid_t links[K];
   arts_guid_t prev = NULL_GUID;
   for (unsigned int i = 0; i < K; i++) {
     prev = chain(db, touch_edt, 0u, 0, prev, DB_MODE_RW);
+    links[i] = prev;
   }
   arts_guid_t d =
       arts_edt_create(phase_b_done, 0, NULL, 1, &(arts_edt_hint_t){.rank = 0});
   arts_add_dependence(prev, d, 0, DB_MODE_NULL);
+  for (unsigned int i = 0; i < K; i++) {
+    arts_event_satisfy_slot(links[i], NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
+  }
 }
 
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
@@ -167,13 +180,18 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   g_far = arts_get_total_ranks() - 1u;
   arts_guid_t db = make_db(0);
   g_base = arts_net_rdzv_txid_peek();
+  arts_guid_t links[K];
   arts_guid_t prev = NULL_GUID;
   for (unsigned int i = 0; i < K; i++) {
     prev = chain(db, touch_edt, 0u, 0, prev, DB_MODE_RW);
+    links[i] = prev;
   }
   arts_guid_t d =
       arts_edt_create(phase_a_done, 0, NULL, 1, &(arts_edt_hint_t){.rank = 0});
   arts_add_dependence(prev, d, 0, DB_MODE_NULL);
+  for (unsigned int i = 0; i < K; i++) {
+    arts_event_satisfy_slot(links[i], NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
+  }
 }
 
 int main(int argc, char **argv) {

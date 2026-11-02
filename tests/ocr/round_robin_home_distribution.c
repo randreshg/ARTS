@@ -316,26 +316,28 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
 
   arts_guid_t shut = arts_edt_create(shutdown_edt, 0, NULL, 1, NULL);
-  arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
-  arts_add_dependence(fe, shut, 0, DB_MODE_NULL);
-  arts_edt_hint_t in_fe = ARTS_EDT_HINT_DEFAULTS;
-  in_fe.group = fe;
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t group = arts_event_create(&gh);
+  arts_add_dependence(group, shut, 0, DB_MODE_NULL);
+  arts_edt_hint_t in_group = ARTS_EDT_HINT_DEFAULTS;
+  in_group.group = group;
 
   uint64_t nlist = ndb + nev;
-  arts_guid_t judge = arts_edt_create(judge_edt, 1, &nlist, nrank, &in_fe);
+  arts_guid_t judge = arts_edt_create(judge_edt, 1, &nlist, nrank, &in_group);
 
   uint64_t ev_param = (uint64_t)ev_range;
   arts_guid_t fired =
-      arts_edt_create(events_fired_edt, 1, &ev_param, nev, &in_fe);
+      arts_edt_create(events_fired_edt, 1, &ev_param, nev, &in_group);
   for (unsigned int i = 0; i < nev; i++) {
     arts_add_dependence(arts_guid_from_index(ev_range, i), fired, i,
                         DB_MODE_NULL);
   }
 
-  arts_guid_t creators = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_guid_t creators = arts_event_create(&gh);
   uint64_t collect_params[2] = {(uint64_t)db_range, (uint64_t)nrank};
   arts_guid_t collect =
-      arts_edt_create(collect_edt, 2, collect_params, 1, &in_fe);
+      arts_edt_create(collect_edt, 2, collect_params, 1, &in_group);
   arts_add_dependence(creators, collect, 0, DB_MODE_NULL);
 
   uint64_t params[4] = {(uint64_t)db_range, (uint64_t)ev_range, (uint64_t)nrank,
@@ -344,6 +346,8 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_edt_create(checker_edt, 4, params, 0,
                     &(arts_edt_hint_t){.rank = r, .group = creators});
   }
+  arts_event_satisfy_slot(group, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
+  arts_event_satisfy_slot(creators, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 int main(int argc, char **argv) {

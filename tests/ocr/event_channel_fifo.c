@@ -21,7 +21,7 @@
  * The receiving EDTs record into one block with no order among them, which the
  * DB-WRF model does not admit.
  *
- * verify_edt deps: slot 0 = finish event (DB_MODE_NULL), slot 1 = ref_db (RO),
+ * verify_edt deps: slot 0 = the group (DB_MODE_NULL), slot 1 = ref_db (RO),
  *                  slot 2 = results_db (RO).
  * counter_edt deps: slot 0 = the delivered data block, slot 1 = results_db
  * (RW).
@@ -98,10 +98,10 @@ static arts_guid_t make_value(uint64_t g) {
 
 static void add_consumer(arts_guid_t ev, int lane, int g,
                          arts_db_access_mode_t mode, arts_guid_t results_db,
-                         arts_guid_t fe) {
+                         arts_guid_t group) {
   uint64_t pv[2] = {(uint64_t)lane, (uint64_t)g};
-  arts_guid_t edt =
-      arts_edt_create(counter_edt, 2, pv, 2, &(arts_edt_hint_t){.group = fe});
+  arts_guid_t edt = arts_edt_create(counter_edt, 2, pv, 2,
+                                    &(arts_edt_hint_t){.group = group});
   arts_add_dependence(ev, edt, 0, mode);
   arts_add_dependence(results_db, edt, 1, DB_MODE_RW);
 }
@@ -127,7 +127,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
   arts_db_release(results_db, DB_MODE_RW);
 
-  arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t group = arts_event_create(&gh);
   arts_event_hint_t h = ARTS_EVENT_HINT_CHANNEL;
 
   /* Producer first: every satisfy is buffered before its dependence. */
@@ -137,13 +139,13 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_event_satisfy(pushed, ref[g]);
   }
   for (int g = 0; g < K_GENS; g++) {
-    add_consumer(pushed, 0, g, DB_MODE_RW, results_db, fe);
+    add_consumer(pushed, 0, g, DB_MODE_RW, results_db, group);
   }
 
   /* Consumer first: every dependence is buffered before its satisfy. */
   arts_guid_t pulled = arts_event_create(&h);
   for (int g = 0; g < K_GENS; g++) {
-    add_consumer(pulled, 1, g, DB_MODE_RO, results_db, fe);
+    add_consumer(pulled, 1, g, DB_MODE_RO, results_db, group);
   }
   for (int g = 0; g < K_GENS; g++) {
     ref[K_GENS + g] = make_value((uint64_t)g);
@@ -153,12 +155,13 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   arts_db_release(ref_db, DB_MODE_RW);
 
-  /* The finish event orders every counter_edt's release of results_db before
+  /* The group orders every counter_edt's release of results_db before
    * verify_edt's read. */
   arts_guid_t v = arts_edt_create(verify_edt, 0, NULL, 3, NULL);
-  arts_add_dependence(fe, v, 0, DB_MODE_NULL);
+  arts_add_dependence(group, v, 0, DB_MODE_NULL);
   arts_add_dependence(ref_db, v, 1, DB_MODE_RO);
   arts_add_dependence(results_db, v, 2, DB_MODE_RO);
+  arts_event_satisfy_slot(group, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 int main(int argc, char **argv) {

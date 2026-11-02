@@ -42,8 +42,8 @@
 ///        satisfied from another rank than the dependent's, a re-satisfy
 ///        after the fire, and late dependences added after the fire.
 ///
-/// Every dependent checks it runs on the rank it was placed on; the finish
-/// scope the shutdown waits on counts them all, so a lost delivery never
+/// Every dependent checks it runs on the rank it was placed on; the group the
+/// shutdown waits on counts them all, so a lost delivery never
 /// reaches the shutdown (the run times out).  Requires 2+ ranks (SKIP on one).
 
 #include "arts.h"
@@ -174,10 +174,10 @@ void shutdown_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_shutdown();
 }
 
-static void satisfy_from(arts_guid_t ev, unsigned int rank, arts_guid_t fe) {
+static void satisfy_from(arts_guid_t ev, unsigned int rank, arts_guid_t group) {
   uint64_t p = (uint64_t)ev;
   arts_edt_create(remote_satisfy, 1, &p, 0,
-                  &(arts_edt_hint_t){.rank = rank, .group = fe});
+                  &(arts_edt_hint_t){.rank = rank, .group = group});
 }
 
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
@@ -195,8 +195,10 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
 
   arts_guid_t shut = arts_edt_create(shutdown_edt, 0, NULL, 1, NULL);
-  arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
-  arts_add_dependence(fe, shut, 0, DB_MODE_NULL);
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t group = arts_event_create(&gh);
+  arts_add_dependence(group, shut, 0, DB_MODE_NULL);
   uint64_t r0 = 0;
   uint64_t r1 = 1;
 
@@ -206,9 +208,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     h.rank = 0;
     arts_guid_t ev = arts_event_create(&h);
     arts_guid_t dep = arts_edt_create(
-        fired_dep, 1, &r0, 1, &(arts_edt_hint_t){.rank = 0, .group = fe});
+        fired_dep, 1, &r0, 1, &(arts_edt_hint_t){.rank = 0, .group = group});
     arts_add_dependence(ev, dep, 0, DB_MODE_RW);
-    satisfy_from(ev, 1, fe);
+    satisfy_from(ev, 1, group);
   }
 
   // Homed on rank 0 with its dependent on rank 1, the dependence added
@@ -219,9 +221,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_guid_t ev = arts_event_create(&h);
     arts_guid_t dep =
         arts_edt_create(early_remote_dep, 1, &r1, 1,
-                        &(arts_edt_hint_t){.rank = 1, .group = fe});
+                        &(arts_edt_hint_t){.rank = 1, .group = group});
     arts_add_dependence(ev, dep, 0, DB_MODE_RW);
-    satisfy_from(ev, 0, fe);
+    satisfy_from(ev, 0, group);
   }
 
   // The trampoline runs once the event fired and adds a late dependence on
@@ -233,9 +235,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     uint64_t tp[1] = {(uint64_t)ev};
     arts_guid_t tramp =
         arts_edt_create(late_dep_trampoline, 1, tp, 1,
-                        &(arts_edt_hint_t){.rank = 0, .group = fe});
+                        &(arts_edt_hint_t){.rank = 0, .group = group});
     arts_add_dependence(ev, tramp, 0, DB_MODE_RW);
-    satisfy_from(ev, 1, fe);
+    satisfy_from(ev, 1, group);
   }
 
   // Satisfied from rank 1; a second satisfy after the fire is absorbed.
@@ -243,13 +245,14 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_event_hint_t h = ARTS_EVENT_HINT_DEFAULTS;
     h.rank = 0;
     arts_guid_t ev = arts_event_create(&h);
-    arts_guid_t dep = arts_edt_create(
-        resatisfied_dep, 1, &r0, 1, &(arts_edt_hint_t){.rank = 0, .group = fe});
+    arts_guid_t dep =
+        arts_edt_create(resatisfied_dep, 1, &r0, 1,
+                        &(arts_edt_hint_t){.rank = 0, .group = group});
     arts_add_dependence(ev, dep, 0, DB_MODE_RW);
-    satisfy_from(ev, 1, fe);
+    satisfy_from(ev, 1, group);
     uint64_t rp[1] = {(uint64_t)ev};
     arts_guid_t re = arts_edt_create(
-        re_satisfy, 1, rp, 1, &(arts_edt_hint_t){.rank = 0, .group = fe});
+        re_satisfy, 1, rp, 1, &(arts_edt_hint_t){.rank = 0, .group = group});
     arts_add_dependence(ev, re, 0, DB_MODE_RW);
   }
 
@@ -261,9 +264,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     uint64_t sp[1] = {(uint64_t)ev};
     arts_guid_t setup =
         arts_edt_create(late_dep_off_home_setup, 1, sp, 1,
-                        &(arts_edt_hint_t){.rank = 1, .group = fe});
+                        &(arts_edt_hint_t){.rank = 1, .group = group});
     arts_add_dependence(ev, setup, 0, DB_MODE_RW);
-    satisfy_from(ev, 0, fe);
+    satisfy_from(ev, 0, group);
   }
 
   // LATCH fan-in: latch = rank count, one decrement from every rank.
@@ -272,12 +275,13 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     h.rank = 0;
     arts_guid_t ev = arts_event_create(&h);
     arts_guid_t dep = arts_edt_create(
-        fan_in_dep, 1, &r0, 1, &(arts_edt_hint_t){.rank = 0, .group = fe});
+        fan_in_dep, 1, &r0, 1, &(arts_edt_hint_t){.rank = 0, .group = group});
     arts_add_dependence(ev, dep, 0, DB_MODE_RW);
     for (unsigned int r = 0; r < total; r++) {
-      satisfy_from(ev, r, fe);
+      satisfy_from(ev, r, group);
     }
   }
+  arts_event_satisfy_slot(group, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 int main(int argc, char **argv) {

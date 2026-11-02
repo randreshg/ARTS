@@ -211,10 +211,13 @@ void main_continue(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   arts_guid_t exit_guid =
       arts_edt_create(exit_program, 0, NULL, 1, &(arts_edt_hint_t){.rank = 0});
-  arts_guid_t search_done = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_event_hint_t group_hint = ARTS_EVENT_HINT_LATCH(1);
+  group_hint.auto_destroy = true;
+  arts_guid_t search_done = arts_event_create(&group_hint);
   arts_add_dependence(search_done, exit_guid, 0, DB_MODE_NULL);
   arts_edt_create(kickoff_termination, 1, (uint64_t *)&source, 0,
                   &(arts_edt_hint_t){.rank = 0, .group = search_done});
+  arts_event_satisfy_slot(search_done, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
@@ -245,7 +248,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   uint64_t *init_paramv = malloc(init_paramc * sizeof(uint64_t));
   arts_block_dist_to_params(&dist, init_paramv);
   arts_argv_to_params(argc, argv, init_paramv + ARTS_BLOCK_DIST_PARAMC);
-  arts_guid_t init_done = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_event_hint_t group_hint = ARTS_EVENT_HINT_LATCH(1);
+  group_hint.auto_destroy = true;
+  arts_guid_t init_done = arts_event_create(&group_hint);
   for (unsigned int i = 0; i < arts_get_total_ranks(); i++) {
     arts_edt_create(init_node, init_paramc, init_paramv, 0,
                     &(arts_edt_hint_t){.rank = i, .group = init_done});
@@ -254,6 +259,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_guid_t cont = arts_edt_create(main_continue, paramc, paramv, 1,
                                      &(arts_edt_hint_t){.rank = 0});
   arts_add_dependence(init_done, cont, 0, DB_MODE_NULL);
+  arts_event_satisfy_slot(init_done, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 int main(int argc, char **argv) { return arts_rt(argc, argv); }

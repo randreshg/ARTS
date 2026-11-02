@@ -295,13 +295,15 @@ static void finale(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 /* The mid-body release, after every phase: the run ends once both the
- * releasing EDT's scope and the reader's have drained. */
+ * releasing EDT's group and the reader's have fired. */
 static void mid_release(arts_guid_t db, unsigned int writer_rank) {
   /* The reader is wired before the releasing EDT exists, so its dependence
    * on the gate is registered before anything can satisfy it. */
   arts_guid_t gate = arts_event_create(&ARTS_EVENT_HINT_DEFAULTS);
   uint64_t want_v[2] = {(uint64_t)MAGIC4, 1u};
-  arts_guid_t e_rd = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t e_rd = arts_event_create(&gh);
   arts_guid_t r =
       arts_edt_create(home_checker_edt, 2, want_v, 2,
                       &(arts_edt_hint_t){.rank = 0, .group = e_rd});
@@ -309,7 +311,7 @@ static void mid_release(arts_guid_t db, unsigned int writer_rank) {
   arts_add_dependence(gate, r, 1, DB_MODE_NULL);
 
   uint64_t gate_v[1] = {(uint64_t)gate};
-  arts_guid_t e_mr = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_guid_t e_mr = arts_event_create(&gh);
   arts_guid_t mr = arts_edt_create(
       mid_release_edt, 1, gate_v, 2,
       &(arts_edt_hint_t){.rank = writer_rank, .group = e_mr});
@@ -319,6 +321,8 @@ static void mid_release(arts_guid_t db, unsigned int writer_rank) {
       arts_edt_create(finale, 0, NULL, 2, &(arts_edt_hint_t){.rank = 0});
   arts_add_dependence(e_mr, f, 0, DB_MODE_NULL);
   arts_add_dependence(e_rd, f, 1, DB_MODE_NULL);
+  arts_event_satisfy_slot(e_rd, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
+  arts_event_satisfy_slot(e_mr, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 /* Each step in a group of its own, the next step gated on it. */
@@ -331,12 +335,14 @@ static void step(const uint64_t *paramv) {
     return;
   }
   unsigned int p = (unsigned int)(s / 2u);
-  arts_guid_t scope = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t group = arts_event_create(&gh);
   if (s % 2u == 0u) {
     /* Runs one aliasing EDT on `writer_rank`. */
     arts_guid_t w = arts_edt_create(
         phases[p].body, 0, NULL, phases[p].slots,
-        &(arts_edt_hint_t){.rank = writer_rank, .group = scope});
+        &(arts_edt_hint_t){.rank = writer_rank, .group = group});
     for (unsigned int i = 0; i < phases[p].slots; i++) {
       arts_add_dependence(db, w, i, phases[p].modes[i]);
     }
@@ -345,13 +351,14 @@ static void step(const uint64_t *paramv) {
     uint64_t want_v[2] = {(uint64_t)phases[p].want, 0u};
     arts_guid_t r =
         arts_edt_create(home_checker_edt, 2, want_v, 1,
-                        &(arts_edt_hint_t){.rank = 0, .group = scope});
+                        &(arts_edt_hint_t){.rank = 0, .group = group});
     arts_add_dependence(db, r, 0, DB_MODE_RO);
   }
   uint64_t next[P_COUNT] = {s + 1u, paramv[P_DB], paramv[P_WRITER]};
   arts_guid_t n = arts_edt_create(step_edt, P_COUNT, next, 1,
                                   &(arts_edt_hint_t){.rank = 0});
-  arts_add_dependence(scope, n, 0, DB_MODE_NULL);
+  arts_add_dependence(group, n, 0, DB_MODE_NULL);
+  arts_event_satisfy_slot(group, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 static void step_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,

@@ -197,8 +197,8 @@ add_pure_unit_src(block_dist_query PASS_REGEX "PASS block_dist_query" TIMEOUT 60
 # arts_csr_free(NULL) is a no-op.
 add_pure_unit_src(csr_free_null PASS_REGEX "PASS csr_free_null" TIMEOUT 60)
 # vector_basic: #includes vector.c directly (libc shims); pins the contracts
-# the per-worker EDT-context lists lean on (lazy alloc, doubling, swap-remove,
-# clear-keeps-block, free-keeps-sentinel).
+# the per-worker created-DB list leans on (lazy alloc, doubling, swap-remove,
+# free-keeps-sentinel).
 add_pure_unit_src(vector_basic PASS_REGEX "PASS vector_basic" TIMEOUT 30)
 endif()
 
@@ -248,21 +248,10 @@ add_arts_test(dbcreate_matrix)
 register_single_node_test(dbcreate_matrix TIMEOUT 60)
 register_multinode_test(dbcreate_matrix TIMEOUT 60)
 
-# --- EDT context: created-DB list and owned groups ---
+# --- EDT context: created-DB list ---
 add_arts_test(ctx_created_db_release_order)
 register_single_node_test(ctx_created_db_release_order TIMEOUT 30)
 set_tests_properties(ctx_created_db_release_order PROPERTIES PASS_REGULAR_EXPRESSION "PASS ctx_created_db_release_order")
-
-# These two record into one block from EDTs with no order among them, which
-# DB-WRF does not admit.  The cross-rank one uses ranks 0 and 1 only, and its
-# group's proxy is fed by messages local to each rank.
-if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
-add_arts_test(ctx_owned_finish_cleanup)
-add_arts_test(ctx_crossrank_proxy_group)
-register_single_node_test(ctx_owned_finish_cleanup TIMEOUT 30)
-register_multinode_test(ctx_crossrank_proxy_group TIMEOUT 60 VARIANTS 2n_9w_1p)
-set_tests_properties(ctx_crossrank_proxy_group_2n_9w_1p PROPERTIES PASS_REGULAR_EXPRESSION "PASS ctx_crossrank_proxy_group")
-endif()
 
 # ctx_gpu_lib_edt: GPU-only real body (ARTS_TEST_GPU); SKIP stub links CPU libarts otherwise.
 if(BUILD_CUDA_LIBRARY)

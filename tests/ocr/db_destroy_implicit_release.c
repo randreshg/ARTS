@@ -122,10 +122,10 @@ void reader(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
 /// Creates the next phase, gated on the previous phase's group.  Every
 /// phase's paramv[0] is the label.
-static void then(arts_edt_t next, const uint64_t *param, arts_guid_t scope) {
+static void then(arts_edt_t next, const uint64_t *param, arts_guid_t group) {
   arts_guid_t n =
       arts_edt_create(next, 1, param, 1, &(arts_edt_hint_t){.rank = 0});
-  arts_add_dependence(scope, n, 0, DB_MODE_NULL);
+  arts_add_dependence(group, n, 0, DB_MODE_NULL);
 }
 
 static void finale(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
@@ -142,11 +142,14 @@ static void after_recreate(uint32_t paramc, const uint64_t *paramv,
   (void)paramc;
   (void)depc;
   (void)depv;
-  arts_guid_t e_a = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t e_a = arts_event_create(&gh);
   arts_guid_t r = arts_edt_create(reader, 0, NULL, 1,
                                   &(arts_edt_hint_t){.rank = 0, .group = e_a});
   arts_add_dependence((arts_guid_t)paramv[0], r, 0, DB_MODE_RO);
   then(finale, paramv, e_a);
+  arts_event_satisfy_slot(e_a, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 static void after_destroy(uint32_t paramc, const uint64_t *paramv,
@@ -154,10 +157,13 @@ static void after_destroy(uint32_t paramc, const uint64_t *paramv,
   (void)paramc;
   (void)depc;
   (void)depv;
-  arts_guid_t e_r = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t e_r = arts_event_create(&gh);
   arts_edt_create(recreator, 1, paramv, 0,
                   &(arts_edt_hint_t){.rank = 0, .group = e_r});
   then(after_recreate, paramv, e_r);
+  arts_event_satisfy_slot(e_r, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
@@ -172,10 +178,13 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_guid_t db = arts_guid_reserve(ARTS_GUID_DB, 0);
   uint64_t param = (uint64_t)db;
 
-  arts_guid_t e_c = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t e_c = arts_event_create(&gh);
   arts_edt_create(creator_destroyer, 1, &param, 0,
                   &(arts_edt_hint_t){.rank = 0, .group = e_c});
   then(after_destroy, &param, e_c);
+  arts_event_satisfy_slot(e_c, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 int main(int argc, char **argv) {

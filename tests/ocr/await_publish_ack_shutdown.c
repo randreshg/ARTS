@@ -151,10 +151,10 @@ static unsigned int away_rank(unsigned int h, unsigned int nranks) {
   return (nranks > 1u) ? 1u + h % (nranks - 1u) : 0u;
 }
 
-static void write_once(arts_guid_t db, unsigned int rank, arts_guid_t scope) {
+static void write_once(arts_guid_t db, unsigned int rank, arts_guid_t group) {
   arts_guid_t e =
       arts_edt_create(rw_bump_edt, 0, NULL, 1,
-                      &(arts_edt_hint_t){.rank = rank, .group = scope});
+                      &(arts_edt_hint_t){.rank = rank, .group = group});
   arts_add_dependence(db, e, 0, DB_MODE_RW);
 }
 
@@ -164,7 +164,7 @@ static void start_shutdown(void) {
   arts_edt_create(shutdown_edt, 0, NULL, 0, &(arts_edt_hint_t){.rank = 0});
 }
 
-/* Gated on the pre-burst writes' scope.  paramv = the BURST blocks.  The
+/* Gated on the pre-burst writes' group.  paramv = the BURST blocks.  The
  * burst: one more write per block, off its home, interleaved with the away
  * creators, so both kinds of release are in flight when the shutdown comes.
  * No group: shutdown_edt is its own. */
@@ -198,14 +198,16 @@ static void warmup(const uint64_t *paramv) {
   unsigned int nranks = arts_get_total_ranks();
   arts_guid_t db = (arts_guid_t)paramv[P_DB];
   if (paramv[P_ROUND] < WARMUP) {
-    arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+    arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+    gh.auto_destroy = true;
+    arts_guid_t group = arts_event_create(&gh);
     arts_guid_t prev = NULL_GUID;
     for (unsigned int h = 0; h < 2u * nranks; h++) {
       arts_guid_t oe = arts_event_create(&ARTS_EVENT_HINT_LATCH(1));
       arts_guid_t e = arts_edt_create(
           rw_bump_edt, 0, NULL, (prev == NULL_GUID) ? 1u : 2u,
           &(arts_edt_hint_t){
-              .rank = h % nranks, .group = fe, .completion_event = oe});
+              .rank = h % nranks, .group = group, .completion_event = oe});
       arts_add_dependence(db, e, 0, DB_MODE_RW);
       if (prev != NULL_GUID) {
         arts_add_dependence(prev, e, 1, DB_MODE_NULL);
@@ -216,7 +218,8 @@ static void warmup(const uint64_t *paramv) {
                               paramv[P_CONTENDED]};
     arts_guid_t n = arts_edt_create(warmup_edt, P_COUNT, next, 1,
                                     &(arts_edt_hint_t){.rank = 0});
-    arts_add_dependence(fe, n, 0, DB_MODE_NULL);
+    arts_add_dependence(group, n, 0, DB_MODE_NULL);
+    arts_event_satisfy_slot(group, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
     return;
   }
 
@@ -232,15 +235,18 @@ static void warmup(const uint64_t *paramv) {
   /* Each burst block is written once, ahead of the burst, on the rank that
    * writes it again in the burst. */
   uint64_t blocks[BURST];
-  arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t group = arts_event_create(&gh);
   for (unsigned int h = 0; h < BURST; h++) {
     arts_guid_t b = create_counter();
     blocks[h] = (uint64_t)b;
-    write_once(b, away_rank(h, nranks), fe);
+    write_once(b, away_rank(h, nranks), group);
   }
   arts_guid_t n = arts_edt_create(burst_edt, BURST, blocks, 1,
                                   &(arts_edt_hint_t){.rank = 0});
-  arts_add_dependence(fe, n, 0, DB_MODE_NULL);
+  arts_add_dependence(group, n, 0, DB_MODE_NULL);
+  arts_event_satisfy_slot(group, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 static void warmup_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,

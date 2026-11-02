@@ -179,7 +179,7 @@ static void event_init(struct arts_event_s *e, const arts_event_hint_t *h) {
     /* auto_destroy promises every consumer bound before the fire; counted
      * promises exactly nb_deps of them will.  They are contradictory, so a
      * caller asking for both is stating a contradiction. */
-    bool ad = (h->finish || h->auto_destroy);
+    bool ad = h->auto_destroy;
     bool ct = (h->nb_deps > 0);
     if (ad && ct) {
       ARTS_ERROR("event hint sets both auto_destroy and a consumer count");
@@ -193,8 +193,7 @@ static void event_init(struct arts_event_s *e, const arts_event_hint_t *h) {
                  h->nb_deps, (uint32_t)EV_NBDEPS_MAX);
     }
     atomic_init(&e->simple.state,
-                EV_MAKE(0u, EV_FIRE_IDLE, ct ? h->nb_deps : 0u,
-                        h->finish ? 1 : h->latch));
+                EV_MAKE(0u, EV_FIRE_IDLE, ct ? h->nb_deps : 0u, h->latch));
     e->simple.counted = ct ? 1u : 0u;
     e->simple.auto_destroy = ad ? 1u : 0u;
     e->simple.discard_data = h->discard_data ? 1u : 0u;
@@ -274,38 +273,11 @@ static arts_shared_ptr_t event_create(const arts_event_hint_t *hint,
                                       arts_guid_t *guid, bool hold) {
   INCREMENT_NUM_EVENT_CREATE_BY(1);
   arts_event_hint_t h = hint_or_defaults(hint);
-  if (h.finish) {
-    /* finish overrides everything: simple latch=1 on current rank, auto-GUID.
-     */
-    h.channel = false;
-    h.guid = NULL_GUID;
-    h.rank = ARTS_HINT_CURRENT_RANK;
-    h.latch = 1;
-  }
   arts_guid_t g = h.guid;
   if (g != NULL_GUID) {
     h.rank = arts_guid_get_rank(g);
   }
-  /* Mechanism A — a finish event made inside a group joins the current group:
-   * it INCRs it through the running EDT's own reference, which that EDT holds
-   * for its whole body, and registers its fire's DECR of it through the
-   * handle on the event this create made (always homed here). */
-  arts_guid_t current = h.finish ? arts_current_group() : NULL_GUID;
-  arts_shared_ptr_t held =
-      event_install(&g, &h, hold || current != NULL_GUID);
-  if (h.finish) {
-    if (current != NULL_GUID) {
-      arts_event_satisfy_slot_on(arts_current_edt->group_ref, current,
-                                 NULL_GUID, ARTS_EVENT_LATCH_INCR_SLOT);
-      arts_event_add_dependence_on(held, g, current,
-                                   ARTS_EVENT_LATCH_DECR_SLOT, DB_MODE_NULL);
-      if (!hold) {
-        arts_shared_release(&held);
-      }
-    }
-    /* Mechanism B — register creator-token for completion cleanup. */
-    arts_owned_finish_register(g);
-  }
+  arts_shared_ptr_t held = event_install(&g, &h, hold);
   *guid = g;
   return held;
 }
@@ -790,9 +762,4 @@ void arts_send_event_satisfy_slot(arts_guid_t event_guid, arts_guid_t data_guid,
                           MSG_EVENT_SATISFY_SLOT);
   arts_transport_send_async((int)arts_guid_get_rank(event_guid),
                             (char *)&packet, sizeof(packet));
-}
-
-void arts_event_release_creator_token(arts_guid_t event_guid) {
-  arts_owned_finish_consume(event_guid);
-  arts_event_satisfy_slot(event_guid, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }

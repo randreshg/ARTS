@@ -252,7 +252,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   uint64_t token = (uint64_t)getpid();
   /* Every task joins one group, and the shutdown waits for it, so the
    * run ends with nothing of the block's in flight. */
-  arts_guid_t scope = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t group = arts_event_create(&gh);
   void *p = NULL;
   arts_guid_t db =
       arts_db_create(&p, sizeof(uint64_t), ARTS_DB, ARTS_DB_PROP_NONE,
@@ -270,7 +272,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     uint64_t probe_args[3] = {(uint64_t)db, token, i};
     arts_guid_t probe =
         arts_edt_create(probe_edt, 3, probe_args, 1,
-                        &(arts_edt_hint_t){.rank = 0u, .group = scope});
+                        &(arts_edt_hint_t){.rank = 0u, .group = group});
     arts_add_dependence(probe_event, probe, 0, DB_MODE_NULL);
 
     arts_guid_t turned = arts_event_create(&ARTS_EVENT_HINT_LATCH(1));
@@ -278,7 +280,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_guid_t t = arts_edt_create(
         turn_edt, 3, turn_args, (gate == NULL_GUID) ? 1u : 2u,
         &(arts_edt_hint_t){
-            .rank = 1u, .group = scope, .completion_event = turned});
+            .rank = 1u, .group = group, .completion_event = turned});
     arts_add_dependence(db, t, 0, DB_MODE_RW);
     if (gate != NULL_GUID) {
       arts_add_dependence(gate, t, 1, DB_MODE_NULL);
@@ -289,24 +291,25 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_guid_t hc = arts_edt_create(
         holder_edt, 2, check_args, 1,
         &(arts_edt_hint_t){
-            .rank = 1u, .group = scope, .completion_event = held});
+            .rank = 1u, .group = group, .completion_event = held});
     arts_add_dependence(turned, hc, 0, DB_MODE_NULL);
 
     arts_guid_t homed = arts_event_create(&ARTS_EVENT_HINT_LATCH(1));
     arts_guid_t mc = arts_edt_create(
         home_edt, 2, check_args, 1,
         &(arts_edt_hint_t){
-            .rank = 0u, .group = scope, .completion_event = homed});
+            .rank = 0u, .group = group, .completion_event = homed});
     arts_add_dependence(held, mc, 0, DB_MODE_NULL);
     gate = homed;
   }
   arts_guid_t v = arts_edt_create(
-      value_edt, 0, NULL, 2, &(arts_edt_hint_t){.rank = 0u, .group = scope});
+      value_edt, 0, NULL, 2, &(arts_edt_hint_t){.rank = 0u, .group = group});
   arts_add_dependence(gate, v, 0, DB_MODE_NULL);
   arts_add_dependence(db, v, 1, DB_MODE_RO);
   arts_guid_t end =
       arts_edt_create(shutdown_edt, 0, NULL, 1, &(arts_edt_hint_t){.rank = 0u});
-  arts_add_dependence(scope, end, 0, DB_MODE_NULL);
+  arts_add_dependence(group, end, 0, DB_MODE_NULL);
+  arts_event_satisfy_slot(group, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 int main(int argc, char **argv) {

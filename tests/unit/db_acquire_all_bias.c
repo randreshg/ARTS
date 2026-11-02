@@ -140,7 +140,9 @@ static void iteration(uint64_t it) {
     arts_db_release(rw[i], DB_MODE_RW);
   }
 
-  arts_guid_t e_m = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t e_m = arts_event_create(&gh);
   arts_guid_t m = arts_edt_create(mixed_edt, 0, NULL, NDEP,
                                   &(arts_edt_hint_t){.rank = 0, .group = e_m});
   for (unsigned int i = 0; i < NRO; i++) {
@@ -159,9 +161,10 @@ static void iteration(uint64_t it) {
   arts_guid_t c = arts_edt_create(check_phase, 1 + NRW, cv, 1,
                                   &(arts_edt_hint_t){.rank = 0});
   arts_add_dependence(e_m, c, 0, DB_MODE_NULL);
+  arts_event_satisfy_slot(e_m, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
-/// Gated on the checkers' scope: the next iteration, or the end of the run.
+/// Gated on the checkers' group: the next iteration, or the end of the run.
 static void next_iteration(uint32_t paramc, const uint64_t *paramv,
                            uint32_t depc, arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -175,13 +178,15 @@ static void next_iteration(uint32_t paramc, const uint64_t *paramv,
   arts_shutdown();
 }
 
-/// Gated on the mixed EDT's scope.
+/// Gated on the mixed EDT's group.
 static void check_phase(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                         arts_edt_dep_t depv[]) {
   (void)paramc;
   (void)depc;
   (void)depv;
-  arts_guid_t e_c = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t e_c = arts_event_create(&gh);
   for (unsigned int i = 0; i < NRW; i++) {
     uint64_t slot = NRO + i;
     arts_guid_t c = arts_edt_create(
@@ -191,6 +196,7 @@ static void check_phase(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_guid_t n = arts_edt_create(next_iteration, 1, paramv, 1,
                                   &(arts_edt_hint_t){.rank = 0});
   arts_add_dependence(e_c, n, 0, DB_MODE_NULL);
+  arts_event_satisfy_slot(e_c, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,

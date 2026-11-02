@@ -54,7 +54,7 @@
 #include "arts/db.h"
 #include "arts/defs.h"
 #include "arts/edt.h"
-#include "arts/edt_context.h" /* arts_owned_finish_cleanup, ctx tls */
+#include "arts/edt_context.h" /* ctx tls */
 #include "arts/gas/guid.h"
 #include "arts/gas/route_table.h"
 #include "arts/memory/regpool.h"
@@ -587,8 +587,6 @@ void arts_thread_zero_node_start(int argc, char **argv, arts_edt_t entry) {
     arts_edt_hint_t main_hint = ARTS_EDT_HINT_DEFAULTS;
     arts_edt_create(entry, 2, main_args, 0, &main_hint);
   }
-
-  arts_owned_finish_cleanup();
 
   arts_runtime_barrier(&arts_node_info.ready_to_inspect);
 

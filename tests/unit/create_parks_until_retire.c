@@ -162,7 +162,7 @@ static void check(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depv;
   const char *lane = "EDT";
   arts_guid_t g = (arts_guid_t)paramv[0];
-  arts_guid_t second_scope = (arts_guid_t)paramv[1];
+  arts_guid_t second_group = (arts_guid_t)paramv[1];
   expect(atomic_load_explicit(&g_ran[0], memory_order_acquire) ==
              (uint64_t)VALUE(0),
          lane, "the first generation did not run with its satisfy");
@@ -175,33 +175,39 @@ static void check(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   uint64_t pv[1] = {(uint64_t)g};
   arts_guid_t d = arts_edt_create(done, 1, pv, 1, NULL);
-  arts_add_dependence(second_scope, d, 0, DB_MODE_NULL);
+  arts_add_dependence(second_group, d, 0, DB_MODE_NULL);
   arts_edt_satisfy_slot(g, 0, VALUE(1), DB_MODE_NULL);
 }
 
 static void edt_lane(void) {
   const char *lane = "EDT";
   arts_guid_t g = arts_guid_reserve(ARTS_GUID_EDT, arts_get_current_rank());
-  arts_guid_t first_scope = arts_event_create(&ARTS_EVENT_HINT_FINISH);
-  arts_guid_t second_scope = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t first_group = arts_event_create(&gh);
+  arts_guid_t second_group = arts_event_create(&gh);
 
   uint64_t tag0 = 0u;
   uint64_t tag1 = 1u;
   (void)arts_edt_create(member, 1, &tag0, 1,
-                        &(arts_edt_hint_t){.guid = g, .group = first_scope});
+                        &(arts_edt_hint_t){.guid = g, .group = first_group});
   expect(installed_tag(g) == 0u, lane, "the first create installed nothing");
   expect(parked_on(g) == 0u, lane, "the first create parked");
 
   (void)arts_edt_create(member, 1, &tag1, 1,
-                        &(arts_edt_hint_t){.guid = g, .group = second_scope});
+                        &(arts_edt_hint_t){.guid = g, .group = second_group});
   expect(parked_on(g) == 1u, lane, "the create of a live GUID did not park");
   expect(installed_tag(g) == 0u, lane,
          "the parked create displaced the occupant");
 
-  uint64_t pv[2] = {(uint64_t)g, (uint64_t)second_scope};
+  uint64_t pv[2] = {(uint64_t)g, (uint64_t)second_group};
   arts_guid_t c = arts_edt_create(check, 2, pv, 1, NULL);
-  arts_add_dependence(first_scope, c, 0, DB_MODE_NULL);
+  arts_add_dependence(first_group, c, 0, DB_MODE_NULL);
   arts_edt_satisfy_slot(g, 0, VALUE(0), DB_MODE_NULL);
+  /* check registers on second_group before its satisfy readies the second
+   * generation, so that group cannot fire first. */
+  arts_event_satisfy_slot(first_group, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
+  arts_event_satisfy_slot(second_group, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,

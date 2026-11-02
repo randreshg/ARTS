@@ -98,7 +98,7 @@
 ///
 /// A violation prints FAIL: and aborts; a stranded acquire surfaces as a ctest
 /// TIMEOUT (no in-test watchdog).  The final PASS line is gated on every round
-/// scope having drained.
+/// group having fired.
 
 #include "arts.h"
 
@@ -270,7 +270,9 @@ static void run_round(const uint64_t *paramv) {
     arts_shutdown();
     return;
   }
-  arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t group = arts_event_create(&gh);
 
   for (int d = 0; d < N_DBS; d++) {
     uint64_t pv[2] = {(uint64_t)r, (uint64_t)d};
@@ -285,7 +287,7 @@ static void run_round(const uint64_t *paramv) {
             nranks;
         arts_guid_t we =
             arts_edt_create(writer_edt, 2, pv, 1,
-                            &(arts_edt_hint_t){.rank = wr, .group = fe});
+                            &(arts_edt_hint_t){.rank = wr, .group = group});
         arts_add_dependence(dbs[d], we, 0, DB_MODE_RW);
         w++;
       }
@@ -297,7 +299,7 @@ static void run_round(const uint64_t *paramv) {
             (unsigned int)((unsigned)d + (r / 2u) + (unsigned)(k % 2)) % nranks;
         arts_guid_t re =
             arts_edt_create(reader_edt, 2, pv, 1,
-                            &(arts_edt_hint_t){.rank = rr, .group = fe});
+                            &(arts_edt_hint_t){.rank = rr, .group = group});
         arts_add_dependence(dbs[d], re, 0, DB_MODE_RO);
         k++;
       }
@@ -311,7 +313,8 @@ static void run_round(const uint64_t *paramv) {
   }
   arts_guid_t n = arts_edt_create(round_edt, 1 + N_DBS, next, 1,
                                   &(arts_edt_hint_t){.rank = 0});
-  arts_add_dependence(fe, n, 0, DB_MODE_NULL);
+  arts_add_dependence(group, n, 0, DB_MODE_NULL);
+  arts_event_satisfy_slot(group, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 static void round_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,

@@ -24,7 +24,7 @@
  *
  * The runs are strictly sequential: each runs in a group of its own,
  * and the next step, which issues any destroy due before its own run, is a
- * continuation gated on that scope.
+ * continuation gated on that group.
  */
 
 #include <stdint.h>
@@ -99,11 +99,13 @@ static void step_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                      arts_edt_dep_t depv[]);
 
 /* Runs fn on rank in a group of its own, and the step after `pv`
- * gated on that scope. */
+ * gated on that group. */
 static void run_on(arts_edt_t fn, unsigned int rank, uint32_t paramc,
                    const uint64_t *paramv, arts_guid_t dep,
                    const uint64_t *pv) {
-  arts_guid_t done = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t done = arts_event_create(&gh);
   arts_guid_t e = arts_edt_create(
       fn, paramc, paramv, dep != NULL_GUID ? 1u : 0u,
       &(arts_edt_hint_t){.rank = rank, .group = done});
@@ -114,6 +116,7 @@ static void run_on(arts_edt_t fn, unsigned int rank, uint32_t paramc,
   arts_guid_t n = arts_edt_create(step_edt, P_COUNT, next, 1,
                                   &(arts_edt_hint_t){.rank = 0u});
   arts_add_dependence(done, n, 0, DB_MODE_NULL);
+  arts_event_satisfy_slot(done, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 /* A case is, with W writer ranks and R = 1 for the sized block (0 for the

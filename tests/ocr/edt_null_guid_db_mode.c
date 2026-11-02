@@ -56,7 +56,7 @@ static void body(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
 }
 
-/* Runs once the body's scope drained.  paramv: the two events, the block. */
+/* Runs once the body's group fired.  paramv: the two events, the block. */
 static void finale(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                    arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -77,7 +77,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)paramv;
   (void)depc;
   (void)depv;
-  arts_guid_t scope = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t group = arts_event_create(&gh);
   void *p = NULL;
   arts_guid_t block =
       arts_db_create(&p, sizeof(uint64_t), ARTS_DB, ARTS_DB_PROP_NONE, NULL);
@@ -88,8 +90,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   uint64_t pv[1] = {(uint64_t)block};
   arts_guid_t e = arts_edt_create(
       body, 1, pv, 4,
-      &(arts_edt_hint_t){.rank = arts_get_total_ranks() - 1u,
-                         .group = scope});
+      &(arts_edt_hint_t){.rank = arts_get_total_ranks() - 1u, .group = group});
   arts_add_dependence(ev_rw, e, 0, DB_MODE_RW);
   arts_add_dependence(ev_ro, e, 1, DB_MODE_RO);
   arts_add_dependence(NULL_GUID, e, 2, DB_MODE_RW);
@@ -99,7 +100,8 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   uint64_t fv[3] = {(uint64_t)ev_rw, (uint64_t)ev_ro, (uint64_t)block};
   arts_guid_t f =
       arts_edt_create(finale, 3, fv, 1, &(arts_edt_hint_t){.rank = 0u});
-  arts_add_dependence(scope, f, 0, DB_MODE_NULL);
+  arts_add_dependence(group, f, 0, DB_MODE_NULL);
+  arts_event_satisfy_slot(group, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 int main(int argc, char **argv) {

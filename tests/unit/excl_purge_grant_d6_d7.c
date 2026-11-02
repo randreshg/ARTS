@@ -12,8 +12,8 @@
  *   ends with another writer still counted at the home, the home hands the
  *   write turn straight to the next one (PURGE: a release with w-1>0 pops
  *   LOCK_GRANT_ONE_RW; RETAIN: a CONFIRM with w>0 forwards a migrate).  Every
- *   writer's increment must land — a broken chain strands a writer → its
- *   finish event never fires → TIMEOUT.
+ *   writer's increment must land — a broken chain strands a writer → the
+ *   chain's latch never fires → TIMEOUT.
  *
  * D7 — RO extends while RW waiting: an active RO phase with an RW parked
  *   (w>0); a NEW RO request must still be granted immediately (PURGE:
@@ -137,7 +137,7 @@ static void shutdown_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_shutdown();
 }
 
-/* The D7 storm, gated on the seed writer's scope: ownership and value are
+/* The D7 storm, gated on the seed writer's group: ownership and value are
  * established before it.  paramv = {d7, d7_latch}. */
 static void storm_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                       arts_edt_dep_t depv[]) {
@@ -208,7 +208,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_add_dependence(d6, d6v, 1, DB_MODE_RO);
 
   /* ---- D7: RO-extend-while-RW-waiting on its own DB. ----
-   * Seed writer runs first (finish-event gated) so readers have SEED. */
+   * Seed writer runs first (group gated) so readers have SEED. */
   void *d7p = NULL;
   arts_guid_t d7 =
       arts_db_create(&d7p, sizeof(uint64_t), ARTS_DB, ARTS_DB_PROP_NONE,
@@ -216,7 +216,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   *(uint64_t *)d7p = 0u;
   arts_db_release(d7, DB_MODE_RW);
 
-  arts_guid_t e_seed = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t e_seed = arts_event_create(&gh);
   arts_guid_t seed =
       arts_edt_create(seed_writer_edt, 0, NULL, 1,
                       &(arts_edt_hint_t){.rank = home, .group = e_seed});
@@ -225,6 +227,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_guid_t storm =
       arts_edt_create(storm_edt, 2, storm_pv, 1, &(arts_edt_hint_t){.rank = 0});
   arts_add_dependence(e_seed, storm, 0, DB_MODE_NULL);
+  arts_event_satisfy_slot(e_seed, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 int main(int argc, char **argv) {

@@ -242,8 +242,10 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   arts_guid_t shut =
       arts_edt_create(shutdown_edt, 0, NULL, 2, &(arts_edt_hint_t){.rank = 0});
-  arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
-  arts_add_dependence(fe, shut, 0, DB_MODE_NULL);
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t group = arts_event_create(&gh);
+  arts_add_dependence(group, shut, 0, DB_MODE_NULL);
   arts_add_dependence(verdicts, shut, 1, DB_MODE_RO);
 
   // Test 1: Create EDT on remote node 1, have it signal back.
@@ -251,11 +253,11 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     uint64_t expected_param = 1;
     arts_guid_t checker =
         arts_edt_create(check_remote_edt, 1, &expected_param, 2,
-                        &(arts_edt_hint_t){.rank = 0, .group = fe});
+                        &(arts_edt_hint_t){.rank = 0, .group = group});
     arts_add_dependence(verdicts, checker, 1, DB_MODE_RW);
     uint64_t coll_param = (uint64_t)checker;
     arts_edt_create(remote_task, 1, &coll_param, 0,
-                    &(arts_edt_hint_t){.rank = 1, .group = fe});
+                    &(arts_edt_hint_t){.rank = 1, .group = group});
   }
 
   // Test 2: TASKS_PER_NODE EDTs on every node, each reports its rank.
@@ -263,7 +265,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     uint32_t tasks = total * TASKS_PER_NODE;
     arts_guid_t all_coll =
         arts_edt_create(check_all_nodes, 0, NULL, tasks + 1,
-                        &(arts_edt_hint_t){.rank = 0, .group = fe});
+                        &(arts_edt_hint_t){.rank = 0, .group = group});
     arts_add_dependence(verdicts, all_coll, tasks, DB_MODE_RW);
     for (unsigned int i = 0; i < tasks; i++) {
       uint64_t params[2];
@@ -271,7 +273,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       params[1] = (uint64_t)i;
       arts_edt_create(
           all_nodes_task, 2, params, 0,
-          &(arts_edt_hint_t){.rank = i / TASKS_PER_NODE, .group = fe});
+          &(arts_edt_hint_t){.rank = i / TASKS_PER_NODE, .group = group});
     }
   }
 
@@ -282,27 +284,27 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     uint64_t exp3 = 120;
     arts_guid_t c =
         arts_edt_create(chain_check, 1, &exp3, 2,
-                        &(arts_edt_hint_t){.rank = 0, .group = fe});
+                        &(arts_edt_hint_t){.rank = 0, .group = group});
     arts_add_dependence(verdicts, c, 1, DB_MODE_RW);
     uint64_t c_param = (uint64_t)c;
     arts_guid_t b =
         arts_edt_create(chain_hop, 1, &c_param, 1,
-                        &(arts_edt_hint_t){.rank = 1, .group = fe});
+                        &(arts_edt_hint_t){.rank = 1, .group = group});
     uint64_t b_param = (uint64_t)b;
     arts_guid_t a =
         arts_edt_create(chain_hop, 1, &b_param, 1,
-                        &(arts_edt_hint_t){.rank = 0, .group = fe});
+                        &(arts_edt_hint_t){.rank = 0, .group = group});
     arts_edt_satisfy_slot(a, 0, (arts_guid_t)(100), DB_MODE_NULL);
   }
 
   // Test 4: Paramv delivery to remote node.
   {
     uint64_t pv[4] = {0xDEAD, 0xBEEF, 0xCAFE, 0xF00D};
-    arts_guid_t chk =
-        arts_edt_create(check_paramv, 4, pv, 1,
-                        &(arts_edt_hint_t){.rank = 1, .group = fe});
+    arts_guid_t chk = arts_edt_create(
+        check_paramv, 4, pv, 1, &(arts_edt_hint_t){.rank = 1, .group = group});
     arts_add_dependence(verdicts, chk, 0, DB_MODE_RW);
   }
+  arts_event_satisfy_slot(group, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 int main(int argc, char **argv) {

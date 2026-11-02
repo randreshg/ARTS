@@ -146,19 +146,24 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
    * would race shutdown against the in-flight cross-node RW hand-offs. */
   arts_guid_t shut =
       arts_edt_create(shutdown_edt, 0, NULL, 1, &(arts_edt_hint_t){.rank = 0});
-  arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
-  arts_add_dependence(fe, shut, 0, DB_MODE_NULL);
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t group = arts_event_create(&gh);
+  arts_add_dependence(group, shut, 0, DB_MODE_NULL);
 
+  arts_guid_t created[N_ITERATIONS];
   for (int iter = 0; iter < N_ITERATIONS; iter++) {
     /* Step 1: rank 0 creates DB on rank 1 (home); MSG_DB_CREATE travels
      * rank 0 -> 1.  arts_db_create hands back the creator's image, a hold
-     * this EDT releases when it ends; the data is written by the writer. */
+     * this EDT releases once every iteration is wired, before its DECR of
+     * the group; the data is written by the writer. */
     void *raw = NULL;
     arts_guid_t db =
         arts_db_create(&raw, sizeof(int), ARTS_DB, ARTS_DB_PROP_NONE,
                        &(arts_db_hint_t){.rank = 1});
+    created[iter] = db;
 
-    /* Step 2: ONCE-equivalent (defaults: latch=1, auto_destroy=true) --
+    /* Step 2: ONCE-equivalent (defaults: latch=1, fire-and-linger) --
      * writer satisfies, consumer waits.  Hosted on rank 0 so the
      * decrement-on-satisfy round-trip is short. */
     arts_event_hint_t evt_hint = ARTS_EVENT_HINT_DEFAULTS;
@@ -170,7 +175,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     uint64_t writer_paramv[1] = {(uint64_t)evt};
     arts_guid_t writer =
         arts_edt_create(writer_edt, /*paramc=*/1, writer_paramv, /*depc=*/1,
-                        &(arts_edt_hint_t){.rank = 1, .group = fe});
+                        &(arts_edt_hint_t){.rank = 1, .group = group});
     arts_add_dependence(db, writer, /*slot=*/0, DB_MODE_RW);
 
     /* Step 4: consumer on rank 2.  Slot 0 = DB (RW), slot 1 = LATCH
@@ -179,10 +184,14 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
      * hand-off end to end. */
     arts_guid_t consumer =
         arts_edt_create(consumer_edt, /*paramc=*/0, NULL, /*depc=*/2,
-                        &(arts_edt_hint_t){.rank = 2, .group = fe});
+                        &(arts_edt_hint_t){.rank = 2, .group = group});
     arts_add_dependence(db, consumer, /*slot=*/0, DB_MODE_RW);
     arts_add_dependence(evt, consumer, /*slot=*/1, DB_MODE_NULL);
   }
+  for (int iter = 0; iter < N_ITERATIONS; iter++) {
+    arts_db_release(created[iter], DB_MODE_RW);
+  }
+  arts_event_satisfy_slot(group, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 int main(int argc, char **argv) {

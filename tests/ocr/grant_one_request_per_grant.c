@@ -71,24 +71,27 @@ static void round_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   uint64_t round = paramv[1];
   unsigned int away = (unsigned int)paramv[2];
 
-  arts_guid_t scope = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t group = arts_event_create(&gh);
   if (round + 1u < ROUNDS) {
     uint64_t pv[3] = {(uint64_t)db, round + 1u, (uint64_t)away};
     arts_guid_t next = arts_edt_create(round_edt, 3, pv, 1,
                                        &(arts_edt_hint_t){.rank = away});
-    arts_add_dependence(scope, next, 0, DB_MODE_NULL);
+    arts_add_dependence(group, next, 0, DB_MODE_NULL);
   } else {
     arts_guid_t ver =
         arts_edt_create(verify_edt, 0, NULL, 2, &(arts_edt_hint_t){.rank = 0});
     arts_add_dependence(db, ver, 0, DB_MODE_RO);
-    arts_add_dependence(scope, ver, 1, DB_MODE_NULL);
+    arts_add_dependence(group, ver, 1, DB_MODE_NULL);
   }
   for (unsigned int k = 0; k < WRITERS; ++k) {
-    arts_guid_t w = arts_edt_create(
-        writer_edt, 0, NULL, 1,
-        &(arts_edt_hint_t){.rank = away, .group = scope});
+    arts_guid_t w =
+        arts_edt_create(writer_edt, 0, NULL, 1,
+                        &(arts_edt_hint_t){.rank = away, .group = group});
     arts_add_dependence(db, w, 0, DB_MODE_RW);
   }
+  arts_event_satisfy_slot(group, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 static void shutdown_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
@@ -114,13 +117,16 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   atomic_init((_Atomic(uint64_t) *)addr, (uint64_t)0);
   arts_db_release(db, DB_MODE_RW);
 
-  arts_guid_t all = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t all = arts_event_create(&gh);
   arts_guid_t shut = arts_edt_create(shutdown_edt, 0, NULL, 1, NULL);
   arts_add_dependence(all, shut, 0, DB_MODE_NULL);
 
   uint64_t pv[3] = {(uint64_t)db, 0u, (uint64_t)away};
   arts_edt_create(round_edt, 3, pv, 0,
                   &(arts_edt_hint_t){.rank = away, .group = all});
+  arts_event_satisfy_slot(all, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 int main(int argc, char **argv) {

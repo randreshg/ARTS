@@ -249,8 +249,8 @@ function(add_arts_test test_name)
         set(ARG_RUNTIME arts_static)
     endif()
     # Sources live under one of the ocr/ unit/ subdirectories.
-    #   ocr/  — portable OCR programs (arts_rt main, no globals, no protocol
-    #           #if; valid under any coherence protocol)
+    #   ocr/  — portable OCR programs (arts_rt main, no protocol #if; valid
+    #           under any coherence protocol)
     #   unit/ — whitebox tests (internal headers, global state, or protocol-#if
     #           guards; exercise ARTS-internal mechanisms)
     set(_src "")
@@ -1660,7 +1660,7 @@ register_pure_unit_test(per_db_buf_pool)
 set_tests_properties(per_db_buf_pool PROPERTIES
     PASS_REGULAR_EXPRESSION "RECYCLE_OK")
 
-# Groups nested and crossing ranks, in a loop.  Two ranks and four
+# A group over a tree of EDTs crossing ranks, in a loop.  Two ranks and four
 # separate a group's members by one and by several hops.
 register_multinode_test(group_stress TIMEOUT 60
                         VARIANTS 2n_9w_1p 4n_4w_1p)
@@ -2341,7 +2341,7 @@ endforeach()
 
 # edt_destroy_pending_group: destroying an EDT that never ran sends the
 # group DECR its completion would have, directly or through the remote
-# group's proxy, so the group drains and the shutdown is quiescent.  Two
+# group's proxy, so the group fires and the shutdown is quiescent.  Two
 # progress threads are what let the destroy reach the home before the create.
 add_arts_test(edt_destroy_pending_group)
 register_single_node_test(edt_destroy_pending_group TIMEOUT 30)
@@ -2381,19 +2381,112 @@ if(ARTS_DEBUG_INJECTION AND ARTS_TEST_REFERENCE_TREE)
     endforeach()
 endif()
 
-# finish_scope_creator_token: a group whose creator hands its token back
-# (arts_event_release_creator_token) fires when its members, a remote worker
-# and that worker's child, finish, while the creator is still running.
-add_arts_test(finish_scope_creator_token)
-register_single_node_test(finish_scope_creator_token TIMEOUT 60)
-register_multinode_test(finish_scope_creator_token TIMEOUT 90 VARIANTS 2n_9w_1p)
-foreach(_t finish_scope_creator_token finish_scope_creator_token_2n_9w_1p)
+# group_explicit_empty: a group with no member fires at its opener's DECR,
+# while the opener still runs; the opener waits for the successor up to a
+# bound shorter than the timeout.
+add_arts_test(group_explicit_empty)
+register_single_node_test(group_explicit_empty TIMEOUT 60)
+register_multinode_test(group_explicit_empty TIMEOUT 90 VARIANTS 2n_9w_1p)
+foreach(_t group_explicit_empty group_explicit_empty_2n_9w_1p)
     set_tests_properties(${_t} PROPERTIES
-        PASS_REGULAR_EXPRESSION "PASS: finish_scope_creator_token"
+        PASS_REGULAR_EXPRESSION "PASS: group_explicit_empty"
+        FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
+endforeach()
+
+# group_fires_while_opener_runs: a group fires when its members, a member on
+# the last rank and that member's child on rank 0, finish and its opener has
+# DECRed it, while the opener still runs.
+add_arts_test(group_fires_while_opener_runs)
+register_single_node_test(group_fires_while_opener_runs TIMEOUT 60)
+register_multinode_test(group_fires_while_opener_runs TIMEOUT 90
+                        VARIANTS 2n_9w_1p)
+foreach(_t group_fires_while_opener_runs
+        group_fires_while_opener_runs_2n_9w_1p)
+    set_tests_properties(${_t} PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS: group_fires_while_opener_runs"
+        FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
+endforeach()
+
+# group_nested_chain: groups opened by the members of an outer group, on every
+# rank, and chained into it keep it open until their own members are done.
+# Where the injection hooks are compiled, one variant also runs under the
+# scheduler fuzz.
+add_arts_test(group_nested_chain)
+register_multinode_test(group_nested_chain TIMEOUT 60)
+set(_group_nested_chain_tests group_nested_chain_2n_9w_1p
+    group_nested_chain_4n_4w_1p group_nested_chain_2n_8w_2p)
+if(ARTS_DEBUG_INJECTION)
+    arts_test_cfg(_cfg 2n_8w_2p)
+    arts_add_test(group_nested_chain_2n_8w_2p_fuzz COMMAND group_nested_chain)
+    set_tests_properties(group_nested_chain_2n_8w_2p_fuzz PROPERTIES
+        LABELS "multinode"
+        TIMEOUT 60
+        RESOURCE_LOCK "arts_runtime"
+        ENVIRONMENT "ARTS_CONFIG=${_cfg};ARTS_SCHED_FUZZ=25")
+    list(APPEND _group_nested_chain_tests group_nested_chain_2n_8w_2p_fuzz)
+endif()
+foreach(_t IN LISTS _group_nested_chain_tests)
+    set_tests_properties(${_t} PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS: group_nested_chain"
+        FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
+endforeach()
+
+# completion_event_latch_n: a completion event created with latch N, named by
+# N EDTs, fires after the N-th completion.
+add_arts_test(completion_event_latch_n)
+register_single_node_test(completion_event_latch_n TIMEOUT 30)
+register_multinode_test(completion_event_latch_n TIMEOUT 60 VARIANTS 2n_9w_1p)
+foreach(_t completion_event_latch_n completion_event_latch_n_2n_9w_1p)
+    set_tests_properties(${_t} PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS: completion_event_latch_n"
+        FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
+endforeach()
+
+# completion_event_before_group: an EDT that names both a group and a
+# completion event satisfies the completion event at its own completion, while
+# the group is still open (a member of it waits on the completion event's
+# successor).
+add_arts_test(completion_event_before_group)
+register_single_node_test(completion_event_before_group TIMEOUT 30)
+register_multinode_test(completion_event_before_group TIMEOUT 60
+                        VARIANTS 2n_9w_1p)
+foreach(_t completion_event_before_group
+        completion_event_before_group_2n_9w_1p)
+    set_tests_properties(${_t} PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS: completion_event_before_group"
         FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
 endforeach()
 
 endif()
+
+# group_nested_chain_writes: a group a remote member opens and chains into its
+# current group, its rank's proxy of the outer group, keeps the outer group
+# open until the inner members' writes to a block are done (each member writes
+# after a delay, so an outer group that did not wait for them fires first).
+# The members record into one block with no order among them, which DB-WRF
+# does not admit.  It uses ranks 0 and 1 only, and its group's proxy is fed by
+# messages local to each rank.
+if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
+add_arts_test(group_nested_chain_writes)
+register_multinode_test(group_nested_chain_writes TIMEOUT 60 VARIANTS 2n_9w_1p)
+set_tests_properties(group_nested_chain_writes_2n_9w_1p PROPERTIES
+    PASS_REGULAR_EXPRESSION "PASS: group_nested_chain_writes"
+    FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
+endif()
+
+# group_explicit_members: an explicit group fires after its members on every
+# rank and their descendants, and a reader on the last rank reads the block its
+# opener wrote and released before its DECR while the opener is still running.
+# The block has one writer, then a reader, so every cell runs it, DB-WRF
+# included; only INV x WB is known to fail without the opener's release (the
+# run ends with its release wait cut).
+add_arts_test(group_explicit_members)
+register_multinode_test(group_explicit_members TIMEOUT 60)
+foreach(_v 2n_9w_1p 4n_4w_1p 2n_8w_2p)
+    set_tests_properties(group_explicit_members_${_v} PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS: group_explicit_members"
+        FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
+endforeach()
 
 # label_reuse_ring_edt: one reserved EDT GUID reused across 64 lifetimes, each
 # generation retired by its completion, in two lanes: the next generation
@@ -2445,8 +2538,8 @@ endforeach()
 # label again; a destroy that never left the last rank would leave the second
 # create parked behind a live first generation.  On one rank the destroying
 # task runs on the home and the path is never taken.  Not on 2n_8w_2p: there
-# the home's two progress threads can dispatch the destroying task's finish
-# signal before its destroy, so the second create is issued while the first
+# the home's two progress threads can dispatch the destroying task's group
+# DECR before its destroy, so the second create is issued while the first
 # generation is live and, under invalidation, the creator's release meets the
 # first generation.
 add_arts_test(db_destroy_untouched_rank)
@@ -3050,8 +3143,7 @@ endif()
 # ============================================================================
 set(_arts_fail_token_tests
     cat_c_ref_balance coherence_rwro_phase
-    csr_graph ctx_created_db_release_order
-    ctx_crossrank_proxy_group ctx_owned_finish_cleanup db_acquire_all_bias
+    csr_graph ctx_created_db_release_order db_acquire_all_bias
     db_create_claims_first_touch_stub db_create_with_data_bytes
     dbcreate_matrix dep_slot_resolved_once edt_create_basic
     edt_create_single_fire event_chain
@@ -3059,8 +3151,8 @@ set(_arts_fail_token_tests
     event_destroy_before_create excl_multiconsumer_queue excl_purge_grant_d6_d7
     excl_request_coalesce excl_samerank_rw_grant_race group_stress
     grant_purge_churn grant_purge_handback_regrant
-    grant_purge_no_acquire_creator guid_keygen_table_coupling
-    launcher_no_respawn multinode_edt
+    grant_purge_no_acquire_creator group_nested_chain_writes
+    guid_keygen_table_coupling launcher_no_respawn multinode_edt
     multinode_event_types random_thread_safe round_robin_home_distribution
     runtime_barrier_counts scheduler_acquire_bias self_send_vs_dispatcher_parity
     stress_edt threads_pin_affinity)

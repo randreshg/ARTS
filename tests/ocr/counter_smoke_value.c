@@ -49,14 +49,17 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depc;
   (void)depv;
 
-  arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t group = arts_event_create(&gh);
   for (int i = 0; i < N_EDTS; i++) {
     arts_edt_create(worker_edt, 0, NULL, 0,
-                    &(arts_edt_hint_t){.rank = 0, .group = fe});
+                    &(arts_edt_hint_t){.rank = 0, .group = group});
   }
   arts_guid_t done =
       arts_edt_create(done_edt, 0, NULL, 1, &(arts_edt_hint_t){.rank = 0});
-  arts_add_dependence(fe, done, 0, DB_MODE_NULL);
+  arts_add_dependence(group, done, 0, DB_MODE_NULL);
+  arts_event_satisfy_slot(group, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 /* Locate counter object `name` inside the JSON, then read its "value" field.

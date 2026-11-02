@@ -6,29 +6,28 @@
  * --------------------------------------------------------------------
  * Every EDT that joins a group emits exactly one INCR at create
  * (arts_edt_create_core) and exactly one DECR at completion
- * (arts_unset_thread_local_edt_info).  The group (a LATCH(1) finish event with
- * a creator-token) fires when its counter returns to 0 — i.e. when the creator
- * has completed (its epilogue releases the token) AND every joined EDT has
- * completed.
+ * (arts_unset_thread_local_edt_info).  The group (a LATCH(1) whose count of
+ * 1 is the creator's) fires when its counter returns to 0 — i.e. when the
+ * creator has DECRed it AND every joined EDT has completed.
  *
  * For a REMOTE EDT the INCR is emitted on the source rank inside create_core
- * (against the parent finish event there), and the create body at the EDT's
- * home, finding the parent homed on another rank, installs a local proxy
- * LATCH(1) wired to forward a DECR to the parent when the proxy drains.  So a
- * remote member still contributes a clean +1/-1 to the parent group.  If any
- * INCR or DECR is dropped (or doubled) the group never drains and the
+ * (against the parent group there), and the create body at the EDT's home,
+ * finding the parent homed on another rank, installs a local proxy LATCH(1)
+ * wired to forward a DECR to the parent when the proxy fires.  So a remote
+ * member still contributes a clean +1/-1 to the parent group.  If any INCR
+ * or DECR is dropped (or doubled) the group never fires and the
  * continuation gated on it never runs (caught by ctest TIMEOUT); an over-DECR
  * would fire the group early before members ran, which the per-member tally
  * would expose.
  *
  * Scenario
  * --------
- * main_edt creates a finish event, then M member EDTs joined to it spread
- * round-robin across all ranks (local + remote when nranks>1), each marking a
- * block of its own, and a continuation gated on the event; main_edt's return
- * releases the creator-token.  When the continuation runs, every member must
- * have run exactly once — proving the group drained precisely when (and only
- * when) all members finished.  Then shut down.
+ * main_edt opens a group, then M member EDTs joined to it spread round-robin
+ * across all ranks (local + remote when nranks>1), each marking a block of
+ * its own, and a continuation gated on the group; main_edt then DECRs it.
+ * When the continuation runs, every member must have run exactly once —
+ * proving the group fired precisely when (and only when) all members
+ * finished.  Then shut down.
  *
  * One block per member: no two write acquisitions of a block ever overlap, so
  * the tally is exact under every memory model.  A shared counter would make
@@ -82,7 +81,7 @@ void verifier(uint32_t pc, const uint64_t *pv, uint32_t dc,
     arts_printf("PASS edt_group_balance: %d members, group balanced\n",
                 MEMBERS);
   } else {
-    arts_printf("FAIL edt_group_balance: group drained with %u members "
+    arts_printf("FAIL edt_group_balance: group fired with %u members "
                 "run once, %u runs in all (want %d) — INCR/DECR imbalance\n",
                 once, runs, MEMBERS);
     arts_abort(1);
@@ -102,21 +101,25 @@ static void finale(uint32_t pc, const uint64_t *pv, uint32_t dc,
 /* Gated on the members' group: every member's DECR landed, which happens only
  * after each member body ran.  Reads the marks back through a verifier EDT
  * (RO acquires) rather than the stale create-time pointers, then shuts down
- * once that second group drains.  pv[i] = member i's block. */
+ * once that second group fires.  pv[i] = member i's block. */
 static void after_members(uint32_t pc, const uint64_t *pv, uint32_t dc,
                           arts_edt_dep_t dv[]) {
   (void)pc;
   (void)dc;
   (void)dv;
-  arts_guid_t fe2 = arts_event_create(&ARTS_EVENT_HINT_FINISH);
-  arts_guid_t v = arts_edt_create(verifier, 0, NULL, MEMBERS,
-                                  &(arts_edt_hint_t){.rank = 0, .group = fe2});
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t verify_group = arts_event_create(&gh);
+  arts_guid_t v =
+      arts_edt_create(verifier, 0, NULL, MEMBERS,
+                      &(arts_edt_hint_t){.rank = 0, .group = verify_group});
   for (int i = 0; i < MEMBERS; i++) {
     arts_add_dependence((arts_guid_t)pv[i], v, (uint32_t)i, DB_MODE_RO);
   }
   arts_guid_t f =
       arts_edt_create(finale, 0, NULL, 1, &(arts_edt_hint_t){.rank = 0});
-  arts_add_dependence(fe2, f, 0, DB_MODE_NULL);
+  arts_add_dependence(verify_group, f, 0, DB_MODE_NULL);
+  arts_event_satisfy_slot(verify_group, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
@@ -148,28 +151,30 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_db_release(blocks[i], DB_MODE_RW);
   }
 
-  arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t group = arts_event_create(&gh);
 
   /* M members joined to the group, round-robin across all ranks, each
    * writing its own block. */
   for (int i = 0; i < MEMBERS; i++) {
     unsigned int rank = (unsigned int)i % nranks;
     arts_guid_t m = arts_edt_create(
-        member, 0, NULL, 1, &(arts_edt_hint_t){.rank = rank, .group = fe});
+        member, 0, NULL, 1, &(arts_edt_hint_t){.rank = rank, .group = group});
     arts_add_dependence(blocks[i], m, 0, DB_MODE_RW);
   }
 
-  /* The continuation runs once the group drains (all members completed and
-   * this EDT returned, releasing the creator-token).  If any INCR/DECR is
-   * dropped the group never reaches 0 and it never runs — caught by the ctest
-   * TIMEOUT. */
+  /* The continuation runs once the group fires (all members completed and
+   * this EDT DECRed it).  If any INCR/DECR is dropped the group never reaches
+   * 0 and it never runs — caught by the ctest TIMEOUT. */
   uint64_t bv[MEMBERS];
   for (int i = 0; i < MEMBERS; i++) {
     bv[i] = (uint64_t)blocks[i];
   }
   arts_guid_t a = arts_edt_create(after_members, MEMBERS, bv, 1,
                                   &(arts_edt_hint_t){.rank = 0});
-  arts_add_dependence(fe, a, 0, DB_MODE_NULL);
+  arts_add_dependence(group, a, 0, DB_MODE_NULL);
+  arts_event_satisfy_slot(group, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 int main(int argc, char **argv) {

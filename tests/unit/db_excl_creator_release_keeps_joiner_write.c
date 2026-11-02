@@ -55,10 +55,11 @@
 /// holder's hold is live: every join below is decided by program order, with
 /// no timing.  Each phase runs in a group of its own, the next phase
 /// created by a continuation gated on it:
-///   main_edt:    creates the block (its create hold, released at its
-///                epilogue) and phase 1, which becomes ready inside main_edt's
-///                body and so joins the write turn the create hold keeps open:
-///                of the two holds, the first released is a non-final release;
+///   main_edt:    creates the block (its create hold, released in its body
+///                before it DECRs phase 1's group) and phase 1, which becomes
+///                ready inside main_edt's body and so joins the write turn the
+///                create hold keeps open: of the two holds, the first released
+///                is a non-final release;
 ///   phase 1:     an RW dependency holder that writes nothing;
 ///   phase 2:     an RW holder that writes nothing and, in its body, adds the
 ///                joiner's RW dependence, so the joiner joins the turn the
@@ -146,12 +147,12 @@ void holder_admits_joiner(uint32_t paramc, const uint64_t *paramv,
   arts_add_dependence((arts_guid_t)paramv[0], jn, 0, DB_MODE_RW);
 }
 
-/// Creates the next phase on rank 0, gated on the previous phase's finish
-/// scope.  Every phase's paramv[0] is the DB.
-static void then(arts_edt_t next, const uint64_t *param, arts_guid_t scope) {
+/// Creates the next phase on rank 0, gated on the previous phase's group.
+/// Every phase's paramv[0] is the DB.
+static void then(arts_edt_t next, const uint64_t *param, arts_guid_t group) {
   arts_guid_t n =
       arts_edt_create(next, 1, param, 1, &(arts_edt_hint_t){.rank = 0});
-  arts_add_dependence(scope, n, 0, DB_MODE_NULL);
+  arts_add_dependence(group, n, 0, DB_MODE_NULL);
 }
 
 static void finale(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
@@ -169,28 +170,34 @@ static void read_phase(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)paramc;
   (void)depc;
   (void)depv;
-  arts_guid_t e_rd = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t e_rd = arts_event_create(&gh);
   uint64_t final_check = 1u;
   arts_guid_t rd =
       arts_edt_create(reader_edt, 1, &final_check, 1,
                       &(arts_edt_hint_t){.rank = 0, .group = e_rd});
   arts_add_dependence((arts_guid_t)paramv[0], rd, 0, DB_MODE_RO);
   then(finale, paramv, e_rd);
+  arts_event_satisfy_slot(e_rd, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 /// Phase 2: the holder, the joiner it admits and the reader the joiner
-/// admits all join one group.  Runs once main_edt and phase 1 have
-/// both completed, so both their releases precede this phase.
+/// admits all join one group.  Runs once main_edt has released its create
+/// hold and phase 1 has completed, so both their releases precede this phase.
 static void join_phase(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                        arts_edt_dep_t depv[]) {
   (void)paramc;
   (void)depc;
   (void)depv;
-  arts_guid_t e_jn = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t e_jn = arts_event_create(&gh);
   arts_guid_t h = arts_edt_create(holder_admits_joiner, 1, paramv, 1,
                                   &(arts_edt_hint_t){.rank = 0, .group = e_jn});
   arts_add_dependence((arts_guid_t)paramv[0], h, 0, DB_MODE_RW);
   then(read_phase, paramv, e_jn);
+  arts_event_satisfy_slot(e_jn, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
@@ -203,7 +210,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_printf("=== db_excl_creator_release_keeps_joiner_write ===\n");
 
   /* Create the DB on rank 0 (home == self when run single-node; the
-   * creator's release is local to its own epilogue regardless). */
+   * creator's release is local regardless). */
   void *ptr = NULL;
   arts_guid_t db =
       arts_db_create(&ptr, sizeof(unsigned int), ARTS_DB, ARTS_DB_PROP_NONE,
@@ -216,14 +223,18 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   /* Phase 1: an EDT that holds the DB as an RW dep but writes nothing.  Its
    * epilogue's release must not disturb a write that follows it. */
-  arts_guid_t e_cr = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t e_cr = arts_event_create(&gh);
   arts_guid_t cr = arts_edt_create(
       writes_nothing, 0, NULL, 1, &(arts_edt_hint_t){.rank = 0, .group = e_cr});
   arts_add_dependence(db, cr, 0, DB_MODE_RW);
-  /* e_cr fires only once this EDT returns (its epilogue releases the create
-   * hold and the creator-token) and phase 1 has released its RW hold. */
   uint64_t param = (uint64_t)db;
   then(join_phase, &param, e_cr);
+  /* e_cr fires once this EDT has released the create hold and DECRed it, and
+   * phase 1 has released its RW hold. */
+  arts_db_release(db, DB_MODE_RW);
+  arts_event_satisfy_slot(e_cr, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 int main(int argc, char **argv) {

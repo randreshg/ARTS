@@ -27,15 +27,19 @@ static void check(uint32_t pc, const uint64_t *pv, uint32_t dc,
 }
 
 /* A case's number, the event the previous case leaves to destroy once its
- * scope drained, and the value lane's per-rank block GUID and opaque event. */
+ * group fired, and the value lane's per-rank block GUID and opaque event. */
 enum { P_CASE, P_EVENT, P_BLOCK, P_OPAQUE, P_COUNT };
 
 static void step_edt(uint32_t pc, const uint64_t *pv, uint32_t dc,
                      arts_edt_dep_t dv[]);
 
+/* Returns the case's group; the caller DECRs it once it has wired the next
+ * case. */
 static arts_guid_t policy_case(unsigned int rank, unsigned int discard,
                                unsigned int late, arts_guid_t *event_out) {
-  arts_guid_t finish = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t group = arts_event_create(&gh);
   arts_event_hint_t event_hint = ARTS_EVENT_HINT_LATCH(2);
   event_hint.rank = rank;
   event_hint.discard_data = discard != 0;
@@ -43,7 +47,7 @@ static arts_guid_t policy_case(unsigned int rank, unsigned int discard,
   uint64_t expected = discard ? NULL_GUID : UINT64_MAX;
   arts_edt_hint_t edt_hint = ARTS_EDT_HINT_DEFAULTS;
   edt_hint.rank = (rank + 1) % arts_get_total_ranks();
-  edt_hint.group = finish;
+  edt_hint.group = group;
   arts_guid_t sink = arts_edt_create(check, 1, &expected, 1, &edt_hint);
   if (!late)
     arts_add_dependence(event, sink, 0, DB_MODE_NULL);
@@ -52,22 +56,24 @@ static arts_guid_t policy_case(unsigned int rank, unsigned int discard,
   if (late)
     arts_add_dependence(event, sink, 0, DB_MODE_NULL);
   *event_out = event;
-  return finish;
+  return group;
 }
 
 static arts_guid_t value_case(unsigned int rank, uint64_t payload,
                               arts_guid_t *event_out) {
-  arts_guid_t finish = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t group = arts_event_create(&gh);
   arts_event_hint_t hint = ARTS_EVENT_HINT_DEFAULTS;
   hint.rank = rank;
   arts_guid_t source = arts_event_create(&hint);
   arts_guid_t sink = arts_edt_create(
-      check, 1, &payload, 2, &(arts_edt_hint_t){.rank = rank, .group = finish});
+      check, 1, &payload, 2, &(arts_edt_hint_t){.rank = rank, .group = group});
   arts_add_dependence(source, sink, 0, DB_MODE_NULL);
   arts_event_satisfy(source, (arts_guid_t)payload);
   arts_edt_satisfy_slot(sink, 1, NULL_GUID, DB_MODE_NULL);
   *event_out = source;
-  return finish;
+  return group;
 }
 
 /* Cases 0 .. 4n-1 are the policy lane (rank, then discard, then late);
@@ -83,11 +89,11 @@ static void step(const uint64_t *pv) {
     /* The previous case was its rank's last value case. */
     arts_event_destroy((arts_guid_t)pv[P_OPAQUE]);
   }
-  arts_guid_t finish;
+  arts_guid_t group;
   arts_guid_t event;
   if (c < policy_end) {
     unsigned int k = (unsigned int)(c % POLICY_CASES);
-    finish =
+    group =
         policy_case((unsigned int)(c / POLICY_CASES), k / 2u, k % 2u, &event);
   } else if (c < policy_end + (uint64_t)VALUE_CASES * ranks) {
     unsigned int rank = (unsigned int)((c - policy_end) / VALUE_CASES);
@@ -102,7 +108,7 @@ static void step(const uint64_t *pv) {
                                             next[P_OPAQUE],
                                             UINT64_MAX,
                                             UINT64_C(0x4000000000000001)};
-    finish = value_case(rank, payloads[i], &event);
+    group = value_case(rank, payloads[i], &event);
   } else {
     arts_printf("PASS: event payloads survive remote creation and binding, "
                 "and arrive as opaque values without an acquire\n");
@@ -112,7 +118,8 @@ static void step(const uint64_t *pv) {
   next[P_EVENT] = (uint64_t)event;
   arts_guid_t then = arts_edt_create(step_edt, P_COUNT, next, 1,
                                      &(arts_edt_hint_t){.rank = 0u});
-  arts_add_dependence(finish, then, 0, DB_MODE_NULL);
+  arts_add_dependence(group, then, 0, DB_MODE_NULL);
+  arts_event_satisfy_slot(group, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 static void step_edt(uint32_t pc, const uint64_t *pv, uint32_t dc,

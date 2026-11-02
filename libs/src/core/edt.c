@@ -74,8 +74,8 @@
 #include "arts/gpu/gpu_internal.h"
 #endif
 
-/* Per-worker EDT-execution context (arts_current_edt, owned-finish list,
- * created-DB tracking) lives in edt_context.c.
+/* Per-worker EDT-execution context (arts_current_edt, created-DB tracking)
+ * lives in edt_context.c.
  * edt.c reads `arts_current_edt` directly and calls the run-start/run-end
  * context hooks below via that header. */
 
@@ -181,18 +181,18 @@ bool arts_edt_create_core(struct arts_edt_s *edt, arts_guid_kind_t guid_kind,
 
   /* Determine group for this EDT.
    *
-   * Groups are created explicitly via arts_event_create(FINISH); an EDT
-   * joins one by passing it in hint.group, otherwise it inherits the
-   * caller's current group (transitive membership).  Either way the EDT
-   * INCRs the group at create and DECRs it on completion (in
-   * arts_unset_thread_local_edt_info), both through one reference to the
-   * group found here: the running EDT's own (`arts_current_edt`, the
-   * thread-local arts_set/unset_thread_local_edt_info maintain), borrowed for
-   * the call, when the group is its group; otherwise a lookup of the hint's
-   * group, counted (`looked`).  A member homed here keeps a reference of its
+   * A group is a simple latch the program creates; an EDT joins one by
+   * passing it in hint.group, otherwise it inherits the caller's current
+   * group (transitive membership).  Either way the EDT INCRs the group at
+   * create and DECRs it on completion (in arts_unset_thread_local_edt_info),
+   * both through one reference to the group found here: the running EDT's
+   * own (`arts_current_edt`, the thread-local
+   * arts_set/unset_thread_local_edt_info maintain), borrowed for the call,
+   * when the group is its group; otherwise a lookup of the hint's group,
+   * counted (`looked`).  A member homed here keeps a reference of its
    * own, a copy of the borrowed one or the looked-up count itself; a member
    * homed on another rank keeps none (its image ships group_ref NULL). */
-  arts_guid_t parent_fe;
+  arts_guid_t parent_group;
   arts_shared_ptr_t group = NULL;
   arts_shared_ptr_t looked = NULL;
   if (hint_group != NULL_GUID) {
@@ -207,28 +207,28 @@ bool arts_edt_create_core(struct arts_edt_s *edt, arts_guid_kind_t guid_kind,
                  arts_guid_get_rank(hint_group), arts_global_rank_id);
     }
 #endif
-    parent_fe = hint_group;
-    if (arts_current_edt && arts_current_edt->group == parent_fe) {
+    parent_group = hint_group;
+    if (arts_current_edt && arts_current_edt->group == parent_group) {
       group = arts_current_edt->group_ref;
-    } else if (arts_guid_get_rank(parent_fe) == arts_global_rank_id) {
-      looked = arts_route_table_lookup_event(parent_fe);
+    } else if (arts_guid_get_rank(parent_group) == arts_global_rank_id) {
+      looked = arts_route_table_lookup_event(parent_group);
       group = looked;
     }
   } else if (arts_current_edt) {
-    parent_fe = arts_current_edt->group;
+    parent_group = arts_current_edt->group;
     group = arts_current_edt->group_ref;
   } else {
-    parent_fe = NULL_GUID;
+    parent_group = NULL_GUID;
   }
-  edt->group = parent_fe;
-  if (parent_fe != NULL_GUID) {
+  edt->group = parent_group;
+  if (parent_group != NULL_GUID) {
     /* Join/inherit: INCR completes before the new EDT can reach its own DECR
      * (which runs only after the EDT executes — strictly later in this
      * thread), except under a GPU wrapper with invalidations outstanding:
      * there the INCR is held back until the wrapper's drain and goes by GUID,
      * so the member's DECR can overtake it.  The member's reference is taken
      * all the same. */
-    arts_event_satisfy_slot_on(group, parent_fe, NULL_GUID,
+    arts_event_satisfy_slot_on(group, parent_group, NULL_GUID,
                                ARTS_EVENT_LATCH_INCR_SLOT);
   }
   if (rank == arts_global_rank_id) {
@@ -331,9 +331,9 @@ arts_guid_t arts_edt_create(arts_edt_t func_ptr, uint32_t paramc,
   } else if (hint == NULL || snap.rank == ARTS_HINT_ANY_RANK) {
     /* No placement preference (NULL hint, or an explicit hint that still
      * needs other fields populated but leaves rank unpinned via
-     * ARTS_HINT_ANY_RANK — e.g. the OCR shim's hint for an EDT with a group
-     * or a completion event).  ROUNDROBIN distributes execution rank across
-     * all nodes with a per-node counter (the scheme arts_db_create uses under
+     * ARTS_HINT_ANY_RANK — e.g. the OCR shim's hint that carries a group or a
+     * completion event).  ROUNDROBIN distributes execution rank across all
+     * nodes with a per-node counter (the scheme arts_db_create uses under
      * ARTS_NOHINT_DB_HOME=ROUNDROBIN); CREATOR pins the EDT to its creating
      * rank.  Both arms resolve to a concrete rank — the sentinel never
      * reaches guid encoding. */

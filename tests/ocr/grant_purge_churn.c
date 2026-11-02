@@ -66,9 +66,9 @@ static void turn_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                             memory_order_relaxed);
 }
 
-/* Opens the next round, or verifies once the last one has drained.  Chaining
- * from an EDT rather than wiring every round up front keeps each round's
- * turns concurrent with each other and with nothing else. */
+/* Opens the next round, or verifies once the last round's group has fired.
+ * Chaining from an EDT rather than wiring every round up front keeps each
+ * round's turns concurrent with each other and with nothing else. */
 static void round_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                       arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -123,19 +123,21 @@ static void round_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   /* One round: turns spread over every rank, so rank 0 — the home — takes
    * turns of its own while the others are asking it for theirs. */
-  arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t group = arts_event_create(&gh);
   for (unsigned int i = 0; i < TURNS_PER_ROUND; i++) {
     unsigned int r = (i + round) % nranks;
     uint64_t tp[2] = {(uint64_t)round, (uint64_t)i};
-    arts_guid_t t =
-        arts_edt_create(turn_edt, 2, tp, 1,
-                        &(arts_edt_hint_t){.rank = r, .group = fe});
+    arts_guid_t t = arts_edt_create(
+        turn_edt, 2, tp, 1, &(arts_edt_hint_t){.rank = r, .group = group});
     arts_add_dependence(g_db, t, 0, DB_MODE_RW);
   }
   uint64_t np[2] = {(uint64_t)(round + 1u), (uint64_t)nranks};
   arts_guid_t next =
       arts_edt_create(round_edt, 2, np, 1, &(arts_edt_hint_t){.rank = 0u});
-  arts_add_dependence(fe, next, 0, DB_MODE_NULL);
+  arts_add_dependence(group, next, 0, DB_MODE_NULL);
+  arts_event_satisfy_slot(group, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,

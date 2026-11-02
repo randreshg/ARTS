@@ -46,8 +46,9 @@
 /// home-local writer contends with remote ones).  The creator writes each
 /// counter's starting value, 0, through the hold its create took, before it
 /// wires any writer: it releases the second half's holds at once and keeps the
-/// first half's to its end, so remote write requests for those blocks queue
-/// behind a creator that has not released yet.  Then
+/// first half's until every iteration is wired, so remote write requests for
+/// those blocks queue behind a creator that has not released yet; it releases
+/// them before it DECRs the groups, as its completion did.  Then
 /// N_WORKERS write turns, spread over every rank, each acquire one block and
 /// increment it; every block gets WORKERS_PER_DB of them.  All iterations are
 /// issued at once, so turns on many blocks and from many ranks are in flight
@@ -86,7 +87,7 @@ static void rw_worker_edt(uint32_t paramc, const uint64_t *paramv,
   atomic_fetch_add_explicit(d, 1, memory_order_relaxed);
 }
 
-/* depv[0] = the iteration's finish event; depv[1..N_DBS] = its blocks, RO. */
+/* depv[0] = the iteration's writers group; depv[1..N_DBS] = its blocks, RO. */
 static void verify_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                        arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -131,11 +132,15 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     return;
   }
 
-  arts_guid_t all = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t all = arts_event_create(&gh);
   arts_guid_t done =
       arts_edt_create(done_edt, 0, NULL, 1, &(arts_edt_hint_t){.rank = 0u});
   arts_add_dependence(all, done, 0, DB_MODE_NULL);
 
+  arts_guid_t writers[K_ITERS];
+  arts_guid_t held[K_ITERS][N_DBS / 2u];
   for (unsigned int iter = 0; iter < K_ITERS; iter++) {
     arts_guid_t dbs[N_DBS];
     for (unsigned int i = 0; i < N_DBS; i++) {
@@ -152,15 +157,17 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       atomic_init((_Atomic(int) *)raw, 0);
       if (i >= N_DBS / 2u) {
         arts_db_release(dbs[i], DB_MODE_RW);
+      } else {
+        held[iter][i] = dbs[i];
       }
     }
 
-    arts_guid_t writers = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+    writers[iter] = arts_event_create(&gh);
     for (unsigned int i = 0; i < N_WORKERS; i++) {
       unsigned int db_idx = (iter * 7u + i * 13u) % N_DBS;
       arts_guid_t w = arts_edt_create(
           rw_worker_edt, 0, NULL, 1,
-          &(arts_edt_hint_t){.rank = i % nranks, .group = writers});
+          &(arts_edt_hint_t){.rank = i % nranks, .group = writers[iter]});
       arts_add_dependence(dbs[db_idx], w, 0, DB_MODE_RW);
     }
 
@@ -168,11 +175,21 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_guid_t v =
         arts_edt_create(verify_edt, 1, pv, 1u + N_DBS,
                         &(arts_edt_hint_t){.rank = 0u, .group = all});
-    arts_add_dependence(writers, v, 0, DB_MODE_NULL);
+    arts_add_dependence(writers[iter], v, 0, DB_MODE_NULL);
     for (unsigned int i = 0; i < N_DBS; i++) {
       arts_add_dependence(dbs[i], v, 1u + i, DB_MODE_RO);
     }
   }
+  for (unsigned int iter = 0; iter < K_ITERS; iter++) {
+    for (unsigned int i = 0; i < N_DBS / 2u; i++) {
+      arts_db_release(held[iter][i], DB_MODE_RW);
+    }
+  }
+  for (unsigned int iter = 0; iter < K_ITERS; iter++) {
+    arts_event_satisfy_slot(writers[iter], NULL_GUID,
+                            ARTS_EVENT_LATCH_DECR_SLOT);
+  }
+  arts_event_satisfy_slot(all, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 int main(int argc, char **argv) {

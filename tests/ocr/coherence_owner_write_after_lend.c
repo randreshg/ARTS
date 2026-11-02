@@ -12,7 +12,7 @@
  *   write V2                                     (owner, resident bytes)
  *                     read  -> MUST see V2
  *
- * Every step is chained through a finish event, so nothing here is a race:
+ * Every step is chained through a group, so nothing here is a race:
  * the second read happens-after the second write. A rank that keeps a stale
  * copy and serves it locally answers V1 and the program is silently wrong —
  * no crash, no hang, just a bad value. That is why this is a value oracle and
@@ -87,14 +87,16 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_db_release(db, DB_MODE_RW);
 
   /* read #1 on the far rank — this is the lend. */
-  arts_guid_t e1 = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t e1 = arts_event_create(&gh);
   uint64_t r1pv[2] = {V1, 1};
   arts_edt_hint_t h1 = {.group = e1, .rank = 1};
   arts_guid_t r1 = arts_edt_create(read_edt, 2, r1pv, 1, &h1);
   arts_add_dependence(db, r1, 0, DB_MODE_RO);
 
   /* write #2 back on the owner, ordered after the lend. */
-  arts_guid_t e2 = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_guid_t e2 = arts_event_create(&gh);
   uint64_t wpv[1] = {V2};
   arts_edt_hint_t h2 = {.group = e2, .rank = 0};
   arts_guid_t w2 = arts_edt_create(write_edt, 1, wpv, 2, &h2);
@@ -102,7 +104,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_add_dependence(e1, w2, 1, DB_MODE_NULL);
 
   /* read #3 on the far rank again, ordered after the write. */
-  arts_guid_t e3 = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_guid_t e3 = arts_event_create(&gh);
   uint64_t r2pv[2] = {V2, 2};
   arts_edt_hint_t h3 = {.group = e3, .rank = 1};
   arts_guid_t r2 = arts_edt_create(read_edt, 2, r2pv, 2, &h3);
@@ -111,6 +113,10 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   arts_guid_t fin = arts_edt_create(done_edt, 0, NULL, 1, NULL);
   arts_add_dependence(e3, fin, 0, DB_MODE_NULL);
+
+  arts_event_satisfy_slot(e1, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
+  arts_event_satisfy_slot(e2, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
+  arts_event_satisfy_slot(e3, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 int main(int argc, char **argv) { return arts_rt(argc, argv) != 0 ? 1 : 0; }

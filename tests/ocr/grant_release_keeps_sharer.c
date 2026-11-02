@@ -113,7 +113,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_db_release(g_db, DB_MODE_RW);
 
   /* Y takes a durable copy. */
-  arts_guid_t f_read = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t f_read = arts_event_create(&gh);
   {
     uint64_t p[2] = {0u, 0u};
     arts_guid_t r = arts_edt_create(
@@ -125,7 +127,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   /* Y writes, letting Z ask before it has written. */
   arts_event_hint_t sticky = ARTS_EVENT_HINT_DEFAULTS;
   arts_guid_t ask = arts_event_create(&sticky);
-  arts_guid_t f_hold = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_guid_t f_hold = arts_event_create(&gh);
   {
     uint64_t p[1] = {(uint64_t)ask};
     arts_guid_t w = arts_edt_create(
@@ -136,7 +138,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
 
   /* Z asks while Y holds, and writes once it has the right. */
-  arts_guid_t f_next = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_guid_t f_next = arts_event_create(&gh);
   {
     arts_guid_t w = arts_edt_create(
         next_writer_edt, 0, NULL, 2,
@@ -154,6 +156,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_add_dependence(f_hold, r, 1, DB_MODE_NULL);
     arts_add_dependence(f_next, r, 2, DB_MODE_NULL);
   }
+  arts_event_satisfy_slot(f_read, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
+  arts_event_satisfy_slot(f_hold, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
+  arts_event_satisfy_slot(f_next, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 int main(int argc, char **argv) {

@@ -132,10 +132,14 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
    * means every acquire after the first meets a grant this rank already holds,
    * and the gap between them is exactly the reader-count zero edge at which a
    * purging policy would hand the grant back. */
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t groups[READERS];
   arts_guid_t prev = NULL_GUID;
   for (unsigned int i = 0; i < READERS; i++) {
     uint64_t pv[2] = {i, (uint64_t)db};
-    arts_guid_t e = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+    arts_guid_t e = arts_event_create(&gh);
+    groups[i] = e;
     arts_edt_hint_t h = {.group = e, .rank = 1};
     arts_guid_t r =
         arts_edt_create(reader_edt, 2, pv, prev == NULL_GUID ? 1 : 2, &h);
@@ -150,6 +154,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   uint64_t cpv[1] = {(uint64_t)db};
   arts_guid_t chk = arts_edt_create(check_edt, 1, cpv, 1, &ch);
   arts_add_dependence(prev, chk, 0, DB_MODE_NULL);
+  for (unsigned int i = 0; i < READERS; i++) {
+    arts_event_satisfy_slot(groups[i], NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
+  }
 }
 
 int main(int argc, char **argv) {

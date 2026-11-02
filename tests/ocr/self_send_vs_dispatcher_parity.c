@@ -118,17 +118,17 @@ static arts_guid_t make_block(unsigned int bytes) {
 }
 
 static void write_turn(arts_guid_t db, uint64_t *value, unsigned int rank,
-                       arts_guid_t scope) {
+                       arts_guid_t group) {
   arts_guid_t w =
       arts_edt_create(writer_edt, 1, value, 1,
-                      &(arts_edt_hint_t){.rank = rank, .group = scope});
+                      &(arts_edt_hint_t){.rank = rank, .group = group});
   arts_add_dependence(db, w, 0, DB_MODE_RW);
 }
 
 static void read_turn(arts_edt_t body, arts_guid_t db, uint64_t *value,
-                      unsigned int rank, arts_guid_t scope) {
+                      unsigned int rank, arts_guid_t group) {
   arts_guid_t r = arts_edt_create(
-      body, 1, value, 1, &(arts_edt_hint_t){.rank = rank, .group = scope});
+      body, 1, value, 1, &(arts_edt_hint_t){.rank = rank, .group = group});
   arts_add_dependence(db, r, 0, DB_MODE_RO);
 }
 
@@ -136,11 +136,11 @@ static void read_turn(arts_edt_t body, arts_guid_t db, uint64_t *value,
 /// zero-size blocks, the iteration's fresh block.
 enum { P_IT, P_PERSISTENT, P_EMPTY, P_DB, P_COUNT };
 
-/// Creates phase `next` on rank 0, gated on the previous phase's scope.
-static void then(arts_edt_t next, const uint64_t *pv, arts_guid_t scope) {
+/// Creates phase `next` on rank 0, gated on the previous phase's group.
+static void then(arts_edt_t next, const uint64_t *pv, arts_guid_t group) {
   arts_guid_t n =
       arts_edt_create(next, P_COUNT, pv, 1, &(arts_edt_hint_t){.rank = 0});
-  arts_add_dependence(scope, n, 0, DB_MODE_NULL);
+  arts_add_dependence(group, n, 0, DB_MODE_NULL);
 }
 
 static void read_phase(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
@@ -153,13 +153,16 @@ static void write_phase(const uint64_t *paramv) {
   uint64_t vnew = (uint64_t)(BASE + paramv[P_IT]);
   arts_guid_t db = make_block(sizeof(unsigned int));
 
-  arts_guid_t e_w = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t e_w = arts_event_create(&gh);
   write_turn(db, &vnew, W, e_w);
   write_turn((arts_guid_t)paramv[P_PERSISTENT], &vnew, W, e_w);
   write_turn((arts_guid_t)paramv[P_EMPTY], &vnew, W, e_w);
   uint64_t pv[P_COUNT] = {paramv[P_IT], paramv[P_PERSISTENT], paramv[P_EMPTY],
                           (uint64_t)db};
   then(read_phase, pv, e_w);
+  arts_event_satisfy_slot(e_w, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 /// Gated on the iteration's read turns: retires its block, then starts the
@@ -193,13 +196,16 @@ static void read_phase(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_guid_t persistent = (arts_guid_t)paramv[P_PERSISTENT];
   arts_guid_t empty = (arts_guid_t)paramv[P_EMPTY];
 
-  arts_guid_t e_r = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t e_r = arts_event_create(&gh);
   for (unsigned int r = 0; r < nranks; r++) {
     read_turn(reader_edt, db, &vnew, r, e_r);
     read_turn(reader_edt, persistent, &vnew, r, e_r);
     read_turn(empty_reader_edt, empty, &vnew, r, e_r);
   }
   then(iteration_end, paramv, e_r);
+  arts_event_satisfy_slot(e_r, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,

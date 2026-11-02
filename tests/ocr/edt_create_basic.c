@@ -116,11 +116,11 @@ void guid_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
 /// 4) EDT created in a group.
 ///    depv[0] = counter_db (RW)
-void scope_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+void group_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                arts_edt_dep_t depv[]) {
   (void)depc;
   (void)paramc;
-  report(depv, paramv, "scope_edt fires in group", true, 3);
+  report(depv, paramv, "group_edt fires in group", true, 3);
 }
 
 /// 5) EDT with has_depv=true — verify depv storage exists.
@@ -209,11 +209,13 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   /* 4) Create in a group: paramv = [coll, ctr]. */
   {
-    arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
-    arts_guid_t e =
-        arts_edt_create(scope_edt, 2, base, 1,
-                        &(arts_edt_hint_t){.rank = 0, .group = fe});
+    arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+    gh.auto_destroy = true;
+    arts_guid_t group = arts_event_create(&gh);
+    arts_guid_t e = arts_edt_create(
+        group_edt, 2, base, 1, &(arts_edt_hint_t){.rank = 0, .group = group});
     arts_add_dependence(ctr_db, e, 0, DB_MODE_RW);
+    arts_event_satisfy_slot(group, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
   }
 
   /* 5) has_depv=true: depv[0]=counter_db(RW), depv[1]=test DB(RO). */

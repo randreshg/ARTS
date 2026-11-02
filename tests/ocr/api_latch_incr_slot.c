@@ -86,9 +86,9 @@ void check_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 static arts_guid_t bind_dependent(arts_guid_t rec_db, arts_guid_t ev,
-                                  arts_guid_t fe, uint64_t idx) {
+                                  arts_guid_t group, uint64_t idx) {
   arts_edt_hint_t dh = ARTS_EDT_HINT_DEFAULTS;
-  dh.group = fe;
+  dh.group = group;
   arts_guid_t d = arts_edt_create(fire_counter_edt, 1, &idx, 2, &dh);
   arts_add_dependence(rec_db, d, 0, DB_MODE_RW);
   arts_add_dependence(ev, d, 1, DB_MODE_NULL);
@@ -114,26 +114,28 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
   arts_db_release(rec_db, DB_MODE_RW);
 
-  arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t group = arts_event_create(&gh);
 
   arts_event_hint_t eh = ARTS_EVENT_HINT_DEFAULTS;
   eh.latch = 3;
 
   /* latch = 3, one INCR, four DECR. */
   arts_guid_t ev = arts_event_create(&eh);
-  (void)bind_dependent(rec_db, ev, fe, SEEN_INCR);
+  (void)bind_dependent(rec_db, ev, group, SEEN_INCR);
   arts_event_satisfy_slot(ev, NULL_GUID, ARTS_EVENT_LATCH_INCR_SLOT);
   for (int i = 1; i <= 4; i++) {
     arts_event_satisfy_slot(ev, DECR_DATA(i), ARTS_EVENT_LATCH_DECR_SLOT);
   }
   /* Bound after the fire: fire-and-linger satisfies it from the stored
    * state. */
-  (void)bind_dependent(rec_db, ev, fe, SEEN_LINGER);
+  (void)bind_dependent(rec_db, ev, group, SEEN_LINGER);
   arts_event_destroy(ev);
 
   /* Control: latch = 3, no INCR, three DECR. */
   arts_guid_t ctl = arts_event_create(&eh);
-  (void)bind_dependent(rec_db, ctl, fe, SEEN_NO_INCR);
+  (void)bind_dependent(rec_db, ctl, group, SEEN_NO_INCR);
   for (int i = 1; i <= 3; i++) {
     arts_event_satisfy_slot(ctl, DECR_DATA(i), ARTS_EVENT_LATCH_DECR_SLOT);
   }
@@ -142,7 +144,8 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_edt_hint_t ch = ARTS_EDT_HINT_DEFAULTS;
   arts_guid_t chk = arts_edt_create(check_edt, 0, NULL, 2, &ch);
   arts_add_dependence(rec_db, chk, 0, DB_MODE_RO);
-  arts_add_dependence(fe, chk, 1, DB_MODE_NULL);
+  arts_add_dependence(group, chk, 1, DB_MODE_NULL);
+  arts_event_satisfy_slot(group, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 int main(int argc, char **argv) {

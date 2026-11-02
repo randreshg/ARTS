@@ -129,7 +129,8 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depv;
   unsigned int here = arts_get_current_rank();
   unsigned int n = arts_get_total_ranks();
-  arts_event_hint_t fh = ARTS_EVENT_HINT_FINISH;
+  arts_event_hint_t fh = ARTS_EVENT_HINT_LATCH(1);
+  fh.auto_destroy = true;
   arts_guid_t group = arts_event_create(&fh);
   arts_guid_t fin = edt_on(finish, here, 0, NULL, 1, NULL_GUID, NULL_GUID);
   arts_add_dependence(group, fin, 0, DB_MODE_NULL);
@@ -204,6 +205,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     uint64_t cpv[5] = {(uint64_t)dr, FRESH, 2u, 0u, (uint64_t)after};
     (void)edt_on(check_other, here, 5, cpv, 0, NULL_GUID, group);
   }
+  arts_event_satisfy_slot(group, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 int main(int argc, char **argv) {

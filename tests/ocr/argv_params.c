@@ -299,7 +299,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   check_layout();
   check_refusals();
 
-  arts_guid_t unpacked = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t unpacked = arts_event_create(&gh);
   arts_guid_t done =
       arts_edt_create(done_edt, 0, NULL, 1, &ARTS_EDT_HINT_DEFAULTS);
   arts_add_dependence(unpacked, done, 0, DB_MODE_NULL);
@@ -319,6 +321,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_edt_satisfy_slot(edt, 0, (arts_guid_t)k, DB_MODE_NULL);
     free(block);
   }
+  arts_event_satisfy_slot(unpacked, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 int main(int argc, char **argv) {

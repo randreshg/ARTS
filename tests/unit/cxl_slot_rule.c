@@ -100,13 +100,12 @@ static void next_generation_check_edt(uint32_t paramc, const uint64_t *paramv,
  * `replaced`, and hands the next one to a check that waits for it to
  * install. */
 static void destroy_then_check_next(arts_guid_t g, const char *what,
-                                    uint64_t replaced, arts_guid_t finish) {
+                                    uint64_t replaced, arts_guid_t group) {
   arts_db_destroy(g);
   uint64_t pv[2] = {(uint64_t)(uintptr_t)what, replaced};
   arts_guid_t c = arts_edt_create(
       next_generation_check_edt, 2, pv, 1,
-      &(arts_edt_hint_t){.rank = arts_get_current_rank(),
-                         .group = finish});
+      &(arts_edt_hint_t){.rank = arts_get_current_rank(), .group = group});
   arts_add_dependence(g, c, 0, DB_MODE_RO);
 }
 
@@ -161,7 +160,9 @@ static void home_check_edt(uint32_t paramc, const uint64_t *paramv,
     if (slot_of(lg) != paramv[4]) {
       fail("a create waiting behind a live block changed that block's slot");
     }
-    arts_guid_t checked = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+    arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+    gh.auto_destroy = true;
+    arts_guid_t checked = arts_event_create(&gh);
     arts_guid_t last = arts_edt_create(
         shutdown_edt, 0, NULL, 1,
         &(arts_edt_hint_t){.rank = arts_get_current_rank()});
@@ -170,6 +171,11 @@ static void home_check_edt(uint32_t paramc, const uint64_t *paramv,
                             "a create that waited for its label's destroy "
                             "installed no block with a slot at its home",
                             paramv[4], checked);
+    /* The group's successor shuts the run down: release the blocks this
+     * check still holds (the destroy released lg's). */
+    arts_db_release((arts_guid_t)paramv[1], DB_MODE_RO);
+    arts_db_release((arts_guid_t)paramv[2], DB_MODE_RO);
+    arts_event_satisfy_slot(checked, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
     return;
   }
   pass_and_shut_down();

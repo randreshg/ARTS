@@ -348,10 +348,11 @@ extern "C" void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   init_paramv[ARTS_BLOCK_DIST_PARAMC] = reducer_guid;
   arts_argv_to_params(argc, argv,
                       init_paramv.data() + ARTS_BLOCK_DIST_PARAMC + 1);
-  arts_event_hint_t finish_hint = {};
-  finish_hint.rank = ARTS_HINT_CURRENT_RANK;
-  finish_hint.finish = true;
-  arts_guid_t init_done = arts_event_create(&finish_hint);
+  arts_event_hint_t group_hint = {};
+  group_hint.rank = ARTS_HINT_CURRENT_RANK;
+  group_hint.latch = 1;
+  group_hint.auto_destroy = true;
+  arts_guid_t init_done = arts_event_create(&group_hint);
   for (unsigned int i = 0; i < arts_get_total_ranks(); i++) {
     arts_edt_hint_t node_hint = {};
     node_hint.rank = i;
@@ -364,6 +365,7 @@ extern "C" void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_guid_t cont =
       arts_edt_create(main_continue, paramc, paramv, 1, &cont_hint);
   arts_add_dependence(init_done, cont, 0, DB_MODE_NULL);
+  arts_event_satisfy_slot(init_done, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 int main(int argc, char **argv) { return arts_rt(argc, argv); }

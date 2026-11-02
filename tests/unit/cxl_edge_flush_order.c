@@ -321,14 +321,17 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depc;
   (void)depv;
   arts_guid_t done = arts_edt_create(done_edt, 0, NULL, 1, NULL);
-  arts_guid_t scope = arts_event_create(&ARTS_EVENT_HINT_FINISH);
-  arts_add_dependence(scope, done, 0, DB_MODE_NULL);
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t group = arts_event_create(&gh);
+  arts_add_dependence(group, done, 0, DB_MODE_NULL);
   arts_guid_t made = arts_event_create(NULL);
   uint64_t pv[1] = {made};
   arts_edt_create(creator_edt, 1, pv, 0,
                   &(arts_edt_hint_t){.rank = rank_a(),
-                                     .group = scope,
+                                     .group = group,
                                      .completion_event = made});
+  arts_event_satisfy_slot(group, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 int main(int argc, char **argv) {

@@ -235,7 +235,8 @@ static void group_parent(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 static void shape_group(uint64_t n) {
-  arts_event_hint_t eh = ARTS_EVENT_HINT_FINISH;
+  arts_event_hint_t eh = ARTS_EVENT_HINT_LATCH(1);
+  eh.auto_destroy = true;
   arts_guid_t group = arts_event_create(&eh);
   arts_edt_hint_t join = g_here;
   join.group = group;
@@ -246,6 +247,9 @@ static void shape_group(uint64_t n) {
     for (uint64_t i = 0; i < n; i++) {
       unit_done();
     }
+  }
+  if (group != NULL_GUID) {
+    arts_event_satisfy_slot(group, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
   }
 }
 

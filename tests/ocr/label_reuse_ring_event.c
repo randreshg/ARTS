@@ -29,7 +29,7 @@
 #define GENERATIONS 64u
 #define VALUE(k) ((arts_guid_t)(0x5000u + (k)))
 
-enum { P_LABEL, P_FINISH, P_GEN, P_COUNT };
+enum { P_LABEL, P_GROUP, P_GEN, P_COUNT };
 
 static void consumer(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                      arts_edt_dep_t depv[]);
@@ -53,17 +53,14 @@ static void producer(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 /* Bind a consumer of generation k to the label and start its producer step. */
-static void start_generation(arts_guid_t label, arts_guid_t finish,
-                             uint64_t k) {
+static void start_generation(arts_guid_t label, arts_guid_t group, uint64_t k) {
   unsigned int last = arts_get_total_ranks() - 1u;
-  uint64_t pv[P_COUNT] = {(uint64_t)label, (uint64_t)finish, k};
+  uint64_t pv[P_COUNT] = {(uint64_t)label, (uint64_t)group, k};
   arts_guid_t c = arts_edt_create(
-      consumer, P_COUNT, pv, 1,
-      &(arts_edt_hint_t){.rank = 0u, .group = finish});
+      consumer, P_COUNT, pv, 1, &(arts_edt_hint_t){.rank = 0u, .group = group});
   arts_add_dependence(label, c, 0, DB_MODE_NULL);
-  (void)arts_edt_create(
-      producer, P_COUNT, pv, 0,
-      &(arts_edt_hint_t){.rank = last, .group = finish});
+  (void)arts_edt_create(producer, P_COUNT, pv, 0,
+                        &(arts_edt_hint_t){.rank = last, .group = group});
 }
 
 static void consumer(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
@@ -81,7 +78,7 @@ static void consumer(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
   arts_event_destroy(label);
   if (k + 1u < GENERATIONS) {
-    start_generation(label, (arts_guid_t)paramv[P_FINISH], k + 1u);
+    start_generation(label, (arts_guid_t)paramv[P_GROUP], k + 1u);
   } else if (arts_test_status() == 0) {
     arts_printf("PASS: label_reuse_ring_event %u generations in order\n",
                 GENERATIONS);
@@ -104,11 +101,14 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depc;
   (void)depv;
   arts_guid_t label = arts_guid_reserve(ARTS_GUID_EVENT, 0u);
-  arts_guid_t finish = arts_event_create(&ARTS_EVENT_HINT_FINISH);
-  start_generation(label, finish, 0u);
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t group = arts_event_create(&gh);
+  start_generation(label, group, 0u);
   arts_guid_t f =
       arts_edt_create(finale, 0, NULL, 1, &(arts_edt_hint_t){.rank = 0u});
-  arts_add_dependence(finish, f, 0, DB_MODE_NULL);
+  arts_add_dependence(group, f, 0, DB_MODE_NULL);
+  arts_event_satisfy_slot(group, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 int main(int argc, char **argv) {

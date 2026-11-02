@@ -9,7 +9,7 @@
  * Two EDTs join one group and each waits on a dependence nobody
  * satisfies: one homed on the first rank (the group's own rank), one homed on
  * the last rank (on several ranks it joins the group through a local proxy).
- * Both are destroyed; the group must then drain, so the continuation gated on
+ * Both are destroyed; the group must then fire, so the continuation gated on
  * it runs and the run ends with no work left undone.  A destroy that left the
  * group's INCR open would leave that continuation unrun.
  *
@@ -51,7 +51,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depc;
   (void)depv;
   unsigned int last = arts_get_total_ranks() - 1u;
-  arts_guid_t group = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t group = arts_event_create(&gh);
   arts_guid_t here = arts_edt_create(
       victim, 0, NULL, 1, &(arts_edt_hint_t){.rank = 0u, .group = group});
   arts_guid_t there = arts_edt_create(
@@ -61,6 +63,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_guid_t f =
       arts_edt_create(finale, 0, NULL, 1, &(arts_edt_hint_t){.rank = 0u});
   arts_add_dependence(group, f, 0, DB_MODE_NULL);
+  arts_event_satisfy_slot(group, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 int main(int argc, char **argv) {

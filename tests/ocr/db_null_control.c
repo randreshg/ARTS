@@ -48,8 +48,8 @@ static arts_guid_t make_block(uint64_t value) {
   return db;
 }
 
-/* A case's number, and what the previous case leaves to retire once its scope
- * drained: its source event and its block (NULL_GUID for none). */
+/* A case's number, and what the previous case leaves to retire once its group
+ * fired: its source event and its block (NULL_GUID for none). */
 enum { P_CASE, P_SOURCE, P_DATA, P_COUNT };
 
 static void step_edt(uint32_t pc, const uint64_t *pv, uint32_t dc,
@@ -65,17 +65,19 @@ static void step(const uint64_t *pv) {
   unsigned int ranks = arts_get_total_ranks();
   uint64_t c = pv[P_CASE];
   uint64_t next[P_COUNT] = {c + 1u, NULL_GUID, NULL_GUID};
-  arts_guid_t finish;
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t group;
   if (c < 2u * ranks) {
     unsigned int retired = (unsigned int)(c / ranks);
     unsigned int rank = (unsigned int)(c % ranks);
     arts_guid_t data = make_block(42);
-    finish = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+    group = arts_event_create(&gh);
     arts_guid_t source = arts_event_create(&ARTS_EVENT_HINT_DEFAULTS);
     uint64_t args[] = {(uint64_t)data};
-    arts_guid_t sink = arts_edt_create(
-        check_control, 1, args, 2,
-        &(arts_edt_hint_t){.rank = rank, .group = finish});
+    arts_guid_t sink =
+        arts_edt_create(check_control, 1, args, 2,
+                        &(arts_edt_hint_t){.rank = rank, .group = group});
     arts_add_dependence(source, sink, 0, DB_MODE_NULL);
     arts_event_satisfy(source, data);
     if (retired)
@@ -87,10 +89,10 @@ static void step(const uint64_t *pv) {
   } else if (c < 3u * ranks) {
     unsigned int rank = (unsigned int)(c - 2u * ranks);
     arts_guid_t db = make_block(0);
-    finish = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+    group = arts_event_create(&gh);
     arts_edt_hint_t hint = ARTS_EDT_HINT_DEFAULTS;
     hint.rank = rank;
-    hint.group = finish;
+    hint.group = group;
     arts_guid_t sink = arts_edt_create(check_release, 0, NULL, 2, &hint);
     arts_edt_satisfy_slot(sink, 0, db, DB_MODE_NULL);
     arts_add_dependence(db, sink, 1, DB_MODE_RW);
@@ -103,7 +105,8 @@ static void step(const uint64_t *pv) {
   }
   arts_guid_t then = arts_edt_create(step_edt, P_COUNT, next, 1,
                                      &(arts_edt_hint_t){.rank = 0u});
-  arts_add_dependence(finish, then, 0, DB_MODE_NULL);
+  arts_add_dependence(group, then, 0, DB_MODE_NULL);
+  arts_event_satisfy_slot(group, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 static void step_edt(uint32_t pc, const uint64_t *pv, uint32_t dc,

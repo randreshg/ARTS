@@ -60,7 +60,7 @@
 /// on an RW release, GRANT_CONFIRM[_ACK] on an ownership transfer) where the
 /// protocol uses them.  Each generation's DB is explicitly destroyed; if any
 /// path leaked a ref or a count, the cb would never reach refcount 0 and the
-/// group would never drain → ctest TIMEOUT FAIL.  The HIT-path UAF would
+/// group would never fire → ctest TIMEOUT FAIL.  The HIT-path UAF would
 /// surface as an ASan use-after-free / SIGSEGV.
 ///
 /// Config-agnostic: every protocol has its own Cat-C set; the loop drives
@@ -99,7 +99,7 @@ static void generation_edt(uint32_t paramc, const uint64_t *paramv,
                            uint32_t depc, arts_edt_dep_t depv[]);
 
 /* paramv: the generation, and the previous generation's block (NULL_GUID
- * for none), destroyed once its scope drained. */
+ * for none), destroyed once its group fired. */
 static void generation(const uint64_t *paramv) {
   unsigned int nranks = arts_get_total_ranks();
   uint64_t it = paramv[0];
@@ -123,20 +123,25 @@ static void generation(const uint64_t *paramv) {
   /* Drive RW (publish/ownership/ACK Cat-C) then RO (snapshot/redirect
    * Cat-C) across every rank so each foreign rank's cache pins + must
    * release. */
-  arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t group = arts_event_create(&gh);
   for (unsigned int r = 0; r < nranks; r++) {
-    arts_guid_t w = arts_edt_create(rw_writer_edt, 0, NULL, 1,
-                                    &(arts_edt_hint_t){.rank = r, .group = fe});
+    arts_guid_t w =
+        arts_edt_create(rw_writer_edt, 0, NULL, 1,
+                        &(arts_edt_hint_t){.rank = r, .group = group});
     arts_add_dependence(db, w, 0, DB_MODE_RW);
 
-    arts_guid_t ro = arts_edt_create(
-        ro_reader_edt, 0, NULL, 1, &(arts_edt_hint_t){.rank = r, .group = fe});
+    arts_guid_t ro =
+        arts_edt_create(ro_reader_edt, 0, NULL, 1,
+                        &(arts_edt_hint_t){.rank = r, .group = group});
     arts_add_dependence(db, ro, 0, DB_MODE_RO);
   }
   uint64_t next[2] = {it + 1u, (uint64_t)db};
   arts_guid_t n = arts_edt_create(generation_edt, 2, next, 1,
                                   &(arts_edt_hint_t){.rank = 0});
-  arts_add_dependence(fe, n, 0, DB_MODE_NULL);
+  arts_add_dependence(group, n, 0, DB_MODE_NULL);
+  arts_event_satisfy_slot(group, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 static void generation_edt(uint32_t paramc, const uint64_t *paramv,

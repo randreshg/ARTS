@@ -178,10 +178,14 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   /* Writers run one after another (each gated on the previous), so every
    * acquire after the first meets a grant this rank already holds. */
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t groups[WRITERS];
   arts_guid_t prev = NULL_GUID;
   for (unsigned int i = 0; i < WRITERS; i++) {
     uint64_t seq = i;
-    arts_guid_t e = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+    arts_guid_t e = arts_event_create(&gh);
+    groups[i] = e;
     arts_guid_t w = arts_edt_create(writer_edt, 1, &seq, prev == NULL_GUID ? 1 : 2,
                                     &(arts_edt_hint_t){.group = e});
     arts_add_dependence(g_db, w, 0, DB_MODE_RW);
@@ -193,6 +197,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   arts_guid_t chk = arts_edt_create(check_edt, 0, NULL, 1, NULL);
   arts_add_dependence(prev, chk, 0, DB_MODE_NULL);
+  for (unsigned int i = 0; i < WRITERS; i++) {
+    arts_event_satisfy_slot(groups[i], NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
+  }
 }
 
 int main(int argc, char **argv) {

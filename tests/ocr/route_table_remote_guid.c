@@ -113,7 +113,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   /* Shutdown waits for the reader and every producer to finish, their
    * releases included. */
-  arts_guid_t done = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t done = arts_event_create(&gh);
   arts_guid_t shut = arts_edt_create(shutdown_edt, 0, NULL, 1, NULL);
   arts_add_dependence(done, shut, 0, DB_MODE_NULL);
   arts_edt_create(acquire_test, 0, NULL, nranks - 1,
@@ -130,6 +132,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_edt_create(node_setup, 3, args, 0,
                     &(arts_edt_hint_t){.rank = n, .group = done});
   }
+  arts_event_satisfy_slot(done, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 int main(int argc, char **argv) {

@@ -60,9 +60,12 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
 
   /* Homed on rank 0 (the creating rank here, via ARTS_HINT_CURRENT_RANK). */
-  arts_guid_t group = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t group = arts_event_create(&gh);
   uint64_t param = (uint64_t)group;
   arts_edt_create(prober_edt, 1, &param, 0, &(arts_edt_hint_t){.rank = 1});
+  arts_event_satisfy_slot(group, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 int main(int argc, char **argv) {

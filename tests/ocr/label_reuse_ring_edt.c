@@ -67,7 +67,7 @@ static void driver(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                    arts_edt_dep_t depv[]);
 static void early_helper(uint32_t paramc, const uint64_t *paramv,
                          uint32_t depc, arts_edt_dep_t depv[]);
-static arts_guid_t create_member(const uint64_t *pv, arts_guid_t scope,
+static arts_guid_t create_member(const uint64_t *pv, arts_guid_t group,
                                  arts_guid_t signal);
 
 /* depv[0] = generation k's value, depv[1] = the record (RW). */
@@ -106,11 +106,11 @@ static void member(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
 }
 
-static arts_guid_t create_member(const uint64_t *pv, arts_guid_t scope,
+static arts_guid_t create_member(const uint64_t *pv, arts_guid_t group,
                                  arts_guid_t signal) {
   return arts_edt_create(member, P_COUNT, pv, 2,
                          &(arts_edt_hint_t){.guid = (arts_guid_t)pv[P_RING],
-                                            .group = scope,
+                                            .group = group,
                                             .completion_event = signal});
 }
 
@@ -181,7 +181,9 @@ static void driver(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
   arts_guid_t signal;
   if (lane == LANE_LATE) {
-    signal = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+    arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+    gh.auto_destroy = true;
+    signal = arts_event_create(&gh);
     (void)create_member(pv, signal, NULL_GUID);
   } else if (k == 0u) {
     signal = arts_event_create(&ARTS_EVENT_HINT_COUNTED(1));
@@ -195,6 +197,11 @@ static void driver(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   pv[P_GEN] = k + 1u;
   start_driver(pv, signal);
   arts_add_dependence(record, ring, 1, DB_MODE_RW);
+  if (lane == LANE_LATE) {
+    /* The next driver reads the record this one holds. */
+    arts_db_release(record, DB_MODE_RO);
+    arts_event_satisfy_slot(signal, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
+  }
 }
 
 static arts_guid_t make_record(void) {
@@ -233,19 +240,21 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_guid_t late_record = make_record();
   arts_guid_t early_record = make_record();
 
-  arts_guid_t finish = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t group = arts_event_create(&gh);
   uint64_t pv[P_COUNT] = {LANE_LATE,           (uint64_t)late_ring,
                           (uint64_t)late_record, 0u,
                           NULL_GUID,           (uint64_t)early_ring,
                           (uint64_t)early_record};
   arts_guid_t first = arts_edt_create(
-      driver, P_COUNT, pv, 2,
-      &(arts_edt_hint_t){.rank = 0u, .group = finish});
+      driver, P_COUNT, pv, 2, &(arts_edt_hint_t){.rank = 0u, .group = group});
   arts_edt_satisfy_slot(first, 0, NULL_GUID, DB_MODE_NULL);
   arts_add_dependence(late_record, first, 1, DB_MODE_RO);
   arts_guid_t f =
       arts_edt_create(finale, 0, NULL, 1, &(arts_edt_hint_t){.rank = 0u});
-  arts_add_dependence(finish, f, 0, DB_MODE_NULL);
+  arts_add_dependence(group, f, 0, DB_MODE_NULL);
+  arts_event_satisfy_slot(group, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 int main(int argc, char **argv) {

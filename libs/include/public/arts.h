@@ -106,7 +106,8 @@ typedef enum {
 typedef enum {
   DB_MODE_NULL = 0, /**< Opaque value or control payload; no DB access. */
   DB_MODE_RO = 1,   /**< Read-Only (shared readers, no publish). */
-  DB_MODE_RW = 2,   /**< Read-Write (one writer node, concurrent local writers). */
+  /** Read-Write (one writer node, concurrent local writers). */
+  DB_MODE_RW = 2,
   /** Values >= this are reserved for runtime-internal dispatch (GPU LC
    * sync/alloc, GPU memset).  They never appear in user-facing
    * arts_add_dependence() arguments.  The enumerator itself only anchors
@@ -135,8 +136,8 @@ typedef enum {
  */
 typedef enum {
   ARTS_DB = 0, /**< Regular DRAM; contract/protocol selected at build time. */
-  ARTS_DB_GPU, /**< GPU staging; per-device replicas merged at release (app-ordered
-                  style). */
+  ARTS_DB_GPU, /**< GPU staging; per-device replicas merged at release
+                  (app-ordered style). */
   ARTS_DB_GPU_PIN, /**< GPU staging (host pinned + per-device replica). */
 } arts_db_types_t;
 
@@ -202,9 +203,8 @@ typedef enum {
  *  that do not apply to the others.
  *  @{ */
 
-/** Bit flags for arts_edt_hint_t.flags.  Reserved for future EDT-create flags;
- *  a group is an ARTS_EVENT_HINT_FINISH event named in
- *  arts_edt_hint_t.group. */
+/** Bit flags for arts_edt_hint_t.flags.  Reserved for future EDT-create
+ *  flags. */
 #define ARTS_EDT_FLAG_NONE 0x0000u
 
 /** Hint passed to @c arts_edt_create.  Optional fields:
@@ -212,8 +212,13 @@ typedef enum {
  *    - @c guid   when non-NULL_GUID pre-reserves the EDT GUID; the home
  *                rank is then taken from that GUID and @c rank is ignored,
  *                and a create of a live GUID parks until it ends.
- *    - @c group when non-NULL_GUID joins this EDT to that group.
- *    - @c flags  bitfield of ARTS_EDT_FLAG_* (default ARTS_EDT_FLAG_NONE). */
+ *    - @c group  when non-NULL_GUID joins this EDT to that group instead of
+ *                the creator's.
+ *    - @c completion_event  when non-NULL_GUID is satisfied at this EDT's
+ *                completion.
+ *    - @c flags  bitfield of ARTS_EDT_FLAG_* (default ARTS_EDT_FLAG_NONE).
+ *  The two event slots are independent: either, both or neither may be
+ *  set. */
 typedef struct {
   /** Target node rank.  ARTS_HINT_CURRENT_RANK = current node (default) |
    *  ARTS_HINT_ANY_RANK = no preference (policy-selected, same as passing a
@@ -226,20 +231,48 @@ typedef struct {
    *  GUID's next EDT.  Two creates of one GUID with no end of life between
    *  them are undefined: one of them stays parked. */
   arts_guid_t guid;
-  /** Group to join (bulk sync).  NULL_GUID = inherit the caller's current
-   *  group (default).  When set, this EDT (and its descendants) join that
-   *  group: INCR at create, DECR at completion.  The group's event must be
-   *  homed on the creating rank (an event homed here: created here with the
-   *  default rank), since the join INCR is local and only a local INCR is
-   *  ordered before the member's DECR; naming another rank's group is
-   *  undefined. */
+  /** Group to join.  NULL_GUID = the creator's current group (default; an
+   *  EDT created outside any EDT has none).  A group is counted by a simple
+   *  latch event.  The creating rank INCRs it before this EDT can run, and
+   *  the EDT DECRs it once, when it completes (after its data blocks are
+   *  released, so a successor the latch wakes sees its writes) or when it is
+   *  destroyed instead.  What this EDT creates joins the same group unless
+   *  its own hint names another.  The latch must be an event created on the
+   *  creating rank with the default rank, which is installed here when its
+   *  create returns, since only a local INCR is ordered before the member's
+   *  DECR.  Naming another rank's latch is undefined (a Debug build refuses
+   *  it), and so is a latch homed here whose create was made on another rank
+   *  (not refused: its install may not have reached this rank).  A member
+   *  that runs on another rank joins through a local proxy of the latch.
+   *
+   *  Opening a group: create the latch with count 1, the opener's own count
+   *  (@c ARTS_EVENT_HINT_LATCH(1)); create the members with this field set;
+   *  wire the successor (@c arts_add_dependence of the latch); then DECR the
+   *  latch (@c arts_event_satisfy_slot on @c ARTS_EVENT_LATCH_DECR_SLOT).  A
+   *  group with no member fires at that DECR.  The opener makes every
+   *  registration on the latch before its DECR, from the latch's home, and
+   *  DECRs only after its last direct create of a member: a later create or
+   *  registration may meet a fired latch.  The DECR is an ordinary satisfy:
+   *  a successor sees the opener's writes to a block only if the opener
+   *  released the block before it.  A successor is not a member of the
+   *  group it waits for (one created by a member would wait for itself).
+   *
+   *  Groups are independent counters: an EDT has one group, and naming one
+   *  here leaves the creator's group.  For the opener's current group to wait
+   *  for the new group too, the opener INCRs @c arts_current_group() and
+   *  wires the new latch's fire to its DECR slot, both before its own DECR of
+   *  the new latch.  The latch's lifetime (lingering, @c arts_event_destroy,
+   *  @c auto_destroy, a consumer count) is the program's choice, as for any
+   *  event. */
   arts_guid_t group;
-  /** Completion event (per-EDT result channel; OCR-style).  NULL_GUID = none
-   *  (default).  When set, the runtime satisfies this event (DECR slot)
-   *  after the EDT's data blocks have been released, carrying the result
-   *  GUID the EDT body registered via @c arts_edt_set_result (NULL_GUID if
-   *  it registered none).  Unlike @c group this is never inherited —
-   *  it belongs to this EDT only. */
+  /** Completion event.  NULL_GUID = none (default).  When set, the runtime
+   *  DECRs this event once, when this EDT completes, after its data blocks
+   *  have been released, carrying the result GUID the body registered with
+   *  @c arts_edt_set_result (NULL_GUID if it registered none).  An EDT
+   *  destroyed instead of run does not satisfy it.  Never inherited, and
+   *  unrelated to @c group: it fires at this EDT's own completion, while
+   *  the EDT's group may still be open.  The event's latch count is the
+   *  number of completions it waits for. */
   arts_guid_t completion_event;
   /** Bitfield of ARTS_EDT_FLAG_*.  uint32_t for future flag growth.  Default
    * ARTS_EDT_FLAG_NONE (0). */
@@ -402,21 +435,12 @@ typedef struct {
    *  Two creates of one GUID with no destroy between them are undefined: one
    *  of them stays parked. */
   arts_guid_t guid;
-  /** If true, this is a FINISH event: a bulk-synchronization latch. All other
-   *  fields (latch, channel, guid) are ignored — forced to a simple
-   *  latch=1 (creator-token), current rank, auto-allocated GUID, auto_destroy.
-   *  The runtime auto-chains it to the current group and tracks its
-   *  creator-token for cleanup.  Act on its fire with a continuation EDT
-   *  wired by arts_add_dependence; the continuation must not name this
-   *  event as its own group, or the group would wait for it and
-   *  never drain.  Default false.
-   */
-  bool finish;
-  /** If true, this event self-destructs (route-slot detach) the instant it
-   *  fires, instead of lingering for late binders.  Single-shot semantics for
-   *  internal forwarder/proxy latches.  Implied by @c finish.  Immutable after
-   *  creation — there is no runtime setter.  Default false (fire-and-linger).
-   */
+  /** If true, the event is detached from its GUID the instant it fires
+   *  instead of lingering for late binders, so every dependence added on it
+   *  and every other satisfy of it must reach it before the satisfy that
+   *  fires it: one that arrives later finds no event.  Immutable after
+   *  creation — there is no runtime setter.  Default false
+   *  (fire-and-linger). */
   bool auto_destroy;
   /** Discard incoming payloads and publish NULL_GUID when a simple event fires.
    *  Default false; ignored for channels. Immutable after creation. */
@@ -462,9 +486,6 @@ typedef struct {
 #define ARTS_EVENT_HINT_CHANNEL                                                \
   ((arts_event_hint_t){                                                        \
       .rank = ARTS_HINT_CURRENT_RANK, .channel = true, .guid = NULL_GUID})
-/** Bulk-synchronization finish event (latch=1 creator-token, auto_destroy). */
-#define ARTS_EVENT_HINT_FINISH                                                 \
-  ((arts_event_hint_t){.rank = ARTS_HINT_CURRENT_RANK, .finish = true})
 /** @} */
 
 /* ========================================================================= */
@@ -815,24 +836,13 @@ void arts_event_add_dependence(arts_guid_t source, arts_guid_t destination,
 void arts_event_destroy(arts_guid_t guid);
 
 /**
- * @brief Hand a FINISH event's creator-token back before the creator returns.
- *
- * The creator of a finish event holds one token that keeps the group open
- * until the creator completes.  Releasing it here lets the group fire as soon
- * as its members finish, while the creator keeps running.
- * Call it only from the token's owner — the EDT that created @p event_guid,
- * on the thread running that EDT — at most once, and only after that EDT has
- * joined every member it wants the group to cover (a join after the release
- * may find the group already fired).  Calling it twice, or from any other
- * EDT, decrements the group one time too many and is undefined.
- */
-void arts_event_release_creator_token(arts_guid_t event_guid);
-
-/**
  * @brief Return the group the calling EDT currently belongs to.
  *
- * Returns the current group GUID inherited or joined by the running
- * EDT, or NULL_GUID if it belongs to no group.
+ * Returns the group the running EDT joined or inherited, or NULL_GUID if
+ * it belongs to none (outside any EDT, too).  For an EDT running on another
+ * rank than its group's latch the result is its local proxy of the latch, so
+ * the GUID is always homed on the calling rank and an INCR of it is applied
+ * locally.
  */
 arts_guid_t arts_current_group(void);
 

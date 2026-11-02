@@ -2,8 +2,8 @@
  *
  * Each iteration creates a group that spawns a depth-DEPTH tree of
  * children, each fanning out to FANOUT children on cycling rank targets.
- * The group must drain to zero on every iteration, and each iteration
- * starts only from the previous one's drain, so an iteration that stalls
+ * The group must fire on every iteration, and each iteration starts only
+ * from the previous one's fire, so an iteration that stalls
  * hangs the chain (caught by ctest TIMEOUT).
  *
  * The iteration counter lives in paramv (passed through the EDT chain) —
@@ -45,7 +45,7 @@ void recursive_spawn(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 /* iter_term: paramv[0] = completed iteration count (1-based after increment).
- * Called when the group of one iteration drains. */
+ * Called when the group of one iteration fires. */
 void iter_term(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -74,13 +74,15 @@ void start_iter(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depv;
   uint64_t iter = paramv[0];
   arts_guid_t term = arts_edt_create(iter_term, 1, &iter, 1, NULL);
-  arts_event_hint_t fh = ARTS_EVENT_HINT_FINISH;
-  arts_guid_t fe = arts_event_create(&fh);
+  arts_event_hint_t fh = ARTS_EVENT_HINT_LATCH(1);
+  fh.auto_destroy = true;
+  arts_guid_t group = arts_event_create(&fh);
   arts_edt_hint_t hint = ARTS_EDT_HINT_DEFAULTS;
-  hint.group = fe;
+  hint.group = group;
   uint64_t init_paramv[1] = {DEPTH};
   arts_edt_create(recursive_spawn, 1, init_paramv, 0, &hint);
-  arts_add_dependence(fe, term, 0, DB_MODE_NULL);
+  arts_add_dependence(group, term, 0, DB_MODE_NULL);
+  arts_event_satisfy_slot(group, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,

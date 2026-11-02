@@ -44,7 +44,7 @@ extern "C" {
 
 #include "arts/defs.h"          /* ARTS_THREAD_LOCAL */
 #include "arts/runtime_types.h" /* arts_guid_t, struct arts_edt_s */
-#include "arts/utils/vector.h"  /* arts_vector_t (per-worker lists) */
+#include "arts/utils/vector.h"  /* arts_vector_t (created-DB list) */
 
 /*
  * Per-worker EDT-execution context.
@@ -77,11 +77,6 @@ void arts_cleanup_edt_tls(void);
 void arts_track_created_db(arts_shared_ptr_t h);
 arts_vector_t *arts_get_created_db_list(void);
 
-/* Finish-event owned-list: register a creator-token, consume one handed back
- * early, drop the rest at completion. */
-void arts_owned_finish_register(arts_guid_t fe_guid);
-void arts_owned_finish_consume(arts_guid_t fe_guid);
-void arts_owned_finish_cleanup(void);
 /* arts_current_group is declared once in the public header (arts.h);
  * callers include that.  Not re-declared here (redundant declaration). */
 

@@ -68,9 +68,6 @@ static inline uint64_t arts_vector_count(const arts_vector_t *v) {
   return v->count;
 }
 
-/* Drop every element, keeping the block for reuse. */
-static inline void arts_vector_clear(arts_vector_t *v) { v->count = 0; }
-
 #ifdef __cplusplus
 }
 #endif

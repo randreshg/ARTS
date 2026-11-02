@@ -46,7 +46,7 @@ static void check(const uint32_t *data, uint32_t d, uint32_t v) {
 }
 
 /* paramv: block index, version this writer stamps, the block's GUID, the
- * block's home.  Each hop joins the work scope by inheritance. */
+ * block's home.  Each hop joins the work group by inheritance. */
 static void hop_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                     arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -100,7 +100,9 @@ static void start_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   unsigned int nranks = arts_get_total_ranks();
   arts_guid_t done =
       arts_edt_create(done_edt, 0, NULL, 1, &(arts_edt_hint_t){.rank = 0});
-  arts_guid_t work = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t work = arts_event_create(&gh);
   arts_add_dependence(work, done, 0, DB_MODE_NULL);
   for (uint32_t d = 0; d < paramc; d++) {
     uint64_t home = d % nranks;
@@ -111,6 +113,7 @@ static void start_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                            .group = work});
     arts_add_dependence((arts_guid_t)paramv[d], e, 0, DB_MODE_RW);
   }
+  arts_event_satisfy_slot(work, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
@@ -133,7 +136,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
   arts_guid_t start =
       arts_edt_create(start_edt, N_DBS, dbs, 1, &(arts_edt_hint_t){.rank = 0});
-  arts_guid_t stamps = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t stamps = arts_event_create(&gh);
   arts_add_dependence(stamps, start, 0, DB_MODE_NULL);
   for (uint32_t d = 0; d < N_DBS; d++) {
     uint64_t pv[1] = {d};
@@ -142,6 +147,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
         &(arts_edt_hint_t){.rank = d % nranks, .group = stamps});
     arts_add_dependence((arts_guid_t)dbs[d], e, 0, DB_MODE_RW);
   }
+  arts_event_satisfy_slot(stamps, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 int main(int argc, char **argv) {

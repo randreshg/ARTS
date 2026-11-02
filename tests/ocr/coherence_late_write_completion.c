@@ -114,7 +114,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     return;
   }
 
-  arts_guid_t all = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t all = arts_event_create(&gh);
   arts_guid_t done =
       arts_edt_create(finish, 0, NULL, 1, &(arts_edt_hint_t){.rank = 0});
   arts_add_dependence(all, done, 0, DB_MODE_NULL);
@@ -130,8 +132,8 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     }
     arts_db_release(db, DB_MODE_RW);
 
-    arts_guid_t written = arts_event_create(&ARTS_EVENT_HINT_FINISH);
-    arts_guid_t read = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+    arts_guid_t written = arts_event_create(&gh);
+    arts_guid_t read = arts_event_create(&gh);
 
     arts_guid_t wr = arts_edt_create(
         writer, 1, &id, 1,
@@ -146,13 +148,16 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       arts_add_dependence(db, rd, 0, DB_MODE_RO);
       arts_add_dependence(written, rd, 1, DB_MODE_NULL);
     }
+    arts_event_satisfy_slot(written, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 
     uint64_t g = (uint64_t)db;
     arts_guid_t ds = arts_edt_create(
         destroyer, 1, &g, 1,
         &(arts_edt_hint_t){.rank = home, .group = all});
     arts_add_dependence(read, ds, 0, DB_MODE_NULL);
+    arts_event_satisfy_slot(read, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
   }
+  arts_event_satisfy_slot(all, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 int main(int argc, char **argv) {

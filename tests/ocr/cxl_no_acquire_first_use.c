@@ -127,17 +127,19 @@ static void write_phase_edt(uint32_t paramc, const uint64_t *paramv,
       &(arts_edt_hint_t){.rank = 1u, .completion_event = written});
   arts_add_dependence(g, w, 0, DB_MODE_RW);
 
-  arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t group = arts_event_create(&gh);
   for (unsigned int r = 0; r < nranks; r++) {
     arts_guid_t v = arts_edt_create(
-        verify_edt, 0, NULL, 2,
-        &(arts_edt_hint_t){.rank = r, .group = fe});
+        verify_edt, 0, NULL, 2, &(arts_edt_hint_t){.rank = r, .group = group});
     arts_add_dependence(written, v, 0, DB_MODE_NULL);
     arts_add_dependence(g, v, 1, DB_MODE_RO);
   }
   arts_guid_t d = arts_edt_create(done_edt, 0, NULL, 1,
                                   &(arts_edt_hint_t){.rank = 0u});
-  arts_add_dependence(fe, d, 0, DB_MODE_NULL);
+  arts_add_dependence(group, d, 0, DB_MODE_NULL);
+  arts_event_satisfy_slot(group, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
@@ -169,11 +171,13 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
 
   arts_guid_t start = arts_event_create(&ARTS_EVENT_HINT_LATCH(1));
-  arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t group = arts_event_create(&gh);
   for (unsigned int r = 0; r < nranks; r++) {
-    arts_guid_t rd = arts_edt_create(
-        first_read_edt, 0, NULL, 2,
-        &(arts_edt_hint_t){.rank = r, .group = fe});
+    arts_guid_t rd =
+        arts_edt_create(first_read_edt, 0, NULL, 2,
+                        &(arts_edt_hint_t){.rank = r, .group = group});
     arts_add_dependence(start, rd, 0, DB_MODE_NULL);
     arts_add_dependence(g, rd, 1, DB_MODE_RO);
   }
@@ -181,7 +185,8 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   uint64_t cpv[2] = {(uint64_t)g, (uint64_t)nranks};
   arts_guid_t c = arts_edt_create(write_phase_edt, 2, cpv, 1,
                                   &(arts_edt_hint_t){.rank = 0u});
-  arts_add_dependence(fe, c, 0, DB_MODE_NULL);
+  arts_add_dependence(group, c, 0, DB_MODE_NULL);
+  arts_event_satisfy_slot(group, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 
   /* Wired last, so the gate cannot fire before every reader is waiting on
    * it. */

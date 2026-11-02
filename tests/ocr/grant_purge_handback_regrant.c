@@ -86,7 +86,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   /* A single rank exercises the concurrent local writer case. */
   unsigned int first = (nranks > 1u) ? 1u : 0u;
   unsigned int nchains = (nranks - first) * CHAINS_PER_RANK;
-  arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t group = arts_event_create(&gh);
   for (unsigned int r = first; r < nranks; r++) {
     for (unsigned int c = 0; c < CHAINS_PER_RANK; c++) {
       arts_guid_t prev = NULL_GUID;
@@ -94,8 +96,8 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
         arts_guid_t oe = arts_event_create(&ARTS_EVENT_HINT_LATCH(1));
         arts_guid_t t = arts_edt_create(
             turn_edt, 0, NULL, (prev == NULL_GUID) ? 1u : 2u,
-            &(arts_edt_hint_t){.rank = r, .completion_event = oe,
-                               .group = fe});
+            &(arts_edt_hint_t){
+                .rank = r, .completion_event = oe, .group = group});
         arts_add_dependence(db, t, 0, DB_MODE_RW);
         if (prev != NULL_GUID) {
           arts_add_dependence(prev, t, 1, DB_MODE_NULL);
@@ -108,7 +110,8 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_guid_t v =
       arts_edt_create(verify_edt, 1, vp, 2, &(arts_edt_hint_t){.rank = 0u});
   arts_add_dependence(db, v, 0, DB_MODE_RO);
-  arts_add_dependence(fe, v, 1, DB_MODE_NULL);
+  arts_add_dependence(group, v, 1, DB_MODE_NULL);
+  arts_event_satisfy_slot(group, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 int main(int argc, char **argv) {

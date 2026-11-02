@@ -155,8 +155,10 @@ static void phase2_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   arts_guid_t shut =
       arts_edt_create(shutdown_edt, 0, NULL, 1, &(arts_edt_hint_t){.rank = 0});
-  arts_guid_t fe_work = arts_event_create(&ARTS_EVENT_HINT_FINISH);
-  arts_add_dependence(fe_work, shut, 0, DB_MODE_NULL);
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t work_group = arts_event_create(&gh);
+  arts_add_dependence(work_group, shut, 0, DB_MODE_NULL);
 
   for (uint32_t d = 0; d < paramc; d++) {
     arts_guid_t db = (arts_guid_t)paramv[d];
@@ -172,10 +174,11 @@ static void phase2_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                              db_bytes[d] / sizeof(int)};
       arts_guid_t wk = arts_edt_create(
           verify_worker_edt, 2, wparams, 1,
-          &(arts_edt_hint_t){.rank = worker_rank, .group = fe_work});
+          &(arts_edt_hint_t){.rank = worker_rank, .group = work_group});
       arts_add_dependence(db, wk, 0, DB_MODE_RO);
     }
   }
+  arts_event_satisfy_slot(work_group, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
@@ -214,20 +217,23 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_db_release(dbs[d], DB_MODE_RW);
   }
 
-  arts_guid_t fe_init = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t init_group = arts_event_create(&gh);
   arts_guid_t phase2 =
       arts_edt_create(phase2_edt, N_DBS, (uint64_t *)dbs, 1,
                       &(arts_edt_hint_t){.rank = 0});
-  arts_add_dependence(fe_init, phase2, 0, DB_MODE_NULL);
+  arts_add_dependence(init_group, phase2, 0, DB_MODE_NULL);
 
   for (int d = 0; d < N_DBS; d++) {
     unsigned int home = (unsigned int)(d % (int)nnodes);
     uint64_t n_ints = db_bytes[d] / sizeof(int);
-    arts_guid_t init = arts_edt_create(
-        init_writer_edt, 1, &n_ints, 1,
-        &(arts_edt_hint_t){.rank = home, .group = fe_init});
+    arts_guid_t init =
+        arts_edt_create(init_writer_edt, 1, &n_ints, 1,
+                        &(arts_edt_hint_t){.rank = home, .group = init_group});
     arts_add_dependence(dbs[d], init, 0, DB_MODE_RW);
   }
+  arts_event_satisfy_slot(init_group, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 int main(int argc, char **argv) {

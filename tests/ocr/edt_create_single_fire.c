@@ -25,7 +25,7 @@
  *      drives it to 0 and fires.  Must fire exactly once.
  *
  * Each fired EDT increments its own per-scenario atomic counter.  A collector
- * EDT (gated on a finish event that all scenarios join) verifies every counter
+ * EDT (gated on a group that all scenarios join) verifies every counter
  * is EXACTLY 1.  A stranded EDT (counter 0) or a double fire (counter 2) is a
  * FAIL; a deadlock is caught by the ctest TIMEOUT.
  *
@@ -81,13 +81,13 @@ void fire_c(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   bump((arts_guid_t)paramv[PV_CTR], &c->fired_c);
 }
 
-/* Collector: reads the counters RO after all scenarios drained. */
+/* Collector: reads the counters RO after the scenarios' group fires. */
 void collector(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                arts_edt_dep_t depv[]) {
   (void)paramc;
   (void)paramv;
   (void)depc;
-  /* depv[0] = finish event (NULL payload), depv[1] = counters DB (RO). */
+  /* depv[0] = the group (NULL payload), depv[1] = counters DB (RO). */
   counters_t *c = (counters_t *)depv[1].ptr;
   unsigned int a = atomic_load_explicit(&c->fired_a, memory_order_relaxed);
   unsigned int b = atomic_load_explicit(&c->fired_b, memory_order_relaxed);
@@ -124,14 +124,16 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   uint64_t pv[1] = {(uint64_t)ctr};
 
-  /* Group: the collector waits until every scenario drains (a fired
-   * EDT's completion balances its INCR). */
-  arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  /* Group: the collector waits until it fires (each fired EDT's completion
+   * balances its INCR). */
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t group = arts_event_create(&gh);
 
   /* --- Scenario A: fresh GUID; the counters dep is its only dependency. --- */
   {
-    arts_guid_t a = arts_edt_create(fire_a, 1, pv, 1,
-                                    &(arts_edt_hint_t){.rank = 0, .group = fe});
+    arts_guid_t a = arts_edt_create(
+        fire_a, 1, pv, 1, &(arts_edt_hint_t){.rank = 0, .group = group});
     arts_add_dependence(ctr, a, 0, DB_MODE_RW);
   }
 
@@ -148,7 +150,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_add_dependence(ctr, b, 0, DB_MODE_RW);
     /* Now create with the pre-reserved GUID; depc=3. */
     arts_edt_create(fire_b, 1, pv, 3,
-                    &(arts_edt_hint_t){.guid = b, .group = fe});
+                    &(arts_edt_hint_t){.guid = b, .group = group});
   }
 
   /* --- Scenario C: pre-reserved GUID where the LAST real satisfy lands after
@@ -159,16 +161,17 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_guid_t cg = arts_guid_reserve(ARTS_GUID_EDT, 0);
     arts_add_dependence(ctr, cg, 0, DB_MODE_RW);
     arts_edt_create(fire_c, 1, pv, 2,
-                    &(arts_edt_hint_t){.guid = cg, .group = fe});
+                    &(arts_edt_hint_t){.guid = cg, .group = group});
     /* Trailing satisfy that drives readiness to 0 after the install. */
     arts_edt_satisfy_slot(cg, 1, NULL_GUID, DB_MODE_NULL);
   }
 
-  /* Collector gated on the group: created last, depends on fe firing. */
+  /* Collector gated on the group: created last, depends on it firing. */
   arts_guid_t coll =
       arts_edt_create(collector, 1, pv, 2, &(arts_edt_hint_t){.rank = 0});
-  arts_add_dependence(fe, coll, 0, DB_MODE_NULL);
+  arts_add_dependence(group, coll, 0, DB_MODE_NULL);
   arts_add_dependence(ctr, coll, 1, DB_MODE_RO);
+  arts_event_satisfy_slot(group, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 int main(int argc, char **argv) {

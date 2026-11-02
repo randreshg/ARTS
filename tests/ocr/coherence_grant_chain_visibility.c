@@ -205,7 +205,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
    * protocol that lets the writer in beside live readers, the chain can end
    * while a reader still holds. */
   arts_guid_t shut = arts_edt_create(shutdown_edt, 0, NULL, 1, NULL);
-  arts_guid_t all_done = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t all_done = arts_event_create(&gh);
   arts_add_dependence(all_done, shut, 0, DB_MODE_NULL);
 
   /* One block for all three stages: its identity stays fixed for its whole
@@ -225,14 +227,14 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_db_release(db, DB_MODE_RW);
 
   /* ── Stage 1: remote write, remote read ───────────────────────────────── */
-  arts_guid_t e_w1 = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_guid_t e_w1 = arts_event_create(&gh);
   uint64_t base1 = 1000;
   arts_guid_t w1 =
       arts_edt_create(chain_writer, 1, &base1, 1,
                       &(arts_edt_hint_t){.rank = other, .group = e_w1});
   arts_add_dependence(db, w1, 0, DB_MODE_RW);
 
-  arts_guid_t e_r1 = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_guid_t e_r1 = arts_event_create(&gh);
   uint64_t p_r1[2] = {base1, 1};
   arts_guid_t r1 =
       arts_edt_create(chain_reader, 2, p_r1, 2,
@@ -241,7 +243,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_add_dependence(e_w1, r1, 1, DB_MODE_NULL);
 
   /* ── Stage 2: a second write, then one holding reader per rank ────────── */
-  arts_guid_t e_w2 = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_guid_t e_w2 = arts_event_create(&gh);
   uint64_t base2 = 2000;
   arts_guid_t w2 = arts_edt_create(
       chain_writer, 1, &base2, 2,
@@ -261,7 +263,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
 
   /* ── Stage 3: a write turn requested while the cohort holds ───────────── */
-  arts_guid_t e_w3 = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_guid_t e_w3 = arts_event_create(&gh);
   arts_guid_t w3 =
       arts_edt_create(chain_incrementer, 1, &base2, 2,
                       &(arts_edt_hint_t){.rank = other, .group = e_w3});
@@ -274,6 +276,12 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       &(arts_edt_hint_t){.rank = 0, .group = all_done});
   arts_add_dependence(db, r3, 0, DB_MODE_RO);
   arts_add_dependence(e_w3, r3, 1, DB_MODE_NULL);
+
+  arts_event_satisfy_slot(all_done, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
+  arts_event_satisfy_slot(e_w1, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
+  arts_event_satisfy_slot(e_r1, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
+  arts_event_satisfy_slot(e_w2, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
+  arts_event_satisfy_slot(e_w3, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 int main(int argc, char **argv) {

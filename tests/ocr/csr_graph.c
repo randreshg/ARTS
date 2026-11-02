@@ -538,7 +538,9 @@ void read_phase_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)paramv;
   (void)depc;
   (void)depv;
-  arts_guid_t readers = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t readers = arts_event_create(&gh);
   arts_edt_hint_t h = ARTS_EDT_HINT_DEFAULTS;
   h.group = readers;
   for (unsigned int i = 0; i < NCASES; ++i) {
@@ -557,6 +559,7 @@ void read_phase_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_edt_hint_t here = ARTS_EDT_HINT_DEFAULTS;
   arts_guid_t done = arts_edt_create(destroy_edt, 0, NULL, 1, &here);
   arts_add_dependence(readers, done, 0, DB_MODE_NULL);
+  arts_event_satisfy_slot(readers, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 static void check_dist_args(void) {
@@ -620,7 +623,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   for (unsigned int i = 0; i < NCASES; ++i) {
     arts_block_dist_to_params(&g_dist[i], &dists[i * ARTS_BLOCK_DIST_PARAMC]);
   }
-  arts_guid_t loaders = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t loaders = arts_event_create(&gh);
   arts_edt_hint_t h = ARTS_EDT_HINT_DEFAULTS;
   h.group = loaders;
   for (unsigned int r = 0; r < arts_get_total_ranks(); ++r) {
@@ -630,6 +635,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_edt_hint_t here = ARTS_EDT_HINT_DEFAULTS;
   arts_guid_t next = arts_edt_create(read_phase_edt, 0, NULL, 1, &here);
   arts_add_dependence(loaders, next, 0, DB_MODE_NULL);
+  arts_event_satisfy_slot(loaders, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 int main(int argc, char **argv) {

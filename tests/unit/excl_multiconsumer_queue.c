@@ -16,11 +16,11 @@
  * writer increments the DB's accumulator; the post-condition checks that EVERY
  * scheduled writer ran exactly once (no lost GRANT) by comparing the
  * accumulator to the writer launch count.  A lost rank/GRANT leaves a writer's
- * EDT permanently parked → it never completes → the group never drains →
+ * EDT permanently parked → it never completes → the group never fires →
  * ctest TIMEOUT (no in-test watchdog, no spin).
  *
- * The W/R EDTs all join one group; verify_edt is gated on that scope
- * firing.  The finish DECR is emitted at EDT completion — AFTER
+ * The W/R EDTs all join one group; verify_edt is gated on that group
+ * firing.  The group DECR is emitted at EDT completion — AFTER
  * arts_release_dbs — so verify observes every writer's increment only once its
  * RW grant has been released (committed).  Satisfying a plain latch from the
  * writer body instead would fire verify before the last writer's release,
@@ -120,9 +120,11 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
    * EDT's completion (after arts_release_dbs), so it fires only once every
    * writer's RW grant has been released — the post-condition then reads
    * committed data. */
-  arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
-  if (fe == NULL_GUID) {
-    (void)fprintf(stderr, "FAIL: finish-event create NULL_GUID\n");
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t group = arts_event_create(&gh);
+  if (group == NULL_GUID) {
+    (void)fprintf(stderr, "FAIL: group latch create NULL_GUID\n");
     arts_abort(1);
   }
 
@@ -134,23 +136,25 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     unsigned int r = (nranks > 1) ? (unsigned int)(i % nranks) : 0u;
     if (i % 5 == 4) {
       /* every 5th is a reader. */
-      arts_guid_t rd = arts_edt_create(
-          reader_edt, 0, NULL, 1, &(arts_edt_hint_t){.rank = r, .group = fe});
+      arts_guid_t rd =
+          arts_edt_create(reader_edt, 0, NULL, 1,
+                          &(arts_edt_hint_t){.rank = r, .group = group});
       arts_add_dependence(db, rd, 0, DB_MODE_RO);
     } else {
-      arts_guid_t w = arts_edt_create(
-          writer_edt, 0, NULL, 1, &(arts_edt_hint_t){.rank = r, .group = fe});
+      arts_guid_t w =
+          arts_edt_create(writer_edt, 0, NULL, 1,
+                          &(arts_edt_hint_t){.rank = r, .group = group});
       arts_add_dependence(db, w, 0, DB_MODE_RW);
     }
   }
 
-  /* verify_edt fires when the group drains (every participant has
-   * completed AND released).  The driver returns without waiting, releasing the
-   * scope's creator-token so it can fire. */
+  /* verify_edt fires when the group fires (every participant has completed
+   * AND released).  The driver DECRs the group without waiting. */
   arts_guid_t v =
       arts_edt_create(verify_edt, 0, NULL, 2, &(arts_edt_hint_t){.rank = 0});
-  arts_add_dependence(fe, v, 0, DB_MODE_NULL);
+  arts_add_dependence(group, v, 0, DB_MODE_NULL);
   arts_add_dependence(db, v, 1, DB_MODE_RO);
+  arts_event_satisfy_slot(group, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 int main(int argc, char **argv) {

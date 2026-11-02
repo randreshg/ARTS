@@ -46,43 +46,6 @@
 
 ARTS_THREAD_LOCAL struct arts_edt_s *arts_current_edt = NULL;
 static ARTS_THREAD_LOCAL arts_vector_t created_db_list = {0};
-static ARTS_THREAD_LOCAL arts_vector_t owned_finish_list = {0};
-
-void arts_owned_finish_register(arts_guid_t fe_guid) {
-  if (!fe_guid) {
-    return;
-  }
-  if (owned_finish_list.element_size == 0) {
-    arts_vector_init(&owned_finish_list, sizeof(arts_guid_t), 8);
-  }
-  arts_vector_push(&owned_finish_list, &fe_guid);
-}
-
-/* Mark fe_guid consumed (by arts_event_release_creator_token) so completion
- * cleanup skips it.  Removed, not blanked: cleanup walks what is still OWED,
- * so a consumed entry leaves the list instead of lingering as a slot to
- * skip. */
-void arts_owned_finish_consume(arts_guid_t fe_guid) {
-  uint64_t n = arts_vector_count(&owned_finish_list);
-  for (uint64_t i = 0; i < n; i++) {
-    arts_guid_t *g = (arts_guid_t *)arts_vector_at(&owned_finish_list, i);
-    if (*g == fe_guid) {
-      arts_vector_swap_remove(&owned_finish_list, i);
-      return;
-    }
-  }
-}
-
-/* Completion: DECR the creator-token of every finish event not handed back
- * early. */
-void arts_owned_finish_cleanup(void) {
-  uint64_t n = arts_vector_count(&owned_finish_list);
-  for (uint64_t i = 0; i < n; i++) {
-    arts_guid_t g = *(arts_guid_t *)arts_vector_at(&owned_finish_list, i);
-    arts_event_satisfy_slot(g, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
-  }
-  arts_vector_clear(&owned_finish_list);
-}
 
 arts_guid_t arts_current_group(void) {
   return arts_current_edt ? arts_current_edt->group : NULL_GUID;
@@ -125,10 +88,7 @@ void arts_set_thread_local_edt_info(struct arts_edt_s *edt) {
   arts_current_edt = edt;
 }
 
-void arts_cleanup_edt_tls() {
-  created_db_list_free(&created_db_list);
-  arts_vector_free(&owned_finish_list);
-}
+void arts_cleanup_edt_tls() { created_db_list_free(&created_db_list); }
 
 void arts_unset_thread_local_edt_info(bool decr_group) {
   /* group tracking: emit DECR on completion of the current EDT.
@@ -145,6 +105,5 @@ void arts_unset_thread_local_edt_info(bool decr_group) {
                                arts_current_edt->group, NULL_GUID,
                                ARTS_EVENT_LATCH_DECR_SLOT);
   }
-  arts_owned_finish_cleanup(); /* creator-tokens not handed back early */
   arts_current_edt = NULL;
 }

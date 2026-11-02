@@ -279,7 +279,7 @@ static void driver_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   run_cell(12, AXIS_NOHINT, HOME_SKIP, n, true);
 }
 
-/* ---- done_edt: depv[0]=outer finish control. */
+/* ---- done_edt: depv[0]=the outer group, control only. */
 static void done_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                      arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -300,7 +300,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   unsigned int n = arts_get_total_ranks();
   arts_printf("=== dbcreate_matrix (%u ranks) ===\n", n);
 
-  arts_guid_t outer = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t outer = arts_event_create(&gh);
   arts_guid_t done = arts_edt_create(done_edt, 0, NULL, 1, NULL);
   arts_add_dependence(outer, done, 0, DB_MODE_NULL);
 
@@ -312,6 +314,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_edt_create(driver_edt, 1, d1, 0,
                     &(arts_edt_hint_t){.rank = 1, .group = outer});
   }
+  arts_event_satisfy_slot(outer, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 int main(int argc, char **argv) {

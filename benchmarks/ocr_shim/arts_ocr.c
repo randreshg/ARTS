@@ -271,10 +271,9 @@ static void ocr_els_reset(void);
  * the release of all of its data blocks before its post-event is
  * satisfied).
  *
- * For finish EDTs (EDT_PROP_FINISH), ocrEdtCreate pre-creates a FINISH event
- * (via ARTS_EVENT_HINT_FINISH), passes it to the EDT via hint.group,
- * and chains it to the OCR outputEvent.  The trampoline itself is
- * group-agnostic.
+ * A finish EDT (EDT_PROP_FINISH) gets no completion event: ocrEdtCreate opens
+ * a group for it, whose fire satisfies the OCR outputEvent (see
+ * ocrEdtCreate).  The trampoline itself is group-agnostic.
  * ========================================================================= */
 
 static void ocr_edt_trampoline(uint32_t paramc, const uint64_t *paramv,
@@ -412,10 +411,10 @@ u8 ocrEdtCreate(ocrGuid_t *guid, ocrGuid_t templateGuid, u32 paramc,
   u32 actualParamc = (paramc == EDT_PARAM_DEF) ? templ->paramc : paramc;
   u32 actualDepc = (depc == EDT_PARAM_DEF) ? templ->depc : depc;
 
-  /* hint affinity → ARTS rank, else self-rank.  This `rank` places the
-   * completion/finish event created below (kept local to the creator regardless
-   * of where the EDT itself executes); the EDT's own execution rank is
-   * `edtRank`, computed separately near its arts_edt_create call below. */
+  /* hint affinity → ARTS rank, else self-rank.  This `rank` homes the
+   * outputEvent created below: on the affinity rank when the hint names one,
+   * else on the creating rank.  The EDT's own execution rank is `edtRank`,
+   * computed separately near its arts_edt_create call below. */
   int aff = extract_edt_affinity(hint);
   unsigned int rank = (aff < 0) ? arts_global_rank_id : (unsigned int)aff;
   arts_guid_t outEvt = NULL_GUID;
@@ -446,19 +445,16 @@ u8 ocrEdtCreate(ocrGuid_t *guid, ocrGuid_t templateGuid, u32 paramc,
   artsParamv[1] = (uint64_t)actualParamc;
   ocr_copy_paramv_safe(&artsParamv[2], paramv, actualParamc);
 
-  /* A finish EDT's group is a finish event created here, on the creating
-   * rank, and handed to the finish EDT as its group; its descendants inherit
-   * it.  Once the finish EDT has joined and the event is chained to outEvt,
-   * the shim hands the creator-token back: the finish EDT's own join holds the
-   * group open, so the token would only delay the fire until the creating task
-   * returns, which OCR does not require.  The event then fires when the finish
-   * EDT and every descendant have completed, satisfying outEvt.  The
-   * dependence carries no data (ARTS_MODE_NULL). */
-  arts_guid_t fe = NULL_GUID;
+  /* A finish EDT gets a group of its own: a latch on the creating rank whose
+   * count of 1 is the shim's.  The finish EDT is its one direct member, and
+   * the finish EDT's descendants join it by inheritance.  The shim makes
+   * every registration on the latch before its DECR below, so the latch can
+   * reclaim itself at its fire. */
+  arts_guid_t group = NULL_GUID;
   if (isFinishEdt) {
-    arts_event_hint_t feh = ARTS_EVENT_HINT_FINISH;
-    feh.rank = rank;
-    fe = arts_event_create(&feh);
+    arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+    gh.auto_destroy = true;
+    group = arts_event_create(&gh);
   }
 
   /* No affinity hint: ARTS_HINT_ANY_RANK lets arts_edt_create's own no-hint
@@ -471,8 +467,9 @@ u8 ocrEdtCreate(ocrGuid_t *guid, ocrGuid_t templateGuid, u32 paramc,
   /* Non-finish EDTs deliver the OCR return value through the ARTS completion
    * event (hint.completion_event; the trampoline registers the value via
    * arts_edt_set_result): the runtime satisfies it after the EDT's
-   * data-block releases.  Finish EDTs get their outputEvent chained to the
-   * finish event below instead. */
+   * data-block releases.  A finish EDT's outputEvent is satisfied by its
+   * group's fire instead, with no value: OCR ignores a finish EDT's return
+   * value. */
   arts_edt_hint_t edtHint = {.rank = edtRank};
   /* A labeled EDT is created at its label, whose rank is then its home: the
    * GUID's rank is authoritative over any affinity, as for every create of a
@@ -483,18 +480,35 @@ u8 ocrEdtCreate(ocrGuid_t *guid, ocrGuid_t templateGuid, u32 paramc,
     edtHint.guid = guid->guid;
   }
   if (isFinishEdt) {
-    edtHint.group = fe;
+    edtHint.group = group;
   } else {
     edtHint.completion_event = outEvt;
   }
   arts_guid_t edtGuid = arts_edt_create(ocr_edt_trampoline, artsParamc,
                                         artsParamv, actualDepc, &edtHint);
 
-  if (isFinishEdt && edtGuid != NULL_GUID && fe != NULL_GUID) {
-    if (outEvt != NULL_GUID) {
-      arts_add_dependence(fe, outEvt, 0, ARTS_MODE_NULL);
+  /* The group fires once the finish EDT and everything created transitively
+   * inside it are done, satisfying outEvt with no data.  The creating task's
+   * group waits for it too, so an enclosing finish EDT covers a nested one's
+   * subtree: arts_current_group() names a latch homed on this rank (that
+   * group, or this rank's proxy of it), so its INCR is applied before the new
+   * group can fire.  The shim's DECR comes last and always, so a latch whose
+   * EDT could not be built still fires and reclaims itself. */
+  if (isFinishEdt) {
+    if (edtGuid != NULL_GUID) {
+      if (outEvt != NULL_GUID) {
+        arts_add_dependence(group, outEvt, ARTS_EVENT_LATCH_DECR_SLOT,
+                            ARTS_MODE_NULL);
+      }
+      arts_guid_t enclosing = arts_current_group();
+      if (enclosing != NULL_GUID) {
+        arts_event_satisfy_slot(enclosing, NULL_GUID,
+                                ARTS_EVENT_LATCH_INCR_SLOT);
+        arts_add_dependence(group, enclosing, ARTS_EVENT_LATCH_DECR_SLOT,
+                            ARTS_MODE_NULL);
+      }
     }
-    arts_event_release_creator_token(fe);
+    arts_event_satisfy_slot(group, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
   }
 
   arts_free(artsParamv);

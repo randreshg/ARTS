@@ -97,7 +97,14 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
    * created.  The checker is created after the creator's release, so its read
    * is ordered after the write. */
   g_round_db[0] = arts_guid_reserve(ARTS_GUID_DB, 0);
-  arts_guid_t touched0 = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  /* Every group opened here, DECRed at the end: a round's checker group is
+   * registered on by the next round. */
+  arts_guid_t opened[2u + 3u * (ROUNDS - 1u)];
+  unsigned int nopened = 0;
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t touched0 = arts_event_create(&gh);
+  opened[nopened++] = touched0;
   arts_guid_t t0 =
       arts_edt_create(toucher_edt, 0, NULL, 1,
                       &(arts_edt_hint_t){.group = touched0, .rank = 0u});
@@ -112,7 +119,8 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     p0[0] = SENTINEL;
   }
   arts_db_release(g_round_db[0], DB_MODE_RW);
-  arts_guid_t prev = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_guid_t prev = arts_event_create(&gh);
+  opened[nopened++] = prev;
   arts_guid_t k0 = arts_edt_create(
       checker_edt, 0, NULL, 2, &(arts_edt_hint_t){.group = prev, .rank = 0u});
   arts_add_dependence(g_round_db[0], k0, 0, DB_MODE_RO);
@@ -121,8 +129,10 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   for (unsigned int r = 1; r < ROUNDS; r++) {
     g_round_db[r] = arts_guid_reserve(ARTS_GUID_DB, 0);
 
-    arts_guid_t touched = arts_event_create(&ARTS_EVENT_HINT_FINISH);
-    arts_guid_t made = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+    arts_guid_t touched = arts_event_create(&gh);
+    arts_guid_t made = arts_event_create(&gh);
+    opened[nopened++] = touched;
+    opened[nopened++] = made;
     arts_edt_hint_t th = {.group = touched, .rank = creator_rank};
     arts_guid_t t = arts_edt_create(toucher_edt, 0, NULL, 2, &th);
 
@@ -130,7 +140,8 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_edt_hint_t ch = {.group = made, .rank = creator_rank};
     arts_guid_t c = arts_edt_create(creator_edt, 1, cpv, 1, &ch);
 
-    arts_guid_t seen = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+    arts_guid_t seen = arts_event_create(&gh);
+    opened[nopened++] = seen;
     arts_edt_hint_t kh = {.group = seen, .rank = creator_rank};
     arts_guid_t k = arts_edt_create(checker_edt, 0, NULL, 3, &kh);
 
@@ -150,6 +161,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   arts_guid_t fin = arts_edt_create(done_edt, 0, NULL, 1, NULL);
   arts_add_dependence(prev, fin, 0, DB_MODE_NULL);
+  for (unsigned int i = 0; i < nopened; i++) {
+    arts_event_satisfy_slot(opened[i], NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
+  }
 }
 
 int main(int argc, char **argv) {

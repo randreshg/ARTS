@@ -118,9 +118,9 @@ static void check_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 static arts_guid_t spawn_inc(arts_guid_t db, unsigned int rank,
-                             arts_guid_t fe) {
+                             arts_guid_t group) {
   arts_guid_t w = arts_edt_create(
-      inc_edt, 0, NULL, 1, &(arts_edt_hint_t){.rank = rank, .group = fe});
+      inc_edt, 0, NULL, 1, &(arts_edt_hint_t){.rank = rank, .group = group});
   arts_add_dependence(db, w, 0, DB_MODE_RW);
   return w;
 }
@@ -142,40 +142,44 @@ static void phase_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                       arts_edt_dep_t depv[]);
 
 /* One batch or one step in a group of its own, the next phase gated
- * on it; after the last step, the check in a scope of its own and the
+ * on it; after the last step, the check in a group of its own and the
  * shutdown gated on that. */
 static void phase(const uint64_t *paramv) {
   unsigned int nranks = arts_get_total_ranks();
   arts_guid_t db = (arts_guid_t)paramv[P_DB];
   uint64_t p = paramv[P_PHASE];
   uint64_t total = paramv[P_TOTAL];
-  arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t group = arts_event_create(&gh);
   if (p < (uint64_t)N_BATCHES) {
     unsigned int b = (unsigned int)p;
     for (int i = 0; i < INCS_PER_BATCH; i++) {
-      spawn_inc(db, (b * INCS_PER_BATCH + (unsigned)i) % nranks, fe);
+      spawn_inc(db, (b * INCS_PER_BATCH + (unsigned)i) % nranks, group);
       total++;
     }
   } else if (p < (uint64_t)N_BATCHES + STEPS) {
     unsigned int r1 = 1u;
     unsigned int r2 = (nranks > 2) ? 2u : 1u;
-    spawn_inc(db, 0u, fe);
-    spawn_inc(db, r1, fe);
-    spawn_inc(db, r2, fe);
+    spawn_inc(db, 0u, group);
+    spawn_inc(db, r1, group);
+    spawn_inc(db, r2, group);
     total += 3;
   } else {
     arts_guid_t chk = arts_edt_create(
-        check_edt, 1, &total, 1, &(arts_edt_hint_t){.rank = 0, .group = fe});
+        check_edt, 1, &total, 1, &(arts_edt_hint_t){.rank = 0, .group = group});
     arts_add_dependence(db, chk, 0, DB_MODE_RO);
     arts_guid_t f =
         arts_edt_create(finale, 0, NULL, 1, &(arts_edt_hint_t){.rank = 0});
-    arts_add_dependence(fe, f, 0, DB_MODE_NULL);
+    arts_add_dependence(group, f, 0, DB_MODE_NULL);
+    arts_event_satisfy_slot(group, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
     return;
   }
   uint64_t next[P_COUNT] = {p + 1u, (uint64_t)db, total};
   arts_guid_t n = arts_edt_create(phase_edt, P_COUNT, next, 1,
                                   &(arts_edt_hint_t){.rank = 0});
-  arts_add_dependence(fe, n, 0, DB_MODE_NULL);
+  arts_add_dependence(group, n, 0, DB_MODE_NULL);
+  arts_event_satisfy_slot(group, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 static void phase_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,

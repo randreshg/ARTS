@@ -137,11 +137,12 @@ static void turn_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       &(arts_edt_hint_t){.rank = writer_rank, .completion_event = written});
   arts_add_dependence(g, w, 0, DB_MODE_RW);
 
-  arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t group = arts_event_create(&gh);
   for (unsigned int r = 0; r < nranks; r++) {
     arts_guid_t rd = arts_edt_create(
-        reader_edt, 1, wpv, 2,
-        &(arts_edt_hint_t){.rank = r, .group = fe});
+        reader_edt, 1, wpv, 2, &(arts_edt_hint_t){.rank = r, .group = group});
     arts_add_dependence(written, rd, 0, DB_MODE_NULL);
     arts_add_dependence(g, rd, 1, DB_MODE_RO);
   }
@@ -154,7 +155,8 @@ static void turn_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       arts_edt_create(destroy_edt, 1, dpv, 1,
                       &(arts_edt_hint_t){.rank = 0u,
                                          .completion_event = ddone});
-  arts_add_dependence(fe, d, 0, DB_MODE_NULL);
+  arts_add_dependence(group, d, 0, DB_MODE_NULL);
+  arts_event_satisfy_slot(group, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 
   if (iter + 1u < CYCLES) {
     uint64_t npv[3] = {(uint64_t)base, (uint64_t)(iter + 1u), (uint64_t)nranks};
@@ -178,15 +180,18 @@ static void iter_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   unsigned int iter = (unsigned int)paramv[1];
   unsigned int nranks = (unsigned int)paramv[2];
 
-  arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t group = arts_event_create(&gh);
   uint64_t cpv[1] = {(uint64_t)arts_guid_from_index(base, iter)};
   (void)arts_edt_create(
       create_edt, 1, cpv, 0,
-      &(arts_edt_hint_t){.rank = iter % nranks, .group = fe});
+      &(arts_edt_hint_t){.rank = iter % nranks, .group = group});
   uint64_t tpv[3] = {(uint64_t)base, (uint64_t)iter, (uint64_t)nranks};
   arts_guid_t t = arts_edt_create(turn_edt, 3, tpv, 1,
                                   &(arts_edt_hint_t){.rank = 0u});
-  arts_add_dependence(fe, t, 0, DB_MODE_NULL);
+  arts_add_dependence(group, t, 0, DB_MODE_NULL);
+  arts_event_satisfy_slot(group, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,

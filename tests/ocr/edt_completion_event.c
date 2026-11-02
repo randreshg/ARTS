@@ -156,7 +156,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   uint64_t pv[1] = {(uint64_t)tally};
 
-  arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t group = arts_event_create(&gh);
 
   /* --- Result path --- */
   {
@@ -172,14 +174,14 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
     arts_guid_t prod = arts_edt_create(
         producer, 1, pv, 1,
-        &(arts_edt_hint_t){.rank = 0, .completion_event = oe, .group = fe});
+        &(arts_edt_hint_t){.rank = 0, .completion_event = oe, .group = group});
     arts_add_dependence(rdb, prod, 0, DB_MODE_RW);
 
     /* Consumer: slot0 = result DB via completion event (RO), slot1 = tally
      * (RW). */
-    arts_guid_t cons =
-        arts_edt_create(result_consumer, 1, pv, 2,
-                        &(arts_edt_hint_t){.rank = consumer_rank, .group = fe});
+    arts_guid_t cons = arts_edt_create(
+        result_consumer, 1, pv, 2,
+        &(arts_edt_hint_t){.rank = consumer_rank, .group = group});
     arts_add_dependence(oe, cons, 0, DB_MODE_RO);
     arts_add_dependence(tally, cons, 1, DB_MODE_RW);
   }
@@ -190,11 +192,11 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
     arts_guid_t prod = arts_edt_create(
         producer_null, 1, pv, 0,
-        &(arts_edt_hint_t){.rank = 0, .completion_event = oe, .group = fe});
+        &(arts_edt_hint_t){.rank = 0, .completion_event = oe, .group = group});
     (void)prod;
 
     arts_guid_t cons = arts_edt_create(
-        null_consumer, 1, pv, 2, &(arts_edt_hint_t){.rank = 0, .group = fe});
+        null_consumer, 1, pv, 2, &(arts_edt_hint_t){.rank = 0, .group = group});
     arts_add_dependence(oe, cons, 0, DB_MODE_NULL);
     arts_add_dependence(tally, cons, 1, DB_MODE_RW);
   }
@@ -202,8 +204,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   /* Collector gated on the group. */
   arts_guid_t coll =
       arts_edt_create(collector, 1, pv, 2, &(arts_edt_hint_t){.rank = 0});
-  arts_add_dependence(fe, coll, 0, DB_MODE_NULL);
+  arts_add_dependence(group, coll, 0, DB_MODE_NULL);
   arts_add_dependence(tally, coll, 1, DB_MODE_RO);
+  arts_event_satisfy_slot(group, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 int main(int argc, char **argv) {

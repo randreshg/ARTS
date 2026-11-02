@@ -339,12 +339,15 @@ void main_continue(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                   &(arts_edt_hint_t){.guid = final_reduce_guid});
 
   // Start work on every node
-  arts_guid_t work_done = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_event_hint_t group_hint = ARTS_EVENT_HINT_LATCH(1);
+  group_hint.auto_destroy = true;
+  arts_guid_t work_done = arts_event_create(&group_hint);
   for (unsigned int i = 0; i < arts_get_total_ranks(); i++) {
     arts_edt_create(start_work, 0, NULL, 0,
                     &(arts_edt_hint_t){.rank = i, .group = work_done});
   }
   arts_add_dependence(work_done, start_reduce_guid, 0, DB_MODE_NULL);
+  arts_event_satisfy_slot(work_done, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
@@ -385,7 +388,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   init_paramv[ARTS_BLOCK_DIST_PARAMC] = start_guid;
   init_paramv[ARTS_BLOCK_DIST_PARAMC + 1] = final_guid;
   arts_argv_to_params(argc, argv, init_paramv + ARTS_BLOCK_DIST_PARAMC + 2);
-  arts_guid_t init_done = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_event_hint_t group_hint = ARTS_EVENT_HINT_LATCH(1);
+  group_hint.auto_destroy = true;
+  arts_guid_t init_done = arts_event_create(&group_hint);
   for (unsigned int i = 0; i < arts_get_total_ranks(); i++) {
     arts_edt_create(init_node, init_paramc, init_paramv, 0,
                     &(arts_edt_hint_t){.rank = i, .group = init_done});
@@ -394,6 +399,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_guid_t cont = arts_edt_create(main_continue, paramc, paramv, 1,
                                      &(arts_edt_hint_t){.rank = 0});
   arts_add_dependence(init_done, cont, 0, DB_MODE_NULL);
+  arts_event_satisfy_slot(init_done, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 int main(int argc, char **argv) { return arts_rt(argc, argv); }

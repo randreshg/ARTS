@@ -10,13 +10,13 @@
  * phases are wired with strict happens-before so the assertions are
  * deterministic (no data race):
  *
- *   writer[k] --completion_event ew[k]--> readers[k] (RO, xM) --finish lk[k]-->
+ *   writer[k] --completion_event ew[k]--> readers[k] (RO, xM) --group lk[k]-->
  *   writer[k+1]
  *
- * - writer[k] -> readers[k] via ew[k]: an EDT's completion event fires
- *   only after it released its blocks, so every reader sees the committed k+1.
- * - readers[k] -> writer[k+1] via the finish event lk[k]: each reader leaves
- *   the scope at completion, after its RO release, so writer[k+1] RW-acquires
+ * - writer[k] -> readers[k] via ew[k]: an EDT's completion event fires only
+ * after it released its blocks, so every reader sees the committed k+1.
+ * - readers[k] -> writer[k+1] via the group lk[k]: each reader leaves the
+ *   group at completion, after its RO release, so writer[k+1] RW-acquires
  *   only once every reader has given its read turn back.
  *
  * Chain, on a second counter block: writer i runs on rank i % nranks and is
@@ -41,7 +41,7 @@
 #define N_CHAIN_WRITERS 12 /* > nranks, so the block migrates several times */
 
 /* Writer: DB (RW) is the LAST dep slot (slot 0 for phase 0, slot 1 otherwise —
- * the earlier slot is the prior phase's finish gate, NULL/control).  Increment
+ * the earlier slot is the prior phase's group, NULL/control).  Increment
  * is HB-ordered after the prior phase, so a plain ++ is correct. */
 static void writer_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                        arts_edt_dep_t depv[]) {
@@ -83,7 +83,7 @@ static void reader_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
 }
 
-/* Final, on rank 0: depv[0] = the last phase's finish event, depv[1] = the
+/* Final, on rank 0: depv[0] = the last phase's group, depv[1] = the
  * phase counter (RO), depv[2] = the last chain writer's completion event,
  * depv[3] = the chain counter (RO).  Every writer ran exactly once, in order.
  */
@@ -139,12 +139,14 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   *(uint64_t *)cp = 0u;
   arts_db_release(counter, DB_MODE_RW);
 
-  /* Per-phase writer completion_event (ew) + reader-batch finish event (lk). */
+  /* Per-phase writer completion_event (ew) + reader-batch group (lk). */
   arts_guid_t ew[N_PHASES];
   arts_guid_t lk[N_PHASES];
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
   for (unsigned int k = 0; k < N_PHASES; k++) {
     ew[k] = arts_event_create(&ARTS_EVENT_HINT_LATCH(1));
-    lk[k] = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+    lk[k] = arts_event_create(&gh);
   }
 
   for (unsigned int k = 0; k < N_PHASES; k++) {
@@ -163,8 +165,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       arts_add_dependence(counter, w, 0, DB_MODE_RW);
     }
 
-    /* M readers, gated on ew[k], joined to finish event lk[k]; assert == k+1.
-     */
+    /* M readers, gated on ew[k], joined to group lk[k]; assert == k+1. */
     uint64_t rp[1] = {(uint64_t)(k + 1u)};
     for (unsigned int m = 0; m < N_READERS; m++) {
       unsigned int rr = (nranks > 1u) ? ((k + m + 1u) % nranks) : 0u;
@@ -209,6 +210,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_add_dependence(counter, v, 1, DB_MODE_RO);
   arts_add_dependence(oe[N_CHAIN_WRITERS - 1], v, 2, DB_MODE_NULL);
   arts_add_dependence(chain, v, 3, DB_MODE_RO);
+  for (unsigned int k = 0; k < N_PHASES; k++) {
+    arts_event_satisfy_slot(lk[k], NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
+  }
 }
 
 int main(int argc, char **argv) {

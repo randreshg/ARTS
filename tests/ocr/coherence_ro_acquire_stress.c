@@ -111,16 +111,19 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
    * depc >= 1 so the group's slot-0 satisfy actually gates it; depc=0
    * would let it fire before any reader. */
   arts_guid_t shut = arts_edt_create(shutdown_edt, 0, NULL, 1, NULL);
-  arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
-  arts_add_dependence(fe, shut, 0, DB_MODE_NULL);
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t group = arts_event_create(&gh);
+  arts_add_dependence(group, shut, 0, DB_MODE_NULL);
 
   unsigned int ranks = arts_get_total_ranks();
   for (int i = 0; i < N_READERS; i++) {
     arts_guid_t r = arts_edt_create(
         reader_edt, 0, NULL, 1,
-        &(arts_edt_hint_t){.rank = (unsigned int)i % ranks, .group = fe});
+        &(arts_edt_hint_t){.rank = (unsigned int)i % ranks, .group = group});
     arts_add_dependence(db, r, 0, DB_MODE_RO);
   }
+  arts_event_satisfy_slot(group, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 int main(int argc, char **argv) {

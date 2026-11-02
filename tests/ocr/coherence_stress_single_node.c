@@ -46,12 +46,13 @@
 ///     block gets two read and two write acquisitions.
 /// Every iteration is issued at once, under one group, so every
 /// iteration's blocks see read and write turns contend at the same time; the
-/// scope drains to the shutdown only once every worker has run.  The write
+/// group fires the shutdown only once every worker has run.  The write
 /// acquisitions of a block are unordered, which DB-WRF does not admit.
 ///
 /// Correctness: each worker calls arts_abort(1) on NULL ptr; the group
-/// draining to shutdown_edt is proof all workers completed without abort.
-/// A stranded waiter surfaces as a ctest TIMEOUT.  No global cross-EDT state.
+/// firing and releasing shutdown_edt is proof all workers completed without
+/// abort.  A stranded waiter surfaces as a ctest TIMEOUT.  No global
+/// cross-EDT state.
 
 #include "arts.h"
 
@@ -101,11 +102,13 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
               "%d DBs/iter) ===\n",
               K_ITERS, N_EDTS, M_DBS);
 
-  /* Finish-EDT must have depc >= 1 so the group's slot-0 satisfy
+  /* The shutdown EDT must have depc >= 1 so the group's slot-0 satisfy
    * actually gates it; depc=0 would let it fire before any worker. */
   arts_guid_t shut = arts_edt_create(shutdown_edt, 0, NULL, 1, NULL);
-  arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
-  arts_add_dependence(fe, shut, 0, DB_MODE_NULL);
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t group = arts_event_create(&gh);
+  arts_add_dependence(group, shut, 0, DB_MODE_NULL);
 
   for (int iter = 0; iter < K_ITERS; iter++) {
     arts_guid_t dbs[M_DBS];
@@ -123,10 +126,11 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       int db_idx = i % M_DBS;
       arts_db_access_mode_t mode = ((i / M_DBS) & 1) ? DB_MODE_RW : DB_MODE_RO;
       arts_guid_t w = arts_edt_create(worker_edt, 0, NULL, 1,
-                                      &(arts_edt_hint_t){.group = fe});
+                                      &(arts_edt_hint_t){.group = group});
       arts_add_dependence(dbs[db_idx], w, 0, mode);
     }
   }
+  arts_event_satisfy_slot(group, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 int main(int argc, char **argv) {

@@ -84,7 +84,7 @@ enum { P_ROUND, P_CTR0, P_CTR1, P_COUNT };
 static void round_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                       arts_edt_dep_t depv[]);
 
-/* One round of writers in a scope of its own, the next round gated on it;
+/* One round of writers in a group of its own, the next round gated on it;
  * after the last, the touches and the checks, and the shutdown gated on
  * those. */
 static void round_step(const uint64_t *paramv) {
@@ -95,23 +95,28 @@ static void round_step(const uint64_t *paramv) {
   uint64_t r = paramv[P_ROUND];
 
   if (r < ROUNDS) {
-    arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+    arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+    gh.auto_destroy = true;
+    arts_guid_t group = arts_event_create(&gh);
     for (unsigned int h = 0; h < BURST; h++) {
       /* Writers go out in pairs, one per counter, so every rank writes
        * both counters and each counter is written from off its home. */
       arts_guid_t e = arts_edt_create(
           bump, 0, NULL, 1,
-          &(arts_edt_hint_t){.rank = (h >> 1) % nranks, .group = fe});
+          &(arts_edt_hint_t){.rank = (h >> 1) % nranks, .group = group});
       arts_add_dependence(ctr[h & 1u], e, 0, DB_MODE_RW);
     }
     uint64_t next[P_COUNT] = {r + 1u, paramv[P_CTR0], paramv[P_CTR1]};
     arts_guid_t n = arts_edt_create(round_edt, P_COUNT, next, 1,
                                     &(arts_edt_hint_t){.rank = 0u});
-    arts_add_dependence(fe, n, 0, DB_MODE_NULL);
+    arts_add_dependence(group, n, 0, DB_MODE_NULL);
+    arts_event_satisfy_slot(group, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
     return;
   }
 
-  arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t group = arts_event_create(&gh);
   for (unsigned int k = 0; k < nranks; k++) {
     void *a = NULL;
     arts_guid_t t =
@@ -119,19 +124,19 @@ static void round_step(const uint64_t *paramv) {
                        ARTS_DB_PROP_NO_ACQUIRE, &(arts_db_hint_t){.rank = k});
     arts_guid_t e = arts_edt_create(
         bump, 0, NULL, 1,
-        &(arts_edt_hint_t){.rank = (k + 1u) % nranks, .group = fe});
+        &(arts_edt_hint_t){.rank = (k + 1u) % nranks, .group = group});
     arts_add_dependence(t, e, 0, DB_MODE_RW);
   }
   for (unsigned int k = 0; k < 2u; k++) {
     uint64_t want = (uint64_t)(BURST / 2u) * ROUNDS;
     arts_guid_t c = arts_edt_create(
-        check, 1, &want, 1,
-        &(arts_edt_hint_t){.rank = last, .group = fe});
+        check, 1, &want, 1, &(arts_edt_hint_t){.rank = last, .group = group});
     arts_add_dependence(ctr[k], c, 0, DB_MODE_RO);
   }
   arts_guid_t f =
       arts_edt_create(finale, 0, NULL, 1, &(arts_edt_hint_t){.rank = 0u});
-  arts_add_dependence(fe, f, 0, DB_MODE_NULL);
+  arts_add_dependence(group, f, 0, DB_MODE_NULL);
+  arts_event_satisfy_slot(group, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 static void round_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,

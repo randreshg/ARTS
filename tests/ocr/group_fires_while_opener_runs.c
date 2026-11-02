@@ -3,25 +3,22 @@
 ** Licensed under the Apache License, Version 2.0 (the "License").           **
 ******************************************************************************/
 
-/* finish_scope_creator_token — a group whose creator hands its token
- * back fires when its members finish, while the creator still runs.
+/* group_fires_while_opener_runs — a group fires once its members are done and
+ * its opener has DECRed it, while the opener still runs.
  *
- * The OCR finish EDT's sequence through the native API: the creating EDT makes
- * a group on its own rank, creates a worker on the last rank in it,
- * binds a continuation to the group, and releases its creator-token.  The
- * worker creates a child on the first rank, which inherits the group.  The
- * creator then keeps running; the continuation must observe the child done
- * and run before the creator returns.  A token held until the creator
- * completes would delay the fire past that point, and the creator gives up
- * after a bound.
+ * main_edt opens a group, puts one member on the last rank, wires a successor
+ * on rank 0 to the group and DECRs it.  The member creates a child on rank 0,
+ * which inherits the group (through the member's local proxy when the member
+ * runs on another rank).  main_edt then keeps running: the successor must
+ * find the child done, and must run before main_edt gives up after a bound.
  */
 
 #include <stdatomic.h>
 #include <stdint.h>
 #include <time.h>
 
-#include "arts.h"
 #include "../test_failure_status.h"
+#include "arts.h"
 
 #define WAIT_NS (30ull * 1000000000ull)
 
@@ -43,7 +40,7 @@ static void child(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   atomic_store_explicit(&g_child_done, 1u, memory_order_release);
 }
 
-static void worker(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+static void member(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                    arts_edt_dep_t depv[]) {
   (void)paramc;
   (void)paramv;
@@ -52,15 +49,15 @@ static void worker(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)arts_edt_create(child, 0, NULL, 0, &(arts_edt_hint_t){.rank = 0u});
 }
 
-static void continuation(uint32_t paramc, const uint64_t *paramv,
-                         uint32_t depc, arts_edt_dep_t depv[]) {
+static void successor(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                      arts_edt_dep_t depv[]) {
   (void)paramc;
   (void)paramv;
   (void)depc;
   (void)depv;
   if (atomic_load_explicit(&g_child_done, memory_order_acquire) != 1u) {
-    arts_printf("FAIL: finish_scope_creator_token: the group fired before "
-                "the worker's child finished\n");
+    arts_printf("FAIL: group_fires_while_opener_runs: the group fired before "
+                "the member's child finished\n");
     arts_test_fail();
   }
   atomic_store_explicit(&g_fired, 1u, memory_order_release);
@@ -73,25 +70,25 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depc;
   (void)depv;
   unsigned int last = arts_get_total_ranks() - 1u;
-  arts_guid_t group = arts_event_create(&ARTS_EVENT_HINT_FINISH);
-  (void)arts_edt_create(
-      worker, 0, NULL, 0,
-      &(arts_edt_hint_t){.rank = last, .group = group});
-  arts_guid_t cont =
-      arts_edt_create(continuation, 0, NULL, 1, &(arts_edt_hint_t){.rank = 0u});
-  arts_add_dependence(group, cont, 0, DB_MODE_NULL);
-  arts_event_release_creator_token(group);
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  arts_guid_t g = arts_event_create(&gh);
+  (void)arts_edt_create(member, 0, NULL, 0,
+                        &(arts_edt_hint_t){.rank = last, .group = g});
+  arts_guid_t succ =
+      arts_edt_create(successor, 0, NULL, 1, &(arts_edt_hint_t){.rank = 0u});
+  arts_add_dependence(g, succ, 0, DB_MODE_NULL);
+  arts_event_satisfy_slot(g, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 
   uint64_t start = now_ns();
   while (atomic_load_explicit(&g_fired, memory_order_acquire) == 0u &&
          now_ns() - start < WAIT_NS) {
   }
   if (atomic_load_explicit(&g_fired, memory_order_acquire) == 0u) {
-    arts_printf("FAIL: finish_scope_creator_token: the group did not fire "
-                "while its creator ran\n");
+    arts_printf("FAIL: group_fires_while_opener_runs: the group did not fire "
+                "while its opener ran\n");
     arts_test_fail();
   } else if (arts_test_status() == 0) {
-    arts_printf("PASS: finish_scope_creator_token\n");
+    arts_printf("PASS: group_fires_while_opener_runs\n");
   }
   arts_shutdown();
 }

@@ -19,7 +19,7 @@
  *   - at the install, group names an event of the home (the proxy);
  *   - the destroy runs while the body is held, and the proxy it DECRs fires
  *     and is reclaimed before the body goes on;
- *   - the group drains, and the shutdown is quiescent.
+ *   - the group fires, and the shutdown is quiescent.
  * The destroyer is started, and seen running, before the EDT is created, so
  * the held body waits on no thread of its own rank's progress engine.
  *
@@ -159,7 +159,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depc;
   (void)depv;
   unsigned int home = arts_get_total_ranks() - 1u;
-  arts_guid_t group = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t group = arts_event_create(&gh);
   arts_guid_t running = arts_event_create(NULL);
   uint64_t dp[1] = {(uint64_t)running};
   (void)arts_edt_create(
@@ -174,6 +176,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_guid_t f = arts_edt_create(
       finale, 1, dp, 1, &(arts_edt_hint_t){.rank = arts_get_current_rank()});
   arts_add_dependence(group, f, 0, DB_MODE_NULL);
+  arts_event_satisfy_slot(group, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 int main(int argc, char **argv) {

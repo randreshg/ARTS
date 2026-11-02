@@ -16,7 +16,7 @@
  * readers would see generation 1, and the run would end with that create
  * still parked.
  *
- * The destroying task's finish signal, which readies the second create,
+ * The destroying task's DECR of its group, which readies the second create,
  * leaves the last rank after its destroy did, so under one progress thread
  * the home handles the destroy first.  With two progress threads the home can
  * dispatch the signal first; the second create then parks behind generation
@@ -110,7 +110,9 @@ static void second_creator(uint32_t paramc, const uint64_t *paramv,
   *p = VALUE(2);
   arts_db_release(label, DB_MODE_RW);
 
-  arts_guid_t read = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t read = arts_event_create(&gh);
   arts_guid_t r = arts_edt_create(
       reader, P_COUNT, paramv, 1,
       &(arts_edt_hint_t){.rank = last_rank(), .group = read});
@@ -119,6 +121,7 @@ static void second_creator(uint32_t paramc, const uint64_t *paramv,
       arts_edt_create(closer, P_COUNT, paramv, 2, &(arts_edt_hint_t){.rank = 0u});
   arts_add_dependence(read, c, 0, DB_MODE_NULL);
   arts_add_dependence(label, c, 1, DB_MODE_RO);
+  arts_event_satisfy_slot(read, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 static void first_creator(uint32_t paramc, const uint64_t *paramv,
@@ -134,13 +137,16 @@ static void first_creator(uint32_t paramc, const uint64_t *paramv,
   *p = VALUE(1);
   arts_db_release(label, DB_MODE_RW);
 
-  arts_guid_t destroyed = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t destroyed = arts_event_create(&gh);
   (void)arts_edt_create(
       destroyer, P_COUNT, paramv, 0,
       &(arts_edt_hint_t){.rank = last_rank(), .group = destroyed});
   arts_guid_t s = arts_edt_create(second_creator, P_COUNT, paramv, 1,
                                   &(arts_edt_hint_t){.rank = 0u});
   arts_add_dependence(destroyed, s, 0, DB_MODE_NULL);
+  arts_event_satisfy_slot(destroyed, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 static void tail(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
@@ -151,7 +157,7 @@ static void tail(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depv;
 }
 
-/* Gated on main's scope.  paramv[0] = the chain's done event. */
+/* Gated on main's group.  paramv[0] = the chain's done event. */
 static void finale(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                    arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -170,7 +176,7 @@ static void finale(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 /* The chain belongs to no group: its last task signals the home, where
- * the only scope the finale is gated on lives with its one member. */
+ * the only group the finale is gated on lives with its one member. */
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
               arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -179,9 +185,11 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depv;
   arts_guid_t label = arts_guid_reserve(ARTS_GUID_DB, 0u);
   arts_guid_t done = arts_event_create(&ARTS_EVENT_HINT_DEFAULTS);
-  arts_guid_t finish = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t group = arts_event_create(&gh);
   arts_guid_t t = arts_edt_create(
-      tail, 0, NULL, 1, &(arts_edt_hint_t){.rank = 0u, .group = finish});
+      tail, 0, NULL, 1, &(arts_edt_hint_t){.rank = 0u, .group = group});
   arts_add_dependence(done, t, 0, DB_MODE_NULL);
   uint64_t pv[P_COUNT] = {(uint64_t)label, (uint64_t)done};
   (void)arts_edt_create(first_creator, P_COUNT, pv, 0,
@@ -189,7 +197,8 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   uint64_t fv[1] = {(uint64_t)done};
   arts_guid_t f =
       arts_edt_create(finale, 1, fv, 1, &(arts_edt_hint_t){.rank = 0u});
-  arts_add_dependence(finish, f, 0, DB_MODE_NULL);
+  arts_add_dependence(group, f, 0, DB_MODE_NULL);
+  arts_event_satisfy_slot(group, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 int main(int argc, char **argv) {

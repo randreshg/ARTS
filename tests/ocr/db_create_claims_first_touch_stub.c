@@ -129,7 +129,7 @@ static void gate_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_add_dependence((arts_guid_t)paramv[0], reader, 0, DB_MODE_RO);
 }
 
-/// Gated on the scope every iteration's EDTs joined.
+/// Gated on the group every iteration's EDTs joined.
 static void finale(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                    arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -159,7 +159,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     return;
   }
 
-  arts_guid_t outer = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t outer = arts_event_create(&gh);
 
   for (unsigned int it = 0; it < ITERS; it++) {
     uint64_t sentinel = SENTINEL_BASE + it;
@@ -186,6 +188,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_guid_t f =
       arts_edt_create(finale, 0, NULL, 1, &(arts_edt_hint_t){.rank = 0});
   arts_add_dependence(outer, f, 0, DB_MODE_NULL);
+  arts_event_satisfy_slot(outer, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 int main(int argc, char **argv) {

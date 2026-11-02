@@ -13,7 +13,7 @@
  *   - removes the sentinel; exactly one party observes the 0 transition, so
  *     the EDT fires exactly once (no double dispatch, no lost fire),
  *   - chains the EDT's group to the remote parent through a proxy
- *     latch, so the parent group drains once the EDT has run.
+ *     latch, so the parent group fires once the EDT has run.
  *
  * Scenario (deterministic, single driver rank)
  * --------------------------------------------
@@ -23,8 +23,8 @@
  *      create and queue OoO there.
  *   2) Create that GUID, targeting W under a group.  On W the install
  *      replays both, and the EDT fires exactly once under the sentinel.
- * A finish event gates a collector; main_edt waits on it.  The member bumps a
- * shared counter exactly once.  A lost fire → the group never drains →
+ * The group gates a collector, which ends the run.  The member bumps a
+ * shared counter exactly once.  A lost fire → the group never fires →
  * TIMEOUT; a double fire → counter == 2 → FAIL.
  *
  * A second create of a live GUID parks until the occupant is destroyed, so
@@ -102,7 +102,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   uint64_t pv[1] = {(uint64_t)cdb};
 
-  arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t group = arts_event_create(&gh);
 
   /* Reserve the member EDT GUID on the (remote) home rank W. */
   arts_guid_t mguid = arts_guid_reserve(ARTS_GUID_EDT, W);
@@ -117,13 +119,14 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
    * On W the install replays both queued satisfies, and the EDT fires once
    * under the sentinel. */
   arts_edt_create(member, 1, pv, 2,
-                  &(arts_edt_hint_t){.guid = mguid, .group = fe});
+                  &(arts_edt_hint_t){.guid = mguid, .group = group});
 
   /* Collector gated on the group. */
   arts_guid_t coll =
       arts_edt_create(collector, 1, pv, 2, &(arts_edt_hint_t){.rank = 0});
-  arts_add_dependence(fe, coll, 0, DB_MODE_NULL);
+  arts_add_dependence(group, coll, 0, DB_MODE_NULL);
   arts_add_dependence(cdb, coll, 1, DB_MODE_RO);
+  arts_event_satisfy_slot(group, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 int main(int argc, char **argv) {

@@ -250,14 +250,16 @@ static void rank_driver_edt(uint32_t paramc, const uint64_t *paramv,
   }
   arts_db_release(coll, DB_MODE_RW);
 
-  /* Checker runs after all reservers (slot 1 = inner finish); it inherits
-   * this driver's scope (outer, joined through this rank's proxy), so the
+  /* Checker runs after all reservers (slot 1 = the inner group); it inherits
+   * this driver's group (outer, joined through this rank's proxy), so the
    * final check waits for it. */
   arts_guid_t checker =
       arts_edt_create(checker_edt, 0, NULL, 2, &(arts_edt_hint_t){.rank = me});
   arts_add_dependence(coll, checker, 0, DB_MODE_RO);
 
-  arts_guid_t inner = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t inner = arts_event_create(&gh);
   arts_add_dependence(inner, checker, 1, DB_MODE_NULL);
 
   /* Fan out reservers inside the inner group, all on this rank. */
@@ -268,6 +270,7 @@ static void rank_driver_edt(uint32_t paramc, const uint64_t *paramv,
                         &(arts_edt_hint_t){.rank = me, .group = inner});
     arts_add_dependence(coll, r, 0, DB_MODE_RW);
   }
+  arts_event_satisfy_slot(inner, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
@@ -285,7 +288,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   uint64_t final_params[2] = {(uint64_t)colls, (uint64_t)nrank};
   arts_guid_t final =
       arts_edt_create(final_edt, 2, final_params, 1, &ARTS_EDT_HINT_DEFAULTS);
-  arts_guid_t outer = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t outer = arts_event_create(&gh);
   arts_add_dependence(outer, final, 0, DB_MODE_NULL);
 
   uint64_t driver_param = (uint64_t)colls;
@@ -293,6 +298,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_edt_create(rank_driver_edt, 1, &driver_param, 0,
                     &(arts_edt_hint_t){.rank = r, .group = outer});
   }
+  arts_event_satisfy_slot(outer, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 int main(int argc, char **argv) {

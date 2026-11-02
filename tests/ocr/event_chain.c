@@ -41,7 +41,7 @@
 /// @brief Tests event-to-event chaining and event-to-EDT dependence wiring.
 ///        Event A → Event B → EDT: when A fires, B should also fire,
 ///        which triggers the final EDT.  A dependent the chain fails to fire
-///        leaves the group undrained (ctest TIMEOUT).
+///        leaves the group unfired (ctest TIMEOUT).
 
 #include "arts.h"
 
@@ -96,13 +96,15 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   arts_printf("=== event_chain ===\n");
 
-  arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t group = arts_event_create(&gh);
 
   // Test 1: Event1(latch=1) → Event2(latch=1) → EDT.
   arts_guid_t ev1 = arts_event_create(NULL);
   arts_guid_t ev2 = arts_event_create(NULL);
   arts_guid_t edt1 = arts_edt_create(
-      chain_end, 0, NULL, 1, &(arts_edt_hint_t){.rank = 0, .group = fe});
+      chain_end, 0, NULL, 1, &(arts_edt_hint_t){.rank = 0, .group = group});
 
   // Wire: ev1 fires → satisfies ev2 slot 0 → ev2 fires → satisfies edt1 slot 0.
   arts_add_dependence(ev1, ev2, ARTS_EVENT_LATCH_DECR_SLOT, DB_MODE_RW);
@@ -118,7 +120,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   fan_in_hint.latch = 2;
   arts_guid_t ev_c = arts_event_create(&fan_in_hint);
   arts_guid_t edt2 = arts_edt_create(
-      fan_in_end, 0, NULL, 1, &(arts_edt_hint_t){.rank = 0, .group = fe});
+      fan_in_end, 0, NULL, 1, &(arts_edt_hint_t){.rank = 0, .group = group});
 
   arts_add_dependence(ev_a, ev_c, ARTS_EVENT_LATCH_DECR_SLOT, DB_MODE_RW);
   arts_add_dependence(ev_b, ev_c, ARTS_EVENT_LATCH_DECR_SLOT, DB_MODE_RW);
@@ -135,13 +137,14 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   // Now wire after fire — fast path self-signals.
   arts_guid_t edt4 =
       arts_edt_create(already_fired_end, 0, NULL, 1,
-                      &(arts_edt_hint_t){.rank = 0, .group = fe});
+                      &(arts_edt_hint_t){.rank = 0, .group = group});
   arts_add_dependence(ev4, edt4, 0, DB_MODE_RW);
   arts_event_destroy(ev4);
 
   arts_guid_t f =
       arts_edt_create(finale, 0, NULL, 1, &(arts_edt_hint_t){.rank = 0});
-  arts_add_dependence(fe, f, 0, DB_MODE_NULL);
+  arts_add_dependence(group, f, 0, DB_MODE_NULL);
+  arts_event_satisfy_slot(group, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 int main(int argc, char **argv) {

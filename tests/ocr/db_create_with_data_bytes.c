@@ -81,15 +81,14 @@ void check_bytes(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 static void consume(arts_guid_t g, uint64_t size, unsigned int id,
-                    arts_db_access_mode_t mode, arts_guid_t scope) {
+                    arts_db_access_mode_t mode, arts_guid_t group) {
   uint64_t pv[3] = {(uint64_t)g, size, id};
-  arts_guid_t e =
-      arts_edt_create(check_bytes, 3, pv, 1,
-                      &(arts_edt_hint_t){.rank = 0, .group = scope});
+  arts_guid_t e = arts_edt_create(
+      check_bytes, 3, pv, 1, &(arts_edt_hint_t){.rank = 0, .group = group});
   arts_add_dependence(g, e, 0, mode);
 }
 
-/// Runs once every consumer's scope drained.
+/// Runs once the consumers' group fired.
 static void finale(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                    arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -113,7 +112,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_printf("=== db_create_with_data_bytes ===\n");
 
   const uint64_t sizes[NUM_LABELED] = {1u, 7u, 64u, 1000u, 0u};
-  arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
+  gh.auto_destroy = true;
+  arts_guid_t group = arts_event_create(&gh);
 
   for (unsigned int c = 0; c < NUM_LABELED; c++) {
     uint64_t size = sizes[c];
@@ -124,7 +125,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       p[i] = pattern_byte((uint64_t)g, i);
     }
     arts_db_release(g, DB_MODE_RW);
-    consume(g, size, c, DB_MODE_RO, fe);
+    consume(g, size, c, DB_MODE_RO, group);
   }
 
   void *mp = NULL;
@@ -134,11 +135,12 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     ((unsigned char *)mp)[i] = pattern_byte((uint64_t)minted, i);
   }
   arts_db_release(minted, DB_MODE_RW);
-  consume(minted, MINTED_BYTES, NUM_LABELED, DB_MODE_RW, fe);
+  consume(minted, MINTED_BYTES, NUM_LABELED, DB_MODE_RW, group);
 
   arts_guid_t f =
       arts_edt_create(finale, 0, NULL, 1, &(arts_edt_hint_t){.rank = 0});
-  arts_add_dependence(fe, f, 0, DB_MODE_NULL);
+  arts_add_dependence(group, f, 0, DB_MODE_NULL);
+  arts_event_satisfy_slot(group, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 int main(int argc, char **argv) {
