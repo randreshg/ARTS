@@ -100,8 +100,6 @@ void arts_db_grant_note_ex_holder(struct arts_db_s *db, unsigned int r) {
 UNREACHED(void arts_db_grant_ship_pending(struct arts_db_cache_s *c))
 UNREACHED(void arts_db_drain_pending_rw_after_grant(struct arts_db_cache_s *c))
 UNREACHED(arts_shared_ptr_t arts_route_table_lookup_db(arts_guid_t g))
-UNREACHED(arts_shared_ptr_t arts_db_cache_stub_install(arts_guid_t g,
-                                                       uint64_t s))
 UNREACHED(void arts_db_rdzv_discard_landing(uint64_t t, uint64_t s, uint64_t c))
 UNREACHED(void *arts_route_table_borrow_or_lookup(arts_shared_ptr_t h,
                                                   arts_guid_t g,
@@ -109,6 +107,7 @@ UNREACHED(void *arts_route_table_borrow_or_lookup(arts_shared_ptr_t h,
 UNREACHED(void arts_send_db_grant_confirm(struct arts_db_s *db))
 UNREACHED(void *arts_shared_get(arts_shared_ptr_t h))
 UNREACHED(void arts_shared_release(arts_shared_ptr_t *p))
+UNREACHED(uint64_t arts_shared_tag(arts_shared_ptr_t p))
 UNREACHED(bool arts_rank_u64_map_load(struct arts_rank_to_u64_map_s *m,
                                       const void *in, size_t size))
 UNREACHED(void arts_net_rdzv_expect(uint64_t txid, uint64_t len,
@@ -175,11 +174,12 @@ static void post_round(unsigned int target) {
 void arts_send_db_grant_invalidate(struct arts_db_s *db, unsigned int current,
                                    unsigned int new_owner,
                                    const struct arts_rdzv_landing_s *rdzv,
-                                   uint64_t have) {
+                                   uint64_t have, uint64_t token) {
   (void)db;
   (void)current;
   (void)rdzv;
   (void)have;
+  (void)token;
   popped(new_owner);
   post_round(new_owner);
 }
@@ -219,7 +219,8 @@ static void *confirm(void *arg) {
     unsigned int target = g_round_target;
     atomic_store_explicit(&g_round_out, 0, memory_order_release);
     if (g_wb_shape) {
-      arts_handler_db_grant_confirm(g_db, NULL);
+      struct arts_db_grant_confirm_args_s ca = {.token = 0u, .sender = target};
+      arts_handler_db_grant_confirm(g_db, &ca);
       continue;
     }
     /* arts_handler_db_grant_confirm of the write-through policy. */
@@ -247,6 +248,7 @@ static void push_stalled(unsigned int v) {
   n->rank = v;
   n->have_version = ARTS_GRANT_VERSION_NONE;
   n->rdzv = (struct arts_rdzv_landing_s){0, 0, 0, 0};
+  n->token = 0u;
   atomic_store_explicit(&n->next, (struct arts_home_grantreq_node_s *)NULL,
                         memory_order_relaxed);
   struct arts_home_grantreq_node_s *prev =
@@ -266,7 +268,7 @@ static void *producer(void *arg) {
       push_stalled(v);
     } else {
       arts_home_grantreq_queue_push(&g_db->pending_rw, v, NULL,
-                                    ARTS_GRANT_VERSION_NONE);
+                                    ARTS_GRANT_VERSION_NONE, 0u);
     }
     arts_sched_fuzz_point();
     arts_db_grant_request_arrived(&g_db->cache, g_db, v);

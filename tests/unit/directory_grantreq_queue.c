@@ -23,7 +23,8 @@
  *   4. A producer stopped between its exchange and its link store: pop() and
  *      peek() would wait for it; pop_linked() and peek_linked() report no
  *      front at once, as for every node behind it, while pending() counts
- *      it; once it links they return it, and the node behind it.
+ *      it; once it links they return it, and the node behind it.  Each node
+ *      comes back with the answer token its push carried.
  *
  * Build: the build's own protocol defines, with -DARTS_UNIT_STANDALONE_SHIMS
  * for the libc alloc shims.
@@ -77,7 +78,7 @@ static int part1_functional(void) {
 
   /* Push 0..9 — FIFO: pop must yield 0,1,...,9. */
   for (unsigned int i = 0; i < 10; i++) {
-    arts_home_grantreq_queue_push(&q, i, NULL, ARTS_GRANT_VERSION_NONE);
+    arts_home_grantreq_queue_push(&q, i, NULL, ARTS_GRANT_VERSION_NONE, 0u);
   }
   if (arts_home_grantreq_queue_empty(&q)) {
     (void)fprintf(stderr, "FAIL: queue empty after 10 pushes\n");
@@ -125,7 +126,8 @@ static int part2_stub_reuse(void) {
   int rc = 0;
   for (int round = 0; round < 3; round++) {
     for (unsigned int i = 0; i < 5; i++) {
-      arts_home_grantreq_queue_push(&q, round * 100 + i, NULL, ARTS_GRANT_VERSION_NONE);
+      arts_home_grantreq_queue_push(&q, round * 100 + i, NULL,
+                                    ARTS_GRANT_VERSION_NONE, 0u);
     }
     for (unsigned int i = 0; i < 5; i++) {
       unsigned int got = 0;
@@ -162,7 +164,8 @@ static void *producer(void *arg) {
   while (!atomic_load_explicit(&g_start, memory_order_acquire)) {
   }
   for (unsigned int s = 0; s < PER_PROD; s++) {
-    arts_home_grantreq_queue_push(&g_q, prod * PER_PROD + s, NULL, ARTS_GRANT_VERSION_NONE);
+    arts_home_grantreq_queue_push(&g_q, prod * PER_PROD + s, NULL,
+                                  ARTS_GRANT_VERSION_NONE, 0u);
     atomic_fetch_add_explicit(&g_produced, 1, memory_order_relaxed);
   }
   return NULL;
@@ -193,9 +196,9 @@ static int part3_mpsc(int linked) {
    * mid-link wait while producers are still mid-push. */
   while (consumed < total) {
     unsigned int v;
-    bool got = linked
-                   ? arts_home_grantreq_queue_pop_linked(&g_q, &v, NULL, NULL)
-                   : arts_home_grantreq_queue_pop(&g_q, &v, NULL, NULL);
+    bool got =
+        linked ? arts_home_grantreq_queue_pop_linked(&g_q, &v, NULL, NULL, NULL)
+               : arts_home_grantreq_queue_pop(&g_q, &v, NULL, NULL);
     if (!got) {
       /* Empty, or (pop_linked) a front not linked yet — retry. */
       continue;
@@ -255,6 +258,7 @@ static void *stalled_producer(void *arg) {
   n->rank = 41u;
   n->have_version = ARTS_GRANT_VERSION_NONE;
   n->rdzv = (struct arts_rdzv_landing_s){0, 0, 0, 0};
+  n->token = 0x410u;
   atomic_store_explicit(&n->next, (struct arts_home_grantreq_node_s *)NULL,
                         memory_order_relaxed);
   struct arts_home_grantreq_node_s *prev =
@@ -269,24 +273,28 @@ static void *stalled_producer(void *arg) {
 static int part4_stalled_producer(void) {
   int rc = 0;
   unsigned int r = 0;
+  uint64_t t = 0u;
   arts_home_grantreq_queue_init(&g_q4);
   atomic_store_explicit(&g_q4_exchanged, 0, memory_order_relaxed);
   atomic_store_explicit(&g_q4_link, 0, memory_order_relaxed);
   /* One linked node ahead, so the stalled one is behind a front. */
-  arts_home_grantreq_queue_push(&g_q4, 40u, NULL, ARTS_GRANT_VERSION_NONE);
+  arts_home_grantreq_queue_push(&g_q4, 40u, NULL, ARTS_GRANT_VERSION_NONE,
+                                0x400u);
   pthread_t th;
   pthread_create(&th, NULL, stalled_producer, NULL);
   while (!atomic_load_explicit(&g_q4_exchanged, memory_order_acquire)) {
   }
-  if (!arts_home_grantreq_queue_pop_linked(&g_q4, &r, NULL, NULL) || r != 40u) {
+  if (!arts_home_grantreq_queue_pop_linked(&g_q4, &r, NULL, NULL, &t) ||
+      r != 40u || t != 0x400u) {
     (void)fprintf(stderr, "FAIL: pop_linked missed the linked front\n");
     rc = 1;
   }
   /* The stalled node is now the front; a node pushed behind it is linked to
    * it and still unreachable. */
-  arts_home_grantreq_queue_push(&g_q4, 42u, NULL, ARTS_GRANT_VERSION_NONE);
-  if (arts_home_grantreq_queue_peek_linked(&g_q4, &r, NULL, NULL) ||
-      arts_home_grantreq_queue_pop_linked(&g_q4, &r, NULL, NULL)) {
+  arts_home_grantreq_queue_push(&g_q4, 42u, NULL, ARTS_GRANT_VERSION_NONE,
+                                0x420u);
+  if (arts_home_grantreq_queue_peek_linked(&g_q4, &r, NULL, NULL, NULL) ||
+      arts_home_grantreq_queue_pop_linked(&g_q4, &r, NULL, NULL, NULL)) {
     (void)fprintf(stderr, "FAIL: peek_linked/pop_linked returned a front whose "
                           "producer has not linked it\n");
     rc = 1;
@@ -297,12 +305,14 @@ static int part4_stalled_producer(void) {
   }
   atomic_store_explicit(&g_q4_link, 1, memory_order_release);
   pthread_join(th, NULL);
-  if (!arts_home_grantreq_queue_peek_linked(&g_q4, &r, NULL, NULL) ||
-      r != 41u || !arts_home_grantreq_queue_pop_linked(&g_q4, &r, NULL, NULL) ||
-      r != 41u || !arts_home_grantreq_queue_pop_linked(&g_q4, &r, NULL, NULL) ||
-      r != 42u) {
+  if (!arts_home_grantreq_queue_peek_linked(&g_q4, &r, NULL, NULL, &t) ||
+      r != 41u || t != 0x410u ||
+      !arts_home_grantreq_queue_pop_linked(&g_q4, &r, NULL, NULL, &t) ||
+      r != 41u || t != 0x410u ||
+      !arts_home_grantreq_queue_pop_linked(&g_q4, &r, NULL, NULL, &t) ||
+      r != 42u || t != 0x420u) {
     (void)fprintf(stderr, "FAIL: the linked fronts did not come back in "
-                          "order\n");
+                          "order, each with its token\n");
     rc = 1;
   }
   if (arts_home_grantreq_queue_pending(&g_q4) ||

@@ -1096,6 +1096,17 @@ if((ARTS_COHERENCE_ARM STREQUAL "VAL" OR ARTS_COHERENCE_ARM STREQUAL "INV")
    AND ARTS_RELEASE_POLICY STREQUAL "RETAIN")
     arts_grant_home_unit(grant_self_transfer 30)
 endif()
+# Each open request axis of a cache owns one count on the requester's
+# descriptor, taken where the axis opens and dropped once by whatever closes
+# it: the answer (acting on the token it echoes), a size round or dismiss, a
+# create's claim, the teardown sweep.  Every VAL and INV tree compiles that
+# accounting differently: the two arms keep the read axis in different words,
+# the write policies close the write axis at different sites (the grant, or
+# the CONFIRM_ACK), PURGE adds the home's self-served front, and only the
+# publishing cells have a flight.
+if(ARTS_COHERENCE_ARM STREQUAL "VAL" OR ARTS_COHERENCE_ARM STREQUAL "INV")
+    arts_grant_home_unit(token_axis_pairing_valinv 30)
+endif()
 
 # --- OoO defer/replay engine (ooo.c) ---
 # Standalone like the SYNC_*/deque tests: each test TU #includes the runtime's
@@ -2568,6 +2579,27 @@ if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
                             PASS "PASS: db_destroy_cover_settles 8 rounds x 32 blocks \\(t2, hop\\)")
         endif()
     endif()
+endif()
+
+# grant_home_reclaim_destroy: the home takes a block's write right back from
+# the rank that wrote it last, and the writer it serves destroys the block in
+# its own body.  Every cell brings the right home its own way, with the home
+# still running on the block after it woke that writer: a revoking home
+# (RETAIN) installs the holder's ship and runs its own CONFIRM inline, and
+# under write-back the CONFIRM_ACK that wakes the writer as well; a PURGE home
+# serves its own request from its queue and walks on; the exclusion arm's
+# grant comes back to its home; FLUSH fetches and writes back.  The program's
+# write acquisitions of a block are ordered by happens-before, so it is
+# DB-WRF-valid and FLUSH runs it too.  With the hook, the decision windows
+# widen.
+add_arts_test(grant_home_reclaim_destroy)
+arts_cover_test(grant_home_reclaim_destroy grant_home_reclaim_destroy
+                VARIANTS 2n_9w_1p 2n_8w_2p
+                PASS "PASS: grant_home_reclaim_destroy 8 rounds x 32 blocks")
+if(ARTS_DEBUG_INJECTION)
+    arts_cover_test(grant_home_reclaim_destroy_fuzz grant_home_reclaim_destroy
+                    VARIANTS 2n_9w_1p 2n_8w_2p HOOK "ARTS_SCHED_FUZZ=25"
+                    PASS "PASS: grant_home_reclaim_destroy 8 rounds x 32 blocks")
 endif()
 
 # db_size_round_once reads the size rounds the home sent back from the counter

@@ -316,6 +316,9 @@ struct arts_ooo_args_db_grant_request_s {
   struct arts_rdzv_landing_s rdzv; /* requester's transfer landing */
   uint64_t have_version;           /* version the requester already holds */
   uint32_t cover;                  /* ARTS_COVER_* */
+#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
+  uint64_t token; /* the requester's answer token */
+#endif
 };
 
 /* The voluntary return carries nothing but who is giving the right back. */
@@ -330,6 +333,9 @@ struct arts_ooo_args_db_snapshot_request_s {
   arts_guid_t db_guid;
   uint32_t cover;                  /* ARTS_COVER_PAR | ARTS_COVER_PRECLAIM */
   struct arts_rdzv_landing_s rdzv; /* requester's snapshot landing */
+#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
+  uint64_t token; /* the requester's answer token */
+#endif
 };
 
 struct arts_ooo_args_db_fetch_request_s {
@@ -377,17 +383,23 @@ struct arts_ooo_args_db_publish_s {
   /* The releaser gave the write right back with this publish; the home
    * owes it the same acceptance a standalone hand-back would ask for. */
   uint32_t returns_grant;
+#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
+  uint64_t token; /* the releaser's flight's answer token */
+#endif
 };
 
-/* DB ownership invalidate: carries the fields the wire
- * arts_msg_grant_invalidate_packet_s delivers (db_guid + new_owner_rank).
- * The WT write policy ignores new_owner_rank; the WB write policy uses it as the
- * GRANT_RESPONSE target. */
+/* DB ownership invalidate: the fields the wire
+ * arts_msg_grant_invalidate_packet_s delivers.  Under both write policies the
+ * holder ships its GRANT_RESPONSE to new_owner_rank, into its landing, echoing
+ * its token. */
 struct arts_ooo_args_db_grant_invalidate_s {
   arts_guid_t db_guid;
   unsigned int new_owner_rank;
   struct arts_rdzv_landing_s new_owner_rdzv; /* transfer landing at new owner */
   uint64_t new_owner_have; /* version the new owner reported holding */
+#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
+  uint64_t new_owner_token; /* the new owner's request's answer token */
+#endif
 };
 
 /* INV protocol OoO args (OOO_DB_INV_REQUEST / OOO_DB_PUBLISH). */
@@ -402,6 +414,9 @@ struct arts_ooo_args_db_inv_request_s {
   bool bounce;                     /* re-sent by a holder that had no bytes */
   struct arts_rdzv_landing_s rdzv; /* deliver/grant landing; txid==0 = first
                                       touch (home replies INV_CTS) */
+#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
+  uint64_t token; /* the subject's answer token */
+#endif
 };
 
 #if defined(ARTS_PROTOCOL_INV) && defined(ARTS_WRITE_POLICY_WB)
@@ -414,6 +429,7 @@ struct arts_ooo_args_db_inv_redirect_s {
   uint32_t cover;
   arts_guid_t db_guid;
   struct arts_rdzv_landing_s rdzv;
+  uint64_t token; /* the requester's answer token */
 };
 #endif /* ARTS_PROTOCOL_INV && ARTS_WRITE_POLICY_WB */
 

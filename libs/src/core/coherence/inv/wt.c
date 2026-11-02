@@ -179,6 +179,9 @@ void arts_handler_db_acquire(void *item, void *args) {
     break;
   }
   case INV_CACHE_ACT_SEND_RO:
+    /* The fetch's count; the take rests on the install and the cover gate
+     * (coherence.h, "Orders"). */
+    arts_db_axis_take(db);
     arts_send_db_inv_request(cache, DB_MODE_RO, arts_inv_read_cover(next));
     break;
   default: /* PARK: the fetch's committer will serve us */
@@ -275,7 +278,7 @@ static void home_serve_deferred_read(struct arts_db_cache_s *cache,
   /* Same-word pairing with the round's roster snapshot, as at the direct
    * serve below. */
   (void)arts_rank_bitset_set(&db->roster, w->requester);
-  arts_send_db_inv_deliver(w->requester, db, &w->rdzv);
+  arts_send_db_inv_deliver(w->requester, db, &w->rdzv, w->token);
 }
 
 void arts_handler_db_inv_request(void *item_v, void *args_v) {
@@ -290,7 +293,7 @@ void arts_handler_db_inv_request(void *item_v, void *args_v) {
       /* Declared: a write turn of the requester's rank covers this request.
        * Dismiss it -- no data, no read turn -- returning the landing. */
       arts_send_db_inv_cts(
-          a->requester, db, db->cache.db_guid,
+          a->requester, a->token, db->cache.db_guid,
           atomic_load_explicit(&db->cache.db_size, memory_order_relaxed),
           a->cover, a->rdzv.cookie);
     }
@@ -310,7 +313,7 @@ void arts_handler_db_inv_request(void *item_v, void *args_v) {
      * requester re-issue with a landing. */
     INCREMENT_NUM_INV_SIZE_CTS_BY(1);
     arts_send_db_inv_cts(
-        a->requester, db, cache->db_guid,
+        a->requester, a->token, cache->db_guid,
         atomic_load_explicit(&cache->db_size, memory_order_relaxed), a->cover,
         a->rdzv.cookie);
     return;
@@ -346,6 +349,7 @@ void arts_handler_db_inv_request(void *item_v, void *args_v) {
         w->requester = a->requester;
         w->cover = a->cover;
         w->rdzv = a->rdzv;
+        w->token = a->token;
         arts_lf_stack_push(&cache->publication_waiters, &w->link);
         buf_h = arts_db_buf_acquire(cache);
         pb = (struct arts_db_buffer_s *)arts_shared_get(buf_h);
@@ -365,7 +369,7 @@ void arts_handler_db_inv_request(void *item_v, void *args_v) {
      * reader, or this serve's stamp load sees the round's hver store, which
      * precedes the exchange. */
     (void)arts_rank_bitset_set(&db->roster, a->requester);
-    arts_send_db_inv_deliver(a->requester, db, &a->rdzv);
+    arts_send_db_inv_deliver(a->requester, db, &a->rdzv, a->token);
     return;
   }
   /* There is no write branch: RW acquires go through the shared grant's

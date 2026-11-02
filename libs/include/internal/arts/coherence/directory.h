@@ -66,13 +66,15 @@ extern "C" {
 void arts_home_grantreq_queue_init(struct arts_home_grantreq_queue_s *q);
 void arts_home_grantreq_queue_destroy(struct arts_home_grantreq_queue_s *q);
 /* Push a requester with its transfer landing (NULL rdzv = zero landing —
- * a data-less / sentinel round) and the version of the copy it already holds
+ * a data-less / sentinel round), the version of the copy it already holds
  * (ARTS_GRANT_VERSION_NONE when it holds none), which travels with it so a
- * server can decide at serve time whether any bytes need to move. */
+ * server can decide at serve time whether any bytes need to move, and its
+ * answer token, which the grant echoes (0 where the arm's answers carry
+ * none). */
 void arts_home_grantreq_queue_push(struct arts_home_grantreq_queue_s *q,
-                                  unsigned int rank,
-                                  const struct arts_rdzv_landing_s *rdzv,
-                                  uint64_t have_version);
+                                   unsigned int rank,
+                                   const struct arts_rdzv_landing_s *rdzv,
+                                   uint64_t have_version, uint64_t token);
 /* Pop the front requester (single consumer).  Returns true and sets *out_rank
  * (+ *out_rdzv / *out_have when non-NULL) on success; false when empty.  Waits
  * out a producer caught between its exchange and its link store. */
@@ -89,14 +91,17 @@ bool arts_home_grantreq_queue_peek(const struct arts_home_grantreq_queue_s *q,
                                   uint64_t *out_have);
 /* pop and peek of a front whose producer has linked it; false, at once, when
  * there is none, including a front caught between its producer's exchange and
- * link store (and every node behind it).  Single consumer, as above. */
+ * link store (and every node behind it).  They also hand out the front's
+ * token (*out_token when non-NULL).  Single consumer, as above. */
 bool arts_home_grantreq_queue_pop_linked(struct arts_home_grantreq_queue_s *q,
                                          unsigned int *out_rank,
                                          struct arts_rdzv_landing_s *out_rdzv,
-                                         uint64_t *out_have);
+                                         uint64_t *out_have,
+                                         uint64_t *out_token);
 bool arts_home_grantreq_queue_peek_linked(
     const struct arts_home_grantreq_queue_s *q, unsigned int *out_rank,
-    struct arts_rdzv_landing_s *out_rdzv, uint64_t *out_have);
+    struct arts_rdzv_landing_s *out_rdzv, uint64_t *out_have,
+    uint64_t *out_token);
 bool arts_home_grantreq_queue_empty(const struct arts_home_grantreq_queue_s *q);
 /* "Is anything queued", safe without the consumer turn: two field loads, no
  * node dereference.  head != tail names a queued requester even before its

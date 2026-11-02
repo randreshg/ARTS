@@ -48,6 +48,16 @@ unsigned int arts_guid_get_rank(arts_guid_t g) {
   (void)g;
   return 0u;
 }
+/* The home descriptor here has no control block: the counts of the home's
+ * own requests the tail serves are dropped on none (their pairing is
+ * token_axis_pairing_valinv's). */
+void arts_shared_release(arts_shared_ptr_t *p) {
+  if (*p != NULL) {
+    printf("FAIL grant_purge_latch_handoff: a request's count dropped on a "
+           "control block the test never made\n");
+    exit(1);
+  }
+}
 #ifdef ARTS_DEBUG_INJECTION
 #include <pthread.h>
 #include <sched.h>
@@ -142,6 +152,8 @@ void arts_dep_waiter_check(const struct arts_edt_s *e, arts_guid_t g,
 ARTS_THREAD_LOCAL uint8_t arts_db_census_serve;
 #endif
 
+static struct arts_db_s *g_db;
+
 /* The request FIFO, stubbed as a ring: one thread pushes and pops, so every
  * pushed node is linked. */
 #define QCAP 8
@@ -150,7 +162,7 @@ static unsigned int q_head, q_tail;
 static int g_looks;
 bool arts_home_grantreq_queue_peek_linked(
     const struct arts_home_grantreq_queue_s *q, unsigned int *r,
-    struct arts_rdzv_landing_s *l, uint64_t *h) {
+    struct arts_rdzv_landing_s *l, uint64_t *h, uint64_t *tok) {
   (void)q;
   g_looks++;
   if (q_head == q_tail) {
@@ -163,13 +175,18 @@ bool arts_home_grantreq_queue_peek_linked(
   if (h) {
     *h = ARTS_GRANT_VERSION_NONE;
   }
+  if (tok) {
+    /* A request names its requester's descriptor: the home's own, the home
+     * descriptor; another rank's, nothing here. */
+    *tok = *r == arts_global_rank_id ? arts_db_token(g_db) : 0u;
+  }
   return true;
 }
 bool arts_home_grantreq_queue_pop_linked(struct arts_home_grantreq_queue_s *q,
                                          unsigned int *r,
                                          struct arts_rdzv_landing_s *l,
-                                         uint64_t *h) {
-  bool ok = arts_home_grantreq_queue_peek_linked(q, r, l, h);
+                                         uint64_t *h, uint64_t *tok) {
+  bool ok = arts_home_grantreq_queue_peek_linked(q, r, l, h, tok);
   if (ok) {
     q_head++;
   }
@@ -181,7 +198,6 @@ bool arts_home_grantreq_queue_pending(
   return q_head != q_tail;
 }
 
-static struct arts_db_s *g_db;
 /* What the stubbed send of the n-th grant does before it returns. */
 enum { IN_SEND_NONE, IN_SEND_HANDBACK, IN_SEND_REQUEST_HANDBACK };
 static int g_in_send;
@@ -195,7 +211,7 @@ static int g_ack_requests;
 
 static void hand_back_cv(unsigned int holder, uint64_t cv) {
   struct arts_db_grant_return_reply_s reply = {
-      .cv = cv, .version = 2u, .ack = true, .credit = false};
+      .cv = cv, .token = 0u, .version = 2u, .ack = true, .credit = false};
   arts_db_grant_return_arrived(g_db, holder, &reply);
 }
 
@@ -219,10 +235,12 @@ static void *helper_main(void *arg) {
 #endif
 
 void arts_db_send_grant_response(struct arts_db_cache_s *c, unsigned int t,
-                                 const struct arts_rdzv_landing_s *l, bool dl) {
+                                 const struct arts_rdzv_landing_s *l, bool dl,
+                                 uint64_t token) {
   (void)c;
   (void)l;
   (void)dl;
+  (void)token;
   g_granted[g_grants++ % QCAP] = t;
 #ifdef ARTS_DEBUG_INJECTION
   if (t == g_helper_for) {
@@ -247,10 +265,11 @@ void arts_db_send_grant_response(struct arts_db_cache_s *c, unsigned int t,
   }
 }
 void arts_send_db_publish_ack(unsigned int r, struct arts_db_s *db, uint64_t cv,
-                              uint64_t v, bool credit) {
+                              uint64_t v, bool credit, uint64_t token) {
   (void)db;
   (void)v;
   (void)credit;
+  (void)token;
   int helper = 0;
 #ifdef ARTS_DEBUG_INJECTION
   helper = t_helper;

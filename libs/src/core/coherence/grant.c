@@ -53,7 +53,7 @@
 #include "arts/coherence/directory.h" /* arts_home_grantreq_queue_push */
 #include "arts/db.h"
 #include "arts/edt.h"
-#include "arts/gas/route_table.h" /* arts_route_table_borrow_or_lookup */
+#include "arts/gas/route_table.h" /* borrow_or_lookup, copy_live, lookup */
 #include "arts/ooo.h"
 #include "arts/runtime_state.h"
 #include "arts/runtime_types.h"
@@ -171,6 +171,9 @@ arts_db_acquire_remote_rw(struct arts_db_cache_s *cache, struct arts_edt_s *edt,
         uint32_t cover = 0u;
         if (arts_db_rw_req_commit(cache, tok, &cover)) {
           INCREMENT_NUM_GRANT_MIGRATE_BY(1);
+          /* The write axis's count; the take rests on the install and the
+           * cover gate (coherence.h, "Orders"). */
+          arts_db_axis_take(arts_db_of_cache(cache));
           arts_send_db_grant_request(cache, cover);
         }
         break;
@@ -232,6 +235,9 @@ void arts_db_grant_rearm(struct arts_db_cache_s *cache) {
     uint32_t cover = 0u;
     if (arts_db_rw_req_commit(cache, tok, &cover)) {
       INCREMENT_NUM_GRANT_MIGRATE_BY(1);
+      /* A fresh count for the new request, under the caller's own (a grant
+       * whose closing count is still held, or a create's). */
+      arts_db_axis_take(arts_db_of_cache(cache));
       arts_send_db_grant_request(cache, cover);
     }
   }
@@ -285,7 +291,7 @@ void arts_db_drain_pending_rw_after_grant(struct arts_db_cache_s *cache) {
 void arts_db_send_grant_response(struct arts_db_cache_s *cache,
                                  unsigned int new_owner,
                                  const struct arts_rdzv_landing_s *new_rdzv,
-                                 bool data_less) {
+                                 bool data_less, uint64_t token) {
   struct arts_rdzv_landing_s rdzv = *new_rdzv;
   arts_shared_ptr_t buf_h = arts_db_buf_acquire(cache);
   struct arts_db_buffer_s *buf =
@@ -351,9 +357,11 @@ void arts_db_send_grant_response(struct arts_db_cache_s *cache,
     };
     /* On the held descriptor even when it is no longer live: its bytes,
      * waiters and counts are here, while a lookup by GUID would find another
-     * object or none. */
-    arts_db_grant_response_on(
-        arts_shared_copy(arts_db_of_cache(cache)->self_cb), &self);
+     * object or none.  The request it answers is this rank's, so its token
+     * names this descriptor, under that request's count. */
+    assert(token == arts_db_token(arts_db_of_cache(cache)) &&
+           "a self-transfer answers this descriptor's own request");
+    arts_db_grant_response_on(arts_db_of_cache(cache), &self);
     return;
   }
 
@@ -392,6 +400,7 @@ void arts_db_send_grant_response(struct arts_db_cache_s *cache,
                             ? ((const uint32_t *)map_buf)[0]
                             : 0u;
   hdr.pad = 0;
+  hdr.token = token;
 
   if (data_less) {
     /* The new owner already holds these exact bytes, so only the permission
@@ -445,9 +454,11 @@ void arts_db_grant_ship_pending(struct arts_db_cache_s *cache) {
   unsigned int new_owner = cache->incoming_new_owner;
   struct arts_rdzv_landing_s rdzv = cache->incoming_new_owner_rdzv;
   uint64_t have = cache->incoming_new_owner_have;
+  uint64_t token = cache->incoming_new_owner_token;
   cache->incoming_new_owner = ARTS_NO_PENDING_OWNER;
   cache->incoming_new_owner_rdzv = (struct arts_rdzv_landing_s){0, 0, 0, 0};
   cache->incoming_new_owner_have = ARTS_GRANT_VERSION_NONE;
+  cache->incoming_new_owner_token = 0u;
   bool data_less = false;
 #ifdef ARTS_WRITE_POLICY_WB
   /* The new owner's copy is current when it carries this buffer's version:
@@ -467,7 +478,7 @@ void arts_db_grant_ship_pending(struct arts_db_cache_s *cache) {
 #else
   (void)have;
 #endif
-  arts_db_send_grant_response(cache, new_owner, &rdzv, data_less);
+  arts_db_send_grant_response(cache, new_owner, &rdzv, data_less, token);
 }
 #endif /* !ARTS_RELEASE_PURGE */
 
@@ -533,11 +544,11 @@ void arts_handler_db_grant_request(void *item_v, void *args_v) {
      * transfers are data-less).  The requester re-issues with a landing.
      * The home's OWN landing-less request is not a size probe: it wants the
      * permission without payload and queues like any other. */
-    arts_send_db_grant_cts(requester, cache->db_guid, db_size);
+    arts_send_db_grant_cts(requester, cache->db_guid, db_size, a->token);
     return;
   }
   arts_home_grantreq_queue_push(&db->pending_rw, requester, &a->rdzv,
-                                a->have_version);
+                                a->have_version, a->token);
   arts_sched_fuzz_point(); /* widen the push<->claim window */
 
   /* The requester is queued; what the home does about it is the release
@@ -625,19 +636,25 @@ void arts_send_db_grant_request(struct arts_db_cache_s *cache,
   p.rdzv.key = rdzv.key;
   p.rdzv.txid = rdzv.txid;
   p.rdzv.cookie = rdzv.cookie;
+  p.token = arts_db_token(arts_db_of_cache(cache));
   if (home_rank == arts_global_rank_id) {
     /* Self-send: the requester's cache is the home's descriptor, on which the
-     * request body runs; one not yet installed takes the engine by GUID,
-     * deferred until the home installs and drains. */
+     * request body runs, under a count of its own (coherence.h, "Self-sends");
+     * one not yet installed takes the engine by GUID, deferred until the home
+     * installs and drains. */
     struct arts_ooo_args_db_grant_request_s args = {
         .requester = p.header.rank,
         .db_guid = db_guid,
         .rdzv = rdzv,
         .have_version = have_version,
         .cover = cover,
+        .token = p.token,
     };
-    arts_ooo_dispatch_on(arts_db_of_cache(cache)->self_cb, OOO_DB_GRANT_REQUEST,
-                         db_guid, &args, sizeof(args));
+    arts_shared_ptr_t held =
+        arts_route_table_copy_live(arts_db_of_cache(cache)->self_cb, db_guid);
+    arts_ooo_dispatch_on(held, OOO_DB_GRANT_REQUEST, db_guid, &args,
+                         sizeof(args));
+    arts_shared_release(&held);
     return;
   }
   if (!arts_net_send_held((int)home_rank, (char *)&p, sizeof(p),
@@ -648,22 +665,28 @@ void arts_send_db_grant_request(struct arts_db_cache_s *cache,
 
 /* GRANT_CTS sender (home → remote first-touch requester) + requester-side
  * body.  The requester learns db_size and re-issues the in-flight request with
- * a landing; the coalescing flag stays held (same round continuing). */
-void arts_send_db_grant_cts(unsigned int requester_rank,
-                                arts_guid_t db_guid, uint64_t db_size) {
+ * a landing; the write axis stays open (same round continuing). */
+void arts_send_db_grant_cts(unsigned int requester_rank, arts_guid_t db_guid,
+                            uint64_t db_size, uint64_t token) {
   INCREMENT_NUM_GRANT_SIZE_CTS_BY(1);
   struct arts_msg_grant_cts_packet_s p;
   arts_fill_packet_header(&p.header, sizeof(p), MSG_DB_GRANT_CTS);
   p.header.rank = arts_global_rank_id;
   p.db_guid = db_guid;
   p.db_size = db_size;
+  p.token = token;
   arts_transport_send_async((int)requester_rank, (char *)&p, sizeof(p));
 }
 
-void arts_handler_db_grant_cts(void *item_v, void *args_v) {
-  struct arts_db_cache_s *cache = &((struct arts_db_s *)item_v)->cache;
-  struct arts_msg_grant_cts_packet_s *p =
-      (struct arts_msg_grant_cts_packet_s *)args_v;
+void arts_handler_db_grant_cts(struct arts_msg_grant_cts_packet_s *p) {
+  struct arts_db_s *db = arts_db_from_token(p->token, p->db_guid);
+  if (arts_db_token_retired(db, p->db_guid)) {
+    /* No re-send to a torn-down cache: the request ends here, with its
+     * count. */
+    arts_db_axis_drop(db, 1u);
+    return;
+  }
+  struct arts_db_cache_s *cache = &db->cache;
   arts_db_cache_learn_size(cache, p->db_size);
   /* Only a request the home did not absorb gets a size round, so this cache
    * is no claim's and never will be: the size round clears its stub bit in
@@ -675,7 +698,8 @@ void arts_handler_db_grant_cts(void *item_v, void *args_v) {
 #ifndef ARTS_RELEASE_PURGE
 void arts_send_db_grant_invalidate(
     struct arts_db_s *db, unsigned int owner_rank, unsigned int new_owner_rank,
-    const struct arts_rdzv_landing_s *new_owner_rdzv, uint64_t new_owner_have) {
+    const struct arts_rdzv_landing_s *new_owner_rdzv, uint64_t new_owner_have,
+    uint64_t new_owner_token) {
   arts_guid_t db_guid = db->cache.db_guid;
   struct arts_rdzv_landing_s rdzv =
       (new_owner_rdzv != NULL) ? *new_owner_rdzv
@@ -691,6 +715,7 @@ void arts_send_db_grant_invalidate(
   p.new_owner_rdzv.txid = rdzv.txid;
   p.new_owner_rdzv.cookie = rdzv.cookie;
   p.new_owner_have = new_owner_have;
+  p.new_owner_token = new_owner_token;
   if (owner_rank == arts_global_rank_id) {
     /* Self-send: under both write policies the INVALIDATE handler runs
      * directly.
@@ -716,6 +741,7 @@ void arts_send_db_grant_invalidate(
         .new_owner_rank = new_owner_rank,
         .new_owner_rdzv = rdzv,
         .new_owner_have = new_owner_have,
+        .new_owner_token = new_owner_token,
     };
     /* The holder's cache is the home's descriptor, which the caller holds:
      * the body runs on it while it is live, and on what a lookup finds
@@ -735,8 +761,8 @@ void arts_send_db_grant_invalidate(
 
 /* CONFIRM (new owner C → home A), both write policies.  The home flips
  * rw_holder and advances the next round; under WB its handler also replies
- * CONFIRM_ACK, under WT it does not.  The handler reads pending_install_owner
- * and takes no args. */
+ * CONFIRM_ACK, echoing C's token, under WT it does not.  The handler reads
+ * the new owner from pending_install_owner. */
 void arts_send_db_grant_confirm(struct arts_db_s *db) {
   arts_guid_t db_guid = db->cache.db_guid;
   unsigned int home_rank = arts_guid_get_rank(db_guid);
@@ -744,19 +770,25 @@ void arts_send_db_grant_confirm(struct arts_db_s *db) {
   arts_fill_packet_header(&p.header, sizeof(p), MSG_DB_GRANT_CONFIRM);
   p.header.rank = arts_global_rank_id;
   p.db_guid = db_guid;
+  p.token = arts_db_token(db);
   if (home_rank == arts_global_rank_id) {
-    /* Self-send: the new owner's cache is the home's descriptor, which the
-     * caller holds.  The body advances the transfer round on it while it is
-     * live, and on what a lookup finds otherwise; a miss (DB destroyed)
-     * silently drops, as on the wire. */
-    arts_shared_ptr_t looked = NULL;
-    struct arts_db_s *home =
-        (struct arts_db_s *)arts_route_table_borrow_or_lookup(db->self_cb,
-                                                              db_guid, &looked);
-    if (home != NULL) {
-      arts_handler_db_grant_confirm(home, NULL);
+    /* Self-send: the new owner's cache is the home's descriptor.  The caller
+     * runs under its write request's count, which the body may drop: under
+     * write-back the CONFIRM_ACK it sends answers that request inline, and
+     * the round it advances runs after.  So the body runs under a count of
+     * its own, a copy while the descriptor is live and what a lookup finds
+     * otherwise; a miss (DB destroyed) silently drops, as on the wire. */
+    arts_shared_ptr_t held = arts_route_table_copy_live(db->self_cb, db_guid);
+    if (held == NULL) {
+      held = arts_route_table_lookup(db_guid);
     }
-    arts_shared_release(&looked);
+    struct arts_db_s *home = (struct arts_db_s *)arts_shared_get(held);
+    if (home != NULL) {
+      struct arts_db_grant_confirm_args_s args = {
+          .token = p.token, .sender = arts_global_rank_id};
+      arts_handler_db_grant_confirm(home, &args);
+    }
+    arts_shared_release(&held);
     return;
   }
   arts_transport_send_async((int)home_rank, (char *)&p, sizeof(p));

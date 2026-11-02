@@ -7,24 +7,28 @@
  * senders.c.
  *
  * Lookup discipline.  Two handler categories, both lookup-then-operate but
- * differing on the MISS action:
+ * differing on the MISS action, and the answers, which look nothing up:
  *   - Cat-B (deferrable bodies, each an OOO_* kind in ooo.h, run at the home
  *     — e.g. GRANT_REQUEST / SNAPSHOT_REQUEST / PUBLISH / DESTROY): the wire
  *     dispatcher routes through the OoO engine, which acquires this rank's db_s
  *     (ref-pinned) and hands a pure (item, args) body the live cache on a
  *     HIT, or DEFERS the args and replays them once DB_CREATE installs.
- *   - Cat-C (non-deferrable, no OOO_* kind — e.g. SNAPSHOT_RESPONSE /
- *     CACHE_DESTROY / PUBLISH_ACK / SNAPSHOT_REDIRECT / GRANT_INVALIDATE /
- *     GRANT_CONFIRM / GRANT_CONFIRM_ACK): the wire dispatcher does the
- *     ref-pinned lookup-acquire; on a HIT it calls the pure (item, args) body,
- *     and on a MISS it applies that handler's exact miss-action (silent drop,
- *     a dismiss reply, or the PUBLISH_ACK sem-post — see each body).
+ *   - Cat-C (non-deferrable, no OOO_* kind — e.g. CACHE_DESTROY /
+ *     SNAPSHOT_REDIRECT / GRANT_INVALIDATE / GRANT_CONFIRM / CREATE_RETURN
+ *     / EXCL_CTS): the wire dispatcher does the ref-pinned lookup-acquire;
+ *     on a HIT it calls the pure (item, args) body, and on a MISS it applies
+ *     that handler's exact miss-action (silent drop or a dismiss reply — see
+ *     each body).
  * Either way an (item, args) body operates on the already-acquired,
  * ref-pinned cache (the FIRST member of the db_s the caller hands it) and
  * does not look it up to operate on it.  A message handed over as the whole
- * packet (GRANT_RESPONSE, INV_DELIVER, EXCL_GRANT and the EXCL RETAIN
- * messages) has a wire entry that looks its block up once and a body on the
- * object.
+ * packet (EXCL_GRANT and the EXCL RETAIN messages) has a wire entry that
+ * looks its block up once and a body on the object.
+ *   - Answers to this rank's own requests (VAL, INV): the entry takes the
+ *     requester's descriptor from the token the answer echoes, under the
+ *     count the open request holds, and either runs the body on it or, when
+ *     its tag shows it retired, ends the landing and drops that count
+ *     (coherence.h).
  *
  * Self-sends.  On this rank a block has one descriptor, which the sending
  * caller holds, so a sender whose target is this rank acts on it rather than
@@ -369,9 +373,11 @@ void arts_db_rdzv_discard_landing(uint64_t txid, uint64_t len,
  * valid").  Install it without a copy (version-conditional; a stale landing
  * recycles), then resume the parked EDT and its window's batch.  Fires on
  * {packet, write-completion} pairing, either arrival order, on a
- * dispatch-path progress thread. */
+ * dispatch-path progress thread.  The context borrows the read request's
+ * count: the window stays open until the answer this callback commits. */
 struct snapshot_landed_ctx_s {
-  arts_shared_ptr_t db_h; /* own pin taken by the handler (may be NULL) */
+  struct arts_db_s *db; /* the token's descriptor */
+  arts_guid_t db_guid;
   struct arts_db_buffer_s *landing;
   uint64_t version;
   uint64_t data_size;
@@ -380,14 +386,13 @@ struct snapshot_landed_ctx_s {
 
 static void snapshot_landed_cb(void *arg) {
   struct snapshot_landed_ctx_s *ctx = (struct snapshot_landed_ctx_s *)arg;
-  struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(ctx->db_h);
-  if (db == NULL) {
-    /* DB destroyed while the pairing was outstanding (destroy-during-pending-
-     * acquire is app UB): end the landing and drop (the parked EDT was torn
-     * down with the DB). */
+  struct arts_db_s *db = ctx->db;
+  if (arts_db_token_retired(db, ctx->db_guid)) {
+    /* Retired while the pairing was outstanding: end the landing, resume
+     * nothing (a teardown frees the parked readers), drop the count. */
     arts_db_buf_landing_return(ctx->landing);
-    arts_shared_release(&ctx->db_h);
     arts_free(ctx);
+    arts_db_axis_drop(db, 1u);
     return;
   }
   struct arts_db_cache_s *cache = &db->cache;
@@ -395,38 +400,41 @@ static void snapshot_landed_cb(void *arg) {
                              ctx->data_size);
   /* A one-sided payload comes from another rank. */
   uint8_t census = arts_db_census_serving(true);
-  arts_db_ro_combine_on_terminal(cache, ctx->cover);
+  bool closed = arts_db_ro_combine_on_terminal(cache, ctx->cover);
   arts_db_census_served(census);
-  arts_shared_release(&ctx->db_h);
   arts_free(ctx);
+  arts_db_axis_drop(db, closed ? 1u : 0u);
 }
 
-/* The teardown found the payload never landed: end the landing and drop the
- * pin, the context's own, and resume nothing. */
+/* The teardown found the payload never landed: end the landing, the
+ * context's one possession, and resume nothing. */
 static void snapshot_landed_discard(void *arg) {
   struct snapshot_landed_ctx_s *ctx = (struct snapshot_landed_ctx_s *)arg;
   arts_db_buf_landing_return(ctx->landing);
-  arts_shared_release(&ctx->db_h);
   arts_free(ctx);
 }
 
-/* Cat-C pure body (SNAPSHOT_RESPONSE).  item_v is the requester's db_s (cache
- * is its FIRST member, offset 0, so item_v IS the cache), held by the wire
- * dispatcher's lookup or, on a self-send, by the caller's pin.  No
- * lookup/NULL-check here — the dispatcher's MISS branch resumes nothing and
- * only ends the landing (this 1:1 response resumes a parked EDT; a missing
- * cache means it was torn down).
+/* SNAPSHOT_RESPONSE, an answer: the wire (from another rank) and a
+ * self-serve call it alike.  The token names the requester's descriptor,
+ * which the read request's count keeps; a retired one only ends the landing
+ * and drops that count.
  *
  * The response ends the requester's combining window, whose cohort is the
  * cache's own chain; it echoes the request's cover word, whose parity must be
  * the open window's (checked in the CAS that consumes the answer).  Bytes
  * that travel one-sided are installed first (version-conditional); a reply
  * that moves none names a version this cache already holds, and resumes
- * against the live buffer.  Shared verbatim by WT/WB. */
-void arts_handler_db_snapshot_response(void *item_v, void *args_v) {
-  struct arts_db_cache_s *cache = &((struct arts_db_s *)item_v)->cache;
-  struct arts_db_snapshot_response_args_s *a =
-      (struct arts_db_snapshot_response_args_s *)args_v;
+ * against the live buffer.  The frame that closes the window drops its count
+ * last.  Shared verbatim by WT/WB. */
+void arts_handler_db_snapshot_response(
+    struct arts_db_snapshot_response_args_s *a) {
+  struct arts_db_s *db = arts_db_from_token(a->token, a->db_guid);
+  if (arts_db_token_retired(db, a->db_guid)) {
+    arts_db_rdzv_discard_landing(a->rdzv_txid, a->db_size, a->rdzv_cookie);
+    arts_db_axis_drop(db, 1u);
+    return;
+  }
+  struct arts_db_cache_s *cache = &db->cache;
 
   /* Every response kind carries the server's descriptor size; a hinted
    * first touch may reach any of them with the size still unlearned. */
@@ -441,18 +449,19 @@ void arts_handler_db_snapshot_response(void *item_v, void *args_v) {
       arts_db_buf_landing_return(
           (struct arts_db_buffer_s *)(uintptr_t)a->rdzv_cookie);
     }
-    arts_db_ro_combine_on_cts(cache, a->cover);
+    bool closed = arts_db_ro_combine_on_cts(cache, a->cover);
+    arts_db_axis_drop(db, closed ? 1u : 0u);
     return;
   }
 
   if (a->data_present == 1 && a->rdzv_txid != 0) {
     /* The payload travels one-sided: pair this packet with the write
-     * completion (either may arrive first); install+resume when both are in.
-     * Take our own descriptor pin for the pairing window (the dispatcher's
-     * ref ends when this handler returns). */
+     * completion (either may arrive first); install+resume when both are
+     * in. */
     struct snapshot_landed_ctx_s *ctx =
         (struct snapshot_landed_ctx_s *)arts_malloc(sizeof(*ctx));
-    ctx->db_h = arts_route_table_lookup_db(cache->db_guid);
+    ctx->db = db;
+    ctx->db_guid = a->db_guid;
     ctx->landing = (struct arts_db_buffer_s *)(uintptr_t)a->rdzv_cookie;
     ctx->version = a->version;
     ctx->data_size = a->db_size;
@@ -502,7 +511,8 @@ void arts_handler_db_snapshot_response(void *item_v, void *args_v) {
            "a reply that moves no bytes named a version this cache lacks");
   }
 #endif
-  arts_db_ro_combine_on_terminal(cache, a->cover);
+  bool closed = arts_db_ro_combine_on_terminal(cache, a->cover);
+  arts_db_axis_drop(db, closed ? 1u : 0u);
 }
 #endif /* the versioned-snapshot read path */
 

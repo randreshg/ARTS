@@ -1024,6 +1024,11 @@ void *arts_route_table_borrow_or_lookup(arts_shared_ptr_t h, arts_guid_t key,
   return arts_shared_get(*looked);
 }
 
+arts_shared_ptr_t arts_route_table_copy_live(arts_shared_ptr_t h,
+                                             arts_guid_t key) {
+  return arts_route_table_live(h, key) ? arts_shared_copy(h) : NULL;
+}
+
 arts_shared_ptr_t arts_route_table_lookup_event(arts_guid_t guid) {
   return arts_route_table_lookup_typed(guid, ARTS_GUID_EVENT);
 }

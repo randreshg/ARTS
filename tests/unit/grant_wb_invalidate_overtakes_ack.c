@@ -14,7 +14,8 @@
  * INVALIDATE, then a CONFIRM_ACK with no piggyback, with no drained writer and
  * with several, each released after the ack; and the control order, the ack
  * before the INVALIDATE.  Each must ship exactly once, to the INVALIDATE's
- * target, at the zero edge, and leave the word at zero.
+ * target, at the zero edge, and leave the word at zero; the ack drops the
+ * count of the write request it answers once.
  *
  * PURE test: no arts_rt, no ports, no threads.
  */
@@ -53,8 +54,6 @@ ARTS_THREAD_LOCAL uint8_t arts_db_census_serve;
     exit(1);                                                                   \
   }
 UNREACHED(arts_shared_ptr_t arts_route_table_lookup_db(arts_guid_t g))
-UNREACHED(arts_shared_ptr_t arts_db_cache_stub_install(arts_guid_t g,
-                                                       uint64_t s))
 UNREACHED(void arts_db_rdzv_discard_landing(uint64_t t, uint64_t s, uint64_t c))
 UNREACHED(void *arts_route_table_borrow_or_lookup(arts_shared_ptr_t h,
                                                   arts_guid_t g,
@@ -62,12 +61,29 @@ UNREACHED(void *arts_route_table_borrow_or_lookup(arts_shared_ptr_t h,
 UNREACHED(void arts_send_db_grant_confirm(struct arts_db_s *db))
 UNREACHED(void arts_send_db_grant_invalidate(
     struct arts_db_s *db, unsigned int o, unsigned int n,
-    const struct arts_rdzv_landing_s *r, uint64_t h))
+    const struct arts_rdzv_landing_s *r, uint64_t h, uint64_t t))
 UNREACHED(void arts_db_grant_note_ex_holder(struct arts_db_s *db,
                                             unsigned int r))
 UNREACHED(void arts_transport_send_async(int r, char *m, unsigned int n))
 UNREACHED(void *arts_shared_get(arts_shared_ptr_t h))
-UNREACHED(void arts_shared_release(arts_shared_ptr_t *p))
+
+/* The new owner's descriptor: installed under DB_GUID, and its write request
+ * (the one this CONFIRM_ACK answers) holds one count, which the ack drops. */
+#define DB_GUID ((arts_guid_t)0x77u)
+static struct arts_shared_s *const g_cb = (struct arts_shared_s *)0x1000;
+static int g_releases;
+uint64_t arts_shared_tag(arts_shared_ptr_t p) {
+  return p == g_cb ? (uint64_t)DB_GUID : 0u;
+}
+void arts_shared_release(arts_shared_ptr_t *p) {
+  if (*p != g_cb) {
+    printf("FAIL grant_wb_invalidate_overtakes_ack: a release of another "
+           "control block\n");
+    exit(1);
+  }
+  g_releases++;
+  *p = NULL;
+}
 UNREACHED(bool arts_rank_u64_map_load(struct arts_rank_to_u64_map_s *m,
                                       const void *in, size_t size))
 UNREACHED(void arts_net_rdzv_expect(uint64_t txid, uint64_t len,
@@ -102,6 +118,9 @@ void arts_db_grant_ship_pending(struct arts_db_cache_s *c) {
 static int scenario(int invalidate_first, unsigned int drained) {
   struct arts_db_s *db = calloc(1, sizeof(*db));
   struct arts_db_cache_s *c = &db->cache;
+  c->db_guid = DB_GUID;
+  db->self_cb = g_cb;
+  g_releases = 0;
   c->incoming_new_owner = ARTS_NO_PENDING_OWNER;
   /* The install: sentinel + drain guard, unconfirmed. */
   atomic_init(&c->writer_count, 2u + ARTS_GRANT_UNCONFIRMED);
@@ -115,6 +134,8 @@ static int scenario(int invalidate_first, unsigned int drained) {
   inv.new_owner_have = ARTS_GRANT_VERSION_NONE;
   struct arts_msg_grant_confirm_ack_packet_s ack;
   memset(&ack, 0, sizeof(ack));
+  ack.db_guid = DB_GUID;
+  ack.token = (uint64_t)(uintptr_t)db;
   ack.new_owner_rank = ARTS_NO_PENDING_OWNER;
   ack.new_owner_have = ARTS_GRANT_VERSION_NONE;
 
@@ -122,9 +143,9 @@ static int scenario(int invalidate_first, unsigned int drained) {
   if (invalidate_first) {
     arts_handler_db_grant_invalidate(db, &inv);
     early |= g_ships;
-    arts_handler_db_grant_confirm_ack(db, &ack);
+    arts_handler_db_grant_confirm_ack(&ack);
   } else {
-    arts_handler_db_grant_confirm_ack(db, &ack);
+    arts_handler_db_grant_confirm_ack(&ack);
     early |= g_ships && drained > 0u;
     arts_handler_db_grant_invalidate(db, &inv);
   }
@@ -134,13 +155,14 @@ static int scenario(int invalidate_first, unsigned int drained) {
   }
   unsigned int w = atomic_load_explicit(&c->writer_count, memory_order_acquire);
   int ok = !early && g_ships == 1 && g_ship_to == TARGET && g_ship_word == 0u &&
-           w == 0u;
+           w == 0u && g_releases == 1;
   if (!ok) {
     printf("FAIL grant_wb_invalidate_overtakes_ack: %s, %u drained writers: "
-           "ships=%d to=%u at word=0x%x, word=0x%x, early=%d\n",
+           "ships=%d to=%u at word=0x%x, word=0x%x, early=%d, request "
+           "counts dropped=%d\n",
            invalidate_first ? "INVALIDATE before the ack"
                             : "ack before the INVALIDATE",
-           drained, g_ships, g_ship_to, g_ship_word, w, early);
+           drained, g_ships, g_ship_to, g_ship_word, w, early, g_releases);
   }
   free(db);
   return ok ? 0 : 1;

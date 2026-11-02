@@ -32,7 +32,7 @@
 
 #include "arts/coherence/coherence.h" /* the handler arg structs */
 #include "arts/db.h" /* struct arts_db_s (the self-send's descriptor) */
-#include "arts/gas/route_table.h" /* arts_route_table_borrow_or_lookup */
+#include "arts/gas/route_table.h" /* arts_route_table_copy_live (self-send) */
 #include "arts/ooo.h" /* arts_ooo_dispatch_on (self-send on the descriptor) */
 #include "arts/system/print.h"
 #include "arts/system/threads.h"
@@ -63,6 +63,7 @@ void arts_send_db_publish(struct arts_db_s *db, uint64_t version, uint64_t cv,
   p.rdzv_txid = rdzv_txid;
   p.rdzv_cookie = rdzv_cookie;
   p.flags = return_grant ? ARTS_PUBLISH_FLAG_GRANT_RETURN : 0ULL;
+  p.token = arts_db_token(db);
 /* The OoO kind exists only in arms that publish at a release; VAL under WB
  * publishes nothing, so its local-hit branch is compiled out with it. */
 #if !defined(ARTS_WRITE_POLICY_WB) || defined(ARTS_PROTOCOL_INV)
@@ -72,7 +73,10 @@ void arts_send_db_publish(struct arts_db_s *db, uint64_t version, uint64_t cv,
    * does, deferred until the home installs and drains. */
   if (home_rank == arts_global_rank_id) {
     /* A home-resident releaser's buffer is the canonical copy, so its flight
-     * moves no bytes: the args carry the ordering round alone. */
+     * moves no bytes: the args carry the ordering round alone.  The round can
+     * end inline, its PUBLISH_ACK landing this flight, whose count a
+     * relaunching caller runs under: the body runs under a count of its
+     * own. */
     struct arts_ooo_args_db_publish_s args = {
         .releaser = p.header.rank,
         .db_guid = db_guid,
@@ -82,9 +86,11 @@ void arts_send_db_publish(struct arts_db_s *db, uint64_t version, uint64_t cv,
         .rdzv_txid = 0,
         .rdzv_cookie = 0,
         .returns_grant = return_grant ? 1u : 0u,
+        .token = p.token,
     };
-    arts_ooo_dispatch_on(db->self_cb, OOO_DB_PUBLISH, db_guid, &args,
-                         sizeof(args));
+    arts_shared_ptr_t held = arts_route_table_copy_live(db->self_cb, db_guid);
+    arts_ooo_dispatch_on(held, OOO_DB_PUBLISH, db_guid, &args, sizeof(args));
+    arts_shared_release(&held);
     return;
   }
 #endif
@@ -129,7 +135,8 @@ void arts_send_db_publish_cts(unsigned int releaser_rank, arts_guid_t db_guid,
 #if (defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)) &&             \
     (!defined(ARTS_WRITE_POLICY_WB) || defined(ARTS_PROTOCOL_INV))
 void arts_send_db_publish_ack(unsigned int releaser_rank, struct arts_db_s *db,
-                              uint64_t cv, uint64_t version, bool credit) {
+                              uint64_t cv, uint64_t version, bool credit,
+                              uint64_t token) {
   arts_guid_t db_guid = db->cache.db_guid;
   struct arts_msg_publish_ack_packet_s p;
   arts_fill_packet_header(&p.header, sizeof(p), MSG_DB_PUBLISH_ACK);
@@ -137,6 +144,7 @@ void arts_send_db_publish_ack(unsigned int releaser_rank, struct arts_db_s *db,
   p.db_guid = db_guid;
   p.cv = cv;
   p.version = version;
+  p.token = token;
   p.credit_addr = 0;
   p.credit_rkey = 0;
   p.credit_txid = 0;
@@ -169,20 +177,16 @@ void arts_send_db_publish_ack(unsigned int releaser_rank, struct arts_db_s *db,
     arts_db_buf_release(&mh);
   }
   if (releaser_rank == arts_global_rank_id) {
-    /* Self-send: the releaser's descriptor is the home's, which the caller
-     * holds.  The body runs on it while it is live and on whatever a lookup
-     * finds otherwise, as on the wire, unconditionally (a miss must still
-     * post a nonzero cv, else the blocked releaser hangs). */
-    struct arts_db_publish_ack_args_s args = {.cv = cv,
+    /* Self-send: the answer, as on the wire (the token names the releaser's
+     * descriptor, which is this rank's one descriptor of the block). */
+    struct arts_db_publish_ack_args_s args = {.db_guid = db_guid,
+                                              .token = token,
+                                              .cv = cv,
                                               .version = version,
                                               .credit_addr = p.credit_addr,
                                               .credit_rkey = p.credit_rkey,
                                               .credit_txid = p.credit_txid};
-    arts_shared_ptr_t looked = NULL;
-    arts_handler_db_publish_ack(
-        arts_route_table_borrow_or_lookup(db->self_cb, db_guid, &looked),
-        &args);
-    arts_shared_release(&looked);
+    arts_handler_db_publish_ack(&args);
     return;
   }
   arts_transport_send_async((int)releaser_rank, (char *)&p, sizeof(p));
@@ -259,18 +263,26 @@ void arts_send_db_snapshot_request(struct arts_db_cache_s *cache,
   p.rdzv.key = rdzv.key;
   p.rdzv.txid = rdzv.txid;
   p.rdzv.cookie = rdzv.cookie;
+  p.token = arts_db_token(arts_db_of_cache(cache));
   if (home_rank == arts_global_rank_id) {
     /* Self-send: the requester's cache is the home's descriptor, on which the
      * request body runs; one not yet installed takes the engine by GUID,
-     * deferred until the home installs and drains. */
+     * deferred until the home installs and drains.  The body can answer the
+     * request inline, dropping the read request's count, which a re-sending
+     * answer runs under, and still run on (a dismiss's teardown): it runs
+     * under a count of its own. */
     struct arts_ooo_args_db_snapshot_request_s args = {
         .requester = p.header.rank,
         .db_guid = db_guid,
         .cover = cover,
         .rdzv = rdzv,
+        .token = p.token,
     };
-    arts_ooo_dispatch_on(arts_db_of_cache(cache)->self_cb,
-                         OOO_DB_SNAPSHOT_REQUEST, db_guid, &args, sizeof(args));
+    arts_shared_ptr_t held =
+        arts_route_table_copy_live(arts_db_of_cache(cache)->self_cb, db_guid);
+    arts_ooo_dispatch_on(held, OOO_DB_SNAPSHOT_REQUEST, db_guid, &args,
+                         sizeof(args));
+    arts_shared_release(&held);
     return;
   }
   if (!arts_net_send_held((int)home_rank, (char *)&p, sizeof(p),
@@ -279,10 +291,10 @@ void arts_send_db_snapshot_request(struct arts_db_cache_s *cache,
   }
 }
 
-void arts_send_db_snapshot_response(unsigned int requester_rank,
-                                    struct arts_db_s *db, arts_guid_t db_guid,
-                                    uint64_t version, uint32_t cover,
-                                    uint32_t kind, uint64_t db_size,
+void arts_send_db_snapshot_response(unsigned int requester_rank, uint64_t token,
+                                    arts_guid_t db_guid, uint64_t version,
+                                    uint32_t cover, uint32_t kind,
+                                    uint64_t db_size,
                                     const struct arts_rdzv_landing_s *landing,
                                     arts_shared_ptr_t src_h) {
   struct arts_db_buffer_s *src =
@@ -297,13 +309,17 @@ void arts_send_db_snapshot_response(unsigned int requester_rank,
   p.db_size = db_size;
   p.rdzv_txid = 0;
   p.rdzv_cookie = (landing != NULL) ? landing->cookie : 0;
+  p.token = token;
   if (requester_rank == arts_global_rank_id) {
     /* Self-serve (a write-back REDIRECT round-trip can land back on the
      * requester rank): the version served is this rank's own copy's, so no
-     * bytes move; the handler returns our own unused landing (cookie), or
-     * adopts it as storage when the reply says nothing is held.  It runs on
-     * the descriptor the caller pins, which is this rank's cache too. */
+     * bytes move; the answer returns our own unused landing (cookie), or
+     * adopts it as storage when the reply says nothing is held, on the
+     * descriptor the token names (a retired one only gets its landing
+     * back). */
     struct arts_db_snapshot_response_args_s args = {
+        .db_guid = db_guid,
+        .token = token,
         .cover = cover,
         .data_present = kind,
         .version = version,
@@ -311,16 +327,9 @@ void arts_send_db_snapshot_response(unsigned int requester_rank,
         .rdzv_txid = 0,
         .rdzv_cookie = (landing != NULL) ? landing->cookie : 0,
     };
-    if (db != NULL) {
-      uint8_t census = arts_db_census_serving(false);
-      arts_handler_db_snapshot_response(db, &args);
-      arts_db_census_served(census);
-    } else if (landing != NULL && landing->cookie != 0) {
-      /* The requester is gone with its descriptor: its unused landing still
-       * has to go back, or the storage it keeps alive never does. */
-      arts_db_buf_landing_return(
-          (struct arts_db_buffer_s *)(uintptr_t)landing->cookie);
-    }
+    uint8_t census = arts_db_census_serving(false);
+    arts_handler_db_snapshot_response(&args);
+    arts_db_census_served(census);
     if (src != NULL) {
       arts_db_buf_release(&src_h);
     }
@@ -396,7 +405,8 @@ void arts_send_db_destroy(arts_guid_t db_guid, arts_shared_ptr_t held) {
     /* The home is this rank: the destroy body runs on the descriptor `held`
      * names while it is live, and takes the engine by GUID otherwise (no
      * handle, or a descriptor not yet installed or retired), deferred until
-     * the home installs and drains. */
+     * the home installs and drains.  No count of its own: `held` is the
+     * caller's own reference, which the body never drops. */
     struct arts_ooo_args_db_destroy_s args = {
         .requester = arts_global_rank_id,
         .db_guid = db_guid,

@@ -160,6 +160,7 @@ void arts_db_cache_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
   c->incoming_new_owner = ARTS_NO_PENDING_OWNER;
   c->incoming_new_owner_rdzv = (struct arts_rdzv_landing_s){0, 0, 0, 0};
   c->incoming_new_owner_have = ARTS_GRANT_VERSION_NONE;
+  c->incoming_new_owner_token = 0u;
   arts_db_cache_common_init(c, db_guid, db_size, kind, creator_rank);
 }
 
@@ -217,8 +218,8 @@ void arts_handler_db_snapshot_request(void *item_v, void *args_v) {
       /* Declared: a write turn of the requester's rank covers this request.
        * Dismiss it -- no data, no read turn -- returning the landing. */
       arts_send_db_snapshot_response(
-          requester, arts_db_of_cache(cache), cache->db_guid, /*version=*/0,
-          cover, /*kind=*/2,
+          requester, a->token, cache->db_guid, /*version=*/0, cover,
+          /*kind=*/2,
           atomic_load_explicit(&cache->db_size, memory_order_relaxed),
           &a->rdzv, NULL);
     }
@@ -255,14 +256,15 @@ void arts_handler_db_snapshot_request(void *item_v, void *args_v) {
      * the owner — answer a size-only CTS directly; the re-request carries a
      * landing and is then redirected for real. */
     INCREMENT_NUM_SNAPSHOT_SIZE_CTS_BY(1);
-    arts_send_db_snapshot_response(requester, db, cache->db_guid,
+    arts_send_db_snapshot_response(requester, a->token, cache->db_guid,
                                    /*version=*/0, cover, /*kind=*/2, db_size,
                                    &a->rdzv, NULL);
     return;
   }
   unsigned int owner =
       atomic_load_explicit(&db->rw_holder, memory_order_acquire);
-  arts_send_db_snapshot_redirect(db, owner, requester, cover, &a->rdzv);
+  arts_send_db_snapshot_redirect(db, owner, requester, cover, &a->rdzv,
+                                 a->token);
 }
 
 /* The coherent destroy at the home (arts_handler_db_destroy, under its
@@ -318,6 +320,9 @@ bool arts_db_create_take_hold(struct arts_db_cache_s *cache, uint8_t *owed) {
   arts_db_grant_claim_writers(cache);
   *owed = arts_db_val_claim_cover(cache);
   arts_db_grant_rearm(cache);
+  /* The claim closed the requests the cache had out: their counts go, under
+   * the create's own. */
+  arts_db_axis_drop(arts_db_of_cache(cache), arts_db_claim_closed_axes(*owed));
   return true;
 }
 
@@ -365,9 +370,9 @@ void arts_handler_db_snapshot_redirect(void *item_v, void *args_v) {
      * ARTS_GRANT_VERSION_NONE, "this rank holds nothing" — and the requester
      * reads that as "nobody has written the block", adopting its own
      * advertised landing as the storage it is owed. */
-    arts_send_db_snapshot_response(requester, arts_db_of_cache(cache),
-                                   a->db_guid, /*version=*/0, cover,
-                                   /*kind=*/0, db_size, &a->rdzv, NULL);
+    arts_send_db_snapshot_response(requester, a->token, a->db_guid,
+                                   /*version=*/0, cover, /*kind=*/0, db_size,
+                                   &a->rdzv, NULL);
     return;
   }
   /* Acquire: the version names the bytes served below, so every write of
@@ -386,9 +391,8 @@ void arts_handler_db_snapshot_redirect(void *item_v, void *args_v) {
      * unused landing for recycling. */
     INCREMENT_NUM_SNAPSHOT_HEADER_ONLY_BY(1);
     arts_db_buf_release(&buf_h);
-    arts_send_db_snapshot_response(requester, arts_db_of_cache(cache),
-                                   a->db_guid, cur_v, cover, /*kind=*/0,
-                                   db_size, &a->rdzv, NULL);
+    arts_send_db_snapshot_response(requester, a->token, a->db_guid, cur_v,
+                                   cover, /*kind=*/0, db_size, &a->rdzv, NULL);
   } else if (a->rdzv.txid == 0) {
     /* Data must move but no landing was forwarded (a first-touch request that
      * slipped past home's CTS gate can only mean home learned the size after
@@ -396,23 +400,22 @@ void arts_handler_db_snapshot_redirect(void *item_v, void *args_v) {
      * carries a landing.  The watermark does NOT advance. */
     arts_db_buf_release(&buf_h);
     INCREMENT_NUM_SNAPSHOT_SIZE_CTS_BY(1);
-    arts_send_db_snapshot_response(requester, arts_db_of_cache(cache),
-                                   a->db_guid, cur_v, cover, /*kind=*/2,
-                                   db_size, &a->rdzv, NULL);
+    arts_send_db_snapshot_response(requester, a->token, a->db_guid, cur_v,
+                                   cover, /*kind=*/2, db_size, &a->rdzv, NULL);
   } else {
     /* Advance dedup watermark (monotonic max), then PUT the payload into the
      * forwarded landing (buf_h transfers into the sender). */
     arts_rank_u64_map_advance(cache->cached_version, requester, cur_v);
-    arts_send_db_snapshot_response(requester, arts_db_of_cache(cache),
-                                   a->db_guid, cur_v, cover, /*kind=*/1,
-                                   db_size, &a->rdzv, buf_h);
+    arts_send_db_snapshot_response(requester, a->token, a->db_guid, cur_v,
+                                   cover, /*kind=*/1, db_size, &a->rdzv, buf_h);
   }
 }
 
 void arts_send_db_snapshot_redirect(struct arts_db_s *db,
                                     unsigned int owner_rank,
                                     unsigned int requester_rank, uint32_t cover,
-                                    const struct arts_rdzv_landing_s *rdzv) {
+                                    const struct arts_rdzv_landing_s *rdzv,
+                                    uint64_t token) {
   arts_guid_t db_guid = db->cache.db_guid;
   struct arts_rdzv_landing_s fwd =
       (rdzv != NULL) ? *rdzv : (struct arts_rdzv_landing_s){0, 0, 0, 0};
@@ -426,16 +429,19 @@ void arts_send_db_snapshot_redirect(struct arts_db_s *db,
   p.rdzv.key = fwd.key;
   p.rdzv.txid = fwd.txid;
   p.rdzv.cookie = fwd.cookie;
+  p.token = token;
   if (owner_rank == arts_global_rank_id) {
     /* Self-send: the owner's cache is the home's descriptor, which the caller
      * holds.  The body serves SNAPSHOT_RESPONSE from it while it is live, and
      * from what a lookup finds otherwise; a miss dismisses the requester, as
-     * the wire path does. */
+     * the wire path does.  No count of its own: the body drops no count its
+     * caller runs under. */
     struct arts_db_snapshot_redirect_args_s args = {
         .db_guid = db_guid,
         .requester_rank = requester_rank,
         .cover = cover,
         .rdzv = fwd,
+        .token = token,
     };
     arts_shared_ptr_t looked = NULL;
     struct arts_db_s *owner =
@@ -445,7 +451,7 @@ void arts_send_db_snapshot_redirect(struct arts_db_s *db,
       arts_handler_db_snapshot_redirect(owner, &args);
     } else {
       /* Torn down after the home took the request in: dismiss it. */
-      arts_send_db_snapshot_response(requester_rank, NULL, db_guid,
+      arts_send_db_snapshot_response(requester_rank, token, db_guid,
                                      /*version=*/0, cover, /*kind=*/2,
                                      /*db_size=*/0, &fwd, NULL);
     }

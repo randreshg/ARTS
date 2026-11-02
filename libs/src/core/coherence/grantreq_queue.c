@@ -25,18 +25,20 @@ void arts_home_grantreq_queue_init(struct arts_home_grantreq_queue_s *q) {
   atomic_store_explicit(&q->stub.next, (struct arts_home_grantreq_node_s *)NULL,
                         memory_order_relaxed);
   q->stub.rank = 0;
+  q->stub.token = 0;
   atomic_store_explicit(&q->tail, &q->stub, memory_order_relaxed);
   atomic_store_explicit(&q->head, &q->stub, memory_order_relaxed);
 }
 
 void arts_home_grantreq_queue_push(struct arts_home_grantreq_queue_s *q,
-                                  unsigned int rank,
-                                  const struct arts_rdzv_landing_s *rdzv,
-                                  uint64_t have_version) {
+                                   unsigned int rank,
+                                   const struct arts_rdzv_landing_s *rdzv,
+                                   uint64_t have_version, uint64_t token) {
   struct arts_home_grantreq_node_s *n =
       (struct arts_home_grantreq_node_s *)arts_malloc(sizeof(*n));
   n->rank = rank;
   n->have_version = have_version;
+  n->token = token;
   if (rdzv != NULL) {
     n->rdzv = *rdzv;
   } else {
@@ -115,7 +117,8 @@ bool arts_home_grantreq_queue_peek(const struct arts_home_grantreq_queue_s *q,
 bool arts_home_grantreq_queue_pop_linked(struct arts_home_grantreq_queue_s *q,
                                          unsigned int *out_rank,
                                          struct arts_rdzv_landing_s *out_rdzv,
-                                         uint64_t *out_have) {
+                                         uint64_t *out_have,
+                                         uint64_t *out_token) {
   struct arts_home_grantreq_node_s *head =
       atomic_load_explicit(&q->head, memory_order_acquire);
   struct arts_home_grantreq_node_s *next =
@@ -129,6 +132,9 @@ bool arts_home_grantreq_queue_pop_linked(struct arts_home_grantreq_queue_s *q,
   }
   if (out_have != NULL) {
     *out_have = next->have_version;
+  }
+  if (out_token != NULL) {
+    *out_token = next->token;
   }
   atomic_store_explicit(&q->head, next, memory_order_release);
   if (head != &q->stub) {
@@ -139,7 +145,8 @@ bool arts_home_grantreq_queue_pop_linked(struct arts_home_grantreq_queue_s *q,
 
 bool arts_home_grantreq_queue_peek_linked(
     const struct arts_home_grantreq_queue_s *q, unsigned int *out_rank,
-    struct arts_rdzv_landing_s *out_rdzv, uint64_t *out_have) {
+    struct arts_rdzv_landing_s *out_rdzv, uint64_t *out_have,
+    uint64_t *out_token) {
   struct arts_home_grantreq_node_s *head =
       atomic_load_explicit(&q->head, memory_order_acquire);
   struct arts_home_grantreq_node_s *next =
@@ -153,6 +160,9 @@ bool arts_home_grantreq_queue_peek_linked(
   }
   if (out_have != NULL) {
     *out_have = next->have_version;
+  }
+  if (out_token != NULL) {
+    *out_token = next->token;
   }
   return true;
 }

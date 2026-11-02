@@ -214,6 +214,7 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
                  .cookie = pack->rdzv.cookie},
         .have_version = pack->have_version & ARTS_GRANT_REQ_VERSION_MASK,
         .cover = (uint32_t)(pack->have_version >> ARTS_GRANT_REQ_VERSION_BITS),
+        .token = pack->token,
     };
     arts_ooo_dispatch_or_defer_guid(pack->db_guid, OOO_DB_GRANT_REQUEST,
                                     &args, sizeof(args));
@@ -290,6 +291,7 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
                            .txid = pack->new_owner_rdzv.txid,
                            .cookie = pack->new_owner_rdzv.cookie},
         .new_owner_have = pack->new_owner_have,
+        .new_owner_token = pack->new_owner_token,
     };
     /* Pin the db_s for the handler's duration (the embedded cache is its FIRST
      * member, offset 0) so a concurrent DESTROY on another progress thread
@@ -331,6 +333,7 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
                  .key = pack->rdzv.key,
                  .txid = pack->rdzv.txid,
                  .cookie = pack->rdzv.cookie},
+        .token = pack->token,
     };
     arts_ooo_dispatch_or_defer_guid(pack->db_guid, OOO_DB_SNAPSHOT_REQUEST,
                                     &args, sizeof(args));
@@ -340,13 +343,12 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
     ARTS_DEBUG("Coh SNAPSHOT_RESPONSE Received");
     struct arts_msg_snapshot_response_packet_s *pack =
         (struct arts_msg_snapshot_response_packet_s *)(packet);
-    /* No inline payload rides the wire anymore (the snapshot payload travels
-     * one-sided and pairs by rdzv_txid inside the handler); a data-bearing
-     * response is metadata-only.  Cat-C lookup-acquire-or-drop: HIT runs the
-     * pure body against the ref-pinned db_s; MISS (DB destroyed / slot
-     * NULL-stored) resumes nothing — the parked EDT this 1:1 response would
-     * resume was torn down — and only ends the landing. */
+    /* An answer: the snapshot payload travels one-sided and pairs by
+     * rdzv_txid inside the handler, which acts on the descriptor the token
+     * names (a retired one only ends the landing). */
     struct arts_db_snapshot_response_args_s args = {
+        .db_guid = pack->db_guid,
+        .token = pack->token,
         .cover = pack->cover,
         .data_present = pack->data_present,
         .version = pack->version,
@@ -354,21 +356,10 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
         .rdzv_txid = pack->rdzv_txid,
         .rdzv_cookie = pack->rdzv_cookie,
     };
-    arts_shared_ptr_t h = arts_route_table_lookup_db(pack->db_guid);
-    struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(h);
-    if (db != NULL) {
-      /* A read answer on the wire comes from another rank. */
-      uint8_t census = arts_db_census_serving(true);
-      arts_handler_db_snapshot_response(db, &args);
-      arts_db_census_served(census);
-    } else {
-      /* MISS: still consume the txid of any one-sided payload in flight so
-       * the pairing table stays leak-free; the landing ends when that payload
-       * arrives, or at once when none was sent. */
-      arts_db_rdzv_discard_landing(pack->rdzv_txid, pack->db_size,
-                                   pack->rdzv_cookie);
-    }
-    arts_shared_release(&h);
+    /* A read answer on the wire comes from another rank. */
+    uint8_t census = arts_db_census_serving(true);
+    arts_handler_db_snapshot_response(&args);
+    arts_db_census_served(census);
     break;
   }
 #endif /* model dispatch for MSG_DB_SNAPSHOT_REQUEST and _RESPONSE */
@@ -544,16 +535,9 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
     ARTS_DEBUG("Coh GRANT_CTS Received");
     struct arts_msg_grant_cts_packet_s *pack =
         (struct arts_msg_grant_cts_packet_s *)(packet);
-    /* Cat-C lookup-acquire-or-drop: HIT learns db_size + re-issues the
-     * in-flight request with a landing; MISS (DB destroyed) silently drops:
-     * the requester's parked waiters are acquires the destroy contract
-     * excludes, freed with its cache and never resumed. */
-    arts_shared_ptr_t h = arts_route_table_lookup_db(pack->db_guid);
-    struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(h);
-    if (db != NULL) {
-      arts_handler_db_grant_cts(db, pack);
-    }
-    arts_shared_release(&h);
+    /* An answer: the handler learns db_size and re-issues the in-flight
+     * request on the descriptor the token names. */
+    arts_handler_db_grant_cts(pack);
     break;
   }
 #endif /* model dispatch for MSG_DB_GRANT_RESPONSE */
@@ -649,6 +633,7 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
         .rdzv_cookie = pack->rdzv_cookie,
         .returns_grant =
             (pack->flags & ARTS_PUBLISH_FLAG_GRANT_RETURN) ? 1u : 0u,
+        .token = pack->token,
     };
     arts_ooo_dispatch_or_defer_guid(pack->db_guid, OOO_DB_PUBLISH, &args,
                                     sizeof(args));
@@ -658,23 +643,19 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
     ARTS_DEBUG("Coh PUBLISH_ACK Received");
     struct arts_msg_publish_ack_packet_s *pack =
         (struct arts_msg_publish_ack_packet_s *)(packet);
-    /* Cat-C SPECIAL — call the body on BOTH HIT and MISS.  A nonzero cv is a
-     * cache-independent pointer-identity sem-post (the heap rendezvous of a
-     * grant return sent on its own); a torn-down cache must NOT drop that ACK
-     * or the blocked returner hangs.  cv == 0 is flight completion, which needs
-     * the live releaser-side cache — the body tolerates a MISS (a destroy while
-     * a publish is outstanding: an ordering violation by the program, or a
-     * destroy that a shutdown escape let follow the release; a waiter still
-     * blocked unblocks through the shutdown path). */
-    struct arts_db_publish_ack_args_s args = {.cv = pack->cv,
+    /* No lookup either way.  A nonzero cv is a cache-independent
+     * pointer-identity sem-post (the heap rendezvous of a grant return sent
+     * on its own), which must reach the blocked returner whatever became of
+     * the block.  cv == 0 is a flight's completion, an answer on the
+     * releaser descriptor its token names. */
+    struct arts_db_publish_ack_args_s args = {.db_guid = pack->db_guid,
+                                              .token = pack->token,
+                                              .cv = pack->cv,
                                               .version = pack->version,
                                               .credit_addr = pack->credit_addr,
                                               .credit_rkey = pack->credit_rkey,
                                               .credit_txid = pack->credit_txid};
-    arts_shared_ptr_t h = arts_route_table_lookup_db(pack->db_guid);
-    struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(h);
-    arts_handler_db_publish_ack(db, &args);
-    arts_shared_release(&h);
+    arts_handler_db_publish_ack(&args);
     break;
   }
 #ifdef ARTS_WRITE_POLICY_WT
@@ -757,13 +738,14 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
                  .key = pack->rdzv.key,
                  .txid = pack->rdzv.txid,
                  .cookie = pack->rdzv.cookie},
+        .token = pack->token,
     };
     arts_shared_ptr_t h = arts_route_table_lookup_db(pack->db_guid);
     struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(h);
     if (db != NULL) {
       arts_handler_db_snapshot_redirect(db, &args);
     } else {
-      arts_send_db_snapshot_response(pack->requester_rank, NULL,
+      arts_send_db_snapshot_response(pack->requester_rank, pack->token,
                                      pack->db_guid, /*version=*/0, pack->cover,
                                      /*kind=*/2, /*db_size=*/0, &args.rdzv,
                                      NULL);
@@ -790,16 +772,8 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
     ARTS_DEBUG("Coh GRANT_CONFIRM_ACK Received");
     struct arts_msg_grant_confirm_ack_packet_s *pack =
         (struct arts_msg_grant_confirm_ack_packet_s *)(packet);
-    /* Cat-C lookup-acquire-or-drop: HIT runs the confirm_ack body on the
-     * ref-pinned db_s.  MISS (DB destroyed) silently drops: the gated waiters
-     * are acquires the destroy contract excludes, freed with the cache and
-     * never resumed. */
-    arts_shared_ptr_t h = arts_route_table_lookup_db(pack->db_guid);
-    struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(h);
-    if (db != NULL) {
-      arts_handler_db_grant_confirm_ack(db, pack);
-    }
-    arts_shared_release(&h);
+    /* An answer, on the descriptor the token names. */
+    arts_handler_db_grant_confirm_ack(pack);
     break;
   }
 #else
@@ -839,11 +813,13 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
         (struct arts_msg_grant_confirm_packet_s *)(packet);
     /* Cat-C lookup-acquire-or-drop: HIT advances the transfer round on the
      * ref-pinned home db_s; MISS (DB destroyed) silently drops.  The new owner
-     * is pending_install_owner, so the handler takes no args. */
+     * is pending_install_owner; its token rides for the CONFIRM_ACK. */
+    struct arts_db_grant_confirm_args_s args = {.token = pack->token,
+                                                .sender = pack->header.rank};
     arts_shared_ptr_t h = arts_route_table_lookup_db(pack->db_guid);
     struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(h);
     if (db != NULL) {
-      arts_handler_db_grant_confirm(db, NULL);
+      arts_handler_db_grant_confirm(db, &args);
     }
     arts_shared_release(&h);
     break;
@@ -1003,6 +979,7 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
                  .key = pack->rdzv.key,
                  .txid = pack->rdzv.txid,
                  .cookie = pack->rdzv.cookie},
+        .token = pack->token,
     };
     if (args.bounce) {
       /* A holder's re-send of a read its home had already taken in: the home
@@ -1014,7 +991,7 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
       if (db != NULL) {
         arts_handler_db_inv_request(db, &args);
       } else {
-        arts_send_db_inv_cts(args.requester, NULL, args.db_guid, 0u,
+        arts_send_db_inv_cts(args.requester, args.token, args.db_guid, 0u,
                              args.cover, args.rdzv.cookie);
       }
       arts_shared_release(&h);
@@ -1028,23 +1005,15 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
     ARTS_DEBUG("Coh INV_CTS Received");
     struct arts_msg_inv_cts_packet_s *pack =
         (struct arts_msg_inv_cts_packet_s *)(packet);
-    /* Cat-C lookup-acquire-or-drop: HIT learns db_size, returns any landing
-     * and re-sends or closes the fetch; MISS (DB destroyed) only returns the
-     * landing. */
-    arts_shared_ptr_t h = arts_route_table_lookup_db(pack->db_guid);
-    struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(h);
-    if (db != NULL) {
-      arts_handler_db_inv_cts(db, pack);
-    } else {
-      arts_db_rdzv_discard_landing(0u, 0u, pack->rdzv_cookie);
-    }
-    arts_shared_release(&h);
+    /* An answer: on the descriptor the token names it learns db_size,
+     * returns any landing and re-sends or closes the fetch. */
+    arts_handler_db_inv_cts(pack);
     break;
   }
   case MSG_DB_INV_DELIVER: {
     ARTS_DEBUG("Coh INV_DELIVER Received");
-    /* Cat-C: the receiver sent its own REQUEST first, so its cache exists;
-     * a destroyed cache discards the landing inside the handler. */
+    /* An answer to the receiver's own request: the handler acts on the
+     * descriptor the token names, and a retired one discards the landing. */
     arts_handler_db_inv_deliver((void *)packet, (size_t)packet->size);
     break;
   }
@@ -1095,6 +1064,7 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
                  .key = pack->rdzv.key,
                  .txid = pack->rdzv.txid,
                  .cookie = pack->rdzv.cookie},
+        .token = pack->token,
     };
     /* The home names a holder only after that holder's install (its CONFIRM,
      * or the creator's own announce), so an empty slot here is a cache
@@ -1106,7 +1076,7 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
       if (db != NULL) {
         arts_handler_db_inv_redirect(db, &args);
       } else {
-        arts_send_db_inv_cts(args.requester, NULL, args.db_guid, 0u,
+        arts_send_db_inv_cts(args.requester, args.token, args.db_guid, 0u,
                              args.cover, args.rdzv.cookie);
       }
       arts_shared_release(&h);

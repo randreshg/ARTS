@@ -39,7 +39,108 @@ extern "C" {
  * complete cache type.  This header keeps only the protocol function
  * declarations. */
 #include "arts/runtime_types.h"
-#include "arts/utils/shared.h" /* arts_shared_ptr_t — stub_install return type */
+#include "arts/utils/shared.h" /* arts_shared_ptr_t */
+
+#include <assert.h>
+
+#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
+/*--- Request axes and their answer tokens ----------------------------------
+ * A rank has at most one request out per axis of a block -- the read request,
+ * the write request and the publish flight -- and each open axis owns one
+ * count on the requester's descriptor.  The CAS that opens the axis takes it,
+ * after it commits and before the request leaves; whichever frame commits a
+ * transition that closes the axis drops it at its own end, after its last
+ * access: the answer, a size round or dismiss that closes, a create's claim,
+ * or, for an axis a cut shutdown left open on a descriptor still installed at
+ * teardown, the teardown sweep (arts_db_sweep_open_items, in a sanitizer build
+ * whose runtime threads all joined); a descriptor retired with an axis open
+ * keeps that count to the process exit.  A re-send, a size round that re-sends,
+ * a hop or a relaunch leaves the count where it is: it belongs to the axis,
+ * never to a message.
+ *
+ * The request names the descriptor as its token (protocol.h) and the answer
+ * acts on it.  The count keeps the descriptor's memory, so the one question
+ * is whether it was retired since, which its control block's tag answers: a
+ * retire clears it, and nothing restamps it.  An answer that finds the
+ * descriptor retired only ends its landing and drops the count, since a
+ * teardown resumes nothing.  A rendezvous pairing context of an answer
+ * borrows the count; its callback decides "retired" the same way, and its
+ * discard never reads the descriptor.
+ *
+ * Self-sends.  A request whose home is this rank runs its body inline, and
+ * the body can answer this rank's own request inline too, dropping that
+ * request's count and running on after it, while the caller may be running
+ * under that very count (an answer that re-sends, a flight's relaunch, a
+ * commit that confirms).  So every self-sent request runs its body under a
+ * count of its own, released once the body returns: a copy of the
+ * descriptor's control block while it is live (arts_route_table_copy_live).
+ * A dispatch onto a descriptor that is not live takes the engine's GUID path,
+ * which may defer the body to the install's drain, whose handle holds it;
+ * only CONFIRM's sender, which calls its handler directly, looks the block up
+ * instead.  A self-sent answer takes none: it drops its count as its last
+ * access, and its caller runs under another count: a request's body under
+ * such a count, a lookup's or a drain's; an answer frame that reaches it (an
+ * INV CTS that closes, a deliver whose copy a round killed) under its own
+ * axis count.  Nor do the self branches whose bodies drop no count their
+ * caller runs under: a DESTROY (on the caller's own reference), a snapshot
+ * redirect, a GRANT_INVALIDATE (its self-transfer can drop the count of the
+ * home's own write request, never one its caller runs under), an INV
+ * invalidate and its ack.
+ *
+ * Orders.  The take is a relaxed increment made before the send, so the
+ * deliveries that cause the answer order it before the answer's acq_rel
+ * decrement.  The window between the CAS that opens the axis and the take
+ * is covered by the count the opener runs under (the slot's pin under a walk's
+ * or a drain's account, the dispatcher's pin for a replay off the walk, a grant
+ * frame's or a create's count for a rearm, the releasing EDT's pin for a
+ * flight) and, beneath that count, by the install's hold (the control block's
+ * in_slot bit) and the cover gate.  The install's only retire is the home's
+ * teardown (on another rank, the CACHE_DESTROY that teardown sends).  The
+ * request leaves only after the take; the cover gate holds the teardown for a
+ * covered request until that request arrives, and the destroy contract keeps it
+ * behind an uncovered one, whose waiters cannot complete before its answer, so
+ * no legal destroy precedes the take.  A decrement that precedes the take (a
+ * claim's, which holds a count of its own) therefore never reaches zero.
+ * The tag load is relaxed: the descriptor stays valid either way, and a body
+ * that runs while a retire is under way copes with it as one a lookup pinned
+ * before the retire does. */
+static inline uint64_t arts_db_token(struct arts_db_s *db) {
+  return (uint64_t)(uintptr_t)db;
+}
+static inline struct arts_db_s *arts_db_from_token(uint64_t token,
+                                                   arts_guid_t db_guid) {
+  struct arts_db_s *db = (struct arts_db_s *)(uintptr_t)token;
+  assert(db != NULL && db->cache.db_guid == db_guid &&
+         "an answer's token names the block its request was for");
+  (void)db_guid;
+  return db;
+}
+static inline bool arts_db_token_retired(struct arts_db_s *db,
+                                         arts_guid_t db_guid) {
+  return arts_shared_tag(db->self_cb) != (uint64_t)db_guid;
+}
+static inline void arts_db_axis_take(struct arts_db_s *db) {
+  (void)arts_shared_copy(db->self_cb);
+}
+/* Drops n counts.  With none to drop it reads nothing: a caller that closed
+ * no axis may hold no count on db any more. */
+static inline void arts_db_axis_drop(struct arts_db_s *db, unsigned int n) {
+  if (n == 0u) {
+    return;
+  }
+  arts_shared_ptr_t cb = db->self_cb;
+  while (n-- != 0u) {
+    arts_shared_ptr_t h = cb;
+    arts_shared_release(&h);
+  }
+}
+/* The axes a create's claim closed, as its owed byte names them: a read
+ * request and a write request still out. */
+static inline unsigned int arts_db_claim_closed_axes(uint8_t owed) {
+  return ((owed & ARTS_CREATE_OWED_RO) != 0u ? 1u : 0u) +
+         ((owed & ARTS_CREATE_OWED_RW) != 0u ? 1u : 0u);
+}
+#endif /* VAL, INV */
 
 /*--- Pending RW Treiber-stack lifecycle helpers --------------------------
  * The per-cache RW waiter chain belongs to the shared grant plane, so it
@@ -106,9 +207,9 @@ void arts_db_cache_destructor(struct arts_db_cache_s *cache);
  * Result enum, returned by the remote acquire helpers
  * (arts_db_acquire_remote_ro / arts_db_acquire_remote_rw): OK means data was
  * resolved synchronously into the slot; PARK means the EDT was parked on the
- * coherence protocol and a later wake (SNAPSHOT_RESPONSE / GRANT / TRANSFER) will
- * deliver it.  The acquire handler itself (arts_handler_db_acquire, below) is a
- * void self-accounting body: a synchronous resolve calls
+ * coherence protocol and a later wake (SNAPSHOT_RESPONSE / GRANT / TRANSFER)
+ * will deliver it.  The acquire handler itself (arts_handler_db_acquire, below)
+ * is a void self-accounting body: a synchronous resolve calls
  * arts_db_acquire_resolved (count the dep + advance the RW cursor); a remote
  * request parks. */
 typedef enum {
@@ -116,13 +217,6 @@ typedef enum {
   ARTS_DB_ACQUIRE_PARK,
 } arts_db_acquire_result_t;
 
-/* Stub first-touch: allocate cache_s on this rank if absent.  Used where a
- * lookup_db miss is observed on a remote-owned DB.  Returns a PINNED handle
- * to the db_s whose cache it installed; the caller MUST arts_shared_release
- * it on every control-flow path.  A NULL handle = the DB was destroyed before
- * the install could be observed. */
-arts_shared_ptr_t arts_db_cache_stub_install(arts_guid_t db_guid,
-                                             uint64_t db_size);
 /* The acquire's first touch of a remote-owned DB, into `slot`, the slot one
  * reservation of db_guid returned and found empty: installs a size-unknown
  * cache-only stub there, or, when another install got there first, returns
@@ -151,14 +245,14 @@ arts_db_cache_stub_install_into(struct arts_route_item_s *slot,
  * acquire phase's own frame (its first pass and the walk, under the phase's
  * bias) or a resume drain, through the account it still owes (the EDT cannot
  * run, so the record's pin stays); an off-walk OoO replay through the OoO
- * dispatcher's pin on the installed object, held across every dispatch --
- * not through the record's pin, which the EDT's release drops.  So the rest of an off-walk replay's handler (a
- * read's request send, a write-through home's re-check and drain of its
- * publication waiters) may run after the slot's EDT ran, released and the
- * program legally destroyed the block: the caller's pin covers the free; the
- * destroy's synchronous half touches no state that rest touches; and a
- * request sent after its slot was served is a covered request the home
- * already counts (declared by a write request or owed by a create's
+ * dispatcher's pin on the installed object, held across every dispatch -- not
+ * through the record's pin, which the EDT's release drops.  So the rest of an
+ * off-walk replay's handler (a read's request send, a write-through home's
+ * re-check and drain of its publication waiters) may run after the slot's EDT
+ * ran, released and the program legally destroyed the block: the caller's pin
+ * covers the free; the destroy's synchronous half touches no state that rest
+ * touches; and a request sent after its slot was served is a covered request
+ * the home already counts (declared by a write request or owed by a create's
  * announce).  A serialized slot's replay runs under the account its worklist
  * entry owes, so its handler finishes before its EDT can run. */
 void arts_handler_db_acquire(void *item, void *args);
@@ -338,8 +432,10 @@ void arts_db_drain_publication_waiters(struct arts_db_cache_s *cache);
 /* Response-terminal hook of the remote-read combining window: resume the
  * in-flight batch against the now-current buffer, then re-arm the window with
  * whatever accumulated meanwhile or release it.  Call at every point the
- * response path resumes the on-wire requester. */
-void arts_db_ro_combine_on_terminal(struct arts_db_cache_s *cache,
+ * response path resumes the on-wire requester.  Returns whether the read
+ * axis closed (a re-armed window keeps it open), whose count the caller then
+ * drops at its end. */
+bool arts_db_ro_combine_on_terminal(struct arts_db_cache_s *cache,
                                     uint32_t cover);
 
 /* Ownership-arrival hook of the combining window: resume every read waiter
@@ -465,7 +561,10 @@ bool arts_db_create_take_hold(struct arts_db_cache_s *cache, uint8_t *owed);
  * and clearing the stub bit.  declaim: a size round answered the write
  * request (rw must be SENT): clear the stub bit -- the home is installed and
  * was created elsewhere, so this cache can never be claimed -- and return the
- * cover word the re-send carries (never PRECLAIM). */
+ * cover word the re-send carries (never PRECLAIM).  The axis counts: a won
+ * commit's caller takes the write axis's before it sends the request; clear
+ * closes it, and its count passes to the frame that runs the grant; a
+ * giveback that re-opens the read window takes the read axis's itself. */
 bool arts_db_rw_req_claim(struct arts_db_cache_s *cache, uint32_t *tok);
 bool arts_db_rw_req_commit(struct arts_db_cache_s *cache, uint32_t tok,
                            uint32_t *cover);
@@ -517,7 +616,9 @@ void arts_db_reader_serve_chain(struct arts_db_reader_pool_s *p,
 void arts_db_reader_pool_destroy(struct arts_db_reader_pool_s *p);
 #endif
 #ifdef ARTS_PROTOCOL_VAL
-void arts_db_ro_combine_on_cts(struct arts_db_cache_s *cache, uint32_t cover);
+/* A size round or a dismiss answered the read window: re-send it, or close
+ * the axis (returned: the caller drops its count at its end). */
+bool arts_db_ro_combine_on_cts(struct arts_db_cache_s *cache, uint32_t cover);
 uint8_t arts_db_val_claim_cover(struct arts_db_cache_s *cache);
 #endif
 
@@ -598,7 +699,8 @@ void arts_db_grant_release_commit(struct arts_db_cache_s *cache);
  * a word carrying exactly its own hold and can hand the right back on its own
  * publish.  commit_drain returns how many waiters it woke and commit_finish is
  * given that count: where the hold became the waiters', at least one waiter
- * must have taken it. */
+ * must have taken it.  commit_drain closes the write axis; the commit drops
+ * its count once commit_finish has returned. */
 unsigned int arts_db_grant_commit_drain(struct arts_db_cache_s *cache);
 void arts_db_grant_commit_finish(struct arts_db_cache_s *cache,
                                  unsigned int drained);
@@ -609,7 +711,8 @@ bool arts_pending_rw_queue_pending(arts_lf_stack_t *q);
 unsigned int arts_pending_rw_chain_count(arts_lf_link_t *chain);
 /* A grant's arrival: take every waiter it serves and release the coalescing
  * flag, opening a request for any waiter pushed after the take.  The caller
- * counts and wakes the returned chain. */
+ * counts and wakes the returned chain.  It closes the write axis: the caller
+ * drops that axis's count at its own end (arts_db_axis_drop). */
 arts_lf_link_t *arts_db_grant_take_waiters(struct arts_db_cache_s *cache);
 /* Hand every waiter of a taken chain to cb, then free it.  cb gets the waiter
  * itself, live for the call, and reads its EDT; this walk reads none. */
@@ -653,6 +756,7 @@ void arts_db_grant_release_settle(struct arts_db_cache_s *cache,
                                   uint64_t token);
 struct arts_db_grant_return_reply_s {
   uint64_t cv;      /* echoed verbatim */
+  uint64_t token;   /* a carried publish's flight token (cv 0), else 0 */
   uint64_t version; /* the covering version of a carried publish, else 0 */
   bool ack;         /* the returner waits on a reply */
   bool credit;      /* the reply refills the returner's in-place credit */
@@ -687,7 +791,9 @@ bool arts_db_acquire_rw_local_fast(struct arts_db_cache_s *cache,
  * and adds their holds to writer_count in one step before waking any of them.
  * Called where a write grant commits on this rank: the WB CONFIRM_ACK
  * handler, RETAIN's commit drain, and a PURGE home that serves its own request
- * from the head of its grant queue. */
+ * from the head of its grant queue.  It closes the write axis
+ * (arts_db_grant_take_waiters): the calling frame drops its count at its
+ * end. */
 void arts_db_drain_pending_rw_after_grant(struct arts_db_cache_s *cache);
 #endif /* shared grant plane */
 

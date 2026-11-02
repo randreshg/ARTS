@@ -328,6 +328,12 @@ arts_shared_ptr_t arts_route_table_lookup(arts_guid_t key);
 void *arts_route_table_borrow_or_lookup(arts_shared_ptr_t h, arts_guid_t key,
                                         arts_shared_ptr_t *looked);
 
+/* A ref of the caller's own on `h`'s object when `h` is live (a copy), NULL
+ * otherwise: for a body run inline that may drop the very ref the caller
+ * holds `h` by.  The caller holds a ref on `h` and releases the result. */
+arts_shared_ptr_t arts_route_table_copy_live(arts_shared_ptr_t h,
+                                             arts_guid_t key);
+
 arts_route_item_t *
 arts_route_table_search_for_key(arts_route_table_t *route_table,
                                 arts_guid_t key);

@@ -49,9 +49,10 @@ void arts_db_grant_advance(struct arts_db_cache_s *cache, struct arts_db_s *db,
   unsigned int next_owner;
   struct arts_rdzv_landing_s next_rdzv;
   uint64_t next_have = ARTS_GRANT_VERSION_NONE;
-  bool got = !looked &&
-             arts_home_grantreq_queue_pop_linked(&db->pending_rw, &next_owner,
-                                                 &next_rdzv, &next_have);
+  uint64_t next_token = 0u;
+  bool got = !looked && arts_home_grantreq_queue_pop_linked(
+                            &db->pending_rw, &next_owner, &next_rdzv,
+                            &next_have, &next_token);
   while (!got) {
     arts_sched_fuzz_point(); /* widen the look<->put-down window */
     /* Same-word pairing with every claim (arts_db_grant_request_arrived):
@@ -63,8 +64,8 @@ void arts_db_grant_advance(struct arts_db_cache_s *cache, struct arts_db_s *db,
       return;
     }
     INCREMENT_NUM_GRANT_BATON_RECLAIM_BY(1);
-    got = arts_home_grantreq_queue_pop_linked(&db->pending_rw, &next_owner,
-                                              &next_rdzv, &next_have);
+    got = arts_home_grantreq_queue_pop_linked(
+        &db->pending_rw, &next_owner, &next_rdzv, &next_have, &next_token);
   }
   atomic_store_explicit(&db->pending_install_owner, next_owner,
                         memory_order_relaxed);
@@ -74,7 +75,7 @@ void arts_db_grant_advance(struct arts_db_cache_s *cache, struct arts_db_s *db,
    * never deferred. */
   arts_send_db_grant_invalidate(
       db, atomic_load_explicit(&db->rw_holder, memory_order_acquire),
-      next_owner, &next_rdzv, next_have);
+      next_owner, &next_rdzv, next_have, next_token);
 }
 
 /* A grant is never handed back unasked here, so there is no obligation to

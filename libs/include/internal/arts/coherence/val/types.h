@@ -218,6 +218,10 @@ struct arts_db_cache_s {
    * have_version), published with the two fields above; the 0-edge actor
    * ships no payload when the canonical bytes are at that very version. */
   uint64_t incoming_new_owner_have;
+  /* The pending new owner's answer token, published with the three fields
+   * above under the same discipline; the 0-edge actor's GRANT_RESPONSE
+   * echoes it. */
+  uint64_t incoming_new_owner_token;
 #endif
   /* The request word (VREQ_* above).  Every write after init is an acq_rel
    * CAS: a reader's park carries its node's fields to the CAS that takes the
@@ -411,6 +415,7 @@ struct arts_db_s {
    * before the latch CAS publishes the slot, read by the latch's one
    * consumer after its consuming CAS. */
   uint64_t pending_return_cv;
+  uint64_t pending_return_token;
   uint64_t pending_return_version;
   uint8_t pending_return_ack;
   uint8_t pending_return_credit;

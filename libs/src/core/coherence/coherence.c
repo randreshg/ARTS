@@ -305,11 +305,9 @@ void arts_db_resolve_slot_cached(struct arts_edt_s *edt, unsigned int slot) {
  * touched, built privately, its self_cb armed: its control block, whose one
  * ref is the caller's.  No home directory (this rank is not the GUID home):
  * arts_db_cache_stub_size() spans cache + db_type, stopping before the home
- * fields.  No user data payload either — install_buffer allocates
- * cache->user_data on demand at the first wire arrival (db_size 0) or the
- * first install. */
-static arts_shared_ptr_t db_cache_stub_make(arts_guid_t db_guid,
-                                            uint64_t db_size) {
+ * fields.  No user data payload either, and no size: the first install
+ * allocates the payload, and the first answer teaches the size. */
+static arts_shared_ptr_t db_cache_stub_make(arts_guid_t db_guid) {
   assert(arts_guid_get_rank(db_guid) != arts_global_rank_id &&
          "a first-touch cache is never made on the block's home rank");
   uint64_t stub_sz = arts_db_cache_stub_size();
@@ -317,8 +315,7 @@ static arts_shared_ptr_t db_cache_stub_make(arts_guid_t db_guid,
       (struct arts_db_s *)arts_malloc_aligned(stub_sz, ARTS_CACHE_LINE_SIZE);
   memset(stub, 0, stub_sz);
   stub->db_type = ARTS_DB;
-  arts_db_cache_init(&stub->cache, db_guid, /*db_size=*/db_size,
-                     ARTS_DB_INIT_STUB,
+  arts_db_cache_init(&stub->cache, db_guid, /*db_size=*/0, ARTS_DB_INIT_STUB,
                      /*creator_rank=*/0);
   arts_shared_ptr_t cb = arts_route_table_make_handle(stub, db_guid);
   stub->self_cb = cb;
@@ -333,37 +330,10 @@ static void db_cache_stub_discard(arts_shared_ptr_t cb) {
   arts_db_free(stub);
 }
 
-/* Race-safe: the install rejects if another thread (e.g. a concurrent
- * wire-receive) raced us; in that case we free our stub and return a pinned
- * handle to the established db_s.  On a win the handle returned is the one
- * this call held across the install. */
-arts_shared_ptr_t arts_db_cache_stub_install(arts_guid_t db_guid,
-                                             uint64_t db_size) {
-  /* First check if it already exists (someone else stub-installed or
-   * a wire-receive fired). */
-  arts_shared_ptr_t existing = arts_route_table_lookup_db(db_guid);
-  if (arts_shared_get(existing) != NULL) {
-    return existing;
-  }
-  arts_shared_release(&existing);
-
-  arts_shared_ptr_t cb = db_cache_stub_make(db_guid, db_size);
-  arts_shared_ptr_t mine = arts_shared_copy(cb);
-  if (arts_route_table_install_handle_if_absent(cb, db_guid)) {
-    return mine;
-  }
-
-  /* Lost the race — another thread already installed.  Tear down our
-   * stub and return a pinned handle to the established db_s. */
-  arts_shared_release(&mine);
-  db_cache_stub_discard(cb);
-  return arts_route_table_lookup_db(db_guid);
-}
-
 arts_shared_ptr_t
 arts_db_cache_stub_install_into(struct arts_route_item_s *slot,
                                 arts_guid_t db_guid) {
-  arts_shared_ptr_t cb = db_cache_stub_make(db_guid, /*db_size=*/0);
+  arts_shared_ptr_t cb = db_cache_stub_make(db_guid);
   arts_shared_ptr_t got = arts_route_table_install_or_get(slot, cb, db_guid);
   if (got != cb) {
     db_cache_stub_discard(cb);
@@ -457,6 +427,10 @@ static void val_send_window(struct arts_db_cache_s *cache, uint64_t post) {
                  (VREQ_STUB(post) ? ARTS_COVER_PRECLAIM : 0u));
 }
 
+/* The read axis is open while a window's request is out and answers it: rp
+ * hands the window's cohort to the write request, which closes the axis. */
+static bool val_read_open(uint64_t s) { return VREQ_RO(s) && !VREQ_RP(s); }
+
 arts_db_acquire_result_t
 arts_db_acquire_remote_ro(struct arts_db_cache_s *cache, struct arts_edt_s *edt,
                           unsigned int slot) {
@@ -474,6 +448,7 @@ arts_db_acquire_remote_ro(struct arts_db_cache_s *cache, struct arts_edt_s *edt,
   (void)val_req_step(cache, VREQ_OP_ACQ_RO, idx, &post, &act);
   if (act == VREQ_ACT_SEND_RO) {
     INCREMENT_NUM_RO_COMBINE_WINDOW_BY(1);
+    arts_db_axis_take(arts_db_of_cache(cache));
     val_send_window(cache, post);
   } else {
     INCREMENT_NUM_RO_COMBINE_JOINED_BY(1);
@@ -481,7 +456,7 @@ arts_db_acquire_remote_ro(struct arts_db_cache_s *cache, struct arts_edt_s *edt,
   return ARTS_DB_ACQUIRE_PARK;
 }
 
-void arts_db_ro_combine_on_terminal(struct arts_db_cache_s *cache,
+bool arts_db_ro_combine_on_terminal(struct arts_db_cache_s *cache,
                                     uint32_t cover) {
   uint64_t post;
   uint32_t act;
@@ -500,10 +475,10 @@ void arts_db_ro_combine_on_terminal(struct arts_db_cache_s *cache,
     INCREMENT_NUM_RO_COMBINE_WINDOW_BY(1);
     val_send_window(cache, post);
   }
+  return val_read_open(pre) && !val_read_open(post);
 }
 
-void arts_db_ro_combine_on_cts(struct arts_db_cache_s *cache,
-                               uint32_t cover) {
+bool arts_db_ro_combine_on_cts(struct arts_db_cache_s *cache, uint32_t cover) {
   uint64_t post;
   uint32_t act;
   uint64_t pre =
@@ -517,6 +492,7 @@ void arts_db_ro_combine_on_cts(struct arts_db_cache_s *cache,
   if (act == VREQ_ACT_RESEND) {
     val_send_window(cache, post);
   }
+  return val_read_open(pre) && !val_read_open(post);
 }
 
 /* A write permission landed (the grant's install): every parked reader is
@@ -568,11 +544,16 @@ bool arts_db_rw_req_commit(struct arts_db_cache_s *cache, uint32_t tok,
 void arts_db_rw_req_giveback(struct arts_db_cache_s *cache, uint32_t tok) {
   uint64_t post;
   uint32_t act;
-  (void)val_req_step(cache, VREQ_OP_RW_GIVE, tok, &post, &act);
+  uint64_t pre = val_req_step(cache, VREQ_OP_RW_GIVE, tok, &post, &act);
   if (act == VREQ_ACT_SEND_RO) {
     INCREMENT_NUM_RO_COMBINE_WINDOW_BY(1);
   }
   if (act == VREQ_ACT_RESEND || act == VREQ_ACT_SEND_RO) {
+    /* Either re-opens the read axis: a window that rode the write request
+     * asks again, or riders open a fresh one. */
+    assert(!val_read_open(pre) && val_read_open(post));
+    (void)pre;
+    arts_db_axis_take(arts_db_of_cache(cache));
     val_send_window(cache, post);
   }
 }
@@ -941,6 +922,8 @@ void arts_db_publish_sync(struct arts_db_cache_s *cache, uint64_t version) {
       if (atomic_compare_exchange_strong_explicit(
               &cache->pub_flight, &expected, ARTS_PUB_FLYING,
               memory_order_acq_rel, memory_order_relaxed)) {
+        /* The flight's count, released by the completion that lands it. */
+        arts_db_axis_take(arts_db_of_cache(cache));
         gate = pub_flight_drive(cache, /*may_block=*/true, version);
         break;
       }
@@ -983,28 +966,28 @@ void arts_db_publish_sync(struct arts_db_cache_s *cache, uint64_t version) {
   }
 }
 
-/* Cat-C pure body (PUBLISH_ACK), shared by every publishing arm.  cv != 0 is
- * the pointer-identity sem-post of a grant return sent on its own (PURGE;
- * cache-independent, posted on both HIT and MISS).  cv == 0 is the
- * completion of a publish flight, control-only ones included: record the
- * refilled credit, wake every waiter the ACKed version covers, and either
- * relaunch (uncovered waiters remain — their releases landed after the
- * flight's version stamp) or land the flight.  A DIRTY bit set
- * after the drain forces a re-examination before landing, so a waiter
- * registered mid-completion is never stranded. */
-void arts_handler_db_publish_ack(void *item_v, void *args_v) {
-  struct arts_db_publish_ack_args_s *a =
-      (struct arts_db_publish_ack_args_s *)args_v;
+/* The PUBLISH_ACK answer, shared by every publishing arm (the wire and the
+ * home's own releaser).  cv != 0 is the pointer-identity sem-post of a grant
+ * return sent on its own (PURGE): it names no descriptor and resolves
+ * nothing.  cv == 0 is the completion of a publish flight, control-only ones
+ * included, on the descriptor its token names: record the refilled credit,
+ * wake every waiter the ACKed version covers, and either relaunch (uncovered
+ * waiters remain — their releases landed after the flight's version stamp)
+ * or land the flight.  A DIRTY bit set after the drain forces a
+ * re-examination before landing, so a waiter registered mid-completion is
+ * never stranded. */
+void arts_handler_db_publish_ack(const struct arts_db_publish_ack_args_s *a) {
   if (a->cv != 0) {
     sem_post((sem_t *)(uintptr_t)a->cv);
     return;
   }
-  struct arts_db_s *db = (struct arts_db_s *)item_v;
-  if (db == NULL) {
+  struct arts_db_s *db = arts_db_from_token(a->token, a->db_guid);
+  if (arts_db_token_retired(db, a->db_guid)) {
     /* The block was destroyed with this flight in the air: a program that
      * destroyed it before the release returned, or a shutdown whose escape
-     * let the release return first.  Nothing is woken; a releaser still
-     * waiting leaves through the shutdown escape. */
+     * let the release return first.  Nothing is woken (a releaser still
+     * waiting leaves through the shutdown escape); the flight's count goes. */
+    arts_db_axis_drop(db, 1u);
     return;
   }
   struct arts_db_cache_s *cache = &db->cache;
@@ -1078,7 +1061,9 @@ void arts_handler_db_publish_ack(void *item_v, void *args_v) {
     if (atomic_compare_exchange_strong_explicit(&cache->pub_flight, &expected,
                                                 0u, memory_order_acq_rel,
                                                 memory_order_acquire)) {
-      return; /* flight landed */
+      /* Flight landed: its count goes, this frame's last access. */
+      arts_db_axis_drop(db, 1u);
+      return;
     }
     /* DIRTY raced in after the drain: consume it and re-examine.  The word
      * stays in {FLYING, FLYING|DIRTY} for the whole completion (only a
@@ -1949,9 +1934,37 @@ void arts_db_debug_quiescence_check(void) {
 #endif /* ARTS_LOG_LEVEL >= 3 */
 }
 
+/* After every thread joined, the words read relaxed.  Each item below is an
+ * open request axis (coherence.h): its count is the one its cut answer would
+ * have dropped. */
 void arts_db_sweep_open_items(struct arts_db_s *db, arts_shared_ptr_t cb) {
+  unsigned int open = 0u;
+#if defined(ARTS_PROTOCOL_VAL)
+  uint64_t s = atomic_load_explicit(&db->cache.req_state, memory_order_relaxed);
+  open += val_read_open(s) ? 1u : 0u;
+  open += (VREQ_RW(s) == VREQ_RW_SENT) ? 1u : 0u;
+#ifdef ARTS_WRITE_POLICY_WT
+  open +=
+      atomic_load_explicit(&db->cache.pub_flight, memory_order_relaxed) != 0u
+          ? 1u
+          : 0u;
+#endif
+#elif defined(ARTS_PROTOCOL_INV)
+  uint64_t s =
+      atomic_load_explicit(&db->cache.cache_state, memory_order_relaxed);
+  open += INV_CACHE_INFLIGHT(s);
+  open += (INV_CACHE_RW(s) == INV_RW_SENT) ? 1u : 0u;
+  open +=
+      atomic_load_explicit(&db->cache.pub_flight, memory_order_relaxed) != 0u
+          ? 1u
+          : 0u;
+#else
   (void)db;
-  (void)cb;
+#endif
+  while (open-- != 0u) {
+    arts_shared_ptr_t h = cb;
+    arts_shared_release(&h);
+  }
 }
 
 #if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV) ||               \

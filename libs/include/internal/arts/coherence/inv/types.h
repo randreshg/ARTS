@@ -197,6 +197,7 @@ struct arts_db_inv_pub_s {
   struct arts_db_inv_pub_s *next;
   uint64_t vnew;
   unsigned int releaser_rank;
+  uint64_t token; /* the releaser's flight's answer token */
   /* The releaser handed the write right back with this release.  The round's
    * finish accepts it, after the batch's acks: not before, because the home
    * may not hand the block on while a stale copy of it still stands. */
@@ -281,6 +282,9 @@ struct arts_db_cache_s {
    * have_version), published with the two fields above; the 0-edge actor
    * ships no payload when the canonical bytes are at that very version. */
   uint64_t incoming_new_owner_have;
+  /* The pending new owner's answer token, published with the three fields
+   * above; the 0-edge actor's GRANT_RESPONSE echoes it. */
+  uint64_t incoming_new_owner_token;
 #endif
 #if defined(ARTS_WRITE_POLICY_WB) && ARTS_DB_CENSUS
   /* Whether the grant this rank installed last was shipped by another rank:
@@ -388,6 +392,7 @@ struct arts_db_s {
    * before the latch CAS publishes the slot, read by the latch's one
    * consumer after its consuming CAS. */
   uint64_t pending_return_cv;
+  uint64_t pending_return_token;
   uint64_t pending_return_version;
   uint8_t pending_return_ack;
   uint8_t pending_return_credit;

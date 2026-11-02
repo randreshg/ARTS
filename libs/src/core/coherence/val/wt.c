@@ -236,6 +236,7 @@ void arts_db_cache_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
   c->incoming_new_owner = ARTS_NO_PENDING_OWNER;
   c->incoming_new_owner_rdzv = (struct arts_rdzv_landing_s){0, 0, 0, 0};
   c->incoming_new_owner_have = ARTS_GRANT_VERSION_NONE;
+  c->incoming_new_owner_token = 0u;
 #endif
   /* WT has no owner-side dedup map (home serves RO via SNAPSHOT_REQUEST): the
    * owner→owner transfer always ships an empty map.  NULL so the shared ship
@@ -304,9 +305,11 @@ void arts_db_home_teardown(struct arts_db_s *db) {
  * watermark and the requester's landing, then advance the watermark only when
  * payload actually moves.  Consumes master_h (the pinned canonical buffer). */
 static void update_cached_version_max(struct arts_db_cache_s *cache,
-                                 unsigned int requester, uint64_t master_v,
-                                 arts_shared_ptr_t master_h, uint32_t cover,
-                                 const struct arts_rdzv_landing_s *rdzv) {
+                                      unsigned int requester, uint64_t master_v,
+                                      arts_shared_ptr_t master_h,
+                                      uint32_t cover,
+                                      const struct arts_rdzv_landing_s *rdzv,
+                                      uint64_t token) {
   struct arts_db_s *db = arts_db_of_cache(cache);
   /* Monotonic dedup — if the requester already holds this version
    * (cur >= master_v), no payload moves: reply no-data, echoing the unused
@@ -318,7 +321,7 @@ static void update_cached_version_max(struct arts_db_cache_s *cache,
   if (cur >= master_v) {
     INCREMENT_NUM_SNAPSHOT_HEADER_ONLY_BY(1);
     arts_db_buf_release(&master_h);
-    arts_send_db_snapshot_response(requester, db, cache->db_guid, master_v,
+    arts_send_db_snapshot_response(requester, token, cache->db_guid, master_v,
                                    cover, /*kind=*/0, db_size, rdzv, NULL);
     return;
   }
@@ -328,13 +331,13 @@ static void update_cached_version_max(struct arts_db_cache_s *cache,
      * landing.  The watermark does NOT advance on this leg. */
     arts_db_buf_release(&master_h);
     INCREMENT_NUM_SNAPSHOT_SIZE_CTS_BY(1);
-    arts_send_db_snapshot_response(requester, db, cache->db_guid, master_v,
+    arts_send_db_snapshot_response(requester, token, cache->db_guid, master_v,
                                    cover, /*kind=*/2, db_size, rdzv, NULL);
     return;
   }
   arts_rank_u64_map_advance(db->cached_version, requester, master_v);
   /* master_h transfers into the sender (PUT source-lifetime pin). */
-  arts_send_db_snapshot_response(requester, db, cache->db_guid, master_v,
+  arts_send_db_snapshot_response(requester, token, cache->db_guid, master_v,
                                  cover, /*kind=*/1, db_size, rdzv, master_h);
 }
 
@@ -357,7 +360,7 @@ static void home_serve_deferred_read(struct arts_db_cache_s *cache,
   assert(master_v >= 1 && "a deferred read is served only once published");
   /* master_h transfers into the reply path (consumed there). */
   update_cached_version_max(cache, w->requester, master_v, master_h, w->cover,
-                            &w->rdzv);
+                            &w->rdzv, w->token);
 }
 
 /* ===== Per-protocol wire-handler bodies =============================== */
@@ -380,8 +383,8 @@ void arts_handler_db_snapshot_request(void *item_v, void *args_v) {
       /* Declared: a write turn of the requester's rank covers this request.
        * Dismiss it -- no data, no read turn -- returning the landing. */
       arts_send_db_snapshot_response(
-          requester, arts_db_of_cache(cache), cache->db_guid, /*version=*/0,
-          cover, /*kind=*/2,
+          requester, a->token, cache->db_guid, /*version=*/0, cover,
+          /*kind=*/2,
           atomic_load_explicit(&cache->db_size, memory_order_relaxed),
           &a->rdzv, NULL);
     }
@@ -439,6 +442,7 @@ void arts_handler_db_snapshot_request(void *item_v, void *args_v) {
       w->serve = home_serve_deferred_read;
       w->requester = requester;
       w->rdzv = a->rdzv;
+      w->token = a->token;
       arts_lf_stack_push(&cache->publication_waiters, &w->link);
       /* Race recovery: a publish may have landed between the version read
        * and the push — drain (our own node included) so no serve parks
@@ -456,9 +460,9 @@ void arts_handler_db_snapshot_request(void *item_v, void *args_v) {
       }
       return;
     }
-    arts_send_db_snapshot_response(requester, arts_db_of_cache(cache),
-                                   cache->db_guid, /*version=*/0, cover,
-                                   /*kind=*/0, db_size, &a->rdzv, NULL);
+    arts_send_db_snapshot_response(requester, a->token, cache->db_guid,
+                                   /*version=*/0, cover, /*kind=*/0, db_size,
+                                   &a->rdzv, NULL);
     return;
   }
   /* Acquire pairs with the publish commit's release-store version stamp: a
@@ -467,7 +471,7 @@ void arts_handler_db_snapshot_request(void *item_v, void *args_v) {
       atomic_load_explicit(&master->version, memory_order_acquire);
   /* master_h transfers into the reply path (consumed there). */
   update_cached_version_max(cache, requester, master_v, master_h, cover,
-                            &a->rdzv);
+                            &a->rdzv, a->token);
 }
 
 /* Cat-B pure body (OoO g_ooo_table[OOO_DB_PUBLISH]): the OoO engine has
@@ -494,6 +498,7 @@ struct pub_landed_ctx_s {
   uint64_t version;
   unsigned int releaser;
   uint64_t cv;
+  uint64_t token; /* the releaser's flight's */
   bool returns_grant;
 };
 
@@ -515,13 +520,14 @@ static void pub_landed_cb(void *arg) {
      * acknowledgement rides the hand-back and leaves once the home has
      * applied it. */
     struct arts_db_grant_return_reply_s reply = {.cv = ctx->cv,
+                                                 .token = ctx->token,
                                                  .version = ctx->version,
                                                  .ack = true,
                                                  .credit = true};
     arts_db_grant_return_arrived(db, ctx->releaser, &reply);
   } else {
     arts_send_db_publish_ack(ctx->releaser, db, ctx->cv, ctx->version,
-                             /*credit=*/true);
+                             /*credit=*/true, ctx->token);
   }
   arts_shared_release(&ctx->db_h);
   arts_free(ctx);
@@ -546,7 +552,7 @@ void arts_handler_db_publish(void *item_v, void *args_v) {
     assert(a->returns_grant == 0u &&
            "a hand-back never rides a data-less publish");
     arts_send_db_publish_ack(a->releaser, arts_db_of_cache(cache), a->cv,
-                             a->version, /*credit=*/true);
+                             a->version, /*credit=*/true, a->token);
     return;
   }
   if (a->rdzv_txid == 0) {
@@ -587,6 +593,7 @@ void arts_handler_db_publish(void *item_v, void *args_v) {
   ctx->version = a->version;
   ctx->releaser = a->releaser;
   ctx->cv = a->cv;
+  ctx->token = a->token;
   ctx->returns_grant = (a->returns_grant != 0u);
   arts_net_rdzv_expect(a->rdzv_txid, a->data_size, pub_landed_cb,
                        pub_landed_discard, ctx);
@@ -647,6 +654,9 @@ bool arts_db_create_take_hold(struct arts_db_cache_s *cache, uint8_t *owed) {
   arts_db_grant_claim_writers(cache);
   *owed = arts_db_val_claim_cover(cache);
   arts_db_grant_rearm(cache);
+  /* The claim closed the requests the cache had out: their counts go, under
+   * the create's own. */
+  arts_db_axis_drop(arts_db_of_cache(cache), arts_db_claim_closed_axes(*owed));
   return true;
 }
 

@@ -253,6 +253,13 @@ struct ARTS_PACKED arts_msg_rdzv_landing_s {
   uint64_t cookie;
 };
 
+/* Answer token (VAL and INV): a request names the requester's descriptor in a
+ * `token` field of its own, beside its landing, which the home and every hop
+ * store with the request and echo verbatim in every answer to it.  Only the
+ * requester dereferences it: the answer acts on that descriptor instead of
+ * resolving the GUID again, the open request holding a count that keeps it
+ * valid (coherence.h).  The cookie stays the landing alone. */
+
 struct ARTS_PACKED arts_msg_grant_request_packet_s {
   struct arts_msg_header_s header;
   arts_guid_t db_guid;
@@ -268,6 +275,9 @@ struct ARTS_PACKED arts_msg_grant_request_packet_s {
    * bits carry the request's ARTS_COVER_* word (the read request its rank has
    * out, and PRECLAIM): a version counts releases and never reaches 2^60. */
   uint64_t have_version;
+#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
+  uint64_t token; /* the requester's answer token */
+#endif
 };
 #define ARTS_GRANT_REQ_VERSION_BITS 60
 #define ARTS_GRANT_REQ_VERSION_MASK                                            \
@@ -285,6 +295,9 @@ struct ARTS_PACKED arts_msg_grant_cts_packet_s {
   struct arts_msg_header_s header;
   arts_guid_t db_guid;
   uint64_t db_size;
+#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
+  uint64_t token; /* the request's, echoed */
+#endif
 };
 
 /* GRANT_RESPONSE — the single ownership-transfer wire message, ONE layout
@@ -318,6 +331,9 @@ struct ARTS_PACKED arts_msg_grant_response_packet_s {
                            payload presence = rdzv_txid */
   uint64_t rdzv_txid;   /* write-completion pairing id (0 = no PUT) */
   uint64_t rdzv_cookie; /* requester's landing handle, echoed verbatim */
+#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
+  uint64_t token; /* the new owner's request's, echoed */
+#endif
   /* followed by arts_msg_rank_version_pair_s pairs[map_entry_count], and
    * nothing after them. */
 };
@@ -338,7 +354,7 @@ struct ARTS_PACKED arts_msg_grant_response_packet_s {
  * landing slot), valid only at the releaser rank, which home echoes verbatim
  * in PUBLISH_CTS so the releaser matches by pointer identity (no seq
  * tracking).  0 on a commit and a data-less publish: their ACK completes the
- * releaser's publish flight, found by db_guid. */
+ * releaser's publish flight, named by the flight's token. */
 struct ARTS_PACKED arts_msg_publish_packet_s {
   struct arts_msg_header_s header;
   arts_guid_t db_guid;
@@ -348,6 +364,9 @@ struct ARTS_PACKED arts_msg_publish_packet_s {
   uint64_t rdzv_txid;
   uint64_t rdzv_cookie;
   uint64_t flags; /* ARTS_PUBLISH_FLAG_* */
+#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
+  uint64_t token; /* the releaser's answer token */
+#endif
 };
 
 /* The releaser is handing the write right back with these bytes.  It rides a
@@ -370,9 +389,9 @@ struct ARTS_PACKED arts_msg_publish_cts_packet_s {
 struct ARTS_PACKED arts_msg_publish_ack_packet_s {
   struct arts_msg_header_s header;
   arts_guid_t db_guid;
-  uint64_t cv; /* a standalone grant return's rendezvous address, forwarded
-                * verbatim; 0 for a publish flight (a hand-back riding its
-                * commit included), whose ACK is found by db_guid */
+  uint64_t cv;      /* a standalone grant return's rendezvous address, forwarded
+                     * verbatim; 0 for a publish flight (a hand-back riding its
+                     * commit included), whose ACK is named by `token` */
   uint64_t version; /* highest version this ACK covers (a publish flight) */
   /* Next publish credit: the DB's stable home buffer + a receiver-minted
    * txid.  The ACK of a WT payload flight refills it while the home's block
@@ -382,12 +401,14 @@ struct ARTS_PACKED arts_msg_publish_ack_packet_s {
   uint64_t credit_addr;
   uint64_t credit_rkey;
   uint64_t credit_txid;
+#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
+  uint64_t token; /* the flight's, echoed (unused when cv != 0) */
+#endif
 };
 
-/* GRANT_INVALIDATE: body = db_guid(8) + new_owner_rank(4) + pad(4) = 16.
- * Total = 44 + 16 = 60 (not 8-aligned; add pad4[] → 64).
- * Both write policies set new_owner_rank so the current holder knows where to ship the
- * owner→owner GRANT_RESPONSE without a round-trip to home. */
+/* GRANT_INVALIDATE: both write policies name the new owner, its landing, the
+ * version it holds and its answer token, so the current holder ships the
+ * owner→owner GRANT_RESPONSE without a round trip to the home. */
 struct ARTS_PACKED arts_msg_grant_invalidate_packet_s {
   struct arts_msg_header_s header;
   arts_guid_t db_guid;
@@ -401,6 +422,9 @@ struct ARTS_PACKED arts_msg_grant_invalidate_packet_s {
    * (ARTS_GRANT_VERSION_NONE when it holds none): the holder ships the
    * permission alone when its canonical bytes are at that version. */
   uint64_t new_owner_have;
+#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
+  uint64_t new_owner_token; /* the new owner's request's */
+#endif
 };
 
 /* GRANT_RETURN: holder → home. Body = db_guid(8) + cv(8); the returner is
@@ -415,12 +439,15 @@ struct ARTS_PACKED arts_msg_grant_return_packet_s {
   uint64_t cv;
 };
 
-/* GRANT_CONFIRM_ACK: home → new owner C. Body = db_guid(8). No version: C
- * already holds its installed version. WB-only by use (WT never sends it);
- * the struct is unconditional. */
+/* GRANT_CONFIRM_ACK: home → new owner C. No version: C already holds its
+ * installed version. WB-only by use (WT never sends it); the struct is
+ * unconditional. */
 struct ARTS_PACKED arts_msg_grant_confirm_ack_packet_s {
   struct arts_msg_header_s header;
   arts_guid_t db_guid;
+#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
+  uint64_t token; /* C's request's, from its CONFIRM: the ack answers it */
+#endif
   /* WB: the CONFIRM_ACK that advances the round piggybacks the next
    * transfer target so the new owner's handler applies the INVALIDATE effect
    * (publish incoming_new_owner + withdraw the sentinel) in the same message,
@@ -433,6 +460,9 @@ struct ARTS_PACKED arts_msg_grant_confirm_ack_packet_s {
   struct arts_msg_rdzv_landing_s new_owner_rdzv;
   /* Piggybacked next owner's reported version (mirrors GRANT_INVALIDATE). */
   uint64_t new_owner_have;
+#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
+  uint64_t new_owner_token; /* piggybacked next owner's request's */
+#endif
 };
 
 struct ARTS_PACKED arts_msg_snapshot_request_packet_s {
@@ -447,6 +477,9 @@ struct ARTS_PACKED arts_msg_snapshot_request_packet_s {
    * not yet know db_size (first touch): the server answers a size-only CTS
    * response (data_present == 2) and the requester re-issues with a landing. */
   struct arts_msg_rdzv_landing_s rdzv;
+#ifdef ARTS_PROTOCOL_VAL
+  uint64_t token; /* the requester's answer token */
+#endif
 };
 
 /* SNAPSHOT_RESPONSE — the snapshot payload does NOT ride the wire; it is PUT
@@ -471,6 +504,9 @@ struct ARTS_PACKED arts_msg_snapshot_response_packet_s {
   uint64_t db_size;     /* payload/allocation byte count (see data_present) */
   uint64_t rdzv_txid;   /* write-completion pairing id (0 = no PUT) */
   uint64_t rdzv_cookie; /* requester's landing handle, echoed verbatim */
+#ifdef ARTS_PROTOCOL_VAL
+  uint64_t token; /* the request's, echoed */
+#endif
 };
 
 /* DB_CREATE_COHERENT — no trailing payload.  Body:
@@ -517,13 +553,15 @@ struct ARTS_PACKED arts_msg_snapshot_redirect_packet_s {
   uint32_t cover; /* the request's cover word, forwarded for the answer */
   /* Requester's landing, forwarded verbatim from its SNAPSHOT_REQUEST. */
   struct arts_msg_rdzv_landing_s rdzv;
+#ifdef ARTS_PROTOCOL_VAL
+  uint64_t token; /* the requester's, forwarded for the answer */
+#endif
 };
 
 /* One entry of GRANT_RESPONSE's dedup-map trailer: map_entry_count of them
  * follow the GRANT_RESPONSE header.  Only VAL WB sends any; every other
  * grant-bearing arm, INV WB included, sends map_entry_count = 0.  Nothing
- * trails the map on the wire, since the payload travels one-sided; only a
- * same-rank dispatch appends it. */
+ * trails the map: the payload travels one-sided. */
 struct ARTS_PACKED arts_msg_rank_version_pair_s {
   uint32_t rank;
   uint32_t pad;
@@ -532,10 +570,14 @@ struct ARTS_PACKED arts_msg_rank_version_pair_s {
 
 /* GRANT_CONFIRM — VAL and INV, both write policies, where the home revokes:
  * new owner C confirms installation of the transferred DB to home A.  The home
- * takes the new owner from pending_install_owner. */
+ * takes the new owner from pending_install_owner; C's answer token rides for
+ * the write-back home's CONFIRM_ACK, which answers C's request. */
 struct ARTS_PACKED arts_msg_grant_confirm_packet_s {
   struct arts_msg_header_s header;
   arts_guid_t db_guid;
+#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
+  uint64_t token;
+#endif
 };
 
 /* CREATE_RETURN — see the enum comment; sent by VAL and INV under WT and by
@@ -763,6 +805,7 @@ struct ARTS_PACKED arts_msg_inv_request_packet_s {
    * not yet know db_size (first touch): the home answers INV_CTS and the
    * requester re-issues with a landing. */
   struct arts_msg_rdzv_landing_s rdzv;
+  uint64_t token; /* the subject's answer token, a bounce's included */
 };
 
 /* An answer without data to a read request: a size round (the request
@@ -776,6 +819,7 @@ struct ARTS_PACKED arts_msg_inv_cts_packet_s {
   arts_guid_t db_guid;
   uint64_t db_size;
   uint64_t rdzv_cookie;
+  uint64_t token; /* the request's, echoed */
 };
 #define ARTS_INV_CTS_SIZE_BITS 60
 #define ARTS_INV_CTS_SIZE_MASK (((uint64_t)1 << ARTS_INV_CTS_SIZE_BITS) - 1)
@@ -789,6 +833,7 @@ struct ARTS_PACKED arts_msg_inv_deliver_packet_s {
   uint64_t data_size;
   uint64_t rdzv_txid;
   uint64_t rdzv_cookie;
+  uint64_t token; /* the request's, echoed */
 };
 
 struct ARTS_PACKED arts_msg_inv_invalidate_packet_s {
@@ -808,6 +853,7 @@ struct ARTS_PACKED arts_msg_inv_redirect_packet_s {
   uint32_t requester;
   uint32_t cover; /* the request's cover word, forwarded for the answer */
   struct arts_msg_rdzv_landing_s rdzv;
+  uint64_t token; /* the requester's, forwarded for the answer */
 };
 #endif /* ARTS_PROTOCOL_INV */
 

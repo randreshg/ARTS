@@ -244,6 +244,7 @@ struct arts_home_grantreq_node_s {
   unsigned int rank;
   uint64_t have_version; /* version the requester already holds */
   struct arts_rdzv_landing_s rdzv; /* the requester's transfer landing */
+  uint64_t token; /* the requester's answer token (protocol.h), or 0 */
 };
 
 struct arts_home_grantreq_queue_s {
@@ -351,12 +352,13 @@ struct arts_db_read_waiter_s {
   unsigned int slot;
   /* Deferred-serve arm: NULL = local waiter (the drain resolves the parked
    * slot on the installed buffer).  Non-NULL = deferred remote serve; the
-   * drain invokes serve(cache, w) BEFORE freeing w, and requester/cover/rdzv
-   * carry the original request. */
+   * drain invokes serve(cache, w) BEFORE freeing w, and
+   * requester/cover/rdzv/token carry the original request. */
   uint32_t cover;
   void (*serve)(struct arts_db_cache_s *cache, struct arts_db_read_waiter_s *w);
   unsigned int requester;
   struct arts_rdzv_landing_s rdzv;
+  uint64_t token;
 };
 static_assert(offsetof(struct arts_db_read_waiter_s, link) == 0,
               "a stack's link is its node's first member");

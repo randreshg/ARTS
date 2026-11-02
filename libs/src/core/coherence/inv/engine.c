@@ -128,6 +128,8 @@ void arts_db_rw_req_giveback(struct arts_db_cache_s *cache, uint32_t tok) {
                (unsigned long)cache->db_guid, (unsigned long long)pre);
   }
   if (act == INV_CACHE_ACT_SEND_RO) {
+    /* Riders with no write turn coming open the read axis. */
+    arts_db_axis_take(arts_db_of_cache(cache));
     arts_send_db_inv_request(cache, DB_MODE_RO, arts_inv_read_cover(post));
   }
 }
@@ -189,6 +191,7 @@ void arts_db_cache_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
   c->incoming_new_owner = ARTS_NO_PENDING_OWNER;
   c->incoming_new_owner_rdzv = (struct arts_rdzv_landing_s){0, 0, 0, 0};
   c->incoming_new_owner_have = ARTS_GRANT_VERSION_NONE;
+  c->incoming_new_owner_token = 0u;
 #endif
   /* INV's sharer plane carries no version ledger by construction; NULL selects
    * the shared transfer helper's empty-map branch. */
@@ -246,6 +249,9 @@ bool arts_db_create_take_hold(struct arts_db_cache_s *cache, uint8_t *owed) {
   }
   arts_db_reader_serve_chain(&cache->reader_pool, INV_CACHE_HEAD_RO(pre));
   arts_db_grant_rearm(cache);
+  /* The claim closed the requests the cache had out: their counts go, under
+   * the create's own. */
+  arts_db_axis_drop(arts_db_of_cache(cache), arts_db_claim_closed_axes(*owed));
   return true;
 }
 
@@ -516,11 +522,11 @@ static void inv_round_finish(struct arts_db_s *db,
       /* Write-through commits land in the stable buffer, so the ACK refills
        * the releaser's in-place credit. */
       arts_send_db_publish_ack(e->releaser_rank, db, 0u, e->vnew,
-                               /*credit=*/true);
+                               /*credit=*/true, e->token);
 #else
       /* Write-back releases carry no payload — nothing to credit. */
       arts_send_db_publish_ack(e->releaser_rank, db, 0u, e->vnew,
-                               /*credit=*/false);
+                               /*credit=*/false, e->token);
 #endif
       arts_free(e);
     }
@@ -534,6 +540,7 @@ static void inv_round_finish(struct arts_db_s *db,
        * applied it. */
       struct arts_db_grant_return_reply_s reply = {
           .cv = 0u,
+          .token = returning->token,
           .version = returning->vnew,
           .ack = true,
 #ifdef ARTS_WRITE_POLICY_WT
@@ -687,6 +694,7 @@ void arts_handler_db_publish(void *item_v, void *args_v) {
       (struct arts_db_inv_pub_s *)arts_malloc(sizeof(*e));
   e->vnew = a->version;
   e->releaser_rank = a->releaser;
+  e->token = a->token;
   e->returns_grant = a->returns_grant;
 #ifdef ARTS_WRITE_POLICY_WT
   e->landed = false;
@@ -711,15 +719,19 @@ void arts_handler_db_publish(void *item_v, void *args_v) {
 
 /* ===== Cat-C handler bodies ============================================= */
 
-void arts_handler_db_inv_cts(struct arts_db_s *db,
-                             struct arts_msg_inv_cts_packet_s *p) {
-  struct arts_db_cache_s *cache = &db->cache;
-  uint32_t cover = (uint32_t)(p->db_size >> ARTS_INV_CTS_SIZE_BITS);
-  arts_db_cache_learn_size(cache, p->db_size & ARTS_INV_CTS_SIZE_MASK);
+void arts_handler_db_inv_cts(struct arts_msg_inv_cts_packet_s *p) {
+  struct arts_db_s *db = arts_db_from_token(p->token, p->db_guid);
   if (p->rdzv_cookie != 0) {
     arts_db_buf_landing_return(
         (struct arts_db_buffer_s *)(uintptr_t)p->rdzv_cookie);
   }
+  if (arts_db_token_retired(db, p->db_guid)) {
+    arts_db_axis_drop(db, 1u);
+    return;
+  }
+  struct arts_db_cache_s *cache = &db->cache;
+  uint32_t cover = (uint32_t)(p->db_size >> ARTS_INV_CTS_SIZE_BITS);
+  arts_db_cache_learn_size(cache, p->db_size & ARTS_INV_CTS_SIZE_MASK);
   uint64_t post;
   uint32_t act;
   uint64_t pre = inv_req_step_tok(cache, INV_CACHE_OP_CTS,
@@ -736,6 +748,8 @@ void arts_handler_db_inv_cts(struct arts_db_s *db,
     arts_send_db_inv_invalidate_ack(
         db->self_cb, arts_guid_get_rank(cache->db_guid), cache->db_guid);
   }
+  /* Anything but a re-send closed the fetch: its count goes last. */
+  arts_db_axis_drop(db, act == INV_CACHE_ACT_RESEND ? 0u : 1u);
 }
 
 /* Publish + whole-chain grab: install the landed payload (home-issued
@@ -743,12 +757,12 @@ void arts_handler_db_inv_cts(struct arts_db_s *db,
  * word CAS takes {REQ->VALID, chain head -> 0} together.  The kill-marked
  * variant serves its cohort once, then executes the reserved purge and the
  * owed ack — the ack LAST, so the round that killed this fetch cannot finish
- * (and nothing newer can complete) until the doomed serve is done. */
-static void inv_deliver_commit(arts_shared_ptr_t db_h, uint64_t version,
+ * (and nothing newer can complete) until the doomed serve is done.  Runs
+ * under the fetch's count, which the CAS closes and the commit drops at its
+ * end. */
+static void inv_deliver_commit(struct arts_db_s *db, uint64_t version,
                                struct arts_db_buffer_s *landing,
                                uint64_t data_size) {
-
-  struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(db_h);
   struct arts_db_cache_s *cache = &db->cache;
   if (landing != NULL) {
     (void)arts_db_buf_install_landed(cache, version, landing, data_size);
@@ -788,61 +802,76 @@ static void inv_deliver_commit(arts_shared_ptr_t db_h, uint64_t version,
                                     arts_guid_get_rank(cache->db_guid),
                                     cache->db_guid); /* owed ack, LAST */
   }
-  arts_shared_release(&db_h);
+  arts_db_axis_drop(db, 1u);
 }
 
+/* A one-sided deliver's pairing; it borrows the fetch's count. */
 struct inv_landed_ctx_s {
-  arts_shared_ptr_t db_h;
+  struct arts_db_s *db; /* the token's descriptor */
   struct arts_db_buffer_s *landing;
   uint64_t version;
   uint64_t data_size;
 };
 
-static void inv_deliver_on(arts_shared_ptr_t db_h,
+static void inv_deliver_on(struct arts_db_s *db,
                            const struct arts_msg_inv_deliver_packet_s *p);
 
 static void inv_landed_cb(void *arg) {
   struct inv_landed_ctx_s *ctx = (struct inv_landed_ctx_s *)arg;
+  struct arts_db_s *db = ctx->db;
+  if (arts_db_token_retired(db, db->cache.db_guid)) {
+    /* Retired while the pairing was outstanding: end the landing, commit
+     * nothing, drop the fetch's count. */
+    arts_db_buf_landing_return(ctx->landing);
+    arts_free(ctx);
+    arts_db_axis_drop(db, 1u);
+    return;
+  }
+  uint64_t version = ctx->version;
+  struct arts_db_buffer_s *landing = ctx->landing;
+  uint64_t data_size = ctx->data_size;
+  arts_free(ctx);
   /* A one-sided payload comes from another rank. */
   uint8_t census = arts_db_census_serving(true);
-  inv_deliver_commit(ctx->db_h, ctx->version, ctx->landing, ctx->data_size);
+  inv_deliver_commit(db, version, landing, data_size);
   arts_db_census_served(census);
-  arts_free(ctx);
 }
 
-/* The teardown found the payload never landed: end the landing and drop the
- * pin, both the context's own, and commit nothing. */
+/* The teardown found the payload never landed: end the landing, the
+ * context's one possession, and commit nothing. */
 static void inv_landed_discard(void *arg) {
   struct inv_landed_ctx_s *ctx = (struct inv_landed_ctx_s *)arg;
   arts_db_buf_landing_return(ctx->landing);
-  arts_shared_release(&ctx->db_h);
   arts_free(ctx);
 }
 
+/* INV_DELIVER, an answer: the body runs on the requester's descriptor the
+ * token names; a retired one only ends the landing and drops the fetch's
+ * count. */
 void arts_handler_db_inv_deliver(void *payload, size_t size) {
   (void)size;
   struct arts_msg_inv_deliver_packet_s *p =
       (struct arts_msg_inv_deliver_packet_s *)payload;
-  arts_shared_ptr_t db_h = arts_route_table_lookup_db(p->db_guid);
-  if (db_h == NULL) {
+  struct arts_db_s *db = arts_db_from_token(p->token, p->db_guid);
+  if (arts_db_token_retired(db, p->db_guid)) {
     arts_db_rdzv_discard_landing(p->rdzv_txid, p->data_size, p->rdzv_cookie);
+    arts_db_axis_drop(db, 1u);
     return;
   }
-  inv_deliver_on(db_h, p);
+  inv_deliver_on(db, p);
 }
 
-/* The DELIVER's body on the requester's descriptor, which db_h holds;
- * consumes db_h (the commit releases it, after a one-sided payload's
- * pairing when one is in flight). */
-static void inv_deliver_on(arts_shared_ptr_t db_h,
+/* The DELIVER's body on the requester's descriptor, under the fetch's count,
+ * which the commit drops (after a one-sided payload's pairing when one is in
+ * flight). */
+static void inv_deliver_on(struct arts_db_s *db,
                            const struct arts_msg_inv_deliver_packet_s *p) {
-  struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(db_h);
   /* Hinted first touch: the size may still be unlearned here. */
   arts_db_cache_learn_size(&db->cache, p->data_size);
   if (p->rdzv_txid != 0) {
     struct inv_landed_ctx_s *ctx =
         (struct inv_landed_ctx_s *)arts_malloc(sizeof(*ctx));
-    ctx->db_h = db_h;
+    ctx->db = db;
     ctx->landing = (struct arts_db_buffer_s *)(uintptr_t)p->rdzv_cookie;
     ctx->version = p->version;
     ctx->data_size = p->data_size;
@@ -877,7 +906,7 @@ static void inv_deliver_on(arts_shared_ptr_t db_h,
     }
   }
   uint8_t census = arts_db_census_serving_from(p->header.rank);
-  inv_deliver_commit(db_h, p->version, NULL, 0u);
+  inv_deliver_commit(db, p->version, NULL, 0u);
   arts_db_census_served(census);
 }
 
@@ -932,7 +961,7 @@ void arts_handler_db_inv_invalidate_ack(struct arts_db_s *db,
 /* Control-only senders are plain packet fills; the payload-carrying trio
  * (deliver/publish) lands with the data-plane implementation. */
 
-void arts_send_db_inv_cts(unsigned int requester_rank, struct arts_db_s *db,
+void arts_send_db_inv_cts(unsigned int requester_rank, uint64_t token,
                           arts_guid_t db_guid, uint64_t db_size,
                           uint32_t cover, uint64_t cookie) {
   struct arts_msg_inv_cts_packet_s p;
@@ -947,12 +976,10 @@ void arts_send_db_inv_cts(unsigned int requester_rank, struct arts_db_s *db,
   p.db_size = (db_size & ARTS_INV_CTS_SIZE_MASK) |
               ((uint64_t)cover << ARTS_INV_CTS_SIZE_BITS);
   p.rdzv_cookie = cookie;
+  p.token = token;
   if (requester_rank == arts_global_rank_id) {
-    if (db != NULL) {
-      arts_handler_db_inv_cts(db, &p);
-    } else if (cookie != 0) {
-      arts_db_buf_landing_return((struct arts_db_buffer_s *)(uintptr_t)cookie);
-    }
+    /* The answer, as on the wire, on the descriptor the token names. */
+    arts_handler_db_inv_cts(&p);
     return;
   }
   arts_transport_send_async((int)requester_rank, (char *)&p, sizeof(p));
@@ -970,7 +997,8 @@ void arts_send_db_inv_invalidate(struct arts_db_s *db,
      * otherwise.  Reachable under WB, where the home holds no canonical copy
      * and is therefore an ordinary sharer — its own copy has to be retired
      * like everyone else's.  A MISS still owes the round its ack, which the
-     * handler body sends. */
+     * handler body sends.  No count of its own: the body drops no count its
+     * caller runs under. */
     arts_shared_ptr_t looked = NULL;
     struct arts_db_s *sharer =
         (struct arts_db_s *)arts_route_table_borrow_or_lookup(db->self_cb,
@@ -1000,7 +1028,8 @@ void arts_send_db_inv_invalidate_ack(arts_shared_ptr_t held,
     /* Local hit: account the ack inline, on the sharer's descriptor, which is
      * the home's, while it is live, and on what a lookup finds otherwise.  A
      * MISS drops — the round's other acks still finish it, and a destroyed DB
-     * has no round to finish. */
+     * has no round to finish.  No count of its own: the body drops no count
+     * its caller runs under. */
     arts_shared_ptr_t looked = NULL;
     struct arts_db_s *home =
         (struct arts_db_s *)arts_route_table_borrow_or_lookup(held, db_guid,
@@ -1043,19 +1072,27 @@ void arts_send_db_inv_request(struct arts_db_cache_s *cache,
       (cover & ARTS_COVER_PRECLAIM) == 0u) {
     (void)arts_db_buf_landing_alloc(cache, fetch_size, &rdzv);
   }
+  uint64_t token = arts_db_token(arts_db_of_cache(cache));
   if (home_rank == arts_global_rank_id) {
     /* Self-send: the requester's cache is the home's descriptor, on which the
      * request body runs; one not yet installed takes the engine by GUID,
-     * deferred until the home installs and drains, as the wire's does. */
+     * deferred until the home installs and drains, as the wire's does.  The
+     * body can answer the fetch inline, dropping its count, which a
+     * re-sending answer runs under, and still run on (a dismiss's teardown):
+     * it runs under a count of its own. */
     struct arts_ooo_args_db_inv_request_s args = {
         .requester = arts_global_rank_id,
         .db_guid = db_guid,
         .mode = mode,
         .cover = cover,
         .rdzv = rdzv,
+        .token = token,
     };
-    arts_ooo_dispatch_on(arts_db_of_cache(cache)->self_cb, OOO_DB_INV_REQUEST,
-                         db_guid, &args, sizeof(args));
+    arts_shared_ptr_t held =
+        arts_route_table_copy_live(arts_db_of_cache(cache)->self_cb, db_guid);
+    arts_ooo_dispatch_on(held, OOO_DB_INV_REQUEST, db_guid, &args,
+                         sizeof(args));
+    arts_shared_release(&held);
     return;
   }
   struct arts_msg_inv_request_packet_s p;
@@ -1070,6 +1107,7 @@ void arts_send_db_inv_request(struct arts_db_cache_s *cache,
   p.rdzv.key = rdzv.key;
   p.rdzv.txid = rdzv.txid;
   p.rdzv.cookie = rdzv.cookie;
+  p.token = token;
   if (!arts_net_send_held((int)home_rank, (char *)&p, sizeof(p),
                           mode == DB_MODE_RO ? ARTS_HELD_READ : ARTS_HELD_WRITE,
                           db_guid)) {
@@ -1080,12 +1118,14 @@ void arts_send_db_inv_request(struct arts_db_cache_s *cache,
 
 void arts_send_db_inv_deliver(unsigned int requester_rank,
                               struct arts_db_s *db,
-                              const struct arts_rdzv_landing_s *rdzv) {
+                              const struct arts_rdzv_landing_s *rdzv,
+                              uint64_t token) {
   struct arts_db_cache_s *cache = &db->cache;
   struct arts_msg_inv_deliver_packet_s p;
   arts_fill_packet_header(&p.header, sizeof(p), MSG_DB_INV_DELIVER);
   p.header.rank = arts_global_rank_id;
   p.db_guid = cache->db_guid;
+  p.token = token;
   /* Always the DB's size (descriptor state): a hinted first touch skipped
    * the size CTS, so even a data-less reply must teach the exact size.
    * Payload presence is signaled by rdzv_txid alone. */
@@ -1137,14 +1177,15 @@ void arts_send_db_inv_deliver(unsigned int requester_rank,
       }
       p.rdzv_cookie = 0;
     }
-    /* The body runs on this rank's descriptor while it is live and on what a
-     * lookup finds otherwise; a miss has no landing left to give back. */
-    arts_shared_ptr_t looked = NULL;
-    if (arts_route_table_borrow_or_lookup(db->self_cb, p.db_guid, &looked) !=
-        NULL) {
-      inv_deliver_on(looked != NULL ? looked : arts_shared_copy(db->self_cb),
-                     &p);
+    /* The answer, as on the wire, on the descriptor the token names; the
+     * landing is already settled, so a retired one only drops the fetch's
+     * count. */
+    struct arts_db_s *req = arts_db_from_token(token, p.db_guid);
+    if (arts_db_token_retired(req, p.db_guid)) {
+      arts_db_axis_drop(req, 1u);
+      return;
     }
+    inv_deliver_on(req, &p);
     return;
   }
   if (src == NULL || rdzv == NULL || rdzv->txid == 0) {

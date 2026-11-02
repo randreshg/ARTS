@@ -145,6 +145,15 @@ static void fail(const char *what) {
   }
 }
 
+/* The home descriptor here has no control block: the counts of the home's
+ * own requests the tail serves are dropped on none (their pairing is
+ * token_axis_pairing_valinv's). */
+void arts_shared_release(arts_shared_ptr_t *p) {
+  if (*p != NULL) {
+    fail("a request's count dropped on a control block the test never made");
+  }
+}
+
 /* ---- the mailbox the progress threads take messages from ---- */
 
 enum { MSG_REQUEST, MSG_RETURN };
@@ -193,12 +202,12 @@ static void *progress(void *arg) {
     if (m.type == MSG_REQUEST) {
       /* arts_handler_db_grant_request: queued, then the release policy. */
       arts_home_grantreq_queue_push(&g_db->pending_rw, m.rank, NULL,
-                                    ARTS_GRANT_VERSION_NONE);
+                                    ARTS_GRANT_VERSION_NONE, 0u);
       arts_sched_fuzz_point();
       arts_db_grant_request_arrived(&g_db->cache, g_db, m.rank);
     } else {
       struct arts_db_grant_return_reply_s reply = {
-          .cv = m.cv, .version = 0u, .ack = true, .credit = false};
+          .cv = m.cv, .token = 0u, .version = 0u, .ack = true, .credit = false};
       arts_db_grant_return_arrived(g_db, m.rank, &reply);
     }
   }
@@ -215,9 +224,11 @@ static _Atomic(uint64_t) g_grants_to[RANKS + 1];
 static _Atomic(uint64_t) g_acks_to[RANKS + 1];
 
 void arts_db_send_grant_response(struct arts_db_cache_s *c, unsigned int t,
-                                 const struct arts_rdzv_landing_s *l, bool dl) {
+                                 const struct arts_rdzv_landing_s *l, bool dl,
+                                 uint64_t token) {
   (void)l;
   (void)dl;
+  (void)token;
   if (t == 0u || t > RANKS) {
     fail("a grant to a rank that never asked remotely");
     return;
@@ -229,10 +240,11 @@ void arts_db_send_grant_response(struct arts_db_cache_s *c, unsigned int t,
 }
 
 void arts_send_db_publish_ack(unsigned int r, struct arts_db_s *db, uint64_t cv,
-                              uint64_t v, bool credit) {
+                              uint64_t v, bool credit, uint64_t token) {
   (void)db;
   (void)v;
   (void)credit;
+  (void)token;
   if (r == 0u || r > RANKS) {
     fail("an acknowledgement to a rank that never handed back");
     return;
@@ -355,9 +367,11 @@ static void *home_writer(void *arg) {
       g_home_req_open = 1;
       pthread_mutex_unlock(&g_park_mu);
       if (open) {
-        /* The home's own GRANT_REQUEST, dispatched inline. */
+        /* The home's own GRANT_REQUEST, dispatched inline; its token names
+         * the home's descriptor. */
         arts_home_grantreq_queue_push(&g_db->pending_rw, 0u, NULL,
-                                      ARTS_GRANT_VERSION_NONE);
+                                      ARTS_GRANT_VERSION_NONE,
+                                      arts_db_token(g_db));
         arts_sched_fuzz_point();
         arts_db_grant_request_arrived(c, g_db, 0u);
       }

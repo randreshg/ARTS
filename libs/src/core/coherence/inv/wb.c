@@ -163,6 +163,9 @@ void arts_handler_db_acquire(void *item, void *args) {
     break;
   }
   case INV_CACHE_ACT_SEND_RO:
+    /* The fetch's count; the take rests on the install and the cover gate
+     * (coherence.h, "Orders"). */
+    arts_db_axis_take(db);
     arts_send_db_inv_request(cache, DB_MODE_RO, arts_inv_read_cover(next));
     break;
   default: /* PARK: the fetch's committer will serve us */
@@ -222,7 +225,7 @@ void arts_handler_db_inv_request(void *item_v, void *args_v) {
       /* Declared: a write turn of the requester's rank covers this request.
        * Dismiss it -- no data, no read turn -- returning the landing. */
       arts_send_db_inv_cts(
-          a->requester, db, db->cache.db_guid,
+          a->requester, a->token, db->cache.db_guid,
           atomic_load_explicit(&db->cache.db_size, memory_order_relaxed),
           a->cover, a->rdzv.cookie);
     }
@@ -241,7 +244,7 @@ void arts_handler_db_inv_request(void *item_v, void *args_v) {
      * requester).  Answer the size and let it re-issue with one. */
     INCREMENT_NUM_INV_SIZE_CTS_BY(1);
     arts_send_db_inv_cts(
-        a->requester, db, cache->db_guid,
+        a->requester, a->token, cache->db_guid,
         atomic_load_explicit(&cache->db_size, memory_order_relaxed), a->cover,
         a->rdzv.cookie);
     return;
@@ -261,11 +264,11 @@ void arts_handler_db_inv_request(void *item_v, void *args_v) {
       atomic_load_explicit(&db->rw_holder, memory_order_acquire);
   if (holder == arts_global_rank_id) {
     /* The home happens to hold the grant: serve from here, no redirect. */
-    arts_send_db_inv_deliver(a->requester, db, &a->rdzv);
+    arts_send_db_inv_deliver(a->requester, db, &a->rdzv, a->token);
     return;
   }
   arts_send_db_inv_redirect(holder, cache->db_guid, a->requester, a->cover,
-                            &a->rdzv);
+                            &a->rdzv, a->token);
 }
 
 /* ===== redirect (home -> current holder) ================================
@@ -292,11 +295,11 @@ void arts_handler_db_inv_redirect(void *item_v, void *args_v) {
        * arrival.  Bounce rather than queue — a reader must never wait here —
        * and let the next pass resolve against a later generation. */
       arts_send_db_inv_request_for(cache->db_guid, a->requester, a->cover,
-                                   &a->rdzv);
+                                   &a->rdzv, a->token);
       return;
     }
   }
-  arts_send_db_inv_deliver(a->requester, db, &a->rdzv);
+  arts_send_db_inv_deliver(a->requester, db, &a->rdzv, a->token);
 }
 
 
@@ -307,7 +310,8 @@ void arts_handler_db_inv_redirect(void *item_v, void *args_v) {
  * the requester are different ranks. */
 void arts_send_db_inv_redirect(unsigned int holder_rank, arts_guid_t db_guid,
                                unsigned int requester, uint32_t cover,
-                               const struct arts_rdzv_landing_s *rdzv) {
+                               const struct arts_rdzv_landing_s *rdzv,
+                               uint64_t token) {
   struct arts_msg_inv_redirect_packet_s p;
   arts_fill_packet_header(&p.header, sizeof(p), MSG_DB_INV_REDIRECT);
   p.header.rank = arts_global_rank_id;
@@ -318,6 +322,7 @@ void arts_send_db_inv_redirect(unsigned int holder_rank, arts_guid_t db_guid,
   p.rdzv.key = rdzv->key;
   p.rdzv.txid = rdzv->txid;
   p.rdzv.cookie = rdzv->cookie;
+  p.token = token;
   /* The home serves the reader itself when it holds the grant. */
   assert(holder_rank != arts_global_rank_id);
   if (!arts_net_send_held((int)holder_rank, (char *)&p, sizeof(p),
@@ -331,7 +336,8 @@ void arts_send_db_inv_redirect(unsigned int holder_rank, arts_guid_t db_guid,
  * resolves against a later ownership generation. */
 void arts_send_db_inv_request_for(arts_guid_t db_guid, unsigned int requester,
                                   uint32_t cover,
-                                  const struct arts_rdzv_landing_s *rdzv) {
+                                  const struct arts_rdzv_landing_s *rdzv,
+                                  uint64_t token) {
   unsigned int home_rank = arts_guid_get_rank(db_guid);
   struct arts_msg_inv_request_packet_s p;
   arts_fill_packet_header(&p.header, sizeof(p), MSG_DB_INV_REQUEST);
@@ -345,6 +351,7 @@ void arts_send_db_inv_request_for(arts_guid_t db_guid, unsigned int requester,
   p.rdzv.key = rdzv->key;
   p.rdzv.txid = rdzv->txid;
   p.rdzv.cookie = rdzv->cookie;
+  p.token = token;
   /* The holder a home redirects to is another rank (the home serves itself
    * when it holds the grant), so a bounce always leaves this rank. */
   assert(home_rank != arts_global_rank_id);

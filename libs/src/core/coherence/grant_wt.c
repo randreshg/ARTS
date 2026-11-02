@@ -35,7 +35,6 @@
 #include "arts/coherence/coherence.h"
 #include "arts/coherence/handlers.h"
 #include "arts/db.h"
-#include "arts/gas/route_table.h"
 #include "arts/ooo.h"
 #include "arts/runtime_state.h"
 #include "arts/runtime_types.h"
@@ -53,10 +52,10 @@
  * then, where the home revokes, sends CONFIRM to home (flips rw_holder +
  * advances the next round). */
 /* Post-install tail of the GRANT_RESPONSE (GRANT) handler — everything
- * that must run only once the transferred bytes are in place.  db_h is the
- * caller's pin on the db_s; consumed (released) here. */
-static void home_response_commit(arts_shared_ptr_t db_h) {
-  struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(db_h);
+ * that must run only once the transferred bytes are in place.  It runs under
+ * the count of the write request the grant answers; its drain closes that
+ * request, and the count goes last. */
+static void home_response_commit(struct arts_db_s *db) {
   struct arts_db_cache_s *cache = &db->cache;
 
   /* Possession + drain guard in one transition: the guard keeps a hold on the
@@ -100,16 +99,16 @@ static void home_response_commit(arts_shared_ptr_t db_h) {
    * handing the right straight back. */
   arts_db_grant_commit_finish(cache, drained);
 
-  arts_shared_release(&db_h);
+  arts_db_axis_drop(db, 1u);
 }
 
 /* Rendezvous continuation: the transfer payload has fully landed in the
  * advertised landing buffer ("imm seen => landing valid"); install it without
  * a copy and run the commit tail.  Fires on {response packet, write
  * completion} pairing, in either arrival order, on a dispatch-path progress
- * thread. */
+ * thread.  The context borrows the write request's count. */
 struct home_response_landed_ctx_s {
-  arts_shared_ptr_t db_h; /* pin transferred from the handler */
+  struct arts_db_s *db; /* the token's descriptor */
   struct arts_db_buffer_s *landing;
   uint64_t version;
   uint64_t data_size;
@@ -118,23 +117,30 @@ struct home_response_landed_ctx_s {
 static void home_response_landed_cb(void *arg) {
   struct home_response_landed_ctx_s *ctx =
       (struct home_response_landed_ctx_s *)arg;
-  struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(ctx->db_h);
+  struct arts_db_s *db = ctx->db;
+  if (arts_db_token_retired(db, db->cache.db_guid)) {
+    /* Retired while the pairing was outstanding: end the landing, commit
+     * nothing, drop the request's count. */
+    arts_db_buf_landing_return(ctx->landing);
+    arts_free(ctx);
+    arts_db_axis_drop(db, 1u);
+    return;
+  }
   arts_db_buf_install_landed(&db->cache, ctx->version, ctx->landing,
                              ctx->data_size);
+  arts_free(ctx);
   /* A one-sided payload comes from another rank. */
   uint8_t census = arts_db_census_serving(true);
-  home_response_commit(ctx->db_h); /* releases */
+  home_response_commit(db); /* drops the count */
   arts_db_census_served(census);
-  arts_free(ctx);
 }
 
-/* The teardown found the payload never landed: end the landing and drop the
- * pin, both the context's own, and commit nothing. */
+/* The teardown found the payload never landed: end the landing, the
+ * context's one possession, and commit nothing. */
 static void home_response_landed_discard(void *arg) {
   struct home_response_landed_ctx_s *ctx =
       (struct home_response_landed_ctx_s *)arg;
   arts_db_buf_landing_return(ctx->landing);
-  arts_shared_release(&ctx->db_h);
   arts_free(ctx);
 }
 
@@ -162,26 +168,16 @@ void arts_handler_db_grant_response(void *payload, size_t size) {
                size - sizeof(*hdr));
   }
 
-  /* The wire's one resolution of the block; the body runs on what it found,
-   * pinned across the install + commit (and, on the rendezvous path, across
-   * the pairing wait) and released by the commit tail. */
-  arts_shared_ptr_t db_h = arts_route_table_lookup_db(db_guid);
-  if (db_h == NULL) {
-    /* Only a program outside the destroy contract gets here: the cache this
-     * rank installed when it requested was retired by a destroy while the
-     * acquire was pending.  The grant then goes into a fresh cache of the
-     * destroyed block, which nothing waits on and which outlives the block;
-     * it is dropped only when that install loses to an object already
-     * retired. */
-    db_h = arts_db_cache_stub_install(db_guid, /*db_size=*/0);
-    if (db_h == NULL) {
-      /* Consume any in-flight one-sided payload so the pairing table stays
-       * leak-free; the landing ends when that payload arrives, or at once
-       * when none was sent. */
-      arts_db_rdzv_discard_landing(hdr->rdzv_txid, hdr->data_size,
-                                   hdr->rdzv_cookie);
-      return; /* the install lost to an object already retired — drop. */
-    }
+  /* An answer: the body runs on the requester's descriptor the token names,
+   * under its write request's count.  A retired one (a destroy while the
+   * acquire was pending, outside the destroy contract) only ends the landing
+   * and drops that count. */
+  struct arts_db_s *db = arts_db_from_token(hdr->token, db_guid);
+  if (arts_db_token_retired(db, db_guid)) {
+    arts_db_rdzv_discard_landing(hdr->rdzv_txid, hdr->data_size,
+                                 hdr->rdzv_cookie);
+    arts_db_axis_drop(db, 1u);
+    return;
   }
   struct arts_db_grant_response_args_s a = {
       .sender = hdr->header.rank,
@@ -190,12 +186,11 @@ void arts_handler_db_grant_response(void *payload, size_t size) {
       .rdzv_txid = hdr->rdzv_txid,
       .rdzv_cookie = hdr->rdzv_cookie,
   };
-  arts_db_grant_response_on(db_h, &a);
+  arts_db_grant_response_on(db, &a);
 }
 
-void arts_db_grant_response_on(arts_shared_ptr_t db_h,
+void arts_db_grant_response_on(struct arts_db_s *db,
                                const struct arts_db_grant_response_args_s *a) {
-  struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(db_h);
   struct arts_db_cache_s *cache = &db->cache;
 
   /* A hinted first touch may reach its first grant with the size still
@@ -209,7 +204,7 @@ void arts_db_grant_response_on(arts_shared_ptr_t db_h,
      * in.  The landing is our own buffer, named by the echoed cookie. */
     struct home_response_landed_ctx_s *ctx =
         (struct home_response_landed_ctx_s *)arts_malloc(sizeof(*ctx));
-    ctx->db_h = db_h;
+    ctx->db = db;
     ctx->landing = (struct arts_db_buffer_s *)(uintptr_t)a->rdzv_cookie;
     ctx->version = a->version;
     ctx->data_size = a->data_size;
@@ -236,7 +231,7 @@ void arts_db_grant_response_on(arts_shared_ptr_t db_h,
         atomic_load_explicit(&cache->db_size, memory_order_relaxed));
   }
   uint8_t census = arts_db_census_serving_from(a->sender);
-  home_response_commit(db_h); /* releases db_h */
+  home_response_commit(db); /* drops the count */
   arts_db_census_served(census);
 }
 
@@ -245,8 +240,8 @@ void arts_db_grant_response_on(arts_shared_ptr_t db_h,
 #ifndef ARTS_RELEASE_PURGE
 /* Cat-C pure body (CONFIRM, home side).  item_v is the home db_s (cache is
  * its FIRST member), held by the wire dispatcher's lookup or, on a self-send,
- * the caller's live descriptor (borrowed) or what a lookup finds when it is not
- * live.  args_v is unused — the new owner is
+ * by the count the sender takes for the body.  args_v (the new owner's token
+ * and rank) is unused here — the new owner is
  * read from db->pending_install_owner (stored by the baton holder).  WT does
  * NOT send CONFIRM_ACK (the new owner already drained + ran at
  * GRANT_RESPONSE); it only flips rw_holder + advances the next round. */
@@ -292,6 +287,7 @@ void arts_handler_db_grant_invalidate(void *item_v, void *args_v) {
    * making the WT and WB transfer paths structurally identical. */
   cache->incoming_new_owner_rdzv = a->new_owner_rdzv;
   cache->incoming_new_owner_have = a->new_owner_have;
+  cache->incoming_new_owner_token = a->new_owner_token;
   cache->incoming_new_owner = a->new_owner_rank;
   /* Sentinel withdrawal (writer_count -= 1).  The home's baton sends AT MOST
    * ONE GRANT_INVALIDATE to this rank per transfer round, after

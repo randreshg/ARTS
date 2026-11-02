@@ -20,10 +20,10 @@
  * into a packet, or to install a snapshot of them) faults; the writer wakes
  * once, its hold counted, on the same buffer at the same version holding the
  * bytes the last turn wrote; the advertised landing goes back once; the CONFIRM
- * leaves once, in the write policy's order; the descriptor's pins balance; the
- * grant stays here once the writer releases; under VAL write-back the
- * self-credit is made and a concurrent advance of another rank's ledger entry
- * survives.
+ * leaves once, in the write policy's order; the descriptor's pins balance, the
+ * write request's count going once with the grant that closes it; the grant
+ * stays here once the writer releases; under VAL write-back the self-credit is
+ * made and a concurrent advance of another rank's ledger entry survives.
  *
  * PURE test: no arts_rt, no ports, no threads.
  */
@@ -91,11 +91,12 @@ static void fail(const char *what) {
     _exit(1);                                                                  \
   }
 UNREACHED(arts_shared_ptr_t arts_route_table_lookup_db(arts_guid_t g))
-UNREACHED(arts_shared_ptr_t arts_db_cache_stub_install(arts_guid_t g,
-                                                       uint64_t s))
 UNREACHED(void *arts_route_table_borrow_or_lookup(arts_shared_ptr_t h,
                                                   arts_guid_t g,
                                                   arts_shared_ptr_t *l))
+UNREACHED(arts_shared_ptr_t arts_route_table_copy_live(arts_shared_ptr_t h,
+                                                       arts_guid_t g))
+UNREACHED(arts_shared_ptr_t arts_route_table_lookup(arts_guid_t g))
 UNREACHED(void arts_db_rdzv_discard_landing(uint64_t t, uint64_t s, uint64_t c))
 UNREACHED(void arts_transport_send_payload_async_free(
     int r, char *m, unsigned int n, char *p, unsigned int o, uint64_t s,
@@ -138,10 +139,10 @@ UNREACHED(int arts_db_cover_request(struct arts_db_s *db, unsigned int r,
 UNREACHED(void arts_db_home_destroy_now(struct arts_db_s *db))
 UNREACHED(void arts_home_grantreq_queue_push(
     struct arts_home_grantreq_queue_s *q, unsigned int r,
-    const struct arts_rdzv_landing_s *l, uint64_t h))
+    const struct arts_rdzv_landing_s *l, uint64_t h, uint64_t t))
 UNREACHED(bool arts_home_grantreq_queue_pop_linked(
     struct arts_home_grantreq_queue_s *q, unsigned int *r,
-    struct arts_rdzv_landing_s *l, uint64_t *h))
+    struct arts_rdzv_landing_s *l, uint64_t *h, uint64_t *t))
 #ifndef NDEBUG
 UNREACHED(void arts_dep_acq_resolve_once(struct arts_edt_s *e, uint32_t s))
 #endif
@@ -354,8 +355,13 @@ static void setup(void) {
   cache->cached_version = NULL;
 #endif
 
-  /* The caller's pin: the INVALIDATE's dispatcher holds the descriptor. */
+  /* The caller's pin: the INVALIDATE's dispatcher holds the descriptor,
+   * installed under the block's GUID. */
   g_db->self_cb = arts_shared_make(g_db, db_deleter);
+  arts_shared_set_tag(g_db->self_cb, (uint64_t)DB_GUID);
+  /* The write request the home popped is this rank's: it holds its count
+   * until the grant closes it. */
+  (void)arts_shared_copy(g_db->self_cb);
 
   /* The writer whose fast path met no grant and parked; its request is the
    * one the home popped. */
@@ -384,6 +390,7 @@ int main(void) {
                          .txid = 42u,
                          .cookie = (uint64_t)(uintptr_t)g_landing},
       .new_owner_have = VERSION,
+      .new_owner_token = (uint64_t)(uintptr_t)g_db,
   };
   payload_protect(PROT_NONE);
   arts_handler_db_grant_invalidate(g_db, &inv);
@@ -400,10 +407,11 @@ int main(void) {
   struct arts_msg_grant_confirm_ack_packet_s ack;
   memset(&ack, 0, sizeof(ack));
   ack.db_guid = DB_GUID;
+  ack.token = (uint64_t)(uintptr_t)g_db;
   ack.new_owner_rank = ARTS_NO_PENDING_OWNER;
   g_acks++;
   g_ack_step = ++g_step;
-  arts_handler_db_grant_confirm_ack(g_db, &ack);
+  arts_handler_db_grant_confirm_ack(&ack);
   if (!(g_confirm_step < g_ack_step && g_ack_step < g_wake_step)) {
     fail("write-back order is not CONFIRM, CONFIRM_ACK, wake");
   }
@@ -439,6 +447,8 @@ int main(void) {
     arts_rank_u64_map_destroy(cache->cached_version);
   }
 
+  /* The request's count went with the grant that closed it, once: the
+   * caller's pin is the last. */
   if (g_db_deleted != 0) {
     fail("the transfer dropped a pin it did not take");
   }

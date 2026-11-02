@@ -461,7 +461,7 @@ void arts_handler_db_excl_request(void *item_v, void *args_v) {
      * counted writer queued behind it, whose count stands in for it until
      * its late transition counts it. */
     arts_home_grantreq_queue_push(&db->rw_waiters, requester, &a->rdzv,
-                                  ARTS_GRANT_VERSION_NONE);
+                                  ARTS_GRANT_VERSION_NONE, 0u);
     arts_sched_fuzz_point();
     do {
       cur = atomic_load_explicit(&db->lock_state, memory_order_acquire);

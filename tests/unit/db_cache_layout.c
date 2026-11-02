@@ -158,6 +158,7 @@ static void print_fingerprint(void) {
   MEMBER(read_waiter_t, serve);
   MEMBER(read_waiter_t, requester);
   MEMBER(read_waiter_t, rdzv);
+  MEMBER(read_waiter_t, token);
   TYPE(rw_waiter_t);
   MEMBER(rw_waiter_t, link);
   MEMBER(rw_waiter_t, edt);
@@ -171,6 +172,7 @@ static void print_fingerprint(void) {
   MEMBER(grantreq_node_t, rank);
   MEMBER(grantreq_node_t, have_version);
   MEMBER(grantreq_node_t, rdzv);
+  MEMBER(grantreq_node_t, token);
   TYPE(grantreq_queue_t);
   MEMBER(grantreq_queue_t, tail);
   MEMBER(grantreq_queue_t, head);
@@ -197,6 +199,7 @@ static void print_fingerprint(void) {
   MEMBER(cache_t, incoming_new_owner);
   MEMBER(cache_t, incoming_new_owner_rdzv);
   MEMBER(cache_t, incoming_new_owner_have);
+  MEMBER(cache_t, incoming_new_owner_token);
 #endif
   MEMBER(cache_t, cached_version);
 #if defined(ARTS_WRITE_POLICY_WT)
@@ -277,6 +280,7 @@ static void print_fingerprint(void) {
 #else
   MEMBER(db_t, pending_return_from);
   MEMBER(db_t, pending_return_cv);
+  MEMBER(db_t, pending_return_token);
   MEMBER(db_t, pending_return_version);
   MEMBER(db_t, pending_return_ack);
   MEMBER(db_t, pending_return_credit);

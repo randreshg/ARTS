@@ -144,6 +144,9 @@ static void grant_tail(struct arts_db_s *db, enum grant_tail_entry_e entry,
   const unsigned int home = arts_global_rank_id;
   uint64_t seen = 1u; /* the winning claim wrote 1 */
   unsigned int latched = returner;
+  /* The home's own write requests this tail served: each serve's drain
+   * closed one, and the tail drops their counts on its way out. */
+  unsigned int served_self = 0u;
 
   if (entry == GRANT_TAIL_ACCEPT) {
     goto accept;
@@ -165,15 +168,19 @@ serve: {
    * itself; one that read possession clear claims nothing, and the accept
    * that sets possession again looks behind it. */
   if (arts_home_grantreq_queue_peek_linked(&db->pending_rw, &front, &front_rdzv,
-                                           NULL) &&
+                                           NULL, NULL) &&
       grant_home_holds(cache)) {
     if (front == home) {
       /* Nothing travels and nothing installs: the home already holds both the
        * right and the bytes, so the round completes here, synchronously. */
       unsigned int self_rank;
       struct arts_rdzv_landing_s self_rdzv;
+      uint64_t self_token = 0u;
       (void)arts_home_grantreq_queue_pop_linked(&db->pending_rw, &self_rank,
-                                                &self_rdzv, NULL);
+                                                &self_rdzv, NULL, &self_token);
+      assert(self_token == arts_db_token(db) &&
+             "the home's own request names the home's descriptor");
+      (void)self_token;
       if (self_rdzv.cookie != 0) {
         arts_db_buf_landing_return(
             (struct arts_db_buffer_s *)(uintptr_t)self_rdzv.cookie);
@@ -185,6 +192,7 @@ serve: {
       uint8_t census = arts_db_census_serving(false);
       arts_db_drain_pending_rw_after_grant(cache);
       arts_db_census_served(census);
+      served_self++;
       /* Look again rather than put the baton down: whatever queued behind
        * the self front is served now, or left to the drained writers' idle
        * edge by the give-up below. */
@@ -200,8 +208,9 @@ serve: {
       unsigned int target;
       struct arts_rdzv_landing_s target_rdzv;
       uint64_t target_has = ARTS_GRANT_VERSION_NONE;
-      (void)arts_home_grantreq_queue_pop_linked(&db->pending_rw, &target,
-                                                &target_rdzv, &target_has);
+      uint64_t target_token = 0u;
+      (void)arts_home_grantreq_queue_pop_linked(
+          &db->pending_rw, &target, &target_rdzv, &target_has, &target_token);
       /* Judge the requester's copy against the canonical axis, and read that
        * axis AFTER the claim above.  The claim is what holds it still: the
        * home may only serve while it possesses the right, which the previous
@@ -215,7 +224,8 @@ serve: {
        * to keep, so "equal" would be equal to nothing. */
       bool data_less = (target_has != ARTS_GRANT_VERSION_NONE &&
                         target_has == arts_db_grant_serve_version(db));
-      arts_db_send_grant_response(cache, target, &target_rdzv, data_less);
+      arts_db_send_grant_response(cache, target, &target_rdzv, data_less,
+                                  target_token);
       /* The home now holds nothing and is owed nothing but the hand-back, so
        * the baton goes down at once: a request arriving meanwhile finds no
        * possession and waits on the FIFO for that hand-back's acceptance, and
@@ -247,7 +257,7 @@ serve: {
       seen = 1u;
       goto serve;
     }
-    return;
+    goto done;
   }
 }
 
@@ -260,7 +270,7 @@ put_down:
   if (atomic_compare_exchange_strong_explicit(&db->grant_baton, &seen, 0u,
                                               memory_order_acq_rel,
                                               memory_order_acquire)) {
-    return;
+    goto done;
   }
   INCREMENT_NUM_GRANT_BATON_RECLAIM_BY(1);
 
@@ -292,6 +302,7 @@ accept: {
    * grant. */
   struct arts_db_grant_return_reply_s reply = {
       .cv = db->pending_return_cv,
+      .token = db->pending_return_token,
       .version = db->pending_return_version,
       .ack = db->pending_return_ack != 0u,
       .credit = db->pending_return_credit != 0u,
@@ -328,12 +339,17 @@ accept: {
    * one of them.  Sent here, by the latch's single consumer, so exactly one
    * reply leaves per hand-back whichever actor applied it. */
   if (reply.ack) {
-    arts_send_db_publish_ack(latched, db, reply.cv, reply.version,
-                             reply.credit);
+    arts_send_db_publish_ack(latched, db, reply.cv, reply.version, reply.credit,
+                             reply.token);
   }
   arts_sched_fuzz_point(); /* widen the accept<->serve window */
   goto serve;
 }
+
+done:
+  /* The home's own requests the serves above closed: their counts go here,
+   * the tail's last access. */
+  arts_db_axis_drop(db, served_self);
 }
 
 /* ===== Home handler: a return arrived ==================================== */
@@ -365,6 +381,7 @@ void arts_db_grant_return_arrived(
    * consuming CAS takes the slot — that CAS reads the value this one wrote,
    * so it synchronizes with it. */
   db->pending_return_cv = reply->cv;
+  db->pending_return_token = reply->token;
   db->pending_return_version = reply->version;
   db->pending_return_ack = reply->ack ? 1u : 0u;
   db->pending_return_credit = reply->credit ? 1u : 0u;
@@ -409,8 +426,11 @@ void arts_db_grant_return_arrived(
 void arts_handler_db_grant_return(void *item_v, void *args_v) {
   struct arts_ooo_args_db_grant_return_s *a =
       (struct arts_ooo_args_db_grant_return_s *)args_v;
-  struct arts_db_grant_return_reply_s reply = {
-      .cv = a->cv, .version = 0u, .ack = (a->cv != 0u), .credit = false};
+  struct arts_db_grant_return_reply_s reply = {.cv = a->cv,
+                                               .token = 0u,
+                                               .version = 0u,
+                                               .ack = (a->cv != 0u),
+                                               .credit = false};
   arts_db_grant_return_arrived((struct arts_db_s *)item_v, a->returner, &reply);
 }
 

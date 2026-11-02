@@ -1289,7 +1289,9 @@ endforeach()
 # [RANK <r>] [CFG <cfg>] [REFERENCE_ONLY]) registers one shape: <probes> and
 # <pins> are the judged rank's NUM_ROUTE_PROBE and NUM_ROUTE_PIN per unit.
 # REFERENCE_ONLY marks a shape no cell can change; it registers in the
-# reference tree only.  Both counters must be captured.
+# reference tree only.  Both counters must be captured.  A shape whose cfg
+# runs more than one rank is a multinode test, given a multinode run's budget
+# for each of its two runs.
 add_arts_test(route_budget)
 function(arts_route_budget_test shape n probes pins)
     cmake_parse_arguments(ARG "REFERENCE_ONLY" "RANK;CFG" "" ${ARGN})
@@ -1307,6 +1309,12 @@ function(arts_route_budget_test shape n probes pins)
         set(ARG_CFG 1n_20w)
     endif()
     arts_test_cfg(_cfg ${ARG_CFG})
+    set(_label single_node)
+    set(_timeout 60)
+    if(ARG_CFG MATCHES "^([0-9]+)n_" AND CMAKE_MATCH_1 GREATER 1)
+        set(_label multinode)
+        set(_timeout 120)
+    endif()
     arts_add_test(route_budget_${shape}
         COMMAND ${CMAKE_COMMAND}
                 -DPROGRAM=$<TARGET_FILE:route_budget> -DSHAPE=${shape}
@@ -1314,7 +1322,7 @@ function(arts_route_budget_test shape n probes pins)
                 -DPROBES_PER_UNIT=${probes} -DPINS_PER_UNIT=${pins}
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/route_budget_diff.cmake)
     set_tests_properties(route_budget_${shape} PROPERTIES
-        LABELS "single_node" TIMEOUT 60 RESOURCE_LOCK "arts_runtime"
+        LABELS ${_label} TIMEOUT ${_timeout} RESOURCE_LOCK "arts_runtime"
         ENVIRONMENT "ARTS_CONFIG=${_cfg}"
         PASS_REGULAR_EXPRESSION "PASS: route_budget_diff ${shape}"
         FAIL_REGULAR_EXPRESSION "FAIL:")
@@ -1341,6 +1349,32 @@ arts_route_budget_test(create 64 3 0 REFERENCE_ONLY)
 # creator stays the sticky owner and sends nothing; FLUSH's home writes nothing
 # back.  1 probe, 0 pins, every cell.
 arts_route_budget_test(rw 64 1 0)
+# firsttouch and rwremote, judged on rank 1, per unit: the EDT create's
+# reservation of its GUID (1 probe), the satisfy's dispatch onto the
+# installed EDT (1 probe, 1 pin) and the acquire's one reservation of the
+# block, which installs the first-touch cache into the slot it found (1
+# probe).  Everything else rank 1 receives is an answer to its own request,
+# which acts on the descriptor its token names, and nothing rank 1 sends
+# resolves anything on rank 1:
+#   VAL, read: SNAPSHOT_RESPONSE (from the home, or under WB from the owner a
+#     redirect names, which is the home here), its payload paired
+#     one-sided.
+#   VAL, write: GRANT_RESPONSE (the holder's ship under RETAIN, the home's
+#     serve under PURGE) and, under WB, CONFIRM_ACK; the release's publish
+#     under WT: PUBLISH_CTS (paired by its rendezvous pointer) and
+#     PUBLISH_ACK, which under PURGE also acknowledges the hand-back riding
+#     the commit.  VAL x WB's release sends nothing.
+#   INV, read: INV_DELIVER; write: GRANT_RESPONSE, CONFIRM_ACK under WB, and
+#     the release's round, acknowledged by PUBLISH_ACK (after PUBLISH_CTS
+#     under WT).  No round targets rank 1: it is the round's releaser, and no
+#     other rank writes the block.
+# 3 probes, 1 pin in each VAL and INV cell.  Two ranks move one-sided
+# payloads, which an ARTS_MALLOC=system tree refuses.
+if((ARTS_COHERENCE_ARM STREQUAL "VAL" OR ARTS_COHERENCE_ARM STREQUAL "INV")
+   AND ARTS_MALLOC STREQUAL "mimalloc")
+    arts_route_budget_test(firsttouch 64 3 1 RANK 1 CFG 2n_9w_1p)
+    arts_route_budget_test(rwremote 64 3 1 RANK 1 CFG 2n_9w_1p)
+endif()
 # scope: each of the unit's two EDTs is created inside the finish scope its
 # creator holds a counted reference to: the create reserves its minted GUID's
 # slot on the fresh path (one probe), the INCR runs on the creator's
