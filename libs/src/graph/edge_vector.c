@@ -88,7 +88,7 @@ void arts_edge_vector_init(arts_edge_vector_t *v,
 }
 
 void arts_edge_vector_push_back(arts_edge_vector_t *v, arts_vertex_t s,
-                                arts_vertex_t t, arts_edge_data_t d) {
+                                arts_vertex_t t) {
   if (v->used == v->size) {
     /* A vector of capacity 0 (initial size 0, or freed) holds no array yet;
      * arts_realloc fails loudly, so the array it returns is never NULL. */
@@ -98,8 +98,7 @@ void arts_edge_vector_push_back(arts_edge_vector_t *v, arts_vertex_t s,
   }
 
   v->edge_array[v->used].source = s;
-  v->edge_array[v->used].target = t;
-  v->edge_array[v->used++].data = d;
+  v->edge_array[v->used++].target = t;
 }
 
 void arts_edge_vector_free(arts_edge_vector_t *v) {

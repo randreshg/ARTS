@@ -60,7 +60,6 @@ arts_csr_graph_t *arts_csr_init(arts_partition_t part_index,
                                 const arts_block_dist_t *dist,
                                 arts_edge_vector_t *edges, bool sorted_by_src,
                                 arts_guid_t block_guid) {
-  // TODO: what will happen if partition does not have any vertex??
   arts_csr_graph_t *csr = NULL;
   if (arts_guid_is_local(block_guid)) {
     // data is a single array that merges row_indices and columns
@@ -132,7 +131,6 @@ arts_csr_graph_t *arts_csr_init(arts_partition_t part_index,
 
         // new source
         // assert(csr->row_indices[src_ind] == i);
-        // ARTS_INFO("src_ind = %" PRIu64 ", ",  src_ind);
         row_indices[src_ind + 1] = i + 1;
         columns[i] = t;
         last_src = s;
@@ -260,13 +258,13 @@ int arts_csr_load_from_args(const arts_block_dist_t *dist, int argc,
   ARTS_INFO("[INFO] Keep Self-loops ? : %d", keep_self_loops);
   ARTS_INFO("[INFO] Csr-format : %d", csr_format);
   if (csr_format) {
-    return arts_csr_load_no_weight_csr(file, dist, flip, !keep_self_loops);
+    return arts_csr_load_adjacency(file, dist, flip, !keep_self_loops);
   }
-  return arts_csr_load_no_weight(file, dist, flip, !keep_self_loops);
+  return arts_csr_load_edge_list(file, dist, flip, !keep_self_loops);
 }
 
 // If we want to read the graph as an undirected graph set flip = True
-int arts_csr_load_no_weight(const char *file_path,
+int arts_csr_load_edge_list(const char *file_path,
                             const arts_block_dist_t *dist, bool flip,
                             bool ignore_self_loops) {
   if (file_path == NULL) {
@@ -365,31 +363,19 @@ int arts_csr_load_no_weight(const char *file_path,
       continue;
     }
 
-    // TODO weights
     // source belongs to current node
     unsigned int owner = arts_block_dist_get_owner(src, dist);
     for (unsigned int k = 0; k < num_local_parts; k++) {
       if (owner == part_index[k]) {
-        // ARTS_INFO("src = %lu owner = %u start = %lu end = %lu", src, owner,
-        // arts_block_dist_partition_start(owner, dist),
-        // arts_block_dist_partition_end(owner, dist));
-        arts_edge_vector_push_back(&vedges[k], src, target,
-                                   0 /*weight zeor for the moment*/);
+        arts_edge_vector_push_back(&vedges[k], src, target);
       }
-      /*else {
-          printf("src = %" PRIu64 ", owner = %d, global rank : %d", src,
-          getOwner(src, dist),
-          arts_get_current_rank());
-          assert(false); //TODO remove
-      }*/
     }
 
     if (flip) {
       owner = arts_block_dist_get_owner(target, dist);
       for (unsigned int k = 0; k < num_local_parts; k++) {
         if (owner == part_index[k]) {
-          arts_edge_vector_push_back(&vedges[k], target, src,
-                                     0 /*weight zeor for the moment*/);
+          arts_edge_vector_push_back(&vedges[k], target, src);
         }
       }
     }
@@ -412,9 +398,9 @@ int arts_csr_load_no_weight(const char *file_path,
   return rc;
 }
 
-int arts_csr_load_no_weight_csr(const char *file_path,
-                                const arts_block_dist_t *dist, bool flip,
-                                bool ignore_self_loops) {
+int arts_csr_load_adjacency(const char *file_path,
+                            const arts_block_dist_t *dist, bool flip,
+                            bool ignore_self_loops) {
   if (file_path == NULL) {
     ARTS_WARN("csr: no file path given");
     return -1;
@@ -479,12 +465,10 @@ int arts_csr_load_no_weight_csr(const char *file_path,
   bool out_of_range = false;
   while (!out_of_range && fgets(str, ARTS_GRAPH_MAXCHAR, file) != NULL) {
     if (str[0] == '%') {
-      // ARTS_INFO("%%%%%%");
       continue;
     }
 
     if (str[0] == '#') {
-      // ARTS_INFO("#######");
       continue;
     }
 
@@ -510,15 +494,13 @@ int arts_csr_load_no_weight_csr(const char *file_path,
       }
 
       if (ignore_self_loops && (src == target)) {
-        // ARTS_INFO("SELF LOOP");
         continue;
       }
 
       unsigned int owner = arts_block_dist_get_owner(src, dist);
       for (unsigned int k = 0; k < num_local_parts; k++) {
         if (owner == part_index[k]) {
-          arts_edge_vector_push_back(&vedges[k], src, target,
-                                     0 /*weight zeor for the moment*/);
+          arts_edge_vector_push_back(&vedges[k], src, target);
           local_edges++;
         }
       }
@@ -527,8 +509,7 @@ int arts_csr_load_no_weight_csr(const char *file_path,
         owner = arts_block_dist_get_owner(target, dist);
         for (unsigned int k = 0; k < num_local_parts; k++) {
           if (owner == part_index[k]) {
-            arts_edge_vector_push_back(&vedges[k], target, src,
-                                       0 /*weight zeor for the moment*/);
+            arts_edge_vector_push_back(&vedges[k], target, src);
             local_edges++;
           }
         }

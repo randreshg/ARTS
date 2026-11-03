@@ -52,13 +52,11 @@ extern "C" {
 typedef uint64_t arts_vertex_t;
 typedef uint64_t arts_graph_sz_t;
 typedef unsigned int arts_partition_t;
-typedef uint32_t arts_edge_data_t;
 typedef uint64_t arts_local_index_t;
 
 typedef struct {
   arts_vertex_t source;
   arts_vertex_t target;
-  arts_edge_data_t data;
 } arts_edge_t;
 
 /* === Edge vector === */
@@ -73,7 +71,7 @@ typedef struct {
 
 void arts_edge_vector_init(arts_edge_vector_t *v, arts_graph_sz_t initial_size);
 void arts_edge_vector_push_back(arts_edge_vector_t *v, arts_vertex_t s,
-                                arts_vertex_t t, arts_edge_data_t d);
+                                arts_vertex_t t);
 void arts_edge_vector_free(arts_edge_vector_t *v);
 void arts_edge_vector_sort_by_source(arts_edge_vector_t *v);
 void arts_edge_vector_sort_by_source_and_target(arts_edge_vector_t *v);
@@ -161,14 +159,16 @@ arts_guid_t arts_block_dist_guid_for_partition(const arts_block_dist_t *dist,
  * The loaders return 0, or -1 when the file cannot be read or does not parse
  * (a missing or inconsistent adjacency header, a line that is not an edge, an
  * endpoint at or above num_vertices); on -1 the calling rank creates no
- * partition.  Edge list (arts_csr_load_no_weight): one "source target" pair
- * per line, further fields ignored; blank and '#' lines are skipped; '%' lines
- * before the first pair mark 1-based ids, and after a "%%MatrixMarket" banner
- * the first data line is the size line; later '%' lines are comments.
- * Adjacency (arts_csr_load_no_weight_csr): a "<vertices> <edges>" header,
- * then line i lists the 1-based targets of vertex i; '%' and '#' lines and 0
- * tokens are skipped.  flip adds the reverse
- * of every edge; ignore_self_loops drops an edge whose ends are equal.
+ * partition.  A partition may hold no vertices or no edges; it is still a
+ * valid, non-zero-size block, and no vertex maps to it.
+ * Edge list (arts_csr_load_edge_list): one "source target" pair per line,
+ * further fields ignored; blank and '#' lines are skipped; '%' lines before
+ * the first pair mark 1-based ids, and after a "%%MatrixMarket" banner the
+ * first data line is the size line; later '%' lines are comments.
+ * Adjacency (arts_csr_load_adjacency): a "<vertices> <edges>" header, then
+ * line i lists the 1-based targets of vertex i; '%' and '#' lines and 0
+ * tokens are skipped.  flip adds the reverse of every edge;
+ * ignore_self_loops drops an edge whose ends are equal.
  * arts_csr_load_from_args takes --file <path>, --flip, --keep-self-loops
  * (self loops are dropped otherwise) and --csr-format (the adjacency
  * format). */
@@ -192,12 +192,12 @@ arts_csr_graph_t *arts_csr_init(arts_partition_t part_index,
                                 const arts_block_dist_t *dist,
                                 arts_edge_vector_t *edges, bool sorted_by_src,
                                 arts_guid_t block_guid);
-int arts_csr_load_no_weight(const char *file_path,
+int arts_csr_load_edge_list(const char *file_path,
                             const arts_block_dist_t *dist, bool flip,
                             bool ignore_self_loops);
-int arts_csr_load_no_weight_csr(const char *file_path,
-                                const arts_block_dist_t *dist, bool flip,
-                                bool ignore_self_loops);
+int arts_csr_load_adjacency(const char *file_path,
+                            const arts_block_dist_t *dist, bool flip,
+                            bool ignore_self_loops);
 int arts_csr_load_from_args(const arts_block_dist_t *dist, int argc,
                             const char *const *argv);
 void arts_csr_free(arts_csr_graph_t *csr);

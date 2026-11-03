@@ -354,7 +354,7 @@ static void build_direct(const csr_case_t *c, const arts_block_dist_t *dist) {
     }
     for (unsigned int e = 0; e < c->nedges; ++e) {
       if (arts_block_dist_get_owner(c->edges[e].s, dist) == p) {
-        arts_edge_vector_push_back(&vec, c->edges[e].s, c->edges[e].t, 0);
+        arts_edge_vector_push_back(&vec, c->edges[e].s, c->edges[e].t);
       }
     }
     arts_edge_vector_sort_by_source_and_target(&vec);
@@ -371,10 +371,9 @@ static int load(const csr_case_t *c, const arts_block_dist_t *dist,
                 const char *path) {
   switch (c->build) {
   case EDGE_LIST:
-    return arts_csr_load_no_weight(path, dist, c->flip, c->ignore_self_loops);
+    return arts_csr_load_edge_list(path, dist, c->flip, c->ignore_self_loops);
   case ADJACENCY:
-    return arts_csr_load_no_weight_csr(path, dist, c->flip,
-                                       c->ignore_self_loops);
+    return arts_csr_load_adjacency(path, dist, c->flip, c->ignore_self_loops);
   default: {
     const char *argv[4] = {"prog"};
     for (int i = 0; i < c->nargs; ++i) {

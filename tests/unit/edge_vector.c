@@ -88,8 +88,7 @@ static void test_growth_and_fidelity(void) {
 
   const unsigned N = 1000;
   for (unsigned i = 0; i < N; i++) {
-    arts_edge_vector_push_back(&v, (arts_vertex_t)i, (arts_vertex_t)(i + 1),
-                               (arts_edge_data_t)(i * 3u));
+    arts_edge_vector_push_back(&v, (arts_vertex_t)i, (arts_vertex_t)(i + 1));
   }
   CHECK(v.used == N, "used == number of pushes");
   CHECK(v.size >= N, "size grew to accommodate");
@@ -98,7 +97,6 @@ static void test_growth_and_fidelity(void) {
   for (unsigned i = 0; i < N; i++) {
     CHECK(v.edge_array[i].source == (arts_vertex_t)i, "source preserved");
     CHECK(v.edge_array[i].target == (arts_vertex_t)(i + 1), "target preserved");
-    CHECK(v.edge_array[i].data == (arts_edge_data_t)(i * 3u), "data preserved");
   }
   arts_edge_vector_free(&v);
   CHECK(v.edge_array == NULL, "free NULLs edge_array");
@@ -109,7 +107,7 @@ static void test_growth_and_fidelity(void) {
 
   /* free-then-reinit reuse. */
   arts_edge_vector_init(&v, 2);
-  arts_edge_vector_push_back(&v, 7, 8, 9);
+  arts_edge_vector_push_back(&v, 7, 8);
   CHECK(v.used == 1 && v.edge_array[0].source == 7, "reuse after free works");
   arts_edge_vector_free(&v);
 }
@@ -119,10 +117,10 @@ static void test_growth_and_fidelity(void) {
 static void test_capacity_boundary(void) {
   arts_edge_vector_t v;
   arts_edge_vector_init(&v, 2);
-  arts_edge_vector_push_back(&v, 1, 1, 1);
-  arts_edge_vector_push_back(&v, 2, 2, 2); /* now used==size==2 */
+  arts_edge_vector_push_back(&v, 1, 1);
+  arts_edge_vector_push_back(&v, 2, 2); /* now used==size==2 */
   CHECK(v.used == 2 && v.size == 2, "filled to capacity exactly");
-  arts_edge_vector_push_back(&v, 3, 3, 3); /* triggers realloc */
+  arts_edge_vector_push_back(&v, 3, 3); /* triggers realloc */
   CHECK(v.used == 3, "grow appended 3rd edge");
   CHECK(v.size == 4, "capacity doubled 2->4");
   CHECK(v.edge_array[0].source == 1 && v.edge_array[1].source == 2 &&
@@ -136,11 +134,11 @@ static void test_capacity_boundary(void) {
 static void test_comparators(void) {
   /* compare_by_source: only source matters; equal source -> 0 regardless of
    * target.  Full uint64 range, branch form (no subtraction overflow). */
-  arts_edge_t a = {.source = 5, .target = 100, .data = 0};
-  arts_edge_t b = {.source = 5, .target = 1, .data = 0};
-  arts_edge_t c = {.source = 9, .target = 0, .data = 0};
-  arts_edge_t lo = {.source = 0, .target = 0, .data = 0};
-  arts_edge_t hi = {.source = UINT64_MAX, .target = 0, .data = 0};
+  arts_edge_t a = {.source = 5, .target = 100};
+  arts_edge_t b = {.source = 5, .target = 1};
+  arts_edge_t c = {.source = 9, .target = 0};
+  arts_edge_t lo = {.source = 0, .target = 0};
+  arts_edge_t hi = {.source = UINT64_MAX, .target = 0};
 
   CHECK(arts_edge_compare_by_source(&a, &b) == 0,
         "by_source: equal source -> 0 ignoring target");
@@ -161,8 +159,8 @@ static void test_comparators(void) {
   CHECK(arts_edge_compare_by_source_and_target(&b, &c) == -1,
         "by_st: source dominates (5,1) < (9,0)");
   {
-    arts_edge_t t1 = {.source = 3, .target = 0, .data = 0};
-    arts_edge_t t2 = {.source = 3, .target = UINT64_MAX, .data = 0};
+    arts_edge_t t1 = {.source = 3, .target = 0};
+    arts_edge_t t2 = {.source = 3, .target = UINT64_MAX};
     CHECK(arts_edge_compare_by_source_and_target(&t1, &t2) == -1,
           "by_st: 0 < UINT64_MAX target (no overflow)");
     CHECK(arts_edge_compare_by_source_and_target(&t2, &t1) == 1,
@@ -176,11 +174,11 @@ static void test_sort_by_source(void) {
   arts_edge_vector_t v;
   arts_edge_vector_init(&v, 4);
   /* deliberately reverse + interleaved sources */
-  arts_edge_vector_push_back(&v, 9, 0, 0);
-  arts_edge_vector_push_back(&v, 3, 0, 0);
-  arts_edge_vector_push_back(&v, 9, 1, 0);
-  arts_edge_vector_push_back(&v, 1, 0, 0);
-  arts_edge_vector_push_back(&v, 3, 1, 0);
+  arts_edge_vector_push_back(&v, 9, 0);
+  arts_edge_vector_push_back(&v, 3, 0);
+  arts_edge_vector_push_back(&v, 9, 1);
+  arts_edge_vector_push_back(&v, 1, 0);
+  arts_edge_vector_push_back(&v, 3, 1);
   arts_edge_vector_sort_by_source(&v);
   for (arts_graph_sz_t i = 1; i < v.used; i++) {
     CHECK(v.edge_array[i - 1].source <= v.edge_array[i].source,
@@ -194,11 +192,11 @@ static void test_sort_by_source(void) {
 static void test_sort_by_source_and_target(void) {
   arts_edge_vector_t v;
   arts_edge_vector_init(&v, 4);
-  arts_edge_vector_push_back(&v, 2, 5, 0);
-  arts_edge_vector_push_back(&v, 2, 1, 0);
-  arts_edge_vector_push_back(&v, 1, 9, 0);
-  arts_edge_vector_push_back(&v, 2, 1, 0); /* duplicate edge */
-  arts_edge_vector_push_back(&v, 1, 0, 0);
+  arts_edge_vector_push_back(&v, 2, 5);
+  arts_edge_vector_push_back(&v, 2, 1);
+  arts_edge_vector_push_back(&v, 1, 9);
+  arts_edge_vector_push_back(&v, 2, 1); /* duplicate edge */
+  arts_edge_vector_push_back(&v, 1, 0);
   arts_edge_vector_sort_by_source_and_target(&v);
   for (arts_graph_sz_t i = 1; i < v.used; i++) {
     bool ordered = (v.edge_array[i - 1].source < v.edge_array[i].source) ||
@@ -230,17 +228,16 @@ static void test_zero_capacity_push(void) {
   CHECK(v.size == 0 && v.used == 0, "init(0): size/used zero");
   const unsigned N = 37;
   for (unsigned i = 0; i < N; i++) {
-    arts_edge_vector_push_back(&v, i, i + 1, i * 3u);
+    arts_edge_vector_push_back(&v, i, i + 1);
   }
   CHECK(v.used == N && v.size >= N, "init(0): every push appended");
   for (unsigned i = 0; i < N; i++) {
-    CHECK(v.edge_array[i].source == i && v.edge_array[i].target == i + 1 &&
-              v.edge_array[i].data == i * 3u,
+    CHECK(v.edge_array[i].source == i && v.edge_array[i].target == i + 1,
           "init(0): edges preserved across growth");
   }
   arts_edge_vector_free(&v);
   /* A freed vector is a capacity-0 vector too. */
-  arts_edge_vector_push_back(&v, 7, 8, 9);
+  arts_edge_vector_push_back(&v, 7, 8);
   CHECK(v.used == 1 && v.edge_array[0].source == 7, "push after free appends");
   arts_edge_vector_free(&v);
 }
