@@ -15,7 +15,8 @@
  * then: a count left behind keeps it from running, a count dropped twice runs
  * it before.  The wire is stubbed: a request is captured, and its answer is
  * built from it, so every answer echoes the token its request carried.  Every
- * landing a request draws is ended exactly once.
+ * landing a request draws is ended exactly once, and every buffer hold a
+ * woken EDT's slot takes is dropped by the release the scenario stands in for.
  *
  * Scenarios, in every VAL and INV cell:
  *   read axis   closed by its answer, by a dismiss while the rank's write
@@ -454,8 +455,9 @@ static struct fake_edt *g_edts[8];
 static int g_nedts;
 static int g_wakes;
 /* The next woken waiter's EDT destroys the block in its body and completes:
- * the test's reference, which stands for the install's and the EDT's, goes
- * at the wake. */
+ * its release drops the buffer hold its slot resolved to, and the test's
+ * reference, which stands for the install's and the EDT's, goes at the
+ * wake. */
 static bool g_wake_drops_ref;
 static struct arts_db_s *g_db;
 
@@ -477,11 +479,21 @@ bool arts_db_rw_secure(struct arts_edt_s *edt, unsigned int slot) {
   return false;
 }
 void arts_db_drain_resume_list(void) {}
+/* The buffer hold the slot's resolver handed the EDT, which the EDT's release
+ * drops after the arm's own release. */
+static void release_buffer_hold(struct arts_edt_s *edt) {
+  struct arts_db_buffer_s *b = arts_db_buf_from_data(edt->dep_acq[0].ptr);
+  edt->dep_acq[0].ptr = NULL;
+  if (b != NULL) {
+    arts_shared_ptr_t h = b->cb;
+    arts_db_buf_release(&h);
+  }
+}
 void arts_db_acquire_account(struct arts_edt_s *edt) {
-  (void)edt;
   g_wakes++;
   if (g_wake_drops_ref) {
     g_wake_drops_ref = false;
+    release_buffer_hold(edt);
     arts_shared_ptr_t h = g_db->self_cb;
     arts_shared_release(&h);
   }
@@ -575,6 +587,17 @@ bool arts_ooo_retire(arts_guid_t key, arts_shared_ptr_t cb) {
   return true;
 }
 
+/* A woken EDT's slot holds a buffer until the release the scenario stands in
+ * for drops it. */
+static void free_edts(void) {
+  for (int i = 0; i < g_nedts; i++) {
+    if (g_edts[i]->acq[0].ptr != NULL) {
+      fail("an EDT's buffer hold was never released");
+    }
+    free(g_edts[i]);
+  }
+}
+
 static void end(int wakes) {
   if (g_wakes != wakes) {
     char m[96];
@@ -595,9 +618,7 @@ static void end(int wakes) {
   if (g_landings != 0) {
     fail("a landing was not ended exactly once");
   }
-  for (int i = 0; i < g_nedts; i++) {
-    free(g_edts[i]);
-  }
+  free_edts();
   printf("ok   %s\n", g_scenario);
 }
 
@@ -630,9 +651,7 @@ static void end_dropped(int wakes) {
   free(g_poisoned);
   g_poisoned = NULL;
   g_poison = false;
-  for (int i = 0; i < g_nedts; i++) {
-    free(g_edts[i]);
-  }
+  free_edts();
   printf("ok   %s\n", g_scenario);
 }
 
@@ -1146,6 +1165,7 @@ static void home_request_served_in_body(void) {
   acquire(DB_MODE_RW);
   holder_ships_to_home(0);
   arts_db_grant_release_commit(&g_db->cache);
+  release_buffer_hold(&g_edts[0]->edt);
   int wakes = 2;
 #endif
   struct fake_edt *f = new_edt(DB_MODE_RW);
