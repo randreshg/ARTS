@@ -369,20 +369,22 @@ typedef void (*arts_edt_t)(uint32_t paramc, const uint64_t *paramv,
  * rank, starts from EDTs it creates (see "Program Structure" in
  * @c docs/getting_started/quickstart.rst).
  *
- * The program defines it with default visibility in an object file the link
- * includes.  The runtime library refers to it by a weak reference, so a
- * program that calls @c arts_rt with no definition links, and arts_rt refuses
- * to start it.  A definition the link does not export (hidden visibility,
- * with the shared library) or one only in an archive member nothing else
- * pulls (a weak reference pulls none) is refused the same way.
+ * The program defines it in an object file the link includes.  This
+ * declaration gives it default visibility, so a program compiled with hidden
+ * visibility by default still exports it to the shared runtime library.  The
+ * runtime library refers to it by a weak reference, so a program that calls
+ * @c arts_rt with no definition links, and arts_rt refuses to start it; a
+ * definition only in an archive member nothing else pulls (a weak reference
+ * pulls none) is refused the same way.
  *
  * @param paramc Number of static parameters (2).
  * @param paramv Parameter array: paramv[0]=argc, paramv[1]=(uint64_t)argv.
  * @param depc   Number of dependency slots (0).
  * @param depv   Dependency array (empty).
  */
-extern void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
-                     arts_edt_dep_t depv[]);
+extern __attribute__((visibility("default"))) void
+main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+         arts_edt_dep_t depv[]);
 
 /** @} */ /* end program_entry */
 

@@ -61,8 +61,8 @@
 int arts_rt(int argc, char **argv) {
   if (main_edt == NULL) {
     (void)fputs("[ARTS] arts_rt: no main_edt reached the runtime: none is "
-                "defined, or it is hidden, or it is only in an archive member "
-                "the link did not pull\n",
+                "defined, or it is only in an archive member the link did not "
+                "pull\n",
                 stderr);
     return 1;
   }

@@ -20,10 +20,12 @@ Every ARTS program consists of three parts:
    rank, starts from EDTs it creates.
 3. ``main()`` — calls :c:func:`arts_rt` to start the runtime.  A program
    that calls ``arts_rt`` without defining ``main_edt`` links, and
-   ``arts_rt`` refuses to start it.  Define ``main_edt`` with default
-   visibility in an object file the link includes: a hidden definition (with
-   the shared library) or one only in an archive member nothing else pulls
-   is not seen by the runtime and is refused the same way.
+   ``arts_rt`` refuses to start it.  Define ``main_edt`` in an object file
+   the link includes: one only in an archive member nothing else pulls is
+   not seen by the runtime and is refused the same way.  The header's
+   declaration gives ``main_edt`` default visibility, so a program compiled
+   with hidden visibility by default still exports it to the shared
+   library.
 
 .. code-block:: c
 

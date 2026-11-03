@@ -125,6 +125,7 @@ int main(int argc, char **argv) { return arts_rt(argc, argv); }
 ")
 _compile(main_only.c main_only.o)
 _compile(whole.c whole.o)
+_compile(whole.c whole_hidden.o -fvisibility=hidden)
 
 # (1) No main_edt: the program links, and arts_rt refuses it with exit status
 # 1 and the refusal line as its only output, so nothing of the runtime ran.
@@ -169,8 +170,29 @@ foreach(_lib IN LISTS STATIC_LIB SHARED_LIB)
     endif()
 endforeach()
 
-# (3) The library refers to main_edt only as a weak undefined symbol.
-# (4) It defines arts_rt globally.
+# (3) A program compiled with hidden visibility by default still exports
+# main_edt, whose public declaration gives it default visibility, so the
+# runtime sees it through the shared library as well.
+foreach(_lib IN LISTS STATIC_LIB SHARED_LIB)
+    get_filename_component(_name "${_lib}" NAME)
+    _link(hidden_${_name} _rc _out "${WORK_DIR}/whole_hidden.o" "${_lib}")
+    if(NOT _rc EQUAL 0)
+        _fail("(3) a program compiled with hidden visibility does not link "
+              "against ${_name}:\n${_out}")
+        continue()
+    endif()
+    _run(hidden_${_name} _rc _out)
+    if(NOT _rc EQUAL 0)
+        _fail("(3) a program compiled with hidden visibility does not run "
+              "against ${_name} (${_rc}):\n${_out}")
+    else()
+        message("main_edt_required: (3) a program compiled with hidden "
+                "visibility links and runs against ${_name}")
+    endif()
+endforeach()
+
+# (4) The library refers to main_edt only as a weak undefined symbol.
+# (5) It defines arts_rt globally.
 foreach(_lib IN LISTS STATIC_LIB SHARED_LIB)
     get_filename_component(_name "${_lib}" NAME)
     if(_lib STREQUAL STATIC_LIB)
@@ -180,16 +202,16 @@ foreach(_lib IN LISTS STATIC_LIB SHARED_LIB)
     endif()
     _nm(_syms "${_lib}" main_edt ${_nm_args})
     if(NOT _syms STREQUAL "w main_edt")
-        _fail("(3) ${_name} does not refer to main_edt only as a weak "
+        _fail("(4) ${_name} does not refer to main_edt only as a weak "
               "undefined symbol: '${_syms}'")
     else()
-        message("main_edt_required: (3) ${_name} has w main_edt only")
+        message("main_edt_required: (4) ${_name} has w main_edt only")
     endif()
     _nm(_entry "${_lib}" arts_rt ${_nm_args})
     if(NOT _entry STREQUAL "T arts_rt")
-        _fail("(4) ${_name} does not define the global arts_rt: '${_entry}'")
+        _fail("(5) ${_name} does not define the global arts_rt: '${_entry}'")
     else()
-        message("main_edt_required: (4) ${_name} defines T arts_rt")
+        message("main_edt_required: (5) ${_name} defines T arts_rt")
     endif()
 endforeach()
 

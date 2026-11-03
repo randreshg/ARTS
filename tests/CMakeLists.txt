@@ -1936,14 +1936,14 @@ if(ARTS_TEST_REFERENCE_TREE)
         FAIL_REGULAR_EXPRESSION "FAIL cxl_arm64_refusal")
 endif()
 
-# A program must define main_edt with default visibility in an object file
-# the link includes.  The script checks that a program without one links and
-# arts_rt refuses it before any runtime state exists, that one defining it
-# links and runs, and that the runtime libraries refer to main_edt only by a
-# weak undefined symbol and define arts_rt.  The programs are built against
-# this tree's libraries, as an installed consumer links them, with the tree's
-# flags and link options (a sanitizer tree's included), and run on the
-# one-node cfg with two workers.
+# A program must define main_edt in an object file the link includes.  The
+# script checks that a program without one links and arts_rt refuses it before
+# any runtime state exists, that one defining it links and runs, compiled with
+# default or with hidden visibility (the public declaration exports it), and
+# that the runtime libraries refer to main_edt only by a weak undefined symbol
+# and define arts_rt.  The programs are built against this tree's libraries,
+# as an installed consumer links them, with the tree's flags and link options
+# (a sanitizer tree's included), and run on the one-node cfg with two workers.
 # No cell changes the entry: the reference tree runs it.
 if(ARTS_TEST_REFERENCE_TREE)
     set(_system_libs -lpthread)
