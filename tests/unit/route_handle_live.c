@@ -41,7 +41,7 @@
  *   I. Debug only: an install whose caller holds no reference of its own ends
  *      the process naming the GUID (in a forked child, before any other
  *      scenario runs).
- *   J. The teardown sweep (arts_clean_up_route_table) clears the tag of each
+ *   J. The teardown sweep (arts_route_table_sweep) clears the tag of each
  *      cb it detaches: a holder's copy of an installed cb is not live after
  *      it, and the object is freed at the holder's release.
  *   K. The sweep hands each object it retires to its detach hook once, with
@@ -232,12 +232,7 @@ static void rt_init(void) {
   arts_node_info.keys = (uint64_t **)calloc(1, sizeof(uint64_t *));
   arts_guid_node_geometry_init();
   arts_guid_key_generator_init();
-  arts_node_info.route_table =
-      (arts_route_table_t **)calloc(1, sizeof(arts_route_table_t *));
-  arts_node_info.route_table[0] = arts_new_route_table(1024, 10);
-  for (int s = 0; s < ARTS_REMOTE_ROUTE_SHARDS; s++) {
-    arts_node_info.remote_route_table[s] = arts_new_route_table(64, 6);
-  }
+  arts_route_table_node_init(1024, 10);
 }
 
 static arts_route_item_t *slot_of(arts_guid_t g) {
@@ -576,7 +571,7 @@ static int run_e(void) {
     FAIL("E: install_handle_fresh did not record its slot\n");
   }
 
-  arts_route_table_t *mirror = arts_new_route_table(64, 6);
+  arts_route_table_t *mirror = arts_route_table_new(64, 6);
   arts_guid_t gm = arts_guid_reserve(ARTS_GUID_DB, 0);
   arts_route_item_t *item = arts_route_table_search_for_empty(mirror, gm);
   if (!arts_route_item_install_data(item, &sentinel_mirror, NULL)) {
@@ -587,8 +582,8 @@ static int run_e(void) {
     FAIL("E: a mirror slot's install_data recorded a home\n");
   }
   arts_shared_release(&hm);
-  (void)arts_clean_up_route_table(mirror, NULL, NULL);
-  arts_delete_route_table(mirror);
+  (void)arts_route_table_sweep(mirror, NULL, NULL);
+  arts_route_table_delete(mirror);
 
   if (!arts_route_table_set_destroyed_if(g1, h1) ||
       !arts_route_table_set_destroyed_if(g2, h2) ||
@@ -837,7 +832,7 @@ static int run_h(void) {
 /* ── J: the teardown sweep leaves no cb that reads as live ─────────────── */
 static int run_j(void) {
   atomic_store_explicit(&g_deletes, 0, memory_order_relaxed);
-  arts_route_table_t *table = arts_new_route_table(64, 6);
+  arts_route_table_t *table = arts_route_table_new(64, 6);
   arts_guid_t g = arts_guid_reserve(ARTS_GUID_DB, 0);
   arts_route_item_t *item = arts_route_table_search_for_empty(table, g);
   arts_shared_ptr_t cb = arts_route_table_make_handle(new_obj(22), g);
@@ -846,7 +841,7 @@ static int run_j(void) {
       !arts_route_table_live(holder, g)) {
     FAIL("J: the install into the swept table's slot failed\n");
   }
-  if (arts_clean_up_route_table(table, NULL, NULL) != 0) {
+  if (arts_route_table_sweep(table, NULL, NULL) != 0) {
     FAIL("J: the sweep kept an object\n");
   }
   if (arts_route_table_live(holder, g)) {
@@ -859,7 +854,7 @@ static int run_j(void) {
   if (deletes() != 1) {
     FAIL("J: %d frees at the holder's release, want 1\n", deletes());
   }
-  arts_delete_route_table(table);
+  arts_route_table_delete(table);
   return 0;
 }
 
@@ -889,7 +884,7 @@ static void k_detach(arts_shared_ptr_t h) {
 
 static int run_k(void) {
   atomic_store_explicit(&g_deletes, 0, memory_order_relaxed);
-  arts_route_table_t *table = arts_new_route_table(64, 6);
+  arts_route_table_t *table = arts_route_table_new(64, 6);
   arts_shared_ptr_t holder = NULL;
   for (int v = K_HELD; v <= K_KEPT; v++) {
     arts_guid_t g = arts_guid_reserve(ARTS_GUID_DB, 0);
@@ -905,7 +900,7 @@ static int run_k(void) {
       arts_shared_release(&mine); /* the install's count alone */
     }
   }
-  if (arts_clean_up_route_table(table, k_keep, k_detach) != 1) {
+  if (arts_route_table_sweep(table, k_keep, k_detach) != 1) {
     FAIL("K: the sweep did not keep exactly the kept object\n");
   }
   if (k_bad != 0) {
@@ -925,11 +920,11 @@ static int run_k(void) {
   }
   atomic_store_explicit(&g_deletes, 0, memory_order_relaxed);
   k_frees_owed = 0;
-  if (arts_clean_up_route_table(table, NULL, k_detach) != 0 || k_bad != 0 ||
+  if (arts_route_table_sweep(table, NULL, k_detach) != 0 || k_bad != 0 ||
       k_calls != 3 || k_seen[2] != K_KEPT || deletes() != 1) {
     FAIL("K: a second sweep did not hand over and free the kept object\n");
   }
-  arts_delete_route_table(table);
+  arts_route_table_delete(table);
   return 0;
 }
 

@@ -66,9 +66,12 @@ struct arts_runtime_shared_s {
   _Atomic(unsigned int) cxl_db_rr_idx;
   unsigned int cxl_db_static_device; /**< Device index for static allocation. */
 #endif
+  /* This rank's route tables, arts_guid_table_count of them: built by
+   * arts_route_table_node_init before any runtime thread exists (thread
+   * creation publishes them) and freed after the joins.  A key's table is the
+   * pure function of its key that arts_get_route_table computes. */
   struct arts_route_table_s **route_table;
   struct arts_route_table_s **gpu_route_table;
-  struct arts_route_table_s *remote_route_table[ARTS_REMOTE_ROUTE_SHARDS];
   /* local_spin[i] points at thread i's `alive`: NULL until thread i has
    * written its role and set `alive`, which the store of the pointer
    * publishes.  That store and its load of shutdown_state

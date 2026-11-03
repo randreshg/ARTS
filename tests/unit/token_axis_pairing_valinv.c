@@ -223,7 +223,7 @@ UNREACHED(arts_shared_ptr_t arts_route_table_install_or_get(
 UNREACHED(arts_shared_ptr_t arts_route_table_make_handle(void *o,
                                                          arts_guid_t k))
 UNREACHED(bool arts_route_table_live(arts_shared_ptr_t h, arts_guid_t k))
-UNREACHED(void arts_reset_route_table_iterator(arts_route_table_iterator_t *i,
+UNREACHED(void arts_route_table_iterator_reset(arts_route_table_iterator_t *i,
                                                arts_route_table_t *t))
 UNREACHED(
     arts_route_item_t *arts_route_table_iterate(arts_route_table_iterator_t *i))

@@ -3,9 +3,9 @@
  * config_compute_derived turns route_table_size and gpu_route_table_size into
  * entry counts (1U << size).  A size whose table cannot exist is refused at
  * load (ARTS_ERROR), never shifted:
- *   route_table_size      4..31  (the remote shards hash with shift size - 3,
- *                                  which must be at least 1; 1U << 32 does not
- *                                  exist in an unsigned int)
+ *   route_table_size      1..31  (a table hashes with shift size, which must
+ *                                  be at least 1; 1U << 32 does not exist in
+ *                                  an unsigned int)
  *   gpu_route_table_size  1..28  (shift at least 1; 8 slots per entry counted
  *                                  in an unsigned int)
  * Both ends of both ranges are accepted with the exact entry count, and the
@@ -53,12 +53,13 @@ int main(void) {
     int refused;
     unsigned int entries, gpu_entries;
   } cases[] = {
+      {1, 12, 0, 1u << 1, 1u << 12},
+      {3, 12, 0, 1u << 3, 1u << 12},
       {4, 12, 0, 1u << 4, 1u << 12},
       {16, 12, 0, 1u << 16, 1u << 12},
       {31, 12, 0, 0x80000000u, 1u << 12},
       {16, 1, 0, 1u << 16, 1u << 1},
       {16, 28, 0, 1u << 16, 1u << 28},
-      {3, 12, 1, 0, 0},
       {0, 12, 1, 0, 0},
       {32, 12, 1, 0, 0},
       {16, 0, 1, 0, 0},

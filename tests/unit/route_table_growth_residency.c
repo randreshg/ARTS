@@ -412,7 +412,7 @@ static void phase_a(void) {
   arts_lf_stack_push(&root->data[0].ooo_list, &parked);
   atomic_store_explicit(&g_frees, 0, memory_order_relaxed);
   probe_build_hook = NULL;
-  arts_delete_route_table(root);
+  arts_route_table_delete(root);
   unsigned frees = atomic_load_explicit(&g_frees, memory_order_relaxed);
   (void)fprintf(stderr, "A: delete drained %u slot(s)\n", frees);
   CHECK(frees == 1,
@@ -421,29 +421,22 @@ static void phase_a(void) {
 
 /* ── phase B: reserve_or_lookup through the key's table ────────────────── */
 
-/* Node init of a one-thread rank as the runtime runs it, with `root` its
- * route table.  Rank 1 of 2: its flat keys start at 2^47, so only a key taken
- * from the geometry lands in `root`. */
+/* Node init of a one-thread rank (rank 1 of 2) as the runtime runs it, with
+ * `root` its route table in place of the one node init built.  With one
+ * table, every key lands in `root`. */
 static void rt_init(arts_route_table_t *root) {
   arts_global_rank_id = 1;
   arts_global_rank_count = 2;
   arts_thread_info.thread_id = 0;
   arts_node_info.total_thread_count = 1;
   arts_guid_node_geometry_init();
-  arts_node_info.route_table =
-      (arts_route_table_t **)calloc(1, sizeof(arts_route_table_t *));
+  arts_route_table_node_init(root->size, root->shift);
+  arts_route_table_delete(arts_node_info.route_table[0]);
   arts_node_info.route_table[0] = root;
-  for (int s = 0; s < ARTS_REMOTE_ROUTE_SHARDS; s++) {
-    arts_node_info.remote_route_table[s] = arts_new_route_table(16, 4);
-  }
 }
 
 static void rt_fini(void) {
-  arts_delete_route_table(arts_node_info.route_table[0]);
-  for (int s = 0; s < ARTS_REMOTE_ROUTE_SHARDS; s++) {
-    arts_delete_route_table(arts_node_info.remote_route_table[s]);
-  }
-  free(arts_node_info.route_table);
+  arts_route_table_node_cleanup();
   arts_guid_generator_cleanup();
 }
 
@@ -466,7 +459,7 @@ static void walk_while_building(const arts_guid_t *keys) {
         "B: a lookup of an unclaimed key found an object mid-growth\n");
   unsigned keyed = 0;
   arts_route_table_iterator_t iter;
-  arts_reset_route_table_iterator(&iter, root);
+  arts_route_table_iterator_reset(&iter, root);
   for (arts_route_item_t *it = arts_route_table_iterate(&iter); it != NULL;
        it = arts_route_table_iterate(&iter)) {
     keyed++;
@@ -480,7 +473,7 @@ static void walk_while_building(const arts_guid_t *keys) {
 
 static void phase_b(void) {
   arts_guid_t keys[NKEYS];
-  arts_route_table_t *root = arts_new_route_table(ROOT_SIZE, ROOT_SHIFT);
+  arts_route_table_t *root = arts_route_table_new(ROOT_SIZE, ROOT_SHIFT);
   rt_init(root);
   /* Keys of thread 0's block, from the first one it mints. */
   if (collect_keys(ARTS_GUID_EVENT, thread_block_base() + 1, 1ull << 30, keys) <
@@ -567,7 +560,7 @@ static int window_family(arts_guid_t *fill, arts_guid_t *extra, int nextra) {
 static void phase_c(void) {
   arts_guid_t fill[COLLISION_RESOLVES];
   arts_guid_t key = 0;
-  arts_route_table_t *root = arts_new_route_table(C_SIZE, C_SHIFT);
+  arts_route_table_t *root = arts_route_table_new(C_SIZE, C_SHIFT);
   rt_init(root);
   if (!window_family(fill, &key, 1)) {
     CHECK(0, "C: not enough colliding keys\n");
@@ -619,7 +612,7 @@ static void phase_c(void) {
 static void phase_d(void) {
   arts_guid_t fill[COLLISION_RESOLVES];
   arts_guid_t extra[2];
-  arts_route_table_t *root = arts_new_route_table(C_SIZE, C_SHIFT);
+  arts_route_table_t *root = arts_route_table_new(C_SIZE, C_SHIFT);
   rt_init(root);
   if (!window_family(fill, extra, 2)) {
     CHECK(0, "D: not enough colliding keys\n");

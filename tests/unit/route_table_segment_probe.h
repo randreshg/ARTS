@@ -121,7 +121,7 @@ static void probe_reset(void) {
 /* A root whose growth goes through the probe. */
 static arts_route_table_t *probe_root(unsigned int windows,
                                       unsigned int shift) {
-  arts_route_table_t *t = arts_new_route_table(windows, shift);
+  arts_route_table_t *t = arts_route_table_new(windows, shift);
   t->ops = &probe_ops;
   return t;
 }

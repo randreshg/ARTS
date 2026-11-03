@@ -3,14 +3,14 @@
  * guid_encoding_roundtrip — pure-unit coverage of guid.c encode/decode, the
  * range allocator and the key geometry, with NO ARTS runtime.
  *
- * guid.c and route_table.c are #include'd directly so the generator's
- * file-local state, the per-thread counter rows and the route-table
- * classifier can be driven straight from this TU.  node_init runs the
- * runtime's node init for one simulated rank: arts_guid_node_geometry_init,
- * then every thread's arts_guid_key_generator_init.  The runtime symbols the
- * included files reference (arts_node_info, arts_thread_info,
- * arts_global_rank_id/count, arts_abort, arts_malloc/calloc/free, the OoO
- * engine) are shimmed with libc-backed definitions.
+ * guid.c is #include'd directly so the generator's file-local state and the
+ * per-thread counter rows can be driven straight from this TU.  node_init
+ * runs the runtime's node init for one simulated rank:
+ * arts_guid_node_geometry_init, then every thread's
+ * arts_guid_key_generator_init.  The runtime symbols the
+ * included file references (arts_node_info, arts_thread_info,
+ * arts_global_rank_id/count, arts_abort, arts_malloc/calloc/free) are
+ * shimmed with libc-backed definitions.
  *
  * Properties asserted (all single-threaded — pure encoding contracts):
  *
@@ -34,10 +34,7 @@
  *      the rank's thread count.  Over simulated ranks of 2-5 threads each,
  *      every thread block lies in its rank's slice [r*S, (r+1)*S),
  *      S = 2^48 / N, no two blocks overlap, each thread's mints stay in its
- *      block and each rank's DB seqs in its creator slice.  The classifier
- *      takes every key of a thread's block to that thread's table, and a
- *      slack key of the slice, a key below the rank's base and the key at
- *      base + span to a remote shard.
+ *      block and each rank's DB seqs in its creator slice.
  *   8. Two ranks that run the same reserve sequence (arts_guid_reserve and
  *      an explicit-rank arts_guid_reserve_range, of every kind) get pairwise
  *      distinct GUIDs, each in its minter's slice.  The encoder's rank guards
@@ -69,25 +66,7 @@ void *arts_calloc_aligned(size_t n, size_t s, size_t a) {
   return p;
 }
 void arts_free(void *p) { free(p); }
-#ifdef ARTS_DEBUG_INJECTION
-/* route_table.c's windows are scheduling-fuzz points in an injection tree. */
-void arts_sched_fuzz_point(void) {}
-#endif
-
-struct arts_route_item_s;
-struct arts_shared_s;
-void arts_ooo_drain_on(struct arts_route_item_s *s, struct arts_shared_s *h) {
-  (void)s;
-  (void)h;
-}
-void arts_ooo_redrive_all(struct arts_route_item_s *s) { (void)s; }
-void arts_ooo_free_all(struct arts_route_item_s *s) { (void)s; }
-
 #include "../../libs/src/core/gas/guid.c"
-#include "../../libs/src/core/gas/route_table.c"
-#include "../../libs/src/core/utils/shared.c"
-
-#include "counter_stubs.h"
 
 struct arts_runtime_shared_s arts_node_info;
 ARTS_THREAD_LOCAL struct arts_runtime_private_s arts_thread_info;
@@ -99,11 +78,6 @@ ARTS_THREAD_LOCAL struct arts_runtime_private_s arts_thread_info;
   } while (0)
 
 #define MAX_THREADS 5u
-
-/* The classifier only selects a table, so placeholders stand in for them. */
-static arts_route_table_t g_local_tables[MAX_THREADS];
-static arts_route_table_t *g_local_slots[MAX_THREADS];
-static arts_route_table_t g_remote_tables[ARTS_REMOTE_ROUTE_SHARDS];
 
 static void node_fini(void) {
   if (arts_node_info.keys != NULL) {
@@ -148,8 +122,8 @@ static const char *geometry_mismatch(unsigned int r, unsigned int n,
   if (arts_guid_flat_base != slice * r) {
     return "flat base";
   }
-  if (arts_guid_flat_span != arts_guid_keys_per_thread * t) {
-    return "flat span";
+  if (arts_guid_flat_slice != slice) {
+    return "flat slice";
   }
   if (arts_db_seq_budget != budget || db_seq_creator_base != budget * r) {
     return "DB creator slice";
@@ -161,22 +135,6 @@ static const char *geometry_mismatch(unsigned int r, unsigned int n,
     }
   }
   return NULL;
-}
-
-/* The local table the classifier picks for flat key `key`, -1 for the remote
- * shard its low bits name, -2 for anything else. */
-static int flat_table_of(uint64_t key) {
-  arts_route_table_t *t =
-      arts_get_route_table(ARTS_GUID_MAKE(ARTS_GUID_EVENT, 0, key));
-  for (unsigned int i = 0; i < arts_guid_table_count; i++) {
-    if (t == arts_node_info.route_table[i]) {
-      return (int)i;
-    }
-  }
-  return t == arts_node_info
-                     .remote_route_table[key & (ARTS_REMOTE_ROUTE_SHARDS - 1)]
-             ? -1
-             : -2;
 }
 
 /* Runs `fn` in a forked child; true when the child ended through
@@ -255,13 +213,6 @@ static int cmp_u64(const void *a, const void *b) {
 }
 
 int main(void) {
-  for (unsigned int i = 0; i < MAX_THREADS; i++) {
-    g_local_slots[i] = &g_local_tables[i];
-  }
-  arts_node_info.route_table = g_local_slots;
-  for (int s = 0; s < ARTS_REMOTE_ROUTE_SHARDS; s++) {
-    arts_node_info.remote_route_table[s] = &g_remote_tables[s];
-  }
 
   /* ---- Test 1: field round-trip, no cross-field bleed. ---- */
   for (unsigned t = 0; t <= ARTS_GUID_TYPE_MASK; t++) {
@@ -491,12 +442,6 @@ int main(void) {
                  ", %" PRIu64 ")\n",
                  r, n, t, lo, hi);
           }
-          if (flat_table_of(lo) != (int)t || flat_table_of(first) != (int)t ||
-              flat_table_of(last) != (int)t ||
-              flat_table_of(hi - 1) != (int)t) {
-            FAIL("rank %u of %u: a key of thread %u's block left its table\n",
-                 r, n, t);
-          }
           uint64_t seq = ARTS_GUID_DB_GET_SEQ(
               ARTS_GUID_GET_KEY(arts_guid_create_for_rank(home, ARTS_GUID_DB)));
           if (seq / arts_db_seq_budget != r) {
@@ -504,20 +449,6 @@ int main(void) {
           }
         }
         arts_thread_info.thread_id = 0;
-        for (uint64_t k = base + arts_guid_flat_span; k < base + slice; k++) {
-          if (flat_table_of(k) != -1) {
-            FAIL("rank %u of %u: slack key %" PRIu64 " took a local table\n", r,
-                 n, k);
-          }
-        }
-        if (flat_table_of(base + arts_guid_flat_span) != -1) {
-          FAIL("rank %u of %u: the key at base + span took a local table\n", r,
-               n);
-        }
-        if (r > 0 && flat_table_of(base - 1) != -1) {
-          FAIL("rank %u of %u: the key below the base took a local table\n", r,
-               n);
-        }
         node_init(r, n, nt);
         bad = geometry_mismatch(r, n, nt);
         if (bad != NULL) {
@@ -566,7 +497,8 @@ int main(void) {
             int in_slice =
                 kinds[ki] == ARTS_GUID_DB
                     ? ARTS_GUID_DB_GET_SEQ(key) / arts_db_seq_budget == r
-                    : key - arts_guid_flat_base < arts_guid_flat_span;
+                    : key - arts_guid_flat_base <
+                          arts_guid_keys_per_thread * arts_guid_table_count;
             if (arts_guid_get_kind(seq[i]) != kinds[ki] ||
                 arts_guid_get_rank(seq[i]) != h || !in_slice) {
               FAIL("rank %u: GUID %u of kind %u on home %u is not its own\n", r,

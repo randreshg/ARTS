@@ -51,7 +51,7 @@
 #include <unistd.h>
 
 #include "arts.h"
-#include "arts/gas/route_table.h" /* shard bits, COLLISION_RESOLVES */
+#include "arts/gas/route_table.h" /* COLLISION_RESOLVES */
 #include "arts/runtime.h"         /* arts_scheduler_loop_count */
 #include "arts/system/print.h"
 #include "arts/transport/launcher.h"
@@ -1353,14 +1353,12 @@ static void config_set_pre_defaults(struct arts_config_s *config) {
 }
 
 static void config_compute_derived(struct arts_config_s *config) {
-  /* A table hashes with shift log2(entries), which must be at least 1, and a
-   * remote shard has 2^(route_table_size - ARTS_REMOTE_ROUTE_SHARD_BITS)
-   * entries; a GPU table counts its COLLISION_RESOLVES slots per entry in an
-   * unsigned int. */
-  if (config->route_table_size < ARTS_REMOTE_ROUTE_SHARD_BITS + 1U ||
-      config->route_table_size > 31U) {
-    ARTS_ERROR("route_table_size=%u is out of range %u..31",
-               config->route_table_size, ARTS_REMOTE_ROUTE_SHARD_BITS + 1U);
+  /* A table hashes with shift log2(entries), which must be at least 1, and
+   * counts its entries in an unsigned int; a GPU table counts its
+   * COLLISION_RESOLVES slots per entry there too. */
+  if (config->route_table_size < 1U || config->route_table_size > 31U) {
+    ARTS_ERROR("route_table_size=%u is out of range 1..31",
+               config->route_table_size);
   }
   if (config->gpu_route_table_size < 1 || config->gpu_route_table_size > 31 ||
       ((uint64_t)COLLISION_RESOLVES << config->gpu_route_table_size) >
@@ -1489,9 +1487,19 @@ static void config_compute_derived(struct arts_config_s *config) {
     }
     config->worker_thread_count =
         config->thread_count - config->progress_thread_count;
+    if (config->worker_thread_count == 0) {
+      ARTS_ERROR("progress_threads=%u takes every one of the %u thread(s) "
+                 "this rank was given (SLURM_CPUS_PER_TASK): a rank needs a "
+                 "worker thread to run EDTs",
+                 config->progress_thread_count, config->thread_count);
+    }
   }
   config->thread_count =
       config->worker_thread_count + config->progress_thread_count;
+  if (config->worker_thread_count == 0) {
+    ARTS_ERROR("worker_threads=0 leaves this rank no worker thread to run "
+               "EDTs");
+  }
 
   /* A deque indexes its ring modulo its size. */
   if (config->deque_size == 0) {

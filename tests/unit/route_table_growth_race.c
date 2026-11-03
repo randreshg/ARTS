@@ -318,11 +318,10 @@ int main(void) {
   arts_node_info.total_thread_count = 1;
   arts_guid_node_geometry_init();
   arts_thread_random_init(0, 0);
-  arts_node_info.route_table =
-      (arts_route_table_t **)calloc(1, sizeof(arts_route_table_t *));
-  for (int s = 0; s < ARTS_REMOTE_ROUTE_SHARDS; s++) {
-    arts_node_info.remote_route_table[s] = arts_new_route_table(64, 6);
-  }
+  /* Each round replaces the one table with a counted root of its own. */
+  arts_route_table_node_init(1u << ROOT_SHIFT, ROOT_SHIFT);
+  arts_route_table_delete(arts_node_info.route_table[0]);
+  arts_node_info.route_table[0] = NULL;
   int found = 0;
   for (uint64_t seq = 1; found < COLLIDE && seq < (1ull << 36); seq++) {
     arts_guid_t g = db_guid(seq);
@@ -358,7 +357,8 @@ int main(void) {
          t = atomic_load_explicit(&t->next, memory_order_acquire)) {
       total_segs++;
     }
-    arts_delete_route_table(root);
+    arts_route_table_delete(root);
+    arts_node_info.route_table[0] = NULL;
     if (round + 1 < ROUNDS) {
       root = probe_root(1u << ROOT_SHIFT, ROOT_SHIFT);
       prepare_round(root);
@@ -369,10 +369,7 @@ int main(void) {
   }
   pthread_barrier_destroy(&g_start);
   pthread_barrier_destroy(&g_end);
-  for (int s = 0; s < ARTS_REMOTE_ROUTE_SHARDS; s++) {
-    arts_delete_route_table(arts_node_info.remote_route_table[s]);
-  }
-  free(arts_node_info.route_table);
+  arts_route_table_node_cleanup();
   arts_guid_generator_cleanup();
   unsigned retired = atomic_load_explicit(&g_retired, memory_order_relaxed);
   unsigned rfail = atomic_load_explicit(&g_retire_failed, memory_order_relaxed);

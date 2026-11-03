@@ -103,20 +103,18 @@ static void test_deleter(void *p) {
 
 /* Node init of a rank whose minting threads are main (thread 0) and the
  * churners (threads 1..CHURN_THREADS), as the runtime runs it; DB GUIDs only,
- * so no key counters.  Every local table is the one small table, so every key
+ * so no key counters.  Every route table is the one small table, so every key
  * shares its slots. */
 static void rt_init(unsigned size, unsigned shift) {
   arts_thread_info.thread_id = 0;
   arts_node_info.total_thread_count = 1 + CHURN_THREADS;
   arts_guid_node_geometry_init();
-  arts_route_table_t *table = arts_new_route_table(size, shift);
-  arts_node_info.route_table = (arts_route_table_t **)calloc(
-      arts_node_info.total_thread_count, sizeof(arts_route_table_t *));
-  for (unsigned t = 0; t < arts_node_info.total_thread_count; t++) {
+  arts_route_table_node_init(size, shift);
+  /* The tables alias one table: node cleanup would free it once per entry. */
+  arts_route_table_t *table = arts_node_info.route_table[0];
+  for (unsigned t = 1; t < arts_node_info.total_thread_count; t++) {
+    arts_route_table_delete(arts_node_info.route_table[t]);
     arts_node_info.route_table[t] = table;
-  }
-  for (int s = 0; s < ARTS_REMOTE_ROUTE_SHARDS; s++) {
-    arts_node_info.remote_route_table[s] = arts_new_route_table(64, 6);
   }
 }
 

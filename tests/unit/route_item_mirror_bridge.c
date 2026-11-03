@@ -112,7 +112,7 @@ static void *s_worker(void *vp) {
 }
 
 int main(void) {
-  g_mirror = arts_new_route_table(16, 4);
+  g_mirror = arts_route_table_new(16, 4);
 
   /* ---- 1. Serial install-or-fail. ---- */
   {
@@ -228,8 +228,8 @@ int main(void) {
 
   /* clean_up detaches+releases every surviving slot cb (the storm winner's),
    * then delete frees the table memory. */
-  arts_clean_up_route_table(g_mirror, NULL, NULL);
-  arts_delete_route_table(g_mirror);
+  arts_route_table_sweep(g_mirror, NULL, NULL);
+  arts_route_table_delete(g_mirror);
   printf("PASS route_item_mirror_bridge: install-or-fail CAS, NULL-deleter, "
          "acquire handle lifecycle, single concurrent winner\n");
   return 0;

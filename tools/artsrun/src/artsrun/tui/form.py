@@ -89,8 +89,11 @@ PROFILE_FIELDS: list[FieldSpec] = [
               "cxi0..cxiN on Slingshot. Empty takes the provider's first "
               "domain",
               optional=True, section="transport"),
-    FieldSpec("route_table_size", "route table (2^N)", "int",
-              "route table size as a power-of-two exponent: 16 = 65536 entries",
+    FieldSpec("route_table_size", "route table (2^N windows)", "int",
+              "log2 of the windows (8 slots x 64 B) in each route table's "
+              "first segment, 1..31: a rank keeps as many tables as worker "
+              "and progress threads, 2^(N+9) bytes each (16 = 32 MiB), mapped "
+              "without reserve, doubling on growth",
               example="16", section="transport"),
     FieldSpec("regpool_slab_mb", "regpool slab (MB)", "int",
               "registered-memory pool floor the fabric draws payload buffers "

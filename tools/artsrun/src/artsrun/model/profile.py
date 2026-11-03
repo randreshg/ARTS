@@ -146,7 +146,7 @@ class Profile(BaseModel):
     pin: bool = True
     provider: str | None = None
     # The runtime refuses any other size when it loads the rendered cfg.
-    route_table_size: int = Field(default=16, ge=4, le=31)
+    route_table_size: int = Field(default=16, ge=1, le=31)
     core_dump: bool = False
     net_interface: str | None = None
     fabric_domain: str | None = None

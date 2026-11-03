@@ -95,7 +95,7 @@ ARTS_THREAD_LOCAL struct arts_runtime_private_s arts_thread_info;
  * INVARIANT (load-bearing): a route_table's `size` MUST equal 2^`shift` —
  * get_route_table_key returns `(hash >> (64-shift)) * COLLISION_RESOLVES`, a
  * band base in [0, 2^shift * 8), and the slot array has exactly size*8 slots.
- * arts_new_route_table asserts it of every table it builds, and the grow
+ * arts_route_table_new asserts it of every table it builds, and the grow
  * path's build(2*size, shift+1) preserves it (2*2^shift == 2^(shift+1)).
  * We pick a SMALL but invariant-respecting root: shift=4 → size=16 (128 slots),
  * so growth is reached quickly while every grown band base stays in range. */
@@ -141,7 +141,7 @@ static void counting_discard(arts_route_table_t *t) {
   route_segment_cpu_ops.discard(t);
 }
 static arts_route_table_t *counted_root(void) {
-  arts_route_table_t *t = arts_new_route_table(ROOT_SIZE, ROOT_SHIFT);
+  arts_route_table_t *t = arts_route_table_new(ROOT_SIZE, ROOT_SHIFT);
   t->ops = &counting_ops;
   atomic_store_explicit(&g_builds, 0u, memory_order_relaxed);
   atomic_store_explicit(&g_discards, 0u, memory_order_relaxed);
@@ -206,7 +206,7 @@ static const char *largest_segment_refuses_growth(char *out, size_t cap) {
     close(fds[0]);
     dup2(fds[1], STDOUT_FILENO);
     dup2(fds[1], STDERR_FILENO);
-    arts_route_table_t *last = arts_new_route_table(2, 1);
+    arts_route_table_t *last = arts_route_table_new(2, 1);
     last->size = 1u << 31;
     int claimed = 0;
     for (uint64_t k = 1; claimed <= COLLISION_RESOLVES; k++) {
@@ -288,7 +288,7 @@ int main(void) {
       }
     }
   }
-  arts_delete_route_table(g_root);
+  arts_route_table_delete(g_root);
 
   /* ---- 2. Concurrent grow race. ---- */
   g_root = counted_root();
@@ -341,7 +341,7 @@ int main(void) {
     FAIL("2: %u builds and %u discards for %u grown segments\n", builds,
          discards, chain_len(g_root) - 1);
   }
-  arts_delete_route_table(g_root);
+  arts_route_table_delete(g_root);
 
   /* ---- 3. A large colliding set is always absorbed. ---------------------- *
    * NCOLLIDE (40) >> one band (8); if growth could ever fail to help, the

@@ -156,21 +156,12 @@ static void table_init(void) {
   arts_thread_info.thread_id = 0;
   arts_node_info.total_thread_count = 1;
   arts_guid_node_geometry_init();
-  arts_node_info.route_table =
-      (arts_route_table_t **)calloc(1, sizeof(arts_route_table_t *));
-  for (int s = 0; s < ARTS_REMOTE_ROUTE_SHARDS; s++) {
-    arts_node_info.remote_route_table[s] = arts_new_route_table(64, 6);
-  }
-  g_table = arts_new_route_table(1u << SHIFT, SHIFT);
-  arts_node_info.route_table[0] = g_table;
+  arts_route_table_node_init(1u << SHIFT, SHIFT);
+  g_table = arts_node_info.route_table[0];
 }
 
 static void table_fini(void) {
-  arts_delete_route_table(g_table);
-  for (int s = 0; s < ARTS_REMOTE_ROUTE_SHARDS; s++) {
-    arts_delete_route_table(arts_node_info.remote_route_table[s]);
-  }
-  free(arts_node_info.route_table);
+  arts_route_table_node_cleanup();
   arts_guid_generator_cleanup();
 }
 

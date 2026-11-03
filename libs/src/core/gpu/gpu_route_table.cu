@@ -312,7 +312,7 @@ uint64_t arts_gpu_clean_up_route_table(unsigned int size_to_clean,
   // Only one person can be running the gc at a time...
   if (pthread_mutex_trylock(&gpu_route_table->gc_lock) == 0) {
     arts_route_table_iterator_t iter;
-    arts_reset_route_table_iterator(&iter, route_table);
+    arts_route_table_iterator_reset(&iter, route_table);
 
     arts_route_item_t *item = arts_route_table_iterate(&iter);
     while (item && freed_size < size_to_clean) {
@@ -335,7 +335,7 @@ uint64_t arts_gpu_free_all(unsigned int gpu_id) {
   arts_route_table_t *route_table = arts_node_info.gpu_route_table[gpu_id];
 
   arts_route_table_iterator_t iter;
-  arts_reset_route_table_iterator(&iter, route_table);
+  arts_route_table_iterator_reset(&iter, route_table);
 
   arts_route_item_t *item = arts_route_table_iterate(&iter);
   while (item) {

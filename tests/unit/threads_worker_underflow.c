@@ -15,13 +15,14 @@
  *   rank_count == 1  =>  progress = 0, worker = thread_count.
  *   rank_count  > 1  =>  worker = thread_count - progress.
  * The subtraction is unsigned, so it relies on progress <= thread_count, which
- * the configuration loader enforces: a progress count above the rank's thread
- * count is refused there before any thread is derived.
+ * the configuration loader enforces: it refuses a progress count that leaves
+ * the rank no worker before any thread is derived.
  *
  * Test strategy
  * -------------
  * 1. rank_count==1 case: assert progress==0 and worker==thread_count.
- * 2. rank_count>1, progress==thread_count: worker==0 (the boundary).
+ * 2. rank_count>1, progress==thread_count: a boundary the loader never lets
+ *    through; the derivation alone still gives worker==0, not a wrap.
  *
  * The stubbed arts_get_thread_mask does nothing and the spawn loop is bounded
  * by thread_count (small), so the derived counts are read without starting any
@@ -200,8 +201,8 @@ int main(void) {
     }
   }
 
-  /* ---- Case 2: rank>1, progress == thread_count => worker == 0 ------------
-   */
+  /* ---- Case 2: rank>1, progress == thread_count => worker == 0, the
+   * derivation's boundary (the configuration loader refuses the pair) ---- */
   {
     unsigned int w = run_derivation(/*rank_count=*/2, /*tc=*/4,
                                     /*progress=*/4, NULL);

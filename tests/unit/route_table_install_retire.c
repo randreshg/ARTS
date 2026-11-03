@@ -161,12 +161,7 @@ static void rt_init(void) {
   arts_node_info.keys = (uint64_t **)calloc(1, sizeof(uint64_t *));
   arts_guid_node_geometry_init();
   arts_guid_key_generator_init();
-  arts_node_info.route_table =
-      (arts_route_table_t **)calloc(1, sizeof(arts_route_table_t *));
-  arts_node_info.route_table[0] = arts_new_route_table(1024, 10);
-  for (int s = 0; s < ARTS_REMOTE_ROUTE_SHARDS; s++) {
-    arts_node_info.remote_route_table[s] = arts_new_route_table(64, 6);
-  }
+  arts_route_table_node_init(1024, 10);
 }
 
 /* ── Scenario A: install storm ─────────────────────────────────────────── */
@@ -235,7 +230,7 @@ static bool h_install(void *obj, arts_guid_t key, arts_shared_ptr_t *held) {
 static unsigned h_count_sentinels(arts_route_table_t *table) {
   unsigned n = 0;
   arts_route_table_iterator_t iter;
-  arts_reset_route_table_iterator(&iter, table);
+  arts_route_table_iterator_reset(&iter, table);
   for (arts_route_item_t *item = arts_route_table_iterate(&iter); item != NULL;
        item = arts_route_table_iterate(&iter)) {
     arts_shared_ptr_t h = arts_route_table_lookup(
@@ -259,9 +254,6 @@ static int run_h(void) {
   unsigned seen = 0;
   for (unsigned t = 0; t < arts_node_info.total_thread_count; t++) {
     seen += h_count_sentinels(arts_node_info.route_table[t]);
-  }
-  for (int sh = 0; sh < ARTS_REMOTE_ROUTE_SHARDS; sh++) {
-    seen += h_count_sentinels(arts_node_info.remote_route_table[sh]);
   }
   if (seen != H_SLOTS) {
     FAIL("H: the iterator walked %u installed slots, want %u\n", seen, H_SLOTS);
@@ -313,13 +305,8 @@ static void *i_worker(void *vp) {
 /* Slots whose key is `g`, over every table and every segment of it. */
 static unsigned i_census(arts_guid_t g) {
   unsigned hits = 0;
-  for (unsigned i = 0;
-       i < arts_node_info.total_thread_count + ARTS_REMOTE_ROUTE_SHARDS; i++) {
-    arts_route_table_t *rt =
-        (i < arts_node_info.total_thread_count)
-            ? arts_node_info.route_table[i]
-            : arts_node_info
-                  .remote_route_table[i - arts_node_info.total_thread_count];
+  for (unsigned i = 0; i < arts_node_info.total_thread_count; i++) {
+    arts_route_table_t *rt = arts_node_info.route_table[i];
     for (; rt != NULL;
          rt = atomic_load_explicit(&rt->next, memory_order_acquire)) {
       uint64_t total = (uint64_t)rt->size * COLLISION_RESOLVES;

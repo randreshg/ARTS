@@ -25,8 +25,15 @@ Threading
      - Description
    * - ``worker_threads``
      - 4
-     - Worker threads per node.  The progress thread(s) that drive the
-       network are separate — see ``progress_threads`` below.
+     - Worker threads per node: the threads that run EDTs; a rank needs at
+       least one.  The progress thread(s) that drive the network are
+       separate — see ``progress_threads`` below.  Under ``launcher=slurm``
+       with ``SLURM_CPUS_PER_TASK`` set, that variable is the rank's thread
+       count and the workers are what ``progress_threads`` leaves of it, so
+       this key has no effect.  A rank left with no worker is refused at
+       load: ``worker_threads=0`` (unless a single-node run reclaims progress
+       threads as workers), or ``progress_threads`` taking every thread
+       ``SLURM_CPUS_PER_TASK`` gives.
    * - ``stack_size``
      - 0
      - Thread stack size in bytes (0 = OS default).
@@ -70,8 +77,19 @@ Scheduling
        refused at load.
    * - ``route_table_size``
      - 16
-     - Routing table size as power of 2 (e.g., 16 → 2\ :sup:`16`), 4..31; a
-       value outside is refused at load.
+     - Log2 of the windows in the first segment of each of a rank's route
+       tables, 1..31; a value outside is refused at load.  A window is 8
+       slots of 64 bytes, so a first segment is 2\ :sup:`size+9` bytes (32 MiB
+       at 16, 8 MiB at 14), and a rank keeps T route tables, T being its
+       thread count (its worker and progress threads together).  A segment
+       is mapped without reserving memory: a page becomes resident when a
+       slot on it is first written and stays resident until the run ends.  A
+       table that needs more room links a segment twice the size of its
+       last.  A key's table follows from the key alone: each source's keys of
+       one kind fill half a first segment (2\ :sup:`size+2` keys) in one
+       table, then move to the next, so one source's large set spreads over
+       every table and one thread's long stream of short-lived objects can
+       leave all T first segments resident.
 
 GPU Support
 -----------

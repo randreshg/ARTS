@@ -50,7 +50,7 @@
 uint64_t arts_guid_table_count = 0;
 uint64_t arts_guid_keys_per_thread = 0;
 uint64_t arts_guid_flat_base = 0;
-uint64_t arts_guid_flat_span = 0;
+uint64_t arts_guid_flat_slice = 0;
 
 /* ── DB-kind seq allocator ──────────────────────────────────────────────────
  * DB keys are [szhint:10 | seq:38] (see guid.h).  seq is unique per
@@ -59,9 +59,8 @@ uint64_t arts_guid_flat_span = 0;
  * this rank's slice a SHARED per-home counter hands out chunks that threads
  * consume through a private cursor — the fast path is a plain thread-local
  * increment, the shared counter is touched once per chunk.  The seqs above
- * the last slice are never minted and classify as "no creator" on every
- * rank. */
-#define ARTS_GUID_DB_CHUNK ((uint64_t)1 << ARTS_GUID_DB_CHUNK_BITS)
+ * the last slice are never minted. */
+#define ARTS_GUID_DB_CHUNK ((uint64_t)1 << 14)
 
 uint64_t arts_db_seq_budget = 0;
 static uint64_t db_seq_creator_base = 0;
@@ -194,17 +193,16 @@ void arts_guid_node_geometry_init(void) {
    * values every rank shares (the key widths, the rank count) and its own
    * rank and thread ids.  Flat keys: rank r owns [r*S, (r+1)*S) with
    * S = 2^48 / N, and its thread t the block of arts_guid_keys_per_thread keys
-   * from arts_guid_flat_base + t * arts_guid_keys_per_thread, so a flat key's
-   * local table is one division and no rank's thread count matters to
-   * another's.  DB seqs: creator r owns [r*B, (r+1)*B) of every home's seq
-   * space, B = 2^38 / N. */
+   * from arts_guid_flat_base + t * arts_guid_keys_per_thread, so no rank's
+   * thread count matters to another's.  DB seqs: creator r owns
+   * [r*B, (r+1)*B) of every home's seq space, B = 2^38 / N. */
   uint64_t nrank = arts_global_rank_count ? arts_global_rank_count : 1;
   arts_guid_table_count = arts_node_info.total_thread_count;
   uint64_t slice = ((uint64_t)1 << ARTS_GUID_KEY_BITS) / nrank;
   arts_guid_keys_per_thread =
       arts_guid_table_count ? slice / arts_guid_table_count : 0;
   arts_guid_flat_base = slice * arts_global_rank_id;
-  arts_guid_flat_span = arts_guid_keys_per_thread * arts_guid_table_count;
+  arts_guid_flat_slice = slice;
 
   arts_db_seq_budget = (ARTS_GUID_DB_SEQ_MASK + 1) / nrank;
   db_seq_creator_base = arts_db_seq_budget * arts_global_rank_id;

@@ -5,15 +5,16 @@
 
 /* route_growth_labeled — every worker creates events named from one reserved
  * range, so their creates, the satisfies that race them and the bindings of
- * their consumers all reserve keys of one route-table chain at once while it
- * grows; each event must fire exactly once.
+ * their consumers all reserve keys of the same route-table chains at once
+ * while they grow; each event must fire exactly once.
  *
  * The range is reserved on the first rank, so every member is homed there and
  * keyed in one block.  One creator per worker, spread over the ranks, creates
  * its share of the events under their labels and binds a consumer on the
  * first rank to each; one satisfier per worker satisfies a share created by
  * another worker, so a satisfy can reach an event before its create.  Run
- * with a tiny route_table_size the chain grows many times under the race.
+ * with the smallest route_table_size, every chain the range's chunks fill
+ * grows several times under the race.
  * Every consumer counts once; the final EDT requires exactly one firing per
  * event.
  */

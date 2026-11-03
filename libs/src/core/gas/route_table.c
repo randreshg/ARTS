@@ -61,92 +61,65 @@
 #include "arts/utils/malloc.h"
 #include "arts/utils/shared.h"
 
-#define HASH64(x, y) ((uint64_t)(x) * (y))
+/* An odd multiplier near 2^64 / phi.  A segment's window for a GUID is the top
+ * `shift` bits of the GUID times it, so the windows of a run of consecutive
+ * keys spread nearly evenly at every shift (the three-distance theorem), and
+ * every table's keys arrive as such runs. */
+#define ROUTE_WINDOW_MIX 0x9E3779B97F4A7C15ull
 
 static inline uint64_t get_route_table_key(uint64_t x, unsigned int shift) {
-  uint64_t hash = 14695981039346656037U;
-  switch (shift) {
-  case 10:
-    hash *= 1021;
-    /* fall through */
-  case 11:
-    hash *= 2039;
-    /* fall through */
-  case 12:
-    hash *= 4093;
-    /* fall through */
-  case 13:
-    hash *= 8191;
-    /* fall through */
-  case 14:
-    hash *= 16381;
-    /* fall through */
-  case 15:
-    hash *= 32749;
-    /* fall through */
-  case 16:
-    hash *= 65521;
-    /* fall through */
-  case 17:
-    hash *= 131071;
-    /* fall through */
-  case 18:
-    hash *= 262139;
-    /* fall through */
-  case 19:
-    hash *= 524287;
-    /* fall through */
-  case 20:
-    hash *= 1048573;
-    /* fall through */
-  case 21:
-    hash *= 2097143;
-    /* fall through */
-  case 22:
-    hash *= 4194301;
-    /* fall through */
-  case 31:
-    hash *= 2147483647;
-    /* fall through */
-  case 32:
-    hash *= 4294967291;
-    /* fall through */
-  default:
-    break;
-  }
-
-  return (HASH64(x, hash) >> (64 - shift)) * COLLISION_RESOLVES;
+  return ((x * ROUTE_WINDOW_MIX) >> (64 - shift)) * COLLISION_RESOLVES;
 }
 
+/* This rank's placement: arts_route_table_node_init writes it before any
+ * runtime thread exists, and thread creation publishes it; afterwards it is
+ * only read, until arts_route_table_node_cleanup clears it after the joins.
+ * Each divisor d is taken as floor(n / d) = (2n * mul / 2^64) >> shift, with
+ * shift = ceil(log2 d) and mul = ceil(2^(63 + shift) / d): exact for every
+ * n < 2^63, since the multiplier's error stays below 1/d. */
+static struct {
+  uint64_t slice;  /* keys in a rank's flat slice */
+  uint64_t block;  /* keys in a thread's block of it */
+  uint64_t tables; /* route tables of this rank */
+  uint64_t slice_mul, block_mul, table_mul;
+  uint8_t slice_shift, block_shift, table_shift;
+  uint8_t chunk_shift; /* log2 of half a root's slots */
+} route_place ARTS_ALIGNED_MAX;
+
+static inline uint64_t route_div(uint64_t n, uint64_t mul, unsigned int shift) {
+  return (uint64_t)(((arts_uint128_t)(n + n) * mul) >> 64) >> shift;
+}
+
+static void route_div_make(uint64_t d, uint64_t *mul, uint8_t *shift) {
+  assert(d >= 1 && d < ((uint64_t)1 << 63));
+  unsigned int s = d == 1 ? 0 : 64 - (unsigned int)__builtin_clzll(d - 1);
+  *mul = (uint64_t)((((arts_uint128_t)1 << (63 + s)) + d - 1) / d);
+  *shift = (uint8_t)s;
+}
+
+/* A key's table, from its 48-bit key alone: with S keys per rank slice and
+ * kpt per thread block, r = key / S, t = (key mod S) / kpt and
+ * v = (key mod S) mod kpt, and the table is (t + r + (v >> chunk_shift)) mod
+ * T.  For a flat key r, t and v are the rank, thread and counter that minted
+ * it: a thread's keys walk the tables half a root at a time, and threads of
+ * one index on different ranks start in different tables.  Any other key (a
+ * data block's [szhint | seq], one never minted) takes the same arithmetic.
+ * No thread or rank identity and no table state is read, so every thread of
+ * the rank finds a key in the one table it was reserved in. */
 static inline arts_route_table_t *arts_get_route_table(arts_guid_t guid) {
   uint64_t key = ARTS_GUID_GET_KEY(guid);
-  if (ARTS_GUID_GET_TYPE(guid) == ARTS_GUID_DB && arts_db_seq_budget) {
-    /* DB keys are [szhint | seq]; the creating rank is arithmetic on seq
-     * (slice width = arts_db_seq_budget), so the local/remote decision is a
-     * pure function of the key — identical on every thread, install and
-     * lookup alike.  Self-created keys (reserved-range members included:
-     * both reserve paths claim from this rank's own slice) spread
-     * chunk-granular over the local per-thread tables; foreign creators and
-     * the never-minted seqs above the last slice sit outside the slice and
-     * take the shared remote shards. */
-    uint64_t seq = key & ARTS_GUID_DB_SEQ_MASK;
-    if (seq / arts_db_seq_budget == arts_global_rank_id) {
-      return arts_node_info.route_table[(seq >> ARTS_GUID_DB_CHUNK_BITS) %
-                                        arts_guid_table_count];
-    }
-    return arts_node_info
-        .remote_route_table[key & (ARTS_REMOTE_ROUTE_SHARDS - 1)];
-  }
-  /* A flat key minted on this rank lies in its threads' blocks; any other key
-   * (another rank's, the never-minted rest of this rank's slice, or one below
-   * the base, which wraps above the span) takes a remote shard and never
-   * indexes past route_table[].  A span of 0 sends every key remote. */
-  uint64_t off = key - arts_guid_flat_base;
-  if (off < arts_guid_flat_span) {
-    return arts_node_info.route_table[off / arts_guid_keys_per_thread];
-  }
-  return arts_node_info
-      .remote_route_table[key & (ARTS_REMOTE_ROUTE_SHARDS - 1)];
+  uint64_t rank =
+      route_div(key, route_place.slice_mul, route_place.slice_shift);
+  uint64_t off = key - rank * route_place.slice;
+  uint64_t thread =
+      route_div(off, route_place.block_mul, route_place.block_shift);
+  uint64_t x = thread + rank +
+               ((off - thread * route_place.block) >> route_place.chunk_shift);
+  uint64_t i = x - route_place.tables * route_div(x, route_place.table_mul,
+                                                  route_place.table_shift);
+  /* Before node init the placement is zero and i is the key itself. */
+  assert(i < route_place.tables);
+  return arts_node_info.route_table[i];
 }
 
 /* ── Per-kind deleter dispatch (registration) ───────────────────────────────
@@ -261,10 +234,44 @@ arts_route_table_new_root(const arts_route_segment_ops_t *ops,
   return t;
 }
 
-arts_route_table_t *arts_new_route_table(unsigned int route_table_size,
+arts_route_table_t *arts_route_table_new(unsigned int windows,
                                          unsigned int shift) {
-  return arts_route_table_new_root(&route_segment_cpu_ops, route_table_size,
-                                   shift);
+  return arts_route_table_new_root(&route_segment_cpu_ops, windows, shift);
+}
+
+/* The placement for this rank's GUID geometry and roots of 2^shift windows. */
+static void route_place_init(unsigned int shift) {
+  /* A rank has a worker thread (the configuration refuses a rank with none),
+   * and a slice of at least 2^34 keys holds a block for each thread. */
+  assert(arts_guid_table_count >= 1 && arts_guid_keys_per_thread >= 1);
+  route_place.slice = arts_guid_flat_slice;
+  route_place.block = arts_guid_keys_per_thread;
+  route_place.tables = arts_guid_table_count;
+  route_div_make(arts_guid_flat_slice, &route_place.slice_mul,
+                 &route_place.slice_shift);
+  route_div_make(arts_guid_keys_per_thread, &route_place.block_mul,
+                 &route_place.block_shift);
+  route_div_make(arts_guid_table_count, &route_place.table_mul,
+                 &route_place.table_shift);
+  route_place.chunk_shift = (uint8_t)(shift + 2);
+}
+
+void arts_route_table_node_init(unsigned int windows, unsigned int shift) {
+  route_place_init(shift);
+  arts_node_info.route_table = (arts_route_table_t **)arts_calloc(
+      route_place.tables, sizeof(arts_route_table_t *));
+  for (uint64_t i = 0; i < route_place.tables; i++) {
+    arts_node_info.route_table[i] = arts_route_table_new(windows, shift);
+  }
+}
+
+void arts_route_table_node_cleanup(void) {
+  for (uint64_t i = 0; i < route_place.tables; i++) {
+    arts_route_table_delete(arts_node_info.route_table[i]);
+  }
+  arts_free(arts_node_info.route_table);
+  arts_node_info.route_table = NULL;
+  memset(&route_place, 0, sizeof(route_place));
 }
 
 /* Bound on waiting for another thread's step.  The one step any route-table
@@ -1041,7 +1048,7 @@ arts_shared_ptr_t arts_route_table_lookup_edt(arts_guid_t guid) {
   return arts_route_table_lookup_typed(guid, ARTS_GUID_EDT);
 }
 
-void arts_reset_route_table_iterator(arts_route_table_iterator_t *iter,
+void arts_route_table_iterator_reset(arts_route_table_iterator_t *iter,
                                      arts_route_table_t *table) {
   iter->table = table;
   iter->index = 0;
@@ -1066,11 +1073,11 @@ arts_route_item_t *arts_route_table_iterate(arts_route_table_iterator_t *iter) {
   return NULL;
 }
 
-uint64_t arts_clean_up_route_table(arts_route_table_t *route_table,
-                                   bool (*keep)(arts_shared_ptr_t),
-                                   void (*detach)(arts_shared_ptr_t)) {
+uint64_t arts_route_table_sweep(arts_route_table_t *route_table,
+                                bool (*keep)(arts_shared_ptr_t),
+                                void (*detach)(arts_shared_ptr_t)) {
   arts_route_table_iterator_t iter;
-  arts_reset_route_table_iterator(&iter, route_table);
+  arts_route_table_iterator_reset(&iter, route_table);
 
   uint64_t kept = 0;
   arts_route_item_t *item = arts_route_table_iterate(&iter);
@@ -1120,7 +1127,7 @@ unsigned int arts_route_table_parked_count(arts_route_table_t *route_table) {
   return n;
 }
 
-void arts_delete_route_table(arts_route_table_t *route_table) {
+void arts_route_table_delete(arts_route_table_t *route_table) {
   while (route_table != NULL) {
     arts_route_table_t *next = route_table_next(route_table);
     uint64_t slots = (uint64_t)route_table->size * COLLISION_RESOLVES;
@@ -1136,16 +1143,11 @@ void arts_delete_route_table(arts_route_table_t *route_table) {
   }
 }
 
-uint64_t arts_clean_up_dbs(bool (*keep)(arts_shared_ptr_t),
-                           void (*detach)(arts_shared_ptr_t)) {
+uint64_t arts_route_table_node_sweep(bool (*keep)(arts_shared_ptr_t),
+                                     void (*detach)(arts_shared_ptr_t)) {
   uint64_t kept = 0;
-  for (unsigned int i = 0; i < arts_node_info.total_thread_count; i++) {
-    kept +=
-        arts_clean_up_route_table(arts_node_info.route_table[i], keep, detach);
-  }
-  for (int s = 0; s < ARTS_REMOTE_ROUTE_SHARDS; s++) {
-    kept += arts_clean_up_route_table(arts_node_info.remote_route_table[s],
-                                      keep, detach);
+  for (uint64_t i = 0; i < route_place.tables; i++) {
+    kept += arts_route_table_sweep(arts_node_info.route_table[i], keep, detach);
   }
   return kept;
 }

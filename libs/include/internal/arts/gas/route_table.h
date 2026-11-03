@@ -67,11 +67,6 @@ extern "C" {
  * — a request arriving mid-teardown resolves to a new reservation of the key,
  * which publishes only after the retire settles. */
 #define ARTS_ROUTE_KEY_RETIRING ((arts_guid_t)1)
-/* Number of independent shards for the remote_route_table: a power of 2, so
- * (key & (N-1)) is the shard selector and each shard holds
- * 2^(route_table_size - ARTS_REMOTE_ROUTE_SHARD_BITS) entries. */
-#define ARTS_REMOTE_ROUTE_SHARD_BITS 3
-#define ARTS_REMOTE_ROUTE_SHARDS (1 << ARTS_REMOTE_ROUTE_SHARD_BITS)
 
 /* Route_item: GUID slot.  Lives as long as its segment, which lives until
  * teardown.
@@ -185,9 +180,19 @@ typedef struct {
 arts_route_table_t *
 arts_route_table_new_root(const arts_route_segment_ops_t *ops,
                           unsigned int windows, unsigned int shift);
-/* arts_route_table_new_root with the global table's segments. */
-arts_route_table_t *arts_new_route_table(unsigned int route_table_size,
+/* arts_route_table_new_root with the CPU segment operations, the segments of
+ * a rank's route tables. */
+arts_route_table_t *arts_route_table_new(unsigned int windows,
                                          unsigned int shift);
+
+/* Builds this rank's route tables: arts_guid_table_count of them, each a root
+ * of `windows` (= 2^`shift`) windows, and the placement every key's table is
+ * computed from.  Once, after arts_guid_node_geometry_init and before any
+ * runtime thread exists or any message is taken in. */
+void arts_route_table_node_init(unsigned int windows, unsigned int shift);
+/* Frees every route table of this rank and clears the placement, once no
+ * thread can reach them. */
+void arts_route_table_node_cleanup(void);
 
 /* ---------------------------------------------------------------------------
  * cb-based item lifecycle API.
@@ -379,7 +384,7 @@ void arts_route_table_reserve_or_lookup(arts_guid_t key,
  * ends the process when another reservation of it is visible. */
 void arts_route_table_reserve_fresh(arts_guid_t key, arts_route_item_t **out);
 
-void arts_reset_route_table_iterator(arts_route_table_iterator_t *iter,
+void arts_route_table_iterator_reset(arts_route_table_iterator_t *iter,
                                      arts_route_table_t *table);
 arts_route_item_t *arts_route_table_iterate(arts_route_table_iterator_t *iter);
 
@@ -389,18 +394,18 @@ arts_route_item_t *arts_route_table_iterate(arts_route_table_iterator_t *iter);
  * (NULL: none) once, after its cb's tag is cleared and before the install's
  * count is dropped, so the object outlives the call.  Only meaningful once no
  * thread can reach the table. */
-uint64_t arts_clean_up_route_table(arts_route_table_t *route_table,
-                                   bool (*keep)(arts_shared_ptr_t),
-                                   void (*detach)(arts_shared_ptr_t));
+uint64_t arts_route_table_sweep(arts_route_table_t *route_table,
+                                bool (*keep)(arts_shared_ptr_t),
+                                void (*detach)(arts_shared_ptr_t));
 /* Payloads parked on the OoO lists of every slot of `route_table` (its whole
  * segment chain), read in place without consuming them.  Only meaningful once
  * no thread can push or drain. */
 unsigned int arts_route_table_parked_count(arts_route_table_t *route_table);
 /* Frees a chain no thread can reach any more, with its parked payloads. */
-void arts_delete_route_table(arts_route_table_t *route_table);
-/* arts_clean_up_route_table over every table of this rank. */
-uint64_t arts_clean_up_dbs(bool (*keep)(arts_shared_ptr_t),
-                           void (*detach)(arts_shared_ptr_t));
+void arts_route_table_delete(arts_route_table_t *route_table);
+/* arts_route_table_sweep over every route table of this rank. */
+uint64_t arts_route_table_node_sweep(bool (*keep)(arts_shared_ptr_t),
+                                     void (*detach)(arts_shared_ptr_t));
 
 #ifdef __cplusplus
 }

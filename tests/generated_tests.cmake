@@ -138,7 +138,10 @@ add_pure_unit_src(guid_encoding_roundtrip PASS_REGEX "PASS guid_encoding_roundtr
 add_pure_unit_src(guid_from_index_overflow PASS_REGEX "PASS guid_from_index_overflow" TIMEOUT 60)
 add_pure_unit_src(guid_reserve_range PASS_REGEX "PASS guid_reserve_range" TIMEOUT 60)
 add_pure_unit_src(guid_db_seq_alloc_stress PASS_REGEX "PASS guid_db_seq_alloc_stress" TIMEOUT 120)
-add_pure_unit_src(route_table_db_shard PASS_REGEX "PASS route_table_db_shard" TIMEOUT 60)
+# A key's table is a pure function of the key and the node-init geometry,
+# agreed on by every thread, entry point and rank id, with the reciprocal
+# divisions exact and a large single-source set spread over every table.
+add_pure_unit_src(route_table_placement PASS_REGEX "PASS route_table_placement" TIMEOUT 120)
 add_pure_unit_src(rank_u64_map_roundtrip SOURCES ${CMAKE_SOURCE_DIR}/libs/src/core/coherence/rank_u64_map.c PASS_REGEX "PASS rank_u64_map_roundtrip" TIMEOUT 60)
 add_pure_unit_src(rank_u64_map_advance SOURCES ${CMAKE_SOURCE_DIR}/libs/src/core/coherence/rank_u64_map.c PASS_REGEX "PASS rank_u64_map_advance" TIMEOUT 60)
 # An interface entry with no address (which getifaddrs may return) is skipped
@@ -556,16 +559,16 @@ foreach(_t route_fresh_path_taken route_fresh_path_taken_2n_9w_1p
 endforeach()
 
 # Every worker creates events of one reserved range, so their creates, the
-# satisfies racing them and their consumers' bindings reserve keys of one
-# chain at once; a tiny route_table_size makes that chain grow under the race
-# (and the scheduling fuzz, in an injection tree).
+# satisfies racing them and their consumers' bindings reserve keys of the same
+# chains at once; the smallest route_table_size makes those chains grow under
+# the race (and the scheduling fuzz, in an injection tree).
 add_arts_test(route_growth_labeled)
 register_single_node_test(route_growth_labeled TIMEOUT 120)
 register_multinode_test(route_growth_labeled TIMEOUT 180
                         VARIANTS 2n_9w_1p 2n_8w_2p)
 foreach(_t route_growth_labeled route_growth_labeled_2n_9w_1p
         route_growth_labeled_2n_8w_2p)
-    set_property(TEST ${_t} APPEND PROPERTY ENVIRONMENT "route_table_size=4")
+    set_property(TEST ${_t} APPEND PROPERTY ENVIRONMENT "route_table_size=1")
     if(ARTS_DEBUG_INJECTION)
         set_property(TEST ${_t} APPEND PROPERTY ENVIRONMENT
                      "ARTS_SCHED_FUZZ=20")

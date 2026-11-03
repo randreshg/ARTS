@@ -192,23 +192,10 @@ void arts_runtime_node_init(struct arts_config_s *config) {
           : NULL;
   arts_node_info.gpu_deque =
       (struct arts_deque_s **)arts_malloc(sizeof(struct arts_deque_s *) * tc);
-  arts_node_info.route_table =
-      (arts_route_table_t **)arts_calloc(tc, sizeof(arts_route_table_t *));
   arts_node_info.gpu_route_table =
       config->gpu ? (arts_route_table_t **)arts_calloc(
                         config->gpu, sizeof(arts_route_table_t *))
                   : NULL;
-  {
-    /* Config load keeps route_table_size above ARTS_REMOTE_ROUTE_SHARD_BITS,
-     * so every shard hashes with a shift of at least 1. */
-    unsigned int shard_shift =
-        config->route_table_size - ARTS_REMOTE_ROUTE_SHARD_BITS;
-    unsigned int shard_entries = 1U << shard_shift;
-    for (int s = 0; s < ARTS_REMOTE_ROUTE_SHARDS; s++) {
-      arts_node_info.remote_route_table[s] =
-          arts_new_route_table(shard_entries, shard_shift);
-    }
-  }
   arts_node_info.local_spin = (_Atomic(_Atomic(bool) *) *)arts_calloc(
       tc, sizeof(_Atomic(_Atomic(bool) *)));
   arts_node_info.thread_roles =
@@ -302,6 +289,10 @@ void arts_runtime_node_init(struct arts_config_s *config) {
   /* GUID generation */
   arts_node_info.keys = (uint64_t **)arts_calloc(tc, sizeof(uint64_t *));
   arts_guid_node_geometry_init();
+  /* Every route table exists before any thread can mint, park or take in a
+   * key that maps to it. */
+  arts_route_table_node_init(config->route_table_entries,
+                             config->route_table_size);
 
   /* Performance counters */
   arts_node_info.counter_folder = config->counter_folder;
@@ -410,7 +401,8 @@ void arts_runtime_global_cleanup() {
 #if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__) ||           \
     __has_feature(address_sanitizer) || __has_feature(thread_sanitizer)
   if (!tables_reachable) {
-    abandoned_edts = arts_clean_up_dbs(arts_edt_admitted, arts_db_sweep_detach);
+    abandoned_edts =
+        arts_route_table_node_sweep(arts_edt_admitted, arts_db_sweep_detach);
   }
 #endif
 
@@ -452,13 +444,7 @@ void arts_runtime_global_cleanup() {
   if (tables_reachable) {
     ARTS_WARN("route tables left unfreed: a thread never joined");
   } else if (abandoned_edts == 0) {
-    for (unsigned int i = 0; i < tc; i++) {
-      arts_delete_route_table(arts_node_info.route_table[i]);
-    }
-    arts_free(arts_node_info.route_table);
-    for (int s = 0; s < ARTS_REMOTE_ROUTE_SHARDS; s++) {
-      arts_delete_route_table(arts_node_info.remote_route_table[s]);
-    }
+    arts_route_table_node_cleanup();
   }
 
   /* Per-thread indexed arrays */
@@ -603,13 +589,6 @@ void arts_runtime_private_init(struct thread_mask_s *thread,
       (config->gpu && thread->role == ARTS_ROLE_WORKER)
           ? arts_deque_new(config->deque_size)
           : NULL;
-  /* Every thread owns a local route table at its own slot: any thread (workers
-   * AND progress threads — several progress threads run
-   * arts_handler_edt_create concurrently) mints GUIDs into a disjoint key
-   * partition keyed by thread->id, and arts_get_route_table resolves those
-   * local GUIDs to route_table[id]. */
-  arts_node_info.route_table[thread->id] = arts_new_route_table(
-      config->route_table_entries, config->route_table_size);
   if (thread->role == ARTS_ROLE_WORKER) {
 #ifdef ARTS_USE_GPU
     if (config->gpu) {

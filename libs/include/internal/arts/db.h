@@ -257,7 +257,7 @@ void arts_prep_dbs(struct arts_edt_s *edt, bool gpu);
 void arts_db_free(void *ptr);
 
 /* The teardown sweep's hand-off of each object it retires (the `detach` of
- * arts_clean_up_dbs): a coherent descriptor goes to its arm's rows
+ * arts_route_table_node_sweep): a coherent descriptor goes to its arm's rows
  * (arts_db_sweep_open_items); any other object is left as it is. */
 void arts_db_sweep_detach(arts_shared_ptr_t h);
 

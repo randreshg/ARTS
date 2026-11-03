@@ -168,26 +168,24 @@ static void pause_ms(long ms) {
 #define SHIFT 10u
 static arts_route_table_t *g_table;
 
-/* Node init of a one-thread rank: every DB GUID of this rank's slice lives in
- * route_table[0]. */
+/* Node init of a one-thread rank: every key lives in route_table[0], which
+ * each case replaces with a root of its own. */
 static void rt_init(void) {
   arts_thread_info.thread_id = 0;
   arts_node_info.total_thread_count = 1;
   arts_guid_node_geometry_init();
-  arts_node_info.route_table =
-      (arts_route_table_t **)calloc(1, sizeof(arts_route_table_t *));
-  for (int s = 0; s < ARTS_REMOTE_ROUTE_SHARDS; s++) {
-    arts_node_info.remote_route_table[s] = arts_new_route_table(64, 6);
-  }
+  arts_route_table_node_init(1u << SHIFT, SHIFT);
+  arts_route_table_delete(arts_node_info.route_table[0]);
+  arts_node_info.route_table[0] = NULL;
 }
 
 static void case_begin(void) {
-  g_table = arts_new_route_table(1u << SHIFT, SHIFT);
+  g_table = arts_route_table_new(1u << SHIFT, SHIFT);
   arts_node_info.route_table[0] = g_table;
 }
 
 static void case_end(void) {
-  arts_delete_route_table(g_table);
+  arts_route_table_delete(g_table);
   arts_node_info.route_table[0] = NULL;
 }
 
@@ -639,10 +637,7 @@ int main(void) {
   case_e();
   case_e2();
   case_f();
-  for (int s = 0; s < ARTS_REMOTE_ROUTE_SHARDS; s++) {
-    arts_delete_route_table(arts_node_info.remote_route_table[s]);
-  }
-  free(arts_node_info.route_table);
+  arts_route_table_node_cleanup();
   arts_guid_generator_cleanup();
   if (g_failed) {
     return 1;

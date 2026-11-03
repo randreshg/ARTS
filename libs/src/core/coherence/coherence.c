@@ -1236,17 +1236,6 @@ void arts_db_cache_common_destroy_pre(struct arts_db_cache_s *cache) {
  * the log level that compiles those messages: below DEBUG the whole check
  * is compiled out — its cost (a full route-table scan at teardown) never
  * lands in a measurement build. */
-#if ARTS_LOG_LEVEL >= 3
-/* The rank's route tables in one index space: one per thread, then the
- * remote shards. */
-static arts_route_table_t *quiescence_table(unsigned int t) {
-  return t < (unsigned int)arts_guid_table_count
-             ? arts_node_info.route_table[t]
-             : arts_node_info
-                   .remote_route_table[t - (unsigned int)arts_guid_table_count];
-}
-#endif
-
 #if ARTS_LOG_LEVEL >= 3 && defined(ARTS_PROTOCOL_EXCL)
 /* One axis row of the EXCL cache word: report `bad` always, or only after a
  * quiescent shutdown when `quiet_only`. */
@@ -1348,8 +1337,7 @@ void arts_db_debug_quiescence_check(void) {
   /* Homes a destroy marked that still wait for a declared request: legal at
    * any shutdown, printed so a campaign can watch it. */
   unsigned int marked_owed = 0;
-  const unsigned int nt =
-      (unsigned int)arts_guid_table_count + ARTS_REMOTE_ROUTE_SHARDS;
+  const unsigned int nt = (unsigned int)arts_guid_table_count;
   /* Whether this shutdown was quiescent, named by contributor so a log's
    * reader knows why a residue went unreported.  Every one is pending work
    * the shutdown left undone: runnable EDTs dropped from a deque, release
@@ -1371,19 +1359,12 @@ void arts_db_debug_quiescence_check(void) {
                                                memory_order_relaxed);
   unsigned int ab_ooo = 0;
   for (unsigned int t = 0; t < nt; t++) {
-    arts_route_table_t *table = quiescence_table(t);
-    if (table != NULL) {
-      ab_ooo += arts_route_table_parked_count(table);
-    }
+    ab_ooo += arts_route_table_parked_count(arts_node_info.route_table[t]);
   }
   unsigned int ab_admitted = 0;
   for (unsigned int t = 0; t < nt; t++) {
-    arts_route_table_t *table = quiescence_table(t);
-    if (table == NULL) {
-      continue;
-    }
     arts_route_table_iterator_t iter;
-    arts_reset_route_table_iterator(&iter, table);
+    arts_route_table_iterator_reset(&iter, arts_node_info.route_table[t]);
     for (arts_route_item_t *item = arts_route_table_iterate(&iter);
          item != NULL; item = arts_route_table_iterate(&iter)) {
       if (ARTS_GUID_GET_TYPE(atomic_load_explicit(
@@ -1399,12 +1380,8 @@ void arts_db_debug_quiescence_check(void) {
   }
   bool quiescent = (ab_queued | ab_waits | ab_ooo | ab_admitted) == 0u;
   for (unsigned int t = 0; t < nt; t++) {
-    arts_route_table_t *table = quiescence_table(t);
-    if (table == NULL) {
-      continue;
-    }
     arts_route_table_iterator_t iter;
-    arts_reset_route_table_iterator(&iter, table);
+    arts_route_table_iterator_reset(&iter, arts_node_info.route_table[t]);
     for (arts_route_item_t *item = arts_route_table_iterate(&iter);
          item != NULL; item = arts_route_table_iterate(&iter)) {
       if (ARTS_GUID_GET_TYPE(atomic_load_explicit(

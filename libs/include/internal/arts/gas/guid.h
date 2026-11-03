@@ -139,8 +139,7 @@ extern "C" {
  * one creating rank the slice is served by shared per-home counters from
  * which threads lease fixed-size chunks — cross-node agreement stays static
  * (zero wire traffic), intra-node agreement is rank-local atomics.  The seqs
- * of every seq space above @c nrank*budget are never minted and classify as
- * "no creator" on every rank.
+ * of every seq space above @c nrank*budget are never minted.
  */
 
 #define ARTS_GUID_DB_SEQ_BITS 38
@@ -167,15 +166,9 @@ extern "C" {
     << ARTS_GUID_DB_SZHINT_SHIFT) |                                            \
    ((uint64_t)(seq) & ARTS_GUID_DB_SEQ_MASK))
 
-/** Threads lease DB seqs in chunks of this many; the route-table shard for a
- *  self-created DB key is chunk-granular (@c (seq >> CHUNK_BITS) % tables),
- *  so install and lookup agree by pure arithmetic on the key. */
-#define ARTS_GUID_DB_CHUNK_BITS 14
-
 /** Width of one creating rank's slice of every home's seq space, 2^38 / N
  *  (written once by arts_guid_node_geometry_init, before the runtime threads
- *  are created; 0 until then, when every DB key classifies to the shared
- *  remote route table). */
+ *  are created). */
 extern uint64_t arts_db_seq_budget;
 
 /** Encode a byte size into the 10-bit szhint field (ceil — the decoded
@@ -218,17 +211,17 @@ arts_guid_t arts_guid_create_for_rank(unsigned int rank, unsigned int type);
 
 /* The GUID geometry, written once by arts_guid_node_geometry_init before the
  * runtime threads are created; every thread only reads it, after the thread
- * creation that publishes it.  arts_guid_table_count is one route table per
- * local thread.  This rank's flat keys are [arts_guid_flat_base,
- * arts_guid_flat_base + 2^48 / N), of which thread t mints from the block of
- * arts_guid_keys_per_thread keys at arts_guid_flat_base + t *
- * arts_guid_keys_per_thread; the blocks cover [arts_guid_flat_base,
- * arts_guid_flat_base + arts_guid_flat_span), and a key in the rest of the
- * slice is never minted. */
+ * creation that publishes it.  Each rank's flat keys are a slice of
+ * arts_guid_flat_slice = 2^48 / N keys, this rank's from arts_guid_flat_base.
+ * arts_guid_table_count is the rank's thread count (and the number of its
+ * route tables); thread t mints from the block of arts_guid_keys_per_thread
+ * keys at arts_guid_flat_base + t * arts_guid_keys_per_thread, and the last
+ * arts_guid_flat_slice mod arts_guid_table_count keys of a slice are never
+ * minted. */
 extern uint64_t arts_guid_table_count;
 extern uint64_t arts_guid_keys_per_thread;
 extern uint64_t arts_guid_flat_base;
-extern uint64_t arts_guid_flat_span;
+extern uint64_t arts_guid_flat_slice;
 
 /** Set the GUID geometry and open the DB seq counters, once, before the
  *  runtime threads are created.  Reads arts_global_rank_id,

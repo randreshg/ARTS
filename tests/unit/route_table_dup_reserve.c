@@ -101,12 +101,7 @@ static void rt_init(void) {
   arts_thread_info.thread_id = 0;
   arts_node_info.total_thread_count = 1;
   arts_guid_node_geometry_init();
-  arts_node_info.route_table =
-      (arts_route_table_t **)calloc(1, sizeof(arts_route_table_t *));
-  arts_node_info.route_table[0] = arts_new_route_table(1024, 10);
-  for (int s = 0; s < ARTS_REMOTE_ROUTE_SHARDS; s++) {
-    arts_node_info.remote_route_table[s] = arts_new_route_table(64, 6);
-  }
+  arts_route_table_node_init(1024, 10);
 }
 
 
