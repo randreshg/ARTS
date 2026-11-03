@@ -1078,11 +1078,8 @@ void arts_handler_db_publish_ack(const struct arts_db_publish_ack_args_s *a) {
 
 #if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
 void arts_db_release_ro(struct arts_db_cache_s *cache) {
-  /* RO release is a no-op for VAL: the EDT's buf ref is dropped
-   * by release_one_dep's DIST branch via release_buf (matching the
-   * acquire_buf in the slot resolver / acquire_local).
-   * EXCL defines its own arts_db_release_ro in coherence/excl/purge.c and
-   * coherence/excl/retain.c. */
+  /* A VAL or INV read hold is the EDT's buffer ref alone, which the caller
+   * drops: no protocol state counts readers. */
   (void)cache;
 }
 #endif /* arms whose RO release drops nothing but the EDT's own ref */

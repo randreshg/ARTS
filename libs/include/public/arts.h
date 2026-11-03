@@ -295,8 +295,8 @@ typedef struct {
  *  ignores them; downstream code may already pass slice info that will
  *  become live in a follow-up patch. */
 typedef struct {
-  /** Target node rank.  ARTS_HINT_CURRENT_RANK | ARTS_HINT_ROUND_ROBIN |
-   *  specific rank.  Default ARTS_HINT_CURRENT_RANK. */
+  /** Target node rank.  ARTS_HINT_CURRENT_RANK | specific rank.  Default
+   *  ARTS_HINT_CURRENT_RANK. */
   unsigned int rank;
   /** Reserved for future fine-grained slice access.  Default 0. */
   uint64_t access_offset;
@@ -663,7 +663,7 @@ int64_t arts_guid_index_from(arts_guid_t range_guid, arts_guid_t guid);
  * @param paramv   Array of @p paramc uint64_t values copied into the closure.
  * @param depc     Number of dependency slots.
  * @param hint     Advisory metadata (rank, guid, group, completion_event).
- *                 NULL = defaults.
+ *                 NULL = no preference, as above.
  * @return GUID of the EDT (== hint->guid when pre-reserved), whether the
  *         create installed at once or parked behind the GUID's live EDT;
  *         NULL_GUID if the EDT could not be built.
@@ -733,8 +733,8 @@ void arts_edt_set_result(arts_guid_t result_guid);
  * destroy is the one genuinely unsafe interleaving.  In practice the safe
  * pattern is to cancel a just-created EDT before wiring any dependence into it.
  *
- * EDTs are not auto-destroyed on completion; this explicit cancel path is
- * rarely needed.
+ * A completed EDT needs no destroy: its completion retires its GUID, and a
+ * destroy that reaches the home after that waits for the GUID's next install.
  *
  * @param guid GUID of the EDT to cancel.
  */
@@ -936,10 +936,11 @@ static inline void *arts_db_create_with_guid(arts_guid_t guid, uint64_t len,
 /**
  * @brief Release the calling EDT's access to a DataBlock before it returns.
  *
- * When an EDT creates a local DB, the runtime automatically holds WRITE
- * access (OCR RW semantics); a dependence slot holds the access its mode
- * names.  Call this to release that access early — before the EDT function
- * returns — so that consumer EDTs waiting on the DB can proceed.
+ * When an EDT creates a DB without ARTS_DB_PROP_NO_ACQUIRE, the runtime
+ * automatically holds WRITE access (OCR RW semantics), wherever the block is
+ * homed; a dependence slot holds the access its mode names.  Call this to
+ * release that access early — before the EDT function returns — so that
+ * consumer EDTs waiting on the DB can proceed.
  *
  * This is required when the EDT, in its body, hands a DB it holds onward, or
  * starts work that leads to the DB's destroyer: a destroy is ordered after

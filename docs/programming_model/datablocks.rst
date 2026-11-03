@@ -123,7 +123,8 @@ Creating a DataBlock
 
 .. code-block:: c
 
-   /* Create a 1024-byte ARTS_DB on this node.  The creator auto-acquires
+   /* Create a 1024-byte ARTS_DB.  A NULL hint leaves its home to
+      ARTS_NOHINT_DB_HOME (this node by default).  The creator auto-acquires
       RW access; *addr points at the writable payload. */
    void *addr;
    arts_guid_t db_guid =

@@ -372,8 +372,9 @@ void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload);
  * TU beside arts_db_release_rw. */
 void arts_db_release_created(struct arts_db_cache_s *cache);
 
-/* Release a RO acquire — currently a no-op (no held ref to drop) but kept as
- * a separate symbol for symmetry and future cutover. */
+/* Release a RO acquire taken as a DEPENDENCE.  An arm whose read hold keeps
+ * protocol state (EXCL's read count) drops it here; on the others it does
+ * nothing.  The EDT's buffer ref is the caller's to drop. */
 void arts_db_release_ro(struct arts_db_cache_s *cache);
 
 /* ===== Shared coherence services (defined in coherence.c) ============

@@ -48,13 +48,15 @@ Creating an EDT
        my_edt,                /* function pointer      */
        paramc, paramv,        /* static params         */
        depc,                  /* dependency count      */
-       &h                     /* hint (NULL = defaults) */
+       &h                     /* hint (NULL = no preference) */
    );
 
 The returned GUID identifies the EDT.  The ``hint`` parameter carries
-all optional creation features in :c:type:`arts_edt_hint_t`: pass
-``NULL`` for the defaults (current node, auto-allocated GUID, inherit
-the creator's current group), or set ``.rank`` to place the EDT on another
+all optional creation features in :c:type:`arts_edt_hint_t`.  Pass
+``NULL`` for no preference: the build's no-hint placement policy
+(``ARTS_NOHINT_EDT_PLACEMENT``: round-robin by default, or the creating
+node) picks the node, the GUID is auto-allocated, and the EDT inherits
+the creator's current group.  Set ``.rank`` to place the EDT on a given
 node.  If ``depc > 0``, the EDT will not run until all slots are
 signaled.
 
@@ -97,7 +99,9 @@ Creation Hint Fields
 :c:func:`arts_edt_create` is the single entry point; optional features ride
 in :c:type:`arts_edt_hint_t`:
 
-- ``rank`` — home node (``ARTS_HINT_CURRENT_RANK`` = current node).
+- ``rank`` — home node (``ARTS_HINT_CURRENT_RANK`` = current node,
+  ``ARTS_HINT_ANY_RANK`` = the no-hint placement policy, as a ``NULL``
+  hint).
 - ``guid`` — create at a pre-reserved GUID (``NULL_GUID`` =
   auto-allocate; when set, the GUID's rank overrides ``rank``).  A
   create of a GUID whose EDT is live waits, parked at the home, until

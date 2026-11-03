@@ -212,9 +212,10 @@ bool arts_regpool_unregister(void);
  * NUMA placement is a preference throughout: a request is never refused for
  * want of memory on one node.  The returned pointer is guaranteed to resolve
  * through arts_regpool_lookup; a pointer that escaped the registered slabs is
- * a fatal error.  Not callable from a thread-exit destructor: once the
- * allocator's own exit hook has run, the thread's heaps cannot serve; after
- * the pool's own, the call is refused as a fatal error. */
+ * a fatal error.  Not callable from a thread-exit destructor: between the
+ * allocator's own exit hook and the pool's the call may abort the run through
+ * the allocator error report, and after the pool's it is refused as a fatal
+ * error. */
 void *arts_regpool_alloc_aligned(size_t size, size_t align);
 
 /* Return a pointer previously obtained from arts_regpool_alloc_aligned.  The

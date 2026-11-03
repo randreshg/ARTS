@@ -298,7 +298,7 @@ runs — so no request of it is ever covered.
 VAL — versioned snapshots, externally ordered updates
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-*Status:* implemented (``libs/src/core/coherence/val/`` — ``directory.c`` +
+*Status:* implemented (``libs/src/core/coherence/val/`` — ``arbiters.c`` +
 ``wt.c`` + ``wb.c``, plus the shared grant plane ``coherence/grant.c``);
 selected by ``-DARTS_COHERENCE_PROTOCOL=VAL``, write policy by
 ``ARTS_WRITE_POLICY={WT,WB}`` (default ``WB``).
@@ -351,10 +351,11 @@ flights).
 INV — write-invalidate, durable reader copies (default)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-*Status:* implemented (``libs/src/core/coherence/inv/`` — ``directory.c`` +
-``engine.c`` + ``wt.c`` + ``wb.c``, plus the shared grant plane
-``coherence/grant.c``); selected by ``-DARTS_COHERENCE_PROTOCOL=INV`` (the
-default), write policy by ``ARTS_WRITE_POLICY={WT,WB}`` (default ``WB``).
+*Status:* implemented (``libs/src/core/coherence/inv/`` — ``arbiters.c`` +
+``directory.c`` + ``engine.c`` + ``wt.c`` + ``wb.c``, plus the shared grant
+plane ``coherence/grant.c``); selected by
+``-DARTS_COHERENCE_PROTOCOL=INV`` (the default), write policy by
+``ARTS_WRITE_POLICY={WT,WB}`` (default ``WB``).
 
 The mirror of VAL on the validity-agent axis: the *writer* keeps reader
 copies valid. A reader's copy is durable — holding the copy is the

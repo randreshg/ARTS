@@ -897,8 +897,10 @@ static bool regpool_mr_close(struct fid_mr *mr) {
  * false.
  *
  * Runs WITHOUT g_lock — it is tens of milliseconds of syscalls per slab, and
- * no allocation, free or grow may queue behind it — so everything it reads
- * is either immutable for the pool's lifetime or atomic. */
+ * no allocation or free that needs no grow may queue behind it — so
+ * everything it reads is either immutable for the pool's lifetime or atomic.
+ * When it maps a node's grow, a second grow of that node waits for it on
+ * g_grow_cv, and so does a second kernel-placed grow when it maps one. */
 static bool regpool_map_slab(int node, uint64_t set, size_t len, size_t align,
                              void **out_base, struct fid_mr **out_mr,
                              uint64_t *out_rkey) {
@@ -1774,8 +1776,10 @@ typedef enum {
 /* Bind *out to the calling thread's heap for `arena` via the per-thread heap
  * cache: the arena's cached heap, created on first use.  See the cache's
  * comment for why heaps are never deleted mid-run.  The heap's part for this
- * thread is made here, inside the error report's window, and a binding names
- * only a heap whose part exists, so no allocation ever makes one. */
+ * thread is made here, inside the error report's window.  While the thread has
+ * not begun exiting a binding names only a heap whose part exists, so no
+ * allocation makes one; the allocator's exit hook destroys every part a
+ * binding names. */
 static regpool_bind_t regpool_thread_bind(mi_arena_id_t arena,
                                           regpool_binding_t *out) {
   mi_heap_t *h = NULL;
@@ -2037,8 +2041,8 @@ static pthread_key_t g_classes_key;
 static regpool_classes_t g_classes_gone;
 
 /* Runs on the exiting thread, after the hooks of keys made before the pool's,
- * the allocator's own among them: past it the thread's heaps cannot serve, so
- * an allocation a later hook makes is refused by name. */
+ * the allocator's own among them.  The table is freed here, so an allocation
+ * a later hook makes is refused by name rather than reading it. */
 static void regpool_classes_free(void *t) {
   t_classes = &g_classes_gone;
   arts_free(t);
