@@ -623,15 +623,26 @@ hand-back and do not overlap: their sum is every hand-back, and
    rank that never reached its teardown —
    ``[REGPOOL] node <n>:`` per NUMA node (carve state, arena count, mapped
    MiB, grow count, the milliseconds its grows spent mapping and the number
-   and milliseconds of waits — a grow attempt that found the node's grow
-   already in flight, or the process-wide turn of a kernel-placed grow — the
-   cost an exhausted node charges the threads that reach it behind the
-   mapping of its next slab or another node's kernel-placed one — and
-   ``spills``, the allocations of its threads that the exhaustion cascade
-   served from another node's arena because the node could not grow, and
-   ``cascades``, the allocations of its threads that left the fast path for
-   that cascade), ``[REGPOOL] direct:`` for the
-   oversize mappings (live, retired, free table slots),
+   and milliseconds of waits — grow attempts that slept on the node's grow
+   in flight, or on the process-wide turn of a kernel-placed grow: a thread
+   that finds the node's grow in flight populates part of its slab, and
+   sleeps only while no part is open (the grower sizing, waiting for the
+   kernel-placed turn or reserving, or a failed round's finisher reserving
+   the next), once every part is claimed, for the parts in flight and the
+   registration, or, on a kernel-placed slab, which carries no placement
+   policy and so is populated only by its grower and the node's own
+   threads, as any other thread — ``spills``, the allocations of its threads
+   that the exhaustion cascade served from another node's arena because the
+   node could not grow, ``cascades``, the allocations of its threads that
+   left the fast path for that cascade, ``sleeps``, the times those attempts
+   fell asleep, ``helpers``, the grow attempts that populated part of a slab
+   another thread's grow reserved, ``help_chunks``, the 2 MiB parts they
+   populated, ``chunks``, every part populated for the node's slabs,
+   ``declines``, the grows that read the node full and mapped nothing, and
+   ``decline_reuses``, the asks that took such a reading instead of reading
+   the node again: one made at the same table length, during a cascade
+   that such a grow ended in), ``[REGPOOL] direct:`` for the oversize
+   mappings (live, retired, free table slots),
    ``[REGPOOL] direct placement:`` (how many of them, and how many MiB, are
    ``interleaved`` across the rank's node set,
    landed on a single ``node<k>``, or were left ``unplaced`` for the kernel

@@ -130,6 +130,8 @@ set(ARTS_REFERENCE_TREE_PROGRAMS
     regpool_direct_oversize
     regpool_theap_no_room
     regpool_room_per_thread
+    regpool_grow_helpers
+    regpool_decline_record
     rdzv_payload_flood
 )
 
@@ -1192,7 +1194,7 @@ set(_regpool_sim_wrap -Wl,--wrap=sched_getcpu,--wrap=syscall,--wrap=fopen)
 set(_regpool_sim_tests regpool_basic regpool_lazy_carve
     regpool_ladder regpool_fallback_order regpool_spill_cycle
     regpool_spill_target regpool_direct_oversize regpool_theap_no_room
-    regpool_room_per_thread)
+    regpool_room_per_thread regpool_grow_helpers regpool_decline_record)
 if(ARTS_DEBUG_INJECTION)
     list(APPEND _regpool_sim_tests ${ARTS_REGPOOL_INJECTION_TESTS})
 endif()
@@ -1202,6 +1204,10 @@ endforeach()
 if(ARTS_DEBUG_INJECTION)
     target_link_options(regpool_evict_wait PRIVATE -Wl,--wrap=munmap)
 endif()
+# regpool_grow_helpers holds a grow's reservation and population calls,
+# fails one, and counts the pool's sleeps and the ranges it gives up.
+target_link_options(regpool_grow_helpers PRIVATE
+    -Wl,--wrap=madvise,--wrap=mprotect,--wrap=munmap,--wrap=pthread_cond_wait)
 
 # The pool tests below assert the arena/slab machinery and the confinement
 # invariant (every returned pointer resolves through arts_regpool_lookup to a
@@ -1260,6 +1266,17 @@ if(ARTS_MALLOC STREQUAL "mimalloc")
     register_pure_unit_test(regpool_room_per_thread TIMEOUT 60)
     set_tests_properties(regpool_room_per_thread PROPERTIES
         PASS_REGULAR_EXPRESSION "PASS regpool_room_per_thread")
+    # Threads that find a grow in flight populate its slab's chunks, none
+    # sleeps while a chunk is unclaimed, a failed chunk steps the grow down,
+    # and a thread of another node does not populate a kernel-placed slab.
+    register_pure_unit_test(regpool_grow_helpers TIMEOUT 60)
+    set_tests_properties(regpool_grow_helpers PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS regpool_grow_helpers")
+    # A full node is read once per cascade: an ask waiting on the declining
+    # grow takes its reading, and memory given back clears it.
+    register_pure_unit_test(regpool_decline_record TIMEOUT 60)
+    set_tests_properties(regpool_decline_record PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS regpool_decline_record")
     # The allocator serves or refuses two requests of one class alike.  It
     # links the allocator directly, with neither the pool nor the runtime.
     add_executable(regpool_request_classes unit/regpool_request_classes.c)
@@ -1310,7 +1327,8 @@ if(ARTS_MALLOC STREQUAL "mimalloc")
     set(_regpool_numa_tests regpool_basic regpool_lazy_carve
         regpool_ladder regpool_fallback_order regpool_spill_cycle
         regpool_spill_target regpool_direct_oversize regpool_theap_no_room
-        regpool_room_per_thread ${_allocator_error_tests})
+        regpool_room_per_thread regpool_grow_helpers regpool_decline_record
+        ${_allocator_error_tests})
     if(ARTS_DEBUG_INJECTION)
         # Eviction of retired mappings and the unplaced fallback behind it,
         # driven by the force-full override on one node and on two.

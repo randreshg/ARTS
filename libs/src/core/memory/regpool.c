@@ -94,7 +94,8 @@
 
 #include "arts/memory/regpool_entry.h"
 #include "arts/utils/stdatomic_compat.h"
-#include <errno.h> /* mmap failure diagnostics */
+#include <errno.h>  /* mmap failure diagnostics */
+#include <limits.h> /* UINT_MAX: the grow-end count wraps */
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -194,6 +195,15 @@ _Static_assert(REGPOOL_BASE_ALIGN == (size_t)1
  * pool-state dump on an exhausted allocation. */
 #define REGPOOL_SLAB_GRANULE ((size_t)32 * 1024 * 1024)
 #define REGPOOL_SLAB_CAP ((size_t)16 * 1024 * 1024 * 1024)
+/* The part of a grow's slab one thread populates at a time (see
+ * regpool_grow_node).  A thread that finds every part of a slab claimed
+ * waits for at most one part in flight per populating thread, and the
+ * registration. */
+#define REGPOOL_POPULATE_CHUNK REGPOOL_BASE_ALIGN
+_Static_assert(REGPOOL_SLAB_GRANULE % REGPOOL_POPULATE_CHUNK == 0 &&
+                   REGPOOL_SLAB_CAP / REGPOOL_POPULATE_CHUNK <= UINT32_MAX,
+               "a slab must be a whole number of population chunks, counted "
+               "in 32 bits");
 /* Arena-table slots the floor's sizing assumes the general-purpose heap
  * takes from the same table.  Nothing holds them back: the pool may take
  * them, and its arena growth ends where the table refuses (or where the
@@ -268,12 +278,12 @@ typedef struct regpool_slab_s {
 
 /* --- module state (guarded by g_lock except where marked atomic) --------- */
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
-/* Waited on by a thread that wants a node grown while another thread is
- * already mapping a slab for that node, that wants the process-wide turn of
+/* Waited on by a thread that finds its node's grow in flight with no part
+ * of the slab left for it to populate, that wants the process-wide turn of
  * a kernel-placed grow while another holds it, or that waits for retired
- * mappings another thread is tearing down; broadcast when a grow ends
- * (which is also where the arena-table latch is set) and when the last
- * teardown in flight ends. */
+ * mappings another thread is tearing down; broadcast when a grow opens a
+ * round of population, when a grow ends (which is also where the
+ * arena-table latch is set) and when the last teardown in flight ends. */
 static pthread_cond_t g_grow_cv = PTHREAD_COND_INITIALIZER;
 static bool g_inited;
 /* g_domain, g_ep, g_slab_bytes and g_numa_nodes are read WITHOUT g_lock by
@@ -357,16 +367,23 @@ static _Atomic(mi_arena_id_t) g_node_arena[REGPOOL_MAX_NODES];
 /* Per-node grow count, for the report (guarded by g_lock). */
 static unsigned g_node_grow_count[REGPOOL_MAX_NODES];
 
-/* Time a node's grows spent mapping (outside the lock, summed over grows)
- * and time threads spent waiting (inside the lock, summed over waits) — for
- * a grow already in flight on their node, or for the process-wide turn of a
- * kernel-placed grow — for the report.  A wait is what an allocation costs
- * when it lands on an exhausted node behind the thread that is mapping its
- * next slab, or behind another node's kernel-placed grow.  Guarded by
- * g_lock. */
+/* For the report, guarded by g_lock: the time a node's grows spent mapping
+ * (summed over grows); the grow attempts that slept on the node's grow in
+ * flight or on the process-wide turn of a kernel-placed grow, the times
+ * they fell asleep and the time they slept; the attempts that populated
+ * part of a slab another thread's grow reserved, the chunks they populated,
+ * and every chunk populated for the node; the grows that read the node full
+ * and mapped nothing, and the asks that took such a reading instead of
+ * reading the node again (g_node_declined). */
 static uint64_t g_node_grow_ns[REGPOOL_MAX_NODES];
 static uint64_t g_node_wait_ns[REGPOOL_MAX_NODES];
 static unsigned g_node_wait_count[REGPOOL_MAX_NODES];
+static unsigned g_node_sleeps[REGPOOL_MAX_NODES];
+static unsigned g_node_helpers[REGPOOL_MAX_NODES];
+static unsigned g_node_help_chunks[REGPOOL_MAX_NODES];
+static unsigned g_node_chunks[REGPOOL_MAX_NODES];
+static unsigned g_node_declines[REGPOOL_MAX_NODES];
+static unsigned g_node_decline_reuses[REGPOOL_MAX_NODES];
 
 static uint64_t regpool_now_ns(void) {
   struct timespec ts;
@@ -401,9 +418,44 @@ static _Atomic(unsigned) g_node_cascades[REGPOOL_MAX_NODES];
 static _Atomic(uint8_t) g_node_state[REGPOOL_MAX_NODES];
 
 /* A grow in flight for this node (guarded by g_lock).  One at a time per
- * node: the mapping runs outside the lock, so the flag plus g_grow_cv is
- * what keeps a herd of threads from mapping a slab each. */
+ * node: the mapping runs outside the lock, so the flag is what keeps a herd
+ * of threads from mapping a slab each; the herd populates the one slab
+ * instead (see regpool_grow_node). */
 static bool g_node_growing[REGPOOL_MAX_NODES];
+
+/* Grows of this node that have ended (guarded by g_lock): a grower knows its
+ * own grow ended once the count moves past the value it read at the start. */
+static unsigned g_node_grow_ends[REGPOOL_MAX_NODES];
+
+/* Grows of every node that have ended (guarded by g_lock): the sequence a
+ * decline record and a cascade's asks are compared by. */
+static unsigned g_grows_ended;
+
+/* One more than the table length at which a grow last read this node full
+ * and mapped nothing, or 0, and that grow's end in g_grows_ended (guarded by
+ * g_lock).  An own or peer ask made against that same length takes the
+ * reading instead of reading the node and the machine again only when the
+ * grow ended after its cascade's first ask (regpool_cascade_t), so a
+ * cascade that begins after a declining grow ended reads the node again and
+ * memory freed meanwhile is seen at most one cascade later.  The table
+ * length only grows, so a reading of a length it has left is never
+ * taken.  Mapping a slab for the node clears the record, and so do
+ * giving retired mappings' memory back and changing the injected
+ * exhaustion, either of which may let the node fit at the same length. */
+static size_t g_node_declined[REGPOOL_MAX_NODES];
+static unsigned g_node_declined_end[REGPOOL_MAX_NODES];
+
+/* Times the records above were cleared (guarded by g_lock).  A grow records
+ * its reading only when no clear came after it began reading, so a reading
+ * that predates memory coming back is never recorded. */
+static unsigned g_declines_cleared;
+
+/* Caller holds g_lock. */
+static void regpool_declines_clear_locked(void) {
+  for (unsigned i = 0; i < REGPOOL_MAX_NODES; i++)
+    g_node_declined[i] = 0;
+  g_declines_cleared++;
+}
 
 /* A kernel-placed grow in flight in this process (guarded by g_lock).  Such
  * a slab is sized against the whole machine's availability, which concurrent
@@ -442,6 +494,7 @@ static _Atomic(uint64_t) g_forced_full;
 /* Publish a force-full mask.  Caller holds g_lock. */
 static void regpool_store_forced_full_locked(uint64_t mask) {
   atomic_store_explicit(&g_forced_full, mask, memory_order_relaxed);
+  regpool_declines_clear_locked();
 }
 #endif
 
@@ -824,9 +877,18 @@ static size_t regpool_node_avail_bytes(int node) {
   return r;
 }
 
-/* Fault every page of a fresh anonymous mapping whose placement policy is
- * already set.  False means the range could not be made resident and the
- * caller must give the mapping up.
+/* Fault every page of `len` bytes of a fresh anonymous mapping whose
+ * placement policy is already set.  False means the range could not be made
+ * resident and the caller must give the mapping up.
+ *
+ * Every slab is populated in full before it is registered or handed to the
+ * allocator, so its residency is decided when it is made and the pool's
+ * resident set is its mapped capacity on every transport: a registration
+ * pins, and so faults, every page anyway, and without population an
+ * unregistered run's resident set would depend on first touch.  An
+ * interruption (EINTR, EAGAIN) is retried over the same range, whose
+ * populated pages are cheap no-ops; any other failure fails it, since a
+ * partly populated slab would fault its tail later.
  *
  * Without the advice a write per page populates and places the range
  * identically, from this thread alone and with no effect on any other CPU,
@@ -886,24 +948,19 @@ static bool regpool_mr_close(struct fid_mr *mr) {
   return true;
 }
 
-/* Map `len` bytes aligned to `align`, apply the NUMA placement preference
- * (`set` non-empty interleaves over it, else `node` is preferred — see
- * regpool_place), populate, and (when a domain is set) register.  Reserves
- * `len + align` of address space with no access and no commit charge, trims
- * it to the aligned `len` whatever the kernel hands back, and only then makes
- * that range writable; that range is commit-charged only under strict
- * overcommit, and the slab sizing, not the map, keeps it within memory.  On
- * success fills *out_* and returns true; on any failure unwinds and returns
- * false.
+/* Reserve `len` bytes aligned to `align` and set the NUMA placement
+ * preference on them (`set` non-empty interleaves over it, else `node` is
+ * preferred — see regpool_place).  Reserves `len + align` of address space
+ * with no access and no commit charge, trims it to the aligned `len`
+ * whatever the kernel hands back, and only then makes that range writable;
+ * that range is commit-charged only under strict overcommit, and the slab
+ * sizing, not the map, keeps it within memory.  No page of the range is
+ * resident on return.  On failure unwinds and returns false.
  *
- * Runs WITHOUT g_lock — it is tens of milliseconds of syscalls per slab, and
- * no allocation or free that needs no grow may queue behind it — so
- * everything it reads is either immutable for the pool's lifetime or atomic.
- * When it maps a node's grow, a second grow of that node waits for it on
- * g_grow_cv, and so does a second kernel-placed grow when it maps one. */
-static bool regpool_map_slab(int node, uint64_t set, size_t len, size_t align,
-                             void **out_base, struct fid_mr **out_mr,
-                             uint64_t *out_rkey) {
+ * Runs without g_lock, so everything it reads is either immutable for the
+ * pool's lifetime or atomic; so do regpool_populate and regpool_register. */
+static bool regpool_reserve(int node, uint64_t set, size_t len, size_t align,
+                            void **out_base) {
   size_t over = len + align;
   void *raw = mmap(NULL, over, PROT_NONE,
                    MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
@@ -928,28 +985,20 @@ static bool regpool_map_slab(int node, uint64_t set, size_t len, size_t align,
     return false;
   }
 
-  /* Must run before fi_mr_reg() (which faults every page while pinning) or
-   * any allocator first-touch — a policy set after pages are already
-   * resident affects only future faults and silently fails to relocate this
-   * range. */
+  /* Before any population, registration (which faults every page while
+   * pinning) or allocator first touch: a policy set after a page is resident
+   * governs only later faults and silently fails to relocate this range. */
   regpool_place(base, len, node, set);
+  *out_base = base;
+  return true;
+}
 
-  /* Populate every page NOW, so that a slab's residency is decided at
-   * creation and the pool's resident set is its mapped capacity on every
-   * transport.  A registration pins — and therefore faults — every page
-   * anyway; without population an unregistered run's resident set would
-   * depend on first touch and would no longer predict a registered run's.
-   * The population's RESULT must be honored: it can stop early on a signal
-   * (EINTR/EAGAIN) or fail outright (EFAULT and kin), and a partially
-   * populated slab would fault its tail later.  Interruptions are retried
-   * over the whole range (populated pages are cheap no-ops); a real failure
-   * fails the map so the caller can step down or relocate.  The cost is
-   * that a slab commits in full at creation. */
-  if (!regpool_populate(base, len)) {
-    munmap(base, len);
-    return false;
-  }
-
+/* Register a populated range when a domain is set (a NULL domain registers
+ * nothing: *out_mr NULL, *out_rkey 0).  On failure the range is given up:
+ * unmapped, or left mapped and forgotten until the process exit when a
+ * registration made for it does not close. */
+static bool regpool_register(void *base, size_t len, struct fid_mr **out_mr,
+                             uint64_t *out_rkey) {
   struct fid_mr *mr = NULL;
   uint64_t rkey = 0;
   struct fid_domain *domain = g_domain;
@@ -961,7 +1010,7 @@ static bool regpool_map_slab(int node, uint64_t set, size_t len, size_t align,
                        FI_SEND | FI_RECV | FI_READ | FI_WRITE | FI_REMOTE_WRITE,
                        0, requested_key, 0, &mr, NULL);
     if (rc != 0) {
-      /* Distinguishable from the mmap failure above: the mapping existed but
+      /* Distinguishable from a reservation failure: the mapping existed but
        * the fabric refused to pin it — on providers that lock pages this is
        * typically the locked-memory limit (RLIMIT_MEMLOCK), not RAM. */
       ARTS_WARN("regpool: fi_mr_reg(%zu MiB) failed: %s", len >> 20,
@@ -992,10 +1041,27 @@ static bool regpool_map_slab(int node, uint64_t set, size_t len, size_t align,
                  "the key-after-enable contract");
     }
   }
-
-  *out_base = base;
   *out_mr = mr;
   *out_rkey = rkey;
+  return true;
+}
+
+/* Reserve, populate and register one range on the calling thread alone:
+ * an oversize mapping, which no other thread waits on.  On success fills
+ * *out_* and returns true; on any failure unwinds and returns false. */
+static bool regpool_map_slab(int node, uint64_t set, size_t len, size_t align,
+                             void **out_base, struct fid_mr **out_mr,
+                             uint64_t *out_rkey) {
+  void *base = NULL;
+  if (!regpool_reserve(node, set, len, align, &base))
+    return false;
+  if (!regpool_populate(base, len)) {
+    munmap(base, len);
+    return false;
+  }
+  if (!regpool_register(base, len, out_mr, out_rkey))
+    return false;
+  *out_base = base;
   return true;
 }
 
@@ -1117,6 +1183,8 @@ static size_t regpool_evict_retired_locked(size_t need) {
     }
     atomic_store_explicit(&g_slab_word[i], 0, memory_order_release);
   }
+  if (freed != 0)
+    regpool_declines_clear_locked();
   return freed;
 }
 
@@ -1147,11 +1215,14 @@ static size_t regpool_evict_retired(size_t need) {
     pthread_mutex_unlock(&g_lock);
     /* As in the locked form: a range whose registration does not close stays
      * mapped, forgotten by the table. */
-    if (regpool_mr_close(mr)) {
+    bool gave = regpool_mr_close(mr);
+    if (gave) {
       munmap(base, len);
       freed += len;
     }
     pthread_mutex_lock(&g_lock);
+    if (gave)
+      regpool_declines_clear_locked();
     if (--g_evicting == 0)
       pthread_cond_broadcast(&g_grow_cv);
   }
@@ -1186,8 +1257,8 @@ static size_t regpool_mem_available(void) {
 
 /* One step down the ladder: half the size, carried back onto the granule and
  * never below the configured base slab.  Every candidate size stays a
- * granule multiple, which regpool_map_slab's tail trim and the allocator's
- * slice geometry both rely on. */
+ * granule multiple, which regpool_reserve's tail trim, a grow's population
+ * chunks and the allocator's slice geometry all rely on. */
 static size_t regpool_step_down(size_t want, size_t floor_bytes) {
   size_t half = (want / 2) & ~(REGPOOL_SLAB_GRANULE - 1);
   return half < floor_bytes ? floor_bytes : half;
@@ -1255,10 +1326,327 @@ typedef enum {
   /* Another node's threads, asked in its stead: nothing. */
   REGPOOL_GROW_PEER,
   /* The node's own threads once every other node declined: a slab the
-   * kernel places, sized by the node's own rung and populated by its own
-   * thread, so its pages follow that node's fallback order. */
+   * kernel places, sized by the node's own rung.  It carries no placement
+   * policy and only the node's own threads populate it, so its pages follow
+   * that node's fallback order. */
   REGPOOL_GROW_LAST,
 } regpool_grow_mode_t;
+
+/* A node's grow in flight: what its grower decided, and the round of
+ * population open now.  A round is one reserved range whose placement is
+ * set; every thread that finds the grow in flight claims chunks of it and
+ * populates them, and the thread whose chunk ends the round registers the
+ * range, hands it to the allocator and publishes it, or gives the range up
+ * and opens the next round a step down, or ends the grow.  The plain fields
+ * are written by the grower before its first round opens and under g_lock at
+ * each open, and read under g_lock or by the round's finisher, which joined
+ * the round under g_lock like every claimer; only that finisher's next open
+ * or the grow's end comes before a rewrite. */
+typedef struct {
+  regpool_grow_mode_t mode;
+  int placed;        /* node the slab is placed on, or -1: the kernel's */
+  bool fits_node;    /* the node's free pages could take the slab */
+  bool superseded;   /* a kernel-placed grow found another slab first */
+  size_t seen_slabs; /* the table length the grow was decided against */
+  unsigned cleared;  /* g_declines_cleared when it began reading */
+  size_t floor_bytes;
+  size_t node_avail; /* the readings the sizing took, for the warnings */
+  size_t mach_avail;
+  uint64_t t0; /* when its mapping began, for the report */
+  bool open;   /* a round of this grow is open */
+  char *base;
+  size_t len;
+  uint32_t nchunks;
+  /* The round's generation in the high half, never reused for the node, and
+   * its next unclaimed chunk in the low half, at most nchunks.  Stored under
+   * g_lock at an open; a claim is a CAS that keeps the generation, so a
+   * thread holding a round that has ended claims nothing.  Relaxed: a
+   * round's fields reach a claimer through g_lock, and what a chunk's
+   * population did reaches the finisher through done. */
+  _Atomic(uint64_t) claim;
+  /* The round's chunks whose population has ended.  Stored 0 under g_lock at
+   * an open; each claimer adds one per chunk, acq_rel, after the chunk's
+   * population and its store to failed.  The add that reaches nchunks is
+   * the last in the word's order: its thread finishes the round, and its
+   * acquire reads every chunk's store to failed. */
+  _Atomic(uint32_t) done;
+  /* A chunk of the round failed to populate.  Stored false under g_lock at
+   * an open, and true, relaxed, by that chunk's claimer before its add to
+   * done; a claimer that reads it true skips its chunk, which is moot. */
+  _Atomic(bool) failed;
+} regpool_grow_t;
+static regpool_grow_t g_grow[REGPOOL_MAX_NODES];
+
+/* One cascade's asks: the readings they may take instead of reading a node
+ * are those of grows that ended after the first of them (`grows_ended`, read
+ * under g_lock when `started` is set).  An ask outside a cascade is a
+ * cascade of one. */
+typedef struct {
+  bool started;
+  unsigned grows_ended;
+} regpool_cascade_t;
+
+/* Whether grow end `a` came after grow end `b`, modulo the count's wrap. */
+static bool regpool_ended_after(unsigned a, unsigned b) {
+  return a - b - 1u < UINT_MAX / 2u;
+}
+
+/* A thread's copy of an open round, taken under g_lock. */
+typedef struct {
+  uint32_t gen;
+  char *base;
+  uint32_t nchunks;
+} regpool_round_t;
+
+typedef enum {
+  REGPOOL_GROW_MAPPED,  /* the slab was handed to an arena */
+  REGPOOL_GROW_REFUSED, /* the arena table refused the slab */
+  REGPOOL_GROW_NOTHING, /* nothing was mapped */
+} regpool_grow_outcome_t;
+
+/* Sleep on g_grow_cv, counted for `node`'s report (*slept: this attempt
+ * slept before).  Caller holds g_lock. */
+static void regpool_sleep_locked(int node, bool *slept) {
+  if (!*slept) {
+    *slept = true;
+    g_node_wait_count[node]++;
+  }
+  g_node_sleeps[node]++;
+  uint64_t t0 = regpool_now_ns();
+  pthread_cond_wait(&g_grow_cv, &g_lock);
+  g_node_wait_ns[node] += regpool_now_ns() - t0;
+}
+
+/* End `node`'s grow: publish the slab a MAPPED outcome handed to `arena`,
+ * record what the grow read, warn, and wake every thread that waits on it.
+ * Runs on the thread that ends the grow's last round, or on the grower when
+ * it opened none. */
+static void regpool_grow_end(int node, regpool_grow_outcome_t outcome,
+                             void *base, size_t len, struct fid_mr *mr,
+                             uint64_t rkey, mi_arena_id_t arena) {
+  regpool_grow_t *g = &g_grow[node];
+  bool mapped = outcome == REGPOOL_GROW_MAPPED;
+  pthread_mutex_lock(&g_lock);
+  g_grows_ended++;
+  g_node_grow_ns[node] += regpool_now_ns() - g->t0;
+  if (g->placed < 0)
+    g_unplaced_growing = false;
+  if (mapped)
+    g_pool_slots++;
+  if (outcome == REGPOOL_GROW_REFUSED) {
+    g_table_refusals++;
+    if (!g_table_exhausted) {
+      g_table_exhausted = true;
+      ARTS_WARN("regpool: the allocator's arena table is full (%u slots held "
+                "by the pool) — no further growth on any node",
+                g_pool_slots);
+    }
+  }
+  if (mapped && !g_inited) {
+    /* Torn down while the mapping was in flight.  Teardown is single-
+     * threaded by contract, so this is a violated contract rather than a
+     * race the protocol handles — but the mapping must not be published
+     * into a pool that no longer exists.  The arena's metadata references
+     * the range, so it is left to the process exit like every arena slab. */
+    (void)regpool_mr_close(mr);
+  } else {
+    if (mapped) {
+      if (regpool_append(base, len, mr, rkey, g->placed,
+                         /*interleaved=*/false, false, arena, node,
+                         regpool_arena_align()) == NULL) {
+        (void)regpool_mr_close(mr);
+        /* Arena metadata now references this range; the OS reclaims it at
+         * exit. */
+        mapped = false;
+      } else {
+        if (len > g_node_last_slab[node])
+          g_node_last_slab[node] = len;
+        g_node_grow_count[node]++;
+        if (g->placed == node)
+          g_node_full_warned[node] = 0;
+        atomic_store_explicit(&g_node_state[node], REGPOOL_NODE_CARVED,
+                              memory_order_release);
+        atomic_store_explicit(&g_node_arena[node], arena, memory_order_release);
+      }
+    }
+    if (!mapped &&
+        atomic_load_explicit(&g_node_state[node], memory_order_relaxed) !=
+            REGPOOL_NODE_CARVED) {
+      atomic_store_explicit(&g_node_state[node], REGPOOL_NODE_REFUSED,
+                            memory_order_release);
+    }
+    if (mapped) {
+      g_node_declined[node] = 0;
+    } else if (!g->fits_node) {
+      if (g->cleared == g_declines_cleared) {
+        g_node_declined[node] = g->seen_slabs + 1;
+        g_node_declined_end[node] = g_grows_ended;
+      }
+      g_node_declines[node]++;
+    }
+    /* Warned once per outcome per exhaustion (cleared when a placed slab
+     * lands on the node again), by the node's own demand: a peer's request
+     * it declines costs its own threads nothing, and a kernel-placed grow
+     * that saw another slab appear leaves the cascade to look at it first. */
+    uint8_t warn = 0;
+    if (!g->fits_node && g->mode == REGPOOL_GROW_OWN)
+      warn = REGPOOL_WARNED_SPILL;
+    else if (!g->fits_node && g->mode == REGPOOL_GROW_LAST)
+      warn = (g->placed == -1 && mapped)              ? REGPOOL_WARNED_UNPLACED
+             : (!g->superseded && !g_table_exhausted) ? REGPOOL_WARNED_NONE
+                                                      : 0;
+    if (warn != 0 && (g_node_full_warned[node] & warn) == 0) {
+      g_node_full_warned[node] |= warn;
+      if (warn == REGPOOL_WARNED_SPILL)
+        ARTS_WARN("regpool: node %d has %zu MiB free — no room for a %zu MiB "
+                  "slab there; its threads are served from memory elsewhere",
+                  node, g->node_avail >> 20, g->floor_bytes >> 20);
+      else if (warn == REGPOOL_WARNED_UNPLACED)
+        ARTS_WARN("regpool: no node has room for a %zu MiB slab; node %d's "
+                  "slab is placed by the kernel",
+                  g->floor_bytes >> 20, node);
+      else if (g->mach_avail != SIZE_MAX)
+        ARTS_WARN("regpool: no slab of %zu MiB or more could be mapped for "
+                  "node %d (the machine can give %zu MiB); an allocation no "
+                  "existing arena can serve fails",
+                  g->floor_bytes >> 20, node, g->mach_avail >> 20);
+      else
+        ARTS_WARN("regpool: no slab of %zu MiB or more could be mapped for "
+                  "node %d; an allocation no existing arena can serve fails",
+                  g->floor_bytes >> 20, node);
+    }
+  }
+  g->open = false;
+  g_node_growing[node] = false;
+  g_node_grow_ends[node]++;
+  pthread_cond_broadcast(&g_grow_cv);
+  pthread_mutex_unlock(&g_lock);
+}
+
+/* Reserve the range of `node`'s next round, stepping down from `want` while
+ * a reservation fails, and open its population.  False when nothing could
+ * be reserved down to the grow's floor. */
+static bool regpool_round_open(int node, size_t want) {
+  regpool_grow_t *g = &g_grow[node];
+  size_t align = regpool_arena_align();
+  for (;;) {
+    void *base = NULL;
+    if (regpool_reserve(g->placed, /*set=*/0, want, align, &base)) {
+      pthread_mutex_lock(&g_lock);
+      uint64_t gen =
+          (atomic_load_explicit(&g->claim, memory_order_relaxed) >> 32) + 1;
+      g->base = base;
+      g->len = want;
+      g->nchunks = (uint32_t)(want / REGPOOL_POPULATE_CHUNK);
+      atomic_store_explicit(&g->done, 0, memory_order_relaxed);
+      atomic_store_explicit(&g->failed, false, memory_order_relaxed);
+      atomic_store_explicit(&g->claim, gen << 32, memory_order_relaxed);
+      g->open = true;
+      pthread_cond_broadcast(&g_grow_cv);
+      pthread_mutex_unlock(&g_lock);
+      return true;
+    }
+    if (want <= g->floor_bytes)
+      return false;
+    want = regpool_step_down(want, g->floor_bytes);
+  }
+}
+
+/* End the round of `node`'s grow whose last chunk the caller populated:
+ * register the range, hand it to an exclusive arena and end the grow with
+ * it; when a chunk or the registration failed, give the range up and open
+ * the next round a step down, or end the grow with nothing at the floor. */
+static void regpool_round_end(int node) {
+  regpool_grow_t *g = &g_grow[node];
+  void *base = g->base;
+  size_t len = g->len;
+  struct fid_mr *mr = NULL;
+  uint64_t rkey = 0;
+  bool ok = !atomic_load_explicit(&g->failed, memory_order_relaxed);
+  if (!ok) {
+    ARTS_WARN("regpool: a %zu MiB slab for node %d could not be populated",
+              len >> 20, node);
+    munmap(base, len);
+  } else {
+    ok = regpool_register(base, len, &mr, &rkey);
+  }
+  if (ok) {
+    /* is_committed=true (committed by mmap and already populated),
+     * is_pinned=true (the arena must never decommit/purge/reset a
+     * registered range), is_zero=true (a fresh anonymous mapping is
+     * kernel-zeroed and nothing between map and manage writes into it:
+     * registration only pins, placement only sets policy), exclusive=true
+     * (only heaps created for this arena draw from it — the confinement
+     * mechanism). */
+    mi_arena_id_t arena = NULL;
+    if (mi_manage_os_memory_ex(base, len, /*is_committed=*/true,
+                               /*is_pinned=*/true, /*is_zero=*/true, g->placed,
+                               /*exclusive=*/true, &arena)) {
+      regpool_grow_end(node, REGPOOL_GROW_MAPPED, base, len, mr, rkey, arena);
+    } else {
+      if (regpool_mr_close(mr))
+        munmap(base, len);
+      regpool_grow_end(node, REGPOOL_GROW_REFUSED, NULL, 0, NULL, 0, NULL);
+    }
+    return;
+  }
+  if (len > g->floor_bytes &&
+      regpool_round_open(node, regpool_step_down(len, g->floor_bytes)))
+    return;
+  regpool_grow_end(node, REGPOOL_GROW_NOTHING, NULL, 0, NULL, 0, NULL);
+}
+
+/* Populate chunks of round `r` of `node`'s grow until none is left to
+ * claim, and end the round when the caller's chunk is its last.  Runs
+ * without g_lock.  Returns the chunks the caller populated (a chunk claimed
+ * after a failure in its round is not populated). */
+static unsigned regpool_round_work(int node, const regpool_round_t *r) {
+  regpool_grow_t *g = &g_grow[node];
+  unsigned mine = 0;
+  uint64_t c = atomic_load_explicit(&g->claim, memory_order_relaxed);
+  for (;;) {
+    if ((uint32_t)(c >> 32) != r->gen || (uint32_t)c >= r->nchunks)
+      return mine;
+    if (!atomic_compare_exchange_weak_explicit(
+            &g->claim, &c, c + 1, memory_order_relaxed, memory_order_relaxed))
+      continue;
+    char *part = r->base + (size_t)(uint32_t)c * REGPOOL_POPULATE_CHUNK;
+    if (!atomic_load_explicit(&g->failed, memory_order_relaxed)) {
+      if (regpool_populate(part, REGPOOL_POPULATE_CHUNK))
+        mine++;
+      else
+        atomic_store_explicit(&g->failed, true, memory_order_relaxed);
+    }
+    if (atomic_fetch_add_explicit(&g->done, 1, memory_order_acq_rel) + 1 ==
+        r->nchunks) {
+      regpool_round_end(node);
+      return mine;
+    }
+    c = atomic_load_explicit(&g->claim, memory_order_relaxed);
+  }
+}
+
+/* One step of a thread that finds `node`'s grow in flight, entered and left
+ * with g_lock held: populate chunks of the open round while one is left
+ * unclaimed and the caller may populate it, else sleep until the grow opens
+ * a round or ends.  A kernel-placed round carries no placement policy, so
+ * only its grower and the node's own threads (`here` is the caller's node)
+ * populate it.  Returns the chunks the caller populated. */
+static unsigned regpool_grow_join_locked(int node, int here, bool grower,
+                                         bool *slept) {
+  regpool_grow_t *g = &g_grow[node];
+  uint64_t c = atomic_load_explicit(&g->claim, memory_order_relaxed);
+  if (g->open && (uint32_t)c < g->nchunks &&
+      (grower || g->placed >= 0 || here == node)) {
+    regpool_round_t r = {(uint32_t)(c >> 32), g->base, g->nchunks};
+    pthread_mutex_unlock(&g_lock);
+    unsigned n = regpool_round_work(node, &r);
+    pthread_mutex_lock(&g_lock);
+    return n;
+  }
+  regpool_sleep_locked(node, slept);
+  return 0;
+}
 
 /* Map one more arena slab for `node` and publish it as the node's current
  * arena.  Returns true when the table grew since the caller's reading —
@@ -1274,19 +1662,34 @@ typedef enum {
  * arena the node already draws from (its own, or one its demand was moved
  * onto) is the answer whatever the length says — the length is published
  * before the arena it stands for, so a caller that read the length after a
- * peer's carve had completed would otherwise carve a second slab.
+ * peer's carve had completed would otherwise carve a second slab.  `asks`
+ * is the caller's cascade (regpool_cascade_t).
  *
- * The mapping itself runs outside g_lock, so one grow per node at a time is
- * enforced by a flag and a condvar rather than by holding the lock: a second
- * thread waits, then re-checks the table and either finds the winner's slab
- * or grows in turn.
+ * One grow per node is in flight at a time, and the mapping runs outside
+ * g_lock.  The grower sizes the slab, reserves its range and sets its
+ * placement (two availability reads and a few system calls whatever the
+ * slab's size), then opens the range's population as chunks.  Every thread
+ * that finds the grow in flight, the grower included, claims chunks and
+ * populates them; the thread whose chunk ends the round registers the range
+ * and publishes the slab, so the registration stays one per slab.  A thread
+ * sleeps only while no round is open (the grower sizing, waiting for the
+ * kernel-placed turn or reserving, or a failed round's finisher reserving
+ * the next), once every chunk is claimed, for the chunks in flight and the
+ * registration, or, on a kernel-placed slab, which carries no placement
+ * policy and so is populated only by its grower and the node's own threads,
+ * as any other thread.  Nothing that sleeps or populates holds g_lock.  A
+ * waiter whose table length the slab moved returns true; one whose grow
+ * ended with nothing grows in turn, unless that grow read the node full at
+ * its length and ended after its cascade's first ask (g_node_declined).
  *
  * A node whose free pages cannot take its floor is FULL, and gets no slab
  * placed on it: one sized for what it has left spends a table slot on a
  * fraction of what the slot must cover.  What the grow does instead depends
- * on `mode` (above).  Only REGPOOL_GROW_LAST maps a slab the kernel places,
- * sized by what the machine can still give — the node figures count free
- * pages alone, so a machine whose every node is full by them may still give
+ * on `mode` (above); an own or peer ask at a length the node was read full
+ * at, by a grow that ended after its cascade's first ask, takes that
+ * reading.  Only REGPOOL_GROW_LAST maps a slab the kernel places, sized by
+ * what the machine can still give — the node figures count free pages
+ * alone, so a machine whose every node is full by them may still give
  * reclaimable cache, which only the machine's figure counts — and such a
  * grow is the cascade's last step, after every arena and every other node
  * was asked, so it maps whenever the machine can still give a slab.
@@ -1299,37 +1702,31 @@ typedef enum {
  * caller's cascade either finds room in an existing arena or fails the
  * allocation loudly. */
 static bool regpool_grow_node(int node, size_t seen_slabs, bool carve,
-                              regpool_grow_mode_t mode) {
+                              regpool_grow_mode_t mode,
+                              regpool_cascade_t *asks) {
+  regpool_grow_t *g = &g_grow[node];
+  int here = regpool_current_node();
+  unsigned helped = 0, own = 0;
+  bool slept = false;
+  bool answer = false;
   pthread_mutex_lock(&g_lock);
-  uint64_t w0 = 0;
-  int answer = -1; /* settled without growing: 0 false, 1 true */
+  if (!asks->started) {
+    asks->started = true;
+    asks->grows_ended = g_grows_ended;
+  }
   for (;;) {
-    if (!g_inited) {
-      answer = 0;
-      break;
-    }
+    if (!g_inited)
+      goto out;
     if (atomic_load_explicit(&g_slab_count, memory_order_acquire) !=
             seen_slabs ||
         (carve && atomic_load_explicit(&g_node_arena[node],
                                        memory_order_acquire) != NULL)) {
-      answer = 1;
-      break;
+      answer = true;
+      goto out;
     }
     if (!g_node_growing[node])
       break;
-    if (w0 == 0)
-      w0 = regpool_now_ns();
-    pthread_cond_wait(&g_grow_cv, &g_lock);
-  }
-  /* One wait per grow attempt that found its node's grow in flight, counted
-   * once however long it waited until no grow of its node was in flight. */
-  if (w0 != 0) {
-    g_node_wait_ns[node] += regpool_now_ns() - w0;
-    g_node_wait_count[node]++;
-  }
-  if (answer >= 0) {
-    pthread_mutex_unlock(&g_lock);
-    return answer == 1;
+    helped += regpool_grow_join_locked(node, here, /*grower=*/false, &slept);
   }
   /* Consulted only once no grow of this node is in flight: a slab such a
    * grow publishes moves the table and answers the caller above, even when
@@ -1341,10 +1738,16 @@ static bool regpool_grow_node(int node, size_t seen_slabs, bool carve,
         REGPOOL_NODE_CARVED)
       atomic_store_explicit(&g_node_state[node], REGPOOL_NODE_REFUSED,
                             memory_order_release);
-    pthread_mutex_unlock(&g_lock);
-    return false;
+    goto out;
+  }
+  if (mode != REGPOOL_GROW_LAST && g_node_declined[node] == seen_slabs + 1 &&
+      regpool_ended_after(g_node_declined_end[node], asks->grows_ended)) {
+    g_node_decline_reuses[node]++;
+    goto out;
   }
   g_node_growing[node] = true;
+  g->cleared = g_declines_cleared;
+  unsigned my_end = g_node_grow_ends[node];
   uint64_t g0 = regpool_now_ns();
   size_t rung = regpool_next_slab_locked(node);
   size_t want = rung;
@@ -1390,11 +1793,8 @@ static bool regpool_grow_node(int node, size_t seen_slabs, bool carve,
     if (unplaced && g_unplaced_growing && !g_table_exhausted) {
       uint64_t t0 = regpool_now_ns();
       while (g_unplaced_growing && !g_table_exhausted)
-        pthread_cond_wait(&g_grow_cv, &g_lock);
-      uint64_t waited = regpool_now_ns() - t0;
-      g_node_wait_ns[node] += waited;
-      g_node_wait_count[node]++;
-      g0 += waited;
+        regpool_sleep_locked(node, &slept);
+      g0 += regpool_now_ns() - t0;
     }
     superseded =
         unplaced &&
@@ -1406,11 +1806,9 @@ static bool regpool_grow_node(int node, size_t seen_slabs, bool carve,
     slots_held = g_pool_slots;
     pthread_mutex_unlock(&g_lock);
   }
-  int placed = node;
   if (unplaced) {
     /* Sized only now, floor included: the previous kernel-placed slab is
      * resident and the machine's availability says so. */
-    placed = -1;
     mach_avail = regpool_mem_available();
     floor_bytes = regpool_floor_bytes(mach_avail, slots_held);
     if (floor_bytes > rung)
@@ -1421,133 +1819,34 @@ static bool regpool_grow_node(int node, size_t seen_slabs, bool carve,
     map = mach_avail == SIZE_MAX || want <= mach_avail;
   }
 
-  void *base = NULL;
-  struct fid_mr *mr = NULL;
-  uint64_t rkey = 0;
-  mi_arena_id_t arena = NULL;
-  size_t align = regpool_arena_align();
-  bool mapped = false;
-  bool managed = false;
-  bool refused = false;
-  while (map) {
-    if (regpool_map_slab(placed, /*set=*/0, want, align, &base, &mr,
-                         &rkey)) {
-      /* Hand the pinned range to an exclusive arena.  is_committed=true
-       * (committed by mmap and already populated), is_pinned=true (the
-       * arena must never decommit/purge/reset a registered range),
-       * is_zero=true (a fresh anonymous mapping is kernel-zeroed and nothing
-       * between map and manage writes into it: registration only pins,
-       * placement only sets policy), exclusive=true (only heaps created for
-       * this arena draw from it — the confinement mechanism). */
-      managed = mi_manage_os_memory_ex(base, want, /*is_committed=*/true,
-                                       /*is_pinned=*/true, /*is_zero=*/true,
-                                       placed, /*exclusive=*/true, &arena);
-      if (!managed) {
-        if (regpool_mr_close(mr)) {
-          munmap(base, want);
-        }
-        refused = true;
-      }
-      mapped = managed;
-      break;
-    }
-    if (want <= floor_bytes)
-      break;
-    want = regpool_step_down(want, floor_bytes);
-  }
+  g->mode = mode;
+  g->placed = unplaced ? -1 : node;
+  g->fits_node = fits_node;
+  g->superseded = superseded;
+  g->seen_slabs = seen_slabs;
+  g->floor_bytes = floor_bytes;
+  g->node_avail = node_avail;
+  g->mach_avail = mach_avail;
+  g->t0 = g0;
+  if (!map || !regpool_round_open(node, want))
+    regpool_grow_end(node, REGPOOL_GROW_NOTHING, NULL, 0, NULL, 0, NULL);
 
+  /* The contract is "a slab appeared", not "this grow mapped one": a slab
+   * another grow published must send the caller's cascade round again, not
+   * read as a node that cannot grow. */
   pthread_mutex_lock(&g_lock);
-  g_node_grow_ns[node] += regpool_now_ns() - g0;
-  if (unplaced)
-    g_unplaced_growing = false;
-  if (managed)
-    g_pool_slots++;
-  if (refused) {
-    g_table_refusals++;
-    if (!g_table_exhausted) {
-      g_table_exhausted = true;
-      ARTS_WARN("regpool: the allocator's arena table is full (%u slots held "
-                "by the pool) — no further growth on any node",
-                g_pool_slots);
-    }
+  while (g_node_grow_ends[node] == my_end)
+    own += regpool_grow_join_locked(node, here, /*grower=*/true, &slept);
+  answer = g_inited && atomic_load_explicit(&g_slab_count,
+                                            memory_order_relaxed) != seen_slabs;
+out:
+  if (helped != 0) {
+    g_node_helpers[node]++;
+    g_node_help_chunks[node] += helped;
   }
-  if (mapped && !g_inited) {
-    /* Torn down while the mapping was in flight.  Teardown is single-
-     * threaded by contract, so this is a violated contract rather than a
-     * race the protocol handles — but the mapping must not be published
-     * into a pool that no longer exists.  The arena's metadata references
-     * the range, so it is left to the process exit like every arena slab. */
-    (void)regpool_mr_close(mr);
-    g_node_growing[node] = false;
-    pthread_cond_broadcast(&g_grow_cv);
-    pthread_mutex_unlock(&g_lock);
-    return false;
-  }
-  if (mapped) {
-    if (regpool_append(base, want, mr, rkey, placed, /*interleaved=*/false,
-                       false, arena, node, align) == NULL) {
-      (void)regpool_mr_close(mr);
-      /* Arena metadata now references this range; the OS reclaims it at
-       * exit. */
-      mapped = false;
-    } else {
-      if (want > g_node_last_slab[node])
-        g_node_last_slab[node] = want;
-      g_node_grow_count[node]++;
-      if (placed == node)
-        g_node_full_warned[node] = 0;
-      atomic_store_explicit(&g_node_state[node], REGPOOL_NODE_CARVED,
-                            memory_order_release);
-      atomic_store_explicit(&g_node_arena[node], arena, memory_order_release);
-    }
-  }
-  if (!mapped &&
-      atomic_load_explicit(&g_node_state[node], memory_order_relaxed) !=
-          REGPOOL_NODE_CARVED) {
-    atomic_store_explicit(&g_node_state[node], REGPOOL_NODE_REFUSED,
-                          memory_order_release);
-  }
-  /* Warned once per outcome per exhaustion (cleared when a placed slab
-   * lands on the node again), by the node's own demand: a peer's request it
-   * declines costs its own threads nothing, and a kernel-placed grow that
-   * saw another slab appear leaves the cascade to look at it first. */
-  uint8_t outcome = 0;
-  if (!fits_node && mode == REGPOOL_GROW_OWN)
-    outcome = REGPOOL_WARNED_SPILL;
-  else if (!fits_node && mode == REGPOOL_GROW_LAST)
-    outcome = (placed == -1 && mapped)              ? REGPOOL_WARNED_UNPLACED
-              : (!superseded && !g_table_exhausted) ? REGPOOL_WARNED_NONE
-                                                    : 0;
-  if (outcome != 0 && (g_node_full_warned[node] & outcome) == 0) {
-    g_node_full_warned[node] |= outcome;
-    if (outcome == REGPOOL_WARNED_SPILL)
-      ARTS_WARN("regpool: node %d has %zu MiB free — no room for a %zu MiB "
-                "slab there; its threads are served from memory elsewhere",
-                node, node_avail >> 20, floor_bytes >> 20);
-    else if (outcome == REGPOOL_WARNED_UNPLACED)
-      ARTS_WARN("regpool: no node has room for a %zu MiB slab; node %d's "
-                "slab is placed by the kernel",
-                floor_bytes >> 20, node);
-    else if (mach_avail != SIZE_MAX)
-      ARTS_WARN("regpool: no slab of %zu MiB or more could be mapped for "
-                "node %d (the machine can give %zu MiB); an allocation no "
-                "existing arena can serve fails",
-                floor_bytes >> 20, node, mach_avail >> 20);
-    else
-      ARTS_WARN("regpool: no slab of %zu MiB or more could be mapped for "
-                "node %d; an allocation no existing arena can serve fails",
-                floor_bytes >> 20, node);
-  }
-  /* The contract is "a slab appeared", not "this call mapped one": a slab
-   * another grow published after the check above must send the caller's
-   * cascade round again, not read as a node that cannot grow. */
-  bool appeared =
-      mapped ||
-      atomic_load_explicit(&g_slab_count, memory_order_relaxed) != seen_slabs;
-  g_node_growing[node] = false;
-  pthread_cond_broadcast(&g_grow_cv);
+  g_node_chunks[node] += helped + own;
   pthread_mutex_unlock(&g_lock);
-  return appeared;
+  return answer;
 }
 
 /* Is `a` a worse candidate than `b` for a mapping requested from `from`?
@@ -1930,13 +2229,15 @@ static void *regpool_retry_refused(size_t size, size_t align,
 static void *regpool_cascade(size_t size, size_t align, int node,
                              mi_arena_id_t refused, regpool_binding_t *w) {
   bool evicted = false;
+  regpool_cascade_t asks = {false, 0};
   for (;;) {
     size_t seen = atomic_load_explicit(&g_slab_count, memory_order_acquire);
     void *p = regpool_serve_own(size, align, node, refused, w);
     if (p != NULL)
       return p;
 
-    if (regpool_grow_node(node, seen, /*carve=*/false, REGPOOL_GROW_OWN)) {
+    if (regpool_grow_node(node, seen, /*carve=*/false, REGPOOL_GROW_OWN,
+                          &asks)) {
       mi_arena_id_t cur =
           atomic_load_explicit(&g_node_arena[node], memory_order_acquire);
       if (cur == NULL) {
@@ -1977,8 +2278,8 @@ static void *regpool_cascade(size_t size, size_t align, int node,
        * published since the sweeps above is one they did not see, and it
        * must send the cascade round again rather than read as a node that
        * cannot grow. */
-      grew =
-          regpool_grow_node(order[o], seen, /*carve=*/false, REGPOOL_GROW_PEER);
+      grew = regpool_grow_node(order[o], seen, /*carve=*/false,
+                               REGPOOL_GROW_PEER, &asks);
     }
     if (grew) {
       /* Whatever appeared, every node's arenas are swept at once, this
@@ -2021,7 +2322,8 @@ static void *regpool_cascade(size_t size, size_t align, int node,
      * node's slab, so the cascade fails only when nothing can be mapped —
      * the machine has nothing left to give, the arena table refused, the
      * slab table is full, or the mapping itself failed. */
-    if (!regpool_grow_node(node, seen, /*carve=*/false, REGPOOL_GROW_LAST)) {
+    if (!regpool_grow_node(node, seen, /*carve=*/false, REGPOOL_GROW_LAST,
+                           &asks)) {
       p = regpool_retry_refused(size, align, refused, w);
       if (p != NULL)
         return p;
@@ -2129,9 +2431,10 @@ static void *regpool_alloc_arena(size_t size, size_t align, int node) {
   if (cur == NULL && atomic_load_explicit(&g_node_state[node],
                                           memory_order_acquire) ==
                          REGPOOL_NODE_UNTRIED) {
+    regpool_cascade_t asks = {false, 0};
     if (regpool_grow_node(
             node, atomic_load_explicit(&g_slab_count, memory_order_acquire),
-            /*carve=*/true, REGPOOL_GROW_OWN)) {
+            /*carve=*/true, REGPOOL_GROW_OWN, &asks)) {
       cur = atomic_load_explicit(&g_node_arena[node], memory_order_acquire);
     }
   }
@@ -2163,7 +2466,7 @@ static void *regpool_alloc_arena(size_t size, size_t align, int node) {
 bool arts_regpool_init(struct fid_domain *domain_or_null,
                        struct fid_ep *ep_or_null, size_t slab_bytes,
                        unsigned int numa_nodes) {
-  /* regpool_map_slab's trim needs a power of two. */
+  /* regpool_reserve's trim needs a power of two. */
   size_t arena_align = regpool_arena_align();
   if ((arena_align & (arena_align - 1)) != 0)
     ARTS_ERROR("regpool: arena alignment %zu is not a power of two",
@@ -2223,6 +2526,13 @@ bool arts_regpool_init(struct fid_domain *domain_or_null,
     g_node_grow_ns[i] = 0;
     g_node_wait_ns[i] = 0;
     g_node_wait_count[i] = 0;
+    g_node_sleeps[i] = 0;
+    g_node_helpers[i] = 0;
+    g_node_help_chunks[i] = 0;
+    g_node_chunks[i] = 0;
+    g_node_declines[i] = 0;
+    g_node_decline_reuses[i] = 0;
+    g_node_declined[i] = 0;
     g_node_full_warned[i] = 0;
     g_node_growing[i] = false;
   }
@@ -2280,17 +2590,18 @@ bool arts_regpool_init(struct fid_domain *domain_or_null,
   int order[REGPOOL_MAX_NODES];
   unsigned cnt = arts_regpool_node_order(first, order, REGPOOL_MAX_NODES);
   bool any = false;
+  regpool_cascade_t asks = {false, 0};
   for (unsigned o = 0; o < cnt && !any; o++) {
     regpool_grow_mode_t mode =
         order[o] == first ? REGPOOL_GROW_OWN : REGPOOL_GROW_PEER;
     any = regpool_grow_node(
         order[o], atomic_load_explicit(&g_slab_count, memory_order_acquire),
-        /*carve=*/true, mode);
+        /*carve=*/true, mode, &asks);
   }
   if (!any)
     any = regpool_grow_node(
         first, atomic_load_explicit(&g_slab_count, memory_order_acquire),
-        /*carve=*/true, REGPOOL_GROW_LAST);
+        /*carve=*/true, REGPOOL_GROW_LAST, &asks);
 
   if (!any) {
     arts_regpool_cleanup();
@@ -2326,7 +2637,9 @@ static void regpool_report_locked(FILE *out) {
                                       memory_order_relaxed);
     fprintf(out,
             "[REGPOOL] node %u: state=%s arenas=%u mapped=%zu grows=%u "
-            "grow_ms=%llu waits=%u wait_ms=%llu spills=%u cascades=%u\n",
+            "grow_ms=%llu waits=%u wait_ms=%llu spills=%u cascades=%u "
+            "sleeps=%u helpers=%u help_chunks=%u chunks=%u declines=%u "
+            "decline_reuses=%u\n",
             node,
             st == REGPOOL_NODE_CARVED
                 ? "carved"
@@ -2336,7 +2649,10 @@ static void regpool_report_locked(FILE *out) {
             g_node_wait_count[node],
             (unsigned long long)(g_node_wait_ns[node] / 1000000ull),
             atomic_load_explicit(&g_node_spills[node], memory_order_relaxed),
-            atomic_load_explicit(&g_node_cascades[node], memory_order_relaxed));
+            atomic_load_explicit(&g_node_cascades[node], memory_order_relaxed),
+            g_node_sleeps[node], g_node_helpers[node], g_node_help_chunks[node],
+            g_node_chunks[node], g_node_declines[node],
+            g_node_decline_reuses[node]);
   }
 
   size_t unplaced = 0;
@@ -2511,6 +2827,13 @@ void arts_regpool_cleanup(void) {
     g_node_grow_ns[i] = 0;
     g_node_wait_ns[i] = 0;
     g_node_wait_count[i] = 0;
+    g_node_sleeps[i] = 0;
+    g_node_helpers[i] = 0;
+    g_node_help_chunks[i] = 0;
+    g_node_chunks[i] = 0;
+    g_node_declines[i] = 0;
+    g_node_decline_reuses[i] = 0;
+    g_node_declined[i] = 0;
     g_node_full_warned[i] = 0;
     g_node_growing[i] = false;
   }
@@ -2596,9 +2919,10 @@ bool arts_regpool_grow(int numa_node) {
     numa_node = 0;
   /* The current table length asks for a slab unconditionally — this entry
    * point is a request to grow, not a reaction to an exhausted arena. */
+  regpool_cascade_t asks = {false, 0};
   return regpool_grow_node(
       numa_node, atomic_load_explicit(&g_slab_count, memory_order_acquire),
-      /*carve=*/false, REGPOOL_GROW_OWN);
+      /*carve=*/false, REGPOOL_GROW_OWN, &asks);
 }
 
 void *arts_regpool_alloc_aligned(size_t size, size_t align) {

@@ -245,7 +245,10 @@ const arts_regpool_mr_t *arts_regpool_lookup(const void *p);
  * allocation published — and false otherwise: the node is full (its
  * threads are served from other nodes' memory), the mapping failed, or the
  * allocator's arena table has refused a slab, after which no grow maps
- * again. */
+ * again.  A call that waits on a grow of the node that reads it full takes
+ * that reading instead of reading the node again, unless retired mappings'
+ * memory was given back or the injected exhaustion changed meanwhile; every
+ * other call reads. */
 bool arts_regpool_grow(int numa_node);
 
 /* Availability estimate over one NUMA node's meminfo stream: the node's free
@@ -282,20 +285,26 @@ void arts_regpool_set_forced_full(uint64_t node_mask);
 /* Print the pool's shape to `out`: per node its carve state, arena count,
  * mapped MiB (of the arena slabs placed on it), grow count (of the slabs grown
  * for it, wherever they landed), the milliseconds its grows spent mapping, the
- * number and milliseconds of waits for a grow in flight (on the node, or for
- * the process-wide turn of a kernel-placed grow), spills (allocations of its
- * threads that the exhaustion cascade served from another node's arena
- * because it could not grow) and cascades (allocations of its threads that
- * left the fast path for that cascade); the direct mappings live, retired,
- * where they landed (per node, interleaved, or unplaced) and the free slots;
- * and the totals, with the arena-table slots the pool's slabs hold, the slabs
- * the table refused, and the binds since init that found an arena with no
- * free slice for the calling thread's part of its heap (theap_refusals; that
- * thread was then served elsewhere).  Takes the pool lock, so the lines are
- * consistent with each other.  Printed to stderr at teardown when
- * ARTS_REGPOOL_REPORT is set in the environment (by cleanup, or by
- * arts_regpool_report_if_requested), and before the fatal error of an
- * allocation the pool could not satisfy. */
+ * number and milliseconds of waits (grow attempts that slept on the node's
+ * grow in flight, or on the process-wide turn of a kernel-placed grow),
+ * spills (allocations of its threads that the exhaustion cascade served from
+ * another node's arena because it could not grow), cascades (allocations of
+ * its threads that left the fast path for that cascade), sleeps (the times
+ * those attempts fell asleep), helpers (grow attempts that populated part of
+ * a slab another thread's grow reserved) and help_chunks (the parts they
+ * populated), chunks (every part populated for the node's slabs), declines
+ * (grows that read the node full and mapped nothing) and decline_reuses
+ * (asks that took such a reading, made at the same table length during a
+ * cascade the grow ended in, instead of reading the node again); the
+ * direct mappings live, retired, where they landed (per node, interleaved,
+ * or unplaced) and the free slots; and the totals, with the arena-table
+ * slots the pool's slabs hold, the slabs the table refused, and the binds
+ * since init that found an arena with no free slice for the calling thread's
+ * part of its heap (theap_refusals; that thread was then served elsewhere).
+ * Takes the pool lock, so the lines are consistent with each other.
+ * Printed to stderr at teardown when ARTS_REGPOOL_REPORT is set in the
+ * environment (by cleanup, or by arts_regpool_report_if_requested), and
+ * before the fatal error of an allocation the pool could not satisfy. */
 void arts_regpool_report(FILE *out);
 
 #ifdef __cplusplus

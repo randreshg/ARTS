@@ -55,6 +55,10 @@
  *                              read after a grow's machine read is then not
  *                              that node's: do not combine the two.
  *
+ * A test may set regpool_sim_node_read_hook: every meminfo read of a
+ * declared node calls it, on the reading thread, before the stream is made,
+ * so a test can hold a grow inside its reading.
+ *
  * Declaring a machine also clears ARTS_REGPOOL_FORCE_FULL_NODES from the
  * environment, so a test that wants nodes forced full sets it afterwards
  * and an inherited value never changes what a test asserts.  The process's
@@ -147,6 +151,8 @@ static _Atomic(unsigned) regpool_sim_node_reads;
  * by anyone else. */
 static _Atomic(unsigned) regpool_sim_self_reads[REGPOOL_SIM_MAX_NODES];
 static _Atomic(unsigned) regpool_sim_other_reads[REGPOOL_SIM_MAX_NODES];
+/* Set before a second thread runs; NULL calls nothing. */
+static void (*regpool_sim_node_read_hook)(int node);
 
 static inline void regpool_sim_declare(int nodes, regpool_sim_avail_t avail) {
   if (nodes < 1 || nodes > REGPOOL_SIM_MAX_NODES)
@@ -350,9 +356,12 @@ FILE *__wrap_fopen(const char *path, const char *mode) {
     return __real_fopen(path, mode);
   file++;
   bool meminfo = strcmp(file, "meminfo") == 0;
-  if (meminfo && n >= 0 && n < regpool_sim_nodes)
+  if (meminfo && n >= 0 && n < regpool_sim_nodes) {
     atomic_fetch_add_explicit(&regpool_sim_node_reads, 1u,
                               memory_order_relaxed);
+    if (regpool_sim_node_read_hook != NULL)
+      regpool_sim_node_read_hook((int)n);
+  }
   if (n < 0 || n >= regpool_sim_nodes || !meminfo ||
       regpool_sim_avail[n] == REGPOOL_SIM_UNKNOWN) {
     errno = ENOENT;
