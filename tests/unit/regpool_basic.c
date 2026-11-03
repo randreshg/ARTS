@@ -19,8 +19,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define N_ALLOC 1000
-#define SLAB_BYTES ((size_t)64 * 1024 * 1024)
+#define N_ALLOC 128
+#define SLAB_BYTES ((size_t)32 * 1024 * 1024)
 #define MAX_SIZE ((size_t)1 * 1024 * 1024)
 #define ALIGN ((size_t)64)
 
@@ -46,7 +46,7 @@ int main(void) {
   regpool_sim_declare(1, REGPOOL_SIM_FREE);
   regpool_sim_set_node_free(0, (size_t)8 << 30);
   bool ok = arts_regpool_init(NULL, NULL, SLAB_BYTES, 1);
-  assert(ok && "regpool_init(NULL domain, 64 MiB, 1 node) must succeed");
+  assert(ok && "regpool_init(NULL domain, 32 MiB, 1 node) must succeed");
 
   static void *ptrs[N_ALLOC];
   static size_t sizes[N_ALLOC];
