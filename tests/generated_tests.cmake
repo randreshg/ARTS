@@ -171,6 +171,7 @@ add_pure_unit_src(config_routing_table_slurm_hostlist PASS_REGEX "PASS config_ro
 add_pure_unit_src(placement_invariants SOURCES ${CMAKE_SOURCE_DIR}/libs/src/core/system/placement.c PASS_REGEX "PASS placement_invariants" TIMEOUT 60)
 add_pure_unit_src(config_route_table_size_shift PASS_REGEX "PASS config_route_table_size_shift" TIMEOUT 60)
 add_pure_unit_src(config_deque_size_range PASS_REGEX "PASS config_deque_size_range" TIMEOUT 60)
+add_pure_unit_src(config_value_syntax PASS_REGEX "PASS config_value_syntax" TIMEOUT 60)
 add_pure_unit_src(config_thread_count_underflow PASS_REGEX "PASS config_thread_count_underflow" TIMEOUT 60)
 add_pure_unit_src(config_launcher_env_precedence PASS_REGEX "PASS config_launcher_env_precedence" TIMEOUT 60)
 add_pure_unit_src(config_slurm_setup PASS_REGEX "PASS config_slurm_setup" TIMEOUT 60)

@@ -211,7 +211,8 @@ void arts_guid_node_geometry_init(void) {
   db_seq_next =
       (_Atomic(uint64_t) *)arts_malloc(sizeof(*db_seq_next) * (size_t)nrank);
   for (uint64_t r = 0; r < nrank; r++) {
-    /* Seq 0 stays unused on rank 0 (counter convention: first value is 1). */
+    /* The first seq of every creator's slice stays unused (a counter
+     * starts one past its slice base). */
     atomic_init(&db_seq_next[r], db_seq_creator_base + 1);
   }
   db_cursor_registry = (struct db_seq_cursor_s **)arts_calloc(
@@ -247,7 +248,6 @@ arts_guid_t arts_guid_reserve(arts_guid_kind_t kind, unsigned int rank) {
   if (rank == ARTS_HINT_CURRENT_RANK) {
     rank = arts_global_rank_id;
   }
-  rank = rank % arts_global_rank_count;
   if ((unsigned int)kind < ARTS_GUID_LAST) {
     guid = arts_guid_create_for_rank_internal(rank, (unsigned int)kind, 1);
     // ARTS_INFO("Allocation Guid %u", guid);

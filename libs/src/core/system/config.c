@@ -304,6 +304,46 @@ static bool arts_config_is_all_digits(const char *str) {
   return true;
 }
 
+/* Decimal digits only (no sign, space or trailing text) whose value is at
+ * most `max`. */
+static bool config_parse_decimal(const char *text, uint64_t max,
+                                 uint64_t *out) {
+  if (text[0] < '0' || text[0] > '9') {
+    return false;
+  }
+  errno = 0;
+  char *end = NULL;
+  unsigned long long value = strtoull(text, &end, 10);
+  if (errno != 0 || *end != '\0' || value > max) {
+    return false;
+  }
+  *out = value;
+  return true;
+}
+
+/* A bound of a host range: decimal digits within an unsigned int. */
+static unsigned int config_range_bound(const char *text) {
+  uint64_t value = 0;
+  if (!config_parse_decimal(text, UINT_MAX, &value)) {
+    ARTS_ERROR("nodes: the host range bound '%s' is not an unsigned decimal "
+               "integer — digits only, within an unsigned int",
+               text);
+  }
+  return (unsigned int)value;
+}
+
+/* The node_count key: a decimal unsigned int; the count's own checks stay with
+ * each launcher. */
+static unsigned int config_node_count_value(const char *text) {
+  uint64_t value = 0;
+  if (!config_parse_decimal(text, UINT_MAX, &value)) {
+    ARTS_ERROR("node_count='%s' is not an unsigned decimal integer — digits "
+               "only, within an unsigned int",
+               text);
+  }
+  return (unsigned int)value;
+}
+
 /* Number of nodes a `nodes` value names.  The value is a comma-separated list
  * of entries, each a host name or a name followed by one bracketed number or
  * range ("n[01-10]", ascending or descending) whose bounds are unsigned ints.
@@ -332,12 +372,23 @@ unsigned int arts_config_count_nodes(const char *node_list) {
         ok = dash == NULL || (dash != range_spec && dash[1] != '\0' &&
                               strchr(dash + 1, '-') == NULL);
         if (ok) {
-          errno = 0;
-          unsigned long long start = strtoull(range_spec, NULL, 10);
-          unsigned long long end = dash ? strtoull(dash + 1, NULL, 10) : start;
-          unsigned long long span = (start <= end ? end - start : start - end);
-          ok = errno == 0 && start <= UINT_MAX && end <= UINT_MAX &&
-               span < UINT_MAX;
+          uint64_t start = 0;
+          uint64_t end = 0;
+          uint64_t span = 0;
+          if (dash) {
+            *dash = '\0';
+          }
+          ok = config_parse_decimal(range_spec, UINT_MAX, &start);
+          if (ok) {
+            end = start;
+            if (dash) {
+              ok = config_parse_decimal(dash + 1, UINT_MAX, &end);
+            }
+          }
+          if (ok) {
+            span = (start <= end ? end - start : start - end);
+            ok = span < UINT_MAX;
+          }
           width = (unsigned int)(span + 1);
           p = close + 1;
         }
@@ -444,8 +495,8 @@ void arts_config_create_routing_table(struct arts_config_s **config,
                 done = true;
               }
 
-              start = strtol(node_begin, NULL, 10);
-              stop = strtol(node_end, NULL, 10);
+              start = config_range_bound(node_begin);
+              stop = config_range_bound(node_end);
 
               if (start < stop) {
                 direction = 1;
@@ -547,8 +598,8 @@ void arts_config_create_routing_table(struct arts_config_s **config,
         char *dash = strchr(range_spec, '-');
         if (dash) {
           *dash = '\0';
-          start = strtol(range_spec, NULL, 10);
-          stop = strtol(dash + 1, NULL, 10);
+          start = config_range_bound(range_spec);
+          stop = config_range_bound(dash + 1);
           unsigned int pad_width = strlen(range_spec);
 
           if (start <= stop) {
@@ -601,9 +652,9 @@ void arts_config_create_routing_table(struct arts_config_s **config,
  *===========================================================================*/
 
 enum arts_config_type {
-  CONFIG_UINT,   /* unsigned int — strtol(value, NULL, 10) */
-  CONFIG_UINT64, /* uint64_t — strtoull(value, NULL, 10) */
-  CONFIG_BOOL,   /* bool — strtol(value, NULL, 10) > 0 */
+  CONFIG_UINT,   /* unsigned int — decimal digits within its range */
+  CONFIG_UINT64, /* uint64_t — decimal digits within its range */
+  CONFIG_BOOL,   /* bool — exactly 0 or 1 */
   CONFIG_STRING, /* char* — arts_config_make_new_var(value) */
   CONFIG_CUSTOM  /* custom handler function */
 };
@@ -632,17 +683,29 @@ static void config_auto_parse(struct arts_config_s *config,
                               const struct arts_config_entry_s *entry,
                               const char *value) {
   char *base = (char *)config;
-  char *end = NULL;
+  uint64_t number = 0;
   switch (entry->type) {
   case CONFIG_UINT:
-    *(unsigned int *)(base + entry->offset) =
-        (unsigned int)strtol(value, &end, 10);
+    if (!config_parse_decimal(value, UINT_MAX, &number)) {
+      ARTS_ERROR("%s='%s' is not an unsigned decimal integer — digits only, "
+                 "within an unsigned int",
+                 entry->key, value);
+    }
+    *(unsigned int *)(base + entry->offset) = (unsigned int)number;
     break;
   case CONFIG_UINT64:
-    *(uint64_t *)(base + entry->offset) = strtoull(value, &end, 10);
+    if (!config_parse_decimal(value, UINT64_MAX, &number)) {
+      ARTS_ERROR("%s='%s' is not an unsigned decimal integer — digits only, "
+                 "within 64 bits",
+                 entry->key, value);
+    }
+    *(uint64_t *)(base + entry->offset) = number;
     break;
   case CONFIG_BOOL:
-    *(bool *)(base + entry->offset) = strtol(value, &end, 10) > 0;
+    if (!config_parse_decimal(value, 1, &number)) {
+      ARTS_ERROR("%s='%s' is not a boolean — use 0 or 1", entry->key, value);
+    }
+    *(bool *)(base + entry->offset) = number != 0;
     break;
   case CONFIG_STRING: {
     char **field = (char **)(base + entry->offset);
@@ -731,9 +794,8 @@ static void handle_net_interface(struct arts_config_s *config,
  * every port must be a bare decimal number a TCP socket can carry.
  */
 static bool parse_one_port(const char *text, unsigned int *out) {
-  char *end = NULL;
-  unsigned long value = strtoul(text, &end, 10);
-  if (end == text || *end != '\0' || value == 0 || value > UINT16_MAX) {
+  uint64_t value = 0;
+  if (!config_parse_decimal(text, UINT16_MAX, &value) || value == 0) {
     return false;
   }
   *out = (unsigned int)value;
@@ -747,29 +809,35 @@ static unsigned int *parse_port_spec(const char *spec, unsigned int *count) {
   }
 
   if (spec[0] == '[') {
-    /* Range format: [start-end] */
-    char *ptr = (char *)spec + 1;
-    char *endptr;
-    unsigned long start = strtoul(ptr, &endptr, 10);
-    if (endptr != ptr && *endptr == '-') {
-      ptr = endptr + 1;
-      unsigned long end = strtoul(ptr, &endptr, 10);
-      if (endptr != ptr && strcmp(endptr, "]") == 0 && start <= end &&
-          start > 0 && end <= UINT16_MAX) {
+    /* Range format: [start-end].  The bounds are cut out of a copy, so a
+       bound takes the same forms as a single port, leading zeros included. */
+    size_t len = strlen(spec);
+    char *copy = (char *)arts_malloc(len + 1);
+    memcpy(copy, spec, len + 1);
+    char *dash = strchr(copy, '-');
+    char *close = strchr(copy, ']');
+    uint64_t start = 0;
+    uint64_t end = 0;
+    unsigned int *ports = NULL;
+    if (dash != NULL && close != NULL && close > dash && close[1] == '\0') {
+      *dash = '\0';
+      *close = '\0';
+      if (config_parse_decimal(copy + 1, UINT16_MAX, &start) &&
+          config_parse_decimal(dash + 1, UINT16_MAX, &end) && start <= end &&
+          start > 0) {
         unsigned int n = (unsigned int)(end - start + 1);
-        unsigned int *ports =
-            (unsigned int *)arts_malloc(n * sizeof(unsigned int));
+        ports = (unsigned int *)arts_malloc(n * sizeof(unsigned int));
         for (unsigned int i = 0; i < n; i++) {
           ports[i] = (unsigned int)(start + i);
         }
         *count = n;
-        return ports;
       }
     }
-    /* Malformed range.  Reported as "no ports parsed" so the caller can fail
-       the load: substituting a port here would bind something the operator
-       never named. */
-    return NULL;
+    arts_free(copy);
+    /* A malformed range is reported as "no ports parsed" so the caller can
+       fail the load: substituting a port here would bind something the
+       operator never named. */
+    return ports;
   }
 
   /* Check for comma-separated list */
@@ -955,13 +1023,8 @@ static void config_set_master_from_table(struct arts_config_s *config) {
 /* A scheduler's count variable: decimal digits only (no sign, space or
  * trailing text), at least 1 and within an unsigned int. */
 static bool config_parse_count(const char *text, unsigned int *out) {
-  if (text[0] < '0' || text[0] > '9') {
-    return false;
-  }
-  errno = 0;
-  char *end = NULL;
-  unsigned long long value = strtoull(text, &end, 10);
-  if (errno != 0 || *end != '\0' || value == 0 || value > UINT_MAX) {
+  uint64_t value = 0;
+  if (!config_parse_decimal(text, UINT_MAX, &value) || value == 0) {
     return false;
   }
   *out = (unsigned int)value;
@@ -1167,7 +1230,7 @@ static void config_setup_ssh(struct arts_config_s *config,
       listed_value = "localhost";
     }
     unsigned int listed_count = arts_config_count_nodes(listed_value);
-    if ((unsigned int)strtol(node_count_value, NULL, 10) != listed_count) {
+    if (config_node_count_value(node_count_value) != listed_count) {
       ARTS_ERROR("launcher=ssh: node_count=%s, but the nodes list '%s' names "
                  "%u node(s) (a config without one lists the single host "
                  "localhost)",
@@ -1182,7 +1245,7 @@ static void config_setup_ssh(struct arts_config_s *config,
     node_list = arts_config_make_new_var(nodes_value);
 
     if (node_count_value) {
-      config->nodes = (unsigned int)strtol(node_count_value, NULL, 10);
+      config->nodes = config_node_count_value(node_count_value);
     } else {
       config->nodes = arts_config_count_nodes(node_list);
     }
@@ -1220,7 +1283,7 @@ static void config_setup_local(struct arts_config_s *config,
   const char *nodes_value = config_lookup(vars, "nodes");
 
   if (node_count_value) {
-    node_count = (unsigned int)strtol(node_count_value, NULL, 10);
+    node_count = config_node_count_value(node_count_value);
   } else if (nodes_value) {
     node_count = arts_config_count_nodes(nodes_value);
   }

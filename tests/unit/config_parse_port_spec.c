@@ -73,6 +73,9 @@ int main(void) {
   {
     unsigned int w[] = {50000, 50001, 50002};
     expect_array("[50000-50002]", w, 3);
+    /* A bound takes a single port's forms, leading zeros included. */
+    expect_array("[0000050000-00000050002]", w, 3);
+    expect_array("0000050000", w, 1);
   }
 
   /* Reversed range -> malformed -> (NULL, 0), so the caller can reject the
@@ -100,6 +103,19 @@ int main(void) {
      the spec is malformed rather than a short list the caller would read past
      the end of. */
   expect_null("50000,");
+
+  /* A sign or a space is not part of a port, in a single port, a list entry
+     or either bound of a range. */
+  expect_null("+50000");
+  expect_null(" 50000");
+  expect_null("50000 ");
+  expect_null("-1");
+  expect_null("50000, 50001");
+  expect_null("[+50000-50001]");
+  expect_null("[ 50000-50001]");
+  expect_null("[50000- 50001]");
+  expect_null("[50000-50001 ]");
+  expect_null("[50000-50001]x");
 
   /* A token that is not a number at all. */
   expect_null("notaport");

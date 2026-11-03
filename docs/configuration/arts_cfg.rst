@@ -289,6 +289,19 @@ environment with neither, or with a list naming fewer hosts than
 ``SLURM_CPUS_PER_TASK``, ``FLUX_JOB_NNODES``, ``FLUX_JOB_SIZE``) must be a
 positive decimal integer, digits only; any other value is refused.
 
+A numeric key (``worker_threads``, ``stack_size``, ``route_table_size``,
+``node_count`` where the launcher reads it, and the rest outside the CXL
+Store section) is read as decimal digits only.  An empty value, a sign, a
+space, trailing text (``3x``), another base (``0x10``) or a value past the
+key's type (an unsigned int; 64 bits for ``stack_size`` and
+``gpu_max_memory``) is refused at load, naming the key and the value, and is
+never read as some other number.  A boolean key (``pin``, ``core_dump``,
+``gpu_p2p``, ``gpu_buff_on``, ``free_db_after_gpu_run``,
+``run_gpu_gc_idle``, ``run_gpu_gc_pre_edt`` and ``delete_zeros_gpu_gc``) is
+exactly ``0`` or ``1``.  The bounds of a host range (``node[01-10]``) follow
+the same rule as an unsigned int.  A key's value comes from the file or from
+an environment variable of the same name, and both are held to these rules.
+
 Launcher selection is environment-driven for the schedulers that publish
 their layout in the environment: under Slurm or LSF the runtime detects the
 scheduler's variables and ignores the configured value.  ``launcher=flux``

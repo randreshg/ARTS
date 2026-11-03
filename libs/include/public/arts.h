@@ -562,7 +562,9 @@ void arts_abort(uint8_t error_code);
  * @c docs/programming_model/guids.rst).
  *
  * @param kind  Kind tag for the GUID (e.g. @c ARTS_GUID_EDT, @c ARTS_GUID_DB).
- * @param rank  Target node rank.
+ * @param rank  A live rank (below the rank count), or
+ *              @c ARTS_HINT_CURRENT_RANK for the calling rank; any other
+ *              value is refused.
  * @return A new GUID.
  */
 arts_guid_t arts_guid_reserve(arts_guid_kind_t kind, unsigned int rank);
@@ -609,7 +611,10 @@ arts_guid_kind_t arts_guid_get_kind(arts_guid_t guid);
  *                @c arts_guid_from_index / @c arts_guid_index_from
  *                interpret it correctly.  Caller must broadcast this range
  *                GUID to every rank that will derive children.
- * @return The start GUID of the range, or @c NULL_GUID on failure.
+ * @return The start GUID of the range, or @c NULL_GUID when @p size is 0 or
+ *         @p kind is not a GUID kind.  A rank that is not live (and not one
+ *         of the special values above) or an exhausted GUID slice aborts the
+ *         run.
  * @see arts_guid_from_index, arts_guid_index_from
  */
 arts_guid_t arts_guid_reserve_range(arts_guid_kind_t kind, unsigned int size,

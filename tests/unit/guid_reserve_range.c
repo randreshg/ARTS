@@ -29,11 +29,13 @@
  * the runtime's node init for one simulated rank.
  */
 
+#include <fcntl.h>
 #include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 unsigned int arts_global_rank_id = 0;
@@ -145,7 +147,55 @@ static int check_stride(arts_guid_kind_t kind) {
   return 0;
 }
 
+/* Whether arts_guid_reserve(kind, rank) ends the process with the abort
+ * stub's status 1 (the refusal), run in a child so the stub's _exit does not
+ * end the test. */
+static int reserve_refused(unsigned int rank) {
+  (void)fflush(stdout);
+  (void)fflush(stderr);
+  pid_t pid = fork();
+  if (pid < 0) {
+    return -1;
+  }
+  if (pid == 0) {
+    int null_fd = open("/dev/null", O_WRONLY);
+    if (null_fd >= 0) {
+      (void)dup2(null_fd, STDOUT_FILENO);
+      (void)dup2(null_fd, STDERR_FILENO);
+    }
+    (void)arts_guid_reserve(ARTS_GUID_DB, rank);
+    _exit(0);
+  }
+  int status = 0;
+  if (waitpid(pid, &status, 0) < 0 || !WIFEXITED(status)) {
+    return -1;
+  }
+  return WEXITSTATUS(status) == 1 ? 1 : (WEXITSTATUS(status) == 0 ? 0 : -1);
+}
+
 int main(void) {
+  /* ---- 0. arts_guid_reserve takes a live rank or the current-rank
+   * sentinel and refuses every other value (no reduction modulo the rank
+   * count). ---- */
+  node_init(2, 4);
+  if (arts_guid_get_rank(arts_guid_reserve(ARTS_GUID_DB, 3)) != 3 ||
+      arts_guid_get_rank(
+          arts_guid_reserve(ARTS_GUID_EDT, ARTS_HINT_CURRENT_RANK)) != 2) {
+    FAIL("a live rank or ARTS_HINT_CURRENT_RANK did not reserve there\n");
+  }
+  const unsigned int bad[] = {4u,
+                              5u,
+                              4u + 3u,
+                              16383u,
+                              16384u,
+                              ARTS_HINT_ROUND_ROBIN,
+                              ARTS_HINT_ANY_RANK};
+  for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+    if (reserve_refused(bad[i]) != 1) {
+      FAIL("arts_guid_reserve(rank %u) was not refused\n", bad[i]);
+    }
+  }
+
   /* ---- 1. labeled-vs-auto collision avoidance. ---- */
   node_init(0, 4);
   const unsigned RSIZE = 40; /* spans several keys per rank (stride=10) */
