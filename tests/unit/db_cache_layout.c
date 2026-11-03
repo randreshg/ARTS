@@ -136,16 +136,8 @@ static void print_fingerprint(void) {
   printf("DB_LAYOUT %s", LAYOUT_LANG);
 
   TYPE(buffer_t);
-#ifdef ARTS_DB_BUF_POOL
-  MEMBER(buffer_t, pool_link);
-#endif
   MEMBER(buffer_t, version);
   MEMBER(buffer_t, cb);
-#ifdef ARTS_DB_BUF_POOL
-  MEMBER(buffer_t, owner_cache);
-  MEMBER(buffer_t, capacity);
-  MEMBER(buffer_t, park_state);
-#endif
   OFFSET(buffer_t, data);
   TYPE(read_waiter_t);
   MEMBER(read_waiter_t, link);
@@ -185,12 +177,9 @@ static void print_fingerprint(void) {
 #endif
 #if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
   MEMBER(cache_t, writer_count);
-  MEMBER(cache_t, buf_holds);
 #endif
   MEMBER(cache_t, buffer);
 #if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
-  MEMBER(cache_t, buf_freelist);
-  MEMBER(cache_t, buf_retired);
   MEMBER(cache_t, pending_rw);
 #ifdef ARTS_PROTOCOL_VAL
   MEMBER(cache_t, req_state);

@@ -4,15 +4,9 @@
  *
  * Each DB version is a separate arts_db_buffer_s wrapped in an
  * arts_shared_ptr_t (cb).  cache.buffer is the atomic slot; the slot holds the
- * "cache-hold" strong ref and every acquirer holds one more.  Where the arm
- * keeps a per-DB free-list (ARTS_DB_BUF_POOL), arts_db_buf_alloc draws a
- * parked buffer from cache->buf_freelist before falling back to the
- * registered pool, and the deleter parks the buffer back on the last strong
- * drop; a buffer drawn from a cache keeps that cache's storage alive until it
- * is parked: the storage release that follows the descriptor's destructor
- * drains whatever is parked when it runs, and the storage goes with whichever
- * comes last, that release or the park of the last buffer still out.
- * Elsewhere the deleter returns the buffer to the registered pool.
+ * "cache-hold" strong ref and every acquirer holds one more.  Every buffer is
+ * drawn from the registered pool, and the deleter returns it there on the last
+ * strong drop.
  *
  * Three primitives manage every buffer during a DB's lifetime:
  *
@@ -33,9 +27,7 @@
  * mutexes:
  *   - the cb keeps the buffer bytes valid for any in-flight acquirer even
  *     across a concurrent destroy, and the release path touches no cache
- *     whose storage could be gone: a buffer names no cache, except where the
- *     arm keeps a free-list, where it names the cache it was drawn from and
- *     keeps that cache's storage alive until it parks there.
+ *     whose storage could be gone: a buffer names no cache.
  *   - version monotonicity: the version stamp inside the buffer is monotonic
  *     per DB, so a reader observing the installed buffer necessarily observes a
  *     version >= its acquire-time version — exactly what the protocol promises.
@@ -58,17 +50,9 @@ extern "C" {
 #include "arts/coherence/coherence.h"
 #include "arts/utils/shared.h" /* arts_shared_ptr_t */
 
-/* Allocate a buffer (header + db_size payload), 64-byte aligned, for a cache
- * the caller holds.  Draws a parked buffer from the cache's free-list where
- * the arm keeps one; falls back to arts_regpool_alloc_aligned.  install_buffer
- * fills + wraps it in a control block; before that the buffer is private to
- * the caller. */
-struct arts_db_buffer_s *arts_db_buf_alloc(struct arts_db_cache_s *cache,
-                                           uint64_t db_size);
-
-/* A buffer that belongs to no cache: its last drop returns it to the
- * registered pool and keeps no cache's storage.  The caller owns the one strong
- * ref and reads the buffer through *out. */
+/* A buffer installed in no slot, stamped version 0: its last drop returns it
+ * to the registered pool.  The caller owns the one strong ref and reads the
+ * buffer through *out. */
 arts_shared_ptr_t arts_db_buf_detached(uint64_t db_size,
                                        struct arts_db_buffer_s **out);
 
@@ -223,28 +207,23 @@ struct arts_db_buffer_s *arts_db_buf_install(struct arts_db_cache_s *cache,
  * the landing pointer).  Fails loudly if the buffer cannot be advertised
  * (payloads cannot move one-sided without a fabric-registered pool). */
 struct arts_db_buffer_s *
-arts_db_buf_landing_alloc(struct arts_db_cache_s *cache, uint64_t db_size,
-                          struct arts_rdzv_landing_s *out);
+arts_db_buf_landing_alloc(uint64_t db_size, struct arts_rdzv_landing_s *out);
 
 /* End a landing that will never be installed, either because no payload
  * moved into it (a dedup'd response, an unused advertisement, a
  * self-transfer) or because its block was destroyed while it was out,
- * whether or not a payload landed in it: it goes back the way any buffer
- * does, parked on the cache it was drawn from or returned to the registered
- * pool.  As a dedup answer this is correct only where the requester provably
- * already holds storage — an acquire that completes owes its EDT a pointer
- * of the DB's declared size, so a landing returned by a rank that has no
- * buffer for a SIZED block loses that guarantee.  Where the reply's silence means "the sender had no bytes
- * either", use arts_db_buf_adopt_landing instead. */
+ * whether or not a payload landed in it: it goes back to the registered pool
+ * at once.  As a dedup answer this is correct only where the requester
+ * provably already holds storage — an acquire that completes owes its EDT a
+ * pointer of the DB's declared size, so a landing returned by a rank that has
+ * no buffer for a SIZED block loses that guarantee.  Where the reply's
+ * silence means "the sender had no bytes either", use
+ * arts_db_buf_adopt_landing instead. */
 void arts_db_buf_landing_return(struct arts_db_buffer_s *b);
 #ifdef ARTS_DEBUG_LANDING_BALANCE
 /* This rank's landings drawn and not yet returned, adopted or installed. */
 int64_t arts_db_landings_outstanding(void);
 #endif
-
-/* Release the storage of a descriptor whose destructor has run.  It is freed
- * now, or by the park of the last buffer drawn from it that is still out. */
-void arts_db_buf_storage_release(struct arts_db_cache_s *cache);
 
 /* Make an unused landing this cache's buffer IF the cache has none, its bytes
  * unspecified and stamped `version`; return it otherwise.  Returns whether it

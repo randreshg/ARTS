@@ -1654,12 +1654,6 @@ foreach(_t db_create_after_first_touch db_create_after_first_touch_2n_9w_1p)
 endforeach()
 
 if(ARTS_TEST_REFERENCE_TREE)
-# One body of the per-DB free-list serves every arm that keeps one.
-add_arts_test(per_db_buf_pool)
-register_pure_unit_test(per_db_buf_pool)
-set_tests_properties(per_db_buf_pool PROPERTIES
-    PASS_REGULAR_EXPRESSION "RECYCLE_OK")
-
 # A group over a tree of EDTs crossing ranks, in a loop.  Two ranks and four
 # separate a group's members by one and by several hops.
 register_multinode_test(group_stress TIMEOUT 60

@@ -247,9 +247,9 @@ void arts_db_cache_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
  * ends the buffer once the last in-flight acquirer releases) and tears down
  * home_s in place.
  * Called from arts_db_free.  Because the cache is embedded by value as the
- * first member of arts_db_s, the caller releases the wrapping db_s's storage
- * after this routine returns (arts_db_buf_storage_release) — it does NOT free
- * the cache separately.  Defined by each arm, around its own cache fields. */
+ * first member of arts_db_s, the caller frees the wrapping db_s after this
+ * routine returns (arts_db_descriptor_free) — it does NOT free the cache
+ * separately.  Defined by each arm, around its own cache fields. */
 void arts_db_cache_destructor(struct arts_db_cache_s *cache);
 
 /*--- Acquire path --------------------------------------------------------

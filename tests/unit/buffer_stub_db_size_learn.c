@@ -41,21 +41,8 @@
 static struct arts_db_cache_s g_cache;
 static _Atomic(int) g_start;
 
-/* Emptying the slot ends its buffer, which parks on the cache's free-list
- * where the arm keeps one; the list, and any buffer set aside as too small
- * for a draw, is drained too, since the next reset would otherwise forget
- * them. */
 static void cache_teardown(void) {
   arts_shared_slot_store(&g_cache.buffer, NULL);
-#ifdef ARTS_DB_BUF_POOL
-  arts_lf_pool_destroy_with(&g_cache.buf_freelist, arts_regpool_free);
-  for (arts_lf_link_t *n = arts_lf_stack_drain(&g_cache.buf_retired);
-       n != NULL;) {
-    arts_lf_link_t *next = atomic_load_explicit(&n->next, memory_order_relaxed);
-    arts_regpool_free(n);
-    n = next;
-  }
-#endif
 }
 
 static int part1_single(void) {
@@ -64,8 +51,7 @@ static int part1_single(void) {
   memset(payload, 0x11, DB_SIZE);
 
   /* First install learns N. */
-  struct arts_db_buffer_s *first =
-      arts_db_buf_install(&g_cache, 1, payload, DB_SIZE);
+  arts_db_buf_install(&g_cache, 1, payload, DB_SIZE);
   if (atomic_load_explicit(&g_cache.db_size, memory_order_relaxed) != DB_SIZE) {
     (void)fprintf(stderr,
                   "FAIL buffer_stub_db_size_learn: first install did not learn "
@@ -89,21 +75,6 @@ static int part1_single(void) {
                   DB_SIZE);
     return 1;
   }
-  /* Where the arm keeps a list, the first buffer is parked now and is smaller
-   * than this request: it must not be the one handed out, since the install
-   * would write past its end. */
-  struct arts_db_buffer_s *third =
-      arts_db_buf_install(&g_cache, 3, payload2, DB_SIZE * 2);
-#ifdef ARTS_DB_BUF_POOL
-  if (third == first) {
-    (void)fprintf(stderr, "FAIL buffer_stub_db_size_learn: a parked buffer "
-                          "smaller than the request was handed out\n");
-    return 1;
-  }
-#else
-  (void)first;
-  (void)third;
-#endif
   cache_teardown();
   return 0;
 }
@@ -184,7 +155,6 @@ int main(void) {
 /* ── libc-backed alloc shims so the test links without the ARTS runtime ── */
 void *arts_calloc(size_t nmemb, size_t size) { return calloc(nmemb, size); }
 void arts_free(void *ptr) { free(ptr); }
-void arts_db_descriptor_free(struct arts_db_s *db) { free(db); }
 void *arts_malloc_aligned(size_t size, size_t align) {
   void *p = NULL;
   size_t a = align < sizeof(void *) ? sizeof(void *) : align;

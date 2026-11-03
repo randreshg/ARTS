@@ -86,7 +86,6 @@ extern "C" {
 #include "arts/defs.h"
 #include "arts/gas/guid.h" /* ARTS_GUID_DB_GET_SZHINT (ARTS_DB_STUB_CLAIMABLE) */
 #include "arts/utils/lockfree_lifo.h"  /* arts_lf_stack_t / arts_lf_link_t */
-#include "arts/utils/lockfree_pool.h"  /* arts_lockfree_pool_t (buf_freelist) */
 #include "arts/utils/shared.h"         /* arts_shared_ptr_t (buffer cb) */
 #include "arts/utils/stdatomic_compat.h"
 #ifdef ARTS_GPU_LAYOUT
@@ -253,22 +252,6 @@ struct arts_home_grantreq_queue_s {
   struct arts_home_grantreq_node_s stub;            /* permanent sentinel */
 };
 
-/* Arms that install a fresh buffer for every version a rank fetches (VAL's
- * snapshots, INV's reader copies) keep a per-DB free-list of buffers to draw
- * the next one from.  Every other arm draws too rarely for a list to pay: one
- * buffer per rank for the block's whole life, or a detached copy per
- * acquire.
- *
- * Where the free-list exists, a buffer drawn from a cache keeps that cache's
- * storage alive until it is parked back: the descriptor's destructor may run
- * while a transfer still holds the buffer, and the late last drop must still
- * have a list to park into.  The storage release that follows the
- * destructor drains whatever is parked when it runs, and the storage goes
- * with whichever comes last, that release or the last such buffer's park. */
-#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
-#define ARTS_DB_BUF_POOL 1
-#endif
-
 /*--- Buffer ---------------------------------------------------------------
  * Holds version + user-visible data bytes.  Lifetime is managed by an
  * arts_shared_ptr_t control block (cache.buffer is the atomic slot; each
@@ -294,26 +277,9 @@ struct arts_home_grantreq_queue_s {
  *            the store is external the member points at it from that same
  *            offset, and the descriptor never owns, frees or zeroes them. */
 struct arts_db_buffer_s {
-#ifdef ARTS_DB_BUF_POOL
-  arts_lf_link_t pool_link; /* FIRST — free-list node while parked */
-#endif
-  _Atomic(uint64_t) version; /* monotonic per buffer (stale while parked) */
+  _Atomic(uint64_t) version; /* monotonic per buffer */
   arts_shared_ptr_t cb; /* this buffer's control block */
-#ifdef ARTS_DB_BUF_POOL
-  /* The cache it was drawn from, whichever cache it is installed in, whose
-   * storage it keeps alive until it is parked there; NULL for a buffer no
-   * cache owns. */
-  struct arts_db_cache_s *owner_cache;
-  uint64_t capacity; /* payload bytes the allocation holds */
-  /* Out or parked, written by a debug build only, which refuses to end a
-   * drawn buffer that is not out; a re-draw marks it out again, so a second
-   * end after one is caught, if at all, only at a later end.  Relaxed: only
-   * its own value. */
-  _Atomic(unsigned int) park_state;
-  char _pad[20]; /* the payload member lands at offset 64 */
-#else
   char _pad[48]; /* the payload member lands at offset 64 */
-#endif
 #ifdef ARTS_CXL_DIRECT
   char *data; /* storage this descriptor refers to and does not own */
 #else

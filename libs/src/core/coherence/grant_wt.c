@@ -226,8 +226,8 @@ void arts_db_grant_response_on(struct arts_db_s *db,
    * about its contents.  A landing was advertised exactly when this rank
    * wanted payload (the home rank asks for the permission alone and echoes no
    * cookie, because it already holds the canonical buffer), so it is the
-   * storage to use: adopt it when the cache has none, recycle it when the
-   * cache already holds a buffer.  Then commit. */
+   * storage to use: adopt it when the cache has none, return it to the pool
+   * when the cache already holds a buffer.  Then commit. */
   if (a->rdzv_cookie != 0) {
     /* Stamped at version 1 when the server held nothing (it sent
      * ARTS_GRANT_VERSION_NONE): a live image may never carry the version that

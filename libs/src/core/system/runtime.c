@@ -111,8 +111,8 @@ void arts_runtime_node_init(struct arts_config_s *config) {
 
   /* Registered-slab pool for DB payload buffers + fabric bring-up.  The pool
    * must be live before any worker or progress thread can allocate a
-   * payload (arts_db_buf_alloc draws from it), so it is carved here — before
-   * arts_thread_init spawns a single thread.
+   * payload (every coherence buffer draws from it), so it is carved here —
+   * before arts_thread_init spawns a single thread.
    *
    * On a multinode run the fabric comes up FIRST so the pool can register its
    * slabs against the domain net_init creates.  Receive resources are armed

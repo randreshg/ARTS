@@ -214,9 +214,7 @@ uint64_t arts_db_first_fetch_size(const struct arts_db_cache_s *cache) {
   return s != 0u ? s : arts_db_szhint_bound(cache->db_guid);
 }
 struct arts_db_buffer_s *
-arts_db_buf_landing_alloc(struct arts_db_cache_s *cache, uint64_t db_size,
-                          struct arts_rdzv_landing_s *out) {
-  (void)cache;
+arts_db_buf_landing_alloc(uint64_t db_size, struct arts_rdzv_landing_s *out) {
   struct arts_db_buffer_s *b =
       (struct arts_db_buffer_s *)calloc(1, sizeof(*b) + db_size);
   g_landings++;

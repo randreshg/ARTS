@@ -323,7 +323,7 @@ struct ARTS_PACKED arts_msg_grant_cts_packet_s {
  *                    bytes yet, or a requester that already holds this
  *                    version or asked for the permission alone).  A nonzero
  *                    rdzv_cookie still echoes the requester's unused landing
- *                    so it can be recycled.
+ *                    so it can be returned.
  *
  * A rank never sends this to itself: granting the right to itself, it runs
  * the receiving body on its own descriptor, which keeps the bytes it holds. */
@@ -500,8 +500,8 @@ struct ARTS_PACKED arts_msg_snapshot_request_packet_s {
  * parked for the request whose parity `cover` echoes.
  * data_present values:
  *   0 = no payload moved (requester's version is current, or nothing
- *       published yet).  A nonzero rdzv_cookie echoes the unused landing for
- *       recycling.
+ *       published yet).  A nonzero rdzv_cookie echoes the unused landing so
+ *       the requester returns it.
  *   1 = `db_size` payload bytes were PUT into the requester's landing
  *       (rdzv_cookie); install on {packet, txid} pairing.
  *   2 = size-only CTS: the request carried no landing and data exists —

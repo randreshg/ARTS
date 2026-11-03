@@ -90,10 +90,10 @@ else()
     set(ARTS_TARGET_AMD64 OFF)
 endif()
 
-# The 16-byte CAS of lockfree_pool.h and the shared-pointer slot must compile
-# and link: cmpxchg16b (-mcx16) on AMD64; libatomic, or inline LL/SC or LSE,
-# on ARM64.  The check proves that much, not that the CAS is lock-free.  It
-# links libatomic because GCC calls it for every 16-byte atomic.
+# The 16-byte CAS of the shared-pointer slot must compile and link:
+# cmpxchg16b (-mcx16) on AMD64; libatomic, or inline LL/SC or LSE, on ARM64.
+# The check proves that much, not that the CAS is lock-free.  It links
+# libatomic because GCC calls it for every 16-byte atomic.
 include(CheckCSourceCompiles)
 set(_arts_saved_required_flags "${CMAKE_REQUIRED_FLAGS}")
 set(_arts_saved_required_libs  "${CMAKE_REQUIRED_LIBRARIES}")
@@ -132,7 +132,7 @@ if(NOT ARTS_DWCAS_LINKS)
         "sequence, on ARM64.")
 endif()
 # Make libatomic available to all targets that may emit 16-byte atomic
-# libcalls (lockfree_pool.h users).  The keyword-less form is transitive, so
+# libcalls (shared-pointer slot users).  The keyword-less form is transitive, so
 # it is also in the link interface of every library target, exported or not.
 if(ARTS_ATOMIC_LINK)
     link_libraries(${ARTS_ATOMIC_LINK})
@@ -449,7 +449,7 @@ option(ARTS_DEBUG_DB_QUARANTINE
 # One atomic per rendezvous landing drawn and per landing ended, so a test can
 # wait for every landing it caused to end.
 option(ARTS_DEBUG_LANDING_BALANCE
-    "Count each rank's rendezvous landings drawn and not yet ended (returned, adopted or installed); a leaked landing pins its cache's descriptor" OFF)
+    "Count each rank's rendezvous landings drawn and not yet ended (returned, adopted or installed)" OFF)
 # One field per waiting entry and per FLUSH fetch packet, one store per park
 # and one compare per wake.  It changes those layouts, so every unit of the
 # tree sees it through the definition below, never through NDEBUG.

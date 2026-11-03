@@ -251,7 +251,7 @@ void arts_send_db_snapshot_request(struct arts_db_cache_s *cache,
    * without a landing: the home absorbs it unanswered if that create is this
    * rank's (the size may be learned just before the claim). */
   if (fetch_size > 0 && (cover & ARTS_COVER_PRECLAIM) == 0u) {
-    (void)arts_db_buf_landing_alloc(cache, fetch_size, &rdzv);
+    (void)arts_db_buf_landing_alloc(fetch_size, &rdzv);
   }
   struct arts_msg_snapshot_request_packet_s p;
   arts_fill_packet_header(&p.header, sizeof(p), MSG_DB_SNAPSHOT_REQUEST);

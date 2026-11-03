@@ -381,7 +381,7 @@ void arts_db_rdzv_discard_landing(uint64_t txid, uint64_t len,
 /* Rendezvous continuation for a data-bearing SNAPSHOT_RESPONSE: the snapshot
  * payload has fully landed in our advertised landing ("imm seen => landing
  * valid").  Install it without a copy (version-conditional; a stale landing
- * recycles), then resume the parked EDT and its window's batch.  Fires on
+ * ends), then resume the parked EDT and its window's batch.  Fires on
  * {packet, write-completion} pairing, either arrival order, on a
  * dispatch-path progress thread.  The context borrows the read request's
  * count: the window stays open until the answer this callback commits. */
@@ -490,7 +490,7 @@ void arts_handler_db_snapshot_response(
    *     than the 0 that means "nothing";
    *   - any other version is the server's dedup verdict (known_v >= cur_v)
    *     or a same-rank serve: this cache already holds bytes at that version
-   *     (below) — recycle. */
+   *     (below) — return the landing. */
   if (a->rdzv_cookie != 0) {
     struct arts_db_buffer_s *landing =
         (struct arts_db_buffer_s *)(uintptr_t)a->rdzv_cookie;

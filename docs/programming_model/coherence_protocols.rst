@@ -443,9 +443,9 @@ release writes back, unconditionally.
        home's ACK, then drop the copy
 
 No versions, no per-rank ledger, no header-only replies, no request
-combining, no write combining, no freelist, no grant, and no counters that
-gate anything: every remote acquire moves the payload and every remote RW
-release moves it back, one round trip each.
+combining, no write combining, no grant, and no counters that gate anything:
+every remote acquire moves the payload and every remote RW release moves it
+back, one round trip each.
 
 A private copy per EDT, rather than one shared line per rank, closes a
 lost-update window: with a single shared line, an RO fetch issued before a

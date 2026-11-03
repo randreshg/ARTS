@@ -141,8 +141,9 @@ void arts_db_grant_response_on(struct arts_db_s *db,
    * addressable pointer, and "nobody has written the block" is a statement
    * about its contents.  A landing was advertised exactly when this rank
    * wanted payload, so it is the storage to use: adopt it when the cache has
-   * none, recycle it when the cache already holds a buffer (its bytes are at
-   * least as good as the silence that just arrived).  Then commit. */
+   * none, return it to the pool when the cache already holds a buffer (its
+   * bytes are at least as good as the silence that just arrived).  Then
+   * commit. */
   if (a->rdzv_cookie != 0) {
     /* Stamped at version 1 when the server held nothing (it sent
      * ARTS_GRANT_VERSION_NONE): a live image may never carry the version that

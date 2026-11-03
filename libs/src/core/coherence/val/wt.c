@@ -314,8 +314,9 @@ static void update_cached_version_max(struct arts_db_cache_s *cache,
   struct arts_db_s *db = arts_db_of_cache(cache);
   /* Monotonic dedup — if the requester already holds this version
    * (cur >= master_v), no payload moves: reply no-data, echoing the unused
-   * landing for recycling.  The ledger is credited by serves AND by the
-   * requester's own publishs, so a self-produced copy dedups too. */
+   * landing so the requester returns it.  The ledger is credited by serves
+   * AND by the requester's own publishs, so a self-produced copy dedups too.
+   */
   uint64_t db_size =
       atomic_load_explicit(&cache->db_size, memory_order_relaxed);
   uint64_t cur = arts_rank_u64_map_get(db->cached_version, requester);

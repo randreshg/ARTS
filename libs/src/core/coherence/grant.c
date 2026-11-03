@@ -410,7 +410,7 @@ void arts_db_send_grant_response(struct arts_db_cache_s *cache,
      * needs to move.  Decided here, at the send, because the point is the
      * bytes on the wire: a receiver-side skip would still have paid for
      * them.  The advertised landing is echoed back unused, and the receiver
-     * recycles it against the copy it kept. */
+     * returns it and keeps its copy. */
     INCREMENT_NUM_GRANT_REGRANT_DEDUP_BY(1);
   }
   if (!data_less && buf != NULL && payload_size > 0 && rdzv.txid != 0) {
@@ -611,7 +611,7 @@ void arts_send_db_grant_request(struct arts_db_cache_s *cache,
     fetch_size = 0;
   }
   if (wants_payload && fetch_size > 0 && arts_global_rank_count > 1) {
-    (void)arts_db_buf_landing_alloc(cache, fetch_size, &rdzv);
+    (void)arts_db_buf_landing_alloc(fetch_size, &rdzv);
   } else if (!wants_payload) {
     INCREMENT_NUM_GRANT_HOME_DATALESS_BY(1);
   }

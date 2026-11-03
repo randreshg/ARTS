@@ -41,14 +41,8 @@ static void cache_init(uint64_t db_size) {
   memset(&g_cache, 0, sizeof(g_cache));
   atomic_store_explicit(&g_cache.db_size, db_size, memory_order_relaxed);
 }
-/* Emptying the slot ends its buffer, which parks on the cache's free-list
- * where the arm keeps one, so the list is drained too; the next cache_init
- * would otherwise forget it. */
 static void cache_teardown(void) {
   arts_shared_slot_store(&g_cache.buffer, NULL);
-#ifdef ARTS_DB_BUF_POOL
-  arts_lf_pool_destroy_with(&g_cache.buf_freelist, arts_regpool_free);
-#endif
 }
 
 static int check_zero_install(uint64_t v, const void *payload,
@@ -141,7 +135,6 @@ int main(void) {
 /* ── libc-backed alloc shims so the test links without the ARTS runtime ── */
 void *arts_calloc(size_t nmemb, size_t size) { return calloc(nmemb, size); }
 void arts_free(void *ptr) { free(ptr); }
-void arts_db_descriptor_free(struct arts_db_s *db) { free(db); }
 void *arts_malloc_aligned(size_t size, size_t align) {
   void *p = NULL;
   size_t a = align < sizeof(void *) ? sizeof(void *) : align;

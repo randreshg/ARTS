@@ -96,9 +96,9 @@ extern "C" {
  * buffer's own version field.  Two asynchronous installs can target one rank's
  * buffer slot (a read reply and an ownership transfer), neither can put the
  * pointer swap inside its own decision CAS, so the swap is stamp-conditional
- * (larger wins, a stale one retreats and recycles) and always ordered BEFORE
- * the publishing CAS.  Nothing reads it to decide whether a copy is still
- * valid — only the arrival of an INVALIDATE decides that.
+ * (larger wins, a stale one retreats and ends its buffer) and always ordered
+ * BEFORE the publishing CAS.  Nothing reads it to decide whether a copy is
+ * still valid — only the arrival of an INVALIDATE decides that.
  */
 #define INV_CACHE_HEAD_BITS ARTS_DB_READER_IDX_BITS
 #define INV_CACHE_ST_BITS 2
@@ -238,23 +238,12 @@ struct arts_db_cache_s {
    * sees the right held, and a writer's acq_rel decrement carries its bytes
    * and version bump to whichever decrement reaches the transfer edge. */
   _Atomic(unsigned int) writer_count;
-  /* Buffers drawn from this cache and not parked back, plus the flag the
-   * storage release sets once the destructor has run (encoding in buffer.c,
-   * lifetime rule in types_common.h).  A draw adds 1 relaxed, under the
-   * drawer's hold on the descriptor; a park's decrement and the flag's add
-   * are acq_rel, so every park is ordered before the storage free. */
-  _Atomic(unsigned int) buf_holds;
   /* The installed buffer.  Orders: a slot's (arts_shared_slot_t,
    * shared.h): an install's release carries the bytes to whoever loads the
    * slot.  A covering reader decides from cache_state before it loads the
    * slot, so what orders an install before that decision is DELIVER's CAS on
    * cache_state, not the slot. */
   _Atomic(arts_shared_slot_t) buffer;
-  arts_lockfree_pool_t buf_freelist; /* parked buffers, drawn first */
-  /* Parked buffers a draw found too small: a popper must not free a node
-   * another popper may still be reading, so they wait here for the storage
-   * release, which frees them with the list. */
-  arts_lf_stack_t buf_retired;
 #ifdef ARTS_WRITE_POLICY_WT
   arts_lf_stack_t publication_waiters; /* pre-publication read holds */
 #if ARTS_DB_CENSUS

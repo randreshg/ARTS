@@ -407,7 +407,7 @@ void arts_send_db_grant_invalidate(
 void arts_send_db_snapshot_request(struct arts_db_cache_s *cache,
                                    uint32_t cover);
 /* Send SNAPSHOT_RESPONSE.  kind (-> wire data_present): 0 = no data moved (a
- * non-NULL landing's cookie is echoed so the requester recycles it), 1 =
+ * non-NULL landing's cookie is echoed so the requester returns it), 1 =
  * payload (PUT from src_h's buffer into `landing`; src_h — a strong buffer
  * ref — is CONSUMED: transferred to the PUT's local completion, or released
  * after an inline self-serve), 2 = an answer without data: a size round

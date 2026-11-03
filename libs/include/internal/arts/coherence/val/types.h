@@ -156,22 +156,11 @@ struct arts_db_cache_s {
    * Every load outside the post-join quiescence walk is acquire, a load
    * whose value a following CAS re-validates included. */
   _Atomic(unsigned int) writer_count;
-  /* Buffers drawn from this cache and not parked back, plus the flag the
-   * storage release sets once the destructor has run (encoding in buffer.c,
-   * lifetime rule in types_common.h).  A draw adds 1 relaxed, under the
-   * drawer's hold on the descriptor; a park's decrement and the flag's add
-   * are acq_rel, so every park is ordered before the storage free. */
-  _Atomic(unsigned int) buf_holds;
   /* The installed buffer.  Orders: a slot's (arts_shared_slot_t, shared.h).
    * An install's release carries the buffer and its bytes to every thread
    * that loads the slot, the one way a reader reaches them: no state of this
    * arm certifies a copy, every acquire asks its home. */
   _Atomic(arts_shared_slot_t) buffer;
-  arts_lockfree_pool_t buf_freelist; /* parked buffers, drawn first */
-  /* Parked buffers a draw found too small: a popper must not free a node
-   * another popper may still be reading, so they wait here for the storage
-   * release, which frees them with the list. */
-  arts_lf_stack_t buf_retired;
   arts_guid_t db_guid;
   /* The block's exact size once this rank has learned it, 0 until then.
    * Every writer stores the one size the block was created with, so a

@@ -386,7 +386,7 @@ void arts_handler_db_snapshot_redirect(void *item_v, void *args_v) {
 
   if (known_v >= cur_v) {
     /* Requester already holds this version — no payload moves; echo the
-     * unused landing for recycling. */
+     * unused landing so the requester returns it. */
     INCREMENT_NUM_SNAPSHOT_HEADER_ONLY_BY(1);
     arts_db_buf_release(&buf_h);
     arts_send_db_snapshot_response(requester, a->token, a->db_guid, cur_v,

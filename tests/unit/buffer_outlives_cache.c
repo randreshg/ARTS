@@ -2,37 +2,24 @@
  *
  * A buffer can outlive its block's descriptor: a one-sided transfer's local
  * completion holds a reference the fabric releases whenever it likes, and the
- * block may be destroyed first.  Where the arm keeps a per-DB free-list, the
- * buffer keeps the descriptor's storage alive until it parks there, and the
- * storage (and the list) go when the last of the two lets go; elsewhere the
- * last drop touches nothing but the buffer.
+ * block may be destroyed first.  A buffer names no cache, so its last drop
+ * touches nothing but the buffer, which goes back to the registered pool.
  *
  * Properties:
- *   1. A drop after the destroy ends the buffer without touching freed memory,
- *      and the descriptor's storage is freed exactly once — where the arm
- *      keeps a list, only after both.
- *   2. With nothing out, the destroy frees the storage at once.
- *   3. The late drop may come on another thread, which then frees the storage
- *      where the arm keeps a list.
- *   4. Many late drops racing the destroy free the storage exactly once;
- *      where the arm keeps a list they race its drain of parked buffers.
- *   5. A landing returned unused ends, and the cache's storage is freed
- *      exactly once; where the arm keeps a list it is the next one that
- *      cache hands out.
- *   6. Where the arm keeps a list, a parked buffer too small for a later draw
- *      is never handed out, and the destroy gives it and every parked buffer
- *      back at once, even while another buffer is still out.
- *   7. Where the arm keeps a list, a buffer installed in another cache still
- *      parks on, and holds, only the cache it was drawn from.
- *   8. Where the arm keeps a list, a drawn buffer ended a second time before
- *      it is drawn again or freed stops the process instead of being parked
- *      twice.
+ *   1. A drop after the destroy ends the buffer without touching the freed
+ *      descriptor.
+ *   2. With nothing out, the destroy ends the installed buffer at once.
+ *   3. The late drop may come on another thread.
+ *   4. Many late drops racing the destroy end the buffer exactly once.
+ *   5. A landing returned unused goes back to the registered pool at once.
+ *   6. A landing that loses to the installed buffer, adopted over it or
+ *      installed at a stale version, goes back to the registered pool at
+ *      once.
  *
- * The descriptor a property creates last is filled with a pattern when it is
- * freed and held back, not released, until the property ends, so any write
- * after the free changes the pattern and fails the test without a sanitizer;
- * every buffer taken from the registered pool must be back there when the
- * property ends.
+ * A destroyed descriptor is filled with a pattern and held back, not
+ * released, until the property ends, so any write after the destroy changes
+ * the pattern and fails the test without a sanitizer; every buffer taken from
+ * the registered pool must be back there when the property ends.
  *
  * Standalone: links buffer.c + shared.c with libc-backed alloc shims.  Where
  * the store is DIRECT the payload is not a buffer's, so that tree does not
@@ -47,26 +34,18 @@
 #include "arts/utils/stdatomic_compat.h"
 #include <pthread.h>
 #include <sched.h>
-#include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/wait.h>
-#include <unistd.h>
 
 #define DB_SIZE 256u
 #define RACERS 8
 #define RACE_ROUNDS 2000
-#define PARKED 64
 #define FREED_FILL 0xDF
 
-static _Atomic(unsigned int) g_db_frees;
-static _Atomic(void *) g_db_live;
-/* The last freed descriptor, filled and held until checked. */
-static _Atomic(void *) g_db_freed;
-/* Set as the storage release begins: no free of the storage may come first. */
-static _Atomic(int) g_released;
+/* The destroyed descriptor, filled and held until checked. */
+static unsigned char *g_db_freed;
 static _Atomic(long) g_pool_out; /* registered-pool buffers not given back */
 static int fail;
 
@@ -77,11 +56,15 @@ static void check(int ok, const char *what) {
   }
 }
 
-/* The freed descriptor must still hold the fill, and every buffer must be
+static long pool_out(void) {
+  return atomic_load_explicit(&g_pool_out, memory_order_relaxed);
+}
+
+/* The destroyed descriptor must still hold the fill, and every buffer must be
  * back in the registered pool; then the descriptor is released for real. */
 static void settle(const char *what) {
-  unsigned char *p =
-      atomic_exchange_explicit(&g_db_freed, NULL, memory_order_acquire);
+  unsigned char *p = g_db_freed;
+  g_db_freed = NULL;
   if (p != NULL) {
     for (size_t i = 0; i < sizeof(struct arts_db_s); i++) {
       if (p[i] != FREED_FILL) {
@@ -108,27 +91,21 @@ static struct arts_db_s *new_db(void) {
   db->db_type = ARTS_DB;
   atomic_init(&db->cache.db_size, DB_SIZE);
   atomic_init(&db->cache.payload_pending, (uint8_t)1);
-#ifdef ARTS_DB_BUF_POOL
-  arts_lf_pool_init(&db->cache.buf_freelist);
-#endif
-  atomic_store_explicit(&g_db_live, db, memory_order_relaxed);
-  atomic_store_explicit(&g_db_frees, 0u, memory_order_relaxed);
-  atomic_store_explicit(&g_released, 0, memory_order_relaxed);
   return db;
 }
 
 /* What freeing a descriptor does to the buffer plane: the destructor drops
- * the slot's reference, then the storage is released. */
+ * the slot's reference, then the storage is freed (here: filled and held). */
 static void destroy(struct arts_db_s *db) {
   arts_shared_slot_store(&db->cache.buffer, NULL);
-  atomic_store_explicit(&g_released, 1, memory_order_release);
-  arts_db_buf_storage_release(&db->cache);
+  memset(db, FREED_FILL, sizeof(*db));
+  g_db_freed = (unsigned char *)db;
 }
 
-static void install(struct arts_db_s *db) {
+static void install(struct arts_db_s *db, uint64_t version) {
   unsigned char payload[DB_SIZE];
   memset(payload, 0x11, sizeof(payload));
-  check(arts_db_buf_install(&db->cache, 1u, payload, DB_SIZE) != NULL,
+  check(arts_db_buf_install(&db->cache, version, payload, DB_SIZE) != NULL,
         "install");
 }
 
@@ -139,14 +116,11 @@ static void *drop(void *arg) {
 }
 
 static _Atomic(int) g_go;
-/* One distinct buffer per racer, so the parks themselves race each other
- * and the destroy, not one buffer's reference count. */
 static void *racer(void *arg) {
   while (!atomic_load_explicit(&g_go, memory_order_acquire)) {
     sched_yield();
   }
-  arts_db_buf_landing_return((struct arts_db_buffer_s *)arg);
-  return NULL;
+  return drop(arg);
 }
 
 static void spawn(pthread_t *t, void *(*fn)(void *), void *arg) {
@@ -161,159 +135,68 @@ int main(void) {
   setvbuf(stdout, NULL, _IONBF, 0);
   /* 1 */
   struct arts_db_s *db = new_db();
-  install(db);
+  install(db, 1u);
   arts_shared_ptr_t held = arts_db_buf_acquire(&db->cache);
   destroy(db);
-#ifdef ARTS_DB_BUF_POOL
-  check(atomic_load_explicit(&g_db_frees, memory_order_relaxed) == 0u,
-        "the storage went while a buffer drawn from it was out");
-#endif
+  check(pool_out() == 1, "the destroy ended a buffer still held");
   arts_shared_release(&held);
-  check(atomic_load_explicit(&g_db_frees, memory_order_relaxed) == 1u,
-        "the storage was not freed exactly once after the late drop");
   settle("a drop after the destroy");
 
   /* 2 */
   db = new_db();
-  install(db);
+  install(db, 1u);
   destroy(db);
-  check(atomic_load_explicit(&g_db_frees, memory_order_relaxed) == 1u,
-        "a destroy with nothing out did not free the storage exactly once");
+  check(pool_out() == 0, "a destroy with nothing out kept its buffer");
   settle("a destroy with nothing out");
 
   /* 3 */
   db = new_db();
-  install(db);
+  install(db, 1u);
   held = arts_db_buf_acquire(&db->cache);
   destroy(db);
   pthread_t t;
   spawn(&t, drop, held);
   pthread_join(t, NULL);
-  check(atomic_load_explicit(&g_db_frees, memory_order_relaxed) == 1u,
-        "a late drop on another thread did not free the storage once");
   settle("a late drop on another thread");
 
   /* 4 */
   for (int round = 0; round < RACE_ROUNDS && !fail; round++) {
     db = new_db();
-    install(db);
+    install(db, 1u);
     pthread_t th[RACERS];
-    struct arts_db_buffer_s *out[RACERS];
-    struct arts_db_buffer_s *parked[PARKED];
-    struct arts_rdzv_landing_s r;
     atomic_store_explicit(&g_go, 0, memory_order_relaxed);
     for (int i = 0; i < RACERS; i++) {
-      out[i] = arts_db_buf_landing_alloc(&db->cache, DB_SIZE, &r);
-    }
-    /* Where the arm keeps a list, parked buffers make the destroy's drain
-     * long enough for the parks to land inside it. */
-    for (int i = 0; i < PARKED; i++) {
-      parked[i] = arts_db_buf_landing_alloc(&db->cache, DB_SIZE, &r);
-    }
-    for (int i = 0; i < PARKED; i++) {
-      arts_db_buf_landing_return(parked[i]);
-    }
-    for (int i = 0; i < RACERS; i++) {
-      spawn(&th[i], racer, out[i]);
+      spawn(&th[i], racer, arts_db_buf_acquire(&db->cache));
     }
     atomic_store_explicit(&g_go, 1, memory_order_release);
     destroy(db);
     for (int i = 0; i < RACERS; i++) {
       pthread_join(th[i], NULL);
     }
-    check(atomic_load_explicit(&g_db_frees, memory_order_relaxed) == 1u,
-          "racing late drops did not free the storage exactly once");
     settle("late drops racing the destroy");
   }
 
   /* 5 */
-  db = new_db();
   struct arts_rdzv_landing_s rdzv;
-  struct arts_db_buffer_s *l1 =
-      arts_db_buf_landing_alloc(&db->cache, DB_SIZE, &rdzv);
-  arts_db_buf_landing_return(l1);
-  struct arts_db_buffer_s *l2 =
-      arts_db_buf_landing_alloc(&db->cache, DB_SIZE, &rdzv);
-#ifdef ARTS_DB_BUF_POOL
-  check(l2 == l1, "an unused landing was not handed out again");
-#endif
-  arts_db_buf_landing_return(l2);
-  destroy(db);
-  check(atomic_load_explicit(&g_db_frees, memory_order_relaxed) == 1u,
-        "the storage was not freed exactly once after a landing round");
+  struct arts_db_buffer_s *l = arts_db_buf_landing_alloc(DB_SIZE, &rdzv);
+  check(pool_out() == 1, "a landing was not drawn from the registered pool");
+  arts_db_buf_landing_return(l);
+  check(pool_out() == 0, "a landing returned unused was kept");
   settle("a landing returned unused");
 
-#ifdef ARTS_DB_BUF_POOL
   /* 6 */
   db = new_db();
-  struct arts_db_buffer_s *small =
-      arts_db_buf_landing_alloc(&db->cache, DB_SIZE / 4, &rdzv);
-  arts_db_buf_landing_return(small);
-  struct arts_db_buffer_s *big =
-      arts_db_buf_landing_alloc(&db->cache, DB_SIZE, &rdzv);
-  check(big != small, "a parked buffer too small for a draw was handed out");
-  struct arts_db_buffer_s *spare =
-      arts_db_buf_landing_alloc(&db->cache, DB_SIZE, &rdzv);
-  arts_db_buf_landing_return(spare);
+  install(db, 3u);
+  l = arts_db_buf_landing_alloc(DB_SIZE, &rdzv);
+  check(!arts_db_buf_adopt_landing(&db->cache, 1u, l, DB_SIZE),
+        "a landing was adopted over an installed buffer");
+  check(pool_out() == 1, "a landing adopted over a buffer was kept");
+  l = arts_db_buf_landing_alloc(DB_SIZE, &rdzv);
+  check(arts_db_buf_install_landed(&db->cache, 2u, l, DB_SIZE) != l,
+        "a stale landing displaced a newer buffer");
+  check(pool_out() == 1, "a stale landing was kept");
   destroy(db);
-  check(atomic_load_explicit(&g_pool_out, memory_order_relaxed) == 1,
-        "the destroy kept parked or set-aside buffers while one was out");
-  arts_db_buf_landing_return(big);
-  check(atomic_load_explicit(&g_db_frees, memory_order_relaxed) == 1u,
-        "the storage was not freed exactly once after a size round");
-  settle("a parked buffer too small for a later draw");
-
-  /* 7 */
-  for (int adopt = 0; adopt < 2; adopt++) {
-    struct arts_db_s *from = new_db();
-    struct arts_db_buffer_s *moved =
-        arts_db_buf_landing_alloc(&from->cache, DB_SIZE, &rdzv);
-    destroy(from);
-    db = new_db();
-    if (adopt) {
-      check(arts_db_buf_adopt_landing(&db->cache, 1u, moved, DB_SIZE),
-            "a landing from another cache was not adopted");
-    } else {
-      check(arts_db_buf_install_landed(&db->cache, 2u, moved, DB_SIZE) ==
-                moved,
-            "a landing from another cache was not installed");
-    }
-    destroy(db);
-    check(atomic_load_explicit(&g_db_frees, memory_order_relaxed) == 1u,
-          "a buffer installed in another cache changed that cache's storage");
-    settle("a buffer installed in another cache");
-  }
-
-  /* 8 */
-  db = new_db();
-  struct arts_db_buffer_s *twice =
-      arts_db_buf_landing_alloc(&db->cache, DB_SIZE, &rdzv);
-  /* A SIGCHLD ignored by whoever started the test would reap the child before
-   * waitpid could see how it ended. */
-  signal(SIGCHLD, SIG_DFL);
-  /* The child would print its inherited unflushed output again on reopening
-   * its streams. */
-  fflush(stdout);
-  fflush(stderr);
-  pid_t pid = fork();
-  if (pid == 0) {
-    (void)freopen("/dev/null", "w", stdout);
-    (void)freopen("/dev/null", "w", stderr);
-    arts_db_buf_landing_return(twice);
-    arts_db_buf_landing_return(twice);
-    _exit(0);
-  }
-  int status = 0;
-  int waited = pid > 0 && waitpid(pid, &status, 0) == pid;
-  check(waited, "the child that ends a buffer twice could not be waited for");
-  check(!waited || !(WIFEXITED(status) && WEXITSTATUS(status) == 0),
-        "a buffer ended twice was parked twice");
-  arts_db_buf_landing_return(twice);
-  destroy(db);
-  check(atomic_load_explicit(&g_db_frees, memory_order_relaxed) == 1u,
-        "the storage was not freed exactly once after a double end");
-  settle("a drawn buffer ended twice");
-#endif
+  settle("a landing that loses to the installed buffer");
 
   printf(fail ? "FAIL buffer_outlives_cache\n"
               : "PASS buffer_outlives_cache\n");
@@ -321,33 +204,9 @@ int main(void) {
 }
 
 /* libc-backed alloc shims, so the test links without the runtime; the
- * descriptor free is held back (see settle) and the registered pool counted. */
+ * registered pool is counted. */
 void *arts_calloc(size_t nmemb, size_t size) { return calloc(nmemb, size); }
 void arts_free(void *ptr) { free(ptr); }
-void arts_db_descriptor_free(struct arts_db_s *db) {
-  void *ptr = db;
-  void *live = ptr;
-  if (ptr != NULL && atomic_compare_exchange_strong_explicit(
-                         &g_db_live, &live, NULL, memory_order_acq_rel,
-                         memory_order_relaxed)) {
-    if (!atomic_load_explicit(&g_released, memory_order_acquire)) {
-      /* Whatever runs next would read the storage; stop at the verdict. */
-      printf("FAIL: the storage was freed before its release\n");
-      exit(1);
-    }
-    atomic_fetch_add_explicit(&g_db_frees, 1u, memory_order_relaxed);
-    memset(ptr, FREED_FILL, sizeof(struct arts_db_s));
-    atomic_store_explicit(&g_db_freed, ptr, memory_order_release);
-    return;
-  }
-  if (ptr != NULL &&
-      ptr == atomic_load_explicit(&g_db_freed, memory_order_acquire)) {
-    /* A second free: counted, not done. */
-    atomic_fetch_add_explicit(&g_db_frees, 1u, memory_order_relaxed);
-    return;
-  }
-  free(ptr);
-}
 void *arts_malloc_aligned(size_t size, size_t align) {
   void *p = NULL;
   size_t a = align < sizeof(void *) ? sizeof(void *) : align;

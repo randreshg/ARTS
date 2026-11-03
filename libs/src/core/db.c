@@ -296,14 +296,14 @@ void arts_db_free(void *ptr) {
    * carries coherence state; other subtypes leave the embedded cache zeroed.
    * The cache is embedded by value as the first member of db_s, so the
    * destructor tears down its sub-resources (the buffer slot's shared_ptr ref +
-   * home_s) in place, and the storage release reclaims the db_s. */
+   * home_s) in place, and the descriptor free reclaims the db_s. */
   if (db->db_type == ARTS_DB) {
 #ifdef ARTS_DEBUG_DB_QUARANTINE
     atomic_fetch_add_explicit(&g_db_descriptors_ended, 1u,
                               memory_order_relaxed);
 #endif
     arts_db_cache_destructor(&db->cache);
-    arts_db_buf_storage_release(&db->cache);
+    arts_db_descriptor_free(db);
     return;
   }
 #ifdef ARTS_USE_GPU

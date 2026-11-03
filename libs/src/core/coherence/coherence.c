@@ -127,11 +127,6 @@ void arts_db_cache_common_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
 #if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
   arts_db_reader_pool_init(&c->reader_pool);
 #endif
-#ifdef ARTS_DB_BUF_POOL
-  arts_lf_pool_init(&c->buf_freelist);
-  arts_lf_stack_init(&c->buf_retired);
-  atomic_init(&c->buf_holds, 0u);
-#endif
   /* Initialize the inlined home-directory fields only on the rank that owns
    * this DB's GUID home; non-home ranks leave db_self->home_initialized false
    * (and allocate only the cache-only stub, so the home fields don't exist).
@@ -1205,9 +1200,7 @@ void arts_db_cover_home_teardown(struct arts_db_s *db) {
  * and lives in each arm's own TU.  The agnostic steps split into pre
  * (the buffer-NULL that must run first) and post (snapshot drain + home
  * teardown), so the per-arm wrapper runs pre, its own teardown, then post.
- * The descriptor's storage is released after the wrapper returns
- * (arts_db_buf_storage_release): freed at once, or, where the arm keeps a
- * per-DB free-list, once no buffer drawn from it is still out. */
+ * The descriptor's storage is freed after the wrapper returns. */
 
 #if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV) ||               \
     defined(ARTS_PROTOCOL_EXCL)
@@ -1225,10 +1218,6 @@ void arts_db_cache_common_destroy_pre(struct arts_db_cache_s *cache) {
    * a resurrected cache that its payload is already there. */
   atomic_store_explicit(&cache->payload_pending, (uint8_t)1,
                         memory_order_release);
-  /* Where the arm keeps a free-list it is not drained here: the storage
-   * release that follows the destructor drains whatever is parked then, and
-   * a buffer still out (a transfer's completion holding it) parks later,
-   * the last of them freeing the storage. */
 }
 #endif /* arms sharing the common cache shape */
 

@@ -1,13 +1,12 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * arts_lf_pool_head_t is a REAL lock-free 128-bit DWCAS, not a
- * libatomic-locked emulation (lockfree_pool.h).
+ * arts_shared_slot_t is updated by a REAL lock-free 128-bit DWCAS, not a
+ * libatomic-locked emulation (shared.h).
  *
- * The whole ABA-defense argument of arts_lockfree_pool_t rests on the 16-byte
- * (ptr,tag) head being updated with a genuine lock-free cmpxchg16b / ldxp+stxp.
- * If a build links the libatomic LOCKED fallback, the pool still works but the
- * "lock-free" claim is void — a build-config (-mcx16) regression that this
- * test catches.
+ * Split reference counting rests on the 16-byte (cb, ext) slot word being
+ * updated with a genuine lock-free cmpxchg16b / ldxp+stxp.  If a build links
+ * the libatomic LOCKED fallback, the slot still works but the "lock-free"
+ * claim is void — a build-config (-mcx16) regression that this test catches.
  *
  * Toolchain behaviour this test is written against: GCC/Clang emit a libcall
  * (__atomic_compare_exchange_16) for 16-byte atomics even with -mcx16, and
@@ -28,7 +27,7 @@
  * (mirrors the global build flag).
  */
 
-#include "arts/utils/lockfree_pool.h"
+#include "arts/utils/shared.h"
 
 #include "arts/utils/stdatomic_compat.h"
 #include <stddef.h>
@@ -38,30 +37,16 @@
 #include <cpuid.h>
 #endif
 
-/* libc-backed shims so the header's batch/alloc inline fns link standalone
- * (they are not exercised here, but the TU references arts_calloc/arts_free
- * through the inline bodies if instantiated). */
-#include <stdlib.h>
-void *arts_calloc(size_t nmemb, size_t size) { return calloc(nmemb, size); }
-void *arts_calloc_aligned(size_t nmemb, size_t size, size_t align) {
-  void *p = NULL;
-  if (posix_memalign(&p, align, nmemb * size) != 0) {
-    return NULL;
-  }
-  return p;
-}
-void arts_free(void *ptr) { free(ptr); }
-
-_Static_assert(sizeof(arts_lf_pool_head_t) == 16,
-               "DWCAS head must be 16 bytes");
-_Static_assert(_Alignof(arts_lf_pool_head_t) == 16,
-               "DWCAS head must be 16-aligned");
+_Static_assert(sizeof(arts_shared_slot_t) == 16,
+               "the slot word must be 16 bytes");
+_Static_assert(_Alignof(arts_shared_slot_t) == 16,
+               "the slot word must be 16-aligned");
 
 int main(void) {
-  /* A real, properly-aligned _Atomic head object — the exact field type used
-   * inside arts_lockfree_pool_t. */
-  _Atomic(arts_lf_pool_head_t) head;
-  arts_lf_pool_head_t init = {.ptr = NULL, .tag = 0};
+  /* A real, properly-aligned _Atomic slot word — the exact type a shared
+   * slot is. */
+  _Atomic(arts_shared_slot_t) head;
+  arts_shared_slot_t init = {.cb = NULL, .ext = 0};
   atomic_store_explicit(&head, init, memory_order_relaxed);
 
   /* The genuine "not a real DWCAS" defect is the CPU lacking CX16 — then
@@ -71,14 +56,15 @@ int main(void) {
   {
     unsigned int eax = 0, ebx = 0, ecx = 0, edx = 0;
     if (!__get_cpuid(1, &eax, &ebx, &ecx, &edx)) {
-      (void)fprintf(stderr, "FAIL lf_pool_dwcas: CPUID leaf 1 unavailable\n");
+      (void)fprintf(stderr,
+                    "FAIL shared_slot_dwcas: CPUID leaf 1 unavailable\n");
       return 1;
     }
     if ((ecx & bit_CMPXCHG16B) == 0) {
       (void)fprintf(stderr,
-                    "FAIL lf_pool_dwcas: CPU lacks CX16 — libatomic uses a "
-                    "LOCKED mutex-table fallback; the pool's 128-bit ABA "
-                    "defense is not lock-free on this machine.\n");
+                    "FAIL shared_slot_dwcas: CPU lacks CX16 — libatomic uses a "
+                    "LOCKED mutex-table fallback; the slot's 128-bit "
+                    "update is not lock-free on this machine.\n");
       return 1;
     }
   }
@@ -90,43 +76,43 @@ int main(void) {
   int compiler_lockfree = atomic_is_lock_free(&head);
 
   /* Sanity: a DWCAS actually swaps both lanes atomically. */
-  arts_lf_pool_head_t expected = init;
-  arts_lf_pool_head_t desired = {.ptr = (arts_lf_link_t *)0x10, .tag = 1};
+  arts_shared_slot_t expected = init;
+  arts_shared_slot_t desired = {.cb = (arts_shared_ptr_t)0x10, .ext = 1};
   if (!atomic_compare_exchange_strong_explicit(&head, &expected, desired,
                                                memory_order_acq_rel,
                                                memory_order_relaxed)) {
-    (void)fprintf(stderr, "FAIL lf_pool_dwcas: initial DWCAS unexpectedly "
+    (void)fprintf(stderr, "FAIL shared_slot_dwcas: initial DWCAS unexpectedly "
                           "failed\n");
     return 1;
   }
-  arts_lf_pool_head_t now = atomic_load_explicit(&head, memory_order_relaxed);
-  if (now.ptr != (arts_lf_link_t *)0x10 || now.tag != 1) {
+  arts_shared_slot_t now = atomic_load_explicit(&head, memory_order_relaxed);
+  if (now.cb != (arts_shared_ptr_t)0x10 || now.ext != 1) {
     (void)fprintf(stderr,
-                  "FAIL lf_pool_dwcas: DWCAS did not swap both lanes "
-                  "(ptr=%p tag=%zu)\n",
-                  (void *)now.ptr, (size_t)now.tag);
+                  "FAIL shared_slot_dwcas: DWCAS did not swap both lanes "
+                  "(cb=%p ext=%zu)\n",
+                  (void *)now.cb, (size_t)now.ext);
     return 1;
   }
 
-  /* A DWCAS against a stale expectation (right pointer, old tag) must fail,
+  /* A DWCAS against a stale expectation (right pointer, old count) must fail,
    * leave both lanes untouched, and hand back the current value. */
-  arts_lf_pool_head_t stale = {.ptr = (arts_lf_link_t *)0x10, .tag = 0};
-  arts_lf_pool_head_t other = {.ptr = (arts_lf_link_t *)0x20, .tag = 2};
+  arts_shared_slot_t stale = {.cb = (arts_shared_ptr_t)0x10, .ext = 0};
+  arts_shared_slot_t other = {.cb = (arts_shared_ptr_t)0x20, .ext = 2};
   if (atomic_compare_exchange_strong_explicit(
           &head, &stale, other, memory_order_acq_rel, memory_order_relaxed)) {
-    (void)fprintf(stderr, "FAIL lf_pool_dwcas: DWCAS succeeded against a "
-                          "stale tag\n");
+    (void)fprintf(stderr, "FAIL shared_slot_dwcas: DWCAS succeeded against "
+                          "a stale count\n");
     return 1;
   }
   now = atomic_load_explicit(&head, memory_order_relaxed);
-  if (now.ptr != (arts_lf_link_t *)0x10 || now.tag != 1 ||
-      stale.ptr != (arts_lf_link_t *)0x10 || stale.tag != 1) {
+  if (now.cb != (arts_shared_ptr_t)0x10 || now.ext != 1 ||
+      stale.cb != (arts_shared_ptr_t)0x10 || stale.ext != 1) {
     (void)fprintf(stderr,
-                  "FAIL lf_pool_dwcas: a failed DWCAS changed the slot or "
-                  "misreported it (slot ptr=%p tag=%zu, reported ptr=%p "
-                  "tag=%zu)\n",
-                  (void *)now.ptr, (size_t)now.tag, (void *)stale.ptr,
-                  (size_t)stale.tag);
+                  "FAIL shared_slot_dwcas: a failed DWCAS changed the slot or "
+                  "misreported it (slot cb=%p ext=%zu, reported cb=%p "
+                  "ext=%zu)\n",
+                  (void *)now.cb, (size_t)now.ext, (void *)stale.cb,
+                  (size_t)stale.ext);
     return 1;
   }
 
@@ -135,7 +121,7 @@ int main(void) {
 #else
   const char *cx16 = "";
 #endif
-  printf("PASS lf_pool_dwcas: %s16-byte DWCAS swaps both lanes "
+  printf("PASS shared_slot_dwcas: %s16-byte DWCAS swaps both lanes "
          "atomically (compiler atomic_is_lock_free=%d — 0 expected on "
          "GCC/Clang x86-64 by design)\n",
          cx16, compiler_lockfree);

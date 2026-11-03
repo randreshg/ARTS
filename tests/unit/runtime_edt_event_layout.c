@@ -12,8 +12,8 @@
  * the C runtime.  The two compilations must therefore lay every struct out
  * byte for byte alike: a member whose `std::atomic<T>` differs from
  * `_Atomic(T)` in size or alignment silently corrupts whatever the two sides
- * share.  Covered: the lock-free primitives (link, stack, MPSC queue, tagged
- * pool, shared-pointer slot, rank bit-set), the EDT and event descriptors,
+ * share.  Covered: the lock-free primitives (link, stack, MPSC queue,
+ * shared-pointer slot, rank bit-set), the EDT and event descriptors,
  * the dependence slot and its acquire record, the event dependence node, the
  * route table and its items, the runtime's shared, per-thread and shutdown
  * state, and the counter cell.  The DB descriptors depend on the coherence
@@ -41,7 +41,6 @@
 #include "arts/rank_bitset.h"
 #include "arts/runtime_state.h"
 #include "arts/runtime_types.h"
-#include "arts/utils/lockfree_pool.h"
 #include "arts/utils/mpsc.h"
 #include "arts/utils/shared.h"
 
@@ -192,9 +191,6 @@ static void print_fingerprint(void) {
   MEMBER(arts_mpsc_t, head);
   MEMBER(arts_mpsc_t, tail);
   MEMBER(arts_mpsc_t, stub);
-  TYPE(arts_lf_pool_head_t);
-  TYPE(arts_lockfree_pool_t);
-  MEMBER(arts_lockfree_pool_t, head);
   TYPE(arts_shared_slot_t);
   TYPE(_Atomic(arts_shared_slot_t));
   TYPE(rank_bitset_t);

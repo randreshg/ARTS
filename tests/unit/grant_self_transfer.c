@@ -123,7 +123,7 @@ UNREACHED(struct arts_db_buffer_s *arts_db_buf_install_landed(
     struct arts_db_cache_s *c, uint64_t v, struct arts_db_buffer_s *l,
     uint64_t s))
 UNREACHED(struct arts_db_buffer_s *arts_db_buf_landing_alloc(
-    struct arts_db_cache_s *c, uint64_t s, struct arts_rdzv_landing_s *o))
+    uint64_t s, struct arts_rdzv_landing_s *o))
 UNREACHED(bool arts_db_buf_ensure(struct arts_db_cache_s *c, uint64_t s))
 UNREACHED(void *arts_db_acquire_local(struct arts_db_cache_s *c))
 UNREACHED(uint64_t arts_db_first_fetch_size(const struct arts_db_cache_s *c))

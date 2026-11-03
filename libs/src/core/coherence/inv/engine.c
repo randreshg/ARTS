@@ -761,8 +761,8 @@ void arts_handler_db_inv_cts(struct arts_msg_inv_cts_packet_s *p) {
 }
 
 /* Publish + whole-chain grab: install the landed payload (home-issued
- * install-lane version; a stale install retreats and recycles), then ONE
- * word CAS takes {REQ->VALID, chain head -> 0} together.  The kill-marked
+ * install-lane version; a stale install retreats and ends its landing), then
+ * ONE word CAS takes {REQ->VALID, chain head -> 0} together.  The kill-marked
  * variant serves its cohort once, then executes the reserved purge and the
  * owed ack — the ack LAST, so the round that killed this fetch cannot finish
  * (and nothing newer can complete) until the doomed serve is done.  Runs
@@ -1068,7 +1068,7 @@ void arts_send_db_inv_request(struct arts_db_cache_s *cache,
   struct arts_rdzv_landing_s rdzv = {0, 0, 0, 0};
   /* A FRESH landing per fetch: reception isolation when a read reply and an
    * ownership transfer are in flight together (each PUT lands in its own
-   * buffer, installed or recycled at commit).  Sized by the exact size when
+   * buffer, installed or returned at commit).  Sized by the exact size when
    * known, else the GUID's szhint bound; txid==0 survives only as the
    * sentinel fallback (the home answers INV_CTS and the fetch re-issues).
    *
@@ -1084,7 +1084,7 @@ void arts_send_db_inv_request(struct arts_db_cache_s *cache,
    * unanswered if the create that claims this cache is this rank's. */
   if (fetch_size != 0 && arts_global_rank_count > 1 &&
       (cover & ARTS_COVER_PRECLAIM) == 0u) {
-    (void)arts_db_buf_landing_alloc(cache, fetch_size, &rdzv);
+    (void)arts_db_buf_landing_alloc(fetch_size, &rdzv);
   }
   uint64_t token = arts_db_token(arts_db_of_cache(cache));
   if (home_rank == arts_global_rank_id) {
