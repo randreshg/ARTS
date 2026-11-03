@@ -1324,11 +1324,25 @@ if(ARTS_MALLOC STREQUAL "mimalloc")
         TIMEOUT 120
         RESOURCE_LOCK "pure_unit_test"
         PASS_REGULAR_EXPRESSION "PASS allocator_error_abort: all [0-9]+ modes")
+    # The arena path's uniform binding and slab-range guard, read against
+    # the pool's own state: it includes the pool's source, so it links the
+    # allocator and the fabric library directly, never the runtime.
+    add_executable(regpool_fast_path unit/regpool_fast_path.c)
+    target_include_directories(regpool_fast_path PRIVATE
+        ${ARTS_PUBLIC_INCLUDE_DIR} ${ARTS_INTERNAL_INCLUDE_DIR}
+        ${ARTS_BUILD_INTERNAL_INCLUDE_DIR})
+    arts_apply_protocol(regpool_fast_path ${ARTS_COHERENCE_ARM} ${ARTS_WRITE_POLICY} ${ARTS_RELEASE_POLICY})
+    target_link_libraries(regpool_fast_path PRIVATE
+        Threads::Threads mimalloc-static arts::libfabric ${RT_LIBRARY})
+    target_link_options(regpool_fast_path PRIVATE ${_regpool_sim_wrap})
+    register_pure_unit_test(regpool_fast_path TIMEOUT 60)
+    set_tests_properties(regpool_fast_path PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS regpool_fast_path")
     set(_regpool_numa_tests regpool_basic regpool_lazy_carve
         regpool_ladder regpool_fallback_order regpool_spill_cycle
         regpool_spill_target regpool_direct_oversize regpool_theap_no_room
         regpool_room_per_thread regpool_grow_helpers regpool_decline_record
-        ${_allocator_error_tests})
+        regpool_fast_path ${_allocator_error_tests})
     if(ARTS_DEBUG_INJECTION)
         # Eviction of retired mappings and the unplaced fallback behind it,
         # driven by the force-full override on one node and on two.
