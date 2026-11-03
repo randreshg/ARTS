@@ -120,6 +120,18 @@ Execution Guarantees
 
 - An EDT runs **exactly once** (or not at all if destroyed before firing).
 - The runtime does **not** preempt a running EDT.
+- A CPU EDT's body **runs to completion on the worker thread that starts
+  it**: the runtime never switches its stack or moves it to another thread.
+  A call the body makes may wait on that thread (a data-block release until
+  the home has answered, or until the shutdown abandons the wait); none runs
+  another body or leaves the thread. A GPU EDT's releases of its
+  dependences, after its kernel, run on the CUDA callback thread.
+- No runtime call runs another EDT's body inline: a call that makes an EDT
+  ready (a create, a satisfy, an added dependence, a release that serves a
+  waiting acquire) only queues it, and bodies run only from a worker's
+  scheduler loop. Any other EDT, even one the body creates or makes ready,
+  may run on a different worker, so a body must not expect thread-local
+  state it sets to carry over to another EDT.
 - EDTs are **node-affine**: the function executes on the node specified
   at creation time.
 - Static parameters are copied at creation; the runtime owns the copy.
