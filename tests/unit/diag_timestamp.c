@@ -3,17 +3,13 @@
  * arts_get_time_stamp and arts_printf's line integrity, from
  * libs/src/core/utils/diag.c.
  *
- * arts_get_time_stamp() returns clock_gettime(CLOCK_REALTIME) folded to
+ * arts_get_time_stamp() returns clock_gettime(CLOCK_MONOTONIC) folded to
  * nanoseconds (tv_sec*1e9 + tv_nsec).  Properties:
- *   A. Per-thread non-decreasing (best-effort): within a single thread,
- *      consecutive samples must be monotonically non-decreasing under normal
- *      conditions.  REALTIME can step backward on an NTP adjustment, so this
- *      is documented as best-effort: a single backward step is reported as a
- *      NOTE, not a hard failure; the test only hard-fails
- *      if the clock is grossly broken (every sample identical for a long busy
- *      loop would indicate the fold math collapsed, or a huge backward jump).
- *   B. Folding sanity: the value is a plausible ns-since-epoch (> year 2020,
- *      < year 2200) so the tv_sec*NANOSECS multiply did not overflow/garble.
+ *   A. Per-thread non-decreasing: within a single thread, consecutive samples
+ *      never decrease (the clock is monotonic, so any backward step fails).
+ *   B. Source and fold: every sample lies between two CLOCK_MONOTONIC reads
+ *      folded the same way, one taken before it and one after, so the call
+ *      reads that clock and the tv_sec*NANOSECS multiply did not garble it.
  *   C. Resolution: across many threads sampling concurrently the call is
  *      thread-safe (no shared mutable state) — ASan/TSan must stay clean.
  *
@@ -30,10 +26,12 @@
 #include "arts/utils/stdatomic_compat.h"
 #include <inttypes.h>
 #include <pthread.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 /* Block the heavy headers diag.c pulls in and stub the one symbol it needs. */
@@ -43,38 +41,41 @@ unsigned int arts_global_rank_id = 0;
 
 #include "../../libs/src/core/utils/diag.c"
 
-/* ---- year bounds for the fold sanity check ---- */
-#define NS_PER_SEC 1000000000ull
-#define SEC_2020 1577836800ull /* 2020-01-01 UTC */
-#define SEC_2200 7258118400ull /* ~2200 */
-
-/* ---- Part A/C: per-thread monotonicity under concurrent sampling ---- */
+/* ---- Part A/B/C: monotonicity and source under concurrent sampling ---- */
 #define MONO_THREADS 8
 #define MONO_SAMPLES 200000
+#define BRACKET_EVERY 1000 /* every this many samples is bracketed */
 
 static _Atomic(int) g_gate;
-static _Atomic(uint_least64_t)
-    g_backward_steps;             /* observed REALTIME regressions */
-static _Atomic(int) g_hard_break; /* gross failure flag */
+static _Atomic(uint_least64_t) g_backward_steps; /* samples below the last */
+static _Atomic(uint_least64_t) g_outside;        /* samples off the bracket */
+
+static uint64_t monotonic_ns(void) {
+  struct timespec ts;
+  (void)clock_gettime(CLOCK_MONOTONIC, &ts);
+  return ((uint64_t)ts.tv_sec * 1000000000ull) + (uint64_t)ts.tv_nsec;
+}
 
 static void *mono_worker(void *arg) {
   (void)arg;
   while (atomic_load_explicit(&g_gate, memory_order_acquire) == 0) {
   }
   uint64_t prev = arts_get_time_stamp();
-  if (prev < SEC_2020 * NS_PER_SEC || prev > SEC_2200 * NS_PER_SEC) {
-    atomic_store_explicit(&g_hard_break, 1, memory_order_release);
-  }
   for (int i = 0; i < MONO_SAMPLES; i++) {
+    uint64_t before = 0, after = 0;
+    bool bracket = (i % BRACKET_EVERY) == 0;
+    if (bracket) {
+      before = monotonic_ns();
+    }
     uint64_t now = arts_get_time_stamp();
-    if (now < prev) {
-      uint64_t delta = prev - now;
-      atomic_fetch_add_explicit(&g_backward_steps, 1, memory_order_relaxed);
-      /* A gross backward jump (> 1s) is not an NTP micro-adjust; treat as a
-       * hard failure of the fold math / clock source. */
-      if (delta > NS_PER_SEC) {
-        atomic_store_explicit(&g_hard_break, 1, memory_order_release);
+    if (bracket) {
+      after = monotonic_ns();
+      if (now < before || now > after) {
+        atomic_fetch_add_explicit(&g_outside, 1, memory_order_relaxed);
       }
+    }
+    if (now < prev) {
+      atomic_fetch_add_explicit(&g_backward_steps, 1, memory_order_relaxed);
     }
     prev = now;
   }
@@ -100,10 +101,10 @@ static void *printf_worker(void *arg) {
 int main(void) {
   int rc = 0;
 
-  /* ===== Part A/C: monotonicity (best-effort) under concurrency. ===== */
+  /* ===== Part A/B/C: monotonicity and source under concurrency. ===== */
   atomic_init(&g_gate, 0);
   atomic_init(&g_backward_steps, 0);
-  atomic_init(&g_hard_break, 0);
+  atomic_init(&g_outside, 0);
   {
     pthread_t th[MONO_THREADS];
     for (int i = 0; i < MONO_THREADS; i++) {
@@ -114,20 +115,21 @@ int main(void) {
       pthread_join(th[i], NULL);
     }
   }
-  if (atomic_load_explicit(&g_hard_break, memory_order_acquire)) {
-    (void)fprintf(stderr,
-                  "FAIL diag_timestamp: timestamp out of plausible range or "
-                  "gross (>1s) backward jump — fold math / clock source\n");
-    rc = 1;
-  }
   uint64_t back = atomic_load_explicit(&g_backward_steps, memory_order_relaxed);
   if (back != 0) {
-    /* Best-effort caveat: REALTIME may step back on NTP adjust.  Document, do
-     * not fail (small steps only — gross ones already set g_hard_break). */
     (void)fprintf(stderr,
-                  "NOTE diag_timestamp: %" PRIu64 " small REALTIME backward "
-                  "step(s) observed (best-effort monotonicity caveat)\n",
+                  "FAIL diag_timestamp: %" PRIu64 " sample(s) below the "
+                  "previous one on the same thread\n",
                   back);
+    rc = 1;
+  }
+  uint64_t outside = atomic_load_explicit(&g_outside, memory_order_relaxed);
+  if (outside != 0) {
+    (void)fprintf(stderr,
+                  "FAIL diag_timestamp: %" PRIu64 " sample(s) outside the "
+                  "CLOCK_MONOTONIC reads around them\n",
+                  outside);
+    rc = 1;
   }
 
   /* ===== Part D: arts_printf line integrity. ===== */
@@ -195,8 +197,7 @@ int main(void) {
   if (rc) {
     return 1;
   }
-  printf("PASS diag_timestamp: per-thread non-decreasing (best-effort), fold "
-         "in plausible range, thread-safe concurrent sampling; arts_printf "
-         "lines whole\n");
+  printf("PASS diag_timestamp: per-thread non-decreasing, CLOCK_MONOTONIC "
+         "source, thread-safe concurrent sampling; arts_printf lines whole\n");
   return 0;
 }

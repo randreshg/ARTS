@@ -62,7 +62,7 @@ int arts_printf(const char *format, ...) {
 
 uint64_t arts_get_time_stamp() {
   struct timespec res;
-  (void)clock_gettime(CLOCK_REALTIME, &res);
+  (void)clock_gettime(CLOCK_MONOTONIC, &res);
   uint64_t time_res = (res.tv_sec * NANOSECS) + res.tv_nsec;
   return time_res;
 }

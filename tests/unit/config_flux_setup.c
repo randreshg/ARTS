@@ -12,6 +12,8 @@
 ///     override (the cfg's worker/progress counts govern)
 ///   - hostlist delimiters are normalized (spaces, tabs, commas alike)
 ///   - task count != node count            -> rejected (one task per node)
+///   - a node or task count that is not a positive integer (zero, a sign,
+///     surrounding text, a value past an unsigned int) -> rejected
 ///   - hostlist host count != node count   -> rejected
 ///   - empty / failing / absent flux CLI   -> rejected
 ///   - a non-expanded (bracketed) hostlist -> rejected
@@ -34,6 +36,7 @@
 
 static char g_stub_dir[256];
 static char g_orig_path[4096];
+static char g_stub_path[4400];
 
 /* The stub prints $FLUX_STUB_HOSTLIST and exits $FLUX_STUB_RC, whatever the
  * subcommand — the runtime only ever asks it for `hostlist -e local`. */
@@ -59,10 +62,9 @@ static int write_stub_flux(void) {
   }
   const char *orig = getenv("PATH");
   snprintf(g_orig_path, sizeof(g_orig_path), "%s", orig ? orig : "");
-  char with_stub[4400];
-  snprintf(with_stub, sizeof(with_stub), "%s:%s", g_stub_dir,
+  snprintf(g_stub_path, sizeof(g_stub_path), "%s:%s", g_stub_dir,
            orig ? orig : "");
-  setenv("PATH", with_stub, 1);
+  setenv("PATH", g_stub_path, 1);
   return 0;
 }
 
@@ -249,7 +251,31 @@ int main(void) {
   setenv("PATH", "/nonexistent-config-flux-setup", 1);
   set_flux_env("0", "2", "2", "hostA hostB", "0");
   expect_rejected("flux-not-on-path", cfg_path, &fails);
-  setenv("PATH", g_orig_path, 1);
+  setenv("PATH", g_stub_path, 1);
+
+  /* (J) node and task counts must be positive integers, never a prefix or a
+     wrapped negative; leading zeros leave the count unchanged. */
+  static const char *const bad_counts[] = {"0",  "2x", "-1",        "+2",
+                                           " 2", "",   "4294967298"};
+  for (size_t i = 0; i < sizeof(bad_counts) / sizeof(bad_counts[0]); i++) {
+    char tag[64];
+    set_flux_env("0", bad_counts[i], NULL, "hostA hostB", "0");
+    snprintf(tag, sizeof(tag), "FLUX_JOB_NNODES='%s'", bad_counts[i]);
+    expect_rejected(tag, cfg_path, &fails);
+    set_flux_env("0", "2", bad_counts[i], "hostA hostB", "0");
+    snprintf(tag, sizeof(tag), "FLUX_JOB_SIZE='%s'", bad_counts[i]);
+    expect_rejected(tag, cfg_path, &fails);
+  }
+  set_flux_env("0", "002", "02", "hostA hostB", "0");
+  struct arts_config_s zeros;
+  arts_config_load(&zeros);
+  if (zeros.nodes != 2 || zeros.table_length != 2) {
+    printf("FAIL config_flux_setup: counts '002'/'02' read as %u node(s), "
+           "table_length %u, want 2\n",
+           zeros.nodes, zeros.table_length);
+    fails++;
+  }
+  arts_config_destroy(&zeros);
 
   (void)remove(cfg_path);
   remove_stub_flux();

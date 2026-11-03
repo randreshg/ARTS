@@ -1033,7 +1033,9 @@ unsigned int arts_get_total_numa_domains();
  */
 unsigned int arts_get_gpus_per_rank();
 
-/** @brief Return a monotonic timestamp in nanoseconds. */
+/** @brief Return a monotonic timestamp in nanoseconds.  Its origin is
+ *  unspecified, so only the difference of two stamps taken on one rank means
+ *  anything. */
 uint64_t arts_get_time_stamp();
 
 /** @} */ /* end util */

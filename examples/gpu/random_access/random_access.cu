@@ -359,7 +359,9 @@ void random_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_gpu_signal_edt_memset(next_random_guid, 0, depv[0].guid);
     // arts_signal_edt(next_random_guid, 0, depv[0].guid, DB_MODE_RW);
   } else {
-    arts_signal_edt(done_guid, (unsigned int)-1, NULL_GUID, DB_MODE_RW);
+    // sync_edt's slots past its num_tiles LC syncs take one GPU chain each.
+    arts_signal_edt(done_guid, (uint32_t)(num_tiles + index), NULL_GUID,
+                    DB_MODE_NULL);
   }
 }
 

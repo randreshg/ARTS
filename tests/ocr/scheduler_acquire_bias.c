@@ -1,8 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
  * scheduler_acquire_bias — single-node stress for the +1 acquire bias of an
- * EDT's acquire phase, and for the readiness wakes a dependence slot does not
- * carry.
+ * EDT's acquire phase, and for readiness wakes that carry no block.
  *
  * The +1 bias (arts_db_acquire_all stores acquire_remaining = 1 + the real
  * dep count, one store, before the seed loop fires anything) prevents a
@@ -13,9 +12,9 @@
  * resolve concurrently, and each EDT body must run EXACTLY ONCE.
  *
  * Beside them, a chain of EDTs takes one shared block for writing in turn,
- * each link woken by its predecessor through a NO_SLOT control satisfy: a
- * readiness decrement that names no dependence slot, counted in depc like
- * any other.  The resumed acquires push onto the resuming thread's own deque
+ * each link woken by its predecessor through a control satisfy of its wake
+ * slot (DB_MODE_NULL, no block): a readiness decrement with nothing to
+ * acquire.  The resumed acquires push onto the resuming thread's own deque
  * while the multi-dep EDTs keep every worker stealing and popping.  Every
  * link must run exactly once too.
  *
@@ -35,9 +34,10 @@
 
 #include "arts.h"
 
-#define MULTI_EDTS 48 /* EDTs exercising the multi-dep +1 bias race */
-#define DEPS_PER 6    /* RW DBs each multi-dep EDT acquires (+ state) */
-#define CHAIN_LEN 64  /* links of the NO_SLOT-woken write chain */
+#define MULTI_EDTS 48     /* EDTs exercising the multi-dep +1 bias race */
+#define DEPS_PER 6        /* RW DBs each multi-dep EDT acquires (+ state) */
+#define CHAIN_LEN 64      /* links of the control-woken write chain */
+#define CHAIN_WAKE_SLOT 2 /* a link's slot for its predecessor's wake */
 #define TOTAL_EDTS (MULTI_EDTS + CHAIN_LEN)
 
 /* State DB layout (uint64_t):
@@ -82,9 +82,9 @@ static void multi_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_event_satisfy_slot(latch, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
-/* Chain link: depv[0] = the shared chain DB (RW), depv[1] = state DB (RW); its
- * third readiness decrement is the predecessor's NO_SLOT wake, which has no
- * depv entry.  paramv: [my_index, next_guid_or_0, latch]. */
+/* Chain link: depv[0] = the shared chain DB (RW), depv[1] = state DB (RW),
+ * depv[CHAIN_WAKE_SLOT] = the predecessor's wake (DB_MODE_NULL).
+ * paramv: [my_index, next_guid_or_0, latch]. */
 static void chain_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                       arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -102,7 +102,7 @@ static void chain_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
   arts_event_satisfy_slot(latch, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
   if (next != NULL_GUID) {
-    arts_edt_satisfy_slot(next, (uint32_t)-1, (arts_guid_t)0, DB_MODE_NULL);
+    arts_edt_satisfy_slot(next, CHAIN_WAKE_SLOT, (arts_guid_t)0, DB_MODE_NULL);
   }
 }
 
@@ -210,12 +210,12 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   for (int i = 0; i < CHAIN_LEN; i++) {
     arts_guid_t next = (i + 1 < CHAIN_LEN) ? link[i + 1] : NULL_GUID;
     uint64_t pv[3] = {(uint64_t)i, (uint64_t)next, (uint64_t)latch};
-    /* depc = 3: the two data slots and the predecessor's NO_SLOT wake. */
+    /* depc = 3: the two data slots and the predecessor's wake. */
     arts_edt_create(chain_edt, 3, pv, 3, &(arts_edt_hint_t){.guid = link[i]});
     arts_add_dependence(chain_db, link[i], 0, DB_MODE_RW);
     arts_add_dependence(state_db, link[i], 1, DB_MODE_RW);
   }
-  arts_edt_satisfy_slot(link[0], (uint32_t)-1, (arts_guid_t)0, DB_MODE_NULL);
+  arts_edt_satisfy_slot(link[0], CHAIN_WAKE_SLOT, (arts_guid_t)0, DB_MODE_NULL);
 
   arts_guid_t v =
       arts_edt_create(verify_edt, 0, NULL, 2, &(arts_edt_hint_t){.rank = 0});

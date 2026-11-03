@@ -1620,7 +1620,7 @@ register_pure_unit_test(array_list_basic)
 # malloc_alignment is the ASan target (heap safety + a-aligned user pointers);
 # malloc_footprint_balance asserts that matched alloc/realloc/free sequences
 # leave BYTES_MEMORY_FOOTPRINT at net zero, single-threaded and concurrently.
-# diag_timestamp pins best-effort per-thread monotonicity + fold sanity and
+# diag_timestamp pins per-thread monotonicity, the CLOCK_MONOTONIC source and
 # that arts_printf's prefix and body reach stdout as one line.
 set(MISC_UTIL_UNIT_TESTS
     malloc_footprint_balance malloc_alignment diag_timestamp)

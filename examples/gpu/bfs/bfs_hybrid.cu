@@ -269,7 +269,12 @@ void do_partition_sync(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depc;
   (void)depv;
   arts_printf("Just Synced Partitions! %lu\n", paramv[0]);
-  arts_signal_edt((arts_guid_t)paramv[1], (uint32_t)-1, NULL_GUID, DB_MODE_RW);
+  // launch_bfs's slots past its nodes * (gpus + 1) sort slots take one sync
+  // each.
+  arts_signal_edt((arts_guid_t)paramv[1],
+                  (arts_get_total_nodes() * (arts_get_total_gpus() + 1)) +
+                      arts_get_current_node(),
+                  NULL_GUID, DB_MODE_NULL);
 }
 
 // There is only one of these per level.  It is signaled by the epoch containing

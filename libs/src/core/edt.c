@@ -504,11 +504,6 @@ static void edt_defer_satisfy(arts_guid_t edt_guid, arts_guid_t data_guid,
 
 /* A satisfy that finds every dependence of the EDT already satisfied. */
 static void edt_over_satisfied(const struct arts_edt_s *edt, uint32_t slot) {
-  if (slot == (uint32_t)-1) {
-    ARTS_ERROR("control satisfy of EDT[Guid:%lu] exceeds its %u "
-               "dependence(s): every dependence is already satisfied",
-               (unsigned long)edt->guid, edt->depc);
-  }
   ARTS_ERROR("satisfy of EDT[Guid:%lu] slot %u exceeds its %u dependence(s): "
              "every dependence is already satisfied",
              (unsigned long)edt->guid, slot, edt->depc);
@@ -522,15 +517,10 @@ static void edt_apply_satisfy(struct arts_edt_s *edt, uint32_t slot,
                               arts_guid_t data_guid,
                               arts_db_access_mode_t mode) {
   arts_edt_dep_t *edt_dep = (arts_edt_dep_t *)arts_get_depv(edt);
-  /* (uint32_t)-1 is the "no specific slot" sentinel used by control
-   * dependences (registered with slot -1): they decrement readiness without
-   * writing any dependence-vector entry.  A real, in-range slot writes its
-   * entry and decrements.  Any other slot names no dependence of this EDT: a
-   * program error that only this rank, which holds the EDT, can see, and the
-   * sender has no path back, so it is fatal here. */
-  const uint32_t NO_SLOT = (uint32_t)-1;
-  bool writes_slot = (slot != NO_SLOT);
-  if (writes_slot && slot >= edt->depc) {
+  /* A slot at or above depc names no dependence of this EDT: a program error
+   * that only this rank, which holds the EDT, can see, and the sender has no
+   * path back, so it is fatal here. */
+  if (slot >= edt->depc) {
     ARTS_ERROR("satisfy of EDT[Guid:%lu] names slot %u, but the EDT has %u "
                "dependence slot(s)",
                (unsigned long)edt->guid, slot, edt->depc);
@@ -542,13 +532,11 @@ static void edt_apply_satisfy(struct arts_edt_s *edt, uint32_t slot,
   if (atomic_load_explicit(&edt->depc_needed, memory_order_relaxed) == 0u) {
     edt_over_satisfied(edt, slot);
   }
-  if (writes_slot) {
-    edt_dep[slot].guid = data_guid;
-    /* A satisfy says which block the slot names, not that the EDT may touch
-     * it; the acquire path fills ptr when the access has been granted. */
-    edt_dep[slot].ptr = NULL;
-    edt_dep[slot].mode = mode;
-  }
+  edt_dep[slot].guid = data_guid;
+  /* A satisfy says which block the slot names, not that the EDT may touch it;
+   * the acquire path fills ptr when the access has been granted. */
+  edt_dep[slot].ptr = NULL;
+  edt_dep[slot].mode = mode;
   unsigned int old =
       atomic_fetch_sub_explicit(&edt->depc_needed, 1u, memory_order_acq_rel);
   if (old == 0u) {

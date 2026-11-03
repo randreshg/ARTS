@@ -135,7 +135,9 @@ static void *arts_counter_capture_thread(void *args) {
 
   // Time synchronization: align captures to synchronized time.
   // All nodes use master node's time (via arts_get_synced_time_stamp) so they
-  // all capture at the same logical time, preventing drift between nodes.
+  // all capture at the same logical time, preventing drift between nodes. A
+  // rank whose time sync timed out uses its own clock instead, so its capture
+  // instants do not line up with those of ranks on other hosts.
   //
   // Epochs are RELATIVE to capture thread start, not absolute timestamps.
   // This makes epoch numbers small (0, 1, 2...) and meaningful for comparing
@@ -245,7 +247,8 @@ void arts_counter_capture_start() {
               &time_sync_state, &state, TIME_SYNC_TIMED_OUT,
               memory_order_acquire, memory_order_acquire)) {
         ARTS_WARN("Time sync: Timeout waiting for master response, "
-                  "using local time (offset=0)");
+                  "using local time (offset=0); this rank's capture instants "
+                  "will not line up with those of ranks on other hosts");
       } else {
         /* A response claimed the word: it publishes RECEIVED next. */
         while (state != TIME_SYNC_RECEIVED) {

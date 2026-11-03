@@ -282,7 +282,12 @@ only there must a ``node_count`` agree with the number of nodes it names;
 there, a config without a ``nodes`` line lists the one host ``localhost``, so
 ``launcher=ssh`` with ``node_count=4`` and no list is refused.  Under LSF the
 first entry of ``LSB_HOSTS`` (or ``LSB_MCPU_HOSTS``) is taken as the launch
-host and runs no rank, so a list that names no other host is refused.
+host and runs no rank, so a list that names no other host is refused.  Under
+Slurm the list is ``SLURM_STEP_NODELIST`` (else ``SLURM_JOB_NODELIST``); an
+environment with neither, or with a list naming fewer hosts than
+``SLURM_NNODES``, is refused.  A scheduler's count (``SLURM_NNODES``,
+``SLURM_CPUS_PER_TASK``, ``FLUX_JOB_NNODES``, ``FLUX_JOB_SIZE``) must be a
+positive decimal integer, digits only; any other value is refused.
 
 Launcher selection is environment-driven for the schedulers that publish
 their layout in the environment: under Slurm or LSF the runtime detects the

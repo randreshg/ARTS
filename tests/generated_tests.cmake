@@ -157,9 +157,9 @@ add_pure_unit_src(stdio_forward_concurrent_push PASS_REGEX "PASS stdio_forward_c
 add_pure_unit_src(stdio_forward_fflush_no_deadlock PASS_REGEX "PASS stdio_forward_fflush_no_deadlock" TIMEOUT 60)
 add_pure_unit_src(stdio_forward_multi_source PASS_REGEX "PASS stdio_forward_multi_source" TIMEOUT 60)
 # Configuration parsing stays inside what it allocated: a routing table
-# holds no more rows than it was sized for, a single-host LSF list is refused,
-# and an environment override spliced into the variable list leaves it well
-# formed.
+# holds no more rows than it was sized for, a single-host LSF list and a Slurm
+# environment that yields no full table are refused, and an environment
+# override spliced into the variable list leaves it well formed.
 add_pure_unit_src(config_routing_table_overflow PASS_REGEX "PASS config_routing_table_overflow" TIMEOUT 60)
 add_pure_unit_src(config_lsf_single_host_oob PASS_REGEX "PASS config_lsf_single_host_oob" TIMEOUT 60)
 add_pure_unit_src(config_find_variable PASS_REGEX "PASS config_find_variable" TIMEOUT 60)
@@ -173,6 +173,7 @@ add_pure_unit_src(config_route_table_size_shift PASS_REGEX "PASS config_route_ta
 add_pure_unit_src(config_deque_size_range PASS_REGEX "PASS config_deque_size_range" TIMEOUT 60)
 add_pure_unit_src(config_thread_count_underflow PASS_REGEX "PASS config_thread_count_underflow" TIMEOUT 60)
 add_pure_unit_src(config_launcher_env_precedence PASS_REGEX "PASS config_launcher_env_precedence" TIMEOUT 60)
+add_pure_unit_src(config_slurm_setup PASS_REGEX "PASS config_slurm_setup" TIMEOUT 60)
 add_pure_unit_src(config_destroy_leak PASS_REGEX "PASS config_destroy_leak" TIMEOUT 60)
 add_pure_unit_src(runtime_edt_event_layout PASS_REGEX "PASS runtime_edt_event_layout" TIMEOUT 60)
 # topology.c #includes <hwloc.h> and calls hwloc_* — the vendored hwloc

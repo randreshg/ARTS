@@ -952,19 +952,40 @@ static void config_set_master_from_table(struct arts_config_s *config) {
   }
 }
 
+/* A scheduler's count variable: decimal digits only (no sign, space or
+ * trailing text), at least 1 and within an unsigned int. */
+static bool config_parse_count(const char *text, unsigned int *out) {
+  if (text[0] < '0' || text[0] > '9') {
+    return false;
+  }
+  errno = 0;
+  char *end = NULL;
+  unsigned long long value = strtoull(text, &end, 10);
+  if (errno != 0 || *end != '\0' || value == 0 || value > UINT_MAX) {
+    return false;
+  }
+  *out = (unsigned int)value;
+  return true;
+}
+
 static void config_setup_slurm(struct arts_config_s *config) {
   config->master_boot = false;
 
-  char *threads_temp = getenv("SLURM_CPUS_PER_TASK");
-  if (threads_temp != NULL) {
-    config->thread_count = (unsigned int)strtol(threads_temp, NULL, 10);
+  const char *threads_env = getenv("SLURM_CPUS_PER_TASK");
+  if (threads_env != NULL &&
+      !config_parse_count(threads_env, &config->thread_count)) {
+    ARTS_ERROR("launcher=slurm: SLURM_CPUS_PER_TASK='%s' is not a positive "
+               "integer — it sets this rank's thread count",
+               threads_env);
   }
 
-  char *slurm_nodes = getenv("SLURM_NNODES");
-  if (slurm_nodes != NULL) {
-    config->nodes = (unsigned int)strtol(slurm_nodes, NULL, 10);
-  } else {
+  const char *nodes_env = getenv("SLURM_NNODES");
+  if (nodes_env == NULL) {
     config->nodes = 1;
+  } else if (!config_parse_count(nodes_env, &config->nodes)) {
+    ARTS_ERROR("launcher=slurm: SLURM_NNODES='%s' is not a positive integer "
+               "— it sets the node count",
+               nodes_env);
   }
 
   /* srun sets the step-scoped list; a bare sbatch shell (no srun) only has
@@ -973,11 +994,26 @@ static void config_setup_slurm(struct arts_config_s *config) {
   if (env_list == NULL) {
     env_list = getenv("SLURM_JOB_NODELIST");
   }
+  if (env_list == NULL) {
+    ARTS_ERROR("launcher=slurm: neither SLURM_STEP_NODELIST nor "
+               "SLURM_JOB_NODELIST is set — SLURM_PROCID or SLURM_NNODES in "
+               "the environment selected slurm, which needs the job's node "
+               "list");
+  }
   /* The routing-table parser writes into its input, and getenv's string must
    * not be modified. */
-  char *node_list = env_list ? arts_config_make_new_var(env_list) : NULL;
+  char *node_list = arts_config_make_new_var(env_list);
   arts_config_create_routing_table(&config, node_list);
   arts_free(node_list);
+  /* The table builder sizes the table at config->nodes and stops early on a
+   * short list. */
+  for (unsigned int i = 0; i < config->table_length; i++) {
+    if (config->table[i].ip_address == NULL) {
+      ARTS_ERROR("launcher=slurm: routing table row %u is empty — the node "
+                 "list '%s' names fewer hosts than SLURM_NNODES=%u",
+                 i, env_list, config->nodes);
+    }
+  }
   config_set_master_from_table(config);
 }
 
@@ -1023,15 +1059,20 @@ static void config_setup_flux(struct arts_config_s *config) {
     ARTS_ERROR("launcher=flux: FLUX_JOB_NNODES is not set — this process "
                "is not a task of a flux job");
   }
-  config->nodes = (unsigned int)strtol(nnodes_env, NULL, 10);
-  if (config->nodes == 0) {
-    ARTS_ERROR("launcher=flux: FLUX_JOB_NNODES='%s' is not a node count",
+  if (!config_parse_count(nnodes_env, &config->nodes)) {
+    ARTS_ERROR("launcher=flux: FLUX_JOB_NNODES='%s' is not a positive integer "
+               "— it sets the node count",
                nnodes_env);
   }
 
   const char *size_env = getenv("FLUX_JOB_SIZE");
   if (size_env != NULL) {
-    unsigned int size = (unsigned int)strtol(size_env, NULL, 10);
+    unsigned int size = 0;
+    if (!config_parse_count(size_env, &size)) {
+      ARTS_ERROR("launcher=flux: FLUX_JOB_SIZE='%s' is not a positive integer "
+                 "— it is the job's task count",
+                 size_env);
+    }
     if (size != config->nodes) {
       ARTS_ERROR("launcher=flux: %u tasks on %u nodes — the launch "
                  "contract is one task per node (flux run -N<n> -n<n>)",
