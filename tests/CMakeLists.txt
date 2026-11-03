@@ -2048,6 +2048,76 @@ else()
     message(STATUS "atomics_implicit_seq_cst not registered: no clang-tidy")
 endif()
 
+# The memory order of each publication site of a landed install: the
+# transport's pairing, the slot's publish and claim, each arm's state word and
+# in-place stamp, and the reader-side acquires they pair with.  It is read in
+# AArch64 code, where an acquire or a release has an instruction of its own
+# (AMD64 compiles both to plain moves).  tools/publication_sites.txt names the
+# sites by function, access and object, and marks every other access of the
+# objects it names; the check finds them in the code this tree's cell
+# compiles, with the tree's compile commands, checks the order the source
+# states, and compiles the units that hold them with each AArch64 compiler at
+# four lowerings (tools/publication_order.py says exactly what it checks).
+# Each tree checks the sites its cell compiles.  A FLUSH tree has no such site
+# of its own (its fetch lands in a private copy and its write-back publishes
+# nothing at the home), and a CXL tree moves no payload over the fabric, so
+# neither registers it.  The reference tree checks the sites no cell compiles
+# differently and registers the test whatever its cell, so those rows run
+# wherever the defaults move.  Registered where Python 3 and an
+# aarch64-linux-gnu-gcc that accepts all four lowerings are found; a Clang
+# that accepts them is checked too.
+find_program(ARTS_AARCH64_GCC aarch64-linux-gnu-gcc)
+find_program(ARTS_AARCH64_CLANG clang)
+find_package(Python3 COMPONENTS Interpreter QUIET)
+set(_script ${CMAKE_CURRENT_SOURCE_DIR}/tools/publication_order.py)
+if(ARTS_TEST_REFERENCE_TREE OR
+   (NOT ARTS_USE_CXL AND ARTS_COHERENCE_ARM MATCHES "^(INV|VAL|EXCL)$"))
+    set(_gcc_ok 1)
+    if(ARTS_AARCH64_GCC AND Python3_Interpreter_FOUND)
+        execute_process(COMMAND ${Python3_EXECUTABLE} -I ${_script} --probe
+                                ${ARTS_AARCH64_GCC}
+                        RESULT_VARIABLE _gcc_ok OUTPUT_QUIET ERROR_QUIET)
+    endif()
+    if(_gcc_ok EQUAL 0)
+        set(_clang "")
+        if(ARTS_AARCH64_CLANG)
+            execute_process(COMMAND ${Python3_EXECUTABLE} -I ${_script} --probe
+                                    ${ARTS_AARCH64_CLANG} --target=aarch64-linux-gnu
+                            RESULT_VARIABLE _clang_ok OUTPUT_QUIET ERROR_QUIET)
+            if(_clang_ok EQUAL 0)
+                set(_clang --clang ${ARTS_AARCH64_CLANG})
+            endif()
+        endif()
+        set(_ref "")
+        if(ARTS_TEST_REFERENCE_TREE)
+            set(_ref --reference)
+        endif()
+        add_test(NAME publication_order_codegen
+                 COMMAND ${Python3_EXECUTABLE} -I ${_script}
+                         --source-dir ${CMAKE_SOURCE_DIR}
+                         --build-dir ${CMAKE_BINARY_DIR}
+                         --work-dir ${CMAKE_CURRENT_BINARY_DIR}/publication_order_codegen
+                         --register ${CMAKE_CURRENT_SOURCE_DIR}/tools/publication_sites.txt
+                         --cell ${ARTS_COHERENCE_ARM}.${ARTS_WRITE_POLICY}.${ARTS_RELEASE_POLICY}
+                         ${_ref} --gcc ${ARTS_AARCH64_GCC} ${_clang} --jobs 4)
+        set_tests_properties(publication_order_codegen PROPERTIES
+            LABELS "single_node"
+            TIMEOUT 300
+            PROCESSORS 4
+            PASS_REGULAR_EXPRESSION "PASS publication_order_codegen"
+            FAIL_REGULAR_EXPRESSION "FAIL publication_order_codegen")
+        unset(_clang)
+        unset(_clang_ok)
+        unset(_ref)
+    else()
+        message(STATUS "publication_order_codegen not registered: no Python 3, "
+                       "or no aarch64-linux-gnu-gcc that accepts the four "
+                       "AArch64 lowerings")
+    endif()
+    unset(_gcc_ok)
+endif()
+unset(_script)
+
 # Blocks destroyed while the one-sided writes that moved their payloads may
 # still be awaiting their local completions.  It runs with those completions
 # held back (ARTS_WRITE_COMPLETION_DELAY_MS), so where payloads travel through
