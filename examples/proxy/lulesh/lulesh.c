@@ -1298,12 +1298,12 @@ void init_tile_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       }
   /* Pattern A: release all 6 created DBs before the LATCH decrement that
    * dispatches downstream consumers. */
-  arts_db_release(cg, DB_MODE_RW);
-  arts_db_release(pg, DB_MODE_RW);
-  arts_db_release(es_guid, DB_MODE_RW);
-  arts_db_release(gg, DB_MODE_RW);
-  arts_db_release(fg, DB_MODE_RW);
-  arts_db_release(dt_guid, DB_MODE_RW);
+  arts_db_release(cg);
+  arts_db_release(pg);
+  arts_db_release(es_guid);
+  arts_db_release(gg);
+  arts_db_release(fg);
+  arts_db_release(dt_guid);
 
   /* Signal init_done latch */
   arts_event_satisfy_slot(init_done, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
@@ -1327,8 +1327,8 @@ void post_init_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   double *eg = TILE_PTR(esh, esh->off_energy, double);
   double dt = 0.5 * cbrt(eivol[0]) / sqrt(2.0 * eg[0]);
   double target = ch->stop_time;
-  arts_db_release(depv[1].guid, DB_MODE_RO);
-  arts_db_release(depv[2].guid, DB_MODE_RO);
+  arts_db_release(depv[1].guid);
+  arts_db_release(depv[2].guid);
   if (target > dt && target < 4.0 * dt / 3.0)
     target = 2.0 * dt / 3.0;
   if (target < dt)
@@ -1574,10 +1574,10 @@ void forces_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       efz[k * 8 + c] = fz[c];
     }
   }
-  arts_db_release(depv[1].guid, DB_MODE_RO);
-  arts_db_release(depv[2].guid, DB_MODE_RO);
+  arts_db_release(depv[1].guid);
+  arts_db_release(depv[2].guid);
   /* Pattern A: flush force_db before the LATCH-DECR dispatches consumers. */
-  arts_db_release(depv[3].guid, DB_MODE_RW);
+  arts_db_release(depv[3].guid);
   arts_event_satisfy_slot(done, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
@@ -1743,9 +1743,9 @@ void reduce_kin_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     pz[ni] += vzp[ni] * dt;
   }
   for (int s = 1; s <= 2 + na; s++)
-    arts_db_release(depv[s].guid, DB_MODE_RO);
+    arts_db_release(depv[s].guid);
   /* Pattern A: flush pos_vel_db before LATCH-DECR dispatches consumers. */
-  arts_db_release(depv[3 + na].guid, DB_MODE_RW);
+  arts_db_release(depv[3 + na].guid);
   arts_event_satisfy_slot(done, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
@@ -1809,10 +1809,10 @@ void elem_props_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     }
   }
   calc_monoq_gradients(ch, pvh, gh);
-  arts_db_release(depv[1].guid, DB_MODE_RO);
-  arts_db_release(depv[2].guid, DB_MODE_RO);
+  arts_db_release(depv[1].guid);
+  arts_db_release(depv[2].guid);
   /* Pattern A: flush grad_db before LATCH-DECR dispatches consumers. */
-  arts_db_release(depv[3].guid, DB_MODE_RW);
+  arts_db_release(depv[3].guid);
   arts_event_satisfy_slot(done, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
@@ -1894,13 +1894,13 @@ void visc_eos_time_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
 
   for (int s = 2; s <= 2 + nf; s++)
-    arts_db_release(depv[s].guid, DB_MODE_RO);
+    arts_db_release(depv[s].guid);
   /* Pattern A: flush the four modified DBs before LATCH-DECR
    * dispatches downstream consumers. */
-  arts_db_release(depv[1].guid, DB_MODE_RW);      // grad_db
-  arts_db_release(depv[3 + nf].guid, DB_MODE_RW); // elem_state_db
-  arts_db_release(depv[4 + nf].guid, DB_MODE_RW); // dt_result_db
-  arts_db_release(depv[5 + nf].guid, DB_MODE_RW); // force_db
+  arts_db_release(depv[1].guid);      // grad_db
+  arts_db_release(depv[3 + nf].guid); // elem_state_db
+  arts_db_release(depv[4 + nf].guid); // dt_result_db
+  arts_db_release(depv[5 + nf].guid); // force_db
   arts_event_satisfy_slot(done, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
@@ -2005,7 +2005,7 @@ void reduce_dt_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_shutdown();
   } else {
     for (int s = 1; s <= nt + 1; s++)
-      arts_db_release(depv[s].guid, DB_MODE_RO);
+      arts_db_release(depv[s].guid);
     /* Create next_iter_edt(depc=0) as trampoline. */
     uint64_t p[4] = {(uint64_t)(iter + 1), 0, 0, 0};
     memcpy(&p[1], &dt_new, sizeof(double));

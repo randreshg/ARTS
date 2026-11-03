@@ -103,7 +103,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_guid_t db = arts_db_create((void **)&data, sizeof(int), ARTS_DB,
                                   ARTS_DB_PROP_NONE, NULL);
   *data = SENTINEL;
-  arts_db_release(db, DB_MODE_RW);
+  arts_db_release(db);
 
   /* Outer group ensures shutdown_edt runs only after every reader has
    * finished — an early arts_shutdown's MSG_SHUTDOWN would otherwise let the

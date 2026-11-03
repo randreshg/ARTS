@@ -152,7 +152,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   tally_t *t = (tally_t *)tp;
   atomic_init(&t->result_ok, 0u);
   atomic_init(&t->null_ok, 0u);
-  arts_db_release(tally, DB_MODE_RW);
+  arts_db_release(tally);
 
   uint64_t pv[1] = {(uint64_t)tally};
 
@@ -168,7 +168,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
         arts_db_create(&rp, sizeof(unsigned int), ARTS_DB, ARTS_DB_PROP_NONE,
                        &(arts_db_hint_t){.rank = 0});
     ((unsigned int *)rp)[0] = 0u;
-    arts_db_release(rdb, DB_MODE_RW);
+    arts_db_release(rdb);
 
     arts_guid_t oe = arts_event_create(&ARTS_EVENT_HINT_LATCH(1));
 

@@ -87,7 +87,7 @@ static void creator_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
   /* The release ends the create's write turn and orders the write before the
    * chains' first readers, which are wired after it. */
-  arts_db_release(db, DB_MODE_RW);
+  arts_db_release(db);
   for (unsigned c = 0; c < CHAINS; c++) {
     arts_guid_t out = arts_event_create(NULL);
     uint64_t pv[3] = {db, 0u, out};

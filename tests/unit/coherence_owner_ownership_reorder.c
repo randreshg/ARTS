@@ -211,7 +211,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       arts_db_create(&ptr, sizeof(uint64_t), ARTS_DB, ARTS_DB_PROP_NONE,
                      &(arts_db_hint_t){.rank = 0});
   atomic_init((_Atomic(uint64_t) *)ptr, (uint64_t)0);
-  arts_db_release(db, DB_MODE_RW);
+  arts_db_release(db);
 
   phase((const uint64_t[P_COUNT]){0u, (uint64_t)db, 0u});
 }

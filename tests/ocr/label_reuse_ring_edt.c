@@ -199,7 +199,7 @@ static void driver(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_add_dependence(record, ring, 1, DB_MODE_RW);
   if (lane == LANE_LATE) {
     /* The next driver reads the record this one holds. */
-    arts_db_release(record, DB_MODE_RO);
+    arts_db_release(record);
     arts_event_satisfy_slot(signal, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
   }
 }
@@ -215,7 +215,7 @@ static arts_guid_t make_record(void) {
     r->vals[i] = 0u;
     r->signal[i] = 0u;
   }
-  arts_db_release(record, DB_MODE_RW);
+  arts_db_release(record);
   return record;
 }
 

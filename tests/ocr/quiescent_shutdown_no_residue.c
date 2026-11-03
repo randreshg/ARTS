@@ -164,7 +164,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
         arts_db_create(&p, sizeof(unsigned int), ARTS_DB, ARTS_DB_PROP_NONE,
                        &(arts_db_hint_t){.rank = k ? last : 0u});
     atomic_init((_Atomic(unsigned int) *)p, 0u);
-    arts_db_release(ctr, DB_MODE_RW);
+    arts_db_release(ctr);
     pv[P_CTR0 + k] = (uint64_t)ctr;
   }
   round_step(pv);

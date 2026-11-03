@@ -94,7 +94,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   for (unsigned int i = 0; i < WORDS; i++) {
     ((uint64_t *)p)[i] = SEED + i;
   }
-  arts_db_release(block, DB_MODE_RW);
+  arts_db_release(block);
   /* The event's value: any GUID; a dependence of mode NULL acquires nothing
    * it names. */
   arts_guid_t value = group;

@@ -190,7 +190,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       arts_db_create(&d6p, sizeof(uint64_t), ARTS_DB, ARTS_DB_PROP_NONE,
                      &(arts_db_hint_t){.rank = home});
   atomic_init((_Atomic(uint64_t) *)d6p, 0u);
-  arts_db_release(d6, DB_MODE_RW);
+  arts_db_release(d6);
 
   arts_event_hint_t d6_latch_hint = ARTS_EVENT_HINT_LATCH(N_CHAIN_WRITERS);
   d6_latch_hint.rank = 0;
@@ -214,7 +214,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       arts_db_create(&d7p, sizeof(uint64_t), ARTS_DB, ARTS_DB_PROP_NONE,
                      &(arts_db_hint_t){.rank = home});
   *(uint64_t *)d7p = 0u;
-  arts_db_release(d7, DB_MODE_RW);
+  arts_db_release(d7);
 
   arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
   gh.auto_destroy = true;

@@ -238,7 +238,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   for (int i = 0; i < V_COUNT; i++) {
     v[i] = V_UNREPORTED;
   }
-  arts_db_release(verdicts, DB_MODE_RW);
+  arts_db_release(verdicts);
 
   arts_guid_t shut =
       arts_edt_create(shutdown_edt, 0, NULL, 2, &(arts_edt_hint_t){.rank = 0});

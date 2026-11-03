@@ -41,10 +41,10 @@
 /// @brief arts_db_destroy implicit release: Path-1 (created_db_list) fires for
 ///        a DB the destroying EDT created and still holds.
 ///
-/// arts_db_destroy(guid) unconditionally calls arts_db_release(guid, RW) first
-/// (OCR ocrDbDestroy semantics).  arts_db_release scans created_db_list (Path
-/// 1) before depv (Path 2); on a match it releases the created hold and removes
-/// the entry, so the epilogue finds nothing left to release.
+/// arts_db_destroy(guid) first releases the calling EDT's own hold on the
+/// block (OCR ocrDbDestroy semantics).  The release scans created_db_list
+/// (Path 1) before depv (Path 2); on a match it releases the created hold and
+/// removes the entry, so the epilogue finds nothing left to release.
 ///
 /// Shape: an EDT creates a fresh labeled DB, writes it, and destroys it
 /// mid-body while it still holds the creator's hold.  It must not crash,

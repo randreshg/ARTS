@@ -69,7 +69,7 @@ void fib_join(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                      ARTS_DB_PROP_NONE, NULL);
   assert(result_ptr && "Result ptr not NULL");
   *result_ptr = x + y;
-  arts_db_release(result_guid, DB_MODE_RW);
+  arts_db_release(result_guid);
 
   // Signal the parent EDT with the result DB
   arts_add_dependence(result_guid, (arts_guid_t)paramv[0], paramv[1],
@@ -90,7 +90,7 @@ void fib_fork(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   if (num < 2) {
     arts_guid_t arg_guid = depv[0].guid;
-    arts_db_release(arg_guid, DB_MODE_RO);
+    arts_db_release(arg_guid);
     arts_add_dependence(arg_guid, guid, slot, DB_MODE_RO);
   } else {
     arts_db_destroy(depv[0].guid);
@@ -105,14 +105,14 @@ void fib_fork(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                                          ARTS_DB, ARTS_DB_PROP_NONE, NULL);
     assert(n1_ptr && "n1_ptr not NULL");
     *n1_ptr = num - 1;
-    arts_db_release(n1_guid, DB_MODE_RW);
+    arts_db_release(n1_guid);
 
     int *n2_ptr;
     arts_guid_t n2_guid = arts_db_create((void **)&n2_ptr, sizeof(unsigned int),
                                          ARTS_DB, ARTS_DB_PROP_NONE, NULL);
     assert(n2_ptr && "n2_ptr not NULL");
     *n2_ptr = num - 2;
-    arts_db_release(n2_guid, DB_MODE_RW);
+    arts_db_release(n2_guid);
 
     // Create first child task with n-1
     uint64_t args1[2] = {join_guid, 0}; // the join and the slot this child fills
@@ -169,7 +169,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                                         ARTS_DB, ARTS_DB_PROP_NONE, NULL);
   assert(num_ptr && "main_edt num_ptr not NULL");
   *num_ptr = num;
-  arts_db_release(num_guid, DB_MODE_RW);
+  arts_db_release(num_guid);
 
   // Start the computation
   uint64_t args[2] = {done_guid, 0}; // the done EDT and its slot

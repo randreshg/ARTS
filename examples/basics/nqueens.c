@@ -131,7 +131,7 @@ void fork_nqueens(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_guid_t fork_guid = arts_edt_create(fork_nqueens, 2, new_paramv, 1,
                                             &(arts_edt_hint_t){.rank = route});
 
-    arts_db_release(db_guid, DB_MODE_RW);
+    arts_db_release(db_guid);
     arts_add_dependence(db_guid, fork_guid, 0, DB_MODE_RO);
   }
   arts_db_destroy(depv[0].guid);
@@ -215,7 +215,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
   fork_data->row = 0;
   fork_data->n = n;
-  arts_db_release(db_guid, DB_MODE_RW);
+  arts_db_release(db_guid);
   arts_add_dependence(db_guid, fork_guid, 0, DB_MODE_RO);
 }
 

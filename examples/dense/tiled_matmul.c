@@ -133,10 +133,10 @@ void init_block_mm(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   copy_block(i, j, TILE, a_tile, MATSIZE, a_mat, true);
   copy_block(i, j, TILE, b_tile, MATSIZE, b_mat, true);
-  arts_db_release(depv[0].guid, DB_MODE_RO);
-  arts_db_release(depv[1].guid, DB_MODE_RO);
-  arts_db_release(a_guid, DB_MODE_RW);
-  arts_db_release(b_guid, DB_MODE_RW);
+  arts_db_release(depv[0].guid);
+  arts_db_release(depv[1].guid);
+  arts_db_release(a_guid);
+  arts_db_release(b_guid);
   arts_event_satisfy(init_latch, NULL_GUID);
 }
 
@@ -165,9 +165,9 @@ void mm_kernel_cpu(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       }
     }
   }
-  arts_db_release(depv[0].guid, DB_MODE_RO);
-  arts_db_release(depv[1].guid, DB_MODE_RO);
-  arts_db_release(c_tile_guid, DB_MODE_RW);
+  arts_db_release(depv[0].guid);
+  arts_db_release(depv[1].guid);
+  arts_db_release(c_tile_guid);
   arts_add_dependence(c_tile_guid, to_signal, idx_k, DB_MODE_RO);
 }
 
@@ -196,7 +196,7 @@ void multiply_mm(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                                              sizeof(float) * TILE * TILE,
                                              ARTS_DB, ARTS_DB_PROP_NONE, NULL);
   init_matrix(row_size, c_tile, false, true);
-  arts_db_release(c_tile_guid, DB_MODE_RW);
+  arts_db_release(c_tile_guid);
 
   uint64_t args[] = {TILE, (uint64_t)to_signal, k, (uint64_t)c_tile_guid, i, j,
                      k};
@@ -204,8 +204,8 @@ void multiply_mm(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       arts_edt_create(mm_kernel_cpu, 7, args, 3, &(arts_edt_hint_t){.rank = 0});
   arts_guid_t a_tile_guid = depv[0].guid;
   arts_guid_t b_tile_guid = depv[1].guid;
-  arts_db_release(a_tile_guid, DB_MODE_RO);
-  arts_db_release(b_tile_guid, DB_MODE_RO);
+  arts_db_release(a_tile_guid);
+  arts_db_release(b_tile_guid);
   arts_add_dependence(a_tile_guid, mul_gpu_guid, 0, DB_MODE_RO);
   arts_add_dependence(b_tile_guid, mul_gpu_guid, 1, DB_MODE_RO);
   arts_add_dependence(c_tile_guid, mul_gpu_guid, 2, DB_MODE_RW);
@@ -240,7 +240,7 @@ void sum_mm(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     }
     arts_db_destroy(depv[i].guid);
   }
-  arts_db_release(c_tile_guid, DB_MODE_RW);
+  arts_db_release(c_tile_guid);
   arts_add_dependence(c_tile_guid, done_guid, 1 + (idx_i * num_blocks + idx_j),
                       DB_MODE_RO);
 }
@@ -306,9 +306,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   init_matrix(MATSIZE, a_mat, false, false);
   init_matrix(MATSIZE, b_mat, true, false);
   init_matrix(MATSIZE, c_mat, false, true);
-  arts_db_release(a_mat_guid, DB_MODE_RW);
-  arts_db_release(b_mat_guid, DB_MODE_RW);
-  arts_db_release(c_mat_guid, DB_MODE_RW);
+  arts_db_release(a_mat_guid);
+  arts_db_release(b_mat_guid);
+  arts_db_release(c_mat_guid);
 
   //        arts_printf("A MATRIX\n");
   //        print_matrix(MATSIZE, a_mat);

@@ -227,7 +227,7 @@ static void run_cell(unsigned int cell_idx, axis_t axis, unsigned int home_idx,
     for (unsigned int i = 0; i < PAYLOAD_COUNT; i++) {
       p[i] = (uint64_t)cell_idx * 1000 + i;
     }
-    arts_db_release(db, DB_MODE_RW);
+    arts_db_release(db);
     wire_consumers(db, cell_idx, axis, home_idx, n, 1, NULL_GUID);
   } else {
     /* OCR contract: DB_PROP_NO_ACQUIRE must come back with addr==NULL (the

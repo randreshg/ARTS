@@ -151,13 +151,13 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   for (int i = 0; i < N_SLOTS; i++) {
     atomic_init(&c[i], 0);
   }
-  arts_db_release(cdb, DB_MODE_RW);
+  arts_db_release(cdb);
 
   _Atomic(int) *fire = NULL;
   arts_guid_t fdb = arts_db_create((void **)&fire, sizeof(_Atomic(int)),
                                    ARTS_DB, ARTS_DB_PROP_NONE, NULL);
   atomic_init(fire, 0);
-  arts_db_release(fdb, DB_MODE_RW);
+  arts_db_release(fdb);
 
   arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
   gh.auto_destroy = true;

@@ -129,7 +129,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_guid_t cdb = arts_db_create((void **)&c, sizeof(int), ARTS_DB,
                                    ARTS_DB_PROP_NONE, NULL);
   c[0] = 0;
-  arts_db_release(cdb, DB_MODE_RW);
+  arts_db_release(cdb);
 
   /* successor: counter RO (slot 0) + a completion-signal slot (slot 1) the lib
    * EDT fills on completion via gh.end_guid/slot, gating it on the lib EDT

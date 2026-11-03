@@ -158,7 +158,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_db_hint_t dh = ARTS_DB_HINT_DEFAULTS;
   dh.rank = here;
   arts_guid_t d1 = arts_db_create(&p, 64, ARTS_DB, ARTS_DB_PROP_NONE, &dh);
-  arts_db_release(d1, DB_MODE_RW);
+  arts_db_release(d1);
   check_later(d1, FRESH, 2u, here, group, true);
   arts_guid_t d2 =
       arts_db_create(&p, 64, ARTS_DB, ARTS_DB_PROP_NO_ACQUIRE, &dh);
@@ -166,7 +166,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_db_hint_t rh = ARTS_DB_HINT_DEFAULTS;
   rh.guid = arts_guid_reserve(ARTS_GUID_DB, here);
   arts_guid_t d3 = arts_db_create(&p, 64, ARTS_DB, ARTS_DB_PROP_NONE, &rh);
-  arts_db_release(d3, DB_MODE_RW);
+  arts_db_release(d3);
   check_later(d3, GENERAL, 2u, here, group, true);
 
   /* Every other rank: a minted EDT, event and data block homed there. */
@@ -190,7 +190,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_db_hint_t xh = ARTS_DB_HINT_DEFAULTS;
     xh.rank = r;
     arts_guid_t dr = arts_db_create(&p, 64, ARTS_DB, ARTS_DB_PROP_NONE, &xh);
-    arts_db_release(dr, DB_MODE_RW);
+    arts_db_release(dr);
     /* The creator's own descriptor is checked here first; then the home's
      * checker, whose read of the block waits for the home's install, looks
      * at the home's and destroys the block, which also retires the

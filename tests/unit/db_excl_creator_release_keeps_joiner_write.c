@@ -233,7 +233,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   then(join_phase, &param, e_cr);
   /* e_cr fires once this EDT has released the create hold and DECRed it, and
    * phase 1 has released its RW hold. */
-  arts_db_release(db, DB_MODE_RW);
+  arts_db_release(db);
   arts_event_satisfy_slot(e_cr, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 

@@ -115,7 +115,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_guid_t db = arts_db_create(&addr, 64, ARTS_DB, ARTS_DB_PROP_NONE,
                                   &(arts_db_hint_t){.rank = 0});
   atomic_init((_Atomic(uint64_t) *)addr, (uint64_t)0);
-  arts_db_release(db, DB_MODE_RW);
+  arts_db_release(db);
 
   arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
   gh.auto_destroy = true;

@@ -162,7 +162,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_abort(1);
   }
   memset(state_raw, 0, ST_NELEMS * sizeof(uint64_t));
-  arts_db_release(state_db, DB_MODE_RW);
+  arts_db_release(state_db);
 
   arts_event_hint_t latch_hint = ARTS_EVENT_HINT_LATCH(TOTAL_EDTS);
   latch_hint.rank = 0;
@@ -186,7 +186,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
         arts_abort(1);
       }
       *(uint64_t *)dp = 0u;
-      arts_db_release(db, DB_MODE_RW);
+      arts_db_release(db);
       arts_add_dependence(db, e, (uint32_t)d, DB_MODE_RW);
     }
     arts_add_dependence(state_db, e, (uint32_t)DEPS_PER, DB_MODE_RW);
@@ -200,7 +200,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_abort(1);
   }
   *(uint64_t *)chain_raw = 0u;
-  arts_db_release(chain_db, DB_MODE_RW);
+  arts_db_release(chain_db);
 
   /* Pre-reserved link GUIDs, so each link can name its successor. */
   arts_guid_t link[CHAIN_LEN];

@@ -164,7 +164,7 @@ static void one_main(void) {
     void *p = NULL;
     g[n] = arts_db_create(&p, S_BYTES, ARTS_DB, ARTS_DB_PROP_NONE, NULL);
     memset(p, 0, S_BYTES);
-    arts_db_release(g[n], DB_MODE_RW);
+    arts_db_release(g[n]);
   }
   for (uint32_t i = 0; i < M_NOACQ; i++, n++) {
     void *p = NULL;
@@ -173,7 +173,7 @@ static void one_main(void) {
   for (uint32_t i = 0; i < Z_ZERO; i++, n++) {
     void *p = NULL;
     g[n] = arts_db_create(&p, 0u, ARTS_DB, ARTS_DB_PROP_NONE, NULL);
-    arts_db_release(g[n], DB_MODE_RW);
+    arts_db_release(g[n]);
   }
   for (uint32_t i = 0; i < n; i++) {
     one_chain(g[i], done, i == 0u);
@@ -249,12 +249,12 @@ static void two_main(void) {
   arts_guid_t b =
       arts_db_create(&p, S_BYTES, ARTS_DB, ARTS_DB_PROP_NONE, &home0);
   memset(p, 0, S_BYTES);
-  arts_db_release(b, DB_MODE_RW);
+  arts_db_release(b);
   /* Created here, homed on rank 1: counted on this rank, never acquired. */
   arts_guid_t c =
       arts_db_create(&p, S_BYTES, ARTS_DB, ARTS_DB_PROP_NONE, &home1);
   memset(p, 0, S_BYTES);
-  arts_db_release(c, DB_MODE_RW);
+  arts_db_release(c);
   arts_guid_t d =
       arts_db_create(&p, S_BYTES, ARTS_DB, ARTS_DB_PROP_NO_ACQUIRE, &home1);
 
@@ -276,7 +276,7 @@ static void home_main(void) {
   arts_guid_t b =
       arts_db_create(&p, S_BYTES, ARTS_DB, ARTS_DB_PROP_NONE, &home0);
   memset(p, 0, S_BYTES);
-  arts_db_release(b, DB_MODE_RW);
+  arts_db_release(b);
   static const unsigned int rank_of[3] = {1, 0, 0};
   static const arts_db_access_mode_t mode_of[3] = {DB_MODE_RW, DB_MODE_RO,
                                                    DB_MODE_RW};
@@ -294,7 +294,7 @@ static void recall_main(void) {
   arts_guid_t b =
       arts_db_create(&p, S_BYTES, ARTS_DB, ARTS_DB_PROP_NONE, &home0);
   memset(p, 0, S_BYTES);
-  arts_db_release(b, DB_MODE_RW);
+  arts_db_release(b);
   static const unsigned int rank_of[2] = {1, 0};
   static const arts_db_access_mode_t mode_of[2] = {DB_MODE_RO, DB_MODE_RW};
   two_chain(b, NULL_GUID, NULL_GUID, 2, rank_of, mode_of);
@@ -324,7 +324,7 @@ static void claim_create(uint32_t paramc, const uint64_t *paramv,
   void *p = arts_db_create_with_guid(g, S_BYTES, ARTS_DB, ARTS_DB_PROP_NONE,
                                      NULL);
   memset(p, 0, S_BYTES);
-  arts_db_release(g, DB_MODE_RW);
+  arts_db_release(g);
 }
 
 static void claim_main(void) {
@@ -349,7 +349,7 @@ static void pub_create(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depv;
   arts_guid_t g = (arts_guid_t)paramv[0];
   (void)arts_db_create_with_guid(g, S_BYTES, ARTS_DB, ARTS_DB_PROP_NONE, NULL);
-  arts_db_release(g, DB_MODE_RW);
+  arts_db_release(g);
 }
 
 static void pub_main(void) {
@@ -435,7 +435,7 @@ static void join_main(const char *shape, int32_t acquisitions) {
   arts_guid_t b =
       arts_db_create(&p, S_BYTES, ARTS_DB, ARTS_DB_PROP_NONE, &home0);
   memset(p, 0, S_BYTES);
-  arts_db_release(b, DB_MODE_RW);
+  arts_db_release(b);
   arts_guid_t done = latch(acquisitions);
   uint64_t pv[2] = {(uint64_t)b, (uint64_t)done};
   arts_guid_t t = edt_on(claim_end, 0u, 1, pv, 1, NULL_GUID);
@@ -469,7 +469,7 @@ static void ping_main(void) {
   arts_guid_t b =
       arts_db_create(&p, P_BYTES, ARTS_DB, ARTS_DB_PROP_NONE, &home0);
   memset(p, 0x77, P_BYTES);
-  arts_db_release(b, DB_MODE_RW);
+  arts_db_release(b);
   arts_guid_t r = edt_on(ping_read, 1u, 0, NULL, 1, NULL_GUID);
   arts_add_dependence(b, r, 0, DB_MODE_RO);
 }

@@ -113,7 +113,7 @@ static arts_guid_t make_block(unsigned int bytes) {
   if (bytes != 0u) {
     ((unsigned int *)ptr)[0] = 0u;
   }
-  arts_db_release(db, DB_MODE_RW);
+  arts_db_release(db);
   return db;
 }
 

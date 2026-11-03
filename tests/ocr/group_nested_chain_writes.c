@@ -123,7 +123,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   for (int i = 0; i < N_SLOTS; i++) {
     c[i] = 0;
   }
-  arts_db_release(cdb, DB_MODE_RW);
+  arts_db_release(cdb);
 
   /* Outer group G homed on rank 0 (current rank). */
   arts_event_hint_t og = ARTS_EVENT_HINT_LATCH(1);

@@ -130,7 +130,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     for (unsigned int w = 0; w < WORDS; w++) {
       d[w] = stamp(id, w, 1);
     }
-    arts_db_release(db, DB_MODE_RW);
+    arts_db_release(db);
 
     arts_guid_t written = arts_event_create(&gh);
     arts_guid_t read = arts_event_create(&gh);

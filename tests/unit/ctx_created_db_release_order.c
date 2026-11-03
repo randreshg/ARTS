@@ -62,7 +62,7 @@ void successor(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
   arts_vector_t *list = arts_get_created_db_list();
   uint64_t len = list ? arts_vector_count(list) : 0;
-  arts_db_release(sdb, DB_MODE_RW);
+  arts_db_release(sdb);
   if (len != 1) {
     arts_printf("  successor's list length %llu, want 1\n",
                 (unsigned long long)len);
@@ -112,7 +112,7 @@ void producer(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
 
   for (int i = 0; i < NDB; i++) {
-    arts_db_release(dbs[i], DB_MODE_RW);
+    arts_db_release(dbs[i]);
     if (arts_vector_count(list) != (uint64_t)(NDB - 1 - i)) {
       fail("a release did not remove exactly its own entry");
       return;

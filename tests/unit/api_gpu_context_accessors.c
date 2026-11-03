@@ -129,7 +129,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_guid_t vdb = arts_db_create((void **)&v, sizeof(int), ARTS_DB,
                                    ARTS_DB_PROP_NONE, NULL);
   *v = 0;
-  arts_db_release(vdb, DB_MODE_RW);
+  arts_db_release(vdb);
 
   /* successor: verdict RO (slot 0) + completion-signal slot (slot 1). */
   arts_edt_hint_t sh = ARTS_EDT_HINT_DEFAULTS;

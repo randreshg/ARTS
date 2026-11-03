@@ -152,7 +152,7 @@ static void creator_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   if (slot_of(g) == 0) {
     fail("an acquiring create off-home left its own cache naming no store");
   }
-  arts_db_release(g, DB_MODE_RW);
+  arts_db_release(g);
 }
 
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,

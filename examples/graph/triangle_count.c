@@ -206,7 +206,7 @@ static inline uint64_t process_vertex(arts_csr_graph_t *graph, arts_vertex_t i,
           arts_db_create((void **)&copy, sizeof(arts_vertex_t) * neighbor_count,
                          ARTS_DB, ARTS_DB_PROP_NONE, NULL);
       memcpy(copy, neighbors, sizeof(arts_vertex_t) * neighbor_count);
-      arts_db_release(copy_guid, DB_MODE_RW);
+      arts_db_release(copy_guid);
       arts_add_dependence(copy_guid, guid, 0, DB_MODE_RO);
       arts_add_dependence(
           arts_block_dist_guid_for_partition(&distribution, owner), guid, 1,

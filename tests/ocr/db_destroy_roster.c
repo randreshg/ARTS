@@ -156,7 +156,7 @@ static void step(const uint64_t *paramv) {
     if (size != 0u) {
       *p = VALUE(0);
     }
-    arts_db_release(label, DB_MODE_RW);
+    arts_db_release(label);
     pv[P_LABEL] = (uint64_t)label;
   }
   arts_guid_t label = (arts_guid_t)pv[P_LABEL];

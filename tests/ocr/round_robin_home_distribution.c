@@ -149,7 +149,7 @@ static void checker_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       } else {
         ptr[0] = (uint64_t)me;
         ptr[1] = (uint64_t)i;
-        arts_db_release(g, DB_MODE_RW);
+        arts_db_release(g);
       }
     }
   }
@@ -177,7 +177,7 @@ static void checker_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_event_satisfy(arts_guid_from_index(ev_range, i), NULL_GUID);
   }
 
-  arts_db_release(list_db, DB_MODE_RW);
+  arts_db_release(list_db);
   arts_add_dependence(list_db, judge, me, DB_MODE_RO);
 
   if (ok) {

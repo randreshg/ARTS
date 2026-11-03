@@ -112,7 +112,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   for (int i = 0; i < SEEN_COUNT; i++) {
     atomic_init(&rec->seen[i], 0u);
   }
-  arts_db_release(rec_db, DB_MODE_RW);
+  arts_db_release(rec_db);
 
   arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
   gh.auto_destroy = true;

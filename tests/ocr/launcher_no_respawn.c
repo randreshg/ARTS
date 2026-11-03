@@ -210,7 +210,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   for (unsigned int r = 0; r < total; r++) {
     ((uint32_t *)ptr)[r] = 0u;
   }
-  arts_db_release(db, DB_MODE_RW);
+  arts_db_release(db);
 
   probe_step((const uint64_t[2]){0u, (uint64_t)db});
 }

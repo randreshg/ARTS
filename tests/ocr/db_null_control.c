@@ -31,7 +31,7 @@ static void check_release(uint32_t pc, const uint64_t *pv, uint32_t dc,
     arts_abort(1);
   }
   *(uint64_t *)dv[1].ptr = 17;
-  arts_db_release(db, DB_MODE_RW);
+  arts_db_release(db);
   if (dv[0].guid != db || dv[0].mode != DB_MODE_NULL || dv[1].ptr != NULL ||
       dv[1].guid != NULL_GUID) {
     arts_printf("FAIL: DB release selected the opaque-value slot\n");
@@ -44,7 +44,7 @@ static arts_guid_t make_block(uint64_t value) {
   arts_guid_t db = arts_db_create((void **)&p, sizeof(*p), ARTS_DB,
                                   ARTS_DB_PROP_NONE, NULL);
   *p = value;
-  arts_db_release(db, DB_MODE_RW);
+  arts_db_release(db);
   return db;
 }
 

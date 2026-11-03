@@ -151,7 +151,7 @@ static void creator_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   for (uint32_t i = 0; i < N; i++) {
     w[i] = seed + i;
   }
-  arts_db_release(g, DB_MODE_RW);
+  arts_db_release(g);
 
   uint64_t rpv[1] = {(uint64_t)seed};
   arts_guid_t r = arts_edt_create(reader_solo_edt, 1, rpv, 1,

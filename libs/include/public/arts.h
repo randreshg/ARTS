@@ -955,11 +955,12 @@ static inline void *arts_db_create_with_guid(arts_guid_t guid, uint64_t len,
  * Calling this on a DB the EDT neither created nor acquired (or already
  * released) is a no-op.
  *
+ * The call releases the calling EDT's hold on the block, whatever mode the
+ * hold was acquired in.
+ *
  * @param guid GUID of the DataBlock to release.
- * @param mode Access mode the DB was acquired/created with (DB_MODE_RW for
- *             created or written DBs, DB_MODE_RO for a read-only dep).
  */
-void arts_db_release(arts_guid_t guid, arts_db_access_mode_t mode);
+void arts_db_release(arts_guid_t guid);
 
 /**
  * @brief Destroy all copies of a DataBlock system-wide, from any rank.

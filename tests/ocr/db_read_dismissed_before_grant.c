@@ -144,7 +144,7 @@ static void maker(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   void *p = NULL;
   arts_guid_t g = arts_db_create(&p, 64, ARTS_DB, ARTS_DB_PROP_NONE, NULL);
   atomic_store_explicit((_Atomic(uint32_t) *)p, 7u, memory_order_relaxed);
-  arts_db_release(g, DB_MODE_RW);
+  arts_db_release(g);
   unsigned int c = (unsigned int)paramv[1];
   arts_guid_t latch = latch_on(c, 4);
   uint64_t dpv[2] = {(uint64_t)g, paramv[2]};

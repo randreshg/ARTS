@@ -104,7 +104,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     return;
   }
   memset(p, 1, 64);
-  arts_db_release(g, DB_MODE_RW);
+  arts_db_release(g);
   uint64_t pv[2] = {(uint64_t)g, home};
   (void)edt_on(destroyer, (home + 1u) % arts_get_total_ranks(), 2, pv);
 }

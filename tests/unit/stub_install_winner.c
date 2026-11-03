@@ -70,7 +70,7 @@ static void seeder_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   if (p != NULL) {
     p[0] = val;
   }
-  arts_db_release(g, DB_MODE_RW);
+  arts_db_release(g);
 }
 
 /// RO reader: must observe the writer's value (the wave races only the stub

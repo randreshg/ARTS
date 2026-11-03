@@ -186,7 +186,7 @@ leading to its destroyer (below) — release explicitly:
 
 .. code-block:: c
 
-   arts_db_release(db_guid, DB_MODE_RW);  /* created/written DBs */
+   arts_db_release(db_guid);
 
 :c:func:`arts_db_destroy` destroys all copies of a DB system-wide, from any
 rank, whether or not it holds a copy.  The program orders the destroy after

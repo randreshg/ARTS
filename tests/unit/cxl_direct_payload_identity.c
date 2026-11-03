@@ -231,7 +231,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     return;
   }
   g_first_ptr = (uint64_t)(uintptr_t)p;
-  arts_db_release(g_db, DB_MODE_RW);
+  arts_db_release(g_db);
 
   unsigned int nranks = arts_get_total_ranks();
   if (nranks - 1u > MAX_HOPS) {

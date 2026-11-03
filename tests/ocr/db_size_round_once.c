@@ -108,7 +108,7 @@ static void maker(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     g = arts_db_create(&p, 4096u, ARTS_DB, ARTS_DB_PROP_NONE, NULL);
   }
   atomic_store_explicit((_Atomic(uint32_t) *)p, 0u, memory_order_relaxed);
-  arts_db_release(g, DB_MODE_RW);
+  arts_db_release(g);
   uint64_t pv[6] = {(uint64_t)g, 0u, paramv[1], paramv[2], paramv[3], 0u};
   turn(step, 1u, pv, g, paramv[3] ? DB_MODE_RO : DB_MODE_RW, NULL_GUID);
 }

@@ -157,7 +157,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     ((uint64_t *)p)[s] = 0u;
   }
   atomic_init((_Atomic(uint64_t) *)&((uint64_t *)p)[SLOTS], 0u);
-  arts_db_release(g_db, DB_MODE_RW);
+  arts_db_release(g_db);
 
   uint64_t rp[2] = {0u, (uint64_t)nranks};
   arts_guid_t first =

@@ -173,8 +173,8 @@ static void home_check_edt(uint32_t paramc, const uint64_t *paramv,
                             paramv[4], checked);
     /* The group's successor shuts the run down: release the blocks this
      * check still holds (the destroy released lg's). */
-    arts_db_release((arts_guid_t)paramv[1], DB_MODE_RO);
-    arts_db_release((arts_guid_t)paramv[2], DB_MODE_RO);
+    arts_db_release((arts_guid_t)paramv[1]);
+    arts_db_release((arts_guid_t)paramv[2]);
     arts_event_satisfy_slot(checked, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
     return;
   }
@@ -192,7 +192,7 @@ static void recreate_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depc;
   (void)depv;
   arts_guid_t dg = (arts_guid_t)paramv[0];
-  arts_db_release(dg, DB_MODE_RO);
+  arts_db_release(dg);
   uint64_t before = slot_of(dg);
   void *dp = arts_db_create_with_guid(dg, N * sizeof(unsigned int), ARTS_DB,
                                       ARTS_DB_PROP_NO_ACQUIRE, NULL);
@@ -222,7 +222,7 @@ static void creator_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
   uint64_t addr = slot_of(g);
   check_slot(addr, "an acquiring create off-home allocated no slot");
-  arts_db_release(g, DB_MODE_RW);
+  arts_db_release(g);
 
   /* First touch, then a create of the same label, on ONE rank.  The dependence
    * is asked for FIRST, so a first touch may install the cache here and park;
@@ -249,7 +249,7 @@ static void creator_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     fail("a create after a first touch of the same label made nothing");
   }
   check_slot(laddr, "a create after a first touch allocated no slot");
-  arts_db_release(lg, DB_MODE_RW);
+  arts_db_release(lg);
 
   /* A create that acquires nothing, made away from the block's home: this rank
    * keeps no cache for it, but it mints the block's slot and names it on the

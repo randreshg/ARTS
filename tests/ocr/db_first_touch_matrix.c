@@ -152,7 +152,7 @@ static void run_case(unsigned int idx) {
       arts_shutdown();
       return;
     }
-    arts_db_release(db, DB_MODE_RW);
+    arts_db_release(db);
   }
 
   arts_edt_hint_t eh = ARTS_EDT_HINT_DEFAULTS;

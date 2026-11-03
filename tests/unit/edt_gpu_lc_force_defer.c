@@ -83,7 +83,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   void *p = NULL;
   arts_guid_t lc = arts_db_create(&p, sizeof(uint32_t) * LC_ELEMS, ARTS_DB_GPU,
                                   ARTS_DB_PROP_NONE, NULL);
-  arts_db_release(lc, DB_MODE_RW);
+  arts_db_release(lc);
 
   arts_edt_hint_t ch = ARTS_EDT_HINT_DEFAULTS;
   arts_guid_t c = arts_edt_create(consumer, 0, NULL, 1, &ch);

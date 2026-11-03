@@ -139,7 +139,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_abort(1);
   }
   memset(state_raw, 0, STATE_NELEMS * sizeof(uint64_t));
-  arts_db_release(state_db, DB_MODE_RW);
+  arts_db_release(state_db);
 
   arts_event_hint_t latch_hint = ARTS_EVENT_HINT_LATCH(TOTAL);
   latch_hint.rank = 0;
@@ -158,7 +158,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       arts_abort(1);
     }
     atomic_init((_Atomic(uint64_t) *)dbp, 0u);
-    arts_db_release(db, DB_MODE_RW);
+    arts_db_release(db);
 
     /* Interleave RW and RO issuance so that, on the same rank, an RO REQUEST is
      * frequently in flight when an RW acquire arrives (RW must still request)

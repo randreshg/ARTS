@@ -81,8 +81,8 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   if (strcmp(argv[1], "requester") == 0) {
     arts_guid_t ro = block_on(0u, 0x11);
     arts_guid_t rw = block_on(0u, 0x22);
-    arts_db_release(ro, DB_MODE_RW);
-    arts_db_release(rw, DB_MODE_RW);
+    arts_db_release(ro);
+    arts_db_release(rw);
     arts_guid_t r = edt_on(must_not_run, 1u, 1);
     arts_guid_t w = edt_on(must_not_run, 1u, 1);
     arts_add_dependence(ro, r, 0, DB_MODE_RO);

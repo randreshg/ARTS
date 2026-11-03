@@ -125,7 +125,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_guid_t db = arts_db_create(&ptr, sizeof(unsigned int), ARTS_DB,
                                   ARTS_DB_PROP_NONE, NULL);
   ((unsigned int *)ptr)[0] = MAGIC;
-  arts_db_release(db, DB_MODE_RW);
+  arts_db_release(db);
 
   /* Readers run one after another on rank 1 — a rank that is NOT the owner, so
    * each acquire is answered by a real home-counted grant.  Chaining them

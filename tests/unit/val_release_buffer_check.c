@@ -51,8 +51,8 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                                  &(arts_db_hint_t){.rank = 0});
   arts_guid_t b = arts_db_create(&pb, 4096, ARTS_DB, ARTS_DB_PROP_NONE,
                                  &(arts_db_hint_t){.rank = 0});
-  arts_db_release(a, DB_MODE_RW);
-  arts_db_release(b, DB_MODE_RW);
+  arts_db_release(a);
+  arts_db_release(b);
   arts_guid_t w =
       arts_edt_create(writer, 0, NULL, 2, &(arts_edt_hint_t){.rank = 0});
   arts_add_dependence(a, w, 0, DB_MODE_RW);

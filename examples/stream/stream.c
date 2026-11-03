@@ -176,9 +176,9 @@ void stream_kernel(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     break;
   }
 
-  arts_db_release(depv[0].guid, DB_MODE_RW);
-  arts_db_release(depv[1].guid, DB_MODE_RW);
-  arts_db_release(depv[2].guid, DB_MODE_RW);
+  arts_db_release(depv[0].guid);
+  arts_db_release(depv[1].guid);
+  arts_db_release(depv[2].guid);
   arts_event_satisfy_slot(latch_guid, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
@@ -220,7 +220,7 @@ void phase_done(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   /* Store timing in metadata DB */
   meta->times[kernel][iter] = end_time - start_time;
   arts_event_destroy(latch);
-  arts_db_release(meta_guid, DB_MODE_RW);
+  arts_db_release(meta_guid);
 
   /* Chain to next phase */
   uint64_t next_kernel = kernel + 1;
@@ -284,7 +284,7 @@ void run_phase(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_add_dependence(meta->b_guids[n], edt, 1, DB_MODE_RW);
     arts_add_dependence(meta->c_guids[n], edt, 2, DB_MODE_RW);
   }
-  arts_db_release(meta_guid, DB_MODE_RO);
+  arts_db_release(meta_guid);
 
   /* Create phase_done EDT: dep[0]=latch, dep[1]=metadata DB */
   uint64_t start_bits;
@@ -397,7 +397,7 @@ void start_benchmark(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     meta->c_guids[n] = depv[(3 * n) + 2].guid;
   }
   for (unsigned int n = 0; n < 3 * num_nodes; n++) {
-    arts_db_release(depv[n].guid, DB_MODE_RO);
+    arts_db_release(depv[n].guid);
   }
 
   /* Print preamble */
@@ -433,7 +433,7 @@ void start_benchmark(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_printf("The SCALAR value used for this run is %f\n", (double)SCALAR);
   arts_printf(HLINE);
 
-  arts_db_release(meta_guid, DB_MODE_RW);
+  arts_db_release(meta_guid);
 
   /* Start first phase */
   uint64_t args[2] = {0, 0}; /* iter=0, kernel=0 */
@@ -487,9 +487,9 @@ void init_node(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     a[j] = 2.0 * a[j];
   }
 
-  arts_db_release(a_guid, DB_MODE_RW);
-  arts_db_release(b_guid, DB_MODE_RW);
-  arts_db_release(c_guid, DB_MODE_RW);
+  arts_db_release(a_guid);
+  arts_db_release(b_guid);
+  arts_db_release(c_guid);
 
   /* Register DB dependencies on the collector EDT */
   arts_add_dependence(a_guid, collector, (3 * n) + 0, DB_MODE_RO);

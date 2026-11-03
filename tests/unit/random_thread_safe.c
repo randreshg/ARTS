@@ -227,7 +227,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     a->rec[i].high_entropy = 0;
     a->rec[i].intra_varies = 0;
   }
-  arts_db_release(db, DB_MODE_RW);
+  arts_db_release(db);
 
   arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
   gh.auto_destroy = true;

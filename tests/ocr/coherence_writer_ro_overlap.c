@@ -352,7 +352,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     for (uint32_t i = 0; i < CHURN_WORDS; i++) {
       atomic_init(&b->churn[i], STAMP_WORD(0));
     }
-    arts_db_release(db, DB_MODE_RW);
+    arts_db_release(db);
     pv[1 + d] = (uint64_t)db;
   }
   run_round(pv);

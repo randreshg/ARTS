@@ -120,7 +120,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   atomic_init(&c->fired_a, 0u);
   atomic_init(&c->fired_b, 0u);
   atomic_init(&c->fired_c, 0u);
-  arts_db_release(ctr, DB_MODE_RW);
+  arts_db_release(ctr);
 
   uint64_t pv[1] = {(uint64_t)ctr};
 

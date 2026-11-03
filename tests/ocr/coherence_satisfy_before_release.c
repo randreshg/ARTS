@@ -201,7 +201,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   /* Step 4: release — the publication point.  Home-parked acquires must be
    * served exactly the bytes written in step 1. */
   for (uint32_t d = 0; d < N_DBS; d++) {
-    arts_db_release(dbs[d], DB_MODE_RW);
+    arts_db_release(dbs[d]);
   }
   arts_event_satisfy_slot(group, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }

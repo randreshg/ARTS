@@ -114,7 +114,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   if (dbp != NULL) {
     atomic_init((_Atomic(uint64_t) *)dbp, 0u);
   }
-  arts_db_release(db, DB_MODE_RW);
+  arts_db_release(db);
 
   /* Group joined by every participant; its DECR is emitted at each
    * EDT's completion (after arts_release_dbs), so it fires only once every

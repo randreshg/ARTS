@@ -81,7 +81,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       arts_db_create(&p, sizeof(_Atomic(uint64_t)), ARTS_DB, ARTS_DB_PROP_NONE,
                      &(arts_db_hint_t){.rank = 0u});
   atomic_init((_Atomic(uint64_t) *)p, 0u);
-  arts_db_release(db, DB_MODE_RW);
+  arts_db_release(db);
 
   /* A single rank exercises the concurrent local writer case. */
   unsigned int first = (nranks > 1u) ? 1u : 0u;

@@ -128,7 +128,7 @@ static void maker(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   if (size != 0u) {
     *(uint32_t *)p = 0u;
   }
-  arts_db_release(g, DB_MODE_RW);
+  arts_db_release(g);
   note_seen(g);
   unsigned int n = arts_get_total_ranks();
   unsigned int here = arts_get_current_rank();

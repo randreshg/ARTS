@@ -118,7 +118,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   } else {
     p0[0] = SENTINEL;
   }
-  arts_db_release(g_round_db[0], DB_MODE_RW);
+  arts_db_release(g_round_db[0]);
   arts_guid_t prev = arts_event_create(&gh);
   opened[nopened++] = prev;
   arts_guid_t k0 = arts_edt_create(

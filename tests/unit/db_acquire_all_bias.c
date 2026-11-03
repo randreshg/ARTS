@@ -129,7 +129,7 @@ static void iteration(uint64_t it) {
     if (p != NULL) {
       ((unsigned int *)p)[0] = 0u;
     }
-    arts_db_release(ro[i], DB_MODE_RW);
+    arts_db_release(ro[i]);
   }
   /* RW deps homed remotely (rank 1+) -> ownership parks resolved by GRANT. */
   for (unsigned int i = 0; i < NRW; i++) {
@@ -137,7 +137,7 @@ static void iteration(uint64_t it) {
     void *p = NULL;
     rw[i] = arts_db_create(&p, sizeof(unsigned int), ARTS_DB, ARTS_DB_PROP_NONE,
                            &(arts_db_hint_t){.rank = home});
-    arts_db_release(rw[i], DB_MODE_RW);
+    arts_db_release(rw[i]);
   }
 
   arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);

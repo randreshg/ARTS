@@ -2031,9 +2031,9 @@ static arts_shared_ptr_t db_release_hold(arts_guid_t guid) {
    * buffer ref and pin exactly once, and the epilogue then skips every slot
    * naming the block.
    *
-   * `mode` therefore selects nothing among the slots that SHARE the block's
-   * acquisition (DB_MODE_RO / DB_MODE_RW): the owner's acquisition is the
-   * strongest mode the EDT asked for and is the only one there is.  A
+   * Whether a slot names DB_MODE_RO or DB_MODE_RW therefore picks nothing
+   * among the slots that SHARE the block's acquisition: the owner's acquisition
+   * is the strongest mode the EDT asked for and is the only one there is.  A
    * device-side internal mode is not part of that acquisition and is not
    * classified, so it is never the owner while a coherent slot names the same
    * block: the search takes the first RO/RW slot and falls back to an
@@ -2093,9 +2093,8 @@ static arts_shared_ptr_t db_release_hold(arts_guid_t guid) {
 }
 
 /* arts_db_release — release the calling EDT's hold on one DB mid-EDT
- * (db_release_hold); the block, not the mode, decides what it releases. */
-void arts_db_release(arts_guid_t guid, arts_db_access_mode_t mode) {
-  (void)mode;
+ * (db_release_hold); the block decides what it releases. */
+void arts_db_release(arts_guid_t guid) {
   arts_shared_ptr_t held = db_release_hold(guid);
   arts_shared_release(&held);
 }

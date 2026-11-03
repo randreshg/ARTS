@@ -84,7 +84,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       arts_db_create(&ptr, sizeof(unsigned int), ARTS_DB, ARTS_DB_PROP_NONE,
                      NULL);
   ((unsigned int *)ptr)[0] = V1;
-  arts_db_release(db, DB_MODE_RW);
+  arts_db_release(db);
 
   /* read #1 on the far rank — this is the lend. */
   arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);

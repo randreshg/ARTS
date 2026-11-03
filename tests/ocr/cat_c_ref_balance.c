@@ -118,7 +118,7 @@ static void generation(const uint64_t *paramv) {
       arts_db_create(&ptr, sizeof(unsigned int), ARTS_DB, ARTS_DB_PROP_NONE,
                      &(arts_db_hint_t){.rank = 0});
   ((unsigned int *)ptr)[0] = 0u;
-  arts_db_release(db, DB_MODE_RW);
+  arts_db_release(db);
 
   /* Drive RW (publish/ownership/ACK Cat-C) then RO (snapshot/redirect
    * Cat-C) across every rank so each foreign rank's cache pins + must

@@ -84,7 +84,7 @@ static void creator_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     return;
   }
   ptr[0] = (unsigned int)paramv[1];
-  arts_db_release(label, DB_MODE_RW);
+  arts_db_release(label);
 }
 
 static void unordered_reader_edt(uint32_t paramc, const uint64_t *paramv,

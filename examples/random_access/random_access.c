@@ -223,11 +223,8 @@ void hpcc_starts_tiled(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       r_array[owner] += 1ULL;
     }
   }
-  if (index == 0)
-    arts_db_release(depv[1].guid, DB_MODE_RW);
-  else
-    arts_db_release(depv[1].guid, DB_MODE_RO);
-  arts_db_release(tile_guid, DB_MODE_RW);
+  arts_db_release(depv[1].guid);
+  arts_db_release(tile_guid);
   arts_add_dependence(tile_guid, update_guid, (index+1), DB_MODE_RW);
 }
 
@@ -270,8 +267,8 @@ void update_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
         table[local_ran_index] ^= local_ran;
     }
   }
-  arts_db_release(depv[1].guid, DB_MODE_RO);
-  arts_db_release(depv[0].guid, DB_MODE_RW);
+  arts_db_release(depv[1].guid);
+  arts_db_release(depv[0].guid);
   arts_edt_satisfy_slot(next_guid, slot, NULL_GUID, DB_MODE_NULL);
 }
 
@@ -284,7 +281,7 @@ void update_driver(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   uint64_t next_random_guid = paramv[4];
 
   arts_guid_t read_only = depv[0].guid;
-  arts_db_release(read_only, DB_MODE_RO);
+  arts_db_release(read_only);
   uint64_t update_args[] = {tile_size, num_tiles, table_size, num_random, 0, next_random_guid, 0};
   uint64_t next = arts_get_current_rank();
   for (uint64_t i = 0; i < num_tiles; i++) {
@@ -294,7 +291,7 @@ void update_driver(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                                 7, update_args, 2,
                                 &(arts_edt_hint_t){.rank = next});
     arts_guid_t tile_guid = depv[i+1].guid;
-    arts_db_release(tile_guid, DB_MODE_RW);
+    arts_db_release(tile_guid);
     arts_add_dependence(tile_guid, update_guid, 0, DB_MODE_RW);
     arts_add_dependence(read_only, update_guid, 1, DB_MODE_RO);
     next = (next+1)%arts_get_total_ranks();
@@ -315,7 +312,7 @@ void random_driver(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                 index * num_random);
   uint64_t table_size = TABLESIZE;
   arts_guid_t frontier_guid = depv[0].guid;
-  arts_db_release(frontier_guid, DB_MODE_RO);
+  arts_db_release(frontier_guid);
 
   //TODO: Probably need to separate hpcc and update edts. Need to wait for all hpcc
   // EDTs to finish before running update
@@ -421,7 +418,7 @@ static void create_table(int argc, char **argv) {
     for (unsigned int j = 0; j < tile_size; j++)
       tile[i][j] = counter++;
     tile[i][tile_size] = 0;
-    arts_db_release(tile_guids[i], DB_MODE_RW);
+    arts_db_release(tile_guids[i]);
   }
 
   // Create update frontiers.  The number of updates a frontier can hold is 1024
@@ -433,7 +430,7 @@ static void create_table(int argc, char **argv) {
                      elems_per_frontier * sizeof(uint64_t), ARTS_DB, 0, NULL);
   for (unsigned int j = 0; j < elems_per_frontier; j++)
     update_frontier[j] = 0;
-  arts_db_release(update_frontier_guid, DB_MODE_RW);
+  arts_db_release(update_frontier_guid);
 
   // Create a LC sync edt for all partitions
   done_guid = arts_guid_reserve(ARTS_GUID_EDT, 0);

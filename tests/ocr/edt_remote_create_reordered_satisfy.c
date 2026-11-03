@@ -98,7 +98,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                      &(arts_db_hint_t){.rank = 0});
   ctr_t *c = (ctr_t *)cp;
   atomic_init(&c->fired, 0u);
-  arts_db_release(cdb, DB_MODE_RW);
+  arts_db_release(cdb);
 
   uint64_t pv[1] = {(uint64_t)cdb};
 

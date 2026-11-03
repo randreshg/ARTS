@@ -92,7 +92,7 @@ static arts_guid_t make_value(uint64_t g) {
   arts_guid_t db = arts_db_create((void **)&p, sizeof(uint64_t), ARTS_DB,
                                   ARTS_DB_PROP_NONE, NULL);
   *p = g;
-  arts_db_release(db, DB_MODE_RW);
+  arts_db_release(db);
   return db;
 }
 
@@ -125,7 +125,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   for (int i = 0; i < TOTAL; i++) {
     res[i] = NULL_GUID;
   }
-  arts_db_release(results_db, DB_MODE_RW);
+  arts_db_release(results_db);
 
   arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
   gh.auto_destroy = true;
@@ -153,7 +153,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                             ARTS_EVENT_LATCH_DECR_SLOT);
   }
 
-  arts_db_release(ref_db, DB_MODE_RW);
+  arts_db_release(ref_db);
 
   /* The group orders every counter_edt's release of results_db before
    * verify_edt's read. */

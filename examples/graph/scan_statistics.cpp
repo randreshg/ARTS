@@ -143,7 +143,7 @@ void find_intersection(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   vertex_scan_stat->source = source;
   vertex_scan_stat->scan_stat = sum;
   // std::cout << "Source " << source << " ScanStat: " << sum << std::endl;
-  arts_db_release(db_guid, DB_MODE_RW);
+  arts_db_release(db_guid);
   arts_add_dependence(db_guid, max_reducer_guid, source, DB_MODE_RO);
 }
 
@@ -180,7 +180,7 @@ void visit_one_hop_neighbor_on_rank(uint32_t paramc, const uint64_t *paramv,
                             std::back_inserter(local_intersection));
     }
   }
-  arts_db_release(depv[1].guid, DB_MODE_RO);
+  arts_db_release(depv[1].guid);
 
   unsigned int db_size = sizeof(per_vertex_scan_stat_t);
   void *ptr = NULL;
@@ -192,7 +192,7 @@ void visit_one_hop_neighbor_on_rank(uint32_t paramc, const uint64_t *paramv,
   // std::cout << "Source: " << src_info->source << " rank: "  <<
   // arts_get_current_node() << " set intersection size: " <<
   // local_intersection.size() <<std::endl;
-  arts_db_release(db_guid, DB_MODE_RW);
+  arts_db_release(db_guid);
   arts_add_dependence(db_guid, src_info->find_intersection_guid,
                       arts_get_current_rank(), DB_MODE_RO);
   arts_db_destroy(depv[0].guid);
@@ -232,11 +232,11 @@ void visit_source(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       src_info->num_neighbors = neighbor_cnt;
       memcpy(&(src_info->neighbors), neighbors,
              sizeof(arts_vertex_t) * neighbor_cnt);
-      arts_db_release(db_guid, DB_MODE_RW);
+      arts_db_release(db_guid);
       // max_reducer destroys the partition, so it is released after the
       // row's last copy and before the last hand-off on the way there.
       if (i + 1 == arts_get_total_ranks()) {
-        arts_db_release(partition_guid, DB_MODE_RO);
+        arts_db_release(partition_guid);
       }
       /*create the edt to find # one-hop neighbors*/
       arts_edt_hint_t hop_hint = {};
@@ -248,7 +248,7 @@ void visit_source(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                           visit_one_hop_neighbor_guid, 1, DB_MODE_RO);
     }
   } else {
-    arts_db_release(partition_guid, DB_MODE_RO);
+    arts_db_release(partition_guid);
     /*signal maxreducer*/
     unsigned int db_size = sizeof(per_vertex_scan_stat_t);
     void *ptr = NULL;
@@ -258,7 +258,7 @@ void visit_source(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     vertex_scan_stat->source = source;
     vertex_scan_stat->scan_stat = 1;
     // std::cout << "signaling maxruducer for source " << source << std::endl;
-    arts_db_release(db_guid, DB_MODE_RW);
+    arts_db_release(db_guid);
     arts_add_dependence(db_guid, max_reducer_guid, source, DB_MODE_RO);
   }
 }

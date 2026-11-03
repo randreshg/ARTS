@@ -212,7 +212,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       arts_db_create(&ptr, sizeof(unsigned int), ARTS_DB, ARTS_DB_PROP_NONE,
                      &(arts_db_hint_t){.rank = 0});
   ((unsigned int *)ptr)[0] = 0u;
-  arts_db_release(db, DB_MODE_RW);
+  arts_db_release(db);
 
   uint64_t pv[P_COUNT] = {0u, (uint64_t)db};
   reset_phase(pv);

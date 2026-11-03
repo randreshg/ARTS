@@ -124,7 +124,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     for (uint64_t i = 0; i < size; i++) {
       p[i] = pattern_byte((uint64_t)g, i);
     }
-    arts_db_release(g, DB_MODE_RW);
+    arts_db_release(g);
     consume(g, size, c, DB_MODE_RO, group);
   }
 
@@ -134,7 +134,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   for (uint64_t i = 0; i < MINTED_BYTES; i++) {
     ((unsigned char *)mp)[i] = pattern_byte((uint64_t)minted, i);
   }
-  arts_db_release(minted, DB_MODE_RW);
+  arts_db_release(minted);
   consume(minted, MINTED_BYTES, NUM_LABELED, DB_MODE_RW, group);
 
   arts_guid_t f =

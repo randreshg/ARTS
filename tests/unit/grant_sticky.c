@@ -174,7 +174,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   void *ptr = NULL;
   g_db = arts_db_create(&ptr, sizeof(int), ARTS_DB, ARTS_DB_PROP_NONE, NULL);
   ((int *)ptr)[0] = 0;
-  arts_db_release(g_db, DB_MODE_RW);
+  arts_db_release(g_db);
 
   /* Writers run one after another (each gated on the previous), so every
    * acquire after the first meets a grant this rank already holds. */

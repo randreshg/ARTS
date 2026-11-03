@@ -76,7 +76,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_guid_t db = arts_db_create(&p, sizeof(uint64_t), ARTS_DB,
                                   ARTS_DB_PROP_NONE, NULL);
   ((uint64_t *)p)[0] = 0xABCDu;
-  arts_db_release(db, DB_MODE_RW);
+  arts_db_release(db);
 
   /* Slot 0 names the block (RO); slot 1 is an event that is never satisfied,
    * which keeps depc_needed above 0, so the runtime never starts the EDT's

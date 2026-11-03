@@ -148,7 +148,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       arts_abort(1);
     }
     ((mark_t *)p)->ran = 0u;
-    arts_db_release(blocks[i], DB_MODE_RW);
+    arts_db_release(blocks[i]);
   }
 
   arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);

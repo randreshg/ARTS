@@ -110,7 +110,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   g_db = arts_db_create(&ptr, sizeof(int), ARTS_DB, ARTS_DB_PROP_NONE,
                         &(arts_db_hint_t){.rank = 0});
   ((int *)ptr)[0] = 0;
-  arts_db_release(g_db, DB_MODE_RW);
+  arts_db_release(g_db);
 
   /* Y takes a durable copy. */
   arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);

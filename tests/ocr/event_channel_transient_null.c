@@ -218,7 +218,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
 
   /* The counting EDTs acquire the state block once this creator hold ends. */
-  arts_db_release(state_db, DB_MODE_RW);
+  arts_db_release(state_db);
 
   arts_guid_t v = arts_edt_create(verify_edt, 0, NULL, 2, NULL);
   arts_add_dependence(latch, v, 0, DB_MODE_NULL);

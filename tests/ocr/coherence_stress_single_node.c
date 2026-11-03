@@ -117,7 +117,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       dbs[i] = arts_db_create((void **)&data, sizeof(int), ARTS_DB,
                               ARTS_DB_PROP_NONE, NULL);
       *data = i;
-      arts_db_release(dbs[i], DB_MODE_RW);
+      arts_db_release(dbs[i]);
     }
 
     /* Mixed RO/RW workers fan out over the DB pool: each pass over the pool

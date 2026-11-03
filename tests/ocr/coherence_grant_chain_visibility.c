@@ -224,7 +224,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   for (unsigned int i = 0; i < ELEMS; i++) {
     ((uint64_t *)ptr)[i] = 0;
   }
-  arts_db_release(db, DB_MODE_RW);
+  arts_db_release(db);
 
   /* ── Stage 1: remote write, remote read ───────────────────────────────── */
   arts_guid_t e_w1 = arts_event_create(&gh);

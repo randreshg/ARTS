@@ -137,7 +137,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_abort(1);
   }
   *(uint64_t *)cp = 0u;
-  arts_db_release(counter, DB_MODE_RW);
+  arts_db_release(counter);
 
   /* Per-phase writer completion_event (ew) + reader-batch group (lk). */
   arts_guid_t ew[N_PHASES];
@@ -185,7 +185,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_abort(1);
   }
   *(uint64_t *)chp = 0u;
-  arts_db_release(chain, DB_MODE_RW);
+  arts_db_release(chain);
 
   /* One completion event per chain writer: it fires after that writer's release
    * has published its increment. */

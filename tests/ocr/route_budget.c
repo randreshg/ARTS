@@ -132,7 +132,7 @@ static void rwremote_unit_end(uint32_t paramc, const uint64_t *paramv,
     addr[0] = ~paramv[0];
   }
   /* Released before the unit ends, so the shutdown cuts no release. */
-  arts_db_release(depv[0].guid, DB_MODE_RW);
+  arts_db_release(depv[0].guid);
   unit_done();
 }
 
@@ -151,7 +151,7 @@ static void shape_remote(uint64_t n, arts_edt_t body,
     for (uint64_t k = 0; k < 64 / sizeof(uint64_t); k++) {
       addr[k] = i + k;
     }
-    arts_db_release(db, DB_MODE_RW);
+    arts_db_release(db);
     arts_edt_hint_t eh = ARTS_EDT_HINT_DEFAULTS;
     eh.rank = 1u;
     uint64_t param = i;

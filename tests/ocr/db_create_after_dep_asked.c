@@ -144,7 +144,7 @@ void late_creator_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
    * task can still be running then — so a value written here would race the
    * one the program does order, and the final read would have two legal
    * answers.  The pointer is what this task is here to assert. */
-  arts_db_release(child, DB_MODE_RW);
+  arts_db_release(child);
 }
 
 /* The write the program DOES order: after the early acquirer (slot 0 is that

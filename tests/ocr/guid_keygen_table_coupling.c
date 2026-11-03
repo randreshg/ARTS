@@ -248,7 +248,7 @@ static void rank_driver_edt(uint32_t paramc, const uint64_t *paramv,
   for (unsigned int i = 0; i < TOTAL_PER_RANK; i++) {
     slots[i] = (uint64_t)NULL_GUID;
   }
-  arts_db_release(coll, DB_MODE_RW);
+  arts_db_release(coll);
 
   /* Checker runs after all reservers (slot 1 = the inner group); it inherits
    * this driver's group (outer, joined through this rank's proxy), so the

@@ -84,7 +84,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_guid_t block =
       arts_db_create(&p, sizeof(uint64_t), ARTS_DB, ARTS_DB_PROP_NONE, NULL);
   ((uint64_t *)p)[0] = SEED;
-  arts_db_release(block, DB_MODE_RW);
+  arts_db_release(block);
   arts_guid_t ev_rw = arts_event_create(NULL);
   arts_guid_t ev_ro = arts_event_create(NULL);
   uint64_t pv[1] = {(uint64_t)block};

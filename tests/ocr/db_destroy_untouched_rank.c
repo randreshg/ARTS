@@ -108,7 +108,7 @@ static void second_creator(uint32_t paramc, const uint64_t *paramv,
     return;
   }
   *p = VALUE(2);
-  arts_db_release(label, DB_MODE_RW);
+  arts_db_release(label);
 
   arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
   gh.auto_destroy = true;
@@ -135,7 +135,7 @@ static void first_creator(uint32_t paramc, const uint64_t *paramv,
     return;
   }
   *p = VALUE(1);
-  arts_db_release(label, DB_MODE_RW);
+  arts_db_release(label);
 
   arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
   gh.auto_destroy = true;

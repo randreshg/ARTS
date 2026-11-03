@@ -129,7 +129,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       arts_edt_create(reader, 1, &rd, 2, &(arts_edt_hint_t){.rank = n - 1u});
   arts_add_dependence(g, rdr, 0, DB_MODE_NULL);
   arts_add_dependence(b, rdr, 1, DB_MODE_RO);
-  arts_db_release(b, DB_MODE_RW);
+  arts_db_release(b);
   arts_event_satisfy_slot(g, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 
   struct timespec t0, t1;

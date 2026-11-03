@@ -68,7 +68,7 @@ static arts_guid_t make_block(uint64_t bytes, unsigned int home,
   if (bytes >= sizeof(uint64_t)) {
     atomic_init((_Atomic(uint64_t) *)addr, seed);
   }
-  arts_db_release(db, DB_MODE_RW);
+  arts_db_release(db);
   return db;
 }
 
@@ -440,7 +440,7 @@ static void case_size_discovery(arts_guid_t group) {
   for (unsigned int i = 0; i < DISCOVERY_BYTES; i++) {
     ((uint8_t *)addr)[i] = first_byte(i);
   }
-  arts_db_release(label, DB_MODE_RW);
+  arts_db_release(label);
 
   arts_guid_t read_done = arts_event_create(&ARTS_EVENT_HINT_DEFAULTS);
   arts_guid_t write_done = arts_event_create(&ARTS_EVENT_HINT_DEFAULTS);

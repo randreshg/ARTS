@@ -214,7 +214,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     /* Release the creator's initial RW grant so the DB's home copy is published
      * before any acquire — a defensive publish that is harmless under every
      * OCR-coherence protocol. */
-    arts_db_release(dbs[d], DB_MODE_RW);
+    arts_db_release(dbs[d]);
   }
 
   arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);

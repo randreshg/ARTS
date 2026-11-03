@@ -171,7 +171,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   counter_db_t *ctr = (counter_db_t *)ctr_ptr;
   atomic_init(&ctr->passed, 0u);
   atomic_init(&ctr->failed, 0u);
-  arts_db_release(ctr_db, DB_MODE_RW);
+  arts_db_release(ctr_db);
 
   /* Collector: NUM_SUBTESTS DB_MODE_NULL slots + 1 RO dep for the counter DB. */
   arts_guid_t coll_guid =

@@ -770,7 +770,7 @@ u8 ocrDbDestroy(ocrGuid_t db) {
 
 u8 ocrDbRelease(ocrGuid_t db) {
   if (!ocrGuidIsNull(db)) {
-    arts_db_release(db.guid, ARTS_MODE_RW);
+    arts_db_release(db.guid);
   }
   return 0;
 }
@@ -788,7 +788,7 @@ u8 ocrDbRelease(ocrGuid_t db) {
  * that no two EW acquisitions of a block overlap, and no ARTS mode excludes
  * the writers of one node from each other.
  *
- * ocrDbRelease() calls arts_db_release(), which releases a hold of either mode
+ * ocrDbRelease() calls arts_db_release(), which releases a hold in any mode
  * before the EDT completes.  A hold must be released before the body's
  * hand-off that can lead to the block's destroy: a destroy is ordered after
  * the release of every hold on the block.

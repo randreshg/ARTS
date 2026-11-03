@@ -76,7 +76,7 @@ void node_setup(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_guid_t db_guid = arts_db_create((void **)&ptr, sizeof(unsigned int),
                                        ARTS_DB, ARTS_DB_PROP_NONE, NULL);
   *ptr = (int)node_id;
-  arts_db_release(db_guid, DB_MODE_RW);
+  arts_db_release(db_guid);
   arts_add_dependence(db_guid, (arts_guid_t)paramv[1], node_id, DB_MODE_RO);
 }
 

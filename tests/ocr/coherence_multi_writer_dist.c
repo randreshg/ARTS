@@ -156,7 +156,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       }
       atomic_init((_Atomic(int) *)raw, 0);
       if (i >= N_DBS / 2u) {
-        arts_db_release(dbs[i], DB_MODE_RW);
+        arts_db_release(dbs[i]);
       } else {
         held[iter][i] = dbs[i];
       }
@@ -182,7 +182,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
   for (unsigned int iter = 0; iter < K_ITERS; iter++) {
     for (unsigned int i = 0; i < N_DBS / 2u; i++) {
-      arts_db_release(held[iter][i], DB_MODE_RW);
+      arts_db_release(held[iter][i]);
     }
   }
   for (unsigned int iter = 0; iter < K_ITERS; iter++) {

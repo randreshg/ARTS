@@ -208,7 +208,7 @@ void alias_release_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     return;
   }
   ((unsigned int *)depv[0].ptr)[0] = MAGIC5;
-  arts_db_release(depv[0].guid, DB_MODE_RW);
+  arts_db_release(depv[0].guid);
 }
 
 /// Releases the block in the middle of its body and then satisfies an event a
@@ -234,7 +234,7 @@ void mid_release_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     return;
   }
   rw[0] = MAGIC4;
-  arts_db_release(db, DB_MODE_RW);
+  arts_db_release(db);
   arts_event_satisfy((arts_guid_t)paramv[0], NULL_GUID);
 }
 
@@ -389,7 +389,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       arts_db_create(&ptr, sizeof(unsigned int), ARTS_DB, ARTS_DB_PROP_NONE,
                      &(arts_db_hint_t){.rank = 0});
   ((unsigned int *)ptr)[0] = 0u;
-  arts_db_release(db, DB_MODE_RW);
+  arts_db_release(db);
 
   step((const uint64_t[P_COUNT]){0u, (uint64_t)db, writer_rank});
 }

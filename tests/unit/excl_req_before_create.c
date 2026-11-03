@@ -189,7 +189,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_add_dependence(evt, consumer, /*slot=*/1, DB_MODE_NULL);
   }
   for (int iter = 0; iter < N_ITERATIONS; iter++) {
-    arts_db_release(created[iter], DB_MODE_RW);
+    arts_db_release(created[iter]);
   }
   arts_event_satisfy_slot(group, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }

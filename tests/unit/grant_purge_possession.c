@@ -260,7 +260,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       arts_db_create(&p, sizeof(uint64_t), ARTS_DB, ARTS_DB_PROP_NONE,
                      &(arts_db_hint_t){.rank = 0u});
   *(uint64_t *)p = 0u;
-  arts_db_release(db, DB_MODE_RW);
+  arts_db_release(db);
 
   /* turn(i) -> holder check(i) -> home check(i) -> turn(i+1).  A turn's
    * acquire begins only once its gate is satisfied, so each after-turn check

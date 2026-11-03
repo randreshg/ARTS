@@ -173,7 +173,7 @@ static void pair(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     } else {
       atomic_store_explicit((_Atomic(uint32_t) *)p, 7u, memory_order_relaxed);
     }
-    arts_db_release(g, DB_MODE_RW);
+    arts_db_release(g);
     arts_event_satisfy(latch, NULL_GUID);
   }
 }
@@ -190,7 +190,7 @@ static void maker(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     void *p = NULL;
     g = arts_db_create(&p, 64, ARTS_DB, ARTS_DB_PROP_NONE, NULL);
     atomic_store_explicit((_Atomic(uint32_t) *)p, 7u, memory_order_relaxed);
-    arts_db_release(g, DB_MODE_RW);
+    arts_db_release(g);
   }
   note_homed(g);
   unsigned int c = (unsigned int)paramv[0];

@@ -90,7 +90,7 @@ void sequential_cholesky_edt(uint32_t paramc, const uint64_t *paramv,
   }
 
   arts_db_destroy(depv[0].guid);
-  arts_db_release(l_guid, DB_MODE_RW); // Pattern A
+  arts_db_release(l_guid); // Pattern A
   arts_event_satisfy_slot(out_event, l_guid, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
@@ -126,9 +126,9 @@ void trisolve_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     }
   }
 
-  arts_db_release(depv[1].guid, DB_MODE_RO);
+  arts_db_release(depv[1].guid);
   arts_db_destroy(depv[0].guid);
-  arts_db_release(lo_guid, DB_MODE_RW); // Pattern A
+  arts_db_release(lo_guid); // Pattern A
   arts_event_satisfy_slot(out_event, lo_guid, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
@@ -154,12 +154,12 @@ void update_diagonal_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       }
     }
   }
-  arts_db_release(depv[1].guid, DB_MODE_RO);
+  arts_db_release(depv[1].guid);
 
   /* In-place modify + forward depv[0].guid (same as OCR cholesky.c).
    * Save the guid before arts_db_release, which nullifies the depv slot. */
   arts_guid_t out_db = depv[0].guid;
-  arts_db_release(out_db, DB_MODE_RW); // Pattern A
+  arts_db_release(out_db); // Pattern A
   arts_event_satisfy_slot(out_event, out_db, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
@@ -188,13 +188,13 @@ void update_nondiagonal_edt(uint32_t paramc, const uint64_t *paramv,
       }
     }
   }
-  arts_db_release(depv[1].guid, DB_MODE_RO);
-  arts_db_release(depv[2].guid, DB_MODE_RO);
+  arts_db_release(depv[1].guid);
+  arts_db_release(depv[2].guid);
 
   /* In-place modify + forward depv[0].guid (same as OCR cholesky.c).
    * Save the guid before arts_db_release, which nullifies the depv slot. */
   arts_guid_t out_db = depv[0].guid;
-  arts_db_release(out_db, DB_MODE_RW); // Pattern A
+  arts_db_release(out_db); // Pattern A
   arts_event_satisfy_slot(out_event, out_db, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
@@ -432,7 +432,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
           int A_j = j * tileSize + tj;
           tile[ti * tileSize + tj] = matrix[A_i * matrixSize + A_j];
         }
-      arts_db_release(g, DB_MODE_RW); // Pattern A
+      arts_db_release(g); // Pattern A
       arts_event_satisfy_slot(EV(i, j, 0), g, ARTS_EVENT_LATCH_DECR_SLOT);
     }
   }
