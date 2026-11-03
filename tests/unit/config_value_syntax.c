@@ -104,7 +104,9 @@ static int node_count_refused(const char *value, unsigned int *out) {
 static int hosts_refused(bool master_boot, const char *list) {
   char buf[128];
   (void)snprintf(buf, sizeof(buf), "%s", list);
-  struct arts_config_s cfg;
+  /* Static: an automatic object the callee changed is indeterminate after
+   * the refusal's longjmp. */
+  static struct arts_config_s cfg;
   memset(&cfg, 0, sizeof(cfg));
   cfg.master_boot = master_boot;
   cfg.nodes = 8;
@@ -116,6 +118,7 @@ static int hosts_refused(bool master_boot, const char *list) {
     arts_config_destroy(&cfg);
     return 0;
   }
+  arts_config_destroy(&cfg);
   return 1;
 }
 

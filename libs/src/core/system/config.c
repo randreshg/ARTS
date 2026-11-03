@@ -463,6 +463,8 @@ void arts_config_create_routing_table(struct arts_config_s **config,
   (*config)->table_length = node_count;
   table = (struct arts_config_table_s *)arts_calloc(
       node_count, sizeof(struct arts_config_table_s));
+  /* The config owns the table from its allocation. */
+  (*config)->table = table;
 
   if (!(*config)->master_boot) {
     char *part;
@@ -639,8 +641,6 @@ void arts_config_create_routing_table(struct arts_config_s **config,
       node_begin = next;
     } while (node_begin < node_list + list_length);
   }
-
-  (*config)->table = table;
 }
 
 /*=============================================================================
