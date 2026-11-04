@@ -1,29 +1,28 @@
-# Fixed-iteration apps sized to ~100 GB, quitting early
+# Fixed-iteration apps: sizing inputs by memory footprint
 
-Hand-off notes for the input-sizing sweep of 2026-10-28. Read this before
-touching these inputs or turning them into a campaign profile.
+Notes on how `run_cxl_experiments_magnificent7.py` sizes its inputs.  Read
+this before changing the inputs or the size models.
 
-## Intent
+Everything here was measured on a development host with no CXL memory, on
+the network (DRAM) build.  The numbers are **datablock sizes and DRAM
+footprints only**.  Timings from that host are deliberately left out: the
+experiments run on the CXL machine, and only its timings are results.
 
-We want CXL experiment runs that put a **large memory footprint (~100 GB)** in
-the CXL arena but **finish quickly (<= 5 min e2e)**.  This stresses capacity
-and placement without paying for long compute.  The way to get there is to
-take the apps whose work is an outer loop with a fixed count, size the problem
-up, and cut the iteration count down.
+## Footprint
 
-"Footprint" here means **total datablock bytes created over the run**
-(`BYTES_DB_CREATE`), not peak RSS.  A CXL-DIRECT arena reclaims nothing within
-a run, so this total is what the arena has to hold.  The user chose this
-definition.  Peak DRAM RSS on a non-CXL build is recorded alongside, but it is
-not the target.
+"Footprint" means **total datablock bytes created over the run**
+(`BYTES_DB_CREATE`), not peak RSS.  A CXL arena reclaims nothing within a
+run, so this total is what the arena has to hold.  The user chose this
+definition.  In the campaign it is per node: an N-node cell creates
+N × footprint.
 
-## Which apps, and why these seven
+## Which apps
 
 All 19 apps in `run_cxl_experiments_optimal.py`'s `APPS` were read and
 classified:
 
 - **Fixed iteration count: 7 apps.**  CoMD, miniAMR, nekbone, npb_cg,
-  Stencil2D, stream and mapreduce_wordcount.  These are the ones used here.
+  Stencil2D, stream and mapreduce_wordcount.
 - **Converging solver: 1 app.**  hpcg_intel_dist runs CG until
   `rtr/rtr0 < 1e-13` or maxIter (arg 5).
 - **Borderline: 2 apps.**  hpgmg_dist runs one fixed F-cycle.  graph500_dist
@@ -31,140 +30,136 @@ classified:
 - **Non-iterative: 9 apps.**  cholesky, fft, fibonacci, LCS_wavefront, nqueens,
   RSBench, XSBench, smithwaterman and triangle.
 
-hpcg and CoMD were also noted as cuttable from the CLI.  XSBench and RSBench
-can decouple memory from runtime through their table-size and lookup flags.
-Neither of those was swept.
+The campaign uses six of the seven fixed-iteration apps.  npb_cg is out
+because its size is an NPB class, not a dial (see below).
 
-## Inputs
+## The sweep
 
-All measurements: 1 rank on this host (2x Xeon Gold 6148, 80 cores, 503 GB
-DRAM, no CXL), 76 workers + 4 progress threads, `launcher=local`.  Binary is
-`<app>_arts_ocr_excl_purge` from the Release tree `build_sweep/`.
+Per-node footprints of 1, 10, 150, 200 and 250 GB across 1–4 nodes,
+weak-scaled.  Iteration counts are fixed per app.  Each input comes from a
+size model (`SIZERS` in the script).  The model holds its per-node
+decomposition at every node count and grows the domain along one axis.
 
-Column meanings:
+| App | Per node | Grows by | Model (DB bytes per node) |
+|---|---|---|---|
+| Stencil2D | 1152 tiles, NT=50 | NP | 16·NP²/N + 194 B·NP·√(1152N)/N |
+| stream | 3456 chains, N=60 | total_elems | 24 B × elems |
+| mapreduce | TPN=384, K=8, 6 rounds | V | V × 8 B × (tree blocks of 384·N tiles)/N × 6 |
+| miniAMR | near-cubic block grid, nx=10, 5 steps | block count B | B × (0.986 MB + 2.1 MB·B^(−1/3)) |
+| CoMD | near-cubic tile grid, 60 steps | tile count | tiles × 6.16 MB (9³ tiles, < 100 GB) or 26.94 MB (18³ tiles) |
+| nekbone | 18×16×12 tasks (9×8×6 below ~4 GB), pDOF 8, CG 20 | elements per task E | tasks × (0.455 + 0.355·E + 0.3675·E^(2/3)) MB |
 
-- **DB GB** is `BYTES_DB_CREATE`.
-- **RSS GB** is the peak resident set of the process tree.
-- **e2e** is the `[E2E]` stamp (`ARTS_E2E_MARKER=1`).
-- **Bold** marks the recommended setting.
-
-| App | Input | DB GB | RSS GB | Measured e2e |
-|---|---|---|---|---|
-| Stencil2D_intel_channelEVTs | `79000 1152 NT` | 100.4 | 105 | NT=2: 67 s · 10: 71 s · **50: 154 s** · 100: 297 s · 200: timeout |
-| stream_dist | `4147200000 3456 N` | 99.5 | 133 | N=2: 52 s · 10: 80 s · 40: 196 s · **60: 271 s** |
-| CoMD_intel_chandra_tiled_hinted | `-x 432 -y 216 -z 216 -N N -n 10 -i 24 -j 12 -k 12` | 93.1 | 133 | N=2: 58 s · 20: 116 s · **60: 250 s** |
-| miniAMR_intel_dist | `--nx 10 --ny 10 --nz 10 --npx 48 --npy 48 --npz 42 --num_refine 1 --num_tsteps T` | 96.2 (T=1) → 99.8 (T=5) | 133 | T=1: 94 s · 3: 182 s · **5: 273 s** |
-| nekbone_dist | `18 16 12 4 4 4 8 20` | 100.4 | 21 | 33 s |
-| mapreduce_wordcount | `4560000 333334 {per_node:384} 8 100 0 6 1` | 100.0 | 107 | 60 s |
-| npb_cg_dist | `-t D -c 188 -i 1` | 9.8 | 13 | 24 s |
-| npb_cg_dist | **`-t E -c 188 -i 1`** | 86.4 | 90 | 363 s (over budget, kept on purpose) |
-
-### Per-app models
-
-These are fitted from the runs above.  Use them to re-target a different
-footprint or time.
+### Per-app notes
 
 - **Stencil2D**
-  - Memory is all up front: DB ≈ 2·NP²·8 B.  NR=1152 tiles.
-  - Setup takes ~65 s, then ~2–3 s per step (per-step cost rose with NT).
-  - Keep NT ≤ ~90.
-  - Validation scales with NT, so any NT passes.
+  - The two NP × NP grids are allocated up front.
+  - The second term is each tile's halo buffers, which scale with the
+    tile's side.
+  - NR and NP are free; uneven tiles are allowed.
 - **stream**
-  - Memory is all up front: DB = 3 × total_elems × 8 B.  total_elems must
-    divide by the chain count (3456).
-  - Setup takes ~45 s, then ~3.8 s per iteration.
-  - Use N ≥ 2: with N=1 there's no timing output.
-- **CoMD**
-  - Memory is up front; the arrays are sized by box count.
-  - Setup takes ~50 s, then ~3.2 s per step.
-  - The campaign's main input (`-x 360 -y 180 -z 180`) gives only 62 GB.
-- **miniAMR**
-  - About 1.0 GB per 1000 blocks at nx=10 and num_vars=40.
-  - Small per-timestep growth (~0.9 GB/timestep) comes from checksum and
-    refine blocks.
-  - Each timestep takes ~45 s (20 stages by default).
-- **nekbone**
-  - The footprint *is* the iteration count: DB ≈ 9.1 GB + 4.57 GB × CGcount
-    at this size, ~1.25 s per iteration.
-  - Fresh vector datablocks are created every CG iteration.  On DRAM they're
-    freed, which is why RSS stays at 21 GB.  On CXL they accumulate.
-  - To change the iteration count at a fixed ~100 GB, change the element
-    block or pDOF.
+  - The three arrays are allocated up front.
+  - total_elems is a multiple of the chain count.
 - **mapreduce**
-  - DB = V × 8 B × 457 blocks per round × ITER.  That holds for M=384 total
-    map tiles and K=8: 384 maps + 73 combines.
-  - About 9 s per round at V≈4M.
-  - For R rounds at 100 GB: V ≈ 100e9 / (3656·R).
+  - One partial histogram per map tile and one per combine of the app's
+    spawner tree.  A range splits into min(n, K) near-equal chunks.
+  - Per node that is 457, 548.5, 579 and 530.25 blocks per round at 1–4
+    nodes.  The tree is not flat in the node count, so V is sized per node
+    count.
   - The per-round check is exact, so any ITER passes.
-- **npb_cg**
-  - Both runs above were single-rank.  On one rank there are no per-spmv
-    fragment blocks, so DB is independent of `-i`.
+- **miniAMR**
+  - About 1 MB per 10³-cell block (num_vars 40).
+  - Bytes per block fall as the grid grows, because refinement is a surface
+    effect.  That is the B^(−1/3) term.
+- **CoMD**
+  - A tile's datablocks depend on its link-cell count.
+  - The model uses the two tile sizes that were measured directly and
+    scales the tile count.
+  - A tile needs at least 2 link cells per axis.
+- **nekbone**
+  - The fixed part is per task.  The volume part is the vectors created
+    fresh every CG iteration: DRAM frees them, the arena keeps them.  The
+    E^(2/3) part is the halo.
+  - One element per task already costs ~4 GB at 3456 tasks, so smaller
+    footprints drop to 432 tasks.
+- **npb_cg** (not in the sweep)
+  - Class D creates 9.8 GB and class E 86.4 GB on one rank.
   - Multi-rank runs add ≈ (R−1)·nloc·8 B per spmv.
-  - `-i 1` is the minimum: it still runs a warm-up pass plus one pass of 25
-    inner iterations.
   - Any `-i` below the class's niter prints `Verification FAILED`, though
     the run shuts down cleanly.
-  - Class E builds 6.3e9 nonzeros on each rank.  Matrix generation draws the
-    whole generator stream on every rank, so expect it to get no faster with
-    more nodes.
-  - E is the only class near 100 GB.  It is ~1 min over the 5-min budget,
-    and the user chose to keep it anyway.
-  - Bringing it under 5 min needs a source change: a custom class between
-    D and E, or skipping the warm-up pass.
 
-## Caveats when moving to the CXL testbed
+### Model checks: one rank
 
-- These are single-node, DRAM-only, 76-worker numbers.  The testbed has 92
-  workers per node, slower CXL memory, and 1–4 nodes.  Prefer mid-range
-  iteration counts over the top of each range.
-- Total DB bytes should not depend on node count for Stencil2D, stream, CoMD
-  and miniAMR, nor for mapreduce (`{per_node:384}` keeps M=384).  For nekbone
-  the halo and reduction blocks may shift a little with rank count.  For
-  npb_cg it grows with the rank count.
-- The arena must hold the DB total plus slack.  `script/run.py` currently
-  creates regions with `--region-size` 10 GiB (`RUN_PY_ARGS`), which is far
-  too small for these inputs.  Raise it and `ARTS_CXL_DB_ARENA_SIZE_BYTES`
-  (5e9 in `build/`) before running.
-- Network-ARTS (DRAM) variants peak at 105–133 GB RSS per rank-host for the
-  up-front apps.
-- `build/` (the tree `run_cxl_experiments_optimal.py` uses through
-  `APP_BUILD_DIR`) is a **Debug** build with counters off.  Use a Release tree
-  for timed runs.
+| App | 1 GB | 10 GB | 250 GB | 250 GB peak DRAM |
+|---|---|---|---|---|
+| Stencil2D | 1.00 | 10.00 | 249.99 | 256 GB |
+| stream | 1.00 | 10.00 | 250.00 | 374 GB |
+| mapreduce | 1.00 | 10.00 | 250.00 | 256 GB |
+| miniAMR | 1.17* | 10.48* | 250.75 | 307 GB |
+| CoMD | 0.99 | 10.09 | 249.49 | 289 GB |
+| nekbone | 2.04–4.07† | — | 247.82 | 31 GB |
 
-## Reproducing
+\* Measured with the first miniAMR model.  Those runs are what the
+surface term was fitted to, and the refit reproduces them within 1%.
+† Probes used to fit the nekbone model, which reproduces all five within 2%.
+
+Peak DRAM is the resident set of the process tree on the network build.
+nekbone's is low because DRAM frees each CG iteration's vectors.
+
+### Model checks: weak scaling (local ranks on one host)
+
+These ran 1, 2 and 4 rank processes on one host with `launcher=local`;
+mapreduce also ran at 3.  Datablock GB per rank:
+
+| App | 1 GB: 1 / 2 / 4 ranks | 10 GB: 1 / 2 / 4 ranks |
+|---|---|---|
+| Stencil2D | 1.002 / 1.002 / 1.002 | 10.001 / 10.001 / 10.001 |
+| stream | 1.000 / 1.000 / 1.000 | 10.000 / 10.000 / 10.000 |
+| CoMD | 0.986 / 0.986 / 0.986 | 10.094 / 10.094 / 10.094 |
+| nekbone | 1.018 / 1.020 / 1.021 | 9.878 / 9.889 / 9.895 |
+| miniAMR | 0.999 / 0.962 / 0.946 | 10.038 / 9.864 / 9.792 |
+| mapreduce | 1.000 at 2, 3 and 4 ranks | 10.000 at 2, 3 and 4 ranks |
+
+- **mapreduce:** with a fixed V the bytes per node rose 20% at 2 ranks.
+  The tree-block count in its model fixes that.
+- **Balance:** ranks are within 0.2% of each other in every case.
+- **miniAMR:** about 5% low at 4 ranks.  Stacking blocks along z changes
+  how much the objects refine.  It's left uncorrected.
+
+The raw run directories from these checks were deleted.  The tables above
+are the record.
+
+## Before running on the CXL machine
+
+- **CXL capacity:** 14 round-robin arenas of 96 GiB each (1.44 TB).  The
+  widest cell needs about 1.34 TB, counting the 10% margin and up to
+  224 GiB stranded in 4 GiB pools.  Build every tree with
+  `-DARTS_CXL_DB_ARENA_SIZE_BYTES=103079215104`.
+- **DRAM on the network variants:** up to 374 GB per node at 250 GB per
+  node (stream).
+- **Timeouts:** 30, 40, 50 and 60 min at 1–4 nodes.  Nothing about run times
+  carries over from the development host; the first CXL cells will show
+  where the budget is tight.
+- **Release build:** `build/` is a Debug build with counters off.  Use a
+  Release tree configured with `configs/counters_cxl_ipdps27.cfg`.
+
+## Reproducing the size checks
 
 ```bash
-# Release tree with BYTES_DB_CREATE, only the 7 binaries needed
+# Release network tree with BYTES_DB_CREATE, only the binaries needed
 cmake -GNinja -Bbuild_sweep -DCMAKE_BUILD_TYPE=Release \
   -DARTS_COHERENCE_PROTOCOL=EXCL -DARTS_WRITE_POLICY=WB -DARTS_RELEASE_POLICY=PURGE \
   -DARTS_USE_CXL=OFF -DARTS_BUILD_BENCHMARKS=ON -DARTS_BUILD_TESTS=OFF \
   -DARTS_BUILD_HPX=OFF -DARTS_BUILD_OCRVX=OFF -DARTS_BUILD_XSOCR=OFF \
   -DARTS_COUNTER_CONFIG=$PWD/configs/counters_cxl_ipdps27.cfg
-ninja -C build_sweep {CoMD_intel_chandra_tiled_hinted,miniAMR_intel_dist,nekbone_dist,npb_cg_dist,Stencil2D_intel_channelEVTs,stream_dist,mapreduce_wordcount}_arts_ocr_excl_purge
+ninja -C build_sweep {CoMD_intel_chandra_tiled_hinted,miniAMR_intel_dist,nekbone_dist,Stencil2D_intel_channelEVTs,stream_dist,mapreduce_wordcount}_arts_ocr_excl_purge
 
-# One-off runs (one rank, local launcher); 330 s timeout by default
+# One input, one rank; the campaign's dry run prints every cell's input
 python3 experiment_scripts/sweep_mem_iters_tmp.py --tag check \
-  --run 'stream_dist|4147200000 3456 10' \
-  --run 'npb_cg_dist|-t E -c 188 -i 1' --timeout 900
+  --run 'stream_dist|416665728 3456 60'
 ```
 
-The script `experiment_scripts/sweep_mem_iters_tmp.py` is temporary and
-untracked.  It does three things:
-
-- polls `/proc` for the RSS of the process tree;
-- reads `counters/n0.json`;
-- kills a run past its timeout, past 420 GB RSS, or when MemAvailable drops
-  below 30 GB.
-
-Raw results for every run (`runs.jsonl`, per-cell `output.log`, `arts.cfg`,
-counters) are under `results/sweep_mem_iters_tmp/<timestamp>-{cal,r2,r3,r4,r4npb}/`.
-
-## Not done yet
-
-- These inputs are not yet a profile in `run_cxl_experiments_optimal.py`.
-  When adding one:
-  - mapreduce needs its `{per_node:384}` placeholder;
-  - every per-rank knob must divide 1–4 nodes.
-- None of these inputs has been run on CXL (STAGED or DIRECT) or on more than
-  one node.
-- npb_cg under 5 min at ~100 GB would need a source change (see above).
+`experiment_scripts/sweep_mem_iters_tmp.py` is temporary and untracked.  It
+reads `BYTES_DB_CREATE` from `counters/n0.json` and polls `/proc` for the
+process tree's peak RSS.  It kills a run past its timeout, past 420 GB RSS,
+or when MemAvailable drops below 30 GB.  It writes under
+`results/sweep_mem_iters_tmp/`.

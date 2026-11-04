@@ -1,27 +1,44 @@
 #!/usr/bin/env python3
-"""Strong-scaling campaign of seven ~100 GB, few-iteration apps on CXL ARTS.
+"""Weak-scaling memory-footprint sweep of six fixed-iteration apps on CXL ARTS.
 
-run_cxl_experiments_optimal.py's campaign (same variants, node counts,
-repeats, threads and counters) cut to the seven apps whose work is an outer
-loop with a fixed count: CoMD, miniAMR, nekbone, npb_cg, Stencil2D, stream
-and mapreduce_wordcount.  Each is sized up to ~100 GB of datablocks created
-over the run (BYTES_DB_CREATE, which a CXL arena never reclaims within a run)
-and its iteration count cut down so a run finishes in ~5 min, so the campaign
-stresses arena capacity and placement without paying for long compute.  The
-inputs and how they were measured are in experiment_scripts/mem_iters_inputs.md.
+The apps whose work is an outer loop with a fixed count (CoMD, miniAMR,
+nekbone, Stencil2D, stream and mapreduce_wordcount; npb_cg is out, since its
+size is an NPB class, not a dial) run on 1..4 nodes at each per-node
+footprint of FOOTPRINTS_GB.  A footprint is datablock bytes created per node
+over the run (BYTES_DB_CREATE / nodes, what a CXL arena must hold: it
+reclaims nothing within a run), and the sweep is weak-scaled: an N-node cell
+creates N x footprint in total, with the per-node decomposition held fixed
+and the domain grown along one axis.  Iteration counts are fixed per app at
+every footprint and node count, so memory is the only thing that moves.
 
-Sizes.  The arena (ARTS_CXL_DB_ARENA_SIZE_BYTES) is a BUILD-TIME constant,
-and the 5 GB default cannot hold these inputs: configure every tree (plain
-and PAPI) with -DARTS_CXL_DB_ARENA_SIZE_BYTES=<CXL_DB_ARENA_SIZE_BYTES> and
+Each app's input is computed from its size model (SIZERS), fitted to
+DRAM measurements of datablock bytes; see the "The sweep" section of
+experiment_scripts/mem_iters_inputs.md.  A record carries the
+model's prediction (predicted_db_bytes_per_node) beside the measured
+db_create_bytes_per_node.
+
+Sizes.  CXL DB allocation is round_robin (cxl_db_allocation_strategy):
+the runtime opens one arena per CXL device and rotates allocations over
+them, so capacity is CXL_DEVICES x the arena.  The arena
+(ARTS_CXL_DB_ARENA_SIZE_BYTES, bytes PER ARENA) is a BUILD-TIME constant:
+configure every tree (plain and PAPI) with
+-DARTS_CXL_DB_ARENA_SIZE_BYTES=<CXL_DB_ARENA_SIZE_BYTES> and
 -DCMAKE_BUILD_TYPE=Release.  Preflight refuses a tree whose CMakeCache has a
-smaller arena or another build type.  The run.py region size
-(CXL_REGION_SIZE_BYTES) and each rank's pool (CXL_DB_POOL_BYTES, written to
-the CXL cells' arts.cfg as cxl_db_pool_bytes) are runtime settings.  All
-three are constants at the top of the configuration below.  Peak DRAM on the
-network (non-CXL) variants is 105-133 GB on a 1-node cell.
+smaller arena or another build type, and a plan whose widest cell does not
+fit CXL_DEVICES arenas.  The run.py region size (CXL_REGION_SIZE_BYTES) and
+each rank's pool (CXL_DB_POOL_BYTES, written to the CXL cells' arts.cfg as
+cxl_db_pool_bytes) are runtime settings.  All are constants at the top of
+the configuration below.  Peak DRAM on the network (non-CXL) variants at
+250 GB per node, 1 node: 256-374 GB (stream 374, miniAMR 307, CoMD 289,
+mapreduce and Stencil2D 256), nekbone 31 GB (it frees each CG iteration's
+vectors, which a CXL arena keeps).
 
-Every (application, node count, repetition) cell runs the same input on 1..4
-nodes, one ARTS rank per node.  Each cell is launched through the site's
+Every (application, footprint, node count) cell runs once, one ARTS rank per
+node, under a timeout that grows with the node count (CELL_TIMEOUT_S).  The
+runtime's "round_robin across <k> device(s)" line is checked against
+CXL_DEVICES on every CXL cell, and so is where the arenas actually landed:
+each rank's "CXL DB arena devices: <d0>,<d1>,..." line must name CXL_DEVICES
+distinct devices (the count line only says how many arenas were asked for).  Each cell is launched through the site's
 run.py wrapper (which creates the CXL regions, runs the command once, and
 releases the regions), and records:
 
@@ -111,6 +128,7 @@ Usage:
   python3 experiment_scripts/run_cxl_experiments_magnificent7.py --dry-run
   python3 experiment_scripts/run_cxl_experiments_magnificent7.py
   python3 experiment_scripts/run_cxl_experiments_magnificent7.py --apps stream_dist,nekbone_dist --nodes 1,2
+  python3 experiment_scripts/run_cxl_experiments_magnificent7.py --footprints 1,10 --dry-run
   python3 experiment_scripts/run_cxl_experiments_magnificent7.py --resume <run-dir>
   python3 experiment_scripts/run_cxl_experiments_magnificent7.py --smoke-test
   python3 experiment_scripts/run_cxl_experiments_magnificent7.py --papi cache --dry-run
@@ -127,7 +145,9 @@ from __future__ import annotations
 import argparse
 import csv
 import datetime as dt
+import functools
 import json
+import math
 import os
 import re
 import shlex
@@ -149,21 +169,25 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # that host.
 NODES = ["node0", "node1", "node2", "node3"]
 
-# Node counts of the strong-scaling sweep.
+# Node counts of the weak-scaling sweep.
 NODE_COUNTS = [1, 2, 3, 4]
+
+# Per-node footprints, GB (10^9 B) of datablocks created per node over the run.
+FOOTPRINTS_GB = [1, 10, 150, 200, 250]
 
 # Threads per rank (per node).  Kept identical at every node count.
 WORKER_THREADS = 92
 PROGRESS_THREADS = 4
 
-# Measured repetitions per cell, plus unrecorded-in-analysis warm-up runs per
-# (app, node count).  Warm-up runs are still logged, flagged is_warmup=true.
-REPEATS = 5
-WARMUP_RUNS = 1
+# One run per cell, no warm-up.  Warm-up runs, when asked for, are still
+# logged, flagged is_warmup=true.
+REPEATS = 1
+WARMUP_RUNS = 0
 
-# Per-run wall-clock budget, seconds.  A run past it is killed and recorded as
-# status "timeout".
-CELL_TIMEOUT_S = 1800
+# Per-run wall-clock budget by node count, seconds: 30 min at 1 node rising
+# linearly to 1 h at 4.  A run past it is killed and recorded as status
+# "timeout".  --timeout replaces it with one flat budget.
+CELL_TIMEOUT_S = {1: 1800, 2: 2400, 3: 3000, 4: 3600}
 
 # Where the executables live and how their names are formed:
 #   <APP_BUILD_DIR>/<app>_<variant>
@@ -178,20 +202,35 @@ APP_BUILD_DIR = REPO_ROOT / "build" / "benchmarks" / "apps"
 VARIANTS = ["arts_ocr_excl_purge", "arts_ocr_excl_purge_cxl_direct",
             "arts_ocr_excl_retain", "arts_ocr_excl_retain_cxl_staged"]
 
-# CXL sizes.  Every input below creates ~100 GB of datablocks over its run,
-# and the arena reclaims none of it before the run ends.  npb_cg's footprint
-# also grows with the rank count.
-#   * CXL_DB_ARENA_SIZE_BYTES: the shared data-block arena.  It is compiled
-#     in (-DARTS_CXL_DB_ARENA_SIZE_BYTES), so changing it here only changes
-#     what preflight demands of the tree: rebuild to match.
-#   * CXL_REGION_SIZE_BYTES: what run.py allocates per region (--region-size).
-#     It must hold the arena.
-#   * CXL_DB_POOL_BYTES: each rank's pool (cxl_db_pool_bytes), the bytes one
-#     refill carves off the arena.  ARTS clamps it to arena / ranks, so at
-#     4 nodes 200 GiB / 4 is exactly this 50 GiB pool per node.
-CXL_DB_ARENA_SIZE_BYTES = 200 * 1024**3
-CXL_REGION_SIZE_BYTES = 300 * 1024**3
-CXL_DB_POOL_BYTES = 50 * 1024**3
+# CXL sizes.  The widest cell (250 GB per node x 4 nodes) creates ~1 TB of
+# datablocks, and the arena reclaims none of it before the run ends.  Under
+# round_robin the runtime opens one arena per device and rotates every
+# allocation over them, with no fallback: the first arena to fill ends the
+# run, so capacity is CXL_DEVICES x the arena, less what rank pools strand.
+#   * CXL_DEVICES / CXL_DEVICE_BYTES: the DAX devices of the CXL machine and
+#     what one can allocate.  The runtime must report CXL_DEVICES (checked
+#     per cell from its "round_robin across <k> device(s)" line).
+#   * CXL_DB_ARENA_SIZE_BYTES: ONE arena, i.e. one device's share.  It is
+#     compiled in (-DARTS_CXL_DB_ARENA_SIZE_BYTES), so changing it here only
+#     changes what preflight demands of the tree: rebuild to match.  14 x
+#     96 GiB = 1.44 TB: the widest cell (~1.1 TB with margin) plus every
+#     pool tail it can strand (224 GiB), ~7% to spare.
+#   * CXL_REGION_SIZE_BYTES: what run.py allocates per region (--region-size),
+#     taken as one device's region, so it must hold one arena.
+#   * CXL_DB_POOL_BYTES: each rank's pool on each arena (cxl_db_pool_bytes),
+#     the bytes one refill carves off it, under the cross-node tournament
+#     lock.  4 GiB keeps refills to ~60 per rank in a 250 GB cell while
+#     ranks still share each arena: a rank keeps one pool per arena, so at
+#     most devices x ranks x pool (224 GiB at 4 nodes) is stranded, which
+#     the arena size covers.  ARTS clamps it to arena / ranks (24 GiB at 4).
+CXL_DEVICES = 14
+CXL_DEVICE_BYTES = 512 * 10**9
+CXL_DB_ARENA_SIZE_BYTES = 96 * 1024**3
+CXL_REGION_SIZE_BYTES = 100 * 1024**3
+CXL_DB_POOL_BYTES = 4 * 1024**3
+# Headroom preflight demands over a cell's predicted cluster total, for
+# model error and uneven fill across the rotated arenas.
+CXL_CAPACITY_MARGIN = 1.10
 
 # The site launch wrapper and the arguments it receives besides
 # --path-to-json.  "--local" runs the binary on this host and lets ARTS
@@ -205,7 +244,7 @@ RUN_PY_UPDATES_CFG = False
 
 # Results live here.  It MUST be on a filesystem every node shares: remote
 # ranks cd into the cell directory and write their counter files into it.
-RESULTS_ROOT = REPO_ROOT / "results" / "cxl_magnificent7"
+RESULTS_ROOT = REPO_ROOT / "results" / "cxl_magnificent7_weak"
 
 # ARTS runtime configuration written into each cell's arts.cfg.
 ARTS_LAUNCHER = "ssh"          # ARTS remote-launches ranks onto NODES over ssh
@@ -215,7 +254,12 @@ ARTS_NET_INTERFACE = None      # e.g. "ib0"; None lets the runtime choose
 ARTS_PIN = True
 ARTS_ROUTE_TABLE_SIZE = 16
 COUNTER_CAPTURE_INTERVAL = 250  # irrelevant to ONCE counters, must be > 0
-# Any further [ARTS] keys, e.g. {"cxl_db_allocation_strategy": "interleaved"}.
+# [ARTS] keys written only into CXL cells.  round_robin is the only strategy
+# besides the default static (any other value silently means static).
+CXL_ARTS_CFG: dict[str, str] = {
+    "cxl_db_allocation_strategy": "round_robin",
+}
+# Any further [ARTS] keys, written into every cell.
 EXTRA_ARTS_CFG: dict[str, str] = {}
 
 # Extra environment for every run (ARTS_CONFIG and ARTS_E2E_MARKER are set by
@@ -276,74 +320,171 @@ PAPI_EVENT_SETS: dict[str, list[str]] = {
 }
 PAPI_MAX_EVENTS = 6
 
-# Applications (base names, without the _<variant> suffix) and their inputs.
-# "{repo}" is replaced with REPO_ROOT.  Inputs are fixed across node counts
-# (strong scaling); "{per_node:M}" is replaced with M / nodes for apps whose
-# command line takes a per-rank share of a fixed total (see expand_args).
-#
-# The seven fixed-iteration apps of the optimal roster, at the recommended
-# settings of experiment_scripts/mem_iters_inputs.md.  The numbers in the
-# comments are its single-node DRAM measurements (1 rank, 76 workers, no
-# CXL): DB is BYTES_DB_CREATE, e2e the [E2E] stamp.  Every rank-following
-# knob divides 1-4 nodes.  Total DB bytes do not depend on the node count,
-# except nekbone's (halo and reduction blocks shift a little) and npb_cg's
-# (it grows by about (R-1) * nloc * 8 B per spmv).
-APPS: list[tuple[str, str]] = [
-    # 3456 subdomains (24x12x12); 93 GB up front, ~50 s setup + ~3.2 s per
-    # step: 250 s at 60 steps.
-    ("CoMD_intel_chandra_tiled_hinted",
-     "-x 432 -y 216 -z 216 -N 60 -n 10 -i 24 -j 12 -k 12"),
-    # 48x48x42 = 96768 blocks, ~1 GB per 1000 at nx=10; 96 GB at the first
-    # timestep plus ~0.9 GB per timestep, ~45 s per timestep: 273 s at 5.
-    ("miniAMR_intel_dist",
-     "--nx 10 --ny 10 --nz 10 --npx 48 --npy 48 --npz 42 --num_refine 1 "
-     "--num_tsteps 5"),
-    # The footprint is the CG count: fresh vector DBs every iteration, which
-    # DRAM frees and the arena keeps.  9.1 GB + 4.57 GB x 20 = 100 GB, 33 s.
-    ("nekbone_dist", "18 16 12 4 4 4 8 20"),
-    # Class E is the only class near 100 GB (86 GB at 1 rank), 363 s: over
-    # the 5 min target, kept on purpose.  -i 1 (warm-up plus one 25-
-    # iteration pass) is the minimum and prints "Verification FAILED" while
-    # shutting down cleanly.
-    ("npb_cg_dist", "-t E -c 188 -i 1"),
-    # Strong scaling: M = 384 map tiles in total at every node count (384
-    # maps + 73 combines per round).  V x 8 B x 457 x 6 rounds = 100 GB, ~9 s
-    # per round: 60 s.  The per-round check is exact at any round count.
-    ("mapreduce_wordcount", "4560000 333334 {per_node:384} 8 100 0 6 1"),
-    # NR = 1152 tiles; 2 * NP^2 * 8 B = 100 GB up front, ~65 s setup + 2-3 s
-    # per step: 154 s at 50 steps.
-    ("Stencil2D_intel_channelEVTs", "79000 1152 50"),
-    # 3 x total_elems x 8 B = 100 GB up front over 3456 chains, ~45 s setup +
-    # ~3.8 s per iteration: 271 s at 60.
-    ("stream_dist", "4147200000 3456 60"),
-]
+# Applications (base names, without the _<variant> suffix) and how each is
+# sized.  A sizer maps (footprint bytes per node, nodes) to (args, predicted
+# DB bytes per node).  Weak scaling: the per-node decomposition (tiles,
+# blocks, chains, tasks) is held at every node count and the domain grows
+# along one axis, so each rank creates the same bytes; iteration counts are
+# fixed per app.  The models are fitted to single-rank DRAM runs (1 rank,
+# 76 workers, no CXL) on the Release counter tree build_sweep/; the
+# measurements are in experiment_scripts/mem_iters_inputs.md.
 
-# --smoke-test inputs: each app of APPS shrunk to a correctness smoke that
-# finishes well inside 30 s at every node count (1..4), for checking the campaign
-# end to end before committing to the real matrix.  Nothing timed here is a
-# result.  Vectors are experiments/experiments/smoke.yaml's (which keeps the
-# per-row legality notes) where it has one.
+GB = 10**9
+
+def near_cube(target: float, max_aspect: float = 2.0) -> tuple[int, int, int]:
+    """(a, b, c), a >= b >= c, whose product is closest to target with
+    a / c <= max_aspect; within 1% of the best fit, the most cube-like grid.
+    The aspect bound is doubled until something fits (small targets)."""
+    t = max(1, round(target))
+    cands = []
+    for c in range(1, int(round(t ** (1 / 3))) + 2):
+        for b in range(c, int(math.sqrt(t / c)) + 3):
+            for a in {max(b, math.floor(t / (b * c))),
+                      max(b, math.ceil(t / (b * c)))}:
+                if a <= max_aspect * c:
+                    cands.append((abs(a * b * c - target) / target, a / c,
+                                  (a, b, c)))
+    if not cands:
+        return near_cube(target, max_aspect * 2)
+    best = min(e for e, _, _ in cands)
+    return min((asp, abc) for e, asp, abc in cands if e <= best + 0.01)[1]
+
+def size_stencil2d(fp: float, n: int):
+    """NP NR NT.  1152 tiles per node (NR = 1152 n).  DB = 16 NP^2 (two
+    NP x NP double grids) + STENCIL_HALO_B x NP x sqrt(NR) (each tile's halo
+    buffers, ~ its side); NP solved from that quadratic.  50 steps."""
+    nr = 1152 * n
+    k = STENCIL_HALO_B * math.sqrt(nr)
+    np_ = int((-k + math.sqrt(k * k + 64 * fp * n)) / 32)
+    return f"{np_} {nr} 50", (16 * np_ ** 2 + k * np_) / n
+
+def size_stream(fp: float, n: int):
+    """total_elems chains ntimes.  3456 chains per node; DB = 3 arrays x
+    total_elems x 8 B, total_elems a multiple of the chain count.  60
+    iterations."""
+    chains = 3456 * n
+    per_chain = round(fp / (24 * 3456))
+    return f"{per_chain * chains} {chains} 60", 24 * per_chain * 3456
+
+@functools.lru_cache(maxsize=None)
+def mapreduce_tree_blocks(tiles: int, k: int = 8) -> int:
+    """Partial histograms one round creates: one per map tile plus one per
+    combine of the app's spawner tree (spawn_subtree: a range splits into
+    min(n, K) near-equal chunks).  457 at 384 tiles; per node it is not
+    flat in the node count (548.5 at 2 nodes, 579 at 3, 530.25 at 4)."""
+    if tiles == 1:
+        return 1
+    parts = min(tiles, k)
+    q, r = divmod(tiles, parts)
+    return 1 + sum(mapreduce_tree_blocks(q + (i < r), k) for i in range(parts))
+
+def size_mapreduce(fp: float, n: int):
+    """V WORDS TPN K ZIPF GRAIN ITER SEED.  TPN = 384 map tiles per node
+    (M = 384 n, the app's own weak form); DB = V x 8 B x the tree's blocks
+    per round x 6 rounds, so V is sized per node count to hold bytes per
+    node at the footprint."""
+    blocks = mapreduce_tree_blocks(384 * n) / n
+    v = round(fp / (8 * blocks * 6))
+    return f"{v} 333334 384 8 100 0 6 1", v * 8 * blocks * 6
+
+def size_miniamr(fp: float, n: int):
+    """10^3-cell blocks (num_vars 40) over 5 timesteps, refinement and
+    checksum blocks included; a near-cubic block grid per node, stacked
+    along z.  Bytes per block fall as the grid grows (refinement is a
+    surface effect): MINIAMR_BLOCK_B + MINIAMR_SURFACE_B x B^(-1/3) for B
+    blocks per node."""
+    def per_node(blocks):
+        return blocks * (MINIAMR_BLOCK_B + MINIAMR_SURFACE_B * blocks ** (-1 / 3))
+    blocks = fp / MINIAMR_BLOCK_B
+    for _ in range(20):  # fixed point: per-block bytes depend on the count
+        blocks = fp / (per_node(blocks) / blocks)
+    a, b, c = near_cube(blocks)
+    return (f"--nx 10 --ny 10 --nz 10 --npx {a} --npy {b} --npz {c * n} "
+            f"--num_refine 1 --num_tsteps 5"), per_node(a * b * c)
+
+def size_comd(fp: float, n: int):
+    """Tiles of s^3 unit cells: s = 9 below 100 GB, s = 18 above (one tile's
+    DB measured at each, COMD_TILE_B); a near-cubic tile grid per node,
+    stacked along x.  60 steps."""
+    s = 9 if fp < 100 * GB else 18
+    tile = COMD_TILE_B[s]
+    a, b, c = near_cube(fp / tile)
+    return (f"-x {s * a * n} -y {s * b} -z {s * c} -N 60 -n 10 "
+            f"-i {a * n} -j {b} -k {c}"), a * b * c * tile
+
+def nekbone_task_bytes(e: int) -> float:
+    """One task's DB bytes at E elements (pDOF 8, 20 CG iterations): a fixed
+    part, a volume part (vectors created fresh every CG iteration, which the
+    arena keeps) and a halo part ~ E^(2/3)."""
+    return NEKBONE_TASK_B + NEKBONE_ELEM_B * e + NEKBONE_HALO_B * e ** (2 / 3)
+
+def size_nekbone(fp: float, n: int):
+    """Rx Ry Rz Ex Ey Ez pDOF CGcount.  A per-node task grid (stacked along
+    x) of Ex x Ey x Ez elements per task at pDOF 8, 20 CG iterations.  One
+    element per task already costs ~4 GB at 3456 tasks, so smaller
+    footprints drop to 432 tasks.  The element block is the closest fit
+    among grids with aspect <= 3."""
+    big = 3456 * nekbone_task_bytes(1)
+    rx, ry, rz = (18, 16, 12) if fp >= big else (9, 8, 6)
+    tasks = rx * ry * rz
+    best = None
+    for c in range(1, 9):
+        for b in range(c, 3 * c + 1):
+            for a in range(b, 3 * c + 1):
+                pred = tasks * nekbone_task_bytes(a * b * c)
+                key = (abs(pred - fp), a - c)
+                if best is None or key < best[0]:
+                    best = (key, (a, b, c), pred)
+    _, (ex, ey, ez), pred = best
+    return f"{rx * n} {ry} {rz} {ex} {ey} {ez} 8 20", pred
+
+# Model constants (bytes).  Fitted from build_sweep/ runs; see each sizer.
+STENCIL_HALO_B = 194
+MINIAMR_BLOCK_B = 0.986e6
+MINIAMR_SURFACE_B = 2.1e6
+COMD_TILE_B = {9: 6.16e6, 18: 26.94e6}
+NEKBONE_TASK_B = 0.455e6
+NEKBONE_ELEM_B = 0.3551e6
+NEKBONE_HALO_B = 0.3675e6
+
+SIZERS = {
+    "CoMD_intel_chandra_tiled_hinted": size_comd,
+    "miniAMR_intel_dist": size_miniamr,
+    "nekbone_dist": size_nekbone,
+    "mapreduce_wordcount": size_mapreduce,
+    "Stencil2D_intel_channelEVTs": size_stencil2d,
+    "stream_dist": size_stream,
+}
+APPS = list(SIZERS)
+
+# --smoke-test inputs: fixed, weak-form correctness smokes (per-node work,
+# so they grow with the node count) that finish well inside 30 s at 1..4
+# nodes, for checking the campaign end to end before committing to the real
+# matrix.  No footprint; nothing timed here is a result.
 SMOKE_APPS: dict[str, str] = {
     "CoMD_intel_chandra_tiled_hinted": "-x 16 -y 8 -z 8 -N 2 -n 1 -i 4 -j 2 -k 2",
     "miniAMR_intel_dist": ("--nx 4 --ny 4 --nz 4 --npx 2 --npy 2 --npz 2 "
                            "--num_refine 1 --num_tsteps 2"),
     "nekbone_dist": "2 2 2 2 2 2 8 2",
-    "npb_cg_dist": "-t S -c 16",
-    "mapreduce_wordcount": "1024 10000 {per_node:12} 4 100 0 2 1",
+    "mapreduce_wordcount": "1024 10000 3 4 100 0 2 1",
     "Stencil2D_intel_channelEVTs": "12 4 2",
     "stream_dist": "400 4 2",
 }
 
-# An input profile: which inputs, and the repeats / warm-ups / timeout it
-# runs with unless the command line says otherwise.  An app with no input in
+# An input profile: each app's input (a sizer, or a fixed string), the
+# footprints it sweeps (None: the input is fixed), and the repeats /
+# warm-ups / timeout it runs with unless the command line says otherwise.
+# The timeout is seconds, flat or {nodes: seconds}.  An app with no input in
 # a profile is not part of that profile.
 PROFILES: dict[str, dict] = {
-    "main": {"apps": dict(APPS), "repeats": REPEATS,
-             "warmups": WARMUP_RUNS, "timeout": CELL_TIMEOUT_S},
+    "main": {"apps": SIZERS, "footprints": FOOTPRINTS_GB,
+             "repeats": REPEATS, "warmups": WARMUP_RUNS,
+             "timeout": CELL_TIMEOUT_S},
     # A smoke is one pass, no warm-up, and a short leash.
-    "smoke": {"apps": SMOKE_APPS, "repeats": 1, "warmups": 0,
-              "timeout": 120},
+    "smoke": {"apps": SMOKE_APPS, "footprints": [None], "repeats": 1,
+              "warmups": 0, "timeout": 120},
 }
+
 
 # =============================================================================
 # End of user configuration
@@ -354,11 +495,13 @@ DONE_RE = re.compile(r"^DONE!\s+(-?\d+)", re.M)
 
 # Fixed leading columns of runs.csv; derived metrics and ctr_* follow.
 BASE_COLUMNS = [
-    "cell_id", "app", "variant", "papi_set", "executable", "nodes",
-    "worker_threads",
+    "cell_id", "app", "variant", "papi_set", "executable", "footprint_gb",
+    "nodes", "worker_threads",
     "progress_threads", "repeat", "is_warmup", "status", "return_code",
     "e2e_ns", "e2e_s", "wall_s", "ranks_reported", "counters_complete",
-    "checks_failed", "started_at",
+    "checks_failed", "started_at", "predicted_db_bytes_per_node",
+    "db_create_bytes_per_node", "cxl_devices_reported",
+    "cxl_arena_devices_reported",
 ]
 DERIVED_COLUMNS = [
     "edt_count", "mean_edt_exec_ns", "edt_create_count", "mean_edt_create_ns",
@@ -379,67 +522,66 @@ DERIVED_COLUMNS = [
 # Campaign plan
 # ---------------------------------------------------------------------------
 
-def plan_cells(apps, variants, node_counts, repeats, warmups, papi_sets=None):
-    """Warm-ups first per (app, variant, event set, nodes), then measured
-    repetitions repeat-major, so slow drift over the campaign spreads across
-    all cells instead of landing on whichever app happens to run last.
-    papi_sets is [(name, events)] for a --papi campaign, None otherwise."""
+def plan_cells(apps, variants, node_counts, footprints, repeats, warmups,
+               papi_sets=None):
+    """Warm-ups first per (footprint, app, variant, event set, nodes), then
+    measured repetitions repeat-major.  Within a pass footprints run smallest
+    first, so a broken app or variant shows on cells that take seconds, not
+    on the 250 GB ones.  apps is [(app, sizer or fixed args)], footprints GB
+    per node ([None] for fixed inputs).  papi_sets is [(name, events)] for a
+    --papi campaign, None otherwise."""
     sets = papi_sets or [None]
-    cells = []
-    for variant in variants:
-        for papi in sets:
-            for app, args in apps:
-                for n in node_counts:
-                    for w in range(warmups):
-                        cells.append(_cell(app, args, variant, n, w,
-                                           warmup=True, papi=papi))
-    for rep in range(repeats):
-        for variant in variants:
-            for papi in sets:
-                for app, args in apps:
-                    for n in node_counts:
-                        cells.append(_cell(app, args, variant, n, rep,
-                                           warmup=False, papi=papi))
-    return cells
 
-PER_NODE_RE = re.compile(r"\{per_node:(\d+)\}")
+    def sweep(index, warmup):
+        return [_cell(app, spec, variant, n, fp, index, warmup=warmup,
+                      papi=papi)
+                for fp in footprints
+                for variant in variants
+                for papi in sets
+                for app, spec in apps
+                for n in node_counts]
 
-def per_node_conflicts(args: str, node_counts) -> list[str]:
-    """The {per_node:M} totals of args that some node count does not divide."""
-    return [f"{{per_node:{m}}} at {n} nodes"
-            for m in map(int, PER_NODE_RE.findall(args))
-            for n in node_counts if m % n]
+    cells = [c for w in range(warmups) for c in sweep(w, True)]
+    return cells + [c for rep in range(repeats) for c in sweep(rep, False)]
 
-def expand_args(args: str, nodes: int) -> str:
-    """An input template as one cell runs it: {repo} becomes REPO_ROOT and
-    {per_node:M} becomes M / nodes, the per-rank share of a fixed total.
-    That turns an app that sizes its work as share x ranks (mapreduce's map
-    tiles) into a strong-scaling cell; an uneven share is an error, never a
-    silent imbalance."""
-    if per_node_conflicts(args, [nodes]):
-        raise ValueError(f"{args!r}: a per_node total is not divisible by "
-                         f"{nodes} nodes")
-    args = PER_NODE_RE.sub(lambda m: str(int(m.group(1)) // nodes), args)
-    return args.replace("{repo}", str(REPO_ROOT))
+def cell_input(spec, footprint_gb, nodes: int):
+    """(args, predicted DB bytes per node) of one cell: a sizer evaluated at
+    the footprint and node count, or a fixed string (no prediction).
+    {repo} becomes REPO_ROOT."""
+    if callable(spec):
+        args, predicted = spec(footprint_gb * GB, nodes)
+    else:
+        args, predicted = spec, None
+    return args.replace("{repo}", str(REPO_ROOT)), predicted
 
-def _cell(app, args, variant, nodes, index, *, warmup, papi=None):
+def _cell(app, spec, variant, nodes, footprint_gb, index, *, warmup,
+          papi=None):
     tag = f"w{index}" if warmup else f"r{index}"
     # The event set is part of the cell's identity: two sets of one
     # (app, variant, nodes, repeat) are two runs, not a retry.
     papi_set, papi_events = papi if papi else (None, None)
     set_tag = f"__{papi_set}" if papi_set else ""
+    fp_tag = f"__f{footprint_gb}g" if footprint_gb is not None else ""
+    args, predicted = cell_input(spec, footprint_gb, nodes)
     return {
-        "cell_id": f"{app}__{variant}__n{nodes}{set_tag}__{tag}",
+        "cell_id": f"{app}__{variant}{fp_tag}__n{nodes}{set_tag}__{tag}",
         "app": app,
         "variant": variant,
         "papi_set": papi_set,
         "papi_events": papi_events,
         "executable": f"{app}_{variant}",
-        "args": expand_args(args, nodes),
+        "args": args,
+        "footprint_gb": footprint_gb,
+        "predicted_db_bytes_per_node": (round(predicted)
+                                        if predicted is not None else None),
         "nodes": nodes,
         "repeat": index,
         "is_warmup": warmup,
     }
+
+def cell_timeout(timeout, nodes: int) -> int:
+    """A profile or --timeout budget for one cell: flat, or by node count."""
+    return timeout[nodes] if isinstance(timeout, dict) else timeout
 
 # ---------------------------------------------------------------------------
 # Per-cell files
@@ -468,9 +610,10 @@ def render_arts_cfg(nodes: int, counter_folder: Path, variant: str,
         lines.append(f"net_interface={ARTS_NET_INTERFACE}")
     if papi_events:
         lines.append(f"papi_events={','.join(papi_events)}")
-    # Only a CXL variant knows the key; a network build would ignore it.
+    # Only a CXL variant knows these keys; a network build would ignore them.
     if "cxl" in variant:
         lines.append(f"cxl_db_pool_bytes={CXL_DB_POOL_BYTES}")
+        lines += [f"{k}={v}" for k, v in CXL_ARTS_CFG.items()]
     lines += [f"{k}={v}" for k, v in EXTRA_ARTS_CFG.items()]
     return "\n".join(lines) + "\n"
 
@@ -573,7 +716,9 @@ def run_cell(cell, run_dir: Path, timeout_s: int):
     per_rank, rank_events = read_rank_counters(counter_dir)
     record = build_record(cell, status, rc, stamps, wall_s, per_rank,
                           started_at, wrapper_done=done is not None,
-                          rank_events=rank_events)
+                          rank_events=rank_events,
+                          cxl_devices=cxl_devices_reported(text),
+                          arena_devices=cxl_arena_devices_reported(text))
     record["log"] = str(log_path.relative_to(run_dir))
     record["counter_dir"] = str(counter_dir.relative_to(run_dir))
     return record
@@ -715,8 +860,25 @@ def derive(sums: dict[str, int], e2e_s: float | None) -> dict:
         **derive_papi(sums, edts),
     }
 
+RR_DEVICES_RE = re.compile(r"CXL DB allocation: round_robin across (\d+) "
+                           r"device\(s\)")
+
+def cxl_devices_reported(text: str) -> list[int]:
+    """The device counts the ranks' "round_robin across <k> device(s)" lines
+    report (one per rank that reached CXL init; [] under static)."""
+    return [int(k) for k in RR_DEVICES_RE.findall(text)]
+
+ARENA_DEVICES_RE = re.compile(r"CXL DB arena devices: ([0-9,]*)")
+
+def cxl_arena_devices_reported(text: str) -> list[list[int]]:
+    """Per rank, the device each DB arena actually sits on, in arena order,
+    from the "CXL DB arena devices:" line every rank prints after checking
+    its arenas."""
+    return [[int(d) for d in m.split(",") if d]
+            for m in ARENA_DEVICES_RE.findall(text)]
+
 def sanity_checks(cell, stamps, per_rank, sums, complete,
-                  rank_events) -> list[str]:
+                  rank_events, cxl_devices, arena_devices) -> list[str]:
     """The run-rejection checks of counter_exploration.md that one run can
     evaluate on its own (cross-run checks belong to post-processing)."""
     failed = []
@@ -729,6 +891,30 @@ def sanity_checks(cell, stamps, per_rank, sums, complete,
                  + (sums.get("BYTES_CXL_FLUSH_PRODUCER") or 0))
     if not is_cxl and cxl_bytes:
         failed.append("cxl_bytes_in_network_build")
+    # Round-robin capacity is devices x arena: a rank that opened fewer
+    # arenas than CXL_DEVICES ran on less CXL than the plan sized for.
+    if (is_cxl and CXL_ARTS_CFG.get("cxl_db_allocation_strategy")
+            == "round_robin"):
+        off = sorted(set(cxl_devices) - {CXL_DEVICES})
+        # Every rank prints the line, and the launcher forwards remote ranks'
+        # stdout into the cell log.
+        if len(cxl_devices) < cell["nodes"]:
+            failed.append(f"round_robin_lines:{len(cxl_devices)}_of_"
+                          f"{cell['nodes']}")
+        elif off:
+            failed.append(f"cxl_devices:{off}_not_{CXL_DEVICES}")
+        # Asking for CXL_DEVICES arenas is not getting them on CXL_DEVICES
+        # devices: a rank whose arenas share a device ran round_robin over
+        # fewer devices than the plan assumed.
+        if len(arena_devices) < cell["nodes"]:
+            failed.append(f"arena_device_lines:{len(arena_devices)}_of_"
+                          f"{cell['nodes']}")
+        else:
+            spread = sorted({len(set(devs)) for devs in arena_devices
+                             if len(set(devs)) != CXL_DEVICES})
+            if spread:
+                failed.append(f"arena_devices_distinct:{spread}_not_"
+                              f"{CXL_DEVICES}")
     # A rank that counted some other list (or none: a tree without
     # ARTS_USE_PAPI) would publish its slots under the wrong event names.
     if cell["papi_set"]:
@@ -739,7 +925,7 @@ def sanity_checks(cell, stamps, per_rank, sums, complete,
     return failed
 
 def build_record(cell, status, rc, stamps, wall_s, per_rank, started_at, *,
-                 wrapper_done, rank_events):
+                 wrapper_done, rank_events, cxl_devices, arena_devices):
     nodes = cell["nodes"]
     complete = sorted(per_rank) == list(range(nodes))
     names = sorted({n for vals in per_rank.values() for n in vals})
@@ -750,13 +936,21 @@ def build_record(cell, status, rc, stamps, wall_s, per_rank, started_at, *,
     e2e_ns = stamps[0] if stamps else None
     e2e_s = e2e_ns / 1e9 if e2e_ns is not None else None
     checks = sanity_checks(cell, stamps, per_rank, sums, complete,
-                           rank_events)
+                           rank_events, cxl_devices, arena_devices)
     if status == "ok" and checks:
         status = "check_failed"
     return {
         **{k: cell[k] for k in ("cell_id", "app", "variant", "papi_set",
-                                "papi_events", "executable", "args", "nodes",
-                                "repeat", "is_warmup")},
+                                "papi_events", "executable", "args",
+                                "footprint_gb", "predicted_db_bytes_per_node",
+                                "nodes", "repeat", "is_warmup")},
+        # The measured footprint the sweep is over: datablock bytes created
+        # per node (cluster sum / nodes; None without every rank's file).
+        "db_create_bytes_per_node": (
+            sums["BYTES_DB_CREATE"] / nodes
+            if "BYTES_DB_CREATE" in sums else None),
+        "cxl_devices_reported": cxl_devices,
+        "cxl_arena_devices_reported": arena_devices,
         "hosts": NODES[:nodes],
         "worker_threads": WORKER_THREADS,
         "progress_threads": PROGRESS_THREADS,
@@ -812,6 +1006,11 @@ def write_tables(run_dir: Path, records: list[dict]):
         for r in rows:
             row = {k: r.get(k) for k in BASE_COLUMNS}
             row["checks_failed"] = ";".join(r["checks_failed"])
+            row["cxl_devices_reported"] = ";".join(
+                map(str, r.get("cxl_devices_reported") or []))
+            row["cxl_arena_devices_reported"] = ";".join(
+                ",".join(map(str, devs))
+                for devs in r.get("cxl_arena_devices_reported") or [])
             row.update(r["derived"])
             for c in counters:
                 row[f"ctr_{c}"] = r["counters_cluster_sum"].get(c)
@@ -821,13 +1020,15 @@ def write_tables(run_dir: Path, records: list[dict]):
     tmp = run_dir / "counters_long.csv.tmp"
     with open(tmp, "w", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["cell_id", "app", "variant", "papi_set", "nodes",
-                    "repeat", "is_warmup", "rank", "counter", "value"])
+        w.writerow(["cell_id", "app", "variant", "papi_set", "footprint_gb",
+                    "nodes", "repeat", "is_warmup", "rank", "counter",
+                    "value"])
         for r in rows:
             for rank, vals in r["counters_per_rank"].items():
                 for name, value in sorted(vals.items()):
                     w.writerow([r["cell_id"], r["app"], r["variant"],
-                                r.get("papi_set"), r["nodes"], r["repeat"],
+                                r.get("papi_set"), r.get("footprint_gb"),
+                                r["nodes"], r["repeat"],
                                 r["is_warmup"],
                                 rank, name, value])
     tmp.replace(run_dir / "counters_long.csv")
@@ -856,10 +1057,13 @@ def write_manifest(run_dir: Path, cells, args):
         "config": {
             "nodes": NODES,
             "node_counts": args.node_counts,
+            "footprints_gb": args.footprints,
+            "scaling": "weak",
             "worker_threads": WORKER_THREADS,
             "progress_threads": PROGRESS_THREADS,
             "repeats": args.repeats,
             "warmup_runs": args.warmups,
+            # Seconds, flat or {nodes: seconds}.
             "cell_timeout_s": args.timeout,
             "profile": args.profile,
             "variants": args.variants,
@@ -874,8 +1078,11 @@ def write_manifest(run_dir: Path, cells, args):
             "arts_pin": ARTS_PIN,
             "arts_route_table_size": ARTS_ROUTE_TABLE_SIZE,
             "counter_capture_interval": COUNTER_CAPTURE_INTERVAL,
+            "cxl_arts_cfg": CXL_ARTS_CFG,
             "extra_arts_cfg": EXTRA_ARTS_CFG,
             "extra_env": EXTRA_ENV,
+            "cxl_devices": CXL_DEVICES,
+            "cxl_device_bytes": CXL_DEVICE_BYTES,
             "cxl_db_arena_size_bytes": CXL_DB_ARENA_SIZE_BYTES,
             "built_cxl_db_arena_size_bytes": cmake_cache_value(
                 "ARTS_CXL_DB_ARENA_SIZE_BYTES"),
@@ -887,9 +1094,21 @@ def write_manifest(run_dir: Path, cells, args):
             "papi_sets": dict(args.papi) if args.papi else None,
             "papi_library": papi_library() if args.papi else None,
         },
-        "apps": [{"app": a, "args": s.replace("{repo}", str(REPO_ROOT))}
-                 for a, s in args.apps],
-        "cells": [c["cell_id"] for c in cells],
+        # Every cell's input (and the model's per-node prediction) is in
+        # "cells"; the sizers' constants are recorded here.
+        "apps": [a for a, _ in args.apps],
+        "size_model": {
+            "stencil_halo_b": STENCIL_HALO_B,
+            "miniamr_block_b": MINIAMR_BLOCK_B,
+            "miniamr_surface_b": MINIAMR_SURFACE_B,
+            "comd_tile_b": COMD_TILE_B,
+            "nekbone_task_b": NEKBONE_TASK_B,
+            "nekbone_elem_b": NEKBONE_ELEM_B,
+            "nekbone_halo_b": NEKBONE_HALO_B,
+        },
+        "cells": [{k: c[k] for k in ("cell_id", "args", "footprint_gb",
+                                     "predicted_db_bytes_per_node")}
+                  for c in cells],
         "files": {
             "runs.jsonl": "one JSON record per run (source of truth)",
             "runs.csv": "one row per run; ctr_<NAME> = sum over ranks",
@@ -1013,6 +1232,36 @@ def papi_node_problems(host: str, papi_sets) -> list[str]:
                             + (f": {out[-1]}" if out else ""))
     return problems
 
+def cxl_need_bytes(cell) -> float | None:
+    """The CXL a cell must find under round_robin: its predicted cluster
+    total with CXL_CAPACITY_MARGIN, plus the pool tails every rank may
+    strand on every arena.  None for a cell without a prediction."""
+    pred = cell["predicted_db_bytes_per_node"]
+    if pred is None:
+        return None
+    return (pred * cell["nodes"] * CXL_CAPACITY_MARGIN
+            + CXL_DEVICES * cell["nodes"] * CXL_DB_POOL_BYTES)
+
+def cxl_capacity_problems(cells) -> list[str]:
+    """Round-robin capacity is CXL_DEVICES arenas of CXL_DB_ARENA_SIZE_BYTES,
+    each on its own device.  An arena that overflows ends the run (no
+    fallback to the next), so the check is against the sum, with margin."""
+    problems = []
+    if CXL_DB_ARENA_SIZE_BYTES > CXL_DEVICE_BYTES:
+        problems.append(f"CXL_DB_ARENA_SIZE_BYTES={CXL_DB_ARENA_SIZE_BYTES} "
+                        f"exceeds one device ({CXL_DEVICE_BYTES})")
+    capacity = CXL_DEVICES * CXL_DB_ARENA_SIZE_BYTES
+    over = sorted({(c["app"], c["footprint_gb"], c["nodes"], need)
+                   for c in cells if "cxl" in c["variant"]
+                   for need in [cxl_need_bytes(c)]
+                   if need is not None and need > capacity},
+                  key=lambda x: -x[3])
+    for app, fp, n, need in over:
+        problems.append(f"{app} at {fp} GB x {n} nodes needs ~{need / GB:.0f} "
+                        f"GB of CXL; {CXL_DEVICES} arenas hold "
+                        f"{capacity / GB:.0f} GB")
+    return problems
+
 def preflight(cells, papi_sets=None) -> list[str]:
     problems = [f"input file missing: {p}" for p in input_files(cells)
                 if not Path(p).exists()]
@@ -1052,6 +1301,7 @@ def preflight(cells, papi_sets=None) -> list[str]:
             problems.append(f"CXL_DB_POOL_BYTES={CXL_DB_POOL_BYTES} x "
                             f"{widest} ranks exceeds the arena; ARTS would "
                             "clamp it to arena / ranks")
+        problems += cxl_capacity_problems(cells)
     if max(c["nodes"] for c in cells) > len(NODES):
         problems.append(f"{len(NODES)} hosts in NODES, but a cell needs "
                         f"{max(c['nodes'] for c in cells)}")
@@ -1077,13 +1327,13 @@ def preflight(cells, papi_sets=None) -> list[str]:
             problems += papi_node_problems(host, papi_sets)
     return problems
 
-def estimate(cells, paths: list[Path], timeout_s: int):
+def estimate(cells, paths: list[Path], timeout):
     """Project the plan's duration from the wall times of earlier runs at the
     same (app, variant, args).  A node count with no run borrows the slowest
     measured node count of that app (strong scaling here is not reliably
     monotone), then the other variant's.  A failed run carries no time; a
-    timed-out one counts as the full timeout.  Each cell is capped at this
-    plan's timeout."""
+    timed-out one counts as its full timeout.  Each cell is capped at this
+    plan's timeout for its node count."""
     seen: dict[tuple, list[float]] = {}
     bad: dict[tuple, set[str]] = {}
     for path in paths:
@@ -1092,7 +1342,8 @@ def estimate(cells, paths: list[Path], timeout_s: int):
             if r["status"] in ("ok", "check_failed", "no_e2e"):
                 seen.setdefault(key, []).append(r["wall_s"])
             elif r["status"] == "timeout":
-                seen.setdefault(key, []).append(float(timeout_s))
+                seen.setdefault(key, []).append(
+                    float(cell_timeout(timeout, r["nodes"])))
                 bad.setdefault(key[:3], set()).add("timeout")
             else:
                 bad.setdefault(key[:3], set()).add(r["status"])
@@ -1121,7 +1372,7 @@ def estimate(cells, paths: list[Path], timeout_s: int):
             unknown += 1
             row[1] += 1
             continue
-        t = min(t, timeout_s)
+        t = min(t, cell_timeout(timeout, c["nodes"]))
         total += t
         row[0] += t
         borrowed += how == "borrowed"
@@ -1146,13 +1397,16 @@ def parse_args():
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     p.add_argument("--apps", help="comma-separated subset of app base names")
     p.add_argument("--nodes", help="comma-separated subset of node counts")
+    p.add_argument("--footprints", help="comma-separated subset of per-node "
+                   f"footprints, GB (default: {','.join(map(str, FOOTPRINTS_GB))}"
+                   "; any positive number is sized by the models)")
     p.add_argument("--variants", help="comma-separated build variants "
                    f"(default: {','.join(VARIANTS)})")
     p.add_argument("--profile", choices=PROFILES, default="main",
                    help="input profile; apps without an input in it are "
                    "skipped.  " + "; ".join(
                        f"{n}: {c['repeats']} repeats, {c['warmups']} warm-ups, "
-                       f"{c['timeout']}s timeout" for n, c in PROFILES.items()))
+                       f"timeout {c['timeout']} s" for n, c in PROFILES.items()))
     p.add_argument("--smoke-test", action="store_const", const="smoke",
                    dest="profile", help="same as --profile smoke")
     p.add_argument("--papi", action="append", metavar="SET",
@@ -1164,7 +1418,8 @@ def parse_args():
     p.add_argument("--repeats", type=int, help="override the profile's")
     p.add_argument("--warmups", type=int, help="override the profile's")
     p.add_argument("--timeout", type=int,
-                   help="per-run timeout, seconds (overrides the profile's)")
+                   help="per-run timeout, seconds, at every node count "
+                   "(overrides the profile's)")
     p.add_argument("--estimate", type=Path, action="append", metavar="RUNS_JSONL",
                    help="with --dry-run, project the plan's duration from the "
                    "wall times in a previous runs.jsonl (repeatable)")
@@ -1188,10 +1443,10 @@ def parse_args():
         p.error("--estimate needs --dry-run")
 
     inputs = profile["apps"]
-    roster = [(a, inputs[a]) for a, _ in APPS if a in inputs]
+    roster = [(a, inputs[a]) for a in APPS if a in inputs]
     if args.apps:
         wanted = args.apps.split(",")
-        known = {a for a, _ in APPS}
+        known = set(APPS)
         unknown = [a for a in wanted if a not in known]
         if unknown:
             p.error(f"unknown app(s): {', '.join(unknown)}")
@@ -1204,10 +1459,20 @@ def parse_args():
     args.node_counts = ([int(n) for n in args.nodes.split(",")]
                         if args.nodes else NODE_COUNTS)
     args.variants = args.variants.split(",") if args.variants else VARIANTS
-    uneven = [f"{a}: {c}" for a, s in args.apps
-              for c in per_node_conflicts(s, args.node_counts)]
-    if uneven:
-        p.error("per-node share not even: " + "; ".join(uneven))
+    if args.footprints:
+        if profile["footprints"] == [None]:
+            p.error(f"the {args.profile} profile has fixed inputs; "
+                    "--footprints applies to main")
+        try:
+            args.footprints = [int(f) if float(f) == int(float(f))
+                               else float(f)
+                               for f in args.footprints.split(",")]
+        except ValueError:
+            p.error(f"--footprints {args.footprints}: not numbers")
+        if any(f <= 0 for f in args.footprints):
+            p.error("--footprints must be positive")
+    else:
+        args.footprints = profile["footprints"]
     args.papi = parse_papi_sets(args.papi or [], p)
     return args
 
@@ -1250,7 +1515,7 @@ def main():
     args = parse_args()
     select_build(bool(args.papi))
     cells = plan_cells(args.apps, args.variants, args.node_counts,
-                       args.repeats, args.warmups, args.papi)
+                       args.footprints, args.repeats, args.warmups, args.papi)
 
     if args.resume:
         run_dir = args.resume.resolve()
@@ -1284,8 +1549,14 @@ def main():
     if args.dry_run:
         for c in ([] if args.estimate else todo):
             spec = {"app": str(APP_BUILD_DIR / c["executable"]), "args": c["args"]}
-            print(f"\n[{c['cell_id']}] hosts={','.join(NODES[:c['nodes']])}")
+            print(f"\n[{c['cell_id']}] hosts={','.join(NODES[:c['nodes']])} "
+                  f"timeout={cell_timeout(args.timeout, c['nodes'])}s")
             print(f"  args.json: {json.dumps(spec)}")
+            if c["predicted_db_bytes_per_node"] is not None:
+                need = cxl_need_bytes(c) if "cxl" in c["variant"] else None
+                print(f"  predicted DB/node "
+                      f"{c['predicted_db_bytes_per_node'] / GB:.2f} GB"
+                      + (f"; CXL need ~{need / GB:.0f} GB" if need else ""))
             if c["papi_events"]:
                 print(f"  papi_events={','.join(c['papi_events'])}")
             print(f"  {shlex.join(launch_argv(Path('<cell>/args.json')))}")
@@ -1308,15 +1579,21 @@ def main():
 
     for i, cell in enumerate(todo, 1):
         print(f"[{i}/{len(todo)}] {cell['cell_id']} ... ", end="", flush=True)
-        record = run_cell(cell, run_dir, args.timeout)
+        record = run_cell(cell, run_dir,
+                          cell_timeout(args.timeout, cell["nodes"]))
         with open(jsonl, "a") as f:
             f.write(json.dumps(record) + "\n")
         records.append(record)
         write_tables(run_dir, records)
         e2e = f"{record['e2e_s']:.3f}s" if record["e2e_s"] is not None else "-"
         extra = f" {';'.join(record['checks_failed'])}" if record["checks_failed"] else ""
+        per_node = record["db_create_bytes_per_node"]
+        pred = record["predicted_db_bytes_per_node"]
+        db = (f" db/node={per_node / GB:.2f}GB"
+              + (f" (model {pred / GB:.2f})" if pred else "")
+              if per_node is not None else "")
         print(f"{record['status']} e2e={e2e} wall={record['wall_s']:.1f}s "
-              f"ranks={record['ranks_reported']}/{cell['nodes']}{extra}",
+              f"ranks={record['ranks_reported']}/{cell['nodes']}{db}{extra}",
               flush=True)
         if record["missing_expected_counters"] and record["counters_complete"]:
             print(f"    missing counters: "
