@@ -42,6 +42,7 @@
 #include "arts/utils/random.h"
 
 #include <assert.h>
+#include <inttypes.h>
 #include <stdint.h>
 #include <stdlib.h>
 
@@ -73,6 +74,76 @@
 
 #ifdef ARTS_USE_CXL
 #include "arts/cxl/deque.h"
+
+/* Every rank, before the first carve: each DB arena must be FAM memory on the
+ * device it was asked for.  The allocator is not trusted -- on twosisters2
+ * GLOBAL_CXL_MALLOC_DEV once handed back a stack pointer, and the workaround
+ * for that (a plain GLOBAL_CXL_MALLOC per arena) silently put every
+ * round_robin arena on one device -- so a misplaced arena ends the run here,
+ * naming the device, rather than running on the wrong memory.  Reads only the
+ * arena headers, never arena memory: a stack pointer is never dereferenced.
+ *
+ * The device is checkable only where the library has more than one: a
+ * single-device library (the fake one included) answers 0 for every pointer,
+ * and every request lands on that device by construction.
+ *
+ * One "CXL DB arena devices:" line per rank lists, in arena order, the device
+ * each arena actually sits on -- the line a campaign checks, since the
+ * "round_robin across" line reports only how many arenas were asked for. */
+static void cxl_check_db_arenas(arts_cxl_deque_t *dq, const uint64_t *dev_ids,
+                                unsigned int dev_count, uint64_t total_devs) {
+  FLUSH_FENCE_CONSUMER(&dq->consts, sizeof(arts_cxl_deque_consts_t));
+  if (dq->consts.db_arena_count != dev_count) {
+    ARTS_ERROR("CXL DB arenas: the deque holds %u arena(s), this rank "
+               "expected %u",
+               dq->consts.db_arena_count, dev_count);
+  }
+  char list[ARTS_CXL_MAX_DEVICES * 24];
+  size_t used = 0;
+  list[0] = '\0';
+  for (unsigned int i = 0; i < dev_count; i++) {
+    arts_cxl_arena_t *arena = dq->consts.db_arenas[i];
+    if (arena == NULL) {
+      ARTS_ERROR("CXL DB arena %u (device %" PRIu64 ") was never created", i,
+                 dev_ids[i]);
+    }
+    FLUSH_FENCE_CONSUMER(arena, sizeof(arts_cxl_arena_t));
+    char *base = arena->base;
+    char *last = arena->max_size - 1;
+    if (base == NULL || !arena->initialized) {
+      ARTS_ERROR("CXL DB arena %u: GLOBAL_CXL_MALLOC_DEV(%llu, %" PRIu64
+                 ") returned no memory",
+                 i, (unsigned long long)ARTS_CXL_DB_ARENA_SIZE_BYTES,
+                 dev_ids[i]);
+    }
+#ifdef ARTS_CXL_NATIVE /* the stub arm's IS_CXL_PTR answers 0 for all */
+    if (!IS_CXL_PTR(base) || !IS_CXL_PTR(last)) {
+      ARTS_ERROR("CXL DB arena %u: GLOBAL_CXL_MALLOC_DEV(%llu, %" PRIu64
+                 ") returned [%p, %p], not FAM memory",
+                 i, (unsigned long long)ARTS_CXL_DB_ARENA_SIZE_BYTES,
+                 dev_ids[i], (void *)base, (void *)arena->max_size);
+    }
+#endif
+    uint64_t at = (uint64_t)GET_CXL_DEV_ID(base);
+    uint64_t at_last = (uint64_t)GET_CXL_DEV_ID(last);
+    if (total_devs > 1u && (at != dev_ids[i] || at_last != dev_ids[i])) {
+      ARTS_ERROR("CXL DB arena %u: asked for device %" PRIu64
+                 ", got [%p, %p) on device %" PRIu64 " (last byte on %" PRIu64
+                 ")",
+                 i, dev_ids[i], (void *)base, (void *)arena->max_size, at,
+                 at_last);
+    }
+    arts_printf("CXL DB arena %u: device %" PRIu64 " (requested %" PRIu64
+                ") [%p, %p)\n",
+                i, at, dev_ids[i], (void *)base, (void *)arena->max_size);
+    int n = snprintf(list + used, sizeof(list) - used, "%s%" PRIu64,
+                     i ? "," : "", at);
+    if (n > 0 && (size_t)n < sizeof(list) - used) {
+      used += (size_t)n;
+    }
+  }
+  arts_printf("CXL DB arena devices: %s\n", list);
+}
 #endif
 
 #define PACKET_SIZE 4096
@@ -271,11 +342,27 @@ void arts_runtime_node_init(struct arts_config_s *config) {
     arts_node_info.cxl_deque =
         arts_cxl_deque_create_with_arenas(dev_ids, dev_count);
 #endif
+    cxl_check_db_arenas(arts_node_info.cxl_deque, dev_ids, dev_count,
+                        cxl_total_devs);
     arts_node_info.cxl_db_dev_count = dev_count;
   } else {
     /* Static: allocate a single arena on the configured device. */
     uint64_t dev_id = (uint64_t)config->cxl_db_allocation_device;
     arts_printf("CXL DB allocation: static on device %lu\n", dev_id);
+    /* A device past the library's count is a cfg error where the library
+     * places by device; a single-device library has only device 0 to give,
+     * so the request collapses onto it (the arena is index 0 either way). */
+    if (dev_id >= cxl_total_devs) {
+      if (cxl_total_devs > 1u) {
+        ARTS_ERROR("cxl_db_allocation_device=%" PRIu64 ", but the CXL "
+                   "library reports %" PRIu64 " device(s)",
+                   dev_id, cxl_total_devs);
+      }
+      arts_printf("CXL DB allocation: the library has one device; device %lu "
+                  "is placed on device 0\n",
+                  dev_id);
+      dev_id = 0;
+    }
     uint64_t dev_ids[1] = {dev_id};
 #ifdef ARTS_CXL_NATIVE
     if (!arts_global_rank_id) {
@@ -286,6 +373,7 @@ void arts_runtime_node_init(struct arts_config_s *config) {
 #else
     arts_node_info.cxl_deque = arts_cxl_deque_create_with_arenas(dev_ids, 1);
 #endif
+    cxl_check_db_arenas(arts_node_info.cxl_deque, dev_ids, 1, cxl_total_devs);
     arts_node_info.cxl_db_dev_count = 1;
     arts_node_info.cxl_db_static_device = (unsigned int)dev_id;
   }

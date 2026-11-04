@@ -143,6 +143,9 @@ static inline void arts_cxl_arena_init_dev(arts_cxl_arena_t **arena,
   (*arena)->head = memory;
   (*arena)->initialized = true;
   (*arena)->max_size = memory + bytes;
+  /* Other ranks read the arena from CXL (the deque's own flush covers only
+   * the pointer to it), as arts_cxl_arena_init publishes its arena. */
+  FLUSH_FENCE_PRODUCER(*arena, sizeof(arts_cxl_arena_t));
 }
 
 static inline void arts_cxl_arena_free(arts_cxl_arena_t *arena) {
@@ -333,9 +336,15 @@ arts_cxl_deque_create_with_arenas(const uint64_t *dev_ids,
   dq->consts.mem_arena = NULL;
 #endif
 
-  (void)dev_ids; /* WORKAROUND: GLOBAL_CXL_MALLOC_DEV returns stack ptr on twosisters2; revert once fixed */
+  /* Each arena's backing memory on its own device: round_robin rotates over
+   * arenas, so an arena that is not on the device it was asked for puts every
+   * rotation on whatever device the allocator defaults to.  The placement is
+   * not trusted here -- GLOBAL_CXL_MALLOC_DEV once returned a stack pointer on
+   * twosisters2 -- but checked by every rank before the first carve
+   * (cxl_check_db_arenas, runtime.c), which touches no arena memory. */
   for (unsigned int i = 0; i < dev_count; i++) {
-    arts_cxl_arena_init(&dq->consts.db_arenas[i], ARTS_CXL_DB_ARENA_SIZE_BYTES);
+    arts_cxl_arena_init_dev(&dq->consts.db_arenas[i],
+                            ARTS_CXL_DB_ARENA_SIZE_BYTES, dev_ids[i]);
   }
   for (unsigned int i = dev_count; i < ARTS_CXL_MAX_DEVICES; i++) {
     dq->consts.db_arenas[i] = NULL;

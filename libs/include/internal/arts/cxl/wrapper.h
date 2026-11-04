@@ -44,6 +44,7 @@ extern "C" {
 /* ── Stubs (no CXL, or CXL code paths without hardware) ──────────────────── */
 #define SHARED_MALLOC(...) malloc(__VA_ARGS__)
 #define GLOBAL_MALLOC(...) malloc(__VA_ARGS__)
+#define GLOBAL_MALLOC_DEV(sz, dev) ((void)(dev), malloc(sz))
 #define GLOBAL_FREE(...) free(__VA_ARGS__)
 #define SHARED_FREE(...) free(__VA_ARGS__)
 #define SHARED_MALLOC_INITIALIZED(...)
