@@ -1685,6 +1685,149 @@ foreach(_t db_create_after_first_touch db_create_after_first_touch_2n_9w_1p)
     set_tests_properties(${_t} PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 endforeach()
 
+# arts_db_downgrade: a write hold becomes a read hold.  Every program ends
+# with a quiescent shutdown, so the teardown walk's markers fail it.  SINGLE
+# adds the one-rank run, VARIANTS replaces the default multinode set, and FUZZ
+# adds a 2n_8w_2p run under the scheduler fuzz where the hooks are compiled.
+function(arts_downgrade_test test program)
+    cmake_parse_arguments(ARG "SINGLE;FUZZ" "" "ARGS;VARIANTS" ${ARGN})
+    if(ARG_UNPARSED_ARGUMENTS)
+        message(FATAL_ERROR "arts_downgrade_test(${test}): unexpected "
+                "arguments '${ARG_UNPARSED_ARGUMENTS}'")
+    endif()
+    set(_names "")
+    if(ARG_SINGLE)
+        arts_test_cfg(_cfg 1n_20w)
+        arts_add_test(${test} COMMAND ${program} ${ARG_ARGS})
+        set_tests_properties(${test} PROPERTIES
+            LABELS "single_node"
+            TIMEOUT 120
+            RESOURCE_LOCK "arts_runtime"
+            ENVIRONMENT "ARTS_CONFIG=${_cfg}")
+        list(APPEND _names ${test})
+    endif()
+    if(NOT ARG_VARIANTS)
+        set(ARG_VARIANTS ${ARTS_TEST_MULTINODE_VARIANTS})
+    endif()
+    set(_runs "")
+    foreach(_v IN LISTS ARG_VARIANTS)
+        list(APPEND _runs ${_v})
+    endforeach()
+    if(ARG_FUZZ AND ARTS_DEBUG_INJECTION)
+        list(APPEND _runs 2n_8w_2p_fuzz)
+    endif()
+    foreach(_r IN LISTS _runs)
+        string(REGEX REPLACE "_fuzz$" "" _v ${_r})
+        arts_test_cfg(_cfg ${_v})
+        set(_env "ARTS_CONFIG=${_cfg}")
+        if(NOT _r STREQUAL _v)
+            list(APPEND _env "ARTS_SCHED_FUZZ=25")
+        endif()
+        arts_add_test(${test}_${_r} COMMAND ${program} ${ARG_ARGS})
+        set_tests_properties(${test}_${_r} PROPERTIES
+            LABELS "multinode;coherence_stress"
+            TIMEOUT 180
+            RESOURCE_LOCK "arts_runtime"
+            ENVIRONMENT "${_env}")
+        list(APPEND _names ${test}_${_r})
+    endforeach()
+    set_tests_properties(${_names} PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS: ${program}"
+        FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
+endfunction()
+
+set(_downgrade_excl OFF)
+if(ARTS_COHERENCE_ARM STREQUAL "EXCL")
+    set(_downgrade_excl ON)
+endif()
+set(_downgrade_wt OFF)
+if((ARTS_COHERENCE_ARM STREQUAL "VAL" OR ARTS_COHERENCE_ARM STREQUAL "INV")
+   AND ARTS_WRITE_POLICY STREQUAL "WT")
+    set(_downgrade_wt ON)
+endif()
+
+# Both kinds of write hold handed on, homes chosen by rank count; the alias
+# trio; the destroys ordered after the read hold; the calls that change
+# nothing.
+add_arts_test(db_downgrade_handoff)
+arts_downgrade_test(db_downgrade_handoff db_downgrade_handoff SINGLE FUZZ)
+add_arts_test(db_downgrade_alias)
+if(_downgrade_excl)
+    arts_downgrade_test(db_downgrade_alias db_downgrade_alias SINGLE FUZZ)
+else()
+    arts_downgrade_test(db_downgrade_alias db_downgrade_alias SINGLE)
+endif()
+add_arts_test(db_downgrade_destroy)
+if(_downgrade_excl)
+    arts_downgrade_test(db_downgrade_destroy db_downgrade_destroy SINGLE FUZZ)
+else()
+    arts_downgrade_test(db_downgrade_destroy db_downgrade_destroy SINGLE)
+endif()
+add_arts_test(db_downgrade_noop)
+arts_downgrade_test(db_downgrade_noop db_downgrade_noop SINGLE
+                    VARIANTS 2n_9w_1p 2n_8w_2p)
+
+# Locations no concurrent writer writes keep the downgrader's view.  A writer
+# on D's rank reaches D's storage on every arm.  A remote writer's bytes land
+# in D's storage (D on the home) only under write-through and FLUSH; under
+# write-back they stay with the writer, and under exclusion the writer is
+# admitted only after D's read hold, so there D reads for a bounded time.  The
+# serve-demote form is exclusion with a retained right.
+add_arts_test(db_downgrade_disjoint)
+arts_downgrade_test(db_downgrade_disjoint_local db_downgrade_disjoint
+                    ARGS local wait VARIANTS 2n_9w_1p 2n_8w_2p FUZZ)
+if(_downgrade_wt OR ARTS_COHERENCE_ARM STREQUAL "FLUSH")
+    arts_downgrade_test(db_downgrade_disjoint_remote db_downgrade_disjoint
+                        ARGS remote wait VARIANTS 2n_9w_1p 2n_8w_2p FUZZ)
+else()
+    arts_downgrade_test(db_downgrade_disjoint_remote db_downgrade_disjoint
+                        ARGS remote nowait VARIANTS 2n_9w_1p 2n_8w_2p FUZZ)
+endif()
+if(_downgrade_excl AND ARTS_RELEASE_POLICY STREQUAL "RETAIN")
+    arts_downgrade_test(db_downgrade_disjoint_demote db_downgrade_disjoint
+                        ARGS demote wait VARIANTS 2n_9w_1p 2n_8w_2p FUZZ)
+endif()
+
+# Two writers of one rank share the turn and one of them downgrades: two
+# overlapping write acquisitions, outside DB-WRF.
+if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
+    add_arts_test(db_downgrade_cowriter)
+    if(_downgrade_excl)
+        arts_downgrade_test(db_downgrade_cowriter db_downgrade_cowriter SINGLE
+                            VARIANTS 2n_9w_1p 2n_8w_2p FUZZ)
+    else()
+        arts_downgrade_test(db_downgrade_cowriter db_downgrade_cowriter SINGLE
+                            VARIANTS 2n_9w_1p 2n_8w_2p)
+    endif()
+endif()
+
+# A create's hold on a cache its rank made by a first touch, downgraded; the
+# creator must not be the home.
+add_arts_test(db_downgrade_claimed)
+arts_downgrade_test(db_downgrade_claimed db_downgrade_claimed
+                    VARIANTS 2n_9w_1p 2n_8w_2p)
+
+# The state a downgrade leaves, read where it lives.  The creator's buffer
+# reference count is read through a function the runtime defines only where
+# it is compiled without NDEBUG; this directory compiles every test with
+# NDEBUG unset, so the program learns the runtime's flags from here.
+add_arts_test(db_downgrade_word)
+string(TOUPPER "${CMAKE_BUILD_TYPE}" _downgrade_bt)
+if(NOT "${CMAKE_C_FLAGS} ${CMAKE_C_FLAGS_${_downgrade_bt}}" MATCHES "-DNDEBUG")
+    target_compile_definitions(db_downgrade_word PRIVATE
+        ARTS_TEST_RUNTIME_NDEBUG_UNSET=1)
+endif()
+unset(_downgrade_bt)
+if(_downgrade_excl)
+    arts_downgrade_test(db_downgrade_word db_downgrade_word SINGLE
+                        VARIANTS 2n_9w_1p 2n_8w_2p FUZZ)
+else()
+    arts_downgrade_test(db_downgrade_word db_downgrade_word SINGLE
+                        VARIANTS 2n_9w_1p 2n_8w_2p)
+endif()
+unset(_downgrade_excl)
+unset(_downgrade_wt)
+
 if(ARTS_TEST_REFERENCE_TREE)
 # A group over a tree of EDTs crossing ranks, in a loop.  Two ranks and four
 # separate a group's members by one and by several hops.

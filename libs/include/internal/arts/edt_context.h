@@ -69,11 +69,20 @@ void arts_unset_thread_local_edt_info(bool decr_group);
 void arts_cleanup_edt_tls(void);
 
 /* Created-DB tracking on the current worker (auto-acquire / release path).
- * Each entry is the descriptor handle of a block this worker created, one
- * strong ref per entry, and the creator's release goes through it.  A
- * creator's operations on its own block name the descriptor it made, because
- * the route slot may hold another generation of the GUID until that
- * descriptor installs. */
+ * Each entry is one creator hold: the descriptor handle of a block this
+ * worker created (one strong ref), through which the creator's release goes.
+ * A creator's operations on its own block name the descriptor it made,
+ * because the route slot may hold another generation of the GUID until that
+ * descriptor installs.  After arts_db_downgrade the hold is a read hold:
+ * `read_only` is set and `read` is the buffer reference that keeps the
+ * creator's bytes (NULL for a block with no bytes); both are written and read
+ * only by the running EDT's thread. */
+struct arts_created_db_s {
+  arts_shared_ptr_t db;
+  arts_shared_ptr_t read;
+  bool read_only;
+};
+
 void arts_track_created_db(arts_shared_ptr_t h);
 arts_vector_t *arts_get_created_db_list(void);
 

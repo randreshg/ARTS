@@ -372,10 +372,20 @@ void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload);
  * TU beside arts_db_release_rw. */
 void arts_db_release_created(struct arts_db_cache_s *cache);
 
-/* Release a RO acquire taken as a DEPENDENCE.  An arm whose read hold keeps
- * protocol state (EXCL's read count) drops it here; on the others it does
- * nothing.  The EDT's buffer ref is the caller's to drop. */
+/* Release a read hold: an RO acquire taken as a dependence, or a write hold
+ * (a dependence's or a create's) that arts_db_downgrade turned into one after
+ * arts_db_join_read counted it.  An arm whose read hold keeps protocol state
+ * (EXCL's read count) drops it here; on the others it does nothing.  Any
+ * buffer ref is the caller's to drop. */
 void arts_db_release_ro(struct arts_db_cache_s *cache);
+
+/* Count the caller as a reader of the write turn its own write hold keeps
+ * open on this rank, before that hold's write release, so the read hold a
+ * downgrade leaves is the one an RO acquisition joining the turn would have
+ * made and arts_db_release_ro ends it.  Nothing is sent and nobody is woken.
+ * An arm whose read hold is the EDT's buffer ref alone counts nothing.  The
+ * caller holds the block for writing on this rank. */
+void arts_db_join_read(struct arts_db_cache_s *cache);
 
 /* ===== Shared coherence services (defined in coherence.c) ============
  * Model TUs (and the release-family TU) call back into these model-agnostic

@@ -368,6 +368,10 @@ void arts_handler_db_fetch_response(
 
 void arts_db_release_ro(struct arts_db_cache_s *cache) { (void)cache; }
 
+/* A read hold here is the EDT's copy (or, on the home, the line) by its
+ * buffer ref: nothing counts readers. */
+void arts_db_join_read(struct arts_db_cache_s *cache) { (void)cache; }
+
 /* A releaser's wait for the home: the answer (a CTS, an ACK) writes its
  * fields and posts, and the woken releaser, which holds its pin on the
  * descriptor, carries them into the cache.  txid is the credit the round

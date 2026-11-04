@@ -6,9 +6,10 @@
  * Pinned properties (white-box reads on the running worker thread):
  *
  *   1. Footprint: the first DB created on a worker lazily allocates
- *      created_db_list with element_size == sizeof(arts_shared_ptr_t), and the
- *      block GROWS to hold what was pushed — NDB exceeds the small initial
- *      capacity, so the doubling is actually exercised, not just permitted.
+ *      created_db_list with element_size == sizeof(struct arts_created_db_s)
+ *      (one creator hold per entry), and the block GROWS to hold what was
+ *      pushed — NDB exceeds the small initial capacity, so the doubling is
+ *      actually exercised, not just permitted.
  *
  *   2. One entry per hold: the list grows by one per acquiring create and
  *      shrinks by one per explicit release.
@@ -96,13 +97,14 @@ void producer(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
 
   arts_vector_t *list = arts_get_created_db_list();
-  if (list->data == NULL || list->element_size != sizeof(arts_shared_ptr_t) ||
+  if (list->data == NULL ||
+      list->element_size != sizeof(struct arts_created_db_s) ||
       list->capacity < (uint64_t)NDB) {
     arts_printf("  data=%p element_size=%zu capacity=%llu, want non-NULL, "
                 "%zu, >= %d\n",
                 list->data, list->element_size,
-                (unsigned long long)list->capacity, sizeof(arts_shared_ptr_t),
-                NDB);
+                (unsigned long long)list->capacity,
+                sizeof(struct arts_created_db_s), NDB);
     fail("the list's footprint");
     return;
   }

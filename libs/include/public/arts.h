@@ -339,7 +339,8 @@ typedef struct {
 /**
  * @brief Describes a single dependency slot delivered to an EDT.
  *
- * Mode is set via @c arts_add_dependence().
+ * Mode is set via @c arts_add_dependence(); @c arts_db_downgrade() turns
+ * DB_MODE_RW into DB_MODE_RO and @c arts_db_release() clears the slot.
  * User EDTs typically read @c guid / @c ptr and ignore @c mode.
  */
 typedef struct {
@@ -961,24 +962,60 @@ static inline void *arts_db_create_with_guid(arts_guid_t guid, uint64_t len,
  * released) is a no-op.
  *
  * The call releases the calling EDT's hold on the block, whatever mode the
- * hold was acquired in.
+ * hold was acquired in; a hold arts_db_downgrade() turned into a read hold is
+ * released like any other.  It acts on the holds of the EDT running on the
+ * calling thread, including from functions its body calls on that thread,
+ * and does nothing on a thread that runs no EDT.
  *
  * @param guid GUID of the DataBlock to release.
  */
 void arts_db_release(arts_guid_t guid);
 
 /**
+ * @brief Give up the calling EDT's write access to a DataBlock and keep read
+ *        access to it.
+ *
+ * For a DataBlock the calling EDT holds for writing (a dependence in
+ * DB_MODE_RW, or its own create's hold), the writes made so far are
+ * published exactly as arts_db_release() publishes them: an EDT ordered after
+ * the call sees them when it acquires the block.  The EDT keeps reading the
+ * block: each depv slot that acquired it keeps its guid and ptr and reads
+ * DB_MODE_RO, and the pointer its create returned stays valid.  The EDT does
+ * not write the block afterwards.  While the read hold lasts, a read of a
+ * location that no EDT concurrent with the caller writes returns the last
+ * write to that location that happens-before the read: the caller's own,
+ * another EDT's write ordered before the read, or the value the location held
+ * when the caller acquired the block.  A read of a location such an EDT
+ * writes races, and its value is unspecified.
+ *
+ * The remaining read hold ends as any hold does: arts_db_release(),
+ * arts_db_destroy() by the same EDT, or the EDT's end.  A destroy by another
+ * EDT is ordered after that release.
+ *
+ * The call acts on the holds of the EDT running on the calling thread,
+ * including from functions its body calls on that thread, and does nothing
+ * on a thread that runs no EDT.  It is a release: it may block the worker as
+ * arts_db_release() may.  On a block held only for reading, no longer held,
+ * or not held, it does nothing.
+ *
+ * @param guid GUID of the DataBlock.
+ */
+void arts_db_downgrade(arts_guid_t guid);
+
+/**
  * @brief Destroy all copies of a DataBlock system-wide, from any rank.
  *
  * The program orders the destroy after the release of every hold that any
  * other EDT has on the block: RO and RW dependence holds and creator holds
- * alike, under every coherence protocol.  The calling EDT's own hold (its
- * create's auto-acquire or a dependence) is the exception: it is released
- * first, as by arts_db_release.  A hold released after the destroy is a
- * program error, and so is an acquire still pending when the destroy is
- * issued: the runtime need not serve it, and it may never complete.  A block
- * is destroyed once: a second destroy of it waits for a block of that GUID,
- * which never comes, and is a program error too.
+ * alike, a hold arts_db_downgrade() left included, under every coherence
+ * protocol.  The calling EDT's own hold (its create's auto-acquire or a
+ * dependence, downgraded or not) is the exception: it is released first, as
+ * by arts_db_release, which also says which EDT's holds the call finds.  A
+ * hold released after the destroy is a program error, and so is an acquire
+ * still pending when the destroy is issued: the runtime need not serve it,
+ * and it may never complete.  A block is destroyed once: a second destroy of
+ * it waits for a block of that GUID, which never comes, and is a program
+ * error too.
  *
  * The destroy is not acknowledged.  The block's home tears the block down and
  * tells every rank that caches it.  A release message sent before the destroy

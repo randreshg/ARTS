@@ -129,6 +129,9 @@ ARTS_THREAD_LOCAL int arts_local_gpu_id;
 #ifdef __cplusplus
 extern "C" {
 #endif
+/* Runs on thread 0 before it enters its loop, outside any EDT, so it creates
+ * no data block: every create runs inside an EDT, whose epilogue releases the
+ * creator's hold. */
 extern void arts_init_per_gpu(unsigned int node_id, int dev_id,
                               cudaStream_t *stream, int argc,
                               char **argv) ARTS_WEAK_IMPORT;

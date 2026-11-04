@@ -100,6 +100,14 @@ Its skeleton:
 * *happens-before* is the transitive closure of the two, and defines when a
   write must be visible to a read of the same DB.
 
+ARTS adds an entry OCR 1.2.0 does not have, ``arts_db_downgrade``: it turns
+an EDT's write hold on a DB into a read hold.  Its write half is a release,
+to which rules (1) and (3) apply: every store the EDT made to the DB before
+the call completes before the call does, and whatever acquires the DB
+ordered after the call sees those stores.  The EDT keeps reading the DB
+until the read hold is released; a location no EDT concurrent with it
+writes keeps the EDT's view meanwhile.
+
 Data races are **legal** under this contract. Racing writes have defined
 semantics; a racing read does not:
 
@@ -174,8 +182,9 @@ contract than OCR — *exclusive write acquisition*:
   creates the block without ``ARTS_DB_PROP_NO_ACQUIRE``. A program is
   DB-WRF-valid iff, for every DataBlock, every pair of its write
   acquisitions is ordered by happens-before — one is released (explicitly,
-  or by its EDT's completion) before the other begins. Read acquisitions
-  (RO, CONST) are unconstrained: they may overlap writes and each other.
+  by a downgrade, or by its EDT's completion) before the other begins.
+  Read acquisitions (RO, CONST) are unconstrained: they may overlap writes
+  and each other.
   Granularity is the whole DataBlock; writers to disjoint byte ranges of one
   block are still two write acquisitions. The property is
   placement-independent: where the EDTs run, and where the block is homed,
@@ -411,6 +420,19 @@ nothing pending sends nothing: the home stays a pure directory naming the
 holder (callback-locking style — it recalls the grant when another node
 asks), and a second local write turn costs no traffic.
 
+A downgraded hold is a reader of its node's write turn: the downgrade
+counts the EDT as a reader of the turn before its write release, and
+changes no phase at the home.  Under ``PURGE`` the turn therefore ends at
+the first instant after the downgrade at which the node holds nothing, a
+same-rank acquisition that arrives while any hold is live joins it, and
+another node's acquirers wait for that end.  Under ``RETAIN`` a same-rank
+acquisition joins the turn in the same way, and another node's readers are
+served from the resident copy as soon as no writer of the node is live
+(unless a writer was queued ahead of them); such a serve gives up the node's
+write permission, after which a writer of the node takes the turn back
+through the home while the read hold lasts, and the bytes stay resident,
+holding any migration, until the node holds nothing.
+
 .. _flush_protocol:
 
 FLUSH — fetch at acquire, flush at release (requires DB-WRF)
@@ -441,6 +463,10 @@ release writes back, unconditionally.
      - Nothing (writes were already in place)
      - PUT the copy into the home line, send the commit, block until the
        home's ACK, then drop the copy
+   * - Downgrade
+     - Nothing; the EDT goes on reading the line
+     - Write the copy back as a Release RW does, then keep it as the EDT's
+       read copy until the read hold is released
 
 No versions, no per-rank ledger, no header-only replies, no request
 combining, no write combining, no grant, and no counters that gate anything:

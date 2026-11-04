@@ -329,11 +329,14 @@ reference                    arts_shared_slot_load                load  slot    
 reference                    arts_db_buf_bump_inplace             load  version       -/1  -
 reference                    buf_publish                          load  version       -/1  -
 
-# Transitions of other events: releases, the request axes, invalidation, the
-# size round, destroy and the owed releases.
+# Transitions of other events: releases, a downgrade's join of the read
+# side, the request axes, invalidation, the size round, destroy and the owed
+# releases.
 EXCL.*.PURGE                 arts_db_release_ro                   load  cache_state   -/1  -
 EXCL.*.RETAIN                arts_db_release_ro                   load  cache_state   -/2  -
 EXCL.*.*                     arts_db_release_ro                   rmw   cache_state   -/1  -
+EXCL.*.*                     arts_db_join_read                    load  cache_state   -/1  -
+EXCL.*.*                     arts_db_join_read                    rmw   cache_state   -/1  -
 EXCL.*.*                     arts_db_release_rw                   load  cache_state   -/1  -
 EXCL.*.*                     arts_db_release_rw                   rmw   cache_state   -/1  -
 EXCL.*.*                     arts_handler_db_excl_cts             load  cache_state   -/2  -

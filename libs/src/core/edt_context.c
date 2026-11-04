@@ -53,18 +53,22 @@ arts_guid_t arts_current_group(void) {
 
 void arts_track_created_db(arts_shared_ptr_t h) {
   if (created_db_list.element_size == 0) {
-    arts_vector_init(&created_db_list, sizeof(arts_shared_ptr_t), 8);
+    arts_vector_init(&created_db_list, sizeof(struct arts_created_db_s), 8);
   }
-  arts_vector_push(&created_db_list, &h);
+  struct arts_created_db_s entry = {.db = h, .read = NULL, .read_only = false};
+  arts_vector_push(&created_db_list, &entry);
 }
 
-/* Frees a created-DB list's storage, dropping the ref of every entry still in
- * it.  Only a list whose holds were already released, or abandoned with their
- * task, reaches here with entries. */
+/* Frees a created-DB list's storage, dropping the refs of every entry still
+ * in it.  Only a list whose holds were already released, or abandoned with
+ * their task, reaches here with entries. */
 static void created_db_list_free(arts_vector_t *list) {
   uint64_t n = arts_vector_count(list);
   for (uint64_t i = 0; i < n; i++) {
-    arts_shared_release((arts_shared_ptr_t *)arts_vector_at(list, i));
+    struct arts_created_db_s *entry =
+        (struct arts_created_db_s *)arts_vector_at(list, i);
+    arts_shared_release(&entry->read);
+    arts_shared_release(&entry->db);
   }
   arts_vector_free(list);
 }

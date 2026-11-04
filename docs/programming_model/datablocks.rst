@@ -188,6 +188,37 @@ leading to its destroyer (below) — release explicitly:
 
    arts_db_release(db_guid);
 
+An EDT that holds a block for writing (an ``RW`` dependence or its create's
+hold) and only reads it from some point on can publish its writes there and
+keep reading: :c:func:`arts_db_downgrade` runs the hold's write release
+exactly as :c:func:`arts_db_release` would, and leaves the EDT a read hold.
+Each ``depv`` slot that acquired the block keeps its guid and ptr and reads
+``DB_MODE_RO``, and the pointer a create returned stays valid; the EDT does
+not write the block afterwards.  An EDT ordered after the call sees the
+writes when it acquires the block.  While the read hold lasts, a read of a
+location that no EDT concurrent with the caller writes returns the last
+write to that location that happens-before the read: the caller's own,
+another EDT's write ordered before the read, or the value the location held
+when the caller acquired the block; a read of a location such an EDT writes
+races, and its value is unspecified.  The read hold ends as any hold does,
+by :c:func:`arts_db_release`, by the EDT's own :c:func:`arts_db_destroy`, or
+at the EDT's end.  The call acts on the holds of the EDT running on the
+calling thread (from functions its body calls on that thread too), and,
+being a release, may block the worker as a release may:
+
+.. code-block:: c
+
+   int *p = (int *)depv[0].ptr;             /* acquired DB_MODE_RW */
+   fill(p);
+   arts_db_downgrade(depv[0].guid);         /* publish; slot now DB_MODE_RO */
+   arts_event_satisfy(ready, depv[0].guid); /* wake a reader */
+   use(p);                                  /* keep reading until the end */
+
+A downgraded hold is a hold like any other for the destroy rule below: a
+destroyer reached through the hand-off is ordered after the read hold's
+release, through the EDT's completion or an explicit release made before
+the satisfy that leads to it.
+
 :c:func:`arts_db_destroy` destroys all copies of a DB system-wide, from any
 rank, whether or not it holds a copy.  The program orders the destroy after
 the release of every hold that any other EDT has on the block: every ``RO``

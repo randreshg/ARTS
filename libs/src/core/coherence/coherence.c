@@ -1077,7 +1077,9 @@ void arts_db_release_ro(struct arts_db_cache_s *cache) {
    * drops: no protocol state counts readers. */
   (void)cache;
 }
-#endif /* arms whose RO release drops nothing but the EDT's own ref */
+
+void arts_db_join_read(struct arts_db_cache_s *cache) { (void)cache; }
+#endif /* arms whose read hold is nothing but the EDT's own ref */
 
 #if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
 /* ===== The declared-arrival rule (home side) ==========================

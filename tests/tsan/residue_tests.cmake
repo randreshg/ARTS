@@ -147,3 +147,13 @@ arts_tsan_residue(db_create_races_acquire_mixed
     CELLS VAL/WT/RETAIN VAL/WT/PURGE INV/WT/RETAIN INV/WT/PURGE SHAPES R2)
 arts_tsan_residue(db_create_races_acquire_mixed_fuzz
     CELLS VAL/WT/RETAIN VAL/WT/PURGE INV/WT/RETAIN INV/WT/PURGE SHAPES R2)
+# A downgrader on the home re-reads the range no writer writes while writers
+# on another rank, ordered after its hand-off, write the other range: each
+# write-through release and each FLUSH write-back lands its whole image in the
+# home's buffer in place, rewriting the downgrader's range with equal values
+# under its reads.
+arts_tsan_residue(db_downgrade_disjoint_remote
+    CELLS VAL/WT/RETAIN VAL/WT/PURGE INV/WT/RETAIN INV/WT/PURGE SHAPES R3
+    VARIANTS 2n_9w_1p 2n_8w_2p)
+arts_tsan_residue(db_downgrade_disjoint_remote
+    CELLS FLUSH SHAPES R5 VARIANTS 2n_9w_1p 2n_8w_2p)

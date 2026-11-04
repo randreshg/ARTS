@@ -1818,3 +1818,28 @@ void arts_db_release_ro(struct arts_db_cache_s *cache) {
     lock_send_release_ro(cache);
   }
 }
+
+/* The caller's write hold is counted in wc under rws == GRANT, so the reader
+ * joins the open turn (SELF_SERVE): the turn then ends only when rc falls to
+ * zero too, and no grant can land in this rank's stable buffer meanwhile.
+ * Any other answer means the caller holds no write turn here. */
+void arts_db_join_read(struct arts_db_cache_s *cache) {
+  uint32_t act;
+  uint64_t cur, next;
+  do {
+    cur = atomic_load_explicit(&cache->cache_state, memory_order_acquire);
+    next = cache_compute_next(cur, CACHE_OP_ACQ_RO, &act);
+    if (act == CACHE_ACT_LATE) {
+      ARTS_ERROR("lock: guid %lu has more read acquires counted on one rank "
+                 "than its cache word can hold (word=%llx)",
+                 (unsigned long)cache->db_guid, (unsigned long long)cur);
+    }
+    if (act != CACHE_ACT_SELF_SERVE) {
+      ARTS_ERROR("lock: guid %lu: a downgrade found no write turn of its own "
+                 "on this rank (word=%llx)",
+                 (unsigned long)cache->db_guid, (unsigned long long)cur);
+    }
+  } while (!atomic_compare_exchange_weak_explicit(&cache->cache_state, &cur,
+                                                  next, memory_order_acq_rel,
+                                                  memory_order_acquire));
+}

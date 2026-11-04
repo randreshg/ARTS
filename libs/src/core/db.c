@@ -130,12 +130,10 @@ void *arts_db_user_ptr(struct arts_db_s *db) {
  * hands it off via events.
  *
  * In both cases the descriptor's handle `h` (its ref moves in) is recorded on
- * the creating THREAD's created-DB list, and whoever drains that list drives
- * the matching release: the EDT epilogue for a task, or the thread's own
- * scheduler entry for a startup hook, which runs before any task on that
- * thread.  The list is thread-local and the release chain needs no task
- * context, so a create outside a task is tracked exactly like one inside it —
- * the alternative leaves the hold stamped and nothing owning its release.
+ * the creating thread's created-DB list.  Every create runs inside an EDT, so
+ * the entry is that EDT's hold: an explicit release, its own destroy or a
+ * downgrade acts on it mid-body, and the EDT's epilogue releases what is
+ * still there.
  */
 static void arts_db_auto_acquire(arts_shared_ptr_t h) {
   arts_track_created_db(h);
@@ -1961,38 +1959,106 @@ void arts_release_dbs(struct arts_edt_s *edt, bool gpu) {
 }
 
 /*
- * release_one_created — Release a single created DB through the descriptor
- * handle its create recorded, and return that handle for the caller to
- * release or keep.
+ * release_one_created — Release a single created DB's hold through the
+ * descriptor handle its create recorded, and return that handle for the
+ * caller to release or keep.
  *
  * No route lookup: the creator's hold is on the descriptor its create built,
  * which the route slot may not hold yet (a parked create).  For ARTS_DB the
- * creator's hold
- * is the arm's own state, seeded at ARTS_DB_INIT_CREATOR_HOME /
- * ARTS_DB_INIT_CREATOR_REMOTE and released through the arm's own entry point
- * with NO buffer ref to drop (auto_acquire never called acquire_buf).  The
- * creator of a GPU kind (ARTS_DB_GPU_PIN, ARTS_DB_GPU) holds nothing to
- * release: no coherence hold, and no side of a GPU staging lock, which only
- * arts_prep_dbs takes.
+ * creator's write hold is the arm's own state, seeded at
+ * ARTS_DB_INIT_CREATOR_HOME / ARTS_DB_INIT_CREATOR_REMOTE and released through
+ * the arm's create-hold entry point with no buffer ref to drop; a downgraded
+ * hold is a read hold, released as an RO acquisition is, and then drops the
+ * buffer ref the downgrade took.  The creator of a GPU kind (ARTS_DB_GPU_PIN,
+ * ARTS_DB_GPU) holds nothing to release: no coherence hold, and no side of a
+ * GPU staging lock, which only arts_prep_dbs takes.
  */
-static arts_shared_ptr_t release_one_created(arts_shared_ptr_t h) {
-  struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(h);
+static arts_shared_ptr_t release_one_created(struct arts_created_db_s *entry) {
+  struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(entry->db);
   if (db->db_type == ARTS_DB) {
-    /* Coherent creator release.  No buffer ref to drop (the hold is the seed
-     * arts_db_cache_init stamped on the cache).  The arm's create-hold entry
-     * point runs it: the creating EDT's bytes are wherever that arm put them
-     * when the block was made, which is not something a dependence's pointer
-     * could name.  The coherent creator hold is always RW. */
-    arts_db_release_created(&db->cache);
+    if (entry->read_only) {
+      arts_db_release_ro(&db->cache);
+      /* The buffer ref before the handle, as a dependence drops its buffer
+       * ref before its pin. */
+      arts_db_buf_release(&entry->read);
+    } else {
+      /* The creating EDT's bytes are wherever the arm put them when the block
+       * was made, which is not something a dependence's pointer could name. */
+      arts_db_release_created(&db->cache);
+    }
   }
-  return h;
+  return entry->db;
+}
+
+/* Index of the created-list entry naming `guid`, scanned from the back
+ * because the common shape is create-then-release; the list's count when
+ * none does.  An entry is removed when its hold is released, so the list
+ * holds what is still held and a search that finds nothing costs only that. */
+static uint64_t db_created_index(arts_vector_t *list, arts_guid_t guid) {
+  uint64_t count = arts_vector_count(list);
+  for (uint64_t i = count; i > 0; i--) {
+    struct arts_created_db_s *entry =
+        (struct arts_created_db_s *)arts_vector_at(list, i - 1);
+    if (((struct arts_db_s *)arts_shared_get(entry->db))->cache.db_guid ==
+        guid) {
+      return i - 1;
+    }
+  }
+  return count;
+}
+
+/*
+ * db_dep_owner — The slot of `edt`'s dependence vector that owns its
+ * acquisition of `guid`, or depc when none does.
+ *
+ * An EDT acquires each distinct block once and every other slot naming it is
+ * an alias on that one acquisition, so a block has exactly ONE non-alias slot
+ * in a dependence vector, and a mid-body operation on the EDT's hold acts on
+ * that slot.  Acting on an alias instead would release or downgrade nothing —
+ * an alias carries no coherence hold — and leave the acquisition as it was
+ * until the epilogue, exposing the block (a satisfy later in the same body)
+ * before the release that carries the bytes home has run.
+ *
+ * Whether a slot names DB_MODE_RO or DB_MODE_RW therefore picks nothing
+ * among the slots that SHARE the block's acquisition: the owner's acquisition
+ * is the strongest mode the EDT asked for and is the only one there is.  A
+ * device-side internal mode is not part of that acquisition and is not
+ * classified, so it is never the owner while a coherent slot names the same
+ * block: the search takes the first RO/RW slot and falls back to an
+ * unclassified one only when the block has no coherent acquisition here.
+ * Releasing the internal-mode slot first would retire the acquisition's
+ * aliases while the acquisition itself stayed held, so the bytes would reach
+ * the home later than the program asked.
+ */
+static uint32_t db_dep_owner(const struct arts_edt_s *edt,
+                             const arts_edt_dep_t *depv, arts_guid_t guid) {
+  uint32_t depc = edt->depc;
+  /* A slot may carry a GUID of another kind, or none, in a mode it never
+   * acquired: such a slot holds nothing. */
+  if (arts_guid_get_kind(guid) != ARTS_GUID_DB) {
+    return depc;
+  }
+  uint32_t unclassified = depc;
+  for (uint32_t i = 0; i < depc; i++) {
+    if (depv[i].guid != guid || depv[i].mode == DB_MODE_NULL ||
+        edt->dep_acq[i].alias) {
+      continue;
+    }
+    if (depv[i].mode == DB_MODE_RO || depv[i].mode == DB_MODE_RW) {
+      return i;
+    }
+    if (unclassified == depc) {
+      unclassified = i;
+    }
+  }
+  return unclassified;
 }
 
 /*
  * db_release_hold — Release the calling EDT's hold on a single DB mid-EDT.
  *
- * Two search paths:
- *   1. created_db_list — DBs the current EDT created (held RW from the create).
+ * Two search paths, in this order (arts_db_downgrade searches the same way):
+ *   1. created_db_list — DBs the current EDT created (held from the create).
  *   2. depv — DBs received as dependencies (RW or RO mode).
  *
  * Both paths funnel through release_one_dep / release_one_created so the
@@ -2004,67 +2070,27 @@ static arts_shared_ptr_t release_one_created(arts_shared_ptr_t h) {
  * NULL when the EDT held nothing.
  */
 static arts_shared_ptr_t db_release_hold(arts_guid_t guid) {
-  /* Path 1: created_db_list (DBs this EDT created).  Scanned from the back
-   * because the common shape is create-then-release, and REMOVED on a match
-   * rather than blanked: the list has to track what is still HELD, not what was
-   * ever created, or a release that finds nothing walks every entry the EDT
-   * ever made and d releases cost d^2. */
+  /* Path 1: an entry is REMOVED on a match rather than blanked, so the list
+   * tracks what is still held (db_created_index). */
   arts_vector_t *list = arts_get_created_db_list();
-  uint64_t count = arts_vector_count(list);
-  for (uint64_t i = count; i > 0; i--) {
-    arts_shared_ptr_t h = *(arts_shared_ptr_t *)arts_vector_at(list, i - 1);
-    if (((struct arts_db_s *)arts_shared_get(h))->cache.db_guid == guid) {
-      arts_vector_swap_remove(list, i - 1);
-      return release_one_created(h);
-    }
+  uint64_t c = db_created_index(list, guid);
+  if (c < arts_vector_count(list)) {
+    struct arts_created_db_s entry =
+        *(struct arts_created_db_s *)arts_vector_at(list, c);
+    arts_vector_swap_remove(list, c);
+    return release_one_created(&entry);
   }
 
-  /* Path 2: depv (dependency-acquired DBs).
-   *
-   * An EDT acquires each distinct block once and every other slot naming it is
-   * an alias on that one acquisition, so a block has exactly ONE non-alias slot
-   * in a dependence vector and that slot is what this call releases.  Releasing
-   * an alias instead would release nothing — an alias carries no coherence hold
-   * — and leave the acquisition held until the epilogue, exposing the block (a
-   * satisfy later in the same body) before the release that carries the bytes
-   * home has run.  The aliases retire with the owner: each still drops its own
-   * buffer ref and pin exactly once, and the epilogue then skips every slot
-   * naming the block.
-   *
-   * Whether a slot names DB_MODE_RO or DB_MODE_RW therefore picks nothing
-   * among the slots that SHARE the block's acquisition: the owner's acquisition
-   * is the strongest mode the EDT asked for and is the only one there is.  A
-   * device-side internal mode is not part of that acquisition and is not
-   * classified, so it is never the owner while a coherent slot names the same
-   * block: the search takes the first RO/RW slot and falls back to an
-   * unclassified one only when the block has no coherent acquisition here.
-   * Releasing the internal-mode slot first would retire the acquisition's
-   * aliases while the acquisition itself stayed held, so the bytes would reach
-   * the home later than the program asked. */
+  /* Path 2: the owner slot, then every alias of it.  The aliases retire with
+   * the owner: each still drops its own buffer ref and pin exactly once, and
+   * the epilogue then skips every slot naming the block. */
   if (!arts_current_edt) {
     return NULL;
   }
   struct arts_edt_s *edt = arts_current_edt;
   arts_edt_dep_t *depv = (arts_edt_dep_t *)arts_get_depv(edt);
   uint32_t depc = edt->depc;
-  uint32_t owner = depc;
-  uint32_t unclassified = depc;
-  for (uint32_t i = 0; i < depc; i++) {
-    if (depv[i].guid != guid || depv[i].mode == DB_MODE_NULL ||
-        edt->dep_acq[i].alias) {
-      continue;
-    }
-    if (depv[i].mode == DB_MODE_RO || depv[i].mode == DB_MODE_RW) {
-      owner = i;
-      break;
-    }
-    if (unclassified == depc) {
-      unclassified = i;
-    }
-  }
-  if (owner == depc) {
-    owner = unclassified;
-  }
+  uint32_t owner = db_dep_owner(edt, depv, guid);
   if (owner == depc) {
     return NULL;
   }
@@ -2100,6 +2126,72 @@ void arts_db_release(arts_guid_t guid) {
 }
 
 /*
+ * arts_db_downgrade — turn the calling EDT's write hold on one DB into a read
+ * hold: the hold's write release runs exactly as arts_db_release would run
+ * it, and what remains is the read hold an RO acquisition on this rank would
+ * have.  The hold is found as db_release_hold finds it.  Per hold, in order:
+ *
+ *   1. The read hold's storage.  A dependence slot already holds a buffer ref
+ *      and a descriptor pin, which it keeps.  A creator hold has no buffer
+ *      ref, so it takes one first: the write release may be what lets the
+ *      creator's buffer go (an arm that writes a copy back and empties the
+ *      slot, or an install that replaces it), and under the creator's own
+ *      write hold the installed buffer is the one its pointer names.
+ *   2. The join (arts_db_join_read), on an arm that counts readers: before the
+ *      write release, whose zero edge would otherwise end the rank's turn
+ *      and let the next grant land in place under the reader.
+ *   3. The arm's write release, unchanged.
+ *   4. The record: every slot that named the block in DB_MODE_RW reads
+ *      DB_MODE_RO, or the created entry is marked read-only.  Only the
+ *      running EDT's thread reads or writes either once the EDT runs.
+ *
+ * The record gates the write release, so a second call finds a read hold and
+ * does nothing.  A GPU kind carries no DB-level coherence: its slot is only
+ * rewritten, and its created hold left as it is.
+ */
+void arts_db_downgrade(arts_guid_t guid) {
+  arts_vector_t *list = arts_get_created_db_list();
+  uint64_t c = db_created_index(list, guid);
+  if (c < arts_vector_count(list)) {
+    struct arts_created_db_s *entry =
+        (struct arts_created_db_s *)arts_vector_at(list, c);
+    struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(entry->db);
+    if (entry->read_only || db->db_type != ARTS_DB) {
+      return;
+    }
+    /* Nothing below adds to or removes from this thread's list, so `entry`
+     * stays valid across the release. */
+    entry->read = arts_db_buf_acquire(&db->cache);
+    arts_db_join_read(&db->cache);
+    arts_db_release_created(&db->cache);
+    entry->read_only = true;
+    return;
+  }
+
+  struct arts_edt_s *edt = arts_current_edt;
+  if (!edt) {
+    return;
+  }
+  arts_edt_dep_t *depv = (arts_edt_dep_t *)arts_get_depv(edt);
+  uint32_t depc = edt->depc;
+  uint32_t owner = db_dep_owner(edt, depv, guid);
+  if (owner == depc || depv[owner].mode != DB_MODE_RW) {
+    return;
+  }
+  if (edt->dep_acq[owner].subtype == ARTS_DB) {
+    struct arts_db_s *db =
+        (struct arts_db_s *)arts_shared_get(dep_release_pin(edt, owner));
+    arts_db_join_read(&db->cache);
+    arts_db_release_rw(&db->cache, depv[owner].ptr);
+  }
+  for (uint32_t i = 0; i < depc; i++) {
+    if (depv[i].guid == guid && depv[i].mode == DB_MODE_RW) {
+      depv[i].mode = DB_MODE_RO;
+    }
+  }
+}
+
+/*
  * arts_release_created_dbs — EDT epilogue helper: release every entry in
  * the thread-local created_db_list that hasn't already been explicitly
  * released by arts_db_release.
@@ -2108,15 +2200,17 @@ void arts_release_created_dbs(void) {
   /* Epilogue: whatever is still on the list was never released.  Drain from
    * the back so each removal is the cheap case and the walk stays linear.
    * The trip count is taken ONCE: a release must not grow this list, and a
-   * bounded loop turns that contract violation into a leftover entry the
-   * next EDT's start reports, rather than a livelock here. */
+   * bounded loop turns that contract violation into a leftover entry, which
+   * a Debug build reports when the next EDT starts, rather than a livelock
+   * here. */
   arts_vector_t *list = arts_get_created_db_list();
   for (uint64_t remaining = arts_vector_count(list); remaining > 0;
        remaining--) {
     uint64_t last = arts_vector_count(list) - 1;
-    arts_shared_ptr_t h = *(arts_shared_ptr_t *)arts_vector_at(list, last);
+    struct arts_created_db_s entry =
+        *(struct arts_created_db_s *)arts_vector_at(list, last);
     arts_vector_swap_remove(list, last);
-    h = release_one_created(h);
+    arts_shared_ptr_t h = release_one_created(&entry);
     arts_shared_release(&h);
   }
 }

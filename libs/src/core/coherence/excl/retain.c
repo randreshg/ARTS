@@ -1589,6 +1589,34 @@ void arts_db_release_ro(struct arts_db_cache_s *cache) {
   }
 }
 
+/* The caller's write hold is counted in wc under rws == GRANT (a demote needs
+ * no live granted writer, so none can have run), so the reader joins the held
+ * grant (SELF_SERVE) and ro_st is left alone: from here the migration gate
+ * sees rc > 0, so the bytes stay resident until rc falls to zero; the read
+ * serve, which admits readers, can demote the write permission as soon as no
+ * granted writer is live.  Any other answer means the caller holds no write
+ * grant here. */
+void arts_db_join_read(struct arts_db_cache_s *cache) {
+  uint32_t act;
+  uint64_t cur, next;
+  do {
+    cur = atomic_load_explicit(&cache->cache_state, memory_order_acquire);
+    next = cache_owner_compute_next(cur, CACHE_OP_ACQ_RO, &act);
+    if (act == CACHE_ACT_LATE) {
+      ARTS_ERROR("lock: guid %lu has more read acquires counted on one rank "
+                 "than its cache word can hold (word=%llx)",
+                 (unsigned long)cache->db_guid, (unsigned long long)cur);
+    }
+    if (act != CACHE_ACT_SELF_SERVE) {
+      ARTS_ERROR("lock: guid %lu: a downgrade found no write grant of its own "
+                 "on this rank (word=%llx)",
+                 (unsigned long)cache->db_guid, (unsigned long long)cur);
+    }
+  } while (!atomic_compare_exchange_weak_explicit(&cache->cache_state, &cur,
+                                                  next, memory_order_acq_rel,
+                                                  memory_order_acquire));
+}
+
 /* The cover gate (arts/coherence/cover_gate.h).  A destroy marks it and
  * tears the home down when nothing is owed; otherwise the last owed request's
  * arrival does.  No release here owes the home anything it must wait for: the
