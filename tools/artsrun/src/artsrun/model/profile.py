@@ -283,7 +283,7 @@ class Profile(BaseModel):
             if self.ports:
                 raise ValueError(
                     "ports must not be set for launcher=local: the ranks share a "
-                    "machine, so the spawning rank finds a free block itself"
+                    "machine, so the spawner finds a free block itself"
                 )
         else:
             if not self.ports:

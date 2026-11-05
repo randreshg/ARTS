@@ -39,6 +39,8 @@
 #ifndef ARTS_SYSTEM_PRINT_H
 #define ARTS_SYSTEM_PRINT_H
 
+#include <errno.h>
+#include <poll.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <unistd.h>
@@ -52,21 +54,46 @@ extern "C" {
 
 /*--- One-line stderr output (used by all logging macros) ----------------------
  *
- * Formats into a stack buffer and writes with a single write() syscall so that
- * output from concurrent threads does not interleave.
+ * Formats into a stack buffer and writes it with one write() when stderr
+ * takes it, so that output from concurrent threads does not interleave (a
+ * line of at most PIPE_BUF bytes reaches a pipe whole).  Leaves errno as it
+ * found it.  It may wait, without bound, until stderr takes the line; a path
+ * that must end within a bound writes once with write() instead, or acts
+ * before it prints.
  *---------------------------------------------------------------------------*/
 
+/* Writes every byte.  The description behind `fd` may be shared with another
+ * process that made it non-blocking (an ssh client does so with the stdout
+ * and stderr it inherits); a write it refuses for now is retried once the
+ * descriptor can take it, so no line is dropped. */
+static inline void arts_write_all(int fd, const char *bytes, size_t length) {
+  while (length > 0) {
+    const ssize_t written = write(fd, bytes, length);
+    if (written > 0) {
+      bytes += written;
+      length -= (size_t)written;
+    } else if (written < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+      struct pollfd writable = {fd, POLLOUT, 0};
+      (void)poll(&writable, 1, -1);
+    } else if (!(written < 0 && errno == EINTR)) {
+      return;
+    }
+  }
+}
+
 static inline void arts_print_line(const char *format, ...) {
+  const int given_errno = errno;
   char buffer[4096];
   va_list args;
   va_start(args, format);
   int len = vsnprintf(buffer, sizeof(buffer), format, args);
   va_end(args);
-  if (len > 0 && len < (int)sizeof(buffer)) {
-    write(STDERR_FILENO, buffer, (size_t)len);
-  } else if (len >= (int)sizeof(buffer)) {
-    write(STDERR_FILENO, buffer, sizeof(buffer) - 1);
+  if (len > 0) {
+    arts_write_all(STDERR_FILENO, buffer,
+                   len < (int)sizeof(buffer) ? (size_t)len
+                                             : sizeof(buffer) - 1);
   }
+  errno = given_errno;
 }
 
 /*--- Log Level Macros --------------------------------------------------------

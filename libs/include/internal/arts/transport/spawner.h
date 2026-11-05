@@ -53,13 +53,19 @@ unsigned int arts_end_grace_s(void);
 
 /* Starts the run's ranks 0..table_length-1 as children of this process, which
  * becomes no rank: a local run execs this program again, an ssh run starts
- * each rank through an ssh client.  It forwards SIGINT, SIGTERM, SIGHUP and
- * SIGALRM to every rank still running, reaps every rank, kills those still
- * running the end grace after the first one ended, and ends the process with
- * the highest status a rank ended with (128 + the signal for a rank a signal
- * ended; 127 for a rank whose exec failed), or 75 when a fork failed.  Called
- * before any thread of the process exists, and only by the process that no
- * launcher gave a rank. */
+ * each rank through an ssh client whose input is a pipe from this process,
+ * and the remote rank lives until that input ends (this process or the
+ * client gone).  It forwards SIGINT, SIGTERM, SIGHUP and SIGALRM to every
+ * rank still running (under ssh as the signal's name on that pipe; the
+ * clients ignore SIGHUP, SIGINT, SIGQUIT, SIGTERM and SIGALRM, so a signal
+ * sent to the process group reaches an ssh rank only through this process),
+ * reaps every rank (the ssh client under ssh), kills those still running the
+ * end grace after the first one ended, puts back the status flags of its
+ * stdout and stderr, and ends the process with the highest status a rank
+ * ended with (128 + the signal for a rank a signal ended; 127 for a rank
+ * whose exec failed), or 75 when a fork, or under ssh a rank's pipe, failed.
+ * Called before any thread of the process exists, and only by the process
+ * that no launcher gave a rank. */
 _Noreturn void arts_spawn(struct arts_config_s *config, int argc, char **argv);
 
 #ifdef __cplusplus

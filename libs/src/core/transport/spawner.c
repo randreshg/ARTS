@@ -42,9 +42,9 @@
 #include "arts/transport/spawner.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <limits.h>
 #include <signal.h>
-#include <stdarg.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -99,84 +99,166 @@ static int arts_shell_quote(const char *input, char *output,
   return 0;
 }
 
-/* Saturating formatted append into a fixed-size buffer.
- *
- * `length` is the number of bytes already written (excluding the terminator)
- * and is updated in place to the new written length, always clamped to
- * `buf_size - 1` so the buffer stays null-terminatable at `buf[length]`.
- *
- * snprintf returns the length it WOULD have written had the buffer been
- * unbounded, which can exceed the space that remains.  Accumulating that raw
- * return value lets `length` run past `buf_size`, after which the remaining
- * size `buf_size - length` underflows and a later `buf[length]` indexes out of
- * bounds.  Guarding the remaining size against underflow and clamping the
- * running length keeps every write — including the terminating one — in
- * bounds even when the composed string is truncated. */
-static void arts_cmd_appendf(char *buf, size_t buf_size, size_t *length,
-                             const char *fmt, ...) {
-  if (buf_size == 0 || *length >= buf_size) {
-    if (buf_size != 0) {
-      *length = buf_size - 1;
-    }
+#if ARTS_LOG_LEVEL >= 3
+#define ARTS_SPAWNER_DEBUG(format, ...)                                        \
+  arts_print_line(ARTS_CLR_DIM                                                 \
+                  "[ARTS] [DEBUG] spawner: " format ARTS_CLR_RESET "\n",       \
+                  ##__VA_ARGS__)
+#else
+#define ARTS_SPAWNER_DEBUG(...) ((void)0)
+#endif
+
+/* A command line under construction: `length` bytes and a terminator in the
+ * `capacity` bytes of `text`. */
+struct arts_cmd_s {
+  char *text;
+  size_t length;
+  size_t capacity;
+};
+
+static void arts_cmd_reserve(struct arts_cmd_s *cmd, size_t more) {
+  if (cmd->length + more < cmd->capacity) {
     return;
   }
-
-  size_t remaining = buf_size - *length;
-  va_list args;
-  va_start(args, fmt);
-  int written = vsnprintf(buf + *length, remaining, fmt, args);
-  va_end(args);
-
-  if (written < 0) {
-    return;
+  size_t capacity = cmd->capacity != 0 ? cmd->capacity : 256;
+  while (capacity <= cmd->length + more) {
+    capacity *= 2;
   }
-  if ((size_t)written >= remaining) {
-    /* Truncated: the buffer is now full up to its last writable byte. */
-    *length = buf_size - 1;
-  } else {
-    *length += (size_t)written;
-  }
+  cmd->text = arts_realloc(cmd->text, capacity);
+  cmd->capacity = capacity;
 }
 
-/* The shell command that starts `rank` on its host, `sh -c <quoted>`: it
- * changes to this process's working directory and runs this program by
- * absolute path with an absolute ARTS_CONFIG, the caller's LD_LIBRARY_PATH,
- * ARTS_RANK and this process's arguments.  False when it does not fit. */
-static bool arts_ssh_command(unsigned int rank, int argc, char **argv,
-                             const char *self_exe, const char *cwd,
-                             const char *config_abs, char *wrapped,
-                             size_t wrapped_size) {
-  char command[4096];
-  char quoted[(sizeof(command) * 6) + 8];
-  size_t length = 0;
+static void arts_cmd_put(struct arts_cmd_s *cmd, const char *text,
+                         size_t length) {
+  arts_cmd_reserve(cmd, length);
+  memcpy(cmd->text + cmd->length, text, length);
+  cmd->length += length;
+  cmd->text[cmd->length] = '\0';
+}
 
-  arts_cmd_appendf(command, sizeof(command), &length, "cd %s && ", cwd);
-  arts_cmd_appendf(command, sizeof(command), &length, "ARTS_CONFIG=%s ",
-                   config_abs);
-  const char *ld_library_path = getenv("LD_LIBRARY_PATH");
-  if (ld_library_path) {
-    arts_cmd_appendf(command, sizeof(command), &length, "LD_LIBRARY_PATH=%s ",
-                     ld_library_path);
-  }
-  arts_cmd_appendf(command, sizeof(command), &length, "ARTS_RANK=%u ", rank);
-  if (self_exe[0] != '\0') {
-    arts_cmd_appendf(command, sizeof(command), &length, "%s", self_exe);
-    for (int j = 1; j < argc; j++) {
-      arts_cmd_appendf(command, sizeof(command), &length, " %s", argv[j]);
-    }
-  } else {
-    for (int j = 0; j < argc; j++) {
-      arts_cmd_appendf(command, sizeof(command), &length, " %s", argv[j]);
-    }
-  }
-  command[length] = '\0';
-  ARTS_DEBUG("SSH command[%u]: %s", rank, command);
+static void arts_cmd_puts(struct arts_cmd_s *cmd, const char *text) {
+  arts_cmd_put(cmd, text, strlen(text));
+}
 
-  if (arts_shell_quote(command, quoted, sizeof(quoted)) != 0) {
+/* Appends `value` as one shell word, whatever bytes it holds. */
+static void arts_cmd_put_word(struct arts_cmd_s *cmd, const char *value) {
+  const size_t room = (5 * strlen(value)) + 3;
+  arts_cmd_reserve(cmd, room);
+  (void)arts_shell_quote(value, cmd->text + cmd->length, room);
+  cmd->length += strlen(cmd->text + cmd->length);
+}
+
+/* Whether a rank started through ssh is handed this variable: every ARTS_
+ * variable and every variable named after a configuration key.  The name is
+ * written unquoted, so only one of letters, digits and underscores qualifies;
+ * the runtime reads no other.  ARTS_CONFIG is handed on made absolute. */
+static bool arts_ssh_hands_on(const char *name, size_t name_length,
+                              const char *const *keys, size_t key_count) {
+  for (size_t j = 0; j < name_length; j++) {
+    const char c = name[j];
+    if (!(c == '_' || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+          (j > 0 && c >= '0' && c <= '9'))) {
+      return false;
+    }
+  }
+  if (name_length == 11 && strncmp(name, "ARTS_CONFIG", 11) == 0) {
     return false;
   }
-  int n = snprintf(wrapped, wrapped_size, "sh -c %s", quoted);
-  return n >= 0 && (size_t)n < wrapped_size;
+  if (name_length >= 5 && strncmp(name, "ARTS_", 5) == 0) {
+    return true;
+  }
+  for (size_t k = 0; k < key_count; k++) {
+    if (strlen(keys[k]) == name_length &&
+        strncmp(keys[k], name, name_length) == 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/* The session wrapper around the working directory and the rank's command.
+ * The rank runs with the session's input closed; a reader takes each signal
+ * name from that input (fd 3) and sends the signal to the rank, and at the
+ * input's end-of-file (this process or its ssh client gone) kills it.  The
+ * wrapper exits with the rank's status, which ssh relays. */
+static const char arts_ssh_wrapper_start[] =
+    " || exit 127; exec 3<&0 </dev/null; ";
+static const char arts_ssh_wrapper_watch[] =
+    " 3<&- & p=$!; ( while read -r s <&3; do kill -s \"$s\" \"$p\" "
+    "2>/dev/null; done; kill -s KILL \"$p\" 2>/dev/null ) & w=$!; "
+    "wait \"$p\"; rc=$?; kill \"$w\" 2>/dev/null; exit \"$rc\"";
+
+/* The command a login shell on `rank`'s host runs, `sh -c <wrapper>`: the
+ * wrapper changes to `cwd` and runs `exe` with this process's arguments after
+ * the first, its environment extended by assignments that hand the rank the
+ * variables arts_ssh_hands_on names, ARTS_CONFIG made absolute against `cwd`,
+ * ARTS_RANK and LD_LIBRARY_PATH when set.  Every value is one quoted word, so
+ * no word after the assignments is taken for one.  The caller frees the
+ * result. */
+static char *arts_ssh_command(unsigned int rank, int argc, char **argv,
+                              const char *exe, const char *cwd) {
+  struct arts_cmd_s run = {NULL, 0, 0};
+  size_t key_count = 0;
+  const char *const *keys = arts_config_key_names(&key_count);
+  for (char **entry = environ; *entry != NULL; entry++) {
+    const char *equals = strchr(*entry, '=');
+    if (equals == NULL) {
+      continue;
+    }
+    const size_t name_length = (size_t)(equals - *entry);
+    if (!arts_ssh_hands_on(*entry, name_length, keys, key_count)) {
+      continue;
+    }
+    arts_cmd_put(&run, *entry, name_length + 1);
+    arts_cmd_put_word(&run, equals + 1);
+    arts_cmd_puts(&run, " ");
+  }
+
+  /* A remote rank must not depend on its working directory to find the
+   * configuration. */
+  const char *config = getenv("ARTS_CONFIG");
+  if (config == NULL || config[0] == '\0') {
+    config = "arts.cfg";
+  }
+  struct arts_cmd_s config_path = {NULL, 0, 0};
+  if (config[0] != '/') {
+    arts_cmd_puts(&config_path, cwd);
+    arts_cmd_puts(&config_path, "/");
+  }
+  arts_cmd_puts(&config_path, config);
+  arts_cmd_puts(&run, "ARTS_CONFIG=");
+  arts_cmd_put_word(&run, config_path.text);
+  arts_free(config_path.text);
+
+  char rank_text[24];
+  (void)snprintf(rank_text, sizeof(rank_text), " ARTS_RANK=%u ", rank);
+  arts_cmd_puts(&run, rank_text);
+  const char *library_path = getenv("LD_LIBRARY_PATH");
+  if (library_path != NULL) {
+    arts_cmd_puts(&run, "LD_LIBRARY_PATH=");
+    arts_cmd_put_word(&run, library_path);
+    arts_cmd_puts(&run, " ");
+  }
+  arts_cmd_put_word(&run, exe);
+  for (int j = 1; j < argc; j++) {
+    arts_cmd_puts(&run, " ");
+    arts_cmd_put_word(&run, argv[j]);
+  }
+
+  struct arts_cmd_s wrapper = {NULL, 0, 0};
+  arts_cmd_puts(&wrapper, "cd ");
+  arts_cmd_put_word(&wrapper, cwd);
+  arts_cmd_puts(&wrapper, arts_ssh_wrapper_start);
+  arts_cmd_put(&wrapper, run.text, run.length);
+  arts_cmd_puts(&wrapper, arts_ssh_wrapper_watch);
+  arts_free(run.text);
+  ARTS_SPAWNER_DEBUG("ssh command for rank %u: %s", rank, wrapper.text);
+
+  struct arts_cmd_s command = {NULL, 0, 0};
+  arts_cmd_puts(&command, "sh -c ");
+  arts_cmd_put_word(&command, wrapper.text);
+  arts_free(wrapper.text);
+  return command.text;
 }
 
 /* A whole number of seconds in 1-86400: decimal digits only. */
@@ -257,15 +339,6 @@ static const char *arts_spawner_signal_name(int sig) {
   return "?";
 }
 
-#if ARTS_LOG_LEVEL >= 3
-#define ARTS_SPAWNER_DEBUG(format, ...)                                        \
-  arts_print_line(ARTS_CLR_DIM                                                 \
-                  "[ARTS] [DEBUG] spawner: " format ARTS_CLR_RESET "\n",       \
-                  ##__VA_ARGS__)
-#else
-#define ARTS_SPAWNER_DEBUG(...) ((void)0)
-#endif
-
 static struct timespec arts_spawner_now(void) {
   struct timespec now;
   (void)clock_gettime(CLOCK_MONOTONIC, &now);
@@ -276,6 +349,17 @@ static bool arts_spawner_reached(const struct timespec *now,
                                  const struct timespec *deadline) {
   return now->tv_sec > deadline->tv_sec ||
          (now->tv_sec == deadline->tv_sec && now->tv_nsec >= deadline->tv_nsec);
+}
+
+/* Puts back the status flags this process was given on its stdout and stderr
+ * (-1: none read).  An ssh client that shares them makes them non-blocking
+ * while it runs, and leaves them so when it is killed. */
+static void arts_spawner_restore_flags(const int given[2]) {
+  for (int fd = STDOUT_FILENO; fd <= STDERR_FILENO; fd++) {
+    if (given[fd - STDOUT_FILENO] >= 0) {
+      (void)fcntl(fd, F_SETFL, given[fd - STDOUT_FILENO]);
+    }
+  }
 }
 
 _Noreturn void arts_spawn(struct arts_config_s *config, int argc, char **argv) {
@@ -289,29 +373,19 @@ _Noreturn void arts_spawn(struct arts_config_s *config, int argc, char **argv) {
     self_exe[self_len] = '\0';
   } else if (!ssh) {
     ARTS_ERROR("spawner: readlink(/proc/self/exe) failed: %s", strerror(errno));
-  } else if (argc > 0 && argv[0] != NULL) {
+  } else if (argc > 0 && argv[0] != NULL && argv[0][0] != '\0') {
     strncpy(self_exe, argv[0], sizeof(self_exe) - 1);
     self_exe[sizeof(self_exe) - 1] = '\0';
   } else {
-    self_exe[0] = '\0';
+    ARTS_ERROR("spawner: readlink(/proc/self/exe) failed (%s) and argv[0] "
+               "names no program to start on the ranks' hosts",
+               strerror(errno));
   }
 
-  char cwd[1024] = "";
-  char config_abs[4096] = "";
+  char cwd[PATH_MAX] = "";
   if (ssh) {
     if (getcwd(cwd, sizeof(cwd)) == NULL) {
       ARTS_ERROR("spawner: getcwd failed: %s", strerror(errno));
-    }
-    /* A remote rank must not depend on its working directory to find the
-     * configuration. */
-    const char *env_cfg = getenv("ARTS_CONFIG");
-    const char *cfg_src =
-        (env_cfg && env_cfg[0] != '\0') ? env_cfg : "arts.cfg";
-    if (cfg_src[0] == '/') {
-      strncpy(config_abs, cfg_src, sizeof(config_abs) - 1);
-      config_abs[sizeof(config_abs) - 1] = '\0';
-    } else {
-      (void)snprintf(config_abs, sizeof(config_abs), "%s/%s", cwd, cfg_src);
     }
   } else {
     (void)arts_transport_select_local_ports(config);
@@ -337,8 +411,9 @@ _Noreturn void arts_spawn(struct arts_config_s *config, int argc, char **argv) {
   sigemptyset(&dfl.sa_mask);
   struct sigaction given_chld;
   (void)sigaction(SIGCHLD, &dfl, &given_chld);
-  /* A reader of its output that went away must not end the spawner, and with
-   * it every rank: a write to it fails instead. */
+  /* A reader of its output, or an ssh client of a rank's pipe, that went away
+   * must not end the spawner, and with it every rank: a write to it fails
+   * instead. */
   struct sigaction ign;
   memset(&ign, 0, sizeof(ign));
   ign.sa_handler = SIG_IGN;
@@ -365,28 +440,39 @@ _Noreturn void arts_spawn(struct arts_config_s *config, int argc, char **argv) {
   memcpy(child_env, environ, env_count * sizeof(char *));
   char rank_var[32];
   child_env[env_count] = rank_var;
-  char ssh_command[(4096 * 6) + 16];
-  char *ssh_argv[] = {"ssh", "-n",
+  char *ssh_argv[] = {"ssh", "-T",
                       "-o",  "BatchMode=yes",
                       "-o",  "StrictHostKeyChecking=no",
                       "-o",  "ConnectTimeout=10",
                       "-o",  "ServerAliveInterval=5",
                       "-o",  "ServerAliveCountMax=3",
-                      NULL,  ssh_command,
+                      NULL,  NULL,
                       NULL};
   /* The vector ends with the host, the command and the terminator. */
   const size_t ssh_host = (sizeof(ssh_argv) / sizeof(ssh_argv[0])) - 3;
 
   pid_t *pids = arts_calloc(ranks, sizeof(pid_t));
+  /* Under ssh, the write end of the pipe each rank's ssh client reads as its
+   * input: the rank lives until that input ends, and a signal name written to
+   * it reaches the rank as that signal. */
+  int *lifelines = ssh ? arts_calloc(ranks, sizeof(int)) : NULL;
+  const int given_flags[2] = {fcntl(STDOUT_FILENO, F_GETFL),
+                              fcntl(STDERR_FILENO, F_GETFL)};
   const pid_t spawner = getpid();
   for (unsigned int i = 0; i < ranks; i++) {
     (void)snprintf(rank_var, sizeof(rank_var), "ARTS_RANK=%u", i);
+    int lifeline[2] = {-1, -1};
     if (ssh) {
-      if (!arts_ssh_command(i, argc, argv, self_exe, cwd, config_abs,
-                            ssh_command, sizeof(ssh_command))) {
-        ARTS_ERROR("spawner: the ssh command for rank %u does not fit", i);
+      if (pipe2(lifeline, O_CLOEXEC) != 0 ||
+          fcntl(lifeline[1], F_SETFL, O_NONBLOCK) != 0) {
+        arts_print_line("[ARTS] spawner: no pipe for rank %u: %s\n", i,
+                        strerror(errno));
+        arts_spawner_restore_flags(given_flags);
+        (void)syscall(SYS_exit_group, 75);
+        _exit(75);
       }
       ssh_argv[ssh_host] = config->table[i].ip_address;
+      ssh_argv[ssh_host + 1] = arts_ssh_command(i, argc, argv, self_exe, cwd);
     }
     pid_t child = fork();
     if (child == 0) {
@@ -398,21 +484,47 @@ _Noreturn void arts_spawn(struct arts_config_s *config, int argc, char **argv) {
       }
       (void)sigaction(SIGCHLD, &given_chld, NULL);
       (void)sigaction(SIGPIPE, &given_pipe, NULL);
+      if (ssh) {
+        /* Only this process forwards a signal to an ssh rank, as a name on its
+         * pipe: a signal sent to this process group, or to every process,
+         * would otherwise end the client and its rank by SIGKILL.  The client
+         * keeps a disposition it inherits as ignored, and ignoring before the
+         * mask is restored also discards one pending since the fork. */
+        (void)sigaction(SIGHUP, &ign, NULL);
+        (void)sigaction(SIGINT, &ign, NULL);
+        (void)sigaction(SIGQUIT, &ign, NULL);
+        (void)sigaction(SIGTERM, &ign, NULL);
+        (void)sigaction(SIGALRM, &ign, NULL);
+      }
       (void)sigprocmask(SIG_SETMASK, &given_mask, NULL);
       if (ssh) {
+        /* dup2 onto itself would keep the close-on-exec flag. */
+        if (lifeline[0] == STDIN_FILENO) {
+          (void)fcntl(STDIN_FILENO, F_SETFD, 0);
+        } else {
+          (void)dup2(lifeline[0], STDIN_FILENO);
+        }
         (void)execvpe("ssh", ssh_argv, child_env);
       } else {
         (void)execve("/proc/self/exe", child_argv, child_env);
       }
+      arts_print_line("[ARTS] spawner: rank %u: cannot run %s: %s\n", i,
+                      ssh ? "ssh" : "/proc/self/exe", strerror(errno));
       _exit(127);
     }
     if (child < 0) {
       arts_print_line("[ARTS] spawner: fork failed for rank %u: %s\n", i,
                       strerror(errno));
+      arts_spawner_restore_flags(given_flags);
       (void)syscall(SYS_exit_group, 75);
       _exit(75);
     }
     pids[i] = child;
+    if (ssh) {
+      (void)close(lifeline[0]);
+      lifelines[i] = lifeline[1];
+      arts_free(ssh_argv[ssh_host + 1]);
+    }
   }
 
   unsigned int live = ranks;
@@ -426,12 +538,18 @@ _Noreturn void arts_spawn(struct arts_config_s *config, int argc, char **argv) {
     if (grace_started && !grace_spent) {
       struct timespec now = arts_spawner_now();
       if (arts_spawner_reached(&now, &deadline)) {
+        /* Every kill goes before any line: a line may wait for stderr to take
+         * it, and the grace is a bound. */
+        for (unsigned int i = 0; i < ranks; i++) {
+          if (pids[i] != 0) {
+            (void)kill(pids[i], SIGKILL);
+          }
+        }
         for (unsigned int i = 0; i < ranks; i++) {
           if (pids[i] != 0) {
             arts_print_line("[ARTS] spawner: end-of-step grace of %u s "
                             "expired; killing rank %u (pid %d)\n",
                             grace_s, i, (int)pids[i]);
-            (void)kill(pids[i], SIGKILL);
           }
         }
         grace_spent = true;
@@ -451,11 +569,18 @@ _Noreturn void arts_spawn(struct arts_config_s *config, int argc, char **argv) {
       continue;
     }
     if (sig != SIGCHLD) {
+      char line[8];
+      const int line_length =
+          snprintf(line, sizeof(line), "%s\n", arts_spawner_signal_name(sig));
       for (unsigned int i = 0; i < ranks; i++) {
         if (pids[i] != 0) {
           ARTS_SPAWNER_DEBUG("forward %s to rank %u (pid %d)",
                              arts_spawner_signal_name(sig), i, (int)pids[i]);
-          (void)kill(pids[i], sig);
+          if (ssh) {
+            (void)!write(lifelines[i], line, (size_t)line_length);
+          } else {
+            (void)kill(pids[i], sig);
+          }
         }
       }
       continue;
@@ -471,6 +596,9 @@ _Noreturn void arts_spawn(struct arts_config_s *config, int argc, char **argv) {
         continue;
       }
       pids[i] = 0;
+      if (ssh) {
+        (void)close(lifelines[i]);
+      }
       live--;
       int s = 0;
       if (WIFEXITED(status)) {
@@ -496,6 +624,7 @@ _Noreturn void arts_spawn(struct arts_config_s *config, int argc, char **argv) {
     }
   }
 
+  arts_spawner_restore_flags(given_flags);
   (void)fflush(NULL);
   arts_fake_cxl_fini_replay();
   (void)syscall(SYS_exit_group, worst);

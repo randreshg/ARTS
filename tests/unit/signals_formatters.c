@@ -25,11 +25,15 @@
  *   HUP}); any other -> "UNKNOWN".  We assert each installed signal maps to its
  *   literal and a sampling of un-installed signals map to "UNKNOWN".
  *
- * arts_print_line(fmt,...): vsnprintf into a 4096 stack buffer + single
- *   write(STDERR).  A formatted length >= 4096 must TRUNCATE to size-1 bytes in
- *   ONE write (no overflow, no second write).  We feed an oversized format and
- *   assert the captured output length is exactly 4095 and the tail is the
- *   truncated content (no NUL written, no trailing garbage).
+ * arts_print_line(fmt,...): vsnprintf into a 4096 stack buffer + one
+ *   write(STDERR) when stderr takes it.  A formatted length >= 4096 must
+ *   TRUNCATE to size-1 bytes (no overflow, no NUL written).  We feed an
+ *   oversized format and assert the captured output length is exactly 4095 and
+ *   the tail is the truncated content (no trailing garbage).  A stderr pipe
+ *   that is full and non-blocking (as an ssh client sharing the descriptor
+ *   leaves it) must delay the line, never drop it: a child prints into such a
+ *   pipe, stays blocked while the pipe is full, and its whole line follows
+ *   the filler once the pipe is drained.
  */
 
 #ifndef _GNU_SOURCE
@@ -44,6 +48,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "arts/system/shutdown.h"
@@ -251,7 +257,71 @@ int main(void) {
     }
   }
 
+  /* A full non-blocking stderr pipe delays the line; it never drops it. */
+  {
+    int pfd[2];
+    if (pipe(pfd) != 0 || fcntl(pfd[1], F_SETFL, O_NONBLOCK) != 0) {
+      fail("non-blocking pipe");
+    }
+    char fill[4096];
+    memset(fill, 'F', sizeof(fill));
+    size_t filled = 0;
+    ssize_t w;
+    while ((w = write(pfd[1], fill, sizeof(fill))) > 0) {
+      filled += (size_t)w;
+    }
+    while (write(pfd[1], fill, 1) == 1) {
+      filled++;
+    }
+    int started[2];
+    if (pipe(started) != 0) {
+      fail("pipe");
+    }
+    pid_t child = fork();
+    if (child == 0) {
+      (void)dup2(pfd[1], STDERR_FILENO);
+      (void)!write(started[1], "s", 1);
+      arts_print_line("NONBLOCKING-LINE %d\n", 7);
+      _exit(0);
+    }
+    (void)close(pfd[1]);
+    (void)close(started[1]);
+    char mark;
+    if (read(started[0], &mark, 1) != 1) {
+      fail("child did not start");
+    }
+    (void)close(started[0]);
+    struct timespec pause = {0, 200 * 1000 * 1000};
+    (void)nanosleep(&pause, NULL);
+    if (waitpid(child, NULL, WNOHANG) != 0) {
+      fail("arts_print_line returned while stderr was full and non-blocking "
+           "(the line was dropped)");
+    }
+    const char *line = "NONBLOCKING-LINE 7\n";
+    const size_t want = filled + strlen(line);
+    char *got = malloc(want + 64);
+    if (!got) {
+      fail("malloc drained");
+    }
+    size_t total = 0;
+    ssize_t r;
+    while ((r = read(pfd[0], got + total, want + 64 - total)) > 0) {
+      total += (size_t)r;
+    }
+    (void)close(pfd[0]);
+    int status = 0;
+    (void)waitpid(child, &status, 0);
+    if (total != want || memcmp(got + filled, line, strlen(line)) != 0) {
+      fail("arts_print_line into a full non-blocking pipe: the line did not "
+           "follow the filler whole");
+    }
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+      fail("arts_print_line child did not exit 0");
+    }
+    free(got);
+  }
+
   printf("PASS signals_formatters: write_signal_line + signal_name table + "
-         "arts_print_line truncation verified\n");
+         "arts_print_line truncation and non-blocking stderr verified\n");
   return 0;
 }

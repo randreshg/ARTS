@@ -321,7 +321,7 @@ class ProfilePanel(VerticalScroll):
         """Show only what the selected launcher decides.
 
         Ports are the clearest case: a local run's ranks share a machine, so
-        they cannot share a port either — the spawning rank finds its own
+        they cannot share a port either — the spawner finds its own
         block and naming one here is a configuration error.
         """
         launcher = str(self.query_one("#f-launcher", Select).value)

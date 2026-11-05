@@ -1,20 +1,23 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * pure_unit test for the spawner's static ssh quoting helper
+ * pure_unit test for the spawner's ssh command (libs/src/core/transport/
+ * spawner.c): the static quoting helper
  *   static int arts_shell_quote(const char *input, char *output,
  *                               size_t output_size)
- * (libs/src/core/transport/spawner.c).
+ * and the command a login shell on a rank's host runs,
+ *   static char *arts_ssh_command(unsigned int rank, int argc, char **argv,
+ *                                 const char *exe, const char *cwd)
  *
- * Because the function is `static`, this TU #include's spawner.c directly so
- * the helper is compiled into the test (precedent: edt_gpu.cu #include's
- * edt.c).  spawner.c's OTHER (non-static) functions reference runtime symbols
- * (arts_malloc, arts_transport_select_local_ports, arts_startup_budget_ms,
- * arts_fake_cxl_fini_replay, ARTS_DEBUG -> arts_thread_info /
- * arts_global_rank_id / arts_abort, ...).  Those functions are never CALLED
- * by this test, but they are compiled, so we provide trivial stubs/defs below
- * to satisfy the link — none of them run.
+ * Because both are `static`, this TU #include's spawner.c directly so they
+ * are compiled into the test (precedent: edt_gpu.cu #include's edt.c).
+ * spawner.c's other functions, compiled here but not called, reference
+ * runtime symbols (arts_transport_select_local_ports, arts_startup_budget_ms,
+ * arts_fake_cxl_fini_replay, ARTS_ERROR -> arts_thread_info /
+ * arts_global_rank_id / arts_abort, ...), so trivial stubs/defs below satisfy
+ * the link.  The command builder calls arts_malloc's family and
+ * arts_config_key_names, whose stub names two keys.
  *
- * Properties verified (no runtime started):
+ * Properties verified (no runtime started, no ssh):
  *
  *  1. Single-quote escaping: every embedded `'` becomes the classic 5-char
  *     idiom  '"'"'  (close-quote, dq-quote, open-quote), and the whole token
@@ -40,11 +43,25 @@
  *
  *  4. output_size < 3 always returns -1 (and writes nothing meaningful).
  *
+ *  5. The session wrapper, run as a remote login shell runs the ssh command
+ *     (`/bin/sh -c <command>` with a pipe on its stdin): `TERM` written to
+ *     the pipe ends the rank with 143, the pipe's end-of-file kills it (137),
+ *     a rank that exits 42 gives 42, and a missing working directory 127.
+ *
+ *  6. The ssh command quotes every value it carries: the working directory,
+ *     ARTS_CONFIG (made absolute against it), LD_LIBRARY_PATH, an ARTS_
+ *     variable, a variable named after a config key, the binary and every
+ *     argument each hold a `'`, a space and `$(x)` (the binary and an
+ *     argument an `=` too, which no assignment may take), and the rank,
+ *     started with only PATH in the shell's environment, sees each exactly;
+ *     a variable that is neither is not passed, nor is a name the shell
+ *     would not read as one word.
+ *
  * On success prints "PASS launcher_shell_quote ..."; on any failure prints a
  * FAIL line to stderr and returns 1.
  */
 
-/* ---- stubs for spawner.c's unused (but compiled) external references ---- */
+/* ---- stubs for spawner.c's external references ---- */
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -52,12 +69,9 @@
 /* Match the real declarations so spawner.c's references resolve. */
 unsigned int arts_global_rank_id = 0;
 
-struct arts_runtime_private_s; /* opaque to us; only its address is taken in
-                                  the (uncalled) log macros, but we must give
-                                  the symbol a definition with a .group_pos
-                                  member.  Easiest: provide the real header's
-                                  layout by letting spawner.c's includes
-                                  declare it, then define the object here. */
+/* Defined below once spawner.c's includes have declared its layout; only the
+ * uncalled ARTS_ERROR paths read it. */
+struct arts_runtime_private_s;
 
 void *arts_malloc(size_t size) { return malloc(size); }
 void *arts_calloc(size_t n, size_t size) { return calloc(n, size); }
@@ -83,13 +97,22 @@ bool arts_transport_select_local_ports(struct arts_config_s *config) {
 }
 unsigned int arts_startup_budget_ms(void) { return 20000u; }
 void arts_fake_cxl_fini_replay(void) {}
+const char *const *arts_config_key_names(size_t *count) {
+  static const char *const keys[] = {"provider", "worker_threads"};
+  *count = sizeof(keys) / sizeof(keys[0]);
+  return keys;
+}
 
 /* arts_thread_info is declared `extern ARTS_THREAD_LOCAL` by runtime_state.h
  * (pulled via spawner.c -> print.h).  Define the object so the link
- * resolves; it is never read (the log macros that touch it are not invoked). */
+ * resolves; only the ARTS_ERROR paths, which this test does not reach, read
+ * it (the spawner's own debug lines do not). */
 ARTS_THREAD_LOCAL struct arts_runtime_private_s arts_thread_info;
 
+#include <fcntl.h>
+#include <poll.h>
 #include <string.h>
+#include <sys/stat.h>
 
 /* ---------- test scaffolding ---------- */
 
@@ -155,6 +178,87 @@ static int decode_quoted(const char *q, char *dst, size_t dstcap) {
   }
   dst[di] = '\0';
   return 0;
+}
+
+/* Runs `command` as a login shell on a rank's host runs the ssh command:
+ * /bin/sh -c, with a pipe on its stdin and only PATH in its environment.
+ * `action` 'T' writes "TERM\n" to the pipe, 'E' closes it, 'N' leaves it open
+ * until the shell ends.  The shell's stdout goes to `out`.  Returns its
+ * status (128 + the signal for one a signal ended), or -1 when it did not end
+ * within 20 s (it is then killed). */
+static int run_as_remote_shell(const char *command, char action, char *out,
+                               size_t out_size) {
+  int in[2];
+  int from[2];
+  if (pipe2(in, O_CLOEXEC) != 0 || pipe2(from, O_CLOEXEC) != 0) {
+    return -1;
+  }
+  pid_t child = fork();
+  if (child == 0) {
+    char *const env[] = {"PATH=/usr/bin:/bin", NULL};
+    (void)dup2(in[0], STDIN_FILENO);
+    (void)dup2(from[1], STDOUT_FILENO);
+    execle("/bin/sh", "sh", "-c", command, (char *)NULL, env);
+    _exit(127);
+  }
+  (void)close(in[0]);
+  (void)close(from[1]);
+  if (action == 'T') {
+    (void)!write(in[1], "TERM\n", 5);
+  } else if (action == 'E') {
+    (void)close(in[1]);
+    in[1] = -1;
+  }
+
+  struct timespec start;
+  (void)clock_gettime(CLOCK_MONOTONIC, &start);
+  size_t got = 0;
+  out[0] = '\0';
+  int status = 0;
+  pid_t ended = 0;
+  for (;;) {
+    struct timespec now;
+    (void)clock_gettime(CLOCK_MONOTONIC, &now);
+    if (now.tv_sec - start.tv_sec > 20) {
+      (void)kill(child, SIGKILL);
+      (void)waitpid(child, &status, 0);
+      ended = -1;
+      break;
+    }
+    if (from[0] >= 0) {
+      struct pollfd p = {from[0], POLLIN, 0};
+      if (poll(&p, 1, 10) > 0) {
+        char chunk[256];
+        ssize_t n = read(from[0], chunk, sizeof(chunk));
+        if (n <= 0) {
+          (void)close(from[0]);
+          from[0] = -1;
+        } else {
+          for (ssize_t k = 0; k < n && got + 1 < out_size; k++) {
+            out[got++] = chunk[k];
+          }
+          out[got] = '\0';
+        }
+      }
+      continue;
+    }
+    ended = waitpid(child, &status, WNOHANG);
+    if (ended == child) {
+      break;
+    }
+    struct timespec pause = {0, 10 * 1000 * 1000};
+    (void)nanosleep(&pause, NULL);
+  }
+  if (from[0] >= 0) {
+    (void)close(from[0]);
+  }
+  if (in[1] >= 0) {
+    (void)close(in[1]);
+  }
+  if (ended != child) {
+    return -1;
+  }
+  return WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
 }
 
 int main(void) {
@@ -308,11 +412,96 @@ int main(void) {
     }
   }
 
+  /* --- the session wrapper: a signal name, end-of-file, the status --- */
+  char here[PATH_MAX];
+  CHECK(getcwd(here, sizeof(here)) != NULL, "getcwd failed");
+  char dir_name[] = "launcher_shell_quote it's $(x) XXXXXX";
+  CHECK(mkdtemp(dir_name) != NULL, "mkdtemp failed");
+  char dir[PATH_MAX + 64];
+  (void)snprintf(dir, sizeof(dir), "%s/%s", here, dir_name);
+  char exe[PATH_MAX + 128];
+  (void)snprintf(exe, sizeof(exe), "%s/sh it's $(x) run=1", dir);
+  CHECK(symlink("/bin/sh", exe) == 0, "symlink %s failed", exe);
+  unsetenv("ARTS_RANK");
+  {
+    struct {
+      char action;
+      const char *script;
+      const char *cwd_suffix;
+      int want;
+    } waits[] = {
+        {'T', "exec sleep 30", "", 143},
+        {'E', "exec sleep 30", "", 137},
+        {'N', "exit 42", "", 42},
+        {'N', "exit 0", "/missing", 127},
+    };
+    for (size_t w = 0; w < sizeof(waits) / sizeof(waits[0]); w++) {
+      char cwd[sizeof(dir) + 16];
+      (void)snprintf(cwd, sizeof(cwd), "%s%s", dir, waits[w].cwd_suffix);
+      char *argv[] = {"rank", "-c", (char *)waits[w].script, NULL};
+      char *command = arts_ssh_command(0, 3, argv, exe, cwd);
+      char out[64];
+      int got = run_as_remote_shell(command, waits[w].action, out, sizeof(out));
+      CHECK(got == waits[w].want,
+            "wrapper case %zu ('%c', \"%s\"): status %d, want %d", w,
+            waits[w].action, waits[w].script, got, waits[w].want);
+      arts_free(command);
+    }
+  }
+
+  /* --- every value the ssh command carries round-trips --- */
+  {
+    const char *odd = "it's $(x)";
+    char config[64];
+    (void)snprintf(config, sizeof(config), "cfg %s.cfg", odd);
+    char library_path[64];
+    (void)snprintf(library_path, sizeof(library_path), "/nonexistent %s", odd);
+    const char *probe = "v it's $(x) \"dq\" `bt` \\bs";
+    char provider[64];
+    (void)snprintf(provider, sizeof(provider), "tcp %s", odd);
+    setenv("ARTS_CONFIG", config, 1);
+    setenv("LD_LIBRARY_PATH", library_path, 1);
+    setenv("ARTS_PROBE_VALUE", probe, 1);
+    setenv("provider", provider, 1);
+    setenv("LSQ_UNLISTED", "1", 1);
+    setenv("ARTS_bad-name", "1", 1);
+    char *argv[] = {"rank",
+                    "-c",
+                    "printf '[%s]\\n' \"$(pwd -P)\" \"$ARTS_CONFIG\" "
+                    "\"$LD_LIBRARY_PATH\" \"$ARTS_PROBE_VALUE\" \"$provider\" "
+                    "\"${LSQ_UNLISTED-unset}\" \"$ARTS_RANK\" \"$0\" \"$1\" "
+                    "\"$2\"",
+                    "a0 it's $(x)",
+                    "a1 'q' `z` $HOME",
+                    "--size=100",
+                    NULL};
+    char *command = arts_ssh_command(7, 6, argv, exe, dir);
+    CHECK(strstr(command, "LSQ_UNLISTED=") == NULL,
+          "an unlisted variable is passed: <%s>", command);
+    CHECK(strstr(command, "ARTS_bad-name=") == NULL,
+          "a name that is not one shell word is passed: <%s>", command);
+    char want[(2 * sizeof(dir)) + 512];
+    char out[sizeof(want)];
+    int got = run_as_remote_shell(command, 'N', out, sizeof(out));
+    (void)snprintf(want, sizeof(want),
+                   "[%s]\n[%s/%s]\n[%s]\n[%s]\n[%s]\n[unset]\n[7]\n"
+                   "[a0 it's $(x)]\n[a1 'q' `z` $HOME]\n[--size=100]\n",
+                   dir, dir, config, library_path, probe, provider);
+    CHECK(got == 0, "round-trip run: status %d (command <%s>)", got, command);
+    CHECK(strcmp(out, want) == 0,
+          "round-trip mismatch:\n--- got\n%s--- want\n%s--- command <%s>", out,
+          want, command);
+    arts_free(command);
+    unsetenv("LD_LIBRARY_PATH");
+  }
+  (void)unlink(exe);
+  CHECK(rmdir(dir) == 0, "rmdir %s failed", dir);
+
   if (g_fail) {
     fprintf(stderr, "FAIL launcher_shell_quote\n");
     return 1;
   }
   printf("PASS launcher_shell_quote (escape idiom, boundary off-by-one, "
-         "no-OOB, round-trip)\n");
+         "no-OOB, round-trip, session wrapper, ssh command)\n");
   return 0;
 }

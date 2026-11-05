@@ -43,6 +43,7 @@ extern "C" {
 #endif
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef ARTS_USE_CXL
@@ -136,6 +137,10 @@ struct arts_config_s {
 
 void arts_config_load(struct arts_config_s *config);
 void arts_config_destroy(struct arts_config_s *config);
+
+/* Every key a configuration can set, `count` of them; an environment variable
+ * of the same name overrides each. */
+const char *const *arts_config_key_names(size_t *count);
 
 #ifdef __cplusplus
 }

@@ -38,9 +38,11 @@
 ******************************************************************************/
 #include "arts/system/config.h"
 
+#include <assert.h>
 #include <ctype.h>
 #include <errno.h>
 #include <limits.h>
+#include <pthread.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -673,6 +675,17 @@ struct arts_config_entry_s {
 /* Look up a config variable's value string, with env var override. */
 static const char *config_lookup(struct arts_config_variable_s **vars,
                                  const char *key) {
+#ifndef NDEBUG
+  /* A key the environment can set is one a process that starts ranks
+   * elsewhere hands on to them. */
+  size_t key_count = 0;
+  const char *const *keys = arts_config_key_names(&key_count);
+  size_t listed = 0;
+  while (listed < key_count && strcmp(keys[listed], key) != 0) {
+    listed++;
+  }
+  assert(listed < key_count);
+#endif
   struct arts_config_variable_s *found = arts_config_find_variable(vars, key);
   return found ? found->value : NULL;
 }
@@ -978,6 +991,41 @@ static const struct arts_config_entry_s config_entries[] = {
     {NULL, 0, 0, NULL, NULL}};
 
 #undef OFF
+
+/* The keys read outside the table: with the table's, every key config_lookup
+ * reads, since an environment variable named after any of them overrides it. */
+static const char *const config_untabled_keys[] = {
+    "node_count",
+    "nodes",
+#ifdef ARTS_USE_CXL
+    "cxl_db_allocation_device",
+#endif /* ARTS_USE_CXL */
+};
+
+#define CONFIG_TABLED_COUNT                                                    \
+  ((sizeof(config_entries) / sizeof(config_entries[0])) - 1)
+#define CONFIG_UNTABLED_COUNT                                                  \
+  (sizeof(config_untabled_keys) / sizeof(config_untabled_keys[0]))
+
+static const char
+    *config_key_names[CONFIG_TABLED_COUNT + CONFIG_UNTABLED_COUNT];
+static pthread_once_t config_key_names_once = PTHREAD_ONCE_INIT;
+
+static void config_fill_key_names(void) {
+  size_t n = 0;
+  for (size_t i = 0; i < CONFIG_TABLED_COUNT; i++) {
+    config_key_names[n++] = config_entries[i].key;
+  }
+  for (size_t i = 0; i < CONFIG_UNTABLED_COUNT; i++) {
+    config_key_names[n++] = config_untabled_keys[i];
+  }
+}
+
+const char *const *arts_config_key_names(size_t *count) {
+  (void)pthread_once(&config_key_names_once, config_fill_key_names);
+  *count = CONFIG_TABLED_COUNT + CONFIG_UNTABLED_COUNT;
+  return config_key_names;
+}
 
 /*--- Table-Driven Parse Loop -----------------------------------------------*/
 
@@ -1406,7 +1454,7 @@ static void config_compute_derived(struct arts_config_s *config) {
       if (resolved != NULL) {
         config->ports = parse_port_spec(resolved, &config->ports_count);
         if (config->ports == NULL || config->ports_count != config->port_count) {
-          ARTS_ERROR("%s from the spawning rank is unusable ('%s') — expected "
+          ARTS_ERROR("%s from the spawner is unusable ('%s') — expected "
                      "%u port(s)",
                      ARTS_RESOLVED_PORTS_ENV, resolved, config->port_count);
         }
