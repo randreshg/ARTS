@@ -866,8 +866,49 @@ if(ARTS_TEST_REFERENCE_TREE)
     add_arts_test(counter_smoke_value)
     arts_counters_captured(_c NUM_EDT_CREATE NUM_EDT_FINISH)
     if(_c)
-        register_single_node_test(counter_smoke_value TIMEOUT 30)
-        set_tests_properties(counter_smoke_value PROPERTIES PASS_REGULAR_EXPRESSION "PASS counter_smoke_value")
+        register_single_node_test(counter_smoke_value TIMEOUT 30 RECORDS 1
+            RECORD_CHECK record_values.cmake 0:NUM_EDT_CREATE=66
+                                             0:NUM_EDT_FINISH=66)
+    endif()
+endif()
+
+# The record of a run's end: every rank's counter file names the run, its
+# rank's end and the time it began.  A run on one rank, on two and on four
+# ends at rank 0's arts_shutdown; each file names one run and status 0, and
+# rank 0's names the program as the origin.
+if(ARTS_TEST_REFERENCE_TREE)
+    arts_counters_captured(_c NUM_EDT_CREATE)
+    if(_c)
+        arts_test_cfg(_cfg 1n_20w)
+        arts_add_test(record_written RECORDS 1
+                      RECORD_CHECK record_meta.cmake origin@0=APP rc=0
+                      COMMAND term_shutdown)
+        set_tests_properties(record_written PROPERTIES
+            LABELS "single_node" TIMEOUT 30 RESOURCE_LOCK "arts_runtime"
+            ENVIRONMENT "ARTS_CONFIG=${_cfg}")
+        foreach(_v 2n_9w_1p 4n_4w_1p)
+            string(REGEX MATCH "^[0-9]+" _ranks ${_v})
+            arts_test_cfg(_cfg ${_v})
+            arts_add_multinode_test(record_written_${_v} RECORDS ${_ranks}
+                RECORD_CHECK record_meta.cmake origin@0=APP rc=0
+                COMMAND term_shutdown)
+            arts_test_properties(record_written_${_v} PROPERTIES
+                LABELS "multinode" TIMEOUT 60 RESOURCE_LOCK "arts_runtime"
+                ENVIRONMENT "ARTS_CONFIG=${_cfg}")
+        endforeach()
+    endif()
+endif()
+
+# How soon every rank learns of the end: rank 2 has contacted every other rank
+# when it ends the run, while each worker of rank 1 floods rank 0 with
+# satisfies, and the four ranks' shutdown stamps lie within one second.
+if(ARTS_TEST_REFERENCE_TREE)
+    add_arts_test(shutdown_learn_latency)
+    arts_counters_captured(_c NUM_EDT_CREATE)
+    if(_c)
+        register_multinode_test(shutdown_learn_latency TIMEOUT 60
+            VARIANTS 4n_4w_1p RECORDS 4
+            RECORD_CHECK record_meta.cmake t0_spread_ms<=1000)
     endif()
 endif()
 
@@ -898,12 +939,13 @@ if(_c)
        AND NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
         list(APPEND _one 0:NUM_PURGE_RETURN=0)
     endif()
-    arts_add_test(counter_exact_one COMMAND counter_exact one ${_one})
+    arts_add_test(counter_exact_one RECORDS 1
+                  RECORD_CHECK record_values.cmake ${_one}
+                  COMMAND counter_exact one)
     arts_test_cfg(_cfg 1n_20w)
     set_tests_properties(counter_exact_one PROPERTIES
         LABELS "single_node" TIMEOUT 30 RESOURCE_LOCK "arts_runtime"
         ENVIRONMENT "ARTS_CONFIG=${_cfg}"
-        PASS_REGULAR_EXPRESSION "PASS: counter_exact one"
         FAIL_REGULAR_EXPRESSION "FAIL:")
 
     # The two-rank program, per cell: rank 1 reads 3 times, writes, reads;
@@ -1101,13 +1143,12 @@ if(_c)
             if(DEFINED _hook_${_shape})
                 list(APPEND _env "${_hook_${_shape}}")
             endif()
-            arts_add_multinode_test(counter_exact_${_shape}_${_v}
-                                    COMMAND counter_exact ${_shape}
-                                            ${_${_shape}})
+            arts_add_multinode_test(counter_exact_${_shape}_${_v} RECORDS 2
+                RECORD_CHECK record_values.cmake ${_${_shape}}
+                COMMAND counter_exact ${_shape})
             arts_test_properties(counter_exact_${_shape}_${_v} PROPERTIES
                 LABELS "multinode" TIMEOUT 60 RESOURCE_LOCK "arts_runtime"
                 ENVIRONMENT "${_env}"
-                PASS_REGULAR_EXPRESSION "PASS: counter_exact ${_shape}"
                 FAIL_REGULAR_EXPRESSION "FAIL:")
         endforeach()
     endforeach()
@@ -1141,12 +1182,12 @@ if(_c AND ARTS_TEST_REFERENCE_TREE)
             arts_test_cfg(_cfg ${_v})
             set(_env "ARTS_CONFIG=${_cfg}")
         endif()
-        arts_add_multinode_test(counter_exact_ping_${_v}
-                                COMMAND counter_exact ping ${_ping})
+        arts_add_multinode_test(counter_exact_ping_${_v} RECORDS 2
+            RECORD_CHECK record_values.cmake ${_ping}
+            COMMAND counter_exact ping)
         arts_test_properties(counter_exact_ping_${_v} PROPERTIES
             LABELS "multinode" TIMEOUT 60 RESOURCE_LOCK "arts_runtime"
             ENVIRONMENT "${_env}"
-            PASS_REGULAR_EXPRESSION "PASS: counter_exact ping"
             FAIL_REGULAR_EXPRESSION "FAIL:")
     endforeach()
 endif()
@@ -1164,13 +1205,21 @@ foreach(_t csr_graph csr_graph_2n_9w_1p csr_graph_4n_4w_1p csr_graph_2n_8w_2p)
         PASS_REGULAR_EXPRESSION "PASS csr_graph")
 endforeach()
 
-# Many EDTs race into arts_shutdown: one wins the shutdown gate, the run ends,
-# and the state word reads as set.  Its initiators acquire one block RW with no
-# order among them, which DB-WRF does not admit.
+# Many EDTs race into arts_shutdown: one wins the shutdown gate and the run
+# ends with status 0; where the tree writes counter files, the rank's file
+# names the program as the origin and status 0.  Its initiators acquire one
+# block RW with no order among them, which DB-WRF does not admit.
 if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
 add_arts_test(runtime_concurrent_shutdown)
-register_single_node_test(runtime_concurrent_shutdown TIMEOUT 60)
-set_tests_properties(runtime_concurrent_shutdown PROPERTIES PASS_REGULAR_EXPRESSION "SHUTDOWN_STATE_OK")
+arts_counters_captured(_c NUM_EDT_CREATE)
+if(_c)
+    register_single_node_test(runtime_concurrent_shutdown TIMEOUT 60 RECORDS 1
+        RECORD_CHECK record_meta.cmake origin=APP rc=0)
+else()
+    register_single_node_test(runtime_concurrent_shutdown TIMEOUT 60)
+endif()
+set_tests_properties(runtime_concurrent_shutdown PROPERTIES
+    FAIL_REGULAR_EXPRESSION "shutdown watchdog:")
 endif()
 
 # runtime_gpu_scheduler_promotion: GPU-only (ARTS_USE_GPU); SKIP stub otherwise.

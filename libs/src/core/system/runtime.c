@@ -44,10 +44,12 @@
 #include "arts/utils/random.h"
 
 #include <assert.h>
+#include <errno.h>
 #include <sched.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/random.h>
 
 #include "arts/counter/Preamble.h"
 #include "arts/counter/counter.h"
@@ -89,6 +91,22 @@ static void runtime_rdzv_cut_done(void) {
 }
 #endif
 
+/* A run's id: never 0, which names a rank that has not learned one. */
+static uint64_t runtime_draw_run_id(void) {
+  uint64_t id = 0;
+  while (id == 0) {
+    ssize_t got = getrandom(&id, sizeof(id), 0);
+    if (got < 0 && errno != EINTR) {
+      ARTS_ERROR("arts_runtime_node_init: getrandom failed: %s",
+                 strerror(errno));
+    }
+    if (got != (ssize_t)sizeof(id)) {
+      id = 0;
+    }
+  }
+  return id;
+}
+
 void arts_runtime_node_init(struct arts_config_s *config) {
 #ifdef ARTS_DEBUG_INJECTION
   arts_net_rdzv_cut_done = runtime_rdzv_cut_done;
@@ -111,6 +129,13 @@ void arts_runtime_node_init(struct arts_config_s *config) {
 #endif
   unsigned int tc = config->thread_count;
   size_t regpool_slab_bytes = (size_t)config->regpool_slab_mb * 1024 * 1024;
+
+  /* Rank 0 draws the run's id; the address exchange hands it to the others. */
+  uint64_t run_id = 0;
+  if (arts_global_rank_id == 0) {
+    run_id = runtime_draw_run_id();
+    atomic_store_explicit(&arts_exit_meta.run_id, run_id, memory_order_relaxed);
+  }
 
   /* Registered-slab pool for DB payload buffers + fabric bring-up.  The pool
    * must be live before any worker or progress thread can allocate a
@@ -136,7 +161,8 @@ void arts_runtime_node_init(struct arts_config_s *config) {
       ARTS_ERROR("arts_runtime_node_init: registered pool init failed");
     }
     arts_net_rx_arm();
-    arts_net_exchange_addresses();
+    run_id = arts_net_exchange_addresses(run_id);
+    atomic_store_explicit(&arts_exit_meta.run_id, run_id, memory_order_relaxed);
     /* Providers whose one-sided immediate path can be configured out prove
      * it now, against this rank's own memory, so a misconfiguration fails
      * here by name instead of at the first DB payload (no-op elsewhere). */

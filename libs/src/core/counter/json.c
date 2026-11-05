@@ -210,6 +210,15 @@ void arts_json_writer_write_u_int64(arts_json_writer_t *writer, const char *key,
   (void)fprintf(writer->fp, "%llu", (unsigned long long)value);
 }
 
+void arts_json_writer_write_int64(arts_json_writer_t *writer, const char *key,
+                                  int64_t value) {
+  if (writer->overflow) {
+    return;
+  }
+  json_writer_write_key(writer, key);
+  (void)fprintf(writer->fp, "%lld", (long long)value);
+}
+
 void arts_json_writer_write_double(arts_json_writer_t *writer, const char *key,
                                    double value) {
   if (writer->overflow) {

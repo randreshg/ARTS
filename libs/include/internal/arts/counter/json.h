@@ -70,6 +70,8 @@ void arts_json_writer_begin_array(arts_json_writer_t *writer, const char *key);
 void arts_json_writer_end_array(arts_json_writer_t *writer);
 void arts_json_writer_write_u_int64(arts_json_writer_t *writer, const char *key,
                                     uint64_t value);
+void arts_json_writer_write_int64(arts_json_writer_t *writer, const char *key,
+                                  int64_t value);
 void arts_json_writer_write_double(arts_json_writer_t *writer, const char *key,
                                    double value);
 void arts_json_writer_write_string(arts_json_writer_t *writer, const char *key,

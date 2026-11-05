@@ -40,6 +40,7 @@
 
 #include "arts/utils/stdatomic_compat.h"
 #include <errno.h>
+#include <inttypes.h>
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
@@ -51,6 +52,7 @@
 #include "arts/counter/json.h"
 #include "arts/runtime_state.h"
 #include "arts/system/print.h"
+#include "arts/system/shutdown.h"
 #include "arts/system/threads.h"
 #include "arts/transport/net.h"      /* outbound send helpers */
 #include "arts/transport/protocol.h" /* wire packet structs */
@@ -79,13 +81,16 @@ static _Atomic(bool) capture_thread_running = false;
 // (release); the waiter, at its timeout, moves it WAITING -> TIMED_OUT and the
 // offset stays 0.  A response that finds the word anything but WAITING writes
 // nothing, so once the waiter has decided the offset never changes.  The
-// waiter reads RECEIVED with acquire before it starts the capture thread, the
-// only other reader of the offset.
+// offset's readers come after an acquire of RECEIVED: the capture thread,
+// which the waiter starts only after its own, and the record's writer,
+// through arts_counter_clock_sync's.  The master rank's capture start stores
+// MASTER: its offset is 0, and no request or response concerns it.
 enum {
   TIME_SYNC_WAITING = 0,
   TIME_SYNC_RECEIVING,
   TIME_SYNC_RECEIVED,
   TIME_SYNC_TIMED_OUT,
+  TIME_SYNC_MASTER,
 };
 static _Atomic(unsigned int) time_sync_state = TIME_SYNC_WAITING;
 /* Written once, by the response that claims time_sync_state. */
@@ -231,6 +236,8 @@ void arts_counter_capture_start() {
 
     if (arts_global_rank_id == arts_global_master_rank_id) {
       // Master node: the offset is 0 and no response comes.
+      atomic_store_explicit(&time_sync_state, TIME_SYNC_MASTER,
+                            memory_order_relaxed);
       ARTS_INFO("Time sync: Master node (rank %u), offset=0",
                 arts_global_master_rank_id);
     } else {
@@ -405,7 +412,33 @@ static void arts_write_capture_history(arts_json_writer_t *writer,
   arts_free(buf);
 }
 
-// Helper: write common metadata fields to JSON
+enum arts_clock_sync arts_counter_clock_sync(void) {
+  switch (atomic_load_explicit(&time_sync_state, memory_order_acquire)) {
+  case TIME_SYNC_RECEIVED:
+  case TIME_SYNC_MASTER:
+    return ARTS_CLOCK_SYNC_RTT;
+  case TIME_SYNC_TIMED_OUT:
+    return ARTS_CLOCK_SYNC_TIMEOUT;
+  default:
+    return ARTS_CLOCK_SYNC_NONE;
+  }
+}
+
+static const char *arts_clock_sync_name(enum arts_clock_sync sync) {
+  switch (sync) {
+  case ARTS_CLOCK_SYNC_RTT:
+    return "rtt";
+  case ARTS_CLOCK_SYNC_TIMEOUT:
+    return "timeout";
+  case ARTS_CLOCK_SYNC_NONE:
+    break;
+  }
+  return "none";
+}
+
+/* The metadata every counter file carries: the run, this rank and how its end
+ * began.  The caller runs after the shutdown entry's publication of the
+ * stamps has been acquired. */
 static void arts_write_common_metadata(arts_json_writer_t *writer) {
   arts_json_writer_write_u_int64(writer, "timestamp", (uint64_t)time(NULL));
   arts_json_writer_write_string(writer, "version", "1.7.0");
@@ -413,6 +446,30 @@ static void arts_write_common_metadata(arts_json_writer_t *writer) {
     arts_json_writer_write_string(writer, "counter_folder",
                                   arts_node_info.counter_folder);
   }
+  enum arts_clock_sync sync = arts_counter_clock_sync();
+  uint64_t run_id =
+      atomic_load_explicit(&arts_exit_meta.run_id, memory_order_relaxed);
+  char run[17] = "";
+  if (run_id != 0) {
+    (void)snprintf(run, sizeof(run), "%016" PRIx64, run_id);
+  }
+  arts_json_writer_write_int64(writer, "rc", arts_app_exit_status());
+  arts_json_writer_write_string(writer, "run", run);
+  arts_json_writer_write_u_int64(writer, "rank", arts_global_rank_id);
+  arts_json_writer_write_string(writer, "origin",
+                                arts_exit_origin_name(arts_exit_meta.origin));
+  arts_json_writer_write_u_int64(writer, "t0_mono_ns",
+                                 arts_exit_meta.t0_mono_ns);
+  arts_json_writer_write_u_int64(writer, "t0_realtime_ns",
+                                 arts_exit_meta.t0_realtime_ns);
+  if (sync == ARTS_CLOCK_SYNC_RTT) {
+    uint64_t synced = (uint64_t)((int64_t)arts_exit_meta.t0_mono_ns -
+                                 atomic_load_explicit(&time_sync_offset,
+                                                      memory_order_relaxed));
+    arts_json_writer_write_u_int64(writer, "t0_synced_ns", synced);
+  }
+  arts_json_writer_write_string(writer, "clock_sync",
+                                arts_clock_sync_name(sync));
 }
 
 // Helper: check if any counters exist at given level, return count

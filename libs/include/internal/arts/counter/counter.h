@@ -305,6 +305,17 @@ void arts_counter_write(const char *output_folder, unsigned int node_id,
 void arts_counter_write_cluster(const char *output_folder,
                                 unsigned int node_count);
 
+/* How this rank's clock relates to the master rank's: RTT where the counter
+ * capture's time sync ran (on the master, whose offset is 0, and on a rank
+ * whose response arrived), TIMEOUT where its wait for the response timed out,
+ * NONE where no sync ran. */
+enum arts_clock_sync {
+  ARTS_CLOCK_SYNC_NONE,
+  ARTS_CLOCK_SYNC_RTT,
+  ARTS_CLOCK_SYNC_TIMEOUT,
+};
+enum arts_clock_sync arts_counter_clock_sync(void);
+
 // RTT-based time synchronization for precise epoch alignment.
 // Worker initiates sync request, master responds, worker calculates offset.
 // The time-offset state lives in counter.c (co-located with these handlers).

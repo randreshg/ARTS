@@ -53,6 +53,8 @@
 #include "arts/transport/socket.h" /* arts_socket_armed */
 #include "arts/utils/stdatomic_compat.h"
 
+struct arts_exit_meta_s arts_exit_meta;
+
 /* The program ends the run (origin APP).  Once this rank has entered the
  * shutdown state, by any path, a call changes nothing. */
 void arts_shutdown() {
@@ -98,14 +100,22 @@ void arts_enter_shutdown_state(enum arts_exit_origin origin) {
           memory_order_relaxed)) {
     return; /* another thread / handler already started shutdown */
   }
-  /* End-to-end marker (rank 0): this CAS is the single idempotent point where
-   * shutdown is first recognized, before anything the rank does to end.
-   * Stamp the e2e end here so the measured span excludes teardown, matching
-   * the reference runtimes (which stop at shutdown reception).  Any thread may
-   * execute this; arts_get_time_stamp is thread-independent and the CAS
-   * guarantees it runs exactly once per node. */
+  /* This CAS is the single idempotent point where the rank's end is first
+   * recognized, before anything the rank does to end, so its stamp is the
+   * record's t0 and, on rank 0, the end of the e2e span: the span excludes
+   * teardown, matching the reference runtimes (which stop at shutdown
+   * reception).  Any thread may execute this; both clocks are
+   * thread-independent and the CAS guarantees it runs exactly once per node.
+   * The shutdown_entry_done release below publishes the stamps. */
+  uint64_t t0 = arts_get_time_stamp();
+  struct timespec now;
+  (void)clock_gettime(CLOCK_REALTIME, &now);
+  arts_exit_meta.t0_mono_ns = t0;
+  arts_exit_meta.t0_realtime_ns =
+      (uint64_t)now.tv_sec * 1000000000u + (uint64_t)now.tv_nsec;
+  arts_exit_meta.origin = origin;
   if (!arts_global_rank_id && arts_node_info.e2e_marker_enabled)
-    arts_node_info.e2e_end_stamp = arts_get_time_stamp();
+    arts_node_info.e2e_end_stamp = t0;
   bool multirank = arts_global_rank_count > 1;
   if (multirank) {
     /* A send that reads the gate closed is dropped; the post bypasses it. */

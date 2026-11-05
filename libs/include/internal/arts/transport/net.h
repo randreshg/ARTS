@@ -55,7 +55,8 @@
  *                                  is non-NULL when the negotiated mr_mode
  *                                  demands endpoint-bound registrations
  *   arts_net_rx_arm()            — landing buffers from the pool, post multi-recv
- *   arts_net_exchange_addresses()— fi_getname blob swap over the TCP mesh + av_insert
+ *   arts_net_exchange_addresses()— fi_getname blob and run id swap over the
+ *                                  TCP mesh + av_insert
  *   arts_net_selfcheck()         — providers with a configurable one-sided
  *                                  immediate path prove it live (no-op elsewhere)
  *   ... runtime runs ...
@@ -230,9 +231,11 @@ void arts_net_put_payload(int rank, uint64_t raddr, uint64_t rkey,
 
 /* The bootstrap address frame, as it goes on the wire: the sender's rank (so
  * the receiver can demux acceptance-ordered connections back to rank order),
- * the fabric address blob's length, then the blob.  The rank/len fields are
- * host-endian on the wire: peers share one ABI and endianness (the launcher
- * never spans heterogeneous nodes), so no byte-order conversion is applied.
+ * the fabric address blob's length, the sender's run id (rank 0's is the
+ * run's; every other rank sends 0, having learned none yet), then the blob.
+ * The header fields are host-endian on the wire: peers share one ABI and
+ * endianness (the launcher never spans heterogeneous nodes), so no byte-order
+ * conversion is applied.
  *
  * It lives beside the length rule that accepts it because the two are one
  * contract: the header transfer is exactly offsetof(addr) bytes and the blob
@@ -241,10 +244,11 @@ void arts_net_put_payload(int rank, uint64_t raddr, uint64_t rkey,
 struct arts_net_addr_frame_s {
   uint32_t rank;
   uint32_t len;
+  uint64_t run_id;
   uint8_t addr[ARTS_NET_ADDR_MAX];
 };
-static_assert(offsetof(struct arts_net_addr_frame_s, addr) == 8u,
-              "the address frame's blob must start at 8: both ranks compute "
+static_assert(offsetof(struct arts_net_addr_frame_s, addr) == 16u,
+              "the address frame's blob must start at 16: both ranks compute "
               "the header transfer's size from this offset");
 
 /* Accept a bootstrap address frame iff the embedded rank is in range AND the
@@ -324,9 +328,10 @@ void arts_net_rx_arm(void);
 
 /* Swap every rank's fi_getname address over the already-established TCP data
  * mesh and fi_av_insert the full table in rank order (fi_addr_t == rank).
- * Must run after arts_net_init and after the socket mesh is up; the data
- * sockets stay open afterward. */
-void arts_net_exchange_addresses(void);
+ * Each frame carries its sender's `run_id`; the result is the one rank 0
+ * sent, or `run_id` itself on rank 0.  Must run after arts_net_init and after
+ * the socket mesh is up; the data sockets stay open afterward. */
+uint64_t arts_net_exchange_addresses(uint64_t run_id);
 
 /* Reap the completion queue (rx dispatch + tx completion frees), repost
  * released multi-recv buffers, and drain the per-thread EAGAIN retry rings.

@@ -14,10 +14,11 @@
  * and the first for 16 rounds, each turn's acquisition ordered after the
  * previous turn's release: with `writes` the second rank takes a write turn
  * every round, with `reads` a read turn (the first rank writing in between),
- * so the second rank sends a fresh request every round.  The size rounds the
- * home sent are read back from the first rank's counter file (the sum of the
- * size-round counters of every plane): one per block for `reserved`, none for
- * `minted`.  Registered only where the tree's counter config captures them.
+ * so the second rank sends a fresh request every round.  The registration's
+ * record check reads the size rounds the home sent from the first rank's
+ * counter file, per size-round counter of the tree's arm: one per block in all
+ * for `reserved`, none for `minted`.  Registered only where the tree's counter
+ * config captures them.
  *
  * Arguments: reserved|minted writes|reads.  Needs two ranks.
  */
@@ -25,8 +26,6 @@
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
 #include "arts.h"
@@ -150,27 +149,6 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
 }
 
-/* Adds the "value" of counter object `name` in the JSON to *sum; false when
- * the file carries no such counter. */
-static bool counter_value(const char *json, const char *name, uint64_t *sum) {
-  char key[128];
-  (void)snprintf(key, sizeof(key), "\"%s\"", name);
-  const char *obj = strstr(json, key);
-  if (obj == NULL) {
-    return false;
-  }
-  const char *v = strstr(obj, "\"value\"");
-  if (v == NULL) {
-    return false;
-  }
-  v = strchr(v + strlen("\"value\""), ':');
-  if (v == NULL) {
-    return false;
-  }
-  *sum += strtoull(v + 1, NULL, 10);
-  return true;
-}
-
 int main(int argc, char **argv) {
   for (int i = 1; i < argc; i++) {
     if (strcmp(argv[i], "minted") == 0) {
@@ -179,58 +157,5 @@ int main(int argc, char **argv) {
       g_reads = true;
     }
   }
-  /* A file an earlier run left must not stand in for this run's. */
-  (void)remove("./counters/n0.json");
-  if (arts_rt(argc, argv) != 0) {
-    printf("FAIL: db_size_round_once: the runtime run failed\n");
-    return 1;
-  }
-  if (arts_test_status() != 0) {
-    return 1;
-  }
-  /* Only the first rank writes the counter file, after its runtime ends. */
-  if (arts_get_current_rank() != 0u) {
-    return 0;
-  }
-  FILE *fp = fopen("./counters/n0.json", "r");
-  if (fp == NULL) {
-    printf("FAIL: db_size_round_once: ./counters/n0.json not found\n");
-    return 1;
-  }
-  (void)fseek(fp, 0, SEEK_END);
-  long sz = ftell(fp);
-  (void)fseek(fp, 0, SEEK_SET);
-  if (sz <= 0) {
-    (void)fclose(fp);
-    printf("FAIL: db_size_round_once: n0.json is empty\n");
-    return 1;
-  }
-  char *buf = (char *)malloc((size_t)sz + 1);
-  size_t got = fread(buf, 1, (size_t)sz, fp);
-  (void)fclose(fp);
-  buf[got] = '\0';
-  uint64_t rounds = 0u;
-  bool found = counter_value(buf, "NUM_GRANT_SIZE_CTS", &rounds);
-  found |= counter_value(buf, "NUM_SNAPSHOT_SIZE_CTS", &rounds);
-  found |= counter_value(buf, "NUM_EXCL_SIZE_CTS", &rounds);
-  found |= counter_value(buf, "NUM_INV_SIZE_CTS", &rounds);
-  found |= counter_value(buf, "NUM_FLUSH_SIZE_CTS", &rounds);
-  free(buf);
-  if (!found) {
-    printf("FAIL: db_size_round_once: n0.json carries no size-round counter\n");
-    return 1;
-  }
-  uint64_t want = g_reserved ? NBLOCKS : 0u;
-  if (rounds != want) {
-    printf("FAIL: db_size_round_once: %llu size rounds for %u %s blocks "
-           "(%s), expected %llu\n",
-           (unsigned long long)rounds, NBLOCKS,
-           g_reserved ? "reserved" : "minted", g_reads ? "reads" : "writes",
-           (unsigned long long)want);
-    return 1;
-  }
-  printf("PASS: db_size_round_once %llu size rounds for %u %s blocks (%s)\n",
-         (unsigned long long)rounds, NBLOCKS,
-         g_reserved ? "reserved" : "minted", g_reads ? "reads" : "writes");
-  return 0;
+  return arts_rt(argc, argv);
 }

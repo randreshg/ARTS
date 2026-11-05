@@ -19,9 +19,11 @@
 /// children, each of which MUST die by abort (nonzero / signalled exit).  The
 /// timer functions only touch atomics + arts_get_time_stamp + (on error)
 /// arts_abort, so they are safe to call directly without arts_rt — keeping the
-/// contract check runtime-free and deterministic.  arts_rt is still driven (a
-/// trivial EDT in a group, and a continuation gated on it that ends the
-/// run) so this registers as a runtime single-node test.
+/// contract check runtime-free and deterministic.  A failed check fails the
+/// run's status before arts_rt starts the runtime, which is still driven (a
+/// trivial EDT in a group, and a continuation gated on it that prints the
+/// pass line and ends the run) so this registers as a runtime single-node
+/// test.
 ///
 /// Config-agnostic: the timer functions behave identically under every
 /// coherence and counter configuration (atomic CAS/swap on a single uint64
@@ -35,6 +37,8 @@
 #include <stdlib.h>
 #include <sys/wait.h>
 #include <unistd.h>
+
+#include "../test_failure_status.h"
 
 /* Spawn a child running fn; return true iff the child died abnormally
    (nonzero exit code or killed by a signal) — i.e. the abort fired. */
@@ -124,6 +128,9 @@ static void finale(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)paramv;
   (void)depc;
   (void)depv;
+  if (arts_test_status() == 0) {
+    printf("PASS counter_timer_balance\n");
+  }
   arts_shutdown();
 }
 
@@ -148,17 +155,8 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 int main(int argc, char **argv) {
   /* Validate the timer balance contract before bringing the runtime up so the
      forked children do not inherit a live runtime. */
-  bool ok = check_timer_contract();
-
-  if (arts_rt(argc, argv) != 0) {
-    printf("FAIL counter_timer_balance: the runtime run failed\n");
-    return 1;
+  if (!check_timer_contract()) {
+    arts_test_fail();
   }
-
-  if (ok) {
-    printf("PASS counter_timer_balance\n");
-    return 0;
-  }
-  printf("FAIL counter_timer_balance\n");
-  return 1;
+  return arts_rt(argc, argv);
 }

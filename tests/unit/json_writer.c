@@ -270,6 +270,14 @@ static void b_escape(arts_json_writer_t *w) {
   arts_json_writer_end_object(w);
 }
 
+static void b_signed(arts_json_writer_t *w) {
+  arts_json_writer_begin_object(w, NULL);
+  arts_json_writer_write_int64(w, "neg", -42);
+  arts_json_writer_write_int64(w, "min", INT64_MIN);
+  arts_json_writer_write_int64(w, "zero", 0);
+  arts_json_writer_end_object(w);
+}
+
 static void b_double(arts_json_writer_t *w) {
   arts_json_writer_begin_object(w, NULL);
   arts_json_writer_write_double(w, "d", 1.5);
@@ -343,6 +351,13 @@ int main(void) {
     CHECK(strstr(g_cap, "\\/") == NULL, "forward slash was escaped");
   }
 
+  /* 4. signed integers, the most negative one included. */
+  capture(b_signed, 2);
+  CHECK(json_is_well_formed(g_cap), "signed output not well-formed");
+  CHECK(strcmp(g_cap, "{\n  \"neg\": -42,\n  \"min\": "
+                      "-9223372036854775808,\n  \"zero\": 0\n}") == 0,
+        "signed integers mismatch");
+
   /* 5. double %.6f. */
   capture(b_double, 2);
   CHECK(json_is_well_formed(g_cap), "double output not well-formed");
@@ -395,6 +410,7 @@ int main(void) {
           "depth-overflow: a write inside a dropped level was emitted");
   }
 
-  printf("PASS json_writer (nested/empty/escape/double/multi-top/overflow)\n");
+  printf("PASS json_writer "
+         "(nested/empty/escape/signed/double/multi-top/overflow)\n");
   return 0;
 }

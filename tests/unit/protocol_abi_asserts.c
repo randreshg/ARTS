@@ -145,9 +145,11 @@ _Static_assert(offsetof(struct arts_net_addr_frame_s, rank) == 0u,
                "address frame: rank drifted");
 _Static_assert(offsetof(struct arts_net_addr_frame_s, len) == 4u,
                "address frame: len drifted");
-_Static_assert(offsetof(struct arts_net_addr_frame_s, addr) == 8u,
+_Static_assert(offsetof(struct arts_net_addr_frame_s, run_id) == 8u,
+               "address frame: run_id drifted");
+_Static_assert(offsetof(struct arts_net_addr_frame_s, addr) == 16u,
                "address frame: the blob's offset drifted");
-_Static_assert(sizeof(struct arts_net_addr_frame_s) == 8u + 256u,
+_Static_assert(sizeof(struct arts_net_addr_frame_s) == 16u + 256u,
                "address frame: total size drifted");
 
 /* ===== (2) header layout — read before the message type is known. ===== */

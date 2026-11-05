@@ -18,6 +18,7 @@ set(_counters "")
 foreach(_units ${N} ${_n2})
     set(_dir "route_budget_${SHAPE}_${_units}")
     file(REMOVE_RECURSE "${_dir}")
+    file(MAKE_DIRECTORY "${_dir}")
     execute_process(
         COMMAND ${CMAKE_COMMAND} -E env "counter_folder=./${_dir}"
                 ${PROGRAM} ${SHAPE} ${_units}

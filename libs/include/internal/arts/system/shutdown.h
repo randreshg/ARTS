@@ -43,6 +43,9 @@ extern "C" {
 #endif
 
 #include <stdbool.h>
+#include <stdint.h>
+
+#include "arts/utils/stdatomic_compat.h"
 
 /* What made this rank begin its end.  An origin fits in three bits, and 0
  * names none. */
@@ -94,6 +97,23 @@ static inline const char *arts_exit_origin_name(enum arts_exit_origin o) {
   }
   return "NONE";
 }
+
+/* What a rank's counter record says of its run and its end.  run_id is drawn
+ * by rank 0 and learned by every other rank from rank 0's address frame, and
+ * is 0 on a rank that has not learned it; it is a value of its own that
+ * publishes nothing, stored and loaded relaxed, so a record written on any
+ * thread reads either 0 or the run's id.  origin and the two t0 stamps are
+ * written once, by the thread that takes the rank's shutdown point, before
+ * the release that publishes the point taken, and the record's writer reads
+ * them only after an acquire of that publication. */
+struct arts_exit_meta_s {
+  _Atomic(uint64_t) run_id;
+  uint64_t t0_mono_ns;     /* CLOCK_MONOTONIC (arts_get_time_stamp) */
+  uint64_t t0_realtime_ns; /* CLOCK_REALTIME */
+  enum arts_exit_origin origin;
+};
+
+extern struct arts_exit_meta_s arts_exit_meta;
 
 #ifdef __cplusplus
 }

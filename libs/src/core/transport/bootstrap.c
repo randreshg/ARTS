@@ -88,7 +88,7 @@ static bool xfer_read_all(int fd, void *buf, size_t len) {
   return true;
 }
 
-void arts_net_exchange_addresses(void) {
+uint64_t arts_net_exchange_addresses(uint64_t run_id) {
   unsigned n = arts_global_rank_count;
   unsigned self = arts_global_rank_id;
 
@@ -107,6 +107,7 @@ void arts_net_exchange_addresses(void) {
   struct arts_net_addr_frame_s out;
   out.rank = self;
   out.len = own_len;
+  out.run_id = run_id;
   memcpy(out.addr, own, own_len);
   size_t frame_bytes = offsetof(struct arts_net_addr_frame_s, addr) + own_len;
   for (unsigned r = 0; r < n; r++) {
@@ -122,6 +123,7 @@ void arts_net_exchange_addresses(void) {
 
   /* Read one frame from each accepted connection's port-0 socket and demux by
    * the embedded rank (accept order != rank order). */
+  uint64_t run = run_id;
   unsigned peers = n - 1;
   for (unsigned c = 0; c < peers; c++) {
     int fd = arts_socket_receive_list[(size_t)c * arts_socket_ports + 0];
@@ -141,6 +143,9 @@ void arts_net_exchange_addresses(void) {
                  in.rank, strerror(errno));
     }
     memcpy(table + (size_t)in.rank * own_len, in.addr, own_len);
+    if (in.rank == 0) {
+      run = in.run_id;
+    }
   }
 
   /* Insert the whole table in rank order so fi_addr_t == rank. */
@@ -148,4 +153,5 @@ void arts_net_exchange_addresses(void) {
   arts_free(table);
   ARTS_INFO("arts_net: address exchange complete (%u ranks, %u-byte addrs)", n,
             own_len);
+  return run;
 }

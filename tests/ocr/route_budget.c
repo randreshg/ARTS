@@ -14,8 +14,8 @@
 /// at n and at 2n.  A process-local counter on the judged rank starts at n + 1
 /// on a one-rank shape (the main EDT decrements it last) and at n on rank
 /// 1 of a two-rank shape; the last EDT of each unit decrements it, and whoever
-/// takes it to zero shuts the run down.  That termination is harness
-/// mechanics, not a pattern for a program.
+/// takes it to zero prints the pass line and shuts the run down.  That
+/// termination is harness mechanics, not a pattern for a program.
 ///
 ///   none        Nothing per unit.
 ///   create      A sticky event, a block created with ARTS_DB_PROP_NO_ACQUIRE
@@ -51,9 +51,15 @@
  * arts_rt; relaxed decrements by the units' last EDTs; the decrement that
  * reaches zero is the only one that acts, so no other access needs an order. */
 static _Atomic(int64_t) g_remaining;
+static const char *g_shape_name;
+static uint64_t g_n;
 
 static void unit_done(void) {
   if (atomic_fetch_sub_explicit(&g_remaining, 1, memory_order_relaxed) == 1) {
+    if (arts_test_status() == 0) {
+      printf("PASS: route_budget %s %llu\n", g_shape_name,
+             (unsigned long long)g_n);
+    }
     arts_shutdown();
   }
 }
@@ -268,7 +274,6 @@ static const struct {
 
 static shape_fn g_run;
 static bool g_two_rank;
-static uint64_t g_n;
 
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
               arts_edt_dep_t depv[]) {
@@ -299,6 +304,7 @@ int main(int argc, char **argv) {
     if (strcmp(argv[1], g_shapes[i].name) == 0) {
       g_run = g_shapes[i].run;
       g_two_rank = g_shapes[i].two_rank;
+      g_shape_name = g_shapes[i].name;
     }
   }
   char *end = NULL;
@@ -311,11 +317,5 @@ int main(int argc, char **argv) {
   atomic_store_explicit(&g_remaining, (int64_t)g_n + (g_two_rank ? 0 : 1),
                         memory_order_relaxed);
 
-  int rc = arts_rt(argc, argv);
-  if (rc != 0 || arts_test_status() != 0) {
-    printf("FAIL: route_budget %s %s\n", argv[1], argv[2]);
-    return 1;
-  }
-  printf("PASS: route_budget %s %s\n", argv[1], argv[2]);
-  return 0;
+  return arts_rt(argc, argv);
 }

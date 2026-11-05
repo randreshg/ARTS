@@ -4,27 +4,26 @@
 ******************************************************************************/
 /// @file runtime_concurrent_shutdown.c
 /// @brief Drives multiple concurrent shutdown initiators (many EDTs each call
-///        arts_shutdown) and verifies the shutdown_state CAS gate keeps exactly
-///        one post/stop, with no deadlock and a clean return.
+///        arts_shutdown): exactly one of them begins the rank's end, with no
+///        deadlock and a clean end.
 ///
 /// arts_shutdown -> arts_enter_shutdown_state(ARTS_EXIT_APP) gates on a
 /// compare-exchange of shutdown_state from 0 to 1: exactly one caller wins
 /// the 0->1 transition and performs the post (MN) + stop_workers; all others
-/// observe a non-zero state and no-op.  That CAS is the word's only writer.
-/// Here we stress N worker EDTs racing into arts_shutdown simultaneously: the
-/// runtime must terminate cleanly (ctest TIMEOUT reaps a hang) and the final
-/// shutdown_state must read 1 (the CAS landed exactly once and was never torn
-/// back to 0).
+/// observe a non-zero state and no-op.  Here we stress N worker EDTs racing
+/// into arts_shutdown simultaneously: the run must end with status 0 (ctest
+/// TIMEOUT reaps a hang), and where the tree writes counter files the
+/// registration's record check reads the rank's end from its file: origin
+/// APP, status 0.
 ///
 /// We fan out N independent EDTs that all call arts_shutdown.  A win counter in
 /// a DB lets each EDT observe how many got to run before the runtime stopped;
-/// the property under test is liveness (no deadlock) plus shutdown_state==1.
+/// the property under test is liveness (no deadlock) and one clean end.
 ///
 /// The initiators acquire one block RW with no order among them, so the
 /// program lies outside DB-WRF.
 
 #include "arts.h"
-#include "arts/runtime_state.h"
 
 #include "arts/utils/stdatomic_compat.h"
 
@@ -72,21 +71,4 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
               N_INITIATORS);
 }
 
-int main(int argc, char **argv) {
-  if (arts_rt(argc, argv) != 0) {
-    return 1;
-  }
-  /* After arts_rt returns, the runtime has stopped cleanly.  Exactly one CAS
-   * must have driven shutdown_state to 1 and nothing torn it back to 0.
-   * Relaxed: every runtime thread has been joined. */
-  unsigned int s = atomic_load_explicit(&arts_node_info.shutdown_state,
-                                        memory_order_relaxed);
-  if (s != 1u) {
-    arts_printf("FAIL runtime_concurrent_shutdown: shutdown_state=%u "
-                "(expected 1)\n",
-                s);
-    return 1;
-  }
-  arts_printf("SHUTDOWN_STATE_OK\n");
-  return 0;
-}
+int main(int argc, char **argv) { return arts_rt(argc, argv); }

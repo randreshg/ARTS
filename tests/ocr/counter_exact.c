@@ -7,7 +7,7 @@
 /// @brief Exact counter values of a known program, read back from the
 ///        per-rank counter files.
 ///
-/// Usage: counter_exact <shape> [<rank>:<COUNTER>=<value>]...
+/// Usage: counter_exact <shape>
 ///
 ///   one    One rank.  Blocks of S bytes: K created with the creator's hold,
 ///          M with ARTS_DB_PROP_NO_ACQUIRE, Z of size zero with the hold, and
@@ -57,18 +57,17 @@
 ///          the write right is on rank 1 by then, confirmed by the home or
 ///          not.  The last of them destroys the block.
 ///
-/// Each expectation names the counter file of a rank (./counters/n<rank>.json,
-/// written by that rank at its teardown) and the exact value the counter must
-/// hold there, or <rank>:<COUNTER> whose value it must equal; the expected
-/// values are the registration's, per cell.  Rank 0 reads every file once its
-/// run, and the ranks it spawned, have ended.
+/// The registration's record check reads each rank's counter file once the
+/// run has ended: <rank>:<COUNTER>=<value> names the exact value a counter
+/// holds in that rank's file, and <rank>:<COUNTER>=<rank>:<COUNTER> another
+/// counter it must equal; the expected values are the registration's, per
+/// cell.
 
 #include "arts.h"
 
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
 #include "../test_failure_status.h"
@@ -503,111 +502,6 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
 }
 
-static char *read_file(const char *path) {
-  FILE *fp = fopen(path, "r");
-  if (fp == NULL) {
-    return NULL;
-  }
-  (void)fseek(fp, 0, SEEK_END);
-  long sz = ftell(fp);
-  (void)fseek(fp, 0, SEEK_SET);
-  if (sz <= 0) {
-    (void)fclose(fp);
-    return NULL;
-  }
-  char *buf = (char *)malloc((size_t)sz + 1);
-  size_t got = fread(buf, 1, (size_t)sz, fp);
-  (void)fclose(fp);
-  buf[got] = '\0';
-  return buf;
-}
-
-/* The "value" of counter object `name`; false when the file lacks it. */
-static bool counter_value(const char *json, const char *name, uint64_t *out) {
-  char key[128];
-  (void)snprintf(key, sizeof(key), "\"%s\"", name);
-  const char *obj = strstr(json, key);
-  if (obj == NULL) {
-    return false;
-  }
-  const char *v = strstr(obj, "\"value\"");
-  if (v == NULL) {
-    return false;
-  }
-  v = strchr(v + strlen("\"value\""), ':');
-  if (v == NULL) {
-    return false;
-  }
-  char *end = NULL;
-  *out = strtoull(v + 1, &end, 10);
-  return end != v + 1;
-}
-
-#define MAX_RANKS 2
-
-static char *g_json[MAX_RANKS];
-
-/* The value of `rank`'s counter `name`; false, with the reason printed, when
- * it cannot be read. */
-static bool rank_value(unsigned int rank, const char *name, uint64_t *out) {
-  if (rank >= MAX_RANKS) {
-    printf("FAIL: counter_exact: no rank %u in this run\n", rank);
-    return false;
-  }
-  if (g_json[rank] == NULL) {
-    char path[64];
-    (void)snprintf(path, sizeof(path), "./counters/n%u.json", rank);
-    g_json[rank] = read_file(path);
-    if (g_json[rank] == NULL) {
-      printf("FAIL: counter_exact: %s not found or empty\n", path);
-      return false;
-    }
-  }
-  if (!counter_value(g_json[rank], name, out)) {
-    printf("FAIL: counter_exact: rank %u's file carries no %s\n", rank, name);
-    return false;
-  }
-  return true;
-}
-
-/* One expectation: <rank>:<COUNTER>=<value> or <rank>:<COUNTER>=<r>:<NAME>. */
-static bool check(const char *shape, const char *expect) {
-  unsigned int rank = 0;
-  unsigned int other = 0;
-  char name[96];
-  char other_name[96];
-  unsigned long long want = 0;
-  int n = sscanf(expect, "%u:%95[A-Z0-9_]=%u:%95[A-Z0-9_]", &rank, name, &other,
-                 other_name);
-  uint64_t got = 0;
-  if (n == 4) {
-    uint64_t ref = 0;
-    if (!rank_value(rank, name, &got) || !rank_value(other, other_name, &ref)) {
-      return false;
-    }
-    if (got != ref) {
-      printf("FAIL: counter_exact %s: rank %u %s = %llu, rank %u %s = %llu\n",
-             shape, rank, name, (unsigned long long)got, other, other_name,
-             (unsigned long long)ref);
-      return false;
-    }
-    return true;
-  }
-  if (sscanf(expect, "%u:%95[A-Z0-9_]=%llu", &rank, name, &want) != 3) {
-    printf("FAIL: counter_exact: bad expectation %s\n", expect);
-    return false;
-  }
-  if (!rank_value(rank, name, &got)) {
-    return false;
-  }
-  if (got != (uint64_t)want) {
-    printf("FAIL: counter_exact %s: rank %u %s = %llu, expected %llu\n", shape,
-           rank, name, (unsigned long long)got, want);
-    return false;
-  }
-  return true;
-}
-
 int main(int argc, char **argv) {
   if (argc < 2) {
     printf("FAIL: counter_exact needs a shape\n");
@@ -635,34 +529,5 @@ int main(int argc, char **argv) {
     printf("FAIL: counter_exact: unknown shape %s\n", argv[1]);
     return 1;
   }
-  /* Files an earlier run left must not stand in for this run's. */
-  for (int r = 0; r < MAX_RANKS; r++) {
-    char path[64];
-    (void)snprintf(path, sizeof(path), "./counters/n%d.json", r);
-    (void)remove(path);
-  }
-  int rc = arts_rt(argc, argv);
-  if (arts_get_current_rank() != 0u) {
-    return rc ? 1 : arts_test_status();
-  }
-  if (rc != 0 || arts_test_status() != 0) {
-    printf("FAIL: counter_exact %s: the runtime run failed\n", argv[1]);
-    return 1;
-  }
-  int failures = 0;
-  int checked = 0;
-  for (int i = 2; i < argc; i++) {
-    if (!check(argv[1], argv[i])) {
-      failures++;
-    }
-    checked++;
-  }
-  for (int r = 0; r < MAX_RANKS; r++) {
-    free(g_json[r]);
-  }
-  if (failures != 0) {
-    return 1;
-  }
-  printf("PASS: counter_exact %s %d values\n", argv[1], checked);
-  return 0;
+  return arts_rt(argc, argv);
 }

@@ -416,8 +416,16 @@ else()
         CACHE INTERNAL "whether this tree registers multinode tests" FORCE)
 endif()
 
+# arts_add_test(<name> [STATUS <n>] [RECORDS <n>]
+#               [RECORD_CHECK <script> [<arg>...]] COMMAND <program> [<arg>...])
+# RECORDS <n> requires one counter file per rank, n0.json ... n<n-1>.json, all
+# naming one run; RECORD_CHECK runs <script> (a path, or a name in
+# tests/cmake) over the test's counter folder once the program has ended as
+# required.  Both read the files a counter-enabled tree writes, so a test
+# carries them only where its tree's counter config captures what it reads.
 function(arts_add_test test_name)
-    cmake_parse_arguments(ARG "" "STATUS" "COMMAND" ${ARGN})
+    cmake_parse_arguments(ARG "" "STATUS;RECORDS" "COMMAND;RECORD_CHECK"
+                          ${ARGN})
     if(NOT DEFINED ARG_STATUS)
         set(ARG_STATUS 0)
     endif()
@@ -425,10 +433,35 @@ function(arts_add_test test_name)
     if(TARGET ${_program})
         set(_program $<TARGET_FILE:${_program}>)
     endif()
+    set(_records "")
+    if(DEFINED ARG_RECORDS)
+        if(NOT ARG_RECORDS MATCHES "^[1-9][0-9]*$")
+            message(FATAL_ERROR "${test_name}: RECORDS is a rank count, not "
+                    "'${ARG_RECORDS}'")
+        endif()
+        list(APPEND _records -DRECORDS=${ARG_RECORDS})
+    endif()
+    if(DEFINED ARG_RECORD_CHECK)
+        list(POP_FRONT ARG_RECORD_CHECK _script)
+        if(NOT IS_ABSOLUTE "${_script}")
+            get_filename_component(_dir "${ARTS_TEST_RUNNER}" DIRECTORY)
+            set(_script "${_dir}/${_script}")
+        endif()
+        if(NOT EXISTS "${_script}")
+            message(FATAL_ERROR "${test_name}: no record check ${_script}")
+        endif()
+        list(LENGTH ARG_RECORD_CHECK _argc)
+        list(APPEND _records -DRECORD_CHECK=${_script} -DRECORD_ARGC=${_argc})
+        set(_i 0)
+        foreach(_a IN LISTS ARG_RECORD_CHECK)
+            list(APPEND _records "-DRECORD_ARG${_i}=${_a}")
+            math(EXPR _i "${_i} + 1")
+        endforeach()
+    endif()
     add_test(
         NAME ${test_name}
-        COMMAND ${CMAKE_COMMAND} -DSTATUS=${ARG_STATUS} -P ${ARTS_TEST_RUNNER}
-                -- ${_program} ${ARG_COMMAND}
+        COMMAND ${CMAKE_COMMAND} -DSTATUS=${ARG_STATUS} ${_records}
+                -P ${ARTS_TEST_RUNNER} -- ${_program} ${ARG_COMMAND}
         WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
     )
     set_tests_properties(${test_name} PROPERTIES ARTS_TEST_RUN TRUE)
@@ -495,16 +528,29 @@ function(arts_test_properties)
     endwhile()
 endfunction()
 
+# RECORDS and RECORD_CHECK are arts_add_test's, passed on as given.
+macro(_arts_test_record_args out)
+    set(${out} "")
+    if(DEFINED ARG_RECORDS)
+        list(APPEND ${out} RECORDS ${ARG_RECORDS})
+    endif()
+    if(DEFINED ARG_RECORD_CHECK)
+        list(APPEND ${out} RECORD_CHECK ${ARG_RECORD_CHECK})
+    endif()
+endmacro()
+
 function(register_single_node_test test_name)
-    cmake_parse_arguments(ARG "" "TIMEOUT;STATUS" "ARGS" ${ARGN})
+    cmake_parse_arguments(ARG "" "TIMEOUT;STATUS;RECORDS" "ARGS;RECORD_CHECK"
+                          ${ARGN})
     if(NOT ARG_TIMEOUT)
         set(ARG_TIMEOUT 10)
     endif()
     if(NOT DEFINED ARG_STATUS)
         set(ARG_STATUS 0)
     endif()
+    _arts_test_record_args(_rec)
     arts_test_cfg(_cfg 1n_20w)
-    arts_add_test(${test_name} STATUS ${ARG_STATUS}
+    arts_add_test(${test_name} STATUS ${ARG_STATUS} ${_rec}
                   COMMAND ${test_name} ${ARG_ARGS})
     set_tests_properties(${test_name} PROPERTIES
         LABELS "single_node"
@@ -527,7 +573,8 @@ set(ARTS_TEST_MULTINODE_VARIANTS 2n_9w_1p 4n_4w_1p 2n_8w_2p
     CACHE INTERNAL "the multinode variants a test registers unless it names its own" FORCE)
 
 function(register_multinode_test test_name)
-    cmake_parse_arguments(ARG "" "TIMEOUT;STATUS" "ARGS;VARIANTS" ${ARGN})
+    cmake_parse_arguments(ARG "" "TIMEOUT;STATUS;RECORDS"
+                          "ARGS;VARIANTS;RECORD_CHECK" ${ARGN})
     if(NOT ARG_TIMEOUT)
         set(ARG_TIMEOUT 60)
     endif()
@@ -537,10 +584,11 @@ function(register_multinode_test test_name)
     if(NOT DEFINED ARG_STATUS)
         set(ARG_STATUS 0)
     endif()
+    _arts_test_record_args(_rec)
     foreach(variant IN LISTS ARG_VARIANTS)
         arts_test_cfg(_cfg ${variant})
         arts_add_multinode_test(${test_name}_${variant} STATUS ${ARG_STATUS}
-                                COMMAND ${test_name} ${ARG_ARGS})
+                                ${_rec} COMMAND ${test_name} ${ARG_ARGS})
         arts_test_properties(${test_name}_${variant} PROPERTIES
             LABELS "multinode"
             TIMEOUT ${ARG_TIMEOUT}
@@ -738,6 +786,16 @@ function(arts_test_finalize)
     arts_tsan_residue_test_env()
     get_property(_tests DIRECTORY PROPERTY TESTS)
     foreach(_t IN LISTS _tests)
+        # Each test writes its counter files into a folder of its own, which
+        # its runner makes and clears of the rank files an earlier run left; a
+        # test that names its own folder keeps it.  Appended here because the
+        # register_* helpers set ENVIRONMENT after arts_add_test, which would
+        # replace a value set there.
+        get_test_property(${_t} ENVIRONMENT _env)
+        if(NOT _env MATCHES "(^|;)counter_folder=")
+            set_property(TEST ${_t} APPEND PROPERTY ENVIRONMENT
+                "counter_folder=${CMAKE_CURRENT_BINARY_DIR}/counters/${_t}")
+        endif()
         get_test_property(${_t} WILL_FAIL _will_fail)
         if(_will_fail)
             message(FATAL_ERROR "${_t}: WILL_FAIL inverts every verdict, a "
@@ -3089,10 +3147,15 @@ if(ARTS_DEBUG_INJECTION)
                     PASS "PASS: grant_home_reclaim_destroy 8 rounds x 32 blocks")
 endif()
 
-# db_size_round_once reads the size rounds the home sent back from the counter
-# file, which carries them only where the tree's counter config captures the
-# arm's counters; elsewhere it is built and not registered.  A store whose
-# grants carry no payload sends no size round.
+# db_size_round_once's record check reads the size rounds the home sent back
+# from the counter file, which carries them only where the tree's counter
+# config captures the arm's counters; elsewhere it is built and not
+# registered.  A store whose grants carry no payload sends no size round.
+# Each counter counts the size rounds of one plane: a write request's
+# (GRANT), a read request's (SNAPSHOT, INV), or either's (EXCL, FLUSH).  Only
+# the second rank's first request of a block pays one, a write under
+# `writes` and a read under `reads`, so for `reserved` the counter of that
+# plane holds one per block (8) and every other holds 0.
 add_arts_test(db_size_round_once)
 if(ARTS_COHERENCE_ARM STREQUAL "EXCL")
     set(_size_counters NUM_EXCL_SIZE_CTS)
@@ -3103,6 +3166,11 @@ elseif(ARTS_COHERENCE_ARM STREQUAL "FLUSH")
 else()
     set(_size_counters NUM_GRANT_SIZE_CTS NUM_INV_SIZE_CTS)
 endif()
+set(_size_plane_NUM_GRANT_SIZE_CTS writes)
+set(_size_plane_NUM_SNAPSHOT_SIZE_CTS reads)
+set(_size_plane_NUM_INV_SIZE_CTS reads)
+set(_size_plane_NUM_EXCL_SIZE_CTS writes reads)
+set(_size_plane_NUM_FLUSH_SIZE_CTS writes reads)
 set(_size_captured ON)
 foreach(_c IN LISTS _size_counters)
     file(STRINGS "${COUNTER_CONFIG_FILE}" _line REGEX "^${_c}=")
@@ -3114,14 +3182,22 @@ if(_size_captured AND NOT ARTS_CXL_TREE_RESIDENCY)
     arts_test_cfg(_cfg 2n_9w_1p)
     foreach(_g reserved minted)
         foreach(_m writes reads)
-            arts_add_multinode_test(db_size_round_once_${_g}_${_m}
-                                    COMMAND db_size_round_once ${_g} ${_m})
+            set(_rounds "")
+            foreach(_c IN LISTS _size_counters)
+                if(_g STREQUAL "reserved" AND _m IN_LIST _size_plane_${_c})
+                    list(APPEND _rounds 0:${_c}=8)
+                else()
+                    list(APPEND _rounds 0:${_c}=0)
+                endif()
+            endforeach()
+            arts_add_multinode_test(db_size_round_once_${_g}_${_m} RECORDS 2
+                RECORD_CHECK record_values.cmake ${_rounds}
+                COMMAND db_size_round_once ${_g} ${_m})
             arts_test_properties(db_size_round_once_${_g}_${_m} PROPERTIES
                 LABELS "multinode"
                 TIMEOUT 60
                 RESOURCE_LOCK "arts_runtime"
                 ENVIRONMENT "ARTS_CONFIG=${_cfg}"
-                PASS_REGULAR_EXPRESSION "PASS: db_size_round_once"
                 FAIL_REGULAR_EXPRESSION "FAIL:")
         endforeach()
     endforeach()

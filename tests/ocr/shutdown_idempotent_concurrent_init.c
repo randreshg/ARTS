@@ -17,18 +17,17 @@
 /// post storm, no deadlock.
 ///
 /// Each of the first two ranks schedules a LOCAL shutdown initiator EDT, so two
-/// independent initiations race across the cluster.  Each rank prints a clean
-/// token after arts_rt returns, and the master's status carries the
-/// launcher's verdict on every rank (ctest TIMEOUT reaps a storm/deadlock
+/// independent initiations race across the cluster.  Each initiator prints
+/// its token before it calls arts_shutdown, and the master's status carries
+/// the launcher's verdict on every rank (ctest TIMEOUT reaps a storm/deadlock
 /// regression).
 ///
-/// Multinode (2n_9w_1p/4n_4w_1p/2n_8w_2p).  Self-skips cleanly to a
-/// single-node clean shutdown when only one rank is present.  Every
+/// Multinode (2n_9w_1p/4n_4w_1p).  A run on one rank fails.  Every
 /// configuration (shutdown sits above the coherence layer).
 
 #include "arts.h"
 
-#include <stdio.h>
+#include "../test_failure_status.h"
 
 void local_initiator_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                          arts_edt_dep_t depv[]) {
@@ -38,6 +37,7 @@ void local_initiator_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depv;
   arts_printf("  rank %u initiating shutdown concurrently\n",
               arts_get_current_rank());
+  arts_printf("[rank %u] IDEMPOTENT_INIT_EXIT\n", arts_get_current_rank());
   arts_shutdown();
 }
 
@@ -52,9 +52,10 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   unsigned int ranks = arts_get_total_ranks();
   if (ranks < 2) {
-    arts_printf("SKIP shutdown_idempotent_concurrent_init: requires 2+ ranks "
+    arts_printf("FAIL shutdown_idempotent_concurrent_init: requires 2+ ranks "
                 "(got %u)\n",
                 ranks);
+    arts_test_fail();
     arts_shutdown();
     return;
   }
@@ -69,8 +70,4 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                   &(arts_edt_hint_t){.rank = 1});
 }
 
-int main(int argc, char **argv) {
-  int rc = arts_rt(argc, argv);
-  printf("[rank %u] IDEMPOTENT_INIT_EXIT\n", arts_get_current_rank());
-  return rc ? 1 : 0;
-}
+int main(int argc, char **argv) { return arts_rt(argc, argv); }

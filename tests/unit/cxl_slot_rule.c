@@ -29,22 +29,35 @@
 #include "arts/gas/route_table.h"
 #include "arts/utils/shared.h"
 
-#include "../test_failure_status.h"
-
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 
 /* The verdict is the exit status: the check that decides it must have RUN,
  * not merely not failed, or a shutdown that wins the race against it would
- * pass an empty run. */
+ * pass an empty run.  The checks run on the home, rank 0, so the home's
+ * status fails a run in which they never ran, however the run ended; any
+ * rank's status fails a run in which a check failed. */
 static _Atomic(int) g_check_ran;
+static _Atomic(unsigned int) g_failures;
+
+int arts_app_exit_status(void) {
+  if (atomic_load_explicit(&g_failures, memory_order_relaxed) != 0u) {
+    return 1;
+  }
+  if (arts_get_current_rank() == 0u &&
+      !atomic_load_explicit(&g_check_ran, memory_order_acquire)) {
+    return 1;
+  }
+  return 0;
+}
 
 #define N 64
 
 static void fail(const char *what) {
   (void)fprintf(stderr, "FAIL: %s\n", what);
-  arts_test_fail();
+  atomic_fetch_add_explicit(&g_failures, 1u, memory_order_relaxed);
 }
 
 /* The block's slot as this rank knows it, or 0 when this rank keeps no cache
@@ -134,8 +147,8 @@ static void shutdown_edt(uint32_t paramc, const uint64_t *paramv,
  * and slot 4 takes that label for writing once they are done: the home grants
  * it only after their releases have landed, so no leg is still outstanding
  * when the run shuts down and none of them can be skipped by losing a race to
- * the shutdown.  main fails a run in which this check never ran, so a run
- * that never reached these checks cannot pass. */
+ * the shutdown.  The home's status fails a run in which this check never
+ * ran, so a run that never reached these checks cannot pass. */
 static void home_check_edt(uint32_t paramc, const uint64_t *paramv,
                            uint32_t depc, arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -310,17 +323,4 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                         &(arts_edt_hint_t){.rank = 1u});
 }
 
-int main(int argc, char **argv) {
-  int rc = arts_rt(argc, argv);
-  if (rc) {
-    return 1;
-  }
-  /* The checks run on the home, rank 0, whose status is the one the launcher
-   * reports; every other rank contributes only through arts_test_status. */
-  if (arts_get_current_rank() == 0u &&
-      !atomic_load_explicit(&g_check_ran, memory_order_acquire)) {
-    (void)fprintf(stderr, "FAIL cxl_slot_rule: the deciding check never ran\n");
-    return 1;
-  }
-  return arts_test_status();
-}
+int main(int argc, char **argv) { return arts_rt(argc, argv); }
