@@ -389,9 +389,9 @@ static void runtime_reclaim_report(size_t discarded, uint64_t ended) {
 }
 
 void arts_runtime_global_cleanup() {
-  /* Write all counter outputs (thread, node, and cluster levels).  A thread
-   * the shutdown gave up joining may still be writing its own row, so it has
-   * no thread file and the node and cluster values leave it out. */
+  /* Write all counter outputs (thread and node levels).  A thread the
+   * shutdown gave up joining may still be writing its own row, so it has no
+   * thread file and the node values leave it out. */
   unsigned int tc = arts_node_info.total_thread_count;
   const bool *unjoined = arts_shutdown_abandon.unjoined;
   for (unsigned int t = 0; t < tc; t++) {

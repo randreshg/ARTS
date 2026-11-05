@@ -28,6 +28,9 @@ Each line follows the format:
 
    COUNTER_NAME=MODE[,LEVEL[,REDUCE]]
 
+A line whose first non-blank character is ``#`` is a comment.  Any other
+non-blank line that is not of this form is a configure error naming it.
+
 Parameters
 ~~~~~~~~~~
 
@@ -42,7 +45,6 @@ Parameters
 
 - ``THREAD`` — per-thread output, no reduction.
 - ``NODE`` — per-node output, reduced across threads.
-- ``CLUSTER`` — cluster-wide output, reduced across all nodes.
 
 **Reduce** (optional, default ``SUM``):
 
@@ -68,14 +70,14 @@ Examples
    # Disabled
    TIME_EDT_EXEC=OFF
 
-   # Capture once at end, cluster-wide sum
-   TIME_EDT_EXEC=ONCE,CLUSTER
+   # Capture once at end, summed over a rank's threads
+   TIME_EDT_EXEC=ONCE,NODE
 
    # Periodic per-thread capture (no reduction)
    TIME_EDT_EXEC=PERIODIC,THREAD
 
-   # Periodic cluster-wide maximum
-   TIME_EDT_EXEC=PERIODIC,CLUSTER,MAX
+   # Periodic maximum over a rank's threads
+   TIME_EDT_EXEC=PERIODIC,NODE,MAX
 
 Available Counters
 ------------------
@@ -282,7 +284,8 @@ Memory — Bytes
      - Usable bytes held through the runtime's ``arts_malloc`` family:
        control structures, not DB payloads or the registered pool.  A
        thread's own value wraps when another thread frees what it
-       allocated, so read it as a node or cluster ``SUM``.
+       allocated, so read it as a node ``SUM``, or as the ``SUM`` over
+       ranks that artsrun's ``c.json`` holds.
 
 Network — Bytes
 ~~~~~~~~~~~~~~~
@@ -369,7 +372,8 @@ Event — Count
    * - ``NUM_EVENT_DESTROY``
      - Events retired on their home: an explicit destroy, an auto-destroy
        after firing, or a counted event's last bind.  Summed over the
-       cluster, creates minus this is what the run still holds.
+       ranks (artsrun's ``c.json``), creates minus this is what the run
+       still holds.
 
 Scheduling — Count
 ~~~~~~~~~~~~~~~~~~
@@ -670,11 +674,12 @@ File naming depends on the counter level:
 
 - **THREAD** — ``n{node}_t{thread}.json`` (one file per thread).
 - **NODE** — ``n{node}.json`` (one file per node, reduced across threads).
-- **CLUSTER** — ``cluster.json`` (single file on the master node, reduced
-  across all nodes).
+
+The runtime does not reduce across ranks: ``artsrun`` reduces a run's
+``n{node}.json`` files into one ``c.json`` (``tools/artsrun/README.md``).
 
 A thread the shutdown could not join writes no ``n{node}_t{thread}.json``,
-and its counts are missing from the node and cluster values.
+and its counts are missing from the node values.
 
 Each JSON file includes a ``timestamp`` (Unix epoch), a ``version``
 string, and a ``counters`` object whose keys are counter names.

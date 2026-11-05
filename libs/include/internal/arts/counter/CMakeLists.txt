@@ -73,83 +73,8 @@ endforeach()
 list(LENGTH COUNTER_TYPES COUNTER_COUNT)
 message(STATUS "Parsed ${COUNTER_COUNT} counters from counter.h: ${COUNTER_TYPES}")
 
-# Set counter configuration
-if(NOT EXISTS "${ARTS_COUNTER_CONFIG}")
-    message(FATAL_ERROR "Counter configuration file not found: ${ARTS_COUNTER_CONFIG}")
-endif()
 message(STATUS "Using counter configuration file: ${ARTS_COUNTER_CONFIG}")
-
-# Parse configuration file
-file(STRINGS "${ARTS_COUNTER_CONFIG}" COUNTER_CONFIG_LINES)
-set(ENABLED_COUNT 0)
-set(DISABLED_COUNT 0)
-
-# Counter mode values: 0=OFF, 1=ONCE, 2=PERIODIC
-# Counter level values: 0=THREAD, 1=NODE, 2=CLUSTER
-# Counter reduce method values: 0=SUM, 1=MAX, 2=MIN, 3=MASTER
-# Format: COUNTER=counterMode[,counterLevel[,reduceMethod]]
-# Default counterLevel is NODE (1), default reduceMethod is SUM (0)
-foreach(LINE ${COUNTER_CONFIG_LINES})
-    if(LINE MATCHES "^[ \\t]*#" OR LINE MATCHES "^[ \\t]*$")
-        continue()
-    endif()
-    # Match: COUNTER=MODE or COUNTER=MODE,LEVEL or COUNTER=MODE,LEVEL,REDUCE
-    if(LINE MATCHES "^([A-Za-z0-9_]+)[ \\t]*=[ \\t]*(OFF|ONCE|PERIODIC)(,[ \\t]*(THREAD|NODE|CLUSTER))?(,[ \\t]*(SUM|MAX|MIN|MASTER))?")
-        set(KEY ${CMAKE_MATCH_1})
-        set(COUNTER_MODE ${CMAKE_MATCH_2})
-        set(COUNTER_LEVEL ${CMAKE_MATCH_4})
-        set(REDUCE_METHOD ${CMAKE_MATCH_6})
-
-        # Default counterLevel to NODE if not specified
-        if(NOT COUNTER_LEVEL)
-            set(COUNTER_LEVEL "NODE")
-        endif()
-
-        # Default reduceMethod to SUM if not specified
-        if(NOT REDUCE_METHOD)
-            set(REDUCE_METHOD "SUM")
-        endif()
-
-        # Set CMake variables for this counter
-        if(COUNTER_MODE STREQUAL "OFF")
-            set(ENABLE_${KEY} 0)
-            set(COUNTER_MODE_${KEY} 0) # artsCounterModeOff
-            set(COUNTER_LEVEL_${KEY} 1) # default to NODE
-            set(REDUCE_METHOD_${KEY} 0) # default to SUM
-            math(EXPR DISABLED_COUNT "${DISABLED_COUNT} + 1")
-        else()
-            set(ENABLE_${KEY} 1)
-            math(EXPR ENABLED_COUNT "${ENABLED_COUNT} + 1")
-
-            # Set counter mode
-            if(COUNTER_MODE STREQUAL "ONCE")
-                set(COUNTER_MODE_${KEY} 1) # artsCounterModeOnce
-            elseif(COUNTER_MODE STREQUAL "PERIODIC")
-                set(COUNTER_MODE_${KEY} 2) # artsCounterModePeriodic
-            endif()
-
-            # Set counter level
-            if(COUNTER_LEVEL STREQUAL "THREAD")
-                set(COUNTER_LEVEL_${KEY} 0) # artsCounterLevelThread
-            elseif(COUNTER_LEVEL STREQUAL "NODE")
-                set(COUNTER_LEVEL_${KEY} 1) # artsCounterLevelNode
-            elseif(COUNTER_LEVEL STREQUAL "CLUSTER")
-                set(COUNTER_LEVEL_${KEY} 2) # artsCounterLevelCluster
-            endif()
-
-            # Set reduce method
-            if(REDUCE_METHOD STREQUAL "SUM")
-                set(REDUCE_METHOD_${KEY} 0) # artsCounterReduceSum
-            elseif(REDUCE_METHOD STREQUAL "MAX")
-                set(REDUCE_METHOD_${KEY} 1) # artsCounterReduceMax
-            elseif(REDUCE_METHOD STREQUAL "MIN")
-                set(REDUCE_METHOD_${KEY} 2) # artsCounterReduceMin
-            elseif(REDUCE_METHOD STREQUAL "MASTER")
-                set(REDUCE_METHOD_${KEY} 3) # artsCounterReduceMaster
-            endif()
-        endif()
-    endif()
-endforeach()
+arts_parse_counter_config("${ARTS_COUNTER_CONFIG}")
 
 message(STATUS "Counter configuration: ${ENABLED_COUNT} enabled, ${DISABLED_COUNT} disabled")
 
@@ -207,7 +132,7 @@ foreach(COUNTER ${COUNTER_TYPES})
 endforeach()
 
 # Generate counter level flags for counters
-file(APPEND ${STAGED_HEADER} "\n/* Counter Level Flags (0=THREAD, 1=NODE, 2=CLUSTER) */\n")
+file(APPEND ${STAGED_HEADER} "\n/* Counter Level Flags (0=THREAD, 1=NODE) */\n")
 foreach(COUNTER ${COUNTER_TYPES})
     if(NOT DEFINED COUNTER_LEVEL_${COUNTER})
         set(COUNTER_LEVEL_${COUNTER} 1) # Default to NODE
@@ -284,7 +209,7 @@ file(APPEND ${STAGED_HEADER} "};\n\n")
 
 # Generate counter level array
 file(APPEND ${STAGED_HEADER} "
-/* Counter level array (0=THREAD, 1=NODE, 2=CLUSTER) */
+/* Counter level array (0=THREAD, 1=NODE) */
 static const unsigned int arts_counter_level_array[] = {
 ")
 

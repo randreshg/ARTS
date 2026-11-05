@@ -432,7 +432,24 @@ mode (`OFF` / `ONCE` / `PERIODIC`), a level, and a reduction:
 |---|---|
 | `THREAD` | each worker's own value |
 | `NODE` | reduced across a rank's threads |
-| `CLUSTER` | reduced across ranks, and the per-rank value is still written |
+
+Each rank writes its own `n<rank>.json`; `artsrun` reduces them across ranks
+into the cell's `c.json` beside them, `<run_dir>/counters/<cell>/c.json`
+(`artsrun counters reduce <run_dir>` rebuilds every cell's, taking each
+cell's rank count from the run's manifest; each counter's reduction is the
+`reduce_method` its rank files state, which the run compiled). Only
+`n<rank>.json` files are read, never the per-thread `n<rank>_t<thread>.json`.
+Keys: `run` (the run id), `ranks`, `missing` (ranks of the launched count
+that wrote no usable file), `pre_arm` (files written before the run id
+existed; not reduced), `origin` (rank 0's), `synced` and `t0_offset_ns` (per
+rank, from the synchronised start stamp only when every rank's clock sync
+was `rtt`, else from the wall-clock one), and `counters`: each counter's
+`reduce` method, `value` and, for a PERIODIC counter, its `captureHistory`
+merged by epoch. When a rank is missing every counter carries `partial:
+true`: a SUM over fewer ranks is not the run's total. A MASTER counter is
+`null` without rank 0. Files of two different runs, an unreadable file, or
+a file whose name and stated rank disagree refuse the cell (no `c.json`; a
+stale one is removed); a campaign reports it and goes on.
 
 **Counter selection is a build-time decision.** The set is parsed at configure
 time into `Preamble.h`, whose indices are compiled into every file that

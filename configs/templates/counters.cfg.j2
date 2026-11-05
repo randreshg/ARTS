@@ -5,8 +5,7 @@
 
    Format: NAME=MODE[,LEVEL[,REDUCE]]
      MODE   OFF | ONCE (one value at the end) | PERIODIC (sampled)
-     LEVEL  THREAD (per worker) | NODE (reduced per rank) | CLUSTER (reduced
-            across ranks; the per-rank value is still written)
+     LEVEL  THREAD (per worker) | NODE (reduced per rank)
      REDUCE SUM | MAX | MIN | MASTER
 #}
 # Generated from configs/templates/counters.cfg.j2 — edit the counter set,

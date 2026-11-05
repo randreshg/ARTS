@@ -108,7 +108,7 @@ counters:
   BYTES_MEMORY_FOOTPRINT:
     group: 'Memory'
     unit: bytes
-    help: 'Usable bytes held through the runtime''s arts_malloc family (control structures, not DB payloads or the registered pool); a thread''s value wraps when another thread frees what it allocated, so read it as a node or cluster SUM'
+    help: 'Usable bytes held through the runtime''s arts_malloc family (control structures, not DB payloads or the registered pool); a thread''s value wraps when another thread frees what it allocated, so read it as a node SUM, or as the SUM over ranks that artsrun''s c.json holds'
 
   BYTES_REMOTE_SENT:
     group: 'Network bytes'
@@ -168,7 +168,7 @@ counters:
   NUM_EVENT_DESTROY:
     group: 'Event counts'
     unit: count
-    help: 'Events retired on their home (explicit destroy, auto-destroy after firing, a counted event''s last bind); summed over the cluster, creates minus this is what remains'
+    help: 'Events retired on their home (explicit destroy, auto-destroy after firing, a counted event''s last bind); summed over the ranks (artsrun''s c.json), creates minus this is what remains'
 
   NUM_STEAL_SUCCESS:
     group: 'Scheduling'

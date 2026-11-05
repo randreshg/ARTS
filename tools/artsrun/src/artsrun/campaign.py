@@ -240,6 +240,19 @@ class Campaign:
     def counters_dir(self, cell) -> Path:
         return self.run_dir / "counters" / cell.slug
 
+    def _reduce_counters(self, cell, say) -> None:
+        """Write the cell's c.json from the ranks' own files."""
+        folder = self.counters_dir(cell)
+        if not (self.counterset and self.counterset.enabled
+                and folder.is_dir()):
+            return
+        from artsrun.reduce import ReduceError, write_record
+
+        try:
+            write_record(folder, cell.nodes)
+        except ReduceError as exc:
+            say(f"{cell.key}: counters not reduced: {exc}")
+
     def cells(self):
         counters = self.counterset
         on = bool(counters and counters.enabled)
@@ -380,6 +393,8 @@ class Campaign:
                 row["extra"] = dict(result.extra)
             track.write(json.dumps(row) + "\n")
             track.flush()
+            if kind == "finished":
+                self._reduce_counters(result.cell, say)
             if kind == "finished" and announce_cells:
                 timing = (f"{result.e2e_s:.1f}s e2e, "
                           f"{result.wall_s:.1f}s wall"

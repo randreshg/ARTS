@@ -106,6 +106,7 @@ endif()
 # as a runtime object still links.
 include(cmake/ArtsAtomicLink.cmake)
 include(cmake/ArtsWriteIfChanged.cmake)
+include(cmake/ArtsCounterConfig.cmake)
 arts_resolve_atomic_link(C)
 if(ARTS_ATOMIC_LINK)
     set(CMAKE_REQUIRED_LIBRARIES "${ARTS_ATOMIC_LINK}" ${CMAKE_REQUIRED_LIBRARIES})

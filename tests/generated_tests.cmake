@@ -844,36 +844,6 @@ set_tests_properties(api_current_group_null PROPERTIES PASS_REGULAR_EXPRESSION "
 endif()
 
 # --- counters ---
-# The counter tests read their values back from the counter files, which carry
-# a counter only where the tree's counter config captures it; everywhere else
-# there is nothing for a program to read, so it is built (and kept compiling)
-# but not registered.  arts_counters_captured(out NAME...) is TRUE when the
-# config captures every NAME.
-function(arts_counters_captured out)
-    set(_all TRUE)
-    foreach(_c IN LISTS ARGN)
-        file(STRINGS "${COUNTER_CONFIG_FILE}" _line REGEX "^${_c}=")
-        if(NOT _line OR _line MATCHES "^${_c}=OFF")
-            set(_all FALSE)
-        endif()
-    endforeach()
-    set(${out} ${_all} PARENT_SCOPE)
-endfunction()
-
-# arts_counters_periodic(out) is TRUE when the config captures some counter
-# PERIODIC, so every run starts the capture thread and, on a run of several
-# ranks, the counters' time sync, whose request is one more message from every
-# rank but the master.
-function(arts_counters_periodic out)
-    file(STRINGS "${COUNTER_CONFIG_FILE}" _lines
-         REGEX "^[A-Za-z0-9_]+[ \t]*=[ \t]*PERIODIC")
-    if(_lines)
-        set(${out} TRUE PARENT_SCOPE)
-    else()
-        set(${out} FALSE PARENT_SCOPE)
-    endif()
-endfunction()
-
 # counter_smoke_value: the EDTs a program creates and runs are counted exactly,
 # main EDT included.  No cell changes how EDTs are counted.
 if(ARTS_TEST_REFERENCE_TREE)
@@ -910,6 +880,39 @@ if(ARTS_TEST_REFERENCE_TREE)
                 LABELS "multinode" TIMEOUT 60 RESOURCE_LOCK "arts_runtime"
                 ENVIRONMENT "ARTS_CONFIG=${_cfg}")
         endforeach()
+    endif()
+endif()
+
+# Rank files of two runs in one counter folder are refused, not reduced as one
+# run: a run on two ranks and then one on one rank write into one folder that
+# nothing clears between them, so rank 0's file names the second run and rank
+# 1's the first; artsrun's reducer reads the folder as one run after the
+# first and exits with status 2 and "mixed run ids" after the second.  The
+# reducer imports the standard library alone and runs isolated (-I).
+# Registered where some counter is captured at NODE level and Python 3.11 or
+# later is found.
+if(ARTS_TEST_REFERENCE_TREE)
+    arts_counters_node_level(_n)
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if(_n AND Python3_Interpreter_FOUND AND
+       NOT Python3_VERSION VERSION_LESS 3.11)
+        set(_reducer "${CMAKE_SOURCE_DIR}/tools/artsrun/src/artsrun/reduce.py")
+        set(_script
+            "${CMAKE_CURRENT_SOURCE_DIR}/cmake/record_foreign_run_id.cmake")
+        arts_test_cfg(_mn_cfg 2n_9w_1p)
+        arts_test_cfg(_cfg 1n_20w)
+        arts_add_multinode_test(record_foreign_run_id
+            COMMAND ${CMAKE_COMMAND}
+                    -DPROGRAM=$<TARGET_FILE:term_shutdown> -DRANKS=2
+                    -DCFG_RANKS=${_mn_cfg} -DCFG_ONE=${_cfg}
+                    -DPYTHON=${Python3_EXECUTABLE} -DREDUCER=${_reducer}
+                    -P ${_script})
+        arts_test_properties(record_foreign_run_id PROPERTIES
+            LABELS "multinode" TIMEOUT 90 RESOURCE_LOCK "arts_runtime"
+            PASS_REGULAR_EXPRESSION "PASS record_foreign_run_id")
+    elseif(_n)
+        message(STATUS "record_foreign_run_id is not registered: it needs "
+                "Python 3.11 or later, and none was found")
     endif()
 endif()
 

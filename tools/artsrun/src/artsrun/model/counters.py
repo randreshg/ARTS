@@ -18,6 +18,7 @@ from functools import lru_cache
 from pydantic import BaseModel, Field, model_validator
 
 from artsrun.data import load_data
+from artsrun.reduce import Reduce
 
 
 class Mode(StrEnum):
@@ -30,20 +31,11 @@ class Level(StrEnum):
     """Where a counter's value is reported.
 
     THREAD keeps each worker's own value; NODE reduces across the threads of a
-    rank; CLUSTER reduces again across ranks, and still writes the per-rank
-    value so a distribution can be read off the same run.
+    rank.  The per-rank files are reduced across ranks by `artsrun.reduce`.
     """
 
     THREAD = "THREAD"
     NODE = "NODE"
-    CLUSTER = "CLUSTER"
-
-
-class Reduce(StrEnum):
-    SUM = "SUM"
-    MAX = "MAX"
-    MIN = "MIN"
-    MASTER = "MASTER"
 
 
 class Unit(StrEnum):

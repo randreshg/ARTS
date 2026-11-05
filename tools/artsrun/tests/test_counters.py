@@ -90,26 +90,26 @@ def test_the_rendered_file_lists_every_counter_including_the_off_ones():
     # a set states what it turns off as plainly as what it turns on.
     cset = Counterset(name="one", counters={
         "NUM_EDT_FINISH": CounterSetting(mode=Mode.PERIODIC,
-                                         level=Level.CLUSTER),
+                                         level=Level.NODE),
     })
     lines = [l for l in render_counters(cset).splitlines()
              if l and not l.startswith("#")]
     assert len(lines) == len(load_counter_catalog().names)
-    assert "NUM_EDT_FINISH=PERIODIC,CLUSTER,SUM" in lines
+    assert "NUM_EDT_FINISH=PERIODIC,NODE,SUM" in lines
     assert "NUM_EDT_CREATE=OFF" in lines
 
 
 def test_the_rendered_syntax_is_what_the_build_parses():
-    # Mirrors the regex in libs/include/internal/arts/counter/CMakeLists.txt.
+    # Mirrors the regex in cmake/ArtsCounterConfig.cmake.
     pattern = re.compile(
         r"^([A-Za-z0-9_]+)[ \t]*=[ \t]*(OFF|ONCE|PERIODIC)"
-        r"(,[ \t]*(THREAD|NODE|CLUSTER))?(,[ \t]*(SUM|MAX|MIN|MASTER))?$"
+        r"(,[ \t]*(THREAD|NODE))?(,[ \t]*(SUM|MAX|MIN|MASTER))?[ \t]*$"
     )
     cset = Counterset(name="mixed", counters={
         "TIME_EDT_EXEC": CounterSetting(mode=Mode.ONCE, level=Level.THREAD,
                                         reduce=Reduce.MAX),
         "NUM_EDT_FINISH": CounterSetting(mode=Mode.PERIODIC,
-                                         level=Level.CLUSTER),
+                                         level=Level.NODE),
     })
     for line in render_counters(cset).splitlines():
         if line and not line.startswith("#"):
@@ -128,7 +128,7 @@ def _tree_with_counters(build_dir, settings):
     header = build_dir / "libs/include/internal/arts/counter/Preamble.h"
     header.parent.mkdir(parents=True, exist_ok=True)
     modes = {"OFF": 0, "ONCE": 1, "PERIODIC": 2}
-    levels = {"THREAD": 0, "NODE": 1, "CLUSTER": 2}
+    levels = {"THREAD": 0, "NODE": 1}
     reducers = {"SUM": 0, "MAX": 1, "MIN": 2, "MASTER": 3}
     out = []
     for name, (mode, level, reduce) in settings.items():
@@ -146,11 +146,11 @@ def test_what_a_tree_compiled_is_read_from_its_generated_header(tmp_path):
     from artsrun.build import compiled_counters
 
     build_dir = _tree_with_counters(tmp_path / "build", {
-        "NUM_EDT_CREATE": ("PERIODIC", "CLUSTER", "SUM"),
+        "NUM_EDT_CREATE": ("PERIODIC", "NODE", "SUM"),
         "NUM_DB_CREATE": ("OFF", "NODE", "SUM"),
     })
     assert compiled_counters(build_dir) == {
-        "NUM_EDT_CREATE": ("PERIODIC", "CLUSTER", "SUM"),
+        "NUM_EDT_CREATE": ("PERIODIC", "NODE", "SUM"),
         "NUM_DB_CREATE": ("OFF", "NODE", "SUM"),
     }
 
@@ -160,10 +160,10 @@ def test_a_tree_already_carrying_the_set_needs_no_reconfigure(tmp_path):
     from artsrun.model.counters import Counterset, CounterSetting, Level, Mode, Reduce
 
     build_dir = _tree_with_counters(tmp_path / "build", {
-        "NUM_EDT_CREATE": ("PERIODIC", "CLUSTER", "SUM"),
+        "NUM_EDT_CREATE": ("PERIODIC", "NODE", "SUM"),
     })
     same = Counterset(name="x", counters={"NUM_EDT_CREATE": CounterSetting(
-        mode=Mode.PERIODIC, level=Level.CLUSTER, reduce=Reduce.SUM)})
+        mode=Mode.PERIODIC, level=Level.NODE, reduce=Reduce.SUM)})
     assert counter_mismatch(build_dir, same) == []
 
 
@@ -173,7 +173,7 @@ def test_a_tree_carrying_other_counters_is_named_counter_by_counter(tmp_path):
     from artsrun.model.counters import Counterset, CounterSetting, Level, Mode
 
     build_dir = _tree_with_counters(tmp_path / "build", {
-        "NUM_EDT_CREATE": ("PERIODIC", "CLUSTER", "SUM"),
+        "NUM_EDT_CREATE": ("PERIODIC", "NODE", "SUM"),
         "NUM_DB_CREATE": ("OFF", "NODE", "SUM"),
     })
     other = Counterset(name="x", counters={
@@ -200,7 +200,7 @@ def test_a_set_that_turns_everything_off_names_the_counters_still_on(tmp_path):
     from artsrun.model.counters import Counterset
 
     build_dir = _tree_with_counters(tmp_path / "build", {
-        "NUM_EDT_CREATE": ("PERIODIC", "CLUSTER", "SUM"),
+        "NUM_EDT_CREATE": ("PERIODIC", "NODE", "SUM"),
         "NUM_DB_CREATE": ("OFF", "NODE", "SUM"),
     })
     empty = Counterset(name="e2e", counters={})
@@ -220,7 +220,7 @@ def test_an_all_off_set_still_reconfigures_a_counting_tree(tmp_path, monkeypatch
     from artsrun.model.profile import Launcher
 
     build_dir = _tree_with_counters(tmp_path / "build", {
-        "NUM_EDT_CREATE": ("PERIODIC", "CLUSTER", "SUM"),
+        "NUM_EDT_CREATE": ("PERIODIC", "NODE", "SUM"),
     })
     wanted = tmp_path / "cfg" / "counters_e2e.cfg"
     reconfigured = []
@@ -278,7 +278,7 @@ def test_a_counterless_campaign_refuses_an_instrumented_tree(tmp_path,
     from artsrun.model.profile import Launcher
 
     build_dir = _tree_with_counters(tmp_path / "build", {
-        "NUM_EDT_CREATE": ("PERIODIC", "CLUSTER", "SUM"),
+        "NUM_EDT_CREATE": ("PERIODIC", "NODE", "SUM"),
         "NUM_DB_CREATE": ("OFF", "NODE", "SUM"),
     })
     (build_dir / "CMakeCache.txt").write_text(
@@ -313,7 +313,7 @@ def test_a_selected_set_the_tree_already_carries_still_runs(tmp_path,
     from artsrun.model.profile import Launcher
 
     build_dir = _tree_with_counters(tmp_path / "build", {
-        "NUM_EDT_CREATE": ("PERIODIC", "CLUSTER", "SUM"),
+        "NUM_EDT_CREATE": ("PERIODIC", "NODE", "SUM"),
     })
     wanted = tmp_path / "cfg" / "counters_x.cfg"
     reconfigured = []
@@ -331,7 +331,7 @@ def test_a_selected_set_the_tree_already_carries_still_runs(tmp_path,
         build_dir=build_dir, run_dir=tmp_path / "run",
         counterset=Counterset(name="x", counters={
             "NUM_EDT_CREATE": CounterSetting(mode=Mode.PERIODIC,
-                                             level=Level.CLUSTER)}),
+                                             level=Level.NODE)}),
     )
     assert c.build_plan() == "plan"
     assert reconfigured == []
@@ -364,7 +364,7 @@ def _census_like():
     from artsrun.model.counters import Counterset, CounterSetting, Level, Mode
 
     return Counterset(name="x", counters={
-        "NUM_EDT_CREATE": CounterSetting(mode=Mode.PERIODIC, level=Level.CLUSTER)})
+        "NUM_EDT_CREATE": CounterSetting(mode=Mode.PERIODIC, level=Level.NODE)})
 
 
 def test_a_tree_configured_from_a_removed_run_file_is_repointed(tmp_path,
@@ -374,7 +374,7 @@ def test_a_tree_configured_from_a_removed_run_file_is_repointed(tmp_path,
     # configure, so once it is gone the next build cannot regenerate; the
     # campaign points the tree at its own copy instead of trusting a match.
     build_dir = _tree_with_counters(tmp_path / "build", {
-        "NUM_EDT_CREATE": ("PERIODIC", "CLUSTER", "SUM"),
+        "NUM_EDT_CREATE": ("PERIODIC", "NODE", "SUM"),
     })
     gone = tmp_path / "logs/exp/20260925-082512/cfg/counters_x.cfg"
     (build_dir / "CMakeCache.txt").write_text(
@@ -398,7 +398,7 @@ def test_a_tree_already_on_its_own_copy_is_left_alone(tmp_path, monkeypatch):
     from artsrun.build import write_tree_counter_config
 
     build_dir = _tree_with_counters(tmp_path / "build", {
-        "NUM_EDT_CREATE": ("PERIODIC", "CLUSTER", "SUM"),
+        "NUM_EDT_CREATE": ("PERIODIC", "NODE", "SUM"),
     })
     tree_cfg = write_tree_counter_config(build_dir, _census_like())
     stamp = tree_cfg.stat().st_mtime_ns

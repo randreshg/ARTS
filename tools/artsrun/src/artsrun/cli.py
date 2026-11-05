@@ -33,10 +33,14 @@ experiment_app = typer.Typer(
     help="Experiments: application rosters, their calibration and the "
          "coherence entries they run by default.")
 counterset_app = typer.Typer(help="Counter sets compiled into a build.")
+counters_app = typer.Typer(
+    help="The runtime's counters, and a run's reduced counter files.",
+    invoke_without_command=True)
 config_app = typer.Typer(help="Rendered runtime configurations.")
 app.add_typer(profile_app, name="profile")
 app.add_typer(experiment_app, name="experiment")
 app.add_typer(counterset_app, name="counterset")
+app.add_typer(counters_app, name="counters")
 app.add_typer(config_app, name="config")
 
 console = Console()
@@ -770,12 +774,15 @@ def profile_validate(name: str = typer.Argument(None)) -> None:
 
 
 # --- counters ------------------------------------------------------------
-@app.command("counters")
+@counters_app.callback()
 def show_counters(
+    ctx: typer.Context,
     counterset: str = typer.Option(None, "--set", "-s"),
     enabled_only: bool = typer.Option(False, "--enabled"),
 ) -> None:
     """Print the counters the runtime defines, and what a set turns on."""
+    if ctx.invoked_subcommand is not None:
+        return
     from artsrun.model.counters import load_counter_catalog
 
     catalog = load_counter_catalog()
@@ -810,6 +817,43 @@ def show_counters(
         f"periodic capture every {cset.capture_interval} EDT executions · "
         f"the selection is a build-time decision[/dim]"
     )
+
+
+@counters_app.command("reduce")
+def counters_reduce(run_dir: Path = typer.Argument(
+        ..., help="A campaign's run directory")) -> None:
+    """Rebuild every cell's c.json from its per-rank counter files."""
+    from artsrun.reduce import ReduceError, write_record
+
+    cells = sorted(p for p in (run_dir / "counters").glob("*")
+                   if p.is_dir())
+    if not cells:
+        console.print(f"[red]no counter folders under {run_dir}[/red]")
+        raise typer.Exit(2)
+    nodes: dict[str, int] = {}
+    manifest = run_dir / "manifest.json"
+    if manifest.is_file():
+        try:
+            doc = json.loads(manifest.read_text(encoding="utf-8"))
+            nodes = {row["slug"]: row["nodes"]
+                     for row in doc.get("cells", [])}
+        except (OSError, ValueError, KeyError, TypeError,
+                AttributeError) as exc:
+            console.print(f"[red]{manifest} is not usable: {exc}[/red]")
+            raise typer.Exit(2)
+    refused = 0
+    for folder in cells:
+        try:
+            record = write_record(folder, nodes.get(folder.name))
+        except ReduceError as exc:
+            console.print(f"[red]{folder.name}: {exc}[/red]")
+            refused += 1
+            continue
+        console.print(f"{folder.name}: ranks {record['ranks']}"
+                      + (f", missing {record['missing']}"
+                         if record["missing"] else ""))
+    if refused:
+        raise typer.Exit(2)
 
 
 @counterset_app.command("list")

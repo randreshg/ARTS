@@ -243,7 +243,7 @@ typedef enum arts_counter_reduce_method_t {
   ARTS_COUNTER_REDUCE_SUM = 0,
   ARTS_COUNTER_REDUCE_MAX,
   ARTS_COUNTER_REDUCE_MIN,
-  ARTS_COUNTER_REDUCE_MASTER, // Use master node's value only (no reduction)
+  ARTS_COUNTER_REDUCE_MASTER, // Thread 0's value; across ranks, rank 0's
 } arts_counter_reduce_method_t;
 
 // Counter mode: determines when/how often counters are captured
@@ -255,9 +255,8 @@ typedef enum arts_counter_mode_t {
 
 // Counter level: determines the aggregation level for output
 typedef enum arts_counter_level_t {
-  ARTS_COUNTER_LEVEL_THREAD = 0,  // Per-thread output (no reduction)
-  ARTS_COUNTER_LEVEL_NODE = 1,    // Per-node output (reduce across threads)
-  ARTS_COUNTER_LEVEL_CLUSTER = 2, // Cluster output (reduce across all nodes)
+  ARTS_COUNTER_LEVEL_THREAD = 0, // Per-thread output (no reduction)
+  ARTS_COUNTER_LEVEL_NODE = 1,   // Per-node output (reduce across threads)
 } arts_counter_level_t;
 
 /* A thread's counter.  The owning thread updates it, and the periodic
@@ -307,8 +306,6 @@ void arts_counter_timer_start(arts_counter_t *counter);
 void arts_counter_timer_end(arts_counter_t *counter);
 void arts_counter_write(const char *output_folder, unsigned int node_id,
                         unsigned int thread_id);
-void arts_counter_write_cluster(const char *output_folder,
-                                unsigned int node_count);
 
 /* How this rank's clock relates to the master rank's: RTT where the counter
  * capture's time sync ran (on the master, whose offset is 0, and on a rank

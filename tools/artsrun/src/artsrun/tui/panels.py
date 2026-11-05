@@ -883,9 +883,7 @@ class RunPanel(Vertical):
 class CounterPanel(VerticalScroll):
     """Which counters the build compiles in, and how each is reduced.
 
-    Grouped as the runtime's own declaration list groups them.  Level is the
-    interesting column: CLUSTER still writes the per-rank value, so a
-    distribution and a total come from the same run.
+    Grouped as the runtime's own declaration list groups them.
     """
 
     def __init__(self, counterset: Counterset, **kwargs):

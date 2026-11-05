@@ -36,10 +36,8 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
-#include "arts/counter/Preamble.h"
 #define _FILE_OFFSET_BITS 64 // NOLINT(readability-identifier-naming)
 #include "arts.h"
-#include "arts/counter/counter.h"
 #include "arts/gas/guid.h"
 #include "arts/runtime_state.h"
 #include "arts/system/config.h"
@@ -125,10 +123,6 @@ int arts_rt(int argc, char **argv) {
 
   arts_thread_main_join();
 
-  // Aggregate cluster counters before cleanup (workers may still be writing)
-  if (arts_global_rank_id == config.master_rank) {
-    arts_counter_write_cluster(config.counter_folder, config.nodes);
-  }
   int spawned_rank_failures = 0;
   if (arts_global_rank_id == config.master_rank && config.master_boot) {
     config.launcher_data->cleanup_processes(config.launcher_data);

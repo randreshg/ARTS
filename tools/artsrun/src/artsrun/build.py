@@ -261,7 +261,7 @@ def missing_counter_config(build_dir: Path) -> str | None:
 # generates.  Reading them back is what lets a tree be checked against a set
 # rather than against the file it happened to be configured from.
 _MODES = {0: "OFF", 1: "ONCE", 2: "PERIODIC"}
-_LEVELS = {0: "THREAD", 1: "NODE", 2: "CLUSTER"}
+_LEVELS = {0: "THREAD", 1: "NODE"}
 _REDUCERS = {0: "SUM", 1: "MAX", 2: "MIN", 3: "MASTER"}
 
 _PREAMBLE = "libs/include/internal/arts/counter/Preamble.h"
