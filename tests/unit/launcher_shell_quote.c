@@ -1,15 +1,16 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * pure_unit test for the SSH launcher's static helper
+ * pure_unit test for the spawner's static ssh quoting helper
  *   static int arts_shell_quote(const char *input, char *output,
  *                               size_t output_size)
- * (libs/src/core/transport/launcher.c).
+ * (libs/src/core/transport/spawner.c).
  *
- * Because the function is `static`, this TU #include's launcher.c directly so
+ * Because the function is `static`, this TU #include's spawner.c directly so
  * the helper is compiled into the test (precedent: edt_gpu.cu #include's
- * edt.c).  launcher.c's OTHER (non-static) functions reference runtime symbols
- * (arts_malloc, arts_stdio_forwarder_make_pipe, ARTS_DEBUG -> arts_thread_info
- * / arts_global_rank_id / arts_abort, ...).  Those functions are never CALLED
+ * edt.c).  spawner.c's OTHER (non-static) functions reference runtime symbols
+ * (arts_malloc, arts_transport_select_local_ports, arts_startup_budget_ms,
+ * arts_fake_cxl_fini_replay, ARTS_DEBUG -> arts_thread_info /
+ * arts_global_rank_id / arts_abort, ...).  Those functions are never CALLED
  * by this test, but they are compiled, so we provide trivial stubs/defs below
  * to satisfy the link — none of them run.
  *
@@ -43,19 +44,19 @@
  * FAIL line to stderr and returns 1.
  */
 
-/* ---- stubs for launcher.c's unused (but compiled) external references ---- */
+/* ---- stubs for spawner.c's unused (but compiled) external references ---- */
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 
-/* Match the real declarations so launcher.c's references resolve. */
+/* Match the real declarations so spawner.c's references resolve. */
 unsigned int arts_global_rank_id = 0;
 
 struct arts_runtime_private_s; /* opaque to us; only its address is taken in
                                   the (uncalled) log macros, but we must give
                                   the symbol a definition with a .group_pos
                                   member.  Easiest: provide the real header's
-                                  layout by letting launcher.c's includes
+                                  layout by letting spawner.c's includes
                                   declare it, then define the object here. */
 
 void *arts_malloc(size_t size) { return malloc(size); }
@@ -71,20 +72,20 @@ void *arts_calloc_aligned(size_t n, size_t size, size_t align) {
   return calloc(n, size);
 }
 _Noreturn void arts_abort(uint8_t code) { exit(code ? code : 1); }
-int arts_stdio_forwarder_make_pipe(unsigned int rank, const char *label,
-                                   FILE *sink) {
-  (void)rank;
-  (void)label;
-  (void)sink;
-  return -1;
-}
 
-/* Pull in launcher.c (and through it the real declaration of
+/* Pull in spawner.c (and through it the real declaration of
  * struct arts_runtime_private_s + the extern arts_thread_info). */
-#include "transport/launcher.c"
+#include "transport/spawner.c"
+
+bool arts_transport_select_local_ports(struct arts_config_s *config) {
+  (void)config;
+  return true;
+}
+unsigned int arts_startup_budget_ms(void) { return 20000u; }
+void arts_fake_cxl_fini_replay(void) {}
 
 /* arts_thread_info is declared `extern ARTS_THREAD_LOCAL` by runtime_state.h
- * (pulled via launcher.c -> print.h).  Define the object so the link
+ * (pulled via spawner.c -> print.h).  Define the object so the link
  * resolves; it is never read (the log macros that touch it are not invoked). */
 ARTS_THREAD_LOCAL struct arts_runtime_private_s arts_thread_info;
 

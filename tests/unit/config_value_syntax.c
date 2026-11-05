@@ -99,16 +99,16 @@ static int node_count_refused(const char *value, unsigned int *out) {
   return 1;
 }
 
-/* A host list on the Slurm (master_boot false) or ssh (true) table path:
- * 1 when a range bound was refused. */
-static int hosts_refused(bool master_boot, const char *list) {
+/* A host list on the table path of `launcher` (Slurm's or ssh's): 1 when a
+ * range bound was refused. */
+static int hosts_refused(const char *launcher, const char *list) {
   char buf[128];
   (void)snprintf(buf, sizeof(buf), "%s", list);
   /* Static: an automatic object the callee changed is indeterminate after
    * the refusal's longjmp. */
   static struct arts_config_s cfg;
   memset(&cfg, 0, sizeof(cfg));
-  cfg.master_boot = master_boot;
+  cfg.launcher = arts_config_make_new_var(launcher);
   cfg.nodes = 8;
   struct arts_config_s *p = &cfg;
   g_abort_armed = 1;
@@ -182,18 +182,19 @@ int main(void) {
   }
 
   /* host-range bounds, on both table paths */
-  for (int boot = 0; boot < 2; boot++) {
-    bool mb = boot != 0;
-    CHECK(hosts_refused(mb, "j[1-3]") == 0, "range j[1-3] (%d)", boot);
-    CHECK(hosts_refused(mb, "j[01-03]") == 0, "range j[01-03] (%d)", boot);
-    CHECK(hosts_refused(mb, "j[3-1]") == 0, "range j[3-1] (%d)", boot);
-    CHECK(hosts_refused(mb, "j[1x-3]") == 1, "range j[1x-3] (%d)", boot);
-    CHECK(hosts_refused(mb, "j[1-3x]") == 1, "range j[1-3x] (%d)", boot);
-    CHECK(hosts_refused(mb, "j[+1-3]") == 1, "range j[+1-3] (%d)", boot);
-    CHECK(hosts_refused(mb, "j[1-99999999999]") == 1,
-          "range j[1-99999999999] (%d)", boot);
-    CHECK(hosts_refused(mb, "j[4294967296-1]") == 1,
-          "range j[4294967296-1] (%d)", boot);
+  static const char *const launchers[] = {"slurm", "ssh"};
+  for (size_t l = 0; l < sizeof(launchers) / sizeof(launchers[0]); l++) {
+    const char *lr = launchers[l];
+    CHECK(hosts_refused(lr, "j[1-3]") == 0, "range j[1-3] (%s)", lr);
+    CHECK(hosts_refused(lr, "j[01-03]") == 0, "range j[01-03] (%s)", lr);
+    CHECK(hosts_refused(lr, "j[3-1]") == 0, "range j[3-1] (%s)", lr);
+    CHECK(hosts_refused(lr, "j[1x-3]") == 1, "range j[1x-3] (%s)", lr);
+    CHECK(hosts_refused(lr, "j[1-3x]") == 1, "range j[1-3x] (%s)", lr);
+    CHECK(hosts_refused(lr, "j[+1-3]") == 1, "range j[+1-3] (%s)", lr);
+    CHECK(hosts_refused(lr, "j[1-99999999999]") == 1,
+          "range j[1-99999999999] (%s)", lr);
+    CHECK(hosts_refused(lr, "j[4294967296-1]") == 1,
+          "range j[4294967296-1] (%s)", lr);
   }
 
   if (fails != 0) {

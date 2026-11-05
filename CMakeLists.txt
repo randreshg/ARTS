@@ -489,6 +489,17 @@ foreach(_facility IN LISTS ARTS_DEBUG_FACILITIES)
     endif()
 endforeach()
 
+# The bound, in seconds, a rank's end may take once it began: longer where a
+# sanitizer or a Debug build slows the end.  One value per tree, defined for
+# every unit and read by the test registrations, so the code and the tests
+# cannot disagree on it.
+if(NOT ARTS_DEBUG_SANITIZER STREQUAL "OFF" OR CMAKE_BUILD_TYPE STREQUAL "Debug")
+    set(ARTS_EXIT_WATCHDOG_S 60)
+else()
+    set(ARTS_EXIT_WATCHDOG_S 10)
+endif()
+add_compile_definitions(ARTS_EXIT_WATCHDOG_S=${ARTS_EXIT_WATCHDOG_S})
+
 # ── Build tooling ──────────────────────────────────────────────────────────
 # (To pick a faster linker, use CMake's own -DCMAKE_LINKER_TYPE=MOLD/LLD/GOLD
 #  (cmake >= 3.29) or -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=mold.)

@@ -51,9 +51,9 @@
  * several may find a failure at once.
  *
  * SCOPE: one process, so this carries a rank's OWN verdict.  Every rank's
- * main() returns arts_rt()'s result, which carries this status; the local
- * launcher judges each spawned rank's exit status, so a failing peer makes
- * the master's arts_rt() return non-zero.
+ * main() returns arts_rt()'s result, which carries this status; the spawner
+ * of a multi-rank run ends with the highest status a rank ended with, so a
+ * failing peer fails the run.
  */
 
 #include "arts.h"

@@ -262,19 +262,19 @@ machine makes, and the bind dies instantly.
 
 A ``launcher=local`` run is the mirror image.  Every rank is a process on this
 one machine, so they cannot share a port and the ports must be found rather
-than declared: before spawning the peers, the spawning rank bind-probes a block
-of ``node_count × port_count`` ports, slides past anything already holding
-them, and hands the result to the ranks it spawns.  The search is seeded from
-the process id so two runs starting at the same moment do not pick the same
-block.  Naming ``ports`` there is a configure error — it would only reintroduce
-the collisions the search exists to avoid.
+than declared: the process you start, which starts every rank and is none of
+them, bind-probes a block of ``node_count × port_count`` ports, slides past
+anything already holding them, and hands the result to the ranks it starts.
+The search is seeded from the process id so two runs starting at the same
+moment do not pick the same block.  Naming ``ports`` there is a configure
+error — it would only reintroduce the collisions the search exists to avoid.
 
 At startup every rank opens the bootstrap socket mesh to each of its peers —
 connecting to a peer that may not be listening yet, and accepting the peers
-that connect to it.  Each connection has its own budget, 300 seconds by
+that connect to it.  Each connection has its own budget, 20 seconds by
 default.  An accept waits up to the budget for the next peer to arrive.  A
 connect counts attempts rather than time: it is retried budget ÷ 100 ms times
-(3000 by default), 100 ms apart, and each attempt is a blocking connect bounded
+(200 by default), 100 ms apart, and each attempt is a blocking connect bounded
 only by the kernel, so against a host that never answers a single attempt lasts
 the kernel's own connect timeout.  A rank that misses a budget exits with a
 report; a failed connect names the peer and the address it tried, while a
@@ -375,9 +375,6 @@ Debug / Utility
      - 0
      - 1 forces core dumps on crash; 0 lowers the soft core limit to zero, so
        a crash leaves no core file in the working directory.
-   * - ``kill_mode``
-     - 0
-     - Kill leftover processes on SSH nodes before launch.
    * - ``counter_folder``
      - ``./counters``
      - Output directory for performance counter files.

@@ -137,6 +137,11 @@ function(arts_apply_protocol target arm write_policy release_policy)
             ARTS_USE_CXL=1
             ARTS_CXL_${cxl_residency}=1
             ARTS_CXL_DB_ARENA_SIZE_BYTES=${ARTS_CXL_DB_ARENA_SIZE_BYTES}ULL)
+        # Which library the store links: the device's, or the vendored fake
+        # whose exit work the runtime replays.
+        if(ARTS_CXL_REAL)
+            target_compile_definitions(${target} PRIVATE ARTS_CXL_REAL=1)
+        endif()
         target_include_directories(${target} SYSTEM PRIVATE ${ARTS_CXL_INCLUDE_DIR})
     endif()
     # The GPU library is assembled from the same CPU object libraries as the

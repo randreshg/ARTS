@@ -69,19 +69,22 @@ int arts_get_socket_outgoing(struct sockaddr_in *outgoing_socket,
 void arts_transport_set_config(struct arts_config_s *config);
 /* Slide a local multi-node run's port block past whatever already holds it, by
  * probing the exact set of ports the run is about to claim; rewrites
- * config->ports on success.  Callable only from the process that spawns
- * the other ranks — they inherit the chosen base and must not probe again.
- * Returns false when no free block fits below the ephemeral range, leaving the
- * configured ports in place. */
+ * config->ports on success.  Callable only from the spawner — the ranks
+ * inherit the chosen base and must not probe again.  Returns false when no
+ * free block fits below the ephemeral range, leaving the configured ports in
+ * place. */
 bool arts_transport_select_local_ports(struct arts_config_s *config);
+/* One mesh connection's startup budget in milliseconds, read from the
+ * environment by the first call and fixed for the process from then on. */
+unsigned int arts_startup_budget_ms(void);
 void arts_transport_setup_outgoing();
 bool arts_transport_setup_incoming();
 /* Convert the bootstrap TCP mesh into payload-free liveness sentinels once the
  * fi-address exchange has finished: every established connection stays open
  * (connection lifetime doubles as peer liveness — orderly close and process
  * death both surface as HUP on the peer's accept-side socket); only the
- * listening sockets are closed.  The launcher / stdio sockets are untouched.
- * Its last act arms the mesh (arts_socket_armed). */
+ * listening sockets are closed.  Its last act arms the mesh
+ * (arts_socket_armed). */
 void arts_socket_sentinel_arm(void);
 
 /* Whether the mesh is armed.  True only after arts_socket_sentinel_arm, whose

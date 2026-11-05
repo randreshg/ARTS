@@ -37,35 +37,58 @@
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
 
-/// @file launcher_no_respawn.c
-/// @brief The local launcher brings up exactly the configured ranks, each once,
-///        with its identity handed down, and no spawned rank launches again.
+/// @file launcher_orphan_prevention.c
+/// @brief The spawner starts exactly the configured ranks, each once, as its
+///        own children, with each rank's identity handed down.
 ///
-/// The launcher spawns the configured number of non-master ranks and hands
-/// each its rank through ARTS_RANK, which is also what keeps a spawned rank
-/// from running the launcher itself (a rank that did would re-spawn the whole
-/// cluster).  Asserted per rank, by a probe placed on it:
+/// Every rank, rank 0 included, is a child of the spawner, which is no rank:
+/// it hands each its rank through ARTS_RANK, and a rank whose spawner ended
+/// before the rank armed its parent-death signal leaves at startup, so no rank
+/// outlives the spawner.  Asserted per rank, by a probe placed on it:
 ///   1. it runs on the rank it was placed on, and sees the configured total;
-///   2. on every non-master rank, ARTS_RANK is set and names that rank, and
-///      the rank's parent is a live process other than init: a spawned rank
-///      whose launcher died before it armed its parent-death signal is
-///      reparented to init and leaves at startup, never reaching a probe;
-///   3. it stamps its own slot of a marker block, and the master then reads
-///      every slot 0..total-1 filled exactly once with its own rank's marker,
-///      so the live ranks are exactly 0..total-1 with no gap and no duplicate.
+///   2. ARTS_RANK is set and names that rank;
+///   3. its parent is a live process other than init that runs this program
+///      (the spawner, not a subreaper that adopted an orphan), and the same
+///      process on every rank (each probe records its parent, the verifier
+///      compares);
+///   4. it stamps its own slot of a marker block, which no probe stamped
+///      before, and the verifier then reads every slot 0..total-1 holding its
+///      own rank's marker, so the live ranks are exactly 0..total-1 with no
+///      gap and no duplicate.
 /// A rank that never came up leaves its probe unrun (the run times out).
-/// Protocol-agnostic: the launcher carries no coherence state.
+/// Protocol-agnostic: the spawner carries no coherence state.
 
 #include "arts.h"
 
+#include <errno.h>
+#include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include "../test_failure_status.h"
 
 #define MARKER_BASE 0x5A5A0000u
+
+/* The block: total marks, then total parent pids. */
+static uint32_t *marks_of(void *block) { return (uint32_t *)block; }
+static int32_t *parents_of(void *block, unsigned int total) {
+  return (int32_t *)((uint32_t *)block + total);
+}
+
+/* Whether process `pid` runs the executable this process runs. */
+static int runs_this_program(pid_t pid) {
+  char exe[64];
+  (void)snprintf(exe, sizeof(exe), "/proc/%d/exe", (int)pid);
+  struct stat mine;
+  struct stat theirs;
+  if (stat("/proc/self/exe", &mine) != 0 || stat(exe, &theirs) != 0) {
+    return 0;
+  }
+  return mine.st_dev == theirs.st_dev && mine.st_ino == theirs.st_ino;
+}
 
 void rank_probe_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                     arts_edt_dep_t depv[]) {
@@ -73,49 +96,63 @@ void rank_probe_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depc;
   unsigned int expected_rank = (unsigned int)paramv[0];
   unsigned int total = (unsigned int)paramv[1];
-  uint32_t *marks = (uint32_t *)depv[0].ptr;
+  void *block = depv[0].ptr;
 
   unsigned int me = arts_get_current_rank();
   unsigned int seen_total = arts_get_total_ranks();
 
   if (me != expected_rank) {
-    arts_printf("FAIL: launcher_no_respawn probe ran on %u, expected %u\n", me,
-                expected_rank);
+    arts_printf("FAIL: launcher_orphan_prevention probe ran on %u, expected "
+                "%u\n",
+                me, expected_rank);
     arts_test_fail();
     return;
   }
   if (seen_total != total) {
-    arts_printf(
-        "FAIL: launcher_no_respawn rank %u sees %u ranks, expected %u\n", me,
-        seen_total, total);
+    arts_printf("FAIL: launcher_orphan_prevention rank %u sees %u ranks, "
+                "expected %u\n",
+                me, seen_total, total);
     arts_test_fail();
     return;
   }
-
-  /* The master has no ARTS_RANK; every spawned rank must carry its own. */
   const char *rank_env = getenv("ARTS_RANK");
-  if (me != 0) {
-    if (rank_env == NULL || (unsigned int)strtoul(rank_env, NULL, 10) != me) {
-      arts_printf("FAIL: launcher_no_respawn rank %u has ARTS_RANK=%s\n", me,
-                  rank_env ? rank_env : "(unset)");
-      arts_test_fail();
-      return;
-    }
-    pid_t ppid = getppid();
-    if (ppid <= 1) {
-      arts_printf("FAIL: launcher_no_respawn rank %u has parent %d\n", me,
-                  (int)ppid);
-      arts_test_fail();
-      return;
-    }
+  if (rank_env == NULL || (unsigned int)strtoul(rank_env, NULL, 10) != me) {
+    arts_printf("FAIL: launcher_orphan_prevention rank %u has ARTS_RANK=%s\n",
+                me, rank_env ? rank_env : "(unset)");
+    arts_test_fail();
+    return;
   }
-  if (marks == NULL) {
-    arts_printf("FAIL: launcher_no_respawn rank %u got a NULL marker block\n",
+  pid_t ppid = getppid();
+  if (ppid <= 1 || (kill(ppid, 0) != 0 && errno != EPERM)) {
+    arts_printf("FAIL: launcher_orphan_prevention rank %u has parent %d, "
+                "which is init or gone\n",
+                me, (int)ppid);
+    arts_test_fail();
+    return;
+  }
+  if (!runs_this_program(ppid)) {
+    arts_printf("FAIL: launcher_orphan_prevention rank %u has parent %d, "
+                "which does not run this program\n",
+                me, (int)ppid);
+    arts_test_fail();
+    return;
+  }
+  if (block == NULL) {
+    arts_printf("FAIL: launcher_orphan_prevention rank %u got a NULL marker "
+                "block\n",
                 me);
     arts_test_fail();
     return;
   }
-  marks[me] = MARKER_BASE | me;
+  if (marks_of(block)[me] != 0u) {
+    arts_printf("FAIL: launcher_orphan_prevention slot %u was stamped before "
+                "(0x%x)\n",
+                me, marks_of(block)[me]);
+    arts_test_fail();
+    return;
+  }
+  marks_of(block)[me] = MARKER_BASE | me;
+  parents_of(block, total)[me] = (int32_t)ppid;
 }
 
 void verify_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
@@ -123,16 +160,26 @@ void verify_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)paramc;
   (void)depc;
   unsigned int total = (unsigned int)paramv[0];
-  const uint32_t *marks = (const uint32_t *)depv[0].ptr;
-  if (marks == NULL) {
-    arts_printf("FAIL: launcher_no_respawn verifier got a NULL marker block\n");
+  void *block = depv[0].ptr;
+  if (block == NULL) {
+    arts_printf("FAIL: launcher_orphan_prevention verifier got a NULL marker "
+                "block\n");
     arts_test_fail();
     return;
   }
+  const uint32_t *marks = marks_of(block);
+  const int32_t *parents = parents_of(block, total);
   for (unsigned int r = 0; r < total; r++) {
     if (marks[r] != (MARKER_BASE | r)) {
-      arts_printf("FAIL: launcher_no_respawn slot %u = 0x%x, expected 0x%x\n",
+      arts_printf("FAIL: launcher_orphan_prevention slot %u = 0x%x, expected "
+                  "0x%x\n",
                   r, marks[r], MARKER_BASE | r);
+      arts_test_fail();
+    }
+    if (parents[r] != parents[0]) {
+      arts_printf("FAIL: launcher_orphan_prevention rank %u has parent %d, "
+                  "rank 0 has %d\n",
+                  r, (int)parents[r], (int)parents[0]);
       arts_test_fail();
     }
   }
@@ -144,8 +191,8 @@ static void finale_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)paramv;
   (void)depc;
   (void)depv;
-  arts_printf("PASS: launcher_no_respawn (%u ranks, each once, no recursive "
-              "spawn)\n",
+  arts_printf("PASS: launcher_orphan_prevention (%u ranks, each once, one "
+              "live parent)\n",
               arts_get_total_ranks());
   arts_shutdown();
 }
@@ -205,16 +252,15 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   void *ptr = NULL;
   arts_guid_t db =
-      arts_db_create(&ptr, total * sizeof(uint32_t), ARTS_DB, ARTS_DB_PROP_NONE,
-                     &(arts_db_hint_t){.rank = 0});
+      arts_db_create(&ptr, total * (sizeof(uint32_t) + sizeof(int32_t)),
+                     ARTS_DB, ARTS_DB_PROP_NONE, &(arts_db_hint_t){.rank = 0});
   for (unsigned int r = 0; r < total; r++) {
-    ((uint32_t *)ptr)[r] = 0u;
+    marks_of(ptr)[r] = 0u;
+    parents_of(ptr, total)[r] = 0;
   }
   arts_db_release(db);
 
   probe_step((const uint64_t[2]){0u, (uint64_t)db});
 }
 
-int main(int argc, char **argv) {
-  return arts_rt(argc, argv);
-}
+int main(int argc, char **argv) { return arts_rt(argc, argv); }

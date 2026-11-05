@@ -47,6 +47,13 @@ extern "C" {
 
 #include "arts/utils/stdatomic_compat.h"
 
+/* The bound, in seconds, a rank's end may take once it began: one value per
+ * tree, which the build defines for every unit and the test registrations
+ * read. */
+#ifndef ARTS_EXIT_WATCHDOG_S
+#error "ARTS_EXIT_WATCHDOG_S is undefined: the build defines it for every unit"
+#endif
+
 /* What made this rank begin its end.  An origin fits in three bits, and 0
  * names none. */
 enum arts_exit_origin {
@@ -114,6 +121,11 @@ struct arts_exit_meta_s {
 };
 
 extern struct arts_exit_meta_s arts_exit_meta;
+
+/* In a build on the vendored fake CXL library, runs that library's
+ * finalizers once per process, as a normal exit would: the process that
+ * created the region unlinks it there.  A no-op in every other build. */
+void arts_fake_cxl_fini_replay(void);
 
 #ifdef __cplusplus
 }

@@ -108,7 +108,8 @@ set(ARTS_REFERENCE_TREE_PROGRAMS
     event_channel_lifetime
     multinode_edt
     multinode_event_types
-    multinode_stdout_forward
+    launcher_children_inherit_stdout
+    shutdown_spin_peer_killed
     edt_create_oversize_guard
     group_stress
     term_shutdown
@@ -155,6 +156,12 @@ endif()
 
 if(ARTS_TEST_REFERENCE_TREE)
     list(APPEND TEST_PROGRAMS ${ARTS_REFERENCE_TREE_PROGRAMS})
+endif()
+
+# The ranks the spawner's tests drive: the spawner itself is the same in every
+# cell, but a CXL tree's spawner also owns the fake store's region.
+if(ARTS_TEST_REFERENCE_TREE OR ARTS_CXL_TREE_RESIDENCY)
+    list(APPEND TEST_PROGRAMS spawner_rank_probe)
 endif()
 
 # Judged by the teardown quiescence walk, which exists only where
@@ -404,6 +411,22 @@ endfunction()
 set(ARTS_TEST_RUNNER "${CMAKE_CURRENT_SOURCE_DIR}/cmake/run_test.cmake"
     CACHE INTERNAL "the script every program test runs under" FORCE)
 
+# A test that signals a rank or the spawner, or times a rank's end, runs its
+# program under spawner_driver.py, which streams the program's output to the
+# runner and judges the spawner's status itself.  Without an interpreter at
+# configure time it is named by PATH, so a host without one fails those tests
+# instead of losing them.
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND)
+    set(_python ${Python3_EXECUTABLE})
+else()
+    set(_python python3)
+endif()
+set(ARTS_SPAWNER_DRIVER ${_python} -I
+    "${CMAKE_CURRENT_SOURCE_DIR}/tools/spawner_driver.py"
+    CACHE INTERNAL "the command a driven multi-rank test runs" FORCE)
+unset(_python)
+
 # A test registers only where it can pass by design: the registered pool backs
 # every one-sided payload, so a tree on the system allocator is single-node
 # and registers no multinode test.  CACHE INTERNAL because the example and
@@ -464,7 +487,8 @@ function(arts_add_test test_name)
                 -P ${ARTS_TEST_RUNNER} -- ${_program} ${ARG_COMMAND}
         WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
     )
-    set_tests_properties(${test_name} PROPERTIES ARTS_TEST_RUN TRUE)
+    set_tests_properties(${test_name} PROPERTIES ARTS_TEST_RUN TRUE
+                         ARTS_TEST_STATUS ${ARG_STATUS})
     # The first registration in a directory schedules its finalize for the
     # directory's end, so every test it registers, by any route, is covered.
     get_property(_scheduled DIRECTORY PROPERTY ARTS_TEST_FINALIZE_SCHEDULED)
@@ -811,22 +835,14 @@ endfunction()
 # applies.  Every test then has three kinds of output matched as well, being
 # failures its own exit status may not carry: a sanitizer's report (UBSan's
 # leaves the status unchanged, and a forked child's reaches only its parent);
-# the allocator error report, which a forked child or a rank whose status
-# does not reach the master can print; and the local launcher's verdict on a
-# rank it spawned, which reaches the master's status only where the test
-# passes arts_rt's result on: a rank that died on a signal always, one that
-# exited non-zero unless the status is the one the test sets in
-# ARTS_EXPECTS_RANK_FAILURE, a rank's exit it provokes, and one that did not
-# exit after the run ended, which the launcher stops without counting it
-# failed.  That last verdict is a warning printed once the
-# launcher's grace period has passed: a tree that compiles warnings out never
-# prints it, and a rank still escaping the waits it was blocked in at the
-# shutdown (each escape re-checks once a second) has only a few seconds of
-# that period to spare.  WILL_FAIL is refused: CTest would invert the
-# verdict, a late failure's included; an expected exit status is the test's
-# STATUS.  A CXL tree's tests get the store's environment too, an ADDRESS
-# sanitizer tree's the leak suppression, and a THREAD tree's audited tests
-# their arm's residue suppressions.
+# the allocator error report, which a forked child or a rank whose status is
+# not the run's can print; and the spawner's lines for a rank that ended with
+# a status the test does not allow and for a rank its end grace killed.
+# WILL_FAIL is refused: CTest would invert the verdict, a late failure's
+# included; an expected exit status is the test's STATUS.  A CXL tree's tests
+# get the store's environment too, an ADDRESS sanitizer tree's the leak
+# suppression, and a THREAD tree's audited tests their arm's residue
+# suppressions.
 function(arts_test_finalize)
     arts_cxl_test_env()
     arts_lsan_test_env()
@@ -869,28 +885,48 @@ function(arts_test_finalize)
         endif()
         list(APPEND _fail "ERROR: (Address|Leak)Sanitizer"
              "WARNING: ThreadSanitizer" ": runtime error: "
-             "\\[ARTS\\] allocator error:"
-             "Local launcher: rank [0-9]+ \\(pid [0-9]+\\) died on signal"
-             "Local launcher: rank [0-9]+ \\(pid [0-9]+\\) did not exit within")
-        get_test_property(${_t} ARTS_EXPECTS_RANK_FAILURE _expects)
-        if(NOT _expects STREQUAL "NOTFOUND" AND
-           NOT _expects MATCHES "^([1-9]|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-5])$")
-            message(FATAL_ERROR "${_t}: ARTS_EXPECTS_RANK_FAILURE names the exit "
-                    "status a rank is provoked into (1-255), not '${_expects}'")
+             "\\[ARTS\\] allocator error:")
+        # The spawner of a multi-rank run prints one line per rank that ended
+        # with a non-zero status, and its own status is only their maximum,
+        # so a lower failure on another rank shows only there.  A rank may
+        # end with the test's STATUS or a status ARTS_RANK_STATUSES names
+        # (1-255); a line naming any other fails the test.  So does the line
+        # for a rank the end grace killed, whose 137 a test may allow for a
+        # kill of its own, unless ARTS_END_GRACE_EXPIRES says the grace's
+        # expiry is the test's subject.
+        get_test_property(${_t} ARTS_TEST_STATUS _allowed)
+        if(_allowed STREQUAL "NOTFOUND")
+            set(_allowed 0)
         endif()
-        if(_expects STREQUAL "NOTFOUND")
-            list(APPEND _fail
-                 "Local launcher: rank [0-9]+ \\(pid [0-9]+\\) exited with status")
-        else()
-            set(_others "")
-            foreach(_s RANGE 0 255)
-                if(NOT _s EQUAL _expects)
-                    list(APPEND _others ${_s})
+        get_test_property(${_t} ARTS_RANK_STATUSES _rank_statuses)
+        if(NOT _rank_statuses STREQUAL "NOTFOUND")
+            foreach(_s IN LISTS _rank_statuses)
+                if(NOT _s MATCHES "^([1-9]|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-5])$")
+                    message(FATAL_ERROR "${_t}: ARTS_RANK_STATUSES names the "
+                            "statuses a rank may end with (1-255), not '${_s}'")
+                endif()
+                list(APPEND _allowed ${_s})
+            endforeach()
+        endif()
+        list(REMOVE_DUPLICATES _allowed)
+        list(SORT _allowed COMPARE NATURAL)
+        list(JOIN _allowed "_" _key)
+        get_property(_refused DIRECTORY PROPERTY ARTS_REFUSED_STATUSES_${_key})
+        if(NOT _refused)
+            foreach(_s RANGE 1 255)
+                if(NOT _s IN_LIST _allowed)
+                    list(APPEND _refused ${_s})
                 endif()
             endforeach()
-            list(JOIN _others "|" _others)
-            list(APPEND _fail
-                 "Local launcher: rank [0-9]+ \\(pid [0-9]+\\) exited with status (${_others})([^0-9]|$)")
+            list(JOIN _refused "|" _refused)
+            set_property(DIRECTORY PROPERTY ARTS_REFUSED_STATUSES_${_key}
+                         "${_refused}")
+        endif()
+        list(APPEND _fail
+             "\\[ARTS\\] spawner: rank [0-9]+ \\(pid [0-9]+\\) ended with status (${_refused})([^0-9]|$)")
+        get_test_property(${_t} ARTS_END_GRACE_EXPIRES _grace_expires)
+        if(NOT _grace_expires)
+            list(APPEND _fail "end-of-step grace of [0-9]+ s expired")
         endif()
         set_tests_properties(${_t} PROPERTIES FAIL_REGULAR_EXPRESSION "${_fail}")
     endforeach()
@@ -902,7 +938,7 @@ endfunction()
 # one resolver, so these tests run in the mode the rest of the suite runs in
 # instead of being the set a second spelling leaves behind.  What they add is
 # a second verdict channel -- the FAIL token their failure branches print,
-# which fails the run even where a rank's status does not reach the master --
+# which fails the run even where a rank's status is not the run's --
 # and a longer default timeout for one-rank runs.
 function(register_cxl_single_node_test test_name)
     cmake_parse_arguments(ARG "" "TIMEOUT;FAIL_REGEX" "" ${ARGN})
@@ -1161,15 +1197,14 @@ set_tests_properties(term_abort PROPERTIES
 
 # A satisfy naming a slot past an EDT's depc is fatal on the rank holding the
 # EDT: in the caller's own process on one rank, and on two in rank 1, whose
-# exit the master's arts_rt reports.
+# exit the spawner reports.
 register_single_node_test(edt_satisfy_out_of_range TIMEOUT 30 STATUS 1)
 set_tests_properties(edt_satisfy_out_of_range PROPERTIES
     PASS_REGULAR_EXPRESSION "names slot 5, but the EDT has 2 dependence slot")
 register_multinode_test(edt_satisfy_out_of_range TIMEOUT 30 STATUS 1
                         VARIANTS 2n_9w_1p)
 arts_test_properties(edt_satisfy_out_of_range_2n_9w_1p PROPERTIES
-    PASS_REGULAR_EXPRESSION "names slot 5, but the EDT has 2 dependence slot"
-    ARTS_EXPECTS_RANK_FAILURE 1)
+    PASS_REGULAR_EXPRESSION "names slot 5, but the EDT has 2 dependence slot")
 # A satisfy of an in-range slot once every dependence is satisfied: fatal on
 # the rank that holds the EDT, the same way.
 register_single_node_test(edt_satisfy_over_count TIMEOUT 30 STATUS 1)
@@ -1178,18 +1213,16 @@ set_tests_properties(edt_satisfy_over_count PROPERTIES
 register_multinode_test(edt_satisfy_over_count TIMEOUT 30 STATUS 1
                         VARIANTS 2n_9w_1p)
 arts_test_properties(edt_satisfy_over_count_2n_9w_1p PROPERTIES
-    PASS_REGULAR_EXPRESSION "slot 1 exceeds its 2 dependence"
-    ARTS_EXPECTS_RANK_FAILURE 1)
+    PASS_REGULAR_EXPRESSION "slot 1 exceeds its 2 dependence")
 
 # Debug-only (see the program list's guard above): rank 1's fatal error ends
-# that rank, so the master's arts_rt() reports a failed rank and the test
-# exits 1, and the error text names the guard that ended it.
+# that rank with status 1, the spawner's status, and the error text names the
+# guard that ended it.
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     register_multinode_test(edt_create_remote_group_rejected
         VARIANTS 2n_9w_1p STATUS 1)
     arts_test_properties(edt_create_remote_group_rejected_2n_9w_1p PROPERTIES
-        PASS_REGULAR_EXPRESSION "must be homed on the creating rank"
-        ARTS_EXPECTS_RANK_FAILURE 1)
+        PASS_REGULAR_EXPRESSION "must be homed on the creating rank")
 endif()
 
 # term_sigfpe / term_sigsegv crash via signal.  A death by a signal is not an
@@ -2067,9 +2100,12 @@ register_multinode_test(edt_create_oversize_guard VARIANTS 2n_9w_1p TIMEOUT 60
 arts_test_properties(edt_create_oversize_guard_2n_9w_1p PROPERTIES
     PASS_REGULAR_EXPRESSION "over the [0-9]+-byte control-message bound")
 register_multinode_test(multinode_event_types VARIANTS 2n_9w_1p)
-register_multinode_test(multinode_stdout_forward VARIANTS 2n_9w_1p)
-arts_test_properties(multinode_stdout_forward_2n_9w_1p PROPERTIES
-    PASS_REGULAR_EXPRESSION "MULTINODE_STDOUT_FORWARD_SENTINEL 42")
+# Every rank writes to the stdout it inherits from the spawner: its fd 1 is
+# the spawner's open file.
+register_multinode_test(launcher_children_inherit_stdout VARIANTS 2n_9w_1p)
+arts_test_properties(launcher_children_inherit_stdout_2n_9w_1p PROPERTIES
+    PASS_REGULAR_EXPRESSION "\\[1\\] INHERITED_STDOUT_SENTINEL 42"
+    FAIL_REGULAR_EXPRESSION "FAIL")
 # The startup check of the receive side's multi-recv threshold holds only if
 # the endpoint answers for the queue its messages land in; ofi_rxm in
 # passthru mode does not, so a run on it ends at startup with exit 1.
@@ -3498,6 +3534,18 @@ if(ARTS_CXL_TREE_RESIDENCY)
     register_cxl_single_node_test(cxl_edge_flush_order TIMEOUT 30)
     register_cxl_multinode_test(cxl_edge_flush_order TIMEOUT 60
                                 VARIANTS 2n_9w_1p 2n_8w_2p)
+    # On the fake library the spawner is the process that created the
+    # region, and the region's name is gone once the run has ended.
+    if(NOT ARTS_CXL_REAL)
+        arts_test_cfg(_cfg 4n_4w_1p)
+        arts_add_multinode_test(cxl_region_released_3n
+            COMMAND ${ARTS_SPAWNER_DRIVER} --want 0
+                    --absent /dev/shm/arts_fake_cxl
+                    -- $<TARGET_FILE:spawner_rank_probe>)
+        arts_test_properties(cxl_region_released_3n PROPERTIES
+            LABELS "multinode" TIMEOUT 60 RESOURCE_LOCK "arts_runtime"
+            ENVIRONMENT "ARTS_CONFIG=${_cfg};node_count=3")
+    endif()
 endif()
 
 # --- GPU tests ---
@@ -3623,17 +3671,16 @@ endif()
 # ============================================================================
 # Cross-rank failure channel.
 #
-# ctest sees the MASTER rank's exit status, and the local launcher folds every
-# rank it spawned into it: a rank that dies on a signal or exits non-zero makes
-# the master's arts_rt() return non-zero.  A rank's own verdict therefore
-# reaches ctest when that rank's main() returns arts_rt()'s result, which is
-# arts_test_status() through arts_app_exit_status (see
+# ctest sees the spawner's exit status, the highest status a rank ended with
+# (a rank that died on a signal counts 128 + the signal).  A rank's own verdict
+# therefore reaches ctest when that rank's main() returns arts_rt()'s result,
+# which is arts_test_status() through arts_app_exit_status (see
 # tests/test_failure_status.h).
 #
 # This gate is the second net, on every rank and single-node alike: a check
-# whose failure branch only prints -- on any rank, since the launcher forwards
-# every rank's stdout to the master's -- still fails the test by the token it
-# prints.
+# whose failure branch only prints -- on any rank, since every rank writes to
+# the stdout it inherited from the spawner -- still fails the test by the token
+# it prints.
 #
 # Conservative form (as in the PASS-gate sweep of generated_tests.cmake): the
 # token matched is one these tests print ONLY on a failure branch — a clean run
@@ -3652,7 +3699,7 @@ set(_arts_fail_token_tests
     excl_request_coalesce excl_samerank_rw_grant_race group_stress
     grant_purge_churn grant_purge_handback_regrant
     grant_purge_no_acquire_creator group_nested_chain_writes
-    guid_keygen_table_coupling launcher_no_respawn multinode_edt
+    guid_keygen_table_coupling launcher_orphan_prevention multinode_edt
     multinode_event_types random_thread_safe round_robin_home_distribution
     runtime_barrier_counts scheduler_acquire_bias self_send_vs_dispatcher_parity
     stress_edt threads_pin_affinity)

@@ -174,8 +174,8 @@ static int local_row(const struct arts_config_s *config, int prefer) {
   return first;
 }
 
-/* This rank's row: the launcher's word where it gives one (the rank a spawning
- * launcher passes in ARTS_RANK, a flux or Slurm task rank), else the row whose
+/* This rank's row: the launcher's word where it gives one (the rank the
+ * spawner passes in ARTS_RANK, a flux or Slurm task rank), else the row whose
  * resolved address a local interface carries. */
 static bool set_my_rank(struct arts_config_s *config) {
   char *arts_rank_env = getenv("ARTS_RANK");
@@ -416,16 +416,16 @@ static unsigned int ephemeral_port_floor(void) {
   return low;
 }
 
-/* Sliding the port block is the spawning rank's job, and only on a local run:
- * a bind probe here observes this machine, which for a local run is where every
- * rank lives.  A rank that was spawned already carries the answer in its
+/* Sliding the port block is the spawner's job, and only on a local run: a
+ * bind probe here observes this machine, which for a local run is where every
+ * rank lives.  A rank the spawner started already carries the answer in its
  * environment and must not choose again — two ranks choosing separately would
  * disagree about each other's ports. */
 static bool this_rank_chooses_ports(const struct arts_config_s *config) {
   return config->launcher != NULL && strcmp(config->launcher, "local") == 0 &&
-         config->master_boot && config->table_length > 1 &&
-         config->table != NULL && config->ports != NULL &&
-         config->port_count > 0 && getenv(ARTS_RESOLVED_PORTS_ENV) == NULL;
+         config->table_length > 1 && config->table != NULL &&
+         config->ports != NULL && config->port_count > 0 &&
+         getenv(ARTS_RESOLVED_PORTS_ENV) == NULL;
 }
 
 bool arts_transport_select_local_ports(struct arts_config_s *config) {
@@ -499,8 +499,7 @@ void arts_socket_sentinel_arm(void) {
    * liveness, and an orderly peer exit and a peer process death both surface as
    * HUP/EOF on the accept-side socket.  Closing any established socket here
    * would instead signal a false death to its peer, so only the listening
-   * sockets (whose accept duty is complete) are closed.  The launcher / stdio
-   * sockets are separate fds and are untouched. */
+   * sockets (whose accept duty is complete) are closed. */
   if (!arts_global_message_table) {
     return;
   }
@@ -656,14 +655,14 @@ void arts_socket_cleanup() {
   arts_free(local_socket_receive);
 }
 
-/* The startup budget of one connection of the socket mesh.  An accept waits
- * up to the budget for its next peer; a connect is retried budget / 100 ms
- * times, 100 ms apart, and each attempt blocks for as long as the kernel's
- * connect does, so the connect side counts attempts, not time.  The skew
- * between the ranks of one job is the launcher's, not the runtime's, so the
- * budget is a knob: ARTS_STARTUP_TIMEOUT_S, in seconds. */
-#define ARTS_STARTUP_TIMEOUT_DEFAULT_S 300u
-static unsigned int arts_startup_budget_ms(void) {
+/* How long one connection of the socket mesh may take to start: 20 s unless
+ * ARTS_STARTUP_TIMEOUT_S sets another.  An accept waits up to the budget for
+ * its next peer; a connect is retried budget / 100 ms times, 100 ms apart, and
+ * each attempt blocks for as long as the kernel's connect does, so the connect
+ * side counts attempts, not time.  The skew between the ranks of one job is
+ * the launcher's, not the runtime's, so the budget is a knob. */
+#define ARTS_STARTUP_TIMEOUT_DEFAULT_S 20u
+unsigned int arts_startup_budget_ms(void) {
   static unsigned int cached_ms = 0;
   if (cached_ms == 0) {
     const char *s = getenv("ARTS_STARTUP_TIMEOUT_S");

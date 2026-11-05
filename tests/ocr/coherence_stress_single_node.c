@@ -133,8 +133,4 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_event_satisfy_slot(group, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
-int main(int argc, char **argv) {
-  /* Non-zero when a rank this process spawned ended badly: their exit status
-     reaches nobody else, and a run with a dead rank did not succeed. */
-  return arts_rt(argc, argv) != 0 ? 1 : 0;
-}
+int main(int argc, char **argv) { return arts_rt(argc, argv); }

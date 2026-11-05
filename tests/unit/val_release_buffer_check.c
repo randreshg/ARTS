@@ -59,7 +59,4 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_add_dependence(b, w, 1, DB_MODE_RW);
 }
 
-int main(int argc, char **argv) {
-  /* Non-zero when a rank this process spawned ended badly. */
-  return arts_rt(argc, argv) != 0 ? 1 : 0;
-}
+int main(int argc, char **argv) { return arts_rt(argc, argv); }

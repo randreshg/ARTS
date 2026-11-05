@@ -22,7 +22,7 @@ function(add_pure_unit_src name)
         ${ARTS_PUBLIC_INCLUDE_DIR} ${ARTS_INTERNAL_INCLUDE_DIR}
         ${ARTS_BUILD_INTERNAL_INCLUDE_DIR}
         # Some pure_unit TUs '#include' a runtime .c by a path relative to a
-        # source root (e.g. "transport/launcher.c", "counter.c") to pull in
+        # source root (e.g. "transport/spawner.c", "counter.c") to pull in
         # file-static symbols without de-static-ing the runtime.  Expose the
         # source roots so those includes resolve.
         ${CMAKE_SOURCE_DIR}/libs/src
@@ -151,16 +151,17 @@ add_pure_unit_src(socket_helpers PASS_REGEX "PASS socket_helpers" TIMEOUT 60)
 # Every mesh socket is close-on-exec and kept alive at both ends, and a
 # peer's closed or reset connection reads as gone once the mesh is armed.
 add_pure_unit_src(socket_mesh_liveness PASS_REGEX "PASS socket_mesh_liveness" TIMEOUT 60)
+# The startup budget reads 20 s with ARTS_STARTUP_TIMEOUT_S unset, and the
+# value it sets otherwise; each value is a run of its own.
+set_tests_properties(socket_mesh_liveness PROPERTIES
+    ENVIRONMENT_MODIFICATION "ARTS_STARTUP_TIMEOUT_S=unset:")
+arts_add_test(socket_mesh_liveness_budget_set COMMAND socket_mesh_liveness 7000)
+set_tests_properties(socket_mesh_liveness_budget_set PROPERTIES
+    LABELS "single_node" TIMEOUT 60 RESOURCE_LOCK "pure_unit_test"
+    ENVIRONMENT "ARTS_STARTUP_TIMEOUT_S=7"
+    PASS_REGULAR_EXPRESSION "PASS socket_mesh_liveness")
 add_pure_unit_src(socket_net_interface_remap PASS_REGEX "PASS socket_net_interface_remap" TIMEOUT 60)
 add_pure_unit_src(launcher_shell_quote PASS_REGEX "PASS launcher_shell_quote" TIMEOUT 60)
-add_pure_unit_src(stdio_forward_fidelity PASS_REGEX "PASS stdio_forward_fidelity" TIMEOUT 60)
-add_pure_unit_src(stdio_forward_partial_eintr PASS_REGEX "PASS stdio_forward_partial_eintr" TIMEOUT 60)
-add_pure_unit_src(stdio_forward_make_pipe_fail PASS_REGEX "PASS stdio_forward_make_pipe_fail" TIMEOUT 60)
-add_pure_unit_src(stdio_forward_fileno_negative PASS_REGEX "PASS stdio_forward_fileno_negative" TIMEOUT 60)
-add_pure_unit_src(stdio_forward_shutdown_idempotent PASS_REGEX "PASS stdio_forward_shutdown_idempotent" TIMEOUT 60)
-add_pure_unit_src(stdio_forward_concurrent_push PASS_REGEX "PASS stdio_forward_concurrent_push" TIMEOUT 60)
-add_pure_unit_src(stdio_forward_fflush_no_deadlock PASS_REGEX "PASS stdio_forward_fflush_no_deadlock" TIMEOUT 60)
-add_pure_unit_src(stdio_forward_multi_source PASS_REGEX "PASS stdio_forward_multi_source" TIMEOUT 60)
 # Configuration parsing stays inside what it allocated: a routing table
 # holds no more rows than it was sized for, a single-host LSF list and a Slurm
 # environment that yields no full table are refused, and an environment
@@ -638,12 +639,124 @@ set_tests_properties(dispatcher_default_fatal PROPERTIES
     PASS_REGULAR_EXPRESSION "received a message of unknown type [0-9]+"
     FAIL_REGULAR_EXPRESSION "FAIL")
 
-# --- launcher ---
-# The launcher spawns each rank once, every spawned rank knows its rank and the
-# total, and every one has a live parent; four ranks make the spawn loop start
-# more than one child.
-add_arts_test(launcher_no_respawn)
-register_multinode_test(launcher_no_respawn TIMEOUT 60 VARIANTS 2n_9w_1p 4n_4w_1p)
+# --- the spawner ---
+# The spawner starts each rank once, rank 0 included, as its own child: every
+# rank knows its rank and the total, and every one has the same live parent;
+# four ranks make the spawn loop start more than one child past rank 0.
+add_arts_test(launcher_orphan_prevention)
+register_multinode_test(launcher_orphan_prevention TIMEOUT 60
+                        VARIANTS 2n_9w_1p 4n_4w_1p)
+
+# The spawner killed outright takes every rank with it: each rank dies by its
+# parent-death signal, so none is alive a second after the kill.
+arts_test_cfg(_cfg 2n_9w_1p)
+arts_add_multinode_test(launcher_master_killed
+    COMMAND ${ARTS_SPAWNER_DRIVER} --want any --on pids --ranks 2
+            --signal KILL --target spawner --dead-after-ms 1000
+            -- $<TARGET_FILE:spawner_rank_probe> 30000)
+arts_test_properties(launcher_master_killed PROPERTIES
+    LABELS "multinode" TIMEOUT 60 RESOURCE_LOCK "arts_runtime"
+    ENVIRONMENT "ARTS_CONFIG=${_cfg}")
+
+# A hundred four-rank startups in a row, each ending with status 0.
+arts_test_cfg(_cfg 4n_4w_1p)
+arts_add_multinode_test(shutdown_startup_storm
+    COMMAND ${ARTS_SPAWNER_DRIVER} --want 0 --repeat 100
+            -- $<TARGET_FILE:term_shutdown>)
+arts_test_properties(shutdown_startup_storm PROPERTIES
+    LABELS "multinode" TIMEOUT 1200 RESOURCE_LOCK "arts_runtime"
+    ENVIRONMENT "ARTS_CONFIG=${_cfg}")
+
+# A local run whose ranks would need more CPUs than the process may run on is
+# refused before any rank starts.
+arts_test_cfg(_cfg 1n_20w)
+arts_add_test(spawner_oversubscription_refused STATUS 1
+              COMMAND spawner_rank_probe)
+set_tests_properties(spawner_oversubscription_refused PROPERTIES
+    LABELS "single_node" TIMEOUT 5 RESOURCE_LOCK "arts_runtime"
+    ENVIRONMENT "ARTS_CONFIG=${_cfg};node_count=64;SPAWNER_PROBE_NO_RANK=1"
+    PASS_REGULAR_EXPRESSION
+    "launcher=local: 64 ranks x [0-9]+ threads exceed the [0-9]+ CPUs"
+    FAIL_REGULAR_EXPRESSION "SPAWNER_PROBE_RANK_STARTED")
+
+# An end grace that is not a whole number of seconds in 1-86400, or that is
+# below the run's startup budget plus the shutdown bound, is refused before
+# any rank starts.
+arts_test_cfg(_cfg 2n_9w_1p)
+math(EXPR _below "20 + ${ARTS_EXIT_WATCHDOG_S} - 1")
+foreach(_case "zero_2n_9w_1p;ARTS_END_GRACE_S=0"
+              "below_2n_9w_1p;ARTS_STARTUP_TIMEOUT_S=20,ARTS_END_GRACE_S=${_below}")
+    list(GET _case 0 _name)
+    list(GET _case 1 _vars)
+    string(REPLACE "," ";" _vars "${_vars}")
+    arts_add_multinode_test(spawner_end_grace_invalid_${_name} STATUS 1
+                            COMMAND spawner_rank_probe)
+    arts_test_properties(spawner_end_grace_invalid_${_name} PROPERTIES
+        LABELS "multinode" TIMEOUT 30 RESOURCE_LOCK "arts_runtime"
+        ENVIRONMENT "ARTS_CONFIG=${_cfg};SPAWNER_PROBE_NO_RANK=1;${_vars}"
+        PASS_REGULAR_EXPRESSION "ARTS_END_GRACE_S="
+        FAIL_REGULAR_EXPRESSION "SPAWNER_PROBE_RANK_STARTED")
+endforeach()
+unset(_below)
+
+# A rank stopped for good is killed the end grace after the first rank ended:
+# a 10 s startup budget and a grace of that plus the shutdown bound, the
+# smallest the spawner accepts.  Only where the bound is 10 s, so the grace
+# is 20 s; the kill's status is the run's, and the grace kills rank 2 alone.
+if(CMAKE_BUILD_TYPE STREQUAL "Release")
+    arts_test_cfg(_cfg 4n_4w_1p)
+    math(EXPR _grace "10 + ${ARTS_EXIT_WATCHDOG_S}")
+    math(EXPR _lo "${_grace} * 1000")
+    math(EXPR _hi "${_grace} * 1000 + 2000")
+    arts_add_multinode_test(spawner_end_grace
+        COMMAND ${ARTS_SPAWNER_DRIVER} --want 137 --on line:ALL_RANKS_READY
+                --signal STOP --target rank:2
+                --line-window "end-of-step grace of ${_grace} s expired. killing rank 2 "
+                              ${_lo} ${_hi}
+                --bound-ms 30000 --bound-from launch
+                -- $<TARGET_FILE:spawner_rank_probe> 3000)
+    arts_test_properties(spawner_end_grace PROPERTIES
+        LABELS "multinode" TIMEOUT 60 RESOURCE_LOCK "arts_runtime"
+        ENVIRONMENT "ARTS_CONFIG=${_cfg};node_count=3;ARTS_STARTUP_TIMEOUT_S=10;ARTS_END_GRACE_S=${_grace}"
+        ARTS_RANK_STATUSES 137
+        ARTS_END_GRACE_EXPIRES TRUE
+        FAIL_REGULAR_EXPRESSION "killing rank [01] ")
+    unset(_grace)
+    unset(_lo)
+    unset(_hi)
+endif()
+
+# A rank that ended is reaped once and never signalled again: rank 2 aborts
+# with 3, and the spawner, signalled once that rank's end was reported,
+# forwards the signal to the ranks still running only.  The run's status is
+# rank 2's 3, or 143 where a rank the signal reached ends by it.
+arts_test_cfg(_cfg 4n_4w_1p)
+arts_add_multinode_test(spawner_signal_after_reap
+    COMMAND ${ARTS_SPAWNER_DRIVER} --want 3,143
+            "--on=line:\\[ARTS\\] spawner: rank 2 \\(pid [0-9]+\\) ended with status 3"
+            --signal TERM --target spawner
+            -- $<TARGET_FILE:spawner_rank_probe> 30000 2:3)
+arts_test_properties(spawner_signal_after_reap PROPERTIES
+    LABELS "multinode" TIMEOUT 120 RESOURCE_LOCK "arts_runtime"
+    ENVIRONMENT "ARTS_CONFIG=${_cfg};node_count=3"
+    ARTS_RANK_STATUSES "3;143"
+    FAIL_REGULAR_EXPRESSION "spawner: forward [A-Z]+ to rank 2 ")
+if(ARTS_LOG_LEVEL GREATER_EQUAL 3)
+    arts_test_properties(spawner_signal_after_reap PROPERTIES
+        PASS_REGULAR_EXPRESSION "spawner: rank 2 \\(pid [0-9]+\\) reaped, status 3")
+endif()
+
+# Every worker of rank 0 streams to rank 1, and rank 1 is killed: rank 0
+# learns of the end and ends, and the kill's status is the run's.
+arts_test_cfg(_cfg 2n_9w_1p)
+arts_add_multinode_test(shutdown_spin_peer_killed
+    COMMAND ${ARTS_SPAWNER_DRIVER} --want 137 --on line:FLOODING
+            --signal KILL --target rank:1
+            -- $<TARGET_FILE:shutdown_spin_peer_killed>)
+arts_test_properties(shutdown_spin_peer_killed PROPERTIES
+    LABELS "multinode" TIMEOUT 120 RESOURCE_LOCK "arts_runtime"
+    ENVIRONMENT "ARTS_CONFIG=${_cfg}"
+    ARTS_RANK_STATUSES 137)
 
 # --- config loading ---
 add_arts_test(config_load_single_reclaim)
@@ -682,8 +795,7 @@ set_tests_properties(app_status_reaches_exit PROPERTIES
 register_multinode_test(app_status_reaches_exit TIMEOUT 60 STATUS 1
                         VARIANTS 2n_9w_1p)
 arts_test_properties(app_status_reaches_exit_2n_9w_1p PROPERTIES
-    PASS_REGULAR_EXPRESSION "APP_STATUS_RECORDED app_status_reaches_exit"
-    ARTS_EXPECTS_RANK_FAILURE 1)
+    PASS_REGULAR_EXPRESSION "APP_STATUS_RECORDED app_status_reaches_exit")
 if(TARGET arts_shared)
     add_arts_test(app_status_reaches_exit_shared
                   SOURCE app_status_reaches_exit RUNTIME arts_shared)
@@ -716,18 +828,20 @@ register_single_node_test(signals_double_sigterm STATUS 143 TIMEOUT 60)
 # launched rank, or an arts_rt that returned, reports RANK_OVERFLOW_NO_ABORT.
 add_arts_test(main_rank_overflow_abort)
 register_single_node_test(main_rank_overflow_abort STATUS 1 TIMEOUT 60)
+arts_test_cfg(_cfg 1n_20w)
 set_tests_properties(main_rank_overflow_abort PROPERTIES
+    ENVIRONMENT "ARTS_CONFIG=${_cfg};launcher=local"
     PASS_REGULAR_EXPRESSION "exceeds GUID layout limit"
     FAIL_REGULAR_EXPRESSION "RANK_OVERFLOW_NO_ABORT")
 
 # A rank that exits mid-run ends every peer's run, by the end of its stream;
-# the two progress threads race the probes of that end.
+# the two progress threads race the probes of that end.  The aborted rank's
+# status is the run's.
 add_arts_test(shutdown_abort_eof)
-register_multinode_test(shutdown_abort_eof TIMEOUT 120)
+register_multinode_test(shutdown_abort_eof TIMEOUT 120 STATUS 37)
 foreach(_v 2n_9w_1p 4n_4w_1p 2n_8w_2p)
     arts_test_properties(shutdown_abort_eof_${_v} PROPERTIES
-        PASS_REGULAR_EXPRESSION "ABORT_EOF_EXIT"
-        ARTS_EXPECTS_RANK_FAILURE 37)
+        PASS_REGULAR_EXPRESSION "ABORT_EOF_EXIT")
 endforeach()
 
 # Concurrent initialization calls and shutdowns on every rank: one wins on each

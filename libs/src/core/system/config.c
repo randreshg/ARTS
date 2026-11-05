@@ -54,7 +54,6 @@
 #include "arts/gas/route_table.h" /* COLLISION_RESOLVES */
 #include "arts/runtime.h"         /* arts_scheduler_loop_count */
 #include "arts/system/print.h"
-#include "arts/transport/launcher.h"
 #include "arts/utils/malloc.h"
 
 static char *extract_nodelist_lsf(const char *envr, int stride,
@@ -466,7 +465,7 @@ void arts_config_create_routing_table(struct arts_config_s **config,
   /* The config owns the table from its allocation. */
   (*config)->table = table;
 
-  if (!(*config)->master_boot) {
+  if ((*config)->launcher == NULL || strcmp((*config)->launcher, "ssh") != 0) {
     char *part;
     while ((part = arts_get_next_partition(&node_list))) {
       /* The table is calloc'd with exactly node_count entries; never index past
@@ -961,7 +960,6 @@ static const struct arts_config_entry_s config_entries[] = {
     {"fabric_domain", CONFIG_STRING, OFF(fabric_domain), NULL, NULL},
     {"regpool_slab_mb", CONFIG_UINT, OFF(regpool_slab_mb), "256", NULL},
     /* --- Debug --- */
-    {"kill_mode", CONFIG_UINT, OFF(kill_mode), "0", NULL},
     {"core_dump", CONFIG_BOOL, OFF(core_dump), "0", NULL},
     /* --- Counters --- */
     {"counter_folder", CONFIG_STRING, OFF(counter_folder), "./counters", NULL},
@@ -1032,8 +1030,6 @@ static bool config_parse_count(const char *text, unsigned int *out) {
 }
 
 static void config_setup_slurm(struct arts_config_s *config) {
-  config->master_boot = false;
-
   const char *threads_env = getenv("SLURM_CPUS_PER_TASK");
   if (threads_env != NULL &&
       !config_parse_count(threads_env, &config->thread_count)) {
@@ -1115,8 +1111,6 @@ static void config_setup_flux(struct arts_config_s *config) {
   /* One task per node, already placed by flux run; the runtime only
    * discovers identity and roster.  Flux publishes no hostlist variable,
    * so the roster comes from the flux CLI itself. */
-  config->master_boot = false;
-
   const char *nnodes_env = getenv("FLUX_JOB_NNODES");
   if (nnodes_env == NULL) {
     ARTS_ERROR("launcher=flux: FLUX_JOB_NNODES is not set — this process "
@@ -1193,7 +1187,6 @@ static void config_setup_flux(struct arts_config_s *config) {
 }
 
 static void config_setup_lsf(struct arts_config_s *config) {
-  config->master_boot = false;
   unsigned int count = 0;
   char *node_list = extract_nodelist_lsf("LSB_HOSTS", 1, &count);
   if (!node_list) {
@@ -1215,11 +1208,6 @@ static void config_setup_lsf(struct arts_config_s *config) {
 
 static void config_setup_ssh(struct arts_config_s *config,
                              struct arts_config_variable_s **vars) {
-  config->launcher_data = arts_launcher_create(
-      0, NULL, config, config->kill_mode, arts_launcher_ssh_startup_processes,
-      arts_launcher_ssh_cleanup_processes);
-  config->master_boot = true;
-
   /* A node_count must agree with the list the table is built from (no list
    * is the one host "localhost"): a longer list would lose hosts, a shorter
    * one would leave rows without a host. */
@@ -1290,7 +1278,6 @@ static void config_setup_local(struct arts_config_s *config,
 
   if (node_count > 1) {
     /* Multi-node local: simulate cluster on a single machine. */
-    config->master_boot = true;
     config->shared_pu_pool = true;
     config->nodes = node_count;
 
@@ -1307,15 +1294,9 @@ static void config_setup_local(struct arts_config_s *config,
     config->master_rank = 0;
     config->master_node = arts_config_make_new_var("127.0.0.1");
 
-    config->launcher_data =
-        arts_launcher_create(0, NULL, config, config->kill_mode,
-                             arts_launcher_local_startup_processes,
-                             arts_launcher_local_cleanup_processes);
-
     ARTS_INFO("Local multi-node: %u nodes on 127.0.0.1", node_count);
   } else {
     /* Single-node local (original behavior). */
-    config->master_boot = false;
     config->nodes = 1;
     config->table_length = 1;
     config->master_rank = 0;
@@ -1581,9 +1562,6 @@ void arts_config_load(struct arts_config_s *config) {
 
 void arts_config_destroy(struct arts_config_s *config) {
   arts_free(config->launcher);
-  if (config->launcher_data) {
-    arts_free(config->launcher_data);
-  }
   if (config->table) {
     for (unsigned int i = 0; i < config->table_length; i++) {
       arts_free(config->table[i].ip_address);

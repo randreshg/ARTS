@@ -45,8 +45,6 @@ extern "C" {
 #include <stdbool.h>
 #include <stdint.h>
 
-#include "arts/transport/launcher.h"
-
 #ifdef ARTS_USE_CXL
 /** CXL DB allocation strategy. */
 typedef enum {
@@ -60,9 +58,9 @@ typedef enum {
    would collide at random with an outgoing connection's source port. */
 #define ARTS_PORT_WINDOW_LO 20000U
 #define ARTS_PORT_WINDOW_HI 32000U
-/* How the spawning rank tells the ranks it spawns what the run settled on.
-   Not a config key: it is an internal handoff, and a local run rejects any
-   attempt to name ports by hand. */
+/* How the spawner tells the ranks it starts what the run settled on.  Not a
+   config key: it is an internal handoff, and a local run rejects any attempt
+   to name ports by hand. */
 #define ARTS_RESOLVED_PORTS_ENV "ARTS_RESOLVED_PORTS"
 
 struct arts_config_table_s {
@@ -101,19 +99,16 @@ struct arts_config_s {
   unsigned int thread_count;
   unsigned int nodes;
   unsigned int master_rank;
-  unsigned int kill_mode;
   unsigned int route_table_size;
   unsigned int route_table_entries;
   unsigned int deque_size;
   char *counter_folder;
   unsigned int counter_capture_interval;
   unsigned int scheduler;
-  bool master_boot;
   bool core_dump;
   bool pin_threads;
   bool shared_pu_pool; /* true when all nodes share PUs (local multi-node) */
   uint64_t stack_size;
-  struct arts_launcher_s *launcher_data;
   unsigned int table_length;
   unsigned int gpu;
   unsigned int gpu_locality;

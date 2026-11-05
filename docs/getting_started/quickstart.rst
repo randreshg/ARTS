@@ -188,7 +188,8 @@ collide with outgoing connections' source ports.
 
 A ``launcher=local`` run — several ranks on one machine, as the tests and the
 benchmark harness use — names no ports at all: the ranks share a machine and so
-cannot share a port, and the spawning rank finds a free block for all of them.
+cannot share a port, and the process you start finds a free block for all of
+them before it starts them.
 Setting ``ports`` there is a configure error.
 
 On a SLURM cluster the launcher is detected from the scheduler's

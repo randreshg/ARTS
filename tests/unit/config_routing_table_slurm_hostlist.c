@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * arts_config_create_routing_table — Slurm hostlist path (master_boot=false).
+ * arts_config_create_routing_table — Slurm hostlist path (launcher=slurm).
  *
  * Property: every Slurm-style compressed nodelist must expand to exactly
  * config->nodes ranked hostnames, in nodelist order, with each name owning
@@ -31,7 +31,7 @@ static void expect_table(const char *label, char *node_list,
                          const char **want, unsigned int n) {
   struct arts_config_s cfg;
   memset(&cfg, 0, sizeof(cfg));
-  cfg.master_boot = false;
+  cfg.launcher = arts_config_make_new_var("slurm");
   cfg.nodes = n;
 
   struct arts_config_s *p = &cfg;

@@ -18,8 +18,8 @@
 ///
 /// Each of the first two ranks schedules a LOCAL shutdown initiator EDT, so two
 /// independent initiations race across the cluster.  Each initiator prints
-/// its token before it calls arts_shutdown, and the master's status carries
-/// the launcher's verdict on every rank (ctest TIMEOUT reaps a storm/deadlock
+/// its token before it calls arts_shutdown, and the spawner's status is the
+/// highest of every rank's (ctest TIMEOUT reaps a storm/deadlock
 /// regression).
 ///
 /// Multinode (2n_9w_1p/4n_4w_1p).  A run on one rank fails.  Every

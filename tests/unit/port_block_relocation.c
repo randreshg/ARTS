@@ -40,7 +40,7 @@
 /// @file port_block_relocation.c
 /// @brief A local run must move off a port block someone else already holds.
 ///
-/// The spawning rank picks the block every rank will bind, so an occupied port
+/// The spawner picks the block every rank will bind, so an occupied port
 /// anywhere in it has to be found BEFORE the peers exist — once they are told a
 /// base, nothing can move it.  This occupies one port of the block the selector
 /// starts from and checks the selector slides the whole run somewhere free,

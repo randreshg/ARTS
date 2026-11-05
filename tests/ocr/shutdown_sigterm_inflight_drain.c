@@ -17,8 +17,8 @@
 /// shutdown: it closes rank 0's send gate and posts SHUTDOWN to the other
 /// ranks while satisfies keep arriving, and waits for no send.
 ///
-/// Every rank's status says how its run ended; the master's carries the
-/// launcher's verdict on every rank it spawned.
+/// Every rank's status says how its run ended; the spawner's is the highest
+/// of them.
 
 #include "arts.h"
 

@@ -7,9 +7,9 @@
  * header prototype, so each test TU pulls the whole translation unit in with
  *     #include "../../libs/src/core/system/config.c"
  * (precedent: tests build edt_gpu.cu by #include'ing edt.c).  That drags in the
- * runtime's allocator / identity / abort / launcher-backend / scheduler-table
- * symbols, none of which we want the real runtime for.  This header supplies
- * libc-backed shims for them so the test links standalone.
+ * runtime's allocator / identity / abort / scheduler-table symbols, none of
+ * which we want the real runtime for.  This header supplies libc-backed shims
+ * for them so the test links standalone.
  *
  * IMPORTANT: include this header AFTER the config.c include, because config.c
  * brings in print.h (which declares arts_global_rank_id / arts_thread_info used
@@ -55,15 +55,5 @@ void arts_abort(uint8_t code) {
 
 /* ── scheduler table size (config load bounds the `scheduler` key by it) ─── */
 const unsigned int arts_scheduler_loop_count = 3;
-
-/* ── launcher backend symbols (address-taken only by config_setup_*) ─────── */
-void arts_launcher_ssh_startup_processes(struct arts_launcher_s *l) { (void)l; }
-void arts_launcher_ssh_cleanup_processes(struct arts_launcher_s *l) { (void)l; }
-void arts_launcher_local_startup_processes(struct arts_launcher_s *l) {
-  (void)l;
-}
-void arts_launcher_local_cleanup_processes(struct arts_launcher_s *l) {
-  (void)l;
-}
 
 #endif /* CONFIG_TEST_COMMON_H */

@@ -177,10 +177,6 @@ int main(void) {
            config.launcher ? config.launcher : "(null)");
     fails++;
   }
-  if (config.master_boot) {
-    printf("FAIL config_flux_setup: master_boot set — flux spawns nobody\n");
-    fails++;
-  }
   if (config.table_length != 2 || config.table == NULL) {
     printf("FAIL config_flux_setup: table_length %u, want 2\n",
            config.table_length);

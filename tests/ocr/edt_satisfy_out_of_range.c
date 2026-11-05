@@ -8,8 +8,8 @@
  * Rank 0 creates an EDT with two slots on the last rank and satisfies its
  * slot 5.  On one rank the satisfy runs where it is called, so a satisfy that
  * is let through reaches the arts_shutdown after it and the run ends with
- * status 0.  On two ranks it crosses the fabric and ends rank 1, which the
- * master's arts_rt reports; there the EDT's real slots are never satisfied,
+ * status 0.  On two ranks it crosses the fabric and ends rank 1, whose status
+ * the spawner reports; there the EDT's real slots are never satisfied,
  * so a satisfy that is let through leaves the run waiting until the test's
  * timeout.
  */
@@ -40,7 +40,4 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
 }
 
-int main(int argc, char **argv) {
-  /* Non-zero when a rank this process spawned ended badly. */
-  return arts_rt(argc, argv) != 0 ? 1 : 0;
-}
+int main(int argc, char **argv) { return arts_rt(argc, argv); }

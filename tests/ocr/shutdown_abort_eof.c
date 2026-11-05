@@ -14,10 +14,9 @@
 /// departure and exit cleanly (no hang).
 ///
 /// An EDT placed on a NON-master rank (the last rank) calls arts_abort with a
-/// sentinel code.  That rank exits with the code, which the registration names
-/// as the exit it provokes; the master's arts_rt reports the aborted rank,
-/// which main deliberately ignores, and the surviving peers detect the
-/// departure and return 0.  Each surviving rank prints a clean token.  ctest
+/// sentinel code.  That rank exits with the code, the spawner's status, which
+/// the registration names, and the surviving peers detect the departure and
+/// return 0.  Each surviving rank prints a clean token.  ctest
 /// TIMEOUT reaps a departure-detection hang regression.
 ///
 /// Multinode (2n_9w_1p/4n_4w_1p/2n_8w_2p).  Self-skips cleanly to a

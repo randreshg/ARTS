@@ -5,13 +5,11 @@
  * Drives a full arts_config_load() end-to-end over a cfg the test writes and
  * names through ARTS_CONFIG.  The cfg populates: launcher (ssh), routing
  * table (3 hosts, each row with its own copy of the port list), ports,
- * master_node, net_interface, counter_folder, and a launcher_data via
- * arts_launcher_create.  Then arts_config_destroy frees them.
+ * master_node, net_interface and counter_folder.  Then arts_config_destroy
+ * frees them.
  *
- * Property (LSan): a single load+destroy leaks ZERO bytes.  launcher_data is
- * the one block arts_launcher_create allocated (the child-pid array a launch
- * allocates is freed by the launcher's own cleanup step), and destroy releases
- * a configuration once.
+ * Property (LSan): a single load+destroy leaks ZERO bytes, and destroy
+ * releases a configuration once.
  *
  * Built with -fsanitize=address (LSan is part of ASan) to assert no leaks.
  */

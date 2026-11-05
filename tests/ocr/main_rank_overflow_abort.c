@@ -6,25 +6,27 @@
 /// @brief arts_rt aborts (exit 1) when the configured rank count exceeds the
 ///        GUID layout limit (ARTS_GUID_RANK_MASK - 1 == 16382).
 ///
-/// main.c sets arts_global_rank_count = config.table_length and, BEFORE any
-/// transport setup or process launch, guards it:
-///   if (rank_count > ARTS_GUID_RANK_MASK - 1U) ARTS_ERROR(...);
-/// ARTS_ERROR calls arts_abort(1) (process exits 1).  The check sits at the
-/// very top so an over-limit node count aborts before the launcher would ever
-/// fork that many processes.
+/// arts_rt guards config.table_length among its checks of the run as a whole,
+/// BEFORE any transport setup or process launch:
+///   if (table_length > ARTS_GUID_RANK_MASK - 1U) ARTS_ERROR(...);
+/// ARTS_ERROR calls arts_abort(1) (process exits 1).  The check comes first
+/// so an over-limit node count aborts before the spawner would ever fork that
+/// many processes.
 ///
 /// ARTS reads each config variable from the environment when present
 /// (arts_config_find_variable does getenv(name)), so this test sets
 /// node_count=16383 in its own main() before calling arts_rt: the first count
 /// the guard refuses, so a guard that admits one count too many fails the
-/// test.  The guard runs before transport setup and process launch, so it
-/// guarantees that no process is launched.  A regressed guard is bounded by the
-/// tripwire at the top of main(): main() marks the environment before arts_rt,
-/// and every rank the launcher starts inherits the mark and exits at once
-/// reporting RANK_OVERFLOW_NO_ABORT.  The startup budget is cut to one second,
-/// so the spawning rank stops waiting for those ranks at once and a guard that
-/// admits the count fails the test within seconds.  The test is judged on exit
-/// status 1 and the guard's message.
+/// test.  The guard runs before transport setup and before the spawner of a
+/// local run starts any rank, so it guarantees that no process is launched.  A
+/// regressed guard is bounded by the tripwire at the top of main(): main()
+/// marks the environment before arts_rt, and every rank the spawner starts
+/// inherits the mark and exits at once reporting RANK_OVERFLOW_NO_ABORT; a
+/// local run's CPU check also refuses such a count, without the guard's
+/// message.  The startup budget is cut to one second, so a rank that starts
+/// anyway stops waiting for its peers at once and a guard that admits the
+/// count fails the test within seconds.  The test is judged on exit status 1
+/// and the guard's message.
 ///
 /// Single-node; no coherence protocol, write or release policy or payload
 /// store changes the guard (it sits above the coherence layer).  Asserts the

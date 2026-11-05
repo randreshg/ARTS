@@ -249,7 +249,5 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 int main(int argc, char **argv) {
-  /* Two verdicts to merge: what arts_rt saw of the ranks it spawned (their exit
-     status reaches nobody else) and what this rank's own checks found. */
   return arts_rt(argc, argv);
 }

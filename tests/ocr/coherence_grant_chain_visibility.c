@@ -285,7 +285,5 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 int main(int argc, char **argv) {
-  /* Non-zero when a rank this process spawned ended badly (their exit status
-     reaches nobody else) or when a check inside an EDT on this rank failed. */
   return arts_rt(argc, argv);
 }

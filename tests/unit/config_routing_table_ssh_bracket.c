@@ -2,7 +2,7 @@
  *
  * arts_config_create_routing_table SSH bracket-range path.
  *
- * Property: with master_boot=true (SSH parser), node_list "n[01-03]" must
+ * Property: under launcher=ssh (the ssh parser), node_list "n[01-03]" must
  * expand to three zero-padded hostnames, one per rank:
  *   table[0] = {rank 0, "n01"}
  *   table[1] = {rank 1, "n02"}
@@ -28,7 +28,7 @@ static int fails = 0;
 int main(void) {
   struct arts_config_s cfg;
   memset(&cfg, 0, sizeof(cfg));
-  cfg.master_boot = true;
+  cfg.launcher = arts_config_make_new_var("ssh");
   cfg.nodes = 3;
 
   char node_list[] = "n[01-03]";

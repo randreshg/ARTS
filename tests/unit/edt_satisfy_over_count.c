@@ -11,7 +11,7 @@
  * live meanwhile: its body waits for the run's end.  On one rank the
  * satisfies run where they are called, so a satisfy that is let through
  * reaches the arts_shutdown after it and the run ends with status 0.  On two
- * ranks they cross the fabric and end rank 1, which the master's arts_rt
+ * ranks they cross the fabric and end rank 1, whose status the spawner
  * reports; there a satisfy that is let through leaves the run waiting until
  * the test's timeout.  The error names slot 1 there because one progress
  * thread dispatches one sender's messages in the order they were sent.
@@ -63,7 +63,4 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
 }
 
-int main(int argc, char **argv) {
-  /* Non-zero when a rank this process spawned ended badly. */
-  return arts_rt(argc, argv) != 0 ? 1 : 0;
-}
+int main(int argc, char **argv) { return arts_rt(argc, argv); }

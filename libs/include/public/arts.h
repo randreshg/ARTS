@@ -513,9 +513,10 @@ int arts_printf(const char *format, ...);
  *
  * @param argc Argument count from main().
  * @param argv Argument vector from main().
- * @return 1 when no main_edt reached the runtime, a rank this process spawned
- *         failed, or the rank mesh could not be established; otherwise
- *         arts_app_exit_status().
+ * @return 1 when no main_edt reached the runtime or the rank mesh could not
+ *         be established; otherwise arts_app_exit_status().  A process that
+ *         starts the ranks of a run itself never returns: it ends with the
+ *         highest status a rank ended with.
  * @see arts_shutdown
  * @see arts_app_exit_status
  */

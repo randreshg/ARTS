@@ -260,7 +260,7 @@ int main(void) {
   arts_config_destroy(&named);
   (void)remove(cfg_path);
 
-  /* (F) a spawned local rank takes the block the spawning rank claimed. */
+  /* (F) a local rank takes the block its spawner claimed. */
   if (write_cfg(cfg_path, sizeof(cfg_path), "localresolved",
                 "launcher=local\nnode_count=2\n") != 0) {
     printf("FAIL config_ports_contract: cannot write localresolved cfg\n");

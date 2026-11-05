@@ -18,8 +18,8 @@
 int main(void) {
   struct arts_config_s cfg;
   memset(&cfg, 0, sizeof(cfg));
-  cfg.master_boot = true; /* SSH parser path */
-  cfg.nodes = 2;          /* calloc 2 entries ... */
+  cfg.launcher = "ssh"; /* the ssh parser path */
+  cfg.nodes = 2;        /* calloc 2 entries ... */
 
   /* ... but the list parses to 3 hosts.  Config load refuses a node_count
      that disagrees with the list, so the parser is driven directly. */

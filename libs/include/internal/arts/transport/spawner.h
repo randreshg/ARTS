@@ -36,60 +36,32 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
-#ifndef ARTS_TRANSPORT_LAUNCHER_H
-#define ARTS_TRANSPORT_LAUNCHER_H
+#ifndef ARTS_TRANSPORT_SPAWNER_H
+#define ARTS_TRANSPORT_SPAWNER_H
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#include <sys/types.h>
-
 #include "arts/system/config.h"
-#include "arts/utils/malloc.h"
 
-struct arts_launcher_s {
-  unsigned int argc;
-  char **argv;
-  struct arts_config_s *config;
-  unsigned int kill_stuck_processes;
-  void (*launch_processes)(struct arts_launcher_s *);
-  void (*cleanup_processes)(struct arts_launcher_s *);
-  pid_t *child_pids;
-  unsigned int child_count;
-  /* Ranks this launcher spawned that did not end cleanly.  ctest — and any
-     other caller — only ever observes the spawning process's exit status, so a
-     rank that aborted or exited non-zero is otherwise indistinguishable from
-     one that finished.  Cleanup records it here; arts_rt reports it. */
-  unsigned int failed_child_count;
-};
+/* The grace, in seconds, the spawner leaves the other ranks once a first rank
+ * of the run has ended: ARTS_END_GRACE_S, a whole number in 1-86400 no lower
+ * than this run's startup budget plus the shutdown bound, or by default 30
+ * raised to that sum.  Refuses (ARTS_ERROR) any other value; a pure function
+ * of the environment, so every process of a run reads the same answer. */
+unsigned int arts_end_grace_s(void);
 
-// SSH launcher
-void arts_launcher_ssh_startup_processes(struct arts_launcher_s *launcher);
-void arts_launcher_ssh_cleanup_processes(struct arts_launcher_s *launcher);
+/* Starts the run's ranks 0..table_length-1 as children of this process, which
+ * becomes no rank: a local run execs this program again, an ssh run starts
+ * each rank through an ssh client.  It forwards SIGINT, SIGTERM, SIGHUP and
+ * SIGALRM to every rank still running, reaps every rank, kills those still
+ * running the end grace after the first one ended, and ends the process with
+ * the highest status a rank ended with (128 + the signal for a rank a signal
+ * ended; 127 for a rank whose exec failed), or 75 when a fork failed.  Called
+ * before any thread of the process exists, and only by the process that no
+ * launcher gave a rank. */
+_Noreturn void arts_spawn(struct arts_config_s *config, int argc, char **argv);
 
-// Local launcher (multi-node on single machine)
-void arts_launcher_local_startup_processes(struct arts_launcher_s *launcher);
-void arts_launcher_local_cleanup_processes(struct arts_launcher_s *launcher);
-
-static inline struct arts_launcher_s *
-arts_launcher_create(unsigned int argc, char **argv,
-                     struct arts_config_s *config, unsigned int kill_mode,
-                     void (*launch_processes)(struct arts_launcher_s *),
-                     void (*cleanup_processes)(struct arts_launcher_s *)) {
-  struct arts_launcher_s *launcher =
-      (struct arts_launcher_s *)arts_malloc(sizeof(struct arts_launcher_s));
-
-  launcher->argc = argc;
-  launcher->argv = argv;
-  launcher->config = config;
-  launcher->kill_stuck_processes = kill_mode;
-  launcher->child_pids = NULL;
-  launcher->child_count = 0;
-  launcher->launch_processes = launch_processes;
-  launcher->cleanup_processes = cleanup_processes;
-
-  return launcher;
-}
 #ifdef __cplusplus
 }
 #endif
