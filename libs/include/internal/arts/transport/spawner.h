@@ -52,10 +52,11 @@ extern "C" {
 unsigned int arts_end_grace_s(void);
 
 /* Starts the run's ranks 0..table_length-1 as children of this process, which
- * becomes no rank: a local run execs this program again, an ssh run starts
- * each rank through an ssh client whose input is a pipe from this process,
- * and the remote rank lives until that input ends (this process or the
- * client gone).  It forwards SIGINT, SIGTERM, SIGHUP and SIGALRM to every
+ * becomes no rank: a local run execs this program again (rank 0 keeps this
+ * process's standard input, every other rank reads /dev/null), an ssh run
+ * starts each rank through an ssh client whose input is a pipe from this
+ * process, and the remote rank lives until that input ends (this process or
+ * the client gone).  It forwards SIGINT, SIGTERM, SIGHUP and SIGALRM to every
  * rank still running (under ssh as the signal's name on that pipe; the
  * clients ignore SIGHUP, SIGINT, SIGQUIT, SIGTERM and SIGALRM, so a signal
  * sent to the process group reaches an ssh rank only through this process),

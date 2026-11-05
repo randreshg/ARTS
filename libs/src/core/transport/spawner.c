@@ -506,6 +506,18 @@ _Noreturn void arts_spawn(struct arts_config_s *config, int argc, char **argv) {
         }
         (void)execvpe("ssh", ssh_argv, child_env);
       } else {
+        /* Only rank 0 keeps the spawner's input. */
+        if (i != 0) {
+          const int null_fd = open("/dev/null", O_RDONLY);
+          if (null_fd < 0 ||
+              (null_fd != STDIN_FILENO &&
+               (dup2(null_fd, STDIN_FILENO) < 0 || close(null_fd) != 0))) {
+            arts_print_line("[ARTS] spawner: rank %u: no /dev/null on its "
+                            "input: %s\n",
+                            i, strerror(errno));
+            _exit(127);
+          }
+        }
         (void)execve("/proc/self/exe", child_argv, child_env);
       }
       arts_print_line("[ARTS] spawner: rank %u: cannot run %s: %s\n", i,

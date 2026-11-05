@@ -109,6 +109,7 @@ set(ARTS_REFERENCE_TREE_PROGRAMS
     multinode_edt
     multinode_event_types
     launcher_children_inherit_stdout
+    launcher_rank0_stdin
     shutdown_spin_peer_killed
     edt_create_oversize_guard
     group_stress
@@ -2112,6 +2113,17 @@ register_multinode_test(launcher_children_inherit_stdout VARIANTS 2n_9w_1p)
 arts_test_properties(launcher_children_inherit_stdout_2n_9w_1p PROPERTIES
     PASS_REGULAR_EXPRESSION "\\[1\\] INHERITED_STDOUT_SENTINEL 42"
     FAIL_REGULAR_EXPRESSION "FAIL")
+# Rank 0 keeps the spawner's input and every other rank reads /dev/null; the
+# runner gives the spawner a file for input, so the check never compares
+# /dev/null with itself.
+register_multinode_test(launcher_rank0_stdin VARIANTS 2n_9w_1p 4n_4w_1p)
+foreach(_v 2n_9w_1p 4n_4w_1p)
+    arts_test_properties(launcher_rank0_stdin_${_v} PROPERTIES
+        PASS_REGULAR_EXPRESSION "LAUNCHER_RANK0_STDIN_CHECKED [0-9]+"
+        FAIL_REGULAR_EXPRESSION "FAIL")
+    arts_test_properties(launcher_rank0_stdin_${_v} APPEND PROPERTIES
+        ENVIRONMENT "ARTS_TEST_STDIN_FILE=${CMAKE_CURRENT_LIST_FILE}")
+endforeach()
 # The startup check of the receive side's multi-recv threshold holds only if
 # the endpoint answers for the queue its messages land in; ofi_rxm in
 # passthru mode does not, so a run on it ends at startup with exit 1.

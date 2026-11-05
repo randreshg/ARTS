@@ -8,9 +8,11 @@
 # output must also match it.  CTest ignores the exit status of a test it gives
 # a pass regex, which is why the regex is checked here; it is taken out of the
 # environment before the program starts, which therefore sees what a bare run
-# sees.  The output is echoed as it arrives, so a test that times out still
-# leaves it in the log.  An argument is passed as one list element: it cannot
-# hold a ';', and an empty one is dropped.
+# sees.  When ARTS_TEST_STDIN_FILE is non-empty, the program reads that file as
+# its standard input; it is taken out of the environment the same way.  The
+# output is echoed as it arrives, so a test that times out still leaves it in
+# the log.  An argument is passed as one list element: it cannot hold a ';',
+# and an empty one is dropped.
 #
 # Before the program starts, the counter folder ($ENV{counter_folder}) is
 # made, parents included, and the rank files (n*.json) an earlier run left
@@ -37,6 +39,11 @@ if(NOT DEFINED STATUS)
 endif()
 set(_pass "$ENV{ARTS_TEST_PASS_REGEX}")
 unset(ENV{ARTS_TEST_PASS_REGEX})
+set(_stdin "")
+if(NOT "$ENV{ARTS_TEST_STDIN_FILE}" STREQUAL "")
+    set(_stdin INPUT_FILE "$ENV{ARTS_TEST_STDIN_FILE}")
+    unset(ENV{ARTS_TEST_STDIN_FILE})
+endif()
 
 set(_folder "$ENV{counter_folder}")
 if((DEFINED RECORDS OR DEFINED RECORD_CHECK) AND _folder STREQUAL "")
@@ -51,7 +58,7 @@ if(NOT _folder STREQUAL "")
     file(MAKE_DIRECTORY "${_folder}")
 endif()
 
-execute_process(COMMAND ${_cmd}
+execute_process(COMMAND ${_cmd} ${_stdin}
     RESULT_VARIABLE _rc
     OUTPUT_VARIABLE _out ERROR_VARIABLE _out
     ECHO_OUTPUT_VARIABLE ECHO_ERROR_VARIABLE)
