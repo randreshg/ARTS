@@ -378,6 +378,17 @@ void arts_runtime_global_cleanup() {
    * empty now (the check skips itself otherwise).  Reports (does not abort);
    * compiled out below DEBUG log level — see the check's definition. */
   arts_db_debug_quiescence_check();
+  /* Fabric teardown, phase 1, before anything below frees, joined or not:
+   * every runtime thread has passed the ready_to_clean barrier, so none
+   * touches the fabric again.  Quiesce discards or reaps in-flight txns
+   * (their bounces return to the still-live pool) and closes the endpoint
+   * and the registrations bound to it; nothing this thread runs from then on
+   * sends.  Once the close succeeds, no peer's one-sided write, a cut one
+   * included, lands in what the sweep and the frees below return. */
+  bool writes_shut_out = true;
+  if (arts_global_rank_count > 1) {
+    writes_shut_out = arts_net_quiesce();
+  }
   /* Final-teardown fast path: every runtime thread has joined and the process
    * is about to exit, so running each leftover object's destructor only moves
    * bookkeeping inside heaps and pools that are themselves released wholesale
@@ -466,23 +477,15 @@ void arts_runtime_global_cleanup() {
   /* Socket server global arrays (safe to call even for single-node) */
   arts_socket_cleanup();
 
-  /* Fabric teardown, phases 1 and 2, joined or not: every runtime thread has
-   * passed the ready_to_clean barrier, so none touches the fabric again.
-   * Phase 1 refuses new sends, discards or reaps in-flight txns (their
-   * bounces return to the still-live pool) and closes the endpoint and the
-   * registrations bound to it.  Phase 2, after that close so no write lands
-   * in what it returns, runs the discard of every rendezvous expectation left
-   * unpaired, which releases only what its context owns (the sweep above may
+  /* Fabric teardown, phase 2, after phase 1's close, so no write lands in
+   * what it returns: the discard of every rendezvous expectation left
+   * unpaired releases only what its context owns (the sweep above may
    * already have dropped a count a context only borrows; a discard reads
-   * nothing through one), and returns the recv landing buffers; quiesce
-   * dispatched no completion, so no late pairing races a discard.  Both run
-   * before the pool cleanup, so what they return goes back to a live pool and
-   * no recv buffer references a slab MR it closes.
-   * Gap: nothing orders a peer's last one-sided write before the frees above,
-   * so a write the shutdown cut can land in a buffer they freed. */
-  bool writes_shut_out = true;
+   * nothing through one), then the recv landing buffers go back; quiesce
+   * dispatched no completion, so no late pairing races a discard.  Both
+   * phases run before the pool cleanup, so what they return goes back to a
+   * live pool and no recv buffer references a slab MR it closes. */
   if (arts_global_rank_count > 1) {
-    writes_shut_out = arts_net_quiesce();
     uint64_t ended = 0;
 #ifdef ARTS_DEBUG_DB_QUARANTINE
     ended = arts_db_descriptors_ended();
