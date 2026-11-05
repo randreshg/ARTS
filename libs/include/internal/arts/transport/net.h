@@ -341,13 +341,12 @@ uint64_t arts_net_exchange_addresses(uint64_t run_id);
  * caller is the progress thread; safe from any thread (e.g. a test's main). */
 bool arts_net_progress(void);
 
-/* Teardown phase 1, run once every runtime thread has passed the
- * ready_to_clean barrier, the send gate closed at the shutdown point: discard
- * queued-but-unposted retry txns (their completion-gated frees still run, so
- * no caller payload leaks and bounces return to the still-live pool), reap
- * already-posted sends within a bound, close the pool's endpoint-bound
- * registrations where the provider binds them, then close ep/cq/av
- * (cancelling posted recvs).
+/* Teardown phase 1, run once every other runtime thread has stored its stop,
+ * the send gate closed at the shutdown point: discard queued-but-unposted
+ * retry txns (their completion-gated frees still run, so no caller payload
+ * leaks and bounces return to the still-live pool), reap already-posted sends
+ * within a bound, close the pool's endpoint-bound registrations where the
+ * provider binds them, then close ep/cq/av (cancelling posted recvs).
  * Returns whether inbound writes are shut out: the endpoint closed, and so
  * did every registration bound to it that the pool still names.  When they
  * are, no inbound write lands on this rank afterwards and no send desc

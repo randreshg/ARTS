@@ -263,7 +263,7 @@ static void *arts_signal_watcher_main(void *arg) {
                 sig);
       /* Now safe to call non-async-signal-safe code: we are in a normal
        * thread context.  Post SHUTDOWN to the peers and stop our own
-       * workers; main thread's arts_thread_main_join will return,
+       * workers; main thread's arts_thread_main_loop will return,
        * launcher cleanup will reap children, normal teardown runs. */
       arts_enter_shutdown_state(ARTS_EXIT_SIGNAL);
       /* Stay in the loop: a second signal forces exit. */

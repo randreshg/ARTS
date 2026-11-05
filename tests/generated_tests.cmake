@@ -808,9 +808,40 @@ endif()
 add_arts_test(runtime_barrier_counts)
 register_single_node_test(runtime_barrier_counts TIMEOUT 60)
 
-add_arts_test(threads_shutdown_cancel)
-register_single_node_test(threads_shutdown_cancel TIMEOUT 60)
-set_tests_properties(threads_shutdown_cancel PROPERTIES PASS_REGULAR_EXPRESSION "SHUTDOWN_CANCEL_DONE")
+# A shutdown while an EDT body runs on and never returns: the teardown's stop
+# cannot stop that worker, so the teardown frees nothing and says so in a
+# DEBUG line, and the run still ends with status 0.
+if(ARTS_LOG_LEVEL GREATER_EQUAL 3)
+    add_arts_test(shutdown_cuts_running_edt)
+    arts_test_cfg(_cfg 1n_20w)
+    arts_add_test(teardown_stop_skips_running
+                  COMMAND shutdown_cuts_running_edt)
+    set_tests_properties(teardown_stop_skips_running PROPERTIES
+        LABELS "single_node"
+        TIMEOUT 10
+        RESOURCE_LOCK "arts_runtime"
+        ENVIRONMENT "ARTS_CONFIG=${_cfg}"
+        PASS_REGULAR_EXPRESSION
+        "teardown skipped: 1 thread\\(s\\) still running")
+endif()
+
+# The shutdown comes while workers steal EDTs from one another's deques and
+# the progress threads'; the teardown frees the deques only after every thief
+# has stopped, which ThreadSanitizer judges (its reports are in every fail
+# list).  The scheduler fuzz widens the windows a thief spends between its
+# loads.
+if(ARTS_DEBUG_SANITIZER STREQUAL "THREAD" AND ARTS_DEBUG_INJECTION)
+    add_arts_test(teardown_deques_after_stop)
+    register_single_node_test(teardown_deques_after_stop TIMEOUT 60)
+    register_multinode_test(teardown_deques_after_stop TIMEOUT 120
+                            VARIANTS 2n_9w_1p)
+    foreach(_t teardown_deques_after_stop teardown_deques_after_stop_2n_9w_1p)
+        arts_test_properties(${_t} APPEND PROPERTIES
+            ENVIRONMENT "ARTS_SCHED_FUZZ=25")
+        arts_test_properties(${_t} PROPERTIES
+            PASS_REGULAR_EXPRESSION "PASS: teardown_deques_after_stop")
+    endforeach()
+endif()
 
 add_arts_test(threads_pin_affinity)
 register_single_node_test(threads_pin_affinity TIMEOUT 60)

@@ -267,8 +267,7 @@ void arts_db_sweep_detach(arts_shared_ptr_t h);
 void arts_db_descriptor_free(struct arts_db_s *db);
 #ifdef ARTS_DEBUG_DB_QUARANTINE
 /* Check and free every descriptor still held back.  Called once every other
- * thread that can free a descriptor has been joined; skipped, with a warning,
- * when a thread the shutdown gave up joining may still free. */
+ * thread that can free a descriptor has stopped and its stop was acquired. */
 void arts_db_descriptor_quarantine_drain(void);
 /* How many coherent descriptors this rank has ended (their destructor ran).
  * Only its own value. */

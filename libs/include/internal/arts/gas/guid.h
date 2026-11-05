@@ -232,7 +232,7 @@ void arts_guid_node_geometry_init(void);
 void arts_guid_key_generator_init();
 
 /** Free the DB seq allocator's shared counters and every thread's parked
- *  chunk cursor (global cleanup, after worker threads joined). */
+ *  chunk cursor (global cleanup, after the other runtime threads stopped). */
 void arts_guid_generator_cleanup();
 
 /**

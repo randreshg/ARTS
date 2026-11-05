@@ -225,8 +225,8 @@ static void *arts_counter_capture_thread(void *args) {
     }
 
     // Capture counters from all threads - store in nodeInfo.capture_arrays.
-    // Every thread registered before this thread started, and none leaves
-    // the runtime before this thread is joined (see live_counters).
+    // Every thread registered before this thread started, and a runtime
+    // thread never exits, so every row stays alive (see live_counters).
     for (unsigned int i = 0; i < NUM_COUNTER_TYPES; i++) {
       if (arts_counter_mode_array[i] == ARTS_COUNTER_MODE_PERIODIC) {
         for (unsigned int t = 0; t < arts_node_info.total_thread_count; t++) {
@@ -589,15 +589,19 @@ static void arts_close_counter_file(arts_json_writer_t *writer, FILE *fp) {
   (void)fclose(fp);
 }
 
-/* A thread the shutdown gave up joining may still be writing its saved row,
- * so its counts are left out of every node value. */
-static bool arts_counter_thread_left_out(unsigned int t) {
-  return arts_shutdown_abandon.unjoined != NULL &&
-         arts_shutdown_abandon.unjoined[t];
+/* Whether thread t's counts go into the files: its saved row is final once
+ * this acquire reads STOPPED, which orders the row's stores before the reads;
+ * the writer's own row is final by program order.  A thread the teardown's
+ * stop did not stop is left out of every file. */
+static bool arts_counter_thread_counted(unsigned int t) {
+  if (&arts_node_info.thread_stop[t] == arts_thread_stop_slot) {
+    return true;
+  }
+  return atomic_load_explicit(&arts_node_info.thread_stop[t].state,
+                              memory_order_acquire) == ARTS_THREAD_STOPPED;
 }
 
 // Helper function to compute node-level reduced value across all threads
-// Safe to call after threads have closed - uses saved_counters data
 static uint64_t arts_compute_node_reduced_value(unsigned int index) {
   arts_counter_reduce_method_t reduce_method =
       arts_counter_reduce_method_array[index];
@@ -605,7 +609,7 @@ static uint64_t arts_compute_node_reduced_value(unsigned int index) {
       (reduce_method == ARTS_COUNTER_REDUCE_MIN) ? UINT64_MAX : 0;
   for (unsigned int t = 0; t < arts_node_info.total_thread_count; t++) {
     uint64_t *saved = arts_node_info.saved_counters[t];
-    if (!saved || arts_counter_thread_left_out(t)) {
+    if (!saved || !arts_counter_thread_counted(t)) {
       continue; // Thread never registered or data not available
     }
     node_value =
@@ -652,7 +656,7 @@ static void arts_compute_node_reduced_captures(unsigned int counter_index,
                                              sizeof(arts_counter_capture_t *));
 
   for (unsigned int t = 0; t < tc; t++) {
-    if (arts_counter_thread_left_out(t)) {
+    if (!arts_counter_thread_counted(t)) {
       continue;
     }
     arts_array_list_t *thread_list =
@@ -719,7 +723,8 @@ static void arts_compute_node_reduced_captures(unsigned int counter_index,
 static void arts_counter_write_thread(const char *output_folder,
                                       unsigned int node_id,
                                       unsigned int thread_id) {
-  if (!arts_counters_at_level(ARTS_COUNTER_LEVEL_THREAD)) {
+  if (!arts_counters_at_level(ARTS_COUNTER_LEVEL_THREAD) ||
+      !arts_counter_thread_counted(thread_id)) {
     return;
   }
 

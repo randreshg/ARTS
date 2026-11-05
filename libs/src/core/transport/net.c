@@ -246,8 +246,8 @@ static struct {
   struct net_recv_ctx_s rxctx[ARTS_NET_RECV_BUF_COUNT];
 
   /* Transmits completed, written only by the CQ token holder, or once every
-   * runtime thread has passed the ready_to_clean barrier: a reap burst counts
-   * its completions and ends with one release store, which the next holder's
+   * other runtime thread has stored its stop: a reap burst counts its
+   * completions and ends with one release store, which the next holder's
    * token CAS carries on.  Its acquire load in net_tx_outstanding makes every
    * counted completion's post, and that post's `posted` store, visible.  It
    * heads the line of the token-owned and refused-post words, apart from the
@@ -258,8 +258,8 @@ static struct {
    * repost is retried at the top of every CQ reap pass: reaping is exactly
    * what frees provider queue slots, so retry-after-reap converges.  Only
    * touched under the CQ consumer token, before any runtime thread exists, or
-   * by the teardown reap once every runtime thread has passed the
-   * ready_to_clean barrier, so a plain unsigned suffices. */
+   * by the teardown reap once every other runtime thread has stored its stop,
+   * so a plain unsigned suffices. */
   unsigned rx_repost_pending;
   /* Posts the provider refused with EAGAIN: only its own value. */
   _Atomic(uint64_t) eagain_count;
@@ -939,8 +939,9 @@ struct net_rdzv_level_s {
 };
 
 /* Level 0, made by arts_net_init before any runtime thread exists and freed
- * by reclaim once every runtime thread has passed the ready_to_clean barrier,
- * so a plain pointer: thread creation and the barrier order every use. */
+ * by reclaim once every other runtime thread has stored its stop, so a plain
+ * pointer: thread creation and the teardown's acquire of each stop order
+ * every use. */
 static struct net_rdzv_level_s *g_rdzv_level0;
 
 /* txid counter — starts at 1 so a full txid is never 0 (0 is the wire
@@ -1281,10 +1282,10 @@ static void net_rdzv_data_arrived(uint64_t txid) {
 
 /* Teardown: run the discard of every expectation still unpaired (an X
  * record), then free the levels.  An arrival marker (an A record: data whose
- * metadata never came) holds nothing to release.  Every runtime thread has
- * passed the ready_to_clean barrier, whose arrivals order each event's last
- * access to the table before this, so no record is mid-claim and every load is
- * relaxed. */
+ * metadata never came) holds nothing to release.  Every other runtime thread
+ * has stored its stop, and the teardown's acquire of each orders every event's
+ * last access to the table before this, so no record is mid-claim and every
+ * load is relaxed. */
 static size_t net_rdzv_teardown(void) {
   size_t discarded = 0;
   unsigned level = 0;
@@ -1495,8 +1496,8 @@ static inline void net_live_cq_err_check(void) {
 }
 
 /* End a reap burst that completed `n` transmits.  Only the CQ token holder,
- * or the teardown once every runtime thread has passed the ready_to_clean
- * barrier, writes tx_completed, so its own last value is current. */
+ * or the teardown once every other runtime thread has stored its stop, writes
+ * tx_completed, so its own last value is current. */
 static inline void net_count_completed(uint64_t n) {
   if (n != 0) {
     atomic_store_explicit(
@@ -1581,9 +1582,9 @@ static uint64_t net_reap_cq_err(void) {
   return 0;
 }
 
-/* Teardown-only reap: run once every worker/progress thread has passed the
- * ready_to_clean barrier, joined or not (no CQ token needed — none of them
- * touches the CQ again, and the barrier orders each one's last access before
+/* Teardown-only reap: run once every other worker/progress thread has stored
+ * its stop (no CQ token needed — none of them touches the CQ again, and the
+ * teardown's acquire of each stop orders each one's last access before
  * this).  Completes
  * outstanding TX so completion-gated frees run; inbound completions are ignored
  * (no dispatch, no re-arm — the recvs are about to be cancelled).  Returns true
@@ -1628,8 +1629,8 @@ struct net_held_write_s {
   struct net_txn_s *txn;
   uint64_t due_ns;
 };
-/* Touched under the CQ token, or at quiesce once every runtime thread has
- * passed the ready_to_clean barrier. */
+/* Touched under the CQ token, or at quiesce once every other runtime thread
+ * has stored its stop. */
 static struct net_held_write_s *g_held_writes;
 static uint64_t g_write_delay_rng;
 /* Set when the fabric comes up, before any thread exists to reap; 0 = off. */
@@ -1689,8 +1690,8 @@ static uint64_t net_run_held_writes(bool all) {
   }
   return done;
 }
-/* Quiesce's turn: run every held completion.  Every runtime thread has
- * passed the ready_to_clean barrier, joined or not, so none reaps again. */
+/* Quiesce's turn: run every held completion.  Every other runtime thread has
+ * stored its stop, so none reaps again. */
 static void net_quiesce_held_writes(void) {
   if (g_write_delay_ns == 0) {
     return;
@@ -1728,8 +1729,8 @@ static void net_quiesce_held_writes(void) {
  * try-lock and only then sends, so no send runs under the CQ token or the
  * try-lock.  A held packet is not counted outstanding until it is sent, and
  * quiesce frees what is still held (an undelivered message at shutdown is
- * legal): every runtime thread has passed the ready_to_clean barrier by then,
- * so none holds or pushes one again. */
+ * legal): every other runtime thread has stored its stop by then, so none
+ * holds or pushes one again. */
 struct net_held_msg_s {
   _Atomic(struct net_held_msg_s *) next; /* the producers' stack */
   struct net_held_msg_s *wnext; /* the wait and due lists: the lock's own */
@@ -1937,8 +1938,8 @@ static void net_quiesce_held_requests(void) {
   if (g_req_delay_ns == 0) {
     return;
   }
-  /* After the ready_to_clean barrier, whose arrivals order every push and
-   * every try-lock holder's list before these accesses. */
+  /* After every other runtime thread stored its stop, whose acquire orders
+   * every push and every try-lock holder's list before these accesses. */
   net_free_held_push(atomic_exchange_explicit(
       &g_held_push, (struct net_held_msg_s *)NULL, memory_order_relaxed));
   net_free_held_wait(g_held_wait);
@@ -2702,16 +2703,16 @@ void arts_net_rx_arm(void) {
 }
 
 bool arts_net_quiesce(void) {
-  /* Phase 1 of teardown, run once every runtime thread has passed the
-   * ready_to_clean barrier: none touches the fabric again, joined or not, and
-   * the barrier's arrivals order each one's last access before this.  The
-   * send gate closed at the shutdown point, before any teardown can begin.
-   * Discarding sends that were never accepted by the provider at final
-   * teardown is deliberate: the shutdown must never block on a peer that has
-   * already gone.  The ordering matters: send bounces still queued are
-   * released here and the recv buffers by reclaim, both while the pool is
-   * still live, so the pool cleanup that follows can close those MRs without
-   * any outstanding reference — and no desc ever names a closed MR. */
+  /* Phase 1 of teardown, run once every other runtime thread has stored its
+   * stop: none touches the fabric again, and the teardown's acquire of each
+   * stop orders each one's last access before this.  The send gate closed at
+   * the shutdown point, before any teardown can begin.  Discarding sends that
+   * were never accepted by the provider at final teardown is deliberate: the
+   * shutdown must never block on a peer that has already gone.  The ordering
+   * matters: send bounces still queued are released here and the recv
+   * buffers by reclaim, both while the pool is still live, so the pool
+   * cleanup that follows can close those MRs without any outstanding
+   * reference — and no desc ever names a closed MR. */
 #ifndef NDEBUG
   t_net_quiesced = true;
 #endif
@@ -2746,8 +2747,8 @@ bool arts_net_quiesce(void) {
    * to the still-live pool).  TX-only: inbound completions are ignored and no
    * landing buffer is re-armed — they are about to be cancelled.  Bounded — the
    * bound guards against a completion that never arrives on a wedged provider.
-   * Every worker/progress thread has passed the ready_to_clean barrier, so
-   * net_reap_tx_only needs no CQ token — no other thread contends the CQ. */
+   * Every other worker/progress thread has stored its stop, so net_reap_tx_only
+   * needs no CQ token — no other thread contends the CQ. */
   net_quiesce_held_writes();
   net_quiesce_held_requests();
   for (int i = 0; i < 100000 && net_tx_outstanding() != 0; i++) {
@@ -2840,9 +2841,8 @@ size_t arts_net_reclaim(void) {
    * context owns.  The runtime calls this after its teardown sweep of the
    * route tables, which may already have dropped a count a context only
    * borrows, so a discard reads nothing through one.  No pairing can race a
-   * discard: no runtime thread raises an event after the ready_to_clean
-   * barrier, and quiesce dispatched no inbound completion before closing the
-   * endpoint. */
+   * discard: no other runtime thread raises an event after its stop, and
+   * quiesce dispatched no inbound completion before closing the endpoint. */
   size_t discarded = net_rdzv_teardown();
 
   /* Return the recv landing buffers to the pool while it is still live; their

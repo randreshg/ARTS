@@ -3,10 +3,9 @@
 ** Licensed under the Apache License, Version 2.0
 ******************************************************************************/
 /// @file runtime_barrier_counts.c
-/// @brief Asserts the four startup/teardown barrier counters
-///        (ready_to_push / ready_to_parallel_start / ready_to_inspect /
-///         ready_to_clean) were each decremented exactly total_thread_count
-///        times during bring-up.
+/// @brief Asserts the three startup barrier counters
+///        (ready_to_push / ready_to_parallel_start / ready_to_inspect) were
+///        each decremented exactly total_thread_count times during bring-up.
 ///
 /// Each barrier counter is initialised to total_thread_count in
 /// arts_runtime_node_init and every thread (thread-0 in
@@ -14,11 +13,9 @@
 /// decrements it exactly once then spins until it reaches zero.  An off-by-one
 /// (double-decrement or a skipped decrement) would either hang startup or leave
 /// a barrier counter non-zero.  Once main_edt runs, all three startup barriers
-/// (push/parallel_start/inspect) have necessarily reached zero (no thread runs
-/// an EDT before every thread passed the inspect rendezvous), so this test
-/// asserts they read zero exactly.  ready_to_clean is the teardown barrier
-/// and is still at its initial value (total_thread_count) at main_edt time,
-/// which we also assert to pin the init-count invariant.
+/// have necessarily reached zero (no thread runs an EDT before every thread
+/// passed the inspect rendezvous), so this test asserts they read zero
+/// exactly.
 ///
 /// White-box: reads arts_node_info via runtime_state.h, mirroring
 /// the internal-state inspection idiom of the other whitebox tests.
@@ -39,8 +36,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   arts_printf("=== runtime_barrier_counts ===\n");
 
-  /* Relaxed: this thread passed every startup barrier, and no thread
-   * arrives at the teardown barrier before this EDT ends. */
+  /* Relaxed: this thread passed every startup barrier. */
   unsigned int tc = arts_node_info.total_thread_count;
   unsigned int push =
       atomic_load_explicit(&arts_node_info.ready_to_push, memory_order_relaxed);
@@ -48,8 +44,6 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       &arts_node_info.ready_to_parallel_start, memory_order_relaxed);
   unsigned int insp = atomic_load_explicit(&arts_node_info.ready_to_inspect,
                                            memory_order_relaxed);
-  unsigned int clean = atomic_load_explicit(&arts_node_info.ready_to_clean,
-                                            memory_order_relaxed);
 
   bool ok = true;
 
@@ -72,19 +66,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     ok = false;
   }
 
-  /* ready_to_clean is the teardown barrier; at main_edt time no thread has
-   * reached private_cleanup yet, so it must still equal its init value tc.
-   * This pins the "init = total_thread_count" invariant for the count. */
-  if (tc == 0 || clean != tc) {
-    arts_printf("  FAIL: ready_to_clean=%u (expected tc=%u)\n", clean, tc);
-    arts_test_fail();
-    ok = false;
-  }
-
   if (ok) {
-    arts_printf("PASS runtime_barrier_counts: tc=%u all startup barriers 0, "
-                "clean=%u\n",
-                tc, clean);
+    arts_printf("PASS runtime_barrier_counts: tc=%u all startup barriers 0\n",
+                tc);
   }
 
   arts_shutdown();

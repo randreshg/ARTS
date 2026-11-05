@@ -287,13 +287,14 @@ INV.*.*                      arts_db_cache_init                   init  writer_c
 INV.*.*,VAL.*.*              db_create_no_acquire_idle            init  writer_count  -/1  -
 
 # Accesses through a pointer variable of objects that are not the registered
-# words (the reader pool's free-slot word, the runtime barrier's count and a
-# role's stop flag).
+# words (the reader pool's free-slot word, the runtime barrier's count, a
+# role's stop flag and the teardown stopper's stop flag).
 INV.*.*,VAL.*.*              arts_db_reader_alloc                 load  slotp         -/1  -
 INV.*.*,VAL.*.*              arts_db_reader_alloc                 rmw   slotp         -/1  -
 reference                    arts_runtime_barrier                 load  remaining     -/2  -
 reference                    arts_runtime_barrier                 rmw   remaining     -/1  -
 reference                    arts_runtime_stop_by_role            store flag          -/1  -
+reference                    arts_runtime_stop_threads            store flag          -/1  -
 
 # A block's creation and its creator's own hold.
 INV.*.*                      arts_db_create_claim_creator_copy    load  cache_state   -/1  -

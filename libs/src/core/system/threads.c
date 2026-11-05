@@ -42,7 +42,6 @@
 #include <limits.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 
 #include <pthread.h>
 #include <unistd.h>
@@ -51,6 +50,8 @@
 #endif
 
 #include "arts/counter/counter.h"
+#include "arts/db.h"             /* arts_db_resume_list_free */
+#include "arts/edt_context.h"    /* arts_cleanup_edt_tls */
 #include "arts/memory/regpool.h" /* the pool learns this rank's NUMA nodes */
 #include "arts/runtime_state.h"
 #include "arts/system/config.h"
@@ -68,36 +69,36 @@ struct arts_config_s *arts_thread_config;
 struct thread_mask_s *arts_thread_masks;
 pthread_t *arts_thread_handles;
 
-void *arts_thread_loop(void *data) {
-  struct thread_mask_s *thread = (struct thread_mask_s *)data;
-  arts_runtime_private_init(thread, arts_thread_config);
-  arts_runtime_loop();
-  arts_runtime_private_cleanup();
-
-  // Save final counter values to saved_counters before thread exits
-  // This must happen after cleanup but before thread terminates
-  uint64_t *saved = arts_node_info.saved_counters[thread->id];
+/* A thread's final counts, read by the counter writers only once they have
+ * acquired the thread's stop. */
+static void arts_thread_save_counters(unsigned int thread_id) {
+  uint64_t *saved = arts_node_info.saved_counters[thread_id];
   for (unsigned int i = 0; i < NUM_COUNTER_TYPES; i++) {
     saved[i] = atomic_load_explicit(&arts_thread_local_counters[i].count,
                                     memory_order_relaxed);
   }
+}
 
-  return NULL;
-  // pthread_exit(NULL);
+void *arts_thread_loop(void *data) {
+  struct thread_mask_s *thread = (struct thread_mask_s *)data;
+  arts_runtime_private_init(thread, arts_thread_config);
+  arts_runtime_loop();
+  arts_thread_save_counters(thread->id);
+  arts_runtime_thread_park();
 }
 
 /*
- * arts_thread_main_join — Main thread (thread 0) entry after initialization.
+ * arts_thread_main_loop — Main thread (thread 0) entry after initialization.
  *
- * Runs the runtime loop until alive==false, then cleans up and joins all
- * other pthreads.  Counter data is saved before joining to ensure no
- * data loss.
+ * Runs the runtime loop until alive==false, then stops every other runtime
+ * thread and, once all have stopped, tears the node down.  No thread is
+ * joined: a stopped thread parks for the rest of the process.
  */
-void arts_thread_main_join() {
-  ARTS_DEBUG("arts_thread_main_join: main thread entering runtime_loop");
+void arts_thread_main_loop() {
+  ARTS_DEBUG("arts_thread_main_loop: main thread entering runtime_loop");
   arts_runtime_loop();
-  ARTS_DEBUG("arts_thread_main_join: main thread exited runtime_loop, joining "
-             "%u threads",
+  ARTS_DEBUG("arts_thread_main_loop: main thread exited runtime_loop, "
+             "stopping %u threads",
              arts_node_info.total_thread_count - 1);
 
   /* End-to-end marker (rank 0): e2e_start_stamp is taken at the application
@@ -118,89 +119,41 @@ void arts_thread_main_join() {
     fflush(stderr);
   }
 
-  /* Stop the progress threads.  They poll the fabric without ever blocking,
-   * so clearing alive is enough to end their loops; no socket needs closing
-   * to wake them. */
-  arts_runtime_stop_network();
-
   /* The capture thread reads every runtime thread's counters in that
-   * thread's own storage.  No thread leaves the runtime before it passes the
-   * teardown barrier, and none passes it before this thread arrives, so
-   * joining the capture thread first keeps every thread it reads alive and
-   * orders its last access before each thread saves its counts. */
+   * thread's own storage, which a stopped thread keeps, and is joined before
+   * any thread's saved counts are read. */
   arts_counter_capture_stop();
-  arts_runtime_private_cleanup();
+  arts_cleanup_edt_tls();
+  arts_db_resume_list_free();
+  arts_thread_save_counters(0);
 
-  // Save main thread's final counter values before joining other threads
-  uint64_t *saved = arts_node_info.saved_counters[0];
-  for (unsigned int i = 0; i < NUM_COUNTER_TYPES; i++) {
-    saved[i] = atomic_load_explicit(&arts_thread_local_counters[i].count,
-                                    memory_order_relaxed);
+  /* A thread that leaves its loop saves its counts and parks.  The counter
+   * files are written either way; a thread that did not stop is left out of
+   * them. */
+  struct arts_stop_result_s stop =
+      arts_runtime_stop_threads(arts_thread_stop_slot);
+  for (unsigned int t = 0; t < arts_node_info.total_thread_count; t++) {
+    arts_counter_write(arts_node_info.counter_folder, arts_global_rank_id, t);
   }
-
-  // File-based counter aggregation: no socket synchronization needed
-  // Each node writes its own JSON file independently, master polls filesystem
-  // Join ALL threads (workers and progress threads) with timeout + cancel
-  // escalation, so a single stuck thread never wedges the entire process.
-  //
-  // Budget:
-  //   JOIN_DEADLINE_MS   = 1500  per-thread cooperative join deadline
-  //   CANCEL_DEADLINE_MS = 500   post-cancel grace window
-  //
-  // Escalation: timed join → pthread_cancel → timed join → give up and
-  // move on (we are about to exit the process anyway).
-  {
-    const long join_deadline_ns = 1500L * 1000000L;  /* 1.5 s */
-    const long cancel_deadline_ns = 500L * 1000000L; /* 0.5 s */
-    for (unsigned int i = 1; i < arts_node_info.total_thread_count; i++) {
-      struct timespec deadline;
-      (void)clock_gettime(CLOCK_REALTIME, &deadline);
-      deadline.tv_nsec += join_deadline_ns;
-      while (deadline.tv_nsec >= 1000000000L) {
-        deadline.tv_nsec -= 1000000000L;
-        deadline.tv_sec += 1;
-      }
-      int rc = pthread_timedjoin_np(arts_thread_handles[i], NULL, &deadline);
-      if (rc == 0) {
-        continue;
-      }
-      ARTS_WARN("arts_thread_main_join: thread %u did not join within "
-                "%ld ms (rc=%d), cancelling",
-                i, join_deadline_ns / 1000000L, rc);
-      pthread_cancel(arts_thread_handles[i]);
-      atomic_fetch_add_explicit(&arts_shutdown_abandon.cancelled_threads, 1u,
-                                memory_order_relaxed);
-      (void)clock_gettime(CLOCK_REALTIME, &deadline);
-      deadline.tv_nsec += cancel_deadline_ns;
-      while (deadline.tv_nsec >= 1000000000L) {
-        deadline.tv_nsec -= 1000000000L;
-        deadline.tv_sec += 1;
-      }
-      rc = pthread_timedjoin_np(arts_thread_handles[i], NULL, &deadline);
-      if (rc != 0) {
-        ARTS_WARN("arts_thread_main_join: thread %u did not join after "
-                  "cancel (rc=%d); leaking and continuing",
-                  i, rc);
-        if (arts_shutdown_abandon.unjoined == NULL) {
-          arts_shutdown_abandon.unjoined = (bool *)arts_calloc(
-              arts_node_info.total_thread_count, sizeof(bool));
-        }
-        arts_shutdown_abandon.unjoined[i] = true;
-        atomic_fetch_add_explicit(&arts_shutdown_abandon.unjoined_threads, 1u,
-                                  memory_order_relaxed);
-      }
+  if (stop.unsafe != 0 || stop.running != 0) {
+    /* A thread that may still be in the middle of an update can reach
+     * anything the teardown would read or free, so nothing is freed and the
+     * process exit reclaims it all. */
+    if (stop.unsafe != 0) {
+      ARTS_DEBUG("teardown skipped: %u thread(s) stopped mid-transition",
+                 stop.unsafe);
+    } else {
+      ARTS_DEBUG("teardown skipped: %u thread(s) still running", stop.running);
     }
+    arts_regpool_report_if_requested();
+    return;
   }
+  arts_runtime_delete_deques();
   arts_runtime_global_cleanup();
-  // arts_free(args);
-  /* A thread never joined reads its own entry after the teardown barrier, so
-   * the table is left to the process exit. */
-  if (arts_shutdown_abandon.unjoined == NULL) {
-    arts_free(arts_thread_masks);
-  }
-  arts_free(arts_shutdown_abandon.unjoined);
-  arts_shutdown_abandon.unjoined = NULL;
+  arts_free(arts_thread_masks);
+  arts_thread_masks = NULL;
   arts_free(arts_thread_handles);
+  arts_thread_handles = NULL;
 }
 
 void arts_thread_init(struct arts_config_s *config) {
@@ -264,7 +217,7 @@ void arts_thread_init(struct arts_config_s *config) {
     }
 #endif
     /* A worker slot that was never created is fatal, not degraded service:
-     * the slot is joined at shutdown and its share of the placement is
+     * its stop never comes at shutdown and its share of the placement is
      * silently missing from the run. */
     int rc = pthread_create(&arts_thread_handles[i], &attr, &arts_thread_loop,
                             &arts_thread_masks[i]);

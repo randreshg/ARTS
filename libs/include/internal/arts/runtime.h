@@ -54,17 +54,44 @@ extern "C" {
 struct arts_config_s;
 struct thread_mask_s;
 struct arts_edt_s;
+struct arts_thread_stop_s;
 
 void arts_runtime_node_init(struct arts_config_s *config);
+/* Runs only after every other runtime thread has stopped
+ * (arts_runtime_stop_threads found none running or stopped unsafe) and the
+ * deques are gone (arts_runtime_delete_deques). */
 void arts_runtime_global_cleanup();
-void arts_runtime_private_cleanup();
 /* Returns once the shutdown entry's CAS winner has finished its entry (its
  * gate close, its post and its stop walk); acquire, so what the entry wrote
  * is visible after it.  Called only after this thread's loop ended. */
 void arts_runtime_wait_shutdown_entry(void);
 void arts_runtime_stop();
 void arts_runtime_stop_workers();
-void arts_runtime_stop_network();
+/* A runtime thread's end once it has left its loop: it frees what only it
+ * reaches, stores STOPPED into its stop slot (release) and never runs
+ * again.  Every access it makes to shared runtime state precedes its stop
+ * store. */
+#ifdef __cplusplus
+[[noreturn]]
+#else
+_Noreturn
+#endif
+void arts_runtime_thread_park(void);
+struct arts_stop_result_s {
+  unsigned int running; /* threads still RUNNING when the poll gave up */
+  unsigned int unsafe;  /* threads whose slot read STOPPED_UNSAFE */
+};
+/* Stops every runtime thread but the one whose slot is `self` (NULL on a
+ * thread the runtime did not create) and polls their slots with acquire
+ * loads for at most two seconds.  Zero in both counts means every other
+ * runtime thread has stopped, and its last access to shared runtime state
+ * happens before the return. */
+struct arts_stop_result_s
+arts_runtime_stop_threads(const struct arts_thread_stop_s *self);
+/* Counts the EDTs left in every thread's deques as abandoned and frees the
+ * deques.  Only after a stop that left no thread running or stopped unsafe:
+ * no thief or owner can reach a deque any more. */
+void arts_runtime_delete_deques(void);
 void arts_handle_ready_edt(struct arts_edt_s *edt);
 void arts_run_edt(struct arts_edt_s *edt);
 /* Schedule a fully DB-acquired EDT onto the calling thread's own

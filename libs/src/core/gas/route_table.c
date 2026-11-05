@@ -73,7 +73,8 @@ static inline uint64_t get_route_table_key(uint64_t x, unsigned int shift) {
 
 /* This rank's placement: arts_route_table_node_init writes it before any
  * runtime thread exists, and thread creation publishes it; afterwards it is
- * only read, until arts_route_table_node_cleanup clears it after the joins.
+ * only read, until arts_route_table_node_cleanup clears it after the
+ * teardown's stop.
  * Each divisor d is taken as floor(n / d) = (2n * mul / 2^64) >> shift, with
  * shift = ceil(log2 d) and mul = ceil(2^(63 + shift) / d): exact for every
  * n < 2^63, since the multiplier's error stays below 1/d. */
@@ -1115,7 +1116,7 @@ unsigned int arts_route_table_parked_count(arts_route_table_t *route_table) {
   for (arts_route_table_t *t = route_table; t != NULL;
        t = route_table_next(t)) {
     for (uint64_t i = 0; i < (uint64_t)t->size * COLLISION_RESOLVES; i++) {
-      /* Relaxed: read after every thread that pushes or drains has joined. */
+      /* Relaxed: read after every thread that pushes or drains has stopped. */
       arts_lf_link_t *l =
           atomic_load_explicit(&t->data[i].ooo_list.head, memory_order_relaxed);
       for (; l != NULL;

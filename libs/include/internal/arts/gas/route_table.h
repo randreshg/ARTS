@@ -97,11 +97,11 @@ struct arts_route_item_s {
    *     of 0 or of the GUID handed back;
    *   a mirror table's claim (arts_route_table_search_for_empty: acq_rel CAS
    *     0 -> GUID) and a mirror slot's teardown (relaxed store of 0 after the
-   *     join).
+   *     teardown's stop).
    * BUSY, CLAIM(v) and LOST(v) carry kind ARTS_GUID_RESERVED and equal no
    * GUID.  Every load that decides on the word is acquire, so what a writer
    * did to the slot before its write is visible to a reader that sees the
-   * write; loads after the runtime threads have joined are relaxed. */
+   * write; loads once the other runtime threads have stopped are relaxed. */
   _Atomic(arts_guid_t) key;
   /* value == NULL means "absent" — deliberately NOT distinguishing
    * "never created" from "destroyed".  The OoO engine treats both

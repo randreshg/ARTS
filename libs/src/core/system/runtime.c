@@ -50,6 +50,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/random.h>
+#include <time.h>
+#include <unistd.h>
 
 #include "arts/counter/Preamble.h"
 #include "arts/counter/counter.h"
@@ -82,6 +84,7 @@
 #endif
 
 struct arts_runtime_shared_s arts_node_info;
+ARTS_THREAD_LOCAL struct arts_thread_stop_s *arts_thread_stop_slot;
 
 #ifdef ARTS_DEBUG_INJECTION
 /* ARTS_NET_RDZV_CUT's end: the shutdown starts on the thread whose event
@@ -229,6 +232,11 @@ void arts_runtime_node_init(struct arts_config_s *config) {
       tc, sizeof(_Atomic(_Atomic(bool) *)));
   arts_node_info.thread_roles =
       (unsigned int *)arts_calloc(tc, sizeof(unsigned int));
+  arts_node_info.thread_stop = (struct arts_thread_stop_s *)arts_calloc_aligned(
+      tc, sizeof(struct arts_thread_stop_s), sizeof(struct arts_thread_stop_s));
+  for (unsigned int t = 0; t < tc; t++) {
+    atomic_init(&arts_node_info.thread_stop[t].state, ARTS_THREAD_RUNNING);
+  }
 
   /* Thread counts */
   arts_node_info.worker_thread_count = config->worker_thread_count;
@@ -239,7 +247,6 @@ void arts_runtime_node_init(struct arts_config_s *config) {
   atomic_init(&arts_node_info.ready_to_push, tc);
   atomic_init(&arts_node_info.ready_to_parallel_start, tc);
   atomic_init(&arts_node_info.ready_to_inspect, tc);
-  atomic_init(&arts_node_info.ready_to_clean, tc);
 
   /* Seed at our own rank so different ranks pick different first targets;
    * across ranks the round-robin then walks the cluster evenly instead of
@@ -362,9 +369,8 @@ struct arts_shutdown_abandon_s arts_shutdown_abandon;
 /* Count the EDTs left runnable in a deque at teardown.  The shutdown
  * abandoned them, and they stay as it left them, with every ref and hold they
  * took: their memory is reclaimed by the process exit, never by ending holds
- * no thread can release any more.  Every runtime thread has left its loop,
- * but each counts its own deque at the same time as the others, so the shared
- * count is updated atomically. */
+ * no thread can release any more.  Every other runtime thread has stopped,
+ * so the caller is the deque's only user and pops it as its owner. */
 static void arts_count_abandoned_edts(struct arts_deque_s *dq) {
   while (arts_deque_pop_front(dq) != NULL) {
     atomic_fetch_add_explicit(&arts_shutdown_abandon.queued_edts, 1u,
@@ -389,66 +395,47 @@ static void runtime_reclaim_report(size_t discarded, uint64_t ended) {
 }
 
 void arts_runtime_global_cleanup() {
-  /* Write all counter outputs (thread and node levels).  A thread the
-   * shutdown gave up joining may still be writing its own row, so it has no
-   * thread file and the node values leave it out. */
   unsigned int tc = arts_node_info.total_thread_count;
-  const bool *unjoined = arts_shutdown_abandon.unjoined;
-  for (unsigned int t = 0; t < tc; t++) {
-    if (unjoined != NULL && unjoined[t]) {
-      continue;
-    }
-    arts_counter_write(arts_node_info.counter_folder, arts_global_rank_id, t);
-  }
-  /* When every runtime thread has joined, coherence wait-structures must be
-   * empty now (the check skips itself otherwise).  Reports (does not abort);
-   * compiled out below DEBUG log level — see the check's definition. */
+  /* Every other runtime thread has stopped, so coherence wait-structures
+   * must be empty now.  Reports (does not abort); compiled out below DEBUG
+   * log level — see the check's definition. */
   arts_db_debug_quiescence_check();
-  /* Fabric teardown, phase 1, before anything below frees, joined or not:
-   * every runtime thread has passed the ready_to_clean barrier, so none
-   * touches the fabric again.  Quiesce discards or reaps in-flight txns
-   * (their bounces return to the still-live pool) and closes the endpoint
-   * and the registrations bound to it; nothing this thread runs from then on
-   * sends.  Once the close succeeds, no peer's one-sided write, a cut one
-   * included, lands in what the sweep and the frees below return. */
+  /* Fabric teardown, phase 1, before anything below frees: every other
+   * runtime thread has stored its stop, so none touches the fabric again.
+   * Quiesce discards or reaps in-flight txns (their bounces return to the
+   * still-live pool) and closes the endpoint and the registrations bound to
+   * it; nothing this thread runs from then on sends.  Once the close
+   * succeeds, no peer's one-sided write, a cut one included, lands in what
+   * the sweep and the frees below return. */
   bool writes_shut_out = true;
   if (arts_global_rank_count > 1) {
     writes_shut_out = arts_net_quiesce();
   }
-  /* Final-teardown fast path: every runtime thread has joined and the process
-   * is about to exit, so running each leftover object's destructor only moves
-   * bookkeeping inside heaps and pools that are themselves released wholesale
-   * below (pool unmap / process exit) — on programs that never destroy their
-   * objects the per-item sweep costs wall-clock time proportional to the
-   * leftover population for no observable effect.  Keep the full sweep only
-   * under a sanitizer: once it has run, an object kept alive by a reference
-   * nobody will drop is reachable from nothing, which a leak checker reports.
-   * An EDT the shutdown abandoned (admitted, never finished) is the one object
-   * the sweep leaves installed: it keeps the blocks it acquired, and that
-   * residue is the process exit's to reclaim, so when one stays, every route
-   * table is kept and the residue stays reachable through them.  A thread the
-   * shutdown gave up joining may still reach the route tables, so then they
-   * are neither swept nor freed, and the process exit reclaims them.  Before
-   * a coherent descriptor's install count goes, the sweep hands it to its
-   * arm's rows (arts_db_sweep_open_items). */
+  /* Final-teardown fast path: every other runtime thread has stopped and the
+   * process is about to exit, so running each leftover object's destructor
+   * only moves bookkeeping inside heaps and pools that are themselves
+   * released wholesale below (pool unmap / process exit) — on programs that
+   * never destroy their objects the per-item sweep costs wall-clock time
+   * proportional to the leftover population for no observable effect.  Keep
+   * the full sweep only under a sanitizer: once it has run, an object kept
+   * alive by a reference nobody will drop is reachable from nothing, which a
+   * leak checker reports.  An EDT the shutdown abandoned (admitted, never
+   * finished) is the one object the sweep leaves installed: it keeps the
+   * blocks it acquired, and that residue is the process exit's to reclaim, so
+   * when one stays, every route table is kept and the residue stays reachable
+   * through them.  Before a coherent descriptor's install count goes, the
+   * sweep hands it to its arm's rows (arts_db_sweep_open_items). */
   uint64_t abandoned_edts = 0;
-  bool tables_reachable =
-      atomic_load_explicit(&arts_shutdown_abandon.unjoined_threads,
-                           memory_order_relaxed) != 0;
 #ifndef __has_feature
 #define __has_feature(x) 0
 #endif
 #if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__) ||           \
     __has_feature(address_sanitizer) || __has_feature(thread_sanitizer)
-  if (!tables_reachable) {
-    abandoned_edts =
-        arts_route_table_node_sweep(arts_edt_admitted, arts_db_sweep_detach);
-  }
+  abandoned_edts =
+      arts_route_table_node_sweep(arts_edt_admitted, arts_db_sweep_detach);
 #endif
 
-  /* Counter cleanup (reverse of arts_runtime_node_init allocation).  A thread
-   * never joined writes its row of saved_counters after the teardown barrier,
-   * so then the rows and the array are left to the process exit. */
+  /* Counter cleanup (reverse of arts_runtime_node_init allocation). */
   for (unsigned int t = 0; t < tc; t++) {
     if (arts_node_info.capture_arrays && arts_node_info.capture_arrays[t]) {
       for (unsigned int i = 0; i < NUM_COUNTER_TYPES; i++) {
@@ -458,14 +445,12 @@ void arts_runtime_global_cleanup() {
       }
       arts_free(arts_node_info.capture_arrays[t]);
     }
-    if (arts_node_info.saved_counters && !tables_reachable) {
+    if (arts_node_info.saved_counters) {
       arts_free(arts_node_info.saved_counters[t]);
     }
   }
   arts_free(arts_node_info.capture_arrays);
-  if (!tables_reachable) {
-    arts_free(arts_node_info.saved_counters);
-  }
+  arts_free(arts_node_info.saved_counters);
   arts_free(arts_node_info.live_counters);
 
 #ifdef ARTS_USE_CXL
@@ -482,9 +467,7 @@ void arts_runtime_global_cleanup() {
   }
 #endif
 
-  if (tables_reachable) {
-    ARTS_WARN("route tables left unfreed: a thread never joined");
-  } else if (abandoned_edts == 0) {
+  if (abandoned_edts == 0) {
     arts_route_table_node_cleanup();
   }
 
@@ -495,6 +478,10 @@ void arts_runtime_global_cleanup() {
   arts_free(arts_node_info.gpu_route_table);
   arts_free((void *)arts_node_info.local_spin);
   arts_free(arts_node_info.thread_roles);
+  /* A stopped thread never reads its slot again. */
+  arts_free(arts_node_info.thread_stop);
+  arts_node_info.thread_stop = NULL;
+  arts_thread_stop_slot = NULL;
   for (unsigned int i = 0; i < tc; i++) {
     arts_free(arts_node_info.keys[i]);
   }
@@ -527,19 +514,14 @@ void arts_runtime_global_cleanup() {
   arts_db_descriptor_quarantine_drain();
 #endif
 
-  /* Registered-slab pool and the domain: torn down last when every runtime
-   * thread has joined and the endpoint closed.  With a thread unjoined, its
-   * post-barrier tail may still free DB buffers into the pool, and closing the
-   * domain could rewrite the C library's mapping functions under it (a
-   * provider's memory monitor restores the code it patched); with the
-   * endpoint or a registration bound to it still open, a peer's write may
-   * still land in a slab.  Either way both are left to the process exit. */
-  const char *kept_by = tables_reachable   ? "a thread never joined"
-                        : !writes_shut_out ? "the fabric may still write"
-                                           : NULL;
-  if (kept_by != NULL) {
+  /* Registered-slab pool and the domain: torn down last, once the endpoint
+   * has closed.  With the endpoint or a registration bound to it still open,
+   * a peer's write may still land in a slab, so both are left to the process
+   * exit. */
+  if (!writes_shut_out) {
     arts_regpool_report_if_requested();
-    ARTS_WARN("registered pool, domain and fabric left unfreed: %s", kept_by);
+    ARTS_WARN("registered pool, domain and fabric left unfreed: the fabric "
+              "may still write");
     return;
   }
   arts_regpool_cleanup();
@@ -642,6 +624,7 @@ void arts_runtime_private_init(struct thread_mask_s *thread,
         arts_node_info.deque[thread->id];
   }
   arts_node_info.thread_roles[thread->id] = (unsigned int)thread->role;
+  arts_thread_stop_slot = &arts_node_info.thread_stop[thread->id];
   atomic_store_explicit(&arts_thread_info.alive, true, memory_order_relaxed);
   /* Published last: a stopper that finds the pointer reads the role above and
    * stores its false after this thread's true.  A stop that began before the
@@ -687,29 +670,84 @@ void arts_runtime_wait_shutdown_entry(void) {
   }
 }
 
-void arts_runtime_private_cleanup() {
-  /* Teardown ends what the shutdown entry's post and stop walk use: every
-   * thread's TLS stop flag, the stop arrays and the network. */
-  arts_runtime_wait_shutdown_entry();
-  arts_runtime_barrier(&arts_node_info.ready_to_clean);
-  /* The ready_to_clean barrier above guarantees every thread has left its
-   * scheduler loop, so no concurrent push/steal touches these deques, and
-   * orders every thief's last access before the delete.  An EDT still in one
-   * stays installed, so the deque holds no reference of its own that freeing
-   * it would lose.  The pointers are cleared so that the thread owns no deque
-   * from here on. */
-  if (arts_thread_info.my_deque) {
-    arts_count_abandoned_edts(arts_thread_info.my_deque);
-    arts_deque_delete(arts_thread_info.my_deque);
-    arts_thread_info.my_deque = NULL;
-  }
-  if (arts_thread_info.my_gpu_deque) {
-    arts_count_abandoned_edts(arts_thread_info.my_gpu_deque);
-    arts_deque_delete(arts_thread_info.my_gpu_deque);
-    arts_thread_info.my_gpu_deque = NULL;
-  }
+void arts_runtime_thread_park(void) {
   arts_cleanup_edt_tls();
   arts_db_resume_list_free();
+  /* Release: this thread's last accesses, its steals and its saved counters
+   * among them, happen before what the stopper does once it acquires the
+   * store.  The thread stays, so its thread-local storage, which a stopper
+   * may still reach through local_spin, outlives every reader. */
+  atomic_store_explicit(&arts_thread_stop_slot->state, ARTS_THREAD_STOPPED,
+                        memory_order_release);
+  for (;;) {
+    (void)pause();
+  }
+}
+
+struct arts_stop_result_s
+arts_runtime_stop_threads(const struct arts_thread_stop_s *self) {
+  const unsigned int tc = arts_node_info.total_thread_count;
+  for (unsigned int i = 0; i < tc; i++) {
+    if (&arts_node_info.thread_stop[i] == self) {
+      continue;
+    }
+    /* Acquire: the thread's own true, stored before it published the
+     * pointer, precedes the false below.  A thread that never published one
+     * keeps its slot RUNNING, and the poll counts it. */
+    _Atomic(bool) *flag = atomic_load_explicit(&arts_node_info.local_spin[i],
+                                               memory_order_acquire);
+    if (flag != NULL) {
+      /* Release: a thread that sees the stop sees what preceded it here. */
+      atomic_store_explicit(flag, false, memory_order_release);
+    }
+  }
+  const uint64_t budget_ns = 2000000000ULL;
+  const uint64_t begin = arts_get_time_stamp();
+  struct arts_stop_result_s r;
+  for (;;) {
+    r.running = 0;
+    r.unsafe = 0;
+    for (unsigned int i = 0; i < tc; i++) {
+      if (&arts_node_info.thread_stop[i] == self) {
+        continue;
+      }
+      unsigned int st = atomic_load_explicit(
+          &arts_node_info.thread_stop[i].state, memory_order_acquire);
+      if (st == ARTS_THREAD_RUNNING) {
+        r.running++;
+      } else if (st == ARTS_THREAD_STOPPED_UNSAFE) {
+        r.unsafe++;
+      }
+    }
+    if (r.running == 0 || arts_get_time_stamp() - begin >= budget_ns) {
+      return r;
+    }
+    const struct timespec poll = {.tv_sec = 0, .tv_nsec = 1000000L};
+    (void)nanosleep(&poll, NULL);
+  }
+}
+
+void arts_runtime_delete_deques(void) {
+  /* An EDT still in a deque stays installed, so the deque holds no reference
+   * of its own that freeing it would lose.  The pointers are cleared, so a
+   * stray push or steal faults instead of writing freed memory. */
+  for (unsigned int i = 0; i < arts_node_info.total_thread_count; i++) {
+    if (arts_node_info.deque[i] != NULL) {
+      arts_count_abandoned_edts(arts_node_info.deque[i]);
+      arts_deque_delete(arts_node_info.deque[i]);
+      arts_node_info.deque[i] = NULL;
+    }
+    if (arts_node_info.gpu_deque[i] != NULL) {
+      arts_count_abandoned_edts(arts_node_info.gpu_deque[i]);
+      arts_deque_delete(arts_node_info.gpu_deque[i]);
+      arts_node_info.gpu_deque[i] = NULL;
+    }
+  }
+  for (unsigned int p = 0; p < arts_node_info.progress_thread_count; p++) {
+    arts_node_info.progress_deque[p] = NULL;
+  }
+  arts_thread_info.my_deque = NULL;
+  arts_thread_info.my_gpu_deque = NULL;
 }
 
 /*
@@ -759,16 +797,6 @@ static void arts_runtime_stop_by_role(unsigned int role_mask,
 void arts_runtime_stop_workers() {
   ARTS_INFO("arts_runtime_stop_workers");
   arts_runtime_stop_by_role(1U << ARTS_ROLE_WORKER, "workers");
-}
-
-/*
- * arts_runtime_stop_network — clear alive on the progress threads.
- * Call AFTER arts_runtime_stop_workers and the associated worker loop
- * exits, once no more network traffic is expected.
- */
-void arts_runtime_stop_network() {
-  ARTS_INFO("arts_runtime_stop_network");
-  arts_runtime_stop_by_role(1U << ARTS_ROLE_PROGRESS, "progress");
 }
 
 void arts_runtime_stop() {

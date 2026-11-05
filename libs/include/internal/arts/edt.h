@@ -57,8 +57,8 @@ void arts_edt_delete(struct arts_edt_s *edt);
 void (*arts_edt_get_deleter(void))(void *);
 /* Whether `h` holds an EDT every dependence of which was satisfied, so that
  * it was admitted to acquire and run.  An installed one that is still found
- * once every runtime thread has joined never finished: the shutdown abandoned
- * it, with whatever it acquired. */
+ * once every other runtime thread has stopped never finished: the shutdown
+ * abandoned it, with whatever it acquired. */
 bool arts_edt_admitted(arts_shared_ptr_t h);
 
 /* arts_edt_satisfy_slot is the OCR-standard API — declared once in the public

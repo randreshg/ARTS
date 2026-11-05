@@ -68,8 +68,9 @@ struct arts_runtime_shared_s {
 #endif
   /* This rank's route tables, arts_guid_table_count of them: built by
    * arts_route_table_node_init before any runtime thread exists (thread
-   * creation publishes them) and freed after the joins.  A key's table is the
-   * pure function of its key that arts_get_route_table computes. */
+   * creation publishes them) and freed after the teardown's stop.  A key's
+   * table is the pure function of its key that arts_get_route_table
+   * computes. */
   struct arts_route_table_s **route_table;
   struct arts_route_table_s **gpu_route_table;
   /* local_spin[i] points at thread i's `alive`: NULL until thread i has
@@ -78,8 +79,12 @@ struct arts_runtime_shared_s {
    * (arts_runtime_private_init) against the shutdown CAS and the stop walk's
    * load of the pointer (arts_enter_shutdown_state) are a store->load pair:
    * all four are seq_cst, so a stop that began before thread i registered is
-   * seen by one of the two sides. */
+   * seen by one of the two sides.  The teardown's stopper acquires the
+   * pointer, so its false lands after thread i's true. */
   _Atomic(_Atomic(bool) *) *local_spin;
+  /* [thread_id] -> that thread's stop slot, the one arts_thread_stop_slot
+   * names on the thread. */
+  struct arts_thread_stop_s *thread_stop;
   /* Per-thread role, indexed by thread_id (0..total_thread_count-1).
    * Populated during arts_runtime_private_init so that shutdown paths
    * can filter threads by role (workers vs. progress). */
@@ -93,7 +98,6 @@ struct arts_runtime_shared_s {
   _Atomic(unsigned int) ready_to_push;
   _Atomic(unsigned int) ready_to_parallel_start;
   _Atomic(unsigned int) ready_to_inspect;
-  _Atomic(unsigned int) ready_to_clean;
   /* 0 = running, 1 = shutting down.  Written only by the 0 -> 1 CAS in
    * arts_enter_shutdown_state, which every path into the shutdown takes
    * first, and seq_cst there as one side of the stop-registration pair (see
@@ -144,11 +148,13 @@ struct arts_runtime_shared_s {
   const char *counter_folder;
   /* [thread_id] -> that thread's counters, stored before the thread's first
    * barrier arrival; the capture thread starts after the last startup
-   * barrier and is joined before thread 0's teardown barrier arrival, so
-   * every thread it reads is still alive. */
+   * barrier, and a runtime thread never exits, so every row it reads stays
+   * alive. */
   arts_counter_t **live_counters;
-  /* [thread_id][counter_index]: each thread's final counts, stored when it
-   * leaves the runtime and read after it is joined. */
+  /* [thread_id][counter_index]: each thread's final counts, stored before
+   * its stop slot's release.  The counter writers read a row only once they
+   * have acquired its slot as STOPPED, or when it is their own thread's, so
+   * no read meets a store. */
   uint64_t **saved_counters;
   arts_array_list_t ***capture_arrays; // [thread_id][counter_index] - capture
                                        // history (PERIODIC)
@@ -178,13 +184,31 @@ struct arts_runtime_private_s {
 extern struct arts_runtime_shared_s arts_node_info;
 extern ARTS_THREAD_LOCAL struct arts_runtime_private_s arts_thread_info;
 
+/* A runtime thread's stop slot.  Its owner stores a stopped value (release)
+ * once it has left its loop for good, after every access it makes to shared
+ * runtime state, and never stores again; a stopper acquires it, so a stopped
+ * thread's last accesses happen before what the stopper does next.  RUNNING
+ * is the zero the node init stores. */
+enum {
+  ARTS_THREAD_RUNNING = 0,
+  ARTS_THREAD_STOPPED,
+  /* Stopped where shared state may be half-way through an update. */
+  ARTS_THREAD_STOPPED_UNSAFE
+};
+struct arts_thread_stop_s {
+  _Atomic(unsigned int) state;
+} ARTS_ALIGNED(64);
+/* This thread's slot in arts_node_info.thread_stop; NULL on a thread the
+ * runtime did not create. */
+extern ARTS_THREAD_LOCAL struct arts_thread_stop_s *arts_thread_stop_slot;
+
 /* Pending work a shutdown dropped instead of performing, counted by the
- * sites that drop it (relaxed increments; the thread joins that teardown
- * already performs are what make a later read see them).  Together with what
- * the teardown can still count in place -- EDTs admitted but never finished,
- * messages still parked on a route slot's OoO list (a create whose occupant
- * was never destroyed, or any message whose object never installed) -- it
- * says whether a shutdown was quiescent. */
+ * sites that drop it (relaxed increments; the teardown's acquire of every
+ * thread's stop slot is what makes a later read see them).  Together with
+ * what the teardown can still count in place -- EDTs admitted but never
+ * finished, messages still parked on a route slot's OoO list (a create whose
+ * occupant was never destroyed, or any message whose object never installed)
+ * -- it says whether a shutdown was quiescent. */
 struct arts_shutdown_abandon_s {
   /* Runnable EDTs dropped from a deque unrun. */
   _Atomic(unsigned int) queued_edts;
@@ -195,22 +219,6 @@ struct arts_shutdown_abandon_s {
    * non-quiescent more often; the states the walk reports unconditionally
    * are never masked by it. */
   _Atomic(unsigned int) waits;
-  /* Runtime threads the shutdown gave up joining.  Not work left undone but
-   * the premise every teardown read rests on: while one is nonzero the
-   * quiescence walk does not run, since a thread still alive may be mid
-   * transition on anything it would read. */
-  _Atomic(unsigned int) unjoined_threads;
-  /* Runtime threads the join had to cancel, joined afterwards or not.  A
-   * cancellation stops a thread at whatever cancellation point it reached,
-   * possibly mid transition, so while one is nonzero the walk does not run
-   * either; a cancelled thread that joined touches nothing afterwards. */
-  _Atomic(unsigned int) cancelled_threads;
-  /* Which threads the join gave up on, by thread index: NULL until the
-   * first, then total_thread_count flags.  Written only by the main thread's join loop and
-   * read only by that thread afterwards.  Such a thread is past the teardown
-   * barrier but may still write its own counter row, so its counts are left
-   * out of every counter report. */
-  bool *unjoined;
 };
 extern struct arts_shutdown_abandon_s arts_shutdown_abandon;
 

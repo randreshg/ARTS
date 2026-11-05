@@ -197,8 +197,8 @@ struct db_quarantine_ring_s {
 };
 static ARTS_THREAD_LOCAL struct db_quarantine_ring_s *tl_db_quarantine;
 /* Every thread's ring, pushed once per thread and taken whole by the drain.
- * Only its own value: a ring's contents reach the drain through the joins
- * that precede it. */
+ * Only its own value: a ring's contents reach the drain through the
+ * acquired stops that precede it. */
 static _Atomic(struct db_quarantine_ring_s *) g_db_quarantine_rings;
 
 static void db_quarantine_release(struct arts_db_s *db) {
@@ -256,14 +256,9 @@ void arts_db_descriptor_free(struct arts_db_s *db) {
 
 #ifdef ARTS_DEBUG_DB_QUARANTINE
 void arts_db_descriptor_quarantine_drain(void) {
-  /* The caller has joined every other thread that can free a descriptor, so
-   * each ring is complete and visible here; when the shutdown gave up joining
-   * one, that thread may still free into its ring, so no ring is touched. */
-  if (atomic_load_explicit(&arts_shutdown_abandon.unjoined_threads,
-                           memory_order_relaxed) != 0) {
-    ARTS_WARN("freed descriptors left unchecked: a thread never joined");
-    return;
-  }
+  /* Every other runtime thread, each a thread that can free a descriptor,
+   * has stopped and the caller acquired its stop, so each ring is complete
+   * and visible here. */
   struct db_quarantine_ring_s *ring = atomic_exchange_explicit(
       &g_db_quarantine_rings, NULL, memory_order_relaxed);
   while (ring != NULL) {

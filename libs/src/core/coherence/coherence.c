@@ -1009,7 +1009,7 @@ void arts_handler_db_publish_ack(const struct arts_db_publish_ack_args_s *a) {
      * queued since.  An acquire load and a release store of NULL, not an
      * exchange: under the FLYING claim exactly one completion runs at a time,
      * and only a completion touches the field (the teardown walk
-     * reads it relaxed, after every thread has joined). */
+     * reads it relaxed, after every other thread has stopped). */
     arts_lf_link_t *chain =
         atomic_load_explicit(&cache->pub_parked, memory_order_acquire);
     atomic_store_explicit(&cache->pub_parked, NULL, memory_order_release);
@@ -1223,16 +1223,16 @@ void arts_db_cache_common_destroy_pre(struct arts_db_cache_s *cache) {
 }
 #endif /* arms sharing the common cache shape */
 
-/* Debug-only terminal-quiescence check.  Runs once, after every runtime
- * thread has joined and before teardown frees the caches.  It reports two
- * things: states the protocols can never reach, and waiters or holds left
- * behind by a shutdown that was quiescent -- a survivor there is a lost wake
- * that the run's own success criteria may have masked (a reader that never
- * ran, a release that never completed).  Work a shutdown abandoned is the one
- * legal source of such a residue, so after a shutdown that left work undone
- * residues are not reported; the contributors say what was left undone.
- * Violations print a QUIESCENCE-DEBUG marker; tests whose shutdown is
- * quiescent turn that marker into a failure.
+/* Debug-only terminal-quiescence check.  Runs once, after every other
+ * runtime thread has stopped and before teardown frees the caches.  It
+ * reports two things: states the protocols can never reach, and waiters or
+ * holds left behind by a shutdown that was quiescent -- a survivor there is a
+ * lost wake that the run's own success criteria may have masked (a reader
+ * that never ran, a release that never completed).  Work a shutdown abandoned
+ * is the one legal source of such a residue, so after a shutdown that left
+ * work undone residues are not reported; the contributors say what was left
+ * undone.  Violations print a QUIESCENCE-DEBUG marker; tests whose shutdown
+ * is quiescent turn that marker into a failure.
  *
  * The walk exists only to produce diagnostic messages, so it is gated on
  * the log level that compiles those messages: below DEBUG the whole check
@@ -1312,21 +1312,9 @@ static unsigned int excl_cache_word_rows(const struct arts_db_cache_s *c,
 
 void arts_db_debug_quiescence_check(void) {
 #if ARTS_LOG_LEVEL >= 3
-  /* Every read below assumes the runtime's threads are gone: the joins order
-   * every write before it, so each load is relaxed.  A thread the shutdown
-   * gave up joining may still be mid transition, and one it had to cancel
-   * may have stopped mid transition, so the walk cannot judge and says so
-   * instead. */
-  unsigned int unjoined = atomic_load_explicit(
-      &arts_shutdown_abandon.unjoined_threads, memory_order_relaxed);
-  unsigned int cancelled = atomic_load_explicit(
-      &arts_shutdown_abandon.cancelled_threads, memory_order_relaxed);
-  if (unjoined != 0 || cancelled != 0) {
-    ARTS_DEBUG("quiescence check skipped: %u thread(s) never joined, %u "
-               "cancelled",
-               unjoined, cancelled);
-    return;
-  }
+  /* Runs only once every other runtime thread has stopped: the stopper's
+   * acquire of each thread's stop orders every write before it, so each load
+   * is relaxed. */
 #ifdef ARTS_DEBUG_LANDING_BALANCE
   /* Informational: a reply cut by the shutdown (no delivery barrier) leaves
    * its landing out; a test waits for the count to reach zero instead. */
@@ -1350,8 +1338,8 @@ void arts_db_debug_quiescence_check(void) {
    * destroy, or any other message waiting for an install, that never came.
    * A parked message is residue whatever parked it -- a late message for a
    * destroyed GUID included -- so a program whose shutdown leaves one was not
-   * quiescent.  Each is read after every runtime thread has joined, so no
-   * poster can add to what is counted, and before anything frees it.  A
+   * quiescent.  Each is read after every other runtime thread has stopped,
+   * so no poster can add to what is counted, and before anything frees it.  A
    * message from another rank still undelivered is not one: a release in
    * flight to a home strands no waiter, and a grant still owed to a requester
    * leaves that requester's EDT admitted and unfinished. */
@@ -1510,12 +1498,12 @@ void arts_db_debug_quiescence_check(void) {
           /* ro_queued: a set bit names a read request waiting on ro_waiters
            * to be served as a read.  The request sets it before queueing its
            * node, and the drain that pops the node or the same rank's write
-           * request takes it, so once every handler has joined a set bit with
-           * no node of its rank queued is a lost take; reported after a
+           * request takes it, so once every handler has stopped a set bit
+           * with no node of its rank queued is a lost take; reported after a
            * quiescent shutdown. */
           if (quiescent) {
             /* The cursor's acquire loads order nothing here: every handler
-             * has joined. */
+             * has stopped. */
             struct arts_rank_bitset_cursor_s qc =
                 arts_rank_bitset_cursor(&db->ro_queued);
             unsigned int qr;
@@ -1615,7 +1603,7 @@ void arts_db_debug_quiescence_check(void) {
 #ifdef ARTS_PROTOCOL_INV
         if (db->home_initialized) {
           /* The invalidation round.  Unarmed, it is held only by a thread
-           * running or finishing it, so once every thread has joined a held
+           * running or finishing it, so once every thread has stopped a held
            * round or a batch left with no ack to finish it has lost its
            * holder, and every later release queues behind it for ever.  An
            * armed round is not reported by itself: its acks may still be in
@@ -1653,7 +1641,7 @@ void arts_db_debug_quiescence_check(void) {
           /* The home names no holder: its own possession is the directory.
            * The baton is held only by a thread inside the serving tail, and
            * every way out of the tail puts it down, so once every thread has
-           * joined a held baton has lost its holder and every later entry to
+           * stopped a held baton has lost its holder and every later entry to
            * the tail is refused. */
           if (baton) {
             ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu home rests with its "
@@ -1899,10 +1887,10 @@ void arts_db_debug_quiescence_check(void) {
 #endif /* ARTS_LOG_LEVEL >= 3 */
 }
 
-/* After every thread joined, the words read relaxed.  Each item below is an
- * open request axis or an open round of the home (coherence.h): its count is
- * the one its cut answer would have dropped.  The home's rows read home
- * fields, which a cache-only stub does not carry. */
+/* After every other thread stopped, the words read relaxed.  Each item below
+ * is an open request axis or an open round of the home (coherence.h): its
+ * count is the one its cut answer would have dropped.  The home's rows read
+ * home fields, which a cache-only stub does not carry. */
 void arts_db_sweep_open_items(struct arts_db_s *db, arts_shared_ptr_t cb) {
   unsigned int open = 0u;
 #if defined(ARTS_PROTOCOL_VAL)
@@ -1936,7 +1924,7 @@ void arts_db_sweep_open_items(struct arts_db_s *db, arts_shared_ptr_t cb) {
   open += (CACHE_RO_ST(s) == CACHE_ST_REQ) ? 1u : 0u;
   open += (CACHE_RW_ST(s) == CACHE_ST_REQ) ? 1u : 0u;
 #ifdef ARTS_RELEASE_RETAIN
-  /* The home's count, held while w is above zero: after the join, a write
+  /* The home's count, held while w is above zero: after the stop, a write
    * request the home took in whose CONFIRM the shutdown cut. */
   if (db->home_initialized &&
       LOCK_W(atomic_load_explicit(&db->lock_state, memory_order_relaxed)) !=
@@ -1950,7 +1938,7 @@ void arts_db_sweep_open_items(struct arts_db_s *db, arts_shared_ptr_t cb) {
 #if (defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)) &&              \
     !defined(ARTS_RELEASE_PURGE)
   if (db->home_initialized) {
-    /* A held baton: once every thread has joined, a tenure whose transfer
+    /* A held baton: once every thread has stopped, a tenure whose transfer
      * awaits its CONFIRM. */
     open += atomic_load_explicit(&db->grant_baton, memory_order_relaxed) != 0u
                 ? 1u

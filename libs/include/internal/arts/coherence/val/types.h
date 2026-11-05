@@ -153,7 +153,7 @@ struct arts_db_cache_s {
    * grant generation to the admission that sees the right held; a writer's
    * acq_rel decrement carries its bytes and version bump to whichever
    * decrement reaches the transfer edge, which acquires them before it ships.
-   * Every load outside the post-join quiescence walk is acquire, a load
+   * Every load outside the post-stop quiescence walk is acquire, a load
    * whose value a following CAS re-validates included. */
   _Atomic(unsigned int) writer_count;
   /* The installed buffer.  Orders: a slot's (arts_shared_slot_t, shared.h).
@@ -268,7 +268,7 @@ struct arts_db_cache_s {
   /* Waiters a completing flight drained but its version did not cover, held
    * for the trailing flight's ACK.  Accessed only by the flight's completion,
    * one at a time, plus the teardown walk's relaxed read after every thread
-   * has joined: one completion that relaunches stores the chain with release
+   * has stopped: one completion that relaunches stores the chain with release
    * before it sends the trailing flight, and the completion that flight's ACK
    * runs takes it with an acquire load and clears it, so the pair carries the
    * chain's links; one that lands leaves it NULL before the landing CAS that

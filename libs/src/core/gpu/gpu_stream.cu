@@ -579,7 +579,7 @@ void arts_schedule_to_gpu(arts_edt_t fn_ptr, uint32_t paramc,
 }
 
 void free_gpu_item(arts_route_item_t *item) {
-  /* Relaxed: called at teardown, after the runtime threads have joined. */
+  /* Relaxed: called at teardown, after the other runtime threads stopped. */
   arts_guid_t key = atomic_load_explicit(&item->key, memory_order_relaxed);
   arts_guid_kind_t type = arts_guid_get_kind(key);
   arts_shared_ptr_t h = arts_route_item_acquire(item);

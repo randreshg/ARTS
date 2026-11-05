@@ -176,6 +176,7 @@ typedef struct arts_route_table_s route_table_t;
 typedef struct arts_runtime_shared_s runtime_shared_t;
 typedef struct arts_runtime_private_s runtime_private_t;
 typedef struct arts_shutdown_abandon_s shutdown_abandon_t;
+typedef struct arts_thread_stop_s thread_stop_t;
 
 static void print_fingerprint(void) {
   /* Every load-bearing offset, so the sibling compilation can be compared
@@ -261,10 +262,10 @@ static void print_fingerprint(void) {
   MEMBER(runtime_shared_t, scheduler);
   MEMBER(runtime_shared_t, route_table);
   MEMBER(runtime_shared_t, local_spin);
+  MEMBER(runtime_shared_t, thread_stop);
   MEMBER(runtime_shared_t, ready_to_push);
   MEMBER(runtime_shared_t, ready_to_parallel_start);
   MEMBER(runtime_shared_t, ready_to_inspect);
-  MEMBER(runtime_shared_t, ready_to_clean);
   MEMBER(runtime_shared_t, shutdown_state);
   MEMBER(runtime_shared_t, shutdown_entry_done);
   MEMBER(runtime_shared_t, e2e_start_stamp);
@@ -280,8 +281,8 @@ static void print_fingerprint(void) {
   TYPE(shutdown_abandon_t);
   MEMBER(shutdown_abandon_t, queued_edts);
   MEMBER(shutdown_abandon_t, waits);
-  MEMBER(shutdown_abandon_t, unjoined_threads);
-  MEMBER(shutdown_abandon_t, cancelled_threads);
+  TYPE(thread_stop_t);
+  MEMBER(thread_stop_t, state);
   TYPE(arts_counter_t);
   MEMBER(arts_counter_t, count);
   MEMBER(arts_counter_t, start);

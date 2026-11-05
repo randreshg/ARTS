@@ -60,15 +60,15 @@ extern struct thread_mask_s *arts_thread_masks;
 extern pthread_t *arts_thread_handles;
 
 void arts_thread_init(struct arts_config_s *config);
-void arts_thread_main_join(void);
+void arts_thread_main_loop(void);
 
 /* The rank's one shutdown entry, from any thread: the first caller takes the
  * rank's shutdown state, and every later call changes nothing.  The taker
  * closes the send gate on a multinode run; when the end begins on this rank
  * (arts_exit_origin_originates) and the mesh is armed, it posts SHUTDOWN to
  * the peers this rank contacted; then it stops the worker threads.  It waits
- * for no other rank and for no send.  Stopping the progress threads and
- * joining every thread are the main thread's epilogue. */
+ * for no other rank and for no send.  Stopping every other runtime thread,
+ * the progress threads included, is the main thread's epilogue. */
 void arts_enter_shutdown_state(enum arts_exit_origin origin);
 
 /* Ends the process at once with `status`, waiting for no other thread: stdout

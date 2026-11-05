@@ -436,7 +436,8 @@ struct arts_db_s {
   /* The armed round's batch: written by the holder before the ARM, read and
    * cleared by the ack that finishes the round, so round_acks orders every
    * access (and round_queue between holders): plain.  The teardown reads it
-   * after the last reference, the quiescence walk after the joins. */
+   * after the last reference, the quiescence walk after the teardown's
+   * stop. */
   struct arts_db_inv_pub_s *round_entries;
   /* Copy roster (the round's targets).  A read serve's fetch_or and the
    * round's snapshot exchange pair on the word itself: the later of the two

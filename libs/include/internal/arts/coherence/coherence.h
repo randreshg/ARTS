@@ -54,10 +54,10 @@ extern "C" {
  * after its last access: the answer, a size round or dismiss that closes, a
  * create's claim, or, for an axis a cut shutdown left open on a descriptor
  * still installed at teardown, the teardown sweep (arts_db_sweep_open_items, in
- * a sanitizer build whose runtime threads all joined); a descriptor retired
- * with an axis open keeps that count to the process exit.  A re-send, a size
- * round that re-sends, a hop or a relaunch leaves the count where it is: it
- * belongs to the axis, never to a message.
+ * a sanitizer build, once the other runtime threads have stopped); a
+ * descriptor retired with an axis open keeps that count to the process exit.
+ * A re-send, a size round that re-sends, a hop or a relaunch leaves the count
+ * where it is: it belongs to the axis, never to a message.
  *
  * The request names the descriptor as its token (protocol.h) and the answer
  * acts on it.  The count keeps the descriptor's memory, so the one question
@@ -429,7 +429,7 @@ void arts_db_publish_sync(struct arts_db_cache_s *cache, uint64_t version);
 bool arts_db_await_ack(sem_t *cv);
 
 /* Debug-only one-shot teardown-time invariant check over every live DB (see
- * the definition): once all runtime threads have joined, prints
+ * the definition): once every other runtime thread has stopped, prints
  * QUIESCENCE-DEBUG markers for states the protocol can never leave behind
  * and, after a shutdown that abandoned no work, for residues a quiescent run
  * must not leave either.  Compiled out below ARTS_LOG_LEVEL DEBUG — the call
@@ -437,8 +437,8 @@ bool arts_db_await_ack(sem_t *cv);
 void arts_db_debug_quiescence_check(void);
 
 /* The teardown sweep's per-arm rows, run once for each coherent descriptor it
- * retires, after every runtime thread joined and while the install's count is
- * still held, so none of the rows' releases is the last.  An item the
+ * retires, after every other runtime thread stopped and while the install's
+ * count is still held, so none of the rows' releases is the last.  An item the
  * shutdown left open (a request or round whose answer it cut) that owns a
  * count of `cb`, the descriptor's own cb, would have dropped it with that
  * answer; the rows drop it, one release per such item.  An arm whose open

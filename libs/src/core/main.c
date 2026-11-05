@@ -161,7 +161,7 @@ int arts_rt(int argc, char **argv) {
   arts_thread_init(&config);
   arts_thread_zero_node_start(argc, argv, main_edt);
 
-  arts_thread_main_join();
+  arts_thread_main_loop();
 
   arts_stop_signal_watcher_thread();
   arts_config_destroy(&config);

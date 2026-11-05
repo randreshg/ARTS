@@ -883,6 +883,12 @@ function(arts_test_finalize)
         if(_fail STREQUAL "NOTFOUND")
             set(_fail "")
         endif()
+        # A test whose shutdown is quiescent fails on any marker of the
+        # teardown's walk, so a teardown that skipped the walk fails it too.
+        if("QUIESCENCE-DEBUG:" IN_LIST _fail AND
+           NOT "teardown skipped:" IN_LIST _fail)
+            list(APPEND _fail "teardown skipped:")
+        endif()
         list(APPEND _fail "ERROR: (Address|Leak)Sanitizer"
              "WARNING: ThreadSanitizer" ": runtime error: "
              "\\[ARTS\\] allocator error:")
@@ -2548,7 +2554,7 @@ unset(_script)
 # Its writes are ordered, so every arm that moves payloads registers it, and its
 # shutdown is quiescent.  The end-of-run line guards against a shutdown that
 # came before the work; the descriptor check's abort at teardown reaches the
-# exit status, and teardown work left undone because a thread never joined is
+# exit status, and a teardown skipped because a thread did not stop is
 # matched in its output (a rank that had to be stopped is matched as in every
 # test).
 if(ARTS_DEBUG_INJECTION AND ARTS_DEBUG_DB_QUARANTINE AND
@@ -2565,7 +2571,7 @@ if(ARTS_DEBUG_INJECTION AND ARTS_DEBUG_DB_QUARANTINE AND
         arts_test_properties(coherence_late_write_completion_${_v} PROPERTIES
             PASS_REGULAR_EXPRESSION "PASS: coherence_late_write_completion"
             FAIL_REGULAR_EXPRESSION
-            "FAIL:;QUIESCENCE-DEBUG:;left unchecked;left unfreed")
+            "FAIL:;QUIESCENCE-DEBUG:;teardown skipped:;left unfreed")
     endforeach()
 endif()
 
@@ -2657,7 +2663,8 @@ if(ARTS_DEBUG_INJECTION AND ARTS_DEBUG_DB_QUARANTINE AND
     endif()
     set(_info "[^\n]*TEARDOWN-INFO: reclaim discarded")
     set(_cut_fail "FAIL:" "QUIESCENCE-DEBUG: ([1-9]|[^0-9 ])"
-        "left unchecked" "left unfreed")
+        "teardown skipped: (origin|the node|[0-9]+ thread\\(s\\) stopped mid-transition)"
+        "left unfreed")
     foreach(_v 2n_9w_1p 2n_8w_2p)
         arts_test_cfg(_cfg ${_v})
         arts_add_multinode_test(rdzv_cut_requester_${_v}
@@ -3523,7 +3530,7 @@ if(ARTS_CXL_TREE_RESIDENCY)
     # marker on this shape is the oracle catching a real defect, not a test
     # artifact.  Registered wherever the walk is compiled.
     if(ARTS_LOG_LEVEL GREATER_EQUAL 3)
-        register_cxl_multinode_test(cxl_quiescence_marker TIMEOUT 60 FAIL_REGEX "QUIESCENCE-DEBUG|FAIL")
+        register_cxl_multinode_test(cxl_quiescence_marker TIMEOUT 60 FAIL_REGEX "QUIESCENCE-DEBUG|FAIL|teardown skipped:")
     endif()
     # The store's two flushes, each at its one edge of a turn: a consumer
     # flush when a rank's first acquire is admitted, a producer flush when its
