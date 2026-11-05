@@ -469,7 +469,8 @@ void arts_runtime_global_cleanup() {
   arts_free(arts_node_info.live_counters);
 
 #ifdef ARTS_USE_CXL
-  arts_cxl_arena_table_free(arts_node_info.cxl_arenas);
+  /* The arenas stay: peers may still be in the store, and a run's CXL
+   * allocations are released outside the runtime once it ends. */
   pthread_mutex_destroy(&arts_node_info.cxl_arena_lock);
 #endif
 
