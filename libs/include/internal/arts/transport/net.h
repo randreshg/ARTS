@@ -59,7 +59,11 @@
  *   arts_net_selfcheck()         — providers with a configurable one-sided
  *                                  immediate path prove it live (no-op elsewhere)
  *   ... runtime runs ...
- *   arts_net_quiesce()           — refuse new sends, discard/reap in-flight TX;
+ *   arts_net_close_gate()        — (the shutdown point, any thread) a send
+ *                                  that reads the gate closed is dropped
+ *   arts_net_post_shutdown()     — (an end that begins on this rank) SHUTDOWN
+ *                                  to the peers this rank contacted
+ *   arts_net_quiesce()           — discard/reap in-flight TX;
  *                                  under endpoint-bound registration, close the
  *                                  slab MRs FIRST (they hold endpoint refs);
  *                                  close ep/cq/av, or keep all three when
@@ -143,14 +147,20 @@ void arts_transport_send_payload_async_free(int rank, char *message,
 #define ARTS_NET_MIN_MULTI_RECV (ARTS_NET_RECV_BUF_SIZE / 2)
 #define ARTS_NET_MSG_MAX ARTS_NET_MIN_MULTI_RECV
 
-/* Bounded wait until no counted fabric send of any thread is in progress (a
- * post not yet completed, or one the provider keeps refusing while each
- * attempt runs; a send that left by fi_inject is never counted, so an
- * injected SHUTDOWN frame is not waited for).  It reaps completions but
- * dispatches nothing, so any thread may call it, a progress thread included:
- * the counted sends complete through its own reaps, and what arrives waits for
- * a progress thread that is not draining.  No-op single-node. */
-void arts_net_drain_outstanding(unsigned int deadline_ms);
+/* Close the send gate, from any thread, at this rank's shutdown point: a send,
+ * one-sided write or ring-full spin pass of any thread that reads it closed
+ * drops what it would send and runs that send's completion-gated free.
+ * Entries a ring holds already may still be posted.  Multinode only. */
+void arts_net_close_gate(void);
+
+/* Post SHUTDOWN, the bare header, by one fi_inject to each peer other than
+ * this rank that this rank contacted (the provider accepted a post to it) and
+ * whose mesh connection does not read as gone; a refused inject skips that
+ * peer.  Nothing completes or waits: a peer it misses learns of the end when
+ * a connection closes.  Returns the number posted, each counted as a remote
+ * send.  It bypasses the send gate, so it may follow arts_net_close_gate; it
+ * runs only once the mesh is armed (arts_socket_armed). */
+unsigned int arts_net_post_shutdown(void);
 
 /* ==========================================================================
  * Rendezvous one-sided data plane.
@@ -327,11 +337,12 @@ void arts_net_exchange_addresses(void);
 bool arts_net_progress(void);
 
 /* Teardown phase 1, run once every runtime thread has passed the
- * ready_to_clean barrier: refuse new sends, discard queued-but-unposted retry
- * txns (their completion-gated frees still run, so no caller payload leaks
- * and bounces return to the still-live pool), reap already-posted sends
- * within a bound, close the pool's endpoint-bound registrations where the
- * provider binds them, then close ep/cq/av (cancelling posted recvs).
+ * ready_to_clean barrier, the send gate closed at the shutdown point: discard
+ * queued-but-unposted retry txns (their completion-gated frees still run, so
+ * no caller payload leaks and bounces return to the still-live pool), reap
+ * already-posted sends within a bound, close the pool's endpoint-bound
+ * registrations where the provider binds them, then close ep/cq/av
+ * (cancelling posted recvs).
  * Returns whether inbound writes are shut out: the endpoint closed, and so
  * did every registration bound to it that the pool still names.  When they
  * are, no inbound write lands on this rank afterwards and no send desc

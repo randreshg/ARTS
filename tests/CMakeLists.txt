@@ -1540,6 +1540,27 @@ if(ARTS_MALLOC STREQUAL "mimalloc")
     register_pure_unit_test(net_src_bind TIMEOUT 60)
 endif()
 
+# net_gate_drop — whitebox for the send gate (transport/net.c): a send after
+# the gate closed is dropped with its free run, a one-sided PUT stops at its
+# first dropped piece, the ring-full spin stands down at its next pass, and
+# the SHUTDOWN post asks about and injects to contacted peers only.  It holds
+# every token a send could progress with, so no fabric comes up and nothing
+# is drawn from the registered pool: it builds under either allocator.
+add_executable(net_gate_drop unit/net_gate_drop.c $<TARGET_OBJECTS:arts_regpool>)
+target_include_directories(net_gate_drop PRIVATE
+    ${ARTS_PUBLIC_INCLUDE_DIR} ${ARTS_INTERNAL_INCLUDE_DIR}
+    ${ARTS_BUILD_INTERNAL_INCLUDE_DIR})
+arts_apply_protocol(net_gate_drop ${ARTS_COHERENCE_ARM} ${ARTS_WRITE_POLICY} ${ARTS_RELEASE_POLICY})
+set_test_log_level(net_gate_drop 2)
+target_link_libraries(net_gate_drop PRIVATE
+    Threads::Threads arts::libfabric ${RT_LIBRARY})
+if(ARTS_MALLOC STREQUAL "mimalloc")
+    target_link_libraries(net_gate_drop PRIVATE mimalloc-static)
+endif()
+register_pure_unit_test(net_gate_drop TIMEOUT 60)
+set_tests_properties(net_gate_drop PROPERTIES
+    PASS_REGULAR_EXPRESSION "PASS net_gate_drop")
+
 # net_addr_frame_bound — whitebox for the bootstrap address-frame length bound
 # (arts_net_addr_frame_ok in net.h).  Header-only: it exercises the pure
 # predicate, so it needs the internal include dir but no libfabric/runtime link.

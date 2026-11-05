@@ -10,9 +10,10 @@
 /// (SIGTERM/SIGINT/SIGALRM/SIGHUP) + SIGRTMIN; every other thread inherits a
 /// block mask so only the watcher receives term signals.  On the first term hit
 /// the watcher prints "initiating graceful shutdown", calls
-/// arts_enter_shutdown_state(true), and STAYS in the loop (a second hit would
-/// force exit).  A single SIGTERM must therefore drive a cooperative shutdown:
-/// arts_rt returns normally and main() prints the clean-exit token.
+/// arts_enter_shutdown_state(ARTS_EXIT_SIGNAL), and STAYS in the loop (a
+/// second hit would force exit).  A single SIGTERM must therefore drive a
+/// cooperative shutdown: arts_rt returns normally and main() prints the
+/// clean-exit token.
 ///
 /// An EDT raises one process-directed term signal (default SIGTERM; argv[1] may
 /// select SIGINT) via raise(); the watcher consumes it and shuts down.  We do

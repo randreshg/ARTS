@@ -75,6 +75,7 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
 #include "../../libs/src/core/transport/net.c"
 
 #include "counter_stubs.h"
+#include "net_runtime_stubs.h"
 
 static uint64_t now_ns(void) {
   struct timespec ts;

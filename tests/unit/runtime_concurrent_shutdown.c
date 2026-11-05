@@ -5,14 +5,14 @@
 /// @file runtime_concurrent_shutdown.c
 /// @brief Drives multiple concurrent shutdown initiators (many EDTs each call
 ///        arts_shutdown) and verifies the shutdown_state CAS gate keeps exactly
-///        one broadcast/stop, with no deadlock and a clean return.
+///        one post/stop, with no deadlock and a clean return.
 ///
-/// arts_shutdown -> arts_enter_shutdown_state(true) gates on a compare-exchange
-/// of shutdown_state from 0 to 1: exactly one caller wins the 0->1
-/// transition and performs broadcast (MN) + stop_workers; all others observe a
-/// non-zero state and no-op.  That CAS is the word's only writer.  Here we
-/// stress N worker EDTs racing into arts_shutdown simultaneously: the runtime
-/// must terminate cleanly (ctest TIMEOUT reaps a hang) and the final
+/// arts_shutdown -> arts_enter_shutdown_state(ARTS_EXIT_APP) gates on a
+/// compare-exchange of shutdown_state from 0 to 1: exactly one caller wins
+/// the 0->1 transition and performs the post (MN) + stop_workers; all others
+/// observe a non-zero state and no-op.  That CAS is the word's only writer.
+/// Here we stress N worker EDTs racing into arts_shutdown simultaneously: the
+/// runtime must terminate cleanly (ctest TIMEOUT reaps a hang) and the final
 /// shutdown_state must read 1 (the CAS landed exactly once and was never torn
 /// back to 0).
 ///

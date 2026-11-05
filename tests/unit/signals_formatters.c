@@ -46,11 +46,13 @@
 #include <string.h>
 #include <unistd.h>
 
+#include "arts/system/shutdown.h"
+
 /* ---- standalone stubs for symbols signals.c references ------------------- */
 /* arts_global_rank_id is declared extern in identity.h (pulled in via the
  * include below); define storage here. */
 unsigned int arts_global_rank_id = 0;
-void arts_enter_shutdown_state(bool initiator) { (void)initiator; }
+void arts_enter_shutdown_state(enum arts_exit_origin origin) { (void)origin; }
 _Noreturn void arts_exit_now(uint8_t status) { _exit(status); }
 
 /* Pull in the real signals.c (static write_signal_line + signal_name). */

@@ -59,6 +59,7 @@
 #include "arts/gas/route_table.h"
 #include "arts/memory/regpool.h"
 #include "arts/system/print.h"
+#include "arts/system/shutdown.h"
 #include "arts/system/threads.h"
 #include "arts/system/topology.h"
 #include "arts/transport/dispatcher.h"
@@ -83,7 +84,9 @@ struct arts_runtime_shared_s arts_node_info;
 #ifdef ARTS_DEBUG_INJECTION
 /* ARTS_NET_RDZV_CUT's end: the shutdown starts on the thread whose event
  * completed the hook's count, as an arts_shutdown call there would. */
-static void runtime_rdzv_cut_done(void) { arts_enter_shutdown_state(true); }
+static void runtime_rdzv_cut_done(void) {
+  arts_enter_shutdown_state(ARTS_EXIT_APP);
+}
 #endif
 
 void arts_runtime_node_init(struct arts_config_s *config) {
@@ -652,7 +655,7 @@ void arts_runtime_wait_shutdown_entry(void) {
 }
 
 void arts_runtime_private_cleanup() {
-  /* Teardown ends what the shutdown entry's stop walk and drain use: every
+  /* Teardown ends what the shutdown entry's post and stop walk use: every
    * thread's TLS stop flag, the stop arrays and the network. */
   arts_runtime_wait_shutdown_entry();
   arts_runtime_barrier(&arts_node_info.ready_to_clean);
@@ -738,10 +741,10 @@ void arts_runtime_stop_network() {
 void arts_runtime_stop() {
   /* Stop every thread, progress threads included, in one call: the liveness
    * sentinel's path once a peer has closed its connection.  Nothing orders
-   * any rank's close after every other rank has dispatched the initiator's
-   * MSG_SHUTDOWN (the initiator's drain waits only for its local sends to
-   * complete, and a receiver tears down without waiting for anyone), so an
-   * orderly teardown takes this path too and joins the same shutdown. */
+   * any rank's close after every other rank has taken in a SHUTDOWN post
+   * (the post is best effort and reaches only the peers its rank contacted,
+   * and no rank waits for anyone before it tears down), so an orderly
+   * teardown takes this path too and joins the same shutdown. */
   ARTS_INFO("arts_runtime_stop: stopping %u threads",
             arts_node_info.total_thread_count);
   arts_runtime_stop_by_role(0xFFFFFFFFU, "all");

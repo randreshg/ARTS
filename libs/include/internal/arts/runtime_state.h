@@ -108,7 +108,7 @@ struct arts_runtime_shared_s {
    * subsystem.  e2e_start_stamp is taken when the main application EDT
    * becomes runnable (init complete — so application init callbacks run
    * inside the span); e2e_end_stamp is taken at shutdown recognition (the
-   * enter-shutdown CAS, before any teardown/drain).  When e2e_marker_enabled
+   * enter-shutdown CAS, before any teardown).  When e2e_marker_enabled
    * their difference is printed as "[E2E] <ns>" on rank 0 at exit.  Gated so
    * a normal run is never perturbed.  The flag is set from $ARTS_E2E_MARKER
    * before any other thread exists, the start stamp is written and read by

@@ -53,6 +53,7 @@
 #include "arts/gas/route_table.h"
 #include "arts/runtime_state.h"
 #include "arts/system/print.h"
+#include "arts/system/shutdown.h"
 #include "arts/system/threads.h"
 
 /* The rank the handlers print: a handler may touch only lock-free atomic
@@ -215,9 +216,9 @@ void arts_install_signal_handlers(void) {
 /* Dedicated thread that owns SIGTERM/SIGINT/SIGALRM/SIGHUP delivery via
  * sigwait().  Lets graceful-shutdown code paths (which may grab locks
  * and call fprintf) run in a normal thread context instead of inside an
- * async-unsafe signal handler.  Stops the worker threads via
- * arts_enter_shutdown_state(true), which broadcasts the cluster-wide
- * MSG_SHUTDOWN and clears their alive flags.
+ * async-unsafe signal handler.  Ends the run through the shutdown entry
+ * (origin SIGNAL), which posts SHUTDOWN to the peers this rank contacted and
+ * clears the worker threads' alive flags.
  *
  * Wake-on-stop: arts_stop_signal_watcher_thread sets the stop flag and
  * sends SIGRTMIN to break out of sigwait. */
@@ -261,10 +262,10 @@ static void *arts_signal_watcher_main(void *arg) {
       ARTS_WARN("signal watcher: caught %d, initiating graceful shutdown",
                 sig);
       /* Now safe to call non-async-signal-safe code: we are in a normal
-       * thread context.  Broadcast MSG_SHUTDOWN to peers and stop our
-       * own workers; main thread's arts_thread_main_join will return,
+       * thread context.  Post SHUTDOWN to the peers and stop our own
+       * workers; main thread's arts_thread_main_join will return,
        * launcher cleanup will reap children, normal teardown runs. */
-      arts_enter_shutdown_state(true);
+      arts_enter_shutdown_state(ARTS_EXIT_SIGNAL);
       /* Stay in the loop: a second signal forces exit. */
     } else {
       ARTS_WARN("signal watcher: second signal %d, forcing exit", sig);

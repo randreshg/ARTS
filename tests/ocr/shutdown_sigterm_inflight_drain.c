@@ -4,8 +4,7 @@
 ******************************************************************************/
 /// @file shutdown_sigterm_inflight_drain.c
 /// @brief A SIGTERM to rank 0 while satisfies from every other rank are in
-///        flight to it ends the run gracefully, with every counted send
-///        completed.
+///        flight to it ends the run gracefully.
 ///
 /// Rank 0 keeps LANES chains per other rank running.  One round of a chain:
 /// rank 0 creates an event and a consumer EDT whose only dependence is that
@@ -15,9 +14,8 @@
 /// rounds, its consumer signals the process with a process-directed SIGTERM
 /// (never raise(): a thread-directed signal stays pending on the worker, which
 /// blocks the termination signals).  The signal watcher then initiates the
-/// shutdown: it broadcasts the shutdown and waits for its sends to complete
-/// while satisfies keep arriving.  Only a thread that owns a deque may ready
-/// an EDT, so that wait must dispatch none of them.
+/// shutdown: it closes rank 0's send gate and posts SHUTDOWN to the other
+/// ranks while satisfies keep arriving, and waits for no send.
 ///
 /// Every rank's status says how its run ended; the master's carries the
 /// launcher's verdict on every rank it spawned.

@@ -54,34 +54,12 @@
 #include "arts/ooo.h"
 #include "arts/runtime_state.h"
 #include "arts/system/print.h"
+#include "arts/system/shutdown.h"
 #include "arts/system/threads.h"
 #include "arts/transport/net.h"
 #include "arts/transport/protocol.h"
 #include "arts/utils/malloc.h"
 #include "arts/utils/shared.h" /* arts_shared_get / arts_shared_release */
-
-/*
- * arts_transport_broadcast_shutdown — First step of the shutdown protocol.
- *
- * Inject a header-only MSG_SHUTDOWN onto the fabric to every other rank (same
- * path as every other message).  The caller then drains, bounded, the counted
- * fabric sends still in progress (arts_net_drain_outstanding) before
- * proceeding to local shutdown; a frame that leaves by fi_inject is never
- * counted, so the drain does not wait for these frames as such.
- */
-void arts_transport_broadcast_shutdown(void) {
-  if (arts_global_rank_count <= 1) {
-    return;
-  }
-  for (unsigned int r = 0; r < arts_global_rank_count; r++) {
-    if (r == arts_global_rank_id) {
-      continue;
-    }
-    struct arts_msg_header_s packet;
-    arts_fill_packet_header(&packet, sizeof(packet), MSG_SHUTDOWN);
-    arts_transport_send_async((int)r, (char *)&packet, sizeof(packet));
-  }
-}
 
 void arts_transport_setup(struct arts_config_s *config) {
   /* Establish the bootstrap TCP mesh; each producing thread injects its own
@@ -94,12 +72,8 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
   case MSG_SHUTDOWN: {
     ARTS_INFO("Node %u: Received shutdown message from node %u",
               arts_global_rank_id, packet->rank);
-    /* Passive shutdown entry: we received MSG_SHUTDOWN from
-     * another rank, so the dispatcher calls the lightweight RX handler
-     * directly — idempotent CAS gate + worker stop, no re-broadcast, no
-     * drain-wait.  The main thread handles network stop and bounded join
-     * after the worker loop exits. */
-    arts_handler_shutdown();
+    /* Another rank's end: this rank learns of it and posts nothing. */
+    arts_enter_shutdown_state(ARTS_EXIT_WIRE);
     break;
   }
   case MSG_EDT_SATISFY_SLOT: {

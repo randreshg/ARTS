@@ -6,7 +6,7 @@
 /// @brief A non-master rank arts_abort()s; the surviving ranks detect its
 ///        departure and exit cleanly.
 ///
-/// arts_abort exits at once with no broadcast or drain, so the other ranks
+/// arts_abort exits at once with no SHUTDOWN post, so the other ranks
 /// learn of the departure only through the liveness sentinel: the departed
 /// rank's connection closes, and the probe enters the same idempotent shutdown
 /// an inbound shutdown message does.  The property under test: a non-master
@@ -38,7 +38,7 @@ void abort_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depv;
   arts_printf("  non-master rank %u aborting (code %u)\n",
               arts_get_current_rank(), ABORT_CODE);
-  /* Hard exit: no broadcast/drain; peers discover via socket EOF. */
+  /* Hard exit: no post; peers discover via socket EOF. */
   arts_abort((uint8_t)ABORT_CODE);
 }
 

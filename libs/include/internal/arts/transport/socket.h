@@ -102,14 +102,14 @@ bool arts_socket_peer_gone(unsigned int rank);
 
 /* Non-blocking probe of the accept-side sentinels for a closed peer
  * (POLLHUP/POLLERR/EOF).  Called from a progress thread's idle cycle; on a
- * closed peer it enters the same idempotent passive-shutdown path an inbound
- * shutdown message uses and returns true.  Stands down (false) once this
- * rank's shutdown is in progress.  Nothing orders any rank's close after
- * every other rank has dispatched the initiator's MSG_SHUTDOWN — the
- * initiator's drain waits only for its local sends to complete, and a
- * receiver tears down without waiting for anyone — so an orderly teardown can
- * reach the probe first; it joins the same shutdown.  Serialized internally to
- * a single prober. */
+ * closed peer it enters the same idempotent shutdown entry an inbound
+ * shutdown message does, as a rank that learned of the end, and returns true.
+ * Stands down (false) once this rank's shutdown is in progress.  Nothing
+ * orders any rank's close after every other rank has taken in a SHUTDOWN
+ * post — the post is best effort and reaches only the peers its rank
+ * contacted, and no rank waits for anyone before it tears down — so an
+ * orderly teardown can reach the probe first; it joins the same shutdown.
+ * Serialized internally to a single prober. */
 bool arts_socket_sentinel_check(void);
 #ifdef __cplusplus
 }

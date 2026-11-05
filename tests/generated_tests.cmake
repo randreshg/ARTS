@@ -188,6 +188,8 @@ add_pure_unit_src(runtime_edt_event_layout PASS_REGEX "PASS runtime_edt_event_la
 add_pure_unit_src(topology_thread_mask SOURCES ${CMAKE_SOURCE_DIR}/libs/src/core/system/placement.c LIBS arts::hwloc PASS_REGEX "PASS topology_thread_mask" TIMEOUT 60)
 add_pure_unit_src(threads_worker_underflow PASS_REGEX "PASS threads_worker_underflow" TIMEOUT 60)
 add_pure_unit_src(signals_formatters PASS_REGEX "PASS signals_formatters" TIMEOUT 60)
+# Which shutdown origins post SHUTDOWN to the peers, and their names.
+add_pure_unit_src(exit_origin_posts PASS_REGEX "PASS exit_origin_posts" TIMEOUT 30)
 # The handlers' backtrace() must not load the unwinder in signal context: the
 # install loads it first.  A sanitizer runtime loads the unwinder itself before
 # the program starts, so the property is observable only without one.
@@ -735,22 +737,57 @@ foreach(_v 2n_9w_1p 4n_4w_1p)
 endforeach()
 
 # A SIGTERM to rank 0 while every other rank keeps satisfies in flight to it:
-# the signal watcher initiates the shutdown and drains its rank's counted
-# fabric sends in progress (bounded) while those satisfies arrive, and the run
-# ends gracefully.  Where the build prints INFO, the drain's own completion
-# line is part of the oracle.
+# the signal watcher begins the shutdown, which closes rank 0's send gate and
+# posts SHUTDOWN while those satisfies arrive, and the run ends gracefully.
 add_arts_test(shutdown_sigterm_inflight_drain)
 register_multinode_test(shutdown_sigterm_inflight_drain TIMEOUT 120)
-if(ARTS_LOG_LEVEL GREATER_EQUAL 2)
-    set(_drain_pass "shutdown TX drain complete.*\\[rank 0\\] SIGTERM_DRAIN_EXIT")
-else()
-    set(_drain_pass "\\[rank 0\\] SIGTERM_DRAIN_EXIT")
-endif()
 foreach(_v 2n_9w_1p 4n_4w_1p 2n_8w_2p)
     set_tests_properties(shutdown_sigterm_inflight_drain_${_v} PROPERTIES
-        PASS_REGULAR_EXPRESSION "${_drain_pass}"
-        FAIL_REGULAR_EXPRESSION "shutdown TX drain timeout")
+        PASS_REGULAR_EXPRESSION "\\[rank 0\\] SIGTERM_DRAIN_EXIT")
 endforeach()
+
+# Every rank still sending when the shutdown begins: each rank drops its sends
+# after its shutdown point, so none waits on a peer that has gone, a refused
+# inject, a transfer lost on a live run and a send after the teardown began
+# being the failures.
+add_arts_test(shutdown_sends_after_shutdown)
+register_multinode_test(shutdown_sends_after_shutdown TIMEOUT 60)
+foreach(_v 2n_9w_1p 4n_4w_1p 2n_8w_2p)
+    set_tests_properties(shutdown_sends_after_shutdown_${_v} PROPERTIES
+        PASS_REGULAR_EXPRESSION "SENDS_AFTER_SHUTDOWN: ending the run"
+        FAIL_REGULAR_EXPRESSION
+        "fi_inject failed;cq error on a live run;after this thread began the teardown")
+endforeach()
+
+# Two ranks other than rank 0 end the run at once, on four ranks and on three
+# (the four-rank cfg with node_count=3).
+add_arts_test(shutdown_initiators_off_zero)
+register_multinode_test(shutdown_initiators_off_zero TIMEOUT 60
+                        VARIANTS 4n_4w_1p)
+arts_test_cfg(_cfg 4n_4w_1p)
+arts_add_test(shutdown_initiators_off_zero_3n_4w_1p
+              COMMAND shutdown_initiators_off_zero)
+set_tests_properties(shutdown_initiators_off_zero_3n_4w_1p PROPERTIES
+    LABELS "multinode" TIMEOUT 60 RESOURCE_LOCK "arts_runtime"
+    ENVIRONMENT "ARTS_CONFIG=${_cfg};node_count=3")
+
+# A rank posts SHUTDOWN only to the peers it contacted: rank 1 ends the run
+# once ranks 0 and 2, the two peers it sent to, have answered, so rank 3
+# learns of the end from a closed connection.  Where the build prints INFO,
+# rank 3's entry must name that origin and rank 1's post its two peers, in
+# either order, and a post naming any other count fails the run.
+add_arts_test(shutdown_first_contact)
+register_multinode_test(shutdown_first_contact TIMEOUT 60 VARIANTS 4n_4w_1p)
+if(ARTS_LOG_LEVEL GREATER_EQUAL 2)
+    set(_fc_r3 "\\[3:[0-9]+\\] \\[INFO\\] arts_enter_shutdown_state: rank=3 origin=SENTINEL")
+    set(_fc_r1 "\\[1:[0-9]+\\] \\[INFO\\] arts_enter_shutdown_state: posted SHUTDOWN to")
+    set_tests_properties(shutdown_first_contact_4n_4w_1p PROPERTIES
+        PASS_REGULAR_EXPRESSION "${_fc_r3}.*${_fc_r1} 2 peer|${_fc_r1} 2 peer.*${_fc_r3}"
+        FAIL_REGULAR_EXPRESSION "${_fc_r1} ([013-9]|[0-9][0-9]+) peer")
+else()
+    set_tests_properties(shutdown_first_contact_4n_4w_1p PROPERTIES
+        PASS_REGULAR_EXPRESSION "FIRST_CONTACT: rank 1 ends the run")
+endif()
 
 # --- random ---
 # Concurrent draws from the runtime's generator stay in range and do not

@@ -48,30 +48,17 @@
 #include "arts.h"
 #include "arts/runtime_state.h"
 #include "arts/system/print.h"
-#include "arts/transport/dispatcher.h"
-#include "arts/transport/net.h" /* arts_net_drain_outstanding */
+#include "arts/system/shutdown.h"
+#include "arts/transport/net.h"    /* arts_net_close_gate, _post_shutdown */
+#include "arts/transport/socket.h" /* arts_socket_armed */
 #include "arts/utils/stdatomic_compat.h"
 
-/*
- * arts_shutdown — Initiate global shutdown of the ARTS runtime.
- *
- * Enters the shutdown state as its initiator (arts_enter_shutdown_state): on a
- * multi-node run it sends MSG_SHUTDOWN to every other rank over the fabric,
- * like any other message, and waits (bounded) for those sends to complete;
- * then it stops this rank's worker threads.  A rank that receives the message
- * enters the same state without rebroadcasting (arts_handler_shutdown).  Once
- * this rank has entered the shutdown state, by any path, a call changes
- * nothing.
- *
- * Called from:
- *   - User code via the arts_shutdown() public API.
- */
+/* The program ends the run (origin APP).  Once this rank has entered the
+ * shutdown state, by any path, a call changes nothing. */
 void arts_shutdown() {
   ARTS_INFO("arts_shutdown: rank_count=%u, rank_id=%u", arts_global_rank_count,
             arts_global_rank_id);
-  /* Phase A entry — arts_enter_shutdown_state handles both the
-   * multi-node broadcast + drain and the local worker-thread stop. */
-  arts_enter_shutdown_state(/* initiator = */ true);
+  arts_enter_shutdown_state(ARTS_EXIT_APP);
   (void)fflush(stdout);
 }
 
@@ -101,27 +88,7 @@ _Noreturn void arts_abort(uint8_t error_code) {
   arts_exit_now(error_code);
 }
 
-/*
- * arts_enter_shutdown_state — the single internal CAS-gated mechanism for
- * transitioning a rank into SHUTTING_DOWN state.  Both the initiator side
- * (arts_shutdown) and the passive side (arts_handler_shutdown) reach this.
- *
- * Called from:
- *   - arts_shutdown() on the user EDT path (initiator = true)
- *   - the signal watcher on a terminating signal (initiator = true)
- *   - arts_handler_shutdown() — the MSG_SHUTDOWN wire RX path
- *     (initiator = false)
- *   - the liveness sentinel (arts_socket_sentinel_check) when a peer's
- *     bootstrap connection closes before this rank's shutdown began
- *     (initiator = false)
- *   - arts_net_rdzv_cut_done, the ARTS_NET_RDZV_CUT injection hook's end,
- *     on the thread of the event that completed its count (initiator = true)
- *
- * Idempotent: repeated calls after the first are no-ops. The CAS on
- * shutdown_state ensures exactly one caller performs the broadcast and
- * stop-workers step.
- */
-void arts_enter_shutdown_state(bool initiator) {
+void arts_enter_shutdown_state(enum arts_exit_origin origin) {
   /* seq_cst: this CAS and the stop walk's loads of local_spin are one side
    * of the stop-registration store->load pair; arts_runtime_private_init's
    * store of local_spin and load of shutdown_state are the other. */
@@ -132,45 +99,30 @@ void arts_enter_shutdown_state(bool initiator) {
     return; /* another thread / handler already started shutdown */
   }
   /* End-to-end marker (rank 0): this CAS is the single idempotent point where
-   * shutdown is first recognized — before the broadcast + outstanding-drain
-   * teardown below.  Stamp the e2e end here so the measured span excludes
-   * teardown, matching the reference runtimes (which stop at shutdown
-   * reception).  Any thread may execute this; arts_get_time_stamp is
-   * thread-independent and the CAS guarantees it runs exactly once per node. */
+   * shutdown is first recognized, before anything the rank does to end.
+   * Stamp the e2e end here so the measured span excludes teardown, matching
+   * the reference runtimes (which stop at shutdown reception).  Any thread may
+   * execute this; arts_get_time_stamp is thread-independent and the CAS
+   * guarantees it runs exactly once per node. */
   if (!arts_global_rank_id && arts_node_info.e2e_marker_enabled)
     arts_node_info.e2e_end_stamp = arts_get_time_stamp();
-  ARTS_INFO("arts_enter_shutdown_state: rank=%u initiator=%d",
-            arts_global_rank_id, (int)initiator);
-  if (initiator && arts_global_rank_count > 1) {
-    /* Phase A.1: broadcast MSG_SHUTDOWN to every other rank (over the fabric,
-     * like every other message). */
-    arts_transport_broadcast_shutdown();
-    /* Phase A.2: wait (bounded) until no counted fabric send of this rank is
-     * in progress: every thread's posts not yet completed, and a post the
-     * provider keeps refusing while each attempt runs.  It does not wait for
-     * the SHUTDOWN frames as such: a frame that left by fi_inject is never
-     * counted.  The drain only reaps completions and polls the count, since
-     * a handler it dispatched could ready an EDT on a thread that owns no
-     * deque, so the counted sends complete through its own reaps; what
-     * arrives meanwhile waits for a progress thread that is not draining,
-     * none when the drain runs on a rank's only progress thread. */
-    arts_net_drain_outstanding(500U /* SHUTDOWN_DRAIN_MS */);
+  bool multirank = arts_global_rank_count > 1;
+  if (multirank) {
+    /* A send that reads the gate closed is dropped; the post bypasses it. */
+    arts_net_close_gate();
   }
-  /* Phase A.3: stop worker threads.  Progress threads remain alive so they
-   * can flush any in-flight traffic and deliver any inbound MSG_SHUTDOWN. */
+  ARTS_INFO("arts_enter_shutdown_state: rank=%u origin=%s", arts_global_rank_id,
+            arts_exit_origin_name(origin));
+  /* The post goes only from a rank whose end begins here, and only once the
+   * mesh is armed, whose acquire makes the peer table and the endpoint the
+   * post reads visible to this thread. */
+  if (multirank && arts_exit_origin_originates(origin) && arts_socket_armed()) {
+    unsigned int posted = arts_net_post_shutdown();
+    ARTS_INFO("arts_enter_shutdown_state: posted SHUTDOWN to %u peer(s)",
+              posted);
+  }
+  /* Progress threads stay alive: they keep taking in what arrives. */
   arts_runtime_stop_workers();
   atomic_store_explicit(&arts_node_info.shutdown_entry_done, 1U,
                         memory_order_release);
-}
-
-/*
- * arts_handler_shutdown — passive RX entry.  The wire dispatcher
- * calls this directly on MSG_SHUTDOWN.  Lightweight: the idempotent CAS gate
- * (0→1) + worker-thread stop signal, with NO rebroadcast and NO drain-wait
- * (those are the initiator arts_shutdown's responsibility).  Implemented as the
- * non-initiator arts_enter_shutdown_state path so the CAS gate stays the single
- * source of idempotence shared with the initiator side.
- */
-void arts_handler_shutdown(void) {
-  arts_enter_shutdown_state(/* initiator = */ false);
 }

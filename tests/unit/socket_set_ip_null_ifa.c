@@ -44,6 +44,7 @@
 #include "arts/counter/counter.h"
 #include "arts/runtime_state.h"
 #include "arts/system/config.h"
+#include "arts/system/shutdown.h"
 #include "arts/transport/protocol.h"
 
 #include "counter_stubs.h"
@@ -58,7 +59,7 @@ void arts_abort(uint8_t code) { _exit(70 + code); }
 void *arts_malloc(size_t s) { return malloc(s); }
 void *arts_calloc(size_t n, size_t s) { return calloc(n, s); }
 void arts_free(void *p) { free(p); }
-void arts_enter_shutdown_state(bool initiator) { (void)initiator; }
+void arts_enter_shutdown_state(enum arts_exit_origin origin) { (void)origin; }
 void arts_runtime_stop(void) {}
 void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
   (void)packet;

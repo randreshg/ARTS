@@ -47,6 +47,7 @@ extern "C" {
 #include <stdbool.h>
 
 #include "arts/system/config.h"
+#include "arts/system/shutdown.h"
 
 struct thread_mask_s;
 
@@ -61,25 +62,14 @@ extern pthread_t *arts_thread_handles;
 void arts_thread_init(struct arts_config_s *config);
 void arts_thread_main_join(void);
 
-/* Shutdown protocol entry points (see libs/src/core/system/shutdown.c).
- *
- * Responsibility split (state-less, no route_table):
- *   - arts_shutdown (public API, the initiator side): owns the cluster
- *     broadcast (MSG_SHUTDOWN × N-1) + arts_net_drain_outstanding, then enters
- *     the local stop state.  The drain wait is the initiator's responsibility
- *     only.
- *   - arts_handler_shutdown (the passive RX side): the lightweight gate the
- *     wire dispatcher calls directly on MSG_SHUTDOWN — idempotent CAS (0→1) +
- *     worker-thread stop signal.  NO rebroadcast, NO drain-wait.  Stopping
- *     the progress threads and joining every thread are the main-thread
- *     epilogue's job.
- *
- * arts_enter_shutdown_state is the shared CAS-gated mechanism both sides reach
- * (initiator = true adds the broadcast + drain before the worker stop); the CAS
- * keeps exactly one caller doing the broadcast/stop even under concurrent
- * initiation. */
-void arts_enter_shutdown_state(bool initiator);
-void arts_handler_shutdown(void);
+/* The rank's one shutdown entry, from any thread: the first caller takes the
+ * rank's shutdown state, and every later call changes nothing.  The taker
+ * closes the send gate on a multinode run; when the end begins on this rank
+ * (arts_exit_origin_originates) and the mesh is armed, it posts SHUTDOWN to
+ * the peers this rank contacted; then it stops the worker threads.  It waits
+ * for no other rank and for no send.  Stopping the progress threads and
+ * joining every thread are the main thread's epilogue. */
+void arts_enter_shutdown_state(enum arts_exit_origin origin);
 
 /* Ends the process at once with `status`, waiting for no other thread: stdout
  * and stderr are flushed only if no thread holds them (a flush to a sink that

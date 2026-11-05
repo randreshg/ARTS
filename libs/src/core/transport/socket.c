@@ -58,6 +58,7 @@
 #include "arts/runtime_state.h"
 #include "arts/system/config.h"
 #include "arts/system/print.h"
+#include "arts/system/shutdown.h"
 #include "arts/system/threads.h"
 #include "arts/transport/dispatcher.h"
 #include "arts/transport/netif.h"
@@ -552,11 +553,12 @@ bool arts_socket_sentinel_check(void) {
    * rides these sockets after bootstrap).  A dead peer funnels into the same
    * idempotent shutdown entry an inbound shutdown message uses.  Once this
    * rank's shutdown is in progress the probe stands down.  Nothing orders any
-   * rank's close after every other rank has dispatched the initiator's
-   * MSG_SHUTDOWN (the initiator's drain waits only for its local sends to
-   * complete, and a receiver tears down without waiting for anyone), so an
-   * orderly teardown can reach this probe first too; both enter the same
-   * shutdown, so the probe need not tell them apart. */
+   * rank's close after every other rank has taken in a SHUTDOWN post (the
+   * post is best effort and reaches only the peers its rank contacted, and no
+   * rank waits for anyone before it tears down), so an orderly teardown can
+   * reach this probe first too, and for a peer the post skipped it is the
+   * only way to learn of the end; both enter the same shutdown, so the probe
+   * need not tell them apart. */
   if (!arts_global_message_table || poll_incoming == NULL ||
       atomic_load_explicit(&arts_node_info.shutdown_state,
                            memory_order_acquire)) {
@@ -607,7 +609,7 @@ bool arts_socket_sentinel_check(void) {
   if (dead_peer) {
     /* Same entry the wire shutdown handler uses (idempotent CAS), then stop
      * the local threads — this thread's own loop exits on the cleared flag. */
-    arts_enter_shutdown_state(false);
+    arts_enter_shutdown_state(ARTS_EXIT_SENTINEL);
     arts_runtime_stop();
   }
   return dead_peer;
@@ -615,11 +617,11 @@ bool arts_socket_sentinel_check(void) {
 
 void arts_socket_cleanup() {
   /* Close of the liveness sentinels, at the very end of this rank's teardown.
-   * Nothing orders it after every other rank has dispatched the initiator's
-   * MSG_SHUTDOWN (the initiator's drain waits only for its local sends to
-   * complete, and a receiver tears down without waiting for anyone), so a peer
-   * may still observe the HUP before its own shutdown began; its probe then
-   * enters the same idempotent shutdown. */
+   * Nothing orders it after every other rank has taken in a SHUTDOWN post
+   * (the post is best effort and reaches only the peers its rank contacted,
+   * and no rank waits for anyone before it tears down), so a peer may still
+   * observe the HUP before its own shutdown began; its probe then enters the
+   * same idempotent shutdown. */
   if (arts_global_message_table != NULL) {
     int count = (int)arts_global_message_table->table_length;
     if (arts_socket_receive_list) {

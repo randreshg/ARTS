@@ -70,6 +70,7 @@
 #include "arts/transport/dispatcher.h"  /* arts_transport_dispatch_packet */
 #include "arts/transport/netif.h"       /* arts_netif_ipv4_addr */
 #include "arts/transport/protocol.h"    /* arts_msg_header_s, MSG_* */
+#include "arts/transport/socket.h"      /* arts_socket_peer_gone */
 
 /* ------------------------------------------------------------------------- */
 /* Tunables                                                                    */
@@ -81,9 +82,9 @@
 #define ARTS_NET_RECV_BUF_COUNT 2u
 
 /* Per-thread EAGAIN retry ring.  A handful of slots are reserved so
- * the ACK-class messages (PUBLISH_ACK, PUBLISH_CTS, MSG_SHUTDOWN) can always
- * be buffered even when data sends have saturated the ring — otherwise a full
- * ring could wedge the very progress that would drain it. */
+ * the ACK-class messages (PUBLISH_ACK, PUBLISH_CTS) can always be buffered
+ * even when data sends have saturated the ring — otherwise a full ring could
+ * wedge the very progress that would drain it. */
 #define ARTS_NET_RING_CAP 1024u
 #define ARTS_NET_RING_RESERVED 64u
 #define ARTS_NET_MAX_RINGS 1024u
@@ -204,10 +205,12 @@ static struct {
                          * order posted: what lets a payload above max_msg go
                          * as pieces paired on the last piece's immediate      */
   bool is_cxi;          /* negotiated provider is the cxi core (selfcheck)     */
-  /* Teardown began: refuse new submissions.  Set once every runtime thread
-   * has passed the ready_to_clean barrier, joined or not; a sender or reaper
-   * that reads it set stands down and reads nothing the store published, so
-   * every load is relaxed.  Beside the init-only fields every send reads. */
+  /* The send gate, closed at this rank's shutdown point: from then on
+   * arts_net_send_core, net_put and each pass of net_submit's ring-full spin
+   * drop what they would send and run its completion-gated free.  A sender
+   * or reaper that reads it closed stands down and reads nothing the store
+   * published, so every access is relaxed.  Beside the init-only fields
+   * every send reads. */
   _Atomic(bool) quiescing;
   /* Quiesce could not shut inbound writes out: the endpoint's close failed,
    * or a registration bound to it did not close.  The provider may then still
@@ -229,6 +232,10 @@ static struct {
 
   fi_addr_t *peers;     /* rank-indexed AV handles (fi_addr_t rank == rank)    */
   unsigned peer_count;
+  /* One byte per rank, set once the provider accepted a post to it: the peers
+   * the SHUTDOWN post goes to.  Each byte carries only its own value, so
+   * every access is relaxed. */
+  _Atomic(uint8_t) *contacted;
 
   /* Multi-recv landing buffers are drawn from the registered pool (so their MR
    * is the enclosing slab's — no module-private fi_mr_reg); `rxdesc` is that
@@ -316,12 +323,11 @@ static inline void *net_bounce(size_t size) {
   return b;
 }
 
-/* Shutdown / ACK-class messages must never be starved by data-send
- * backpressure — a home rank's ACK is often exactly what unblocks the peer
- * that would otherwise keep the ring full. */
+/* ACK-class messages must never be starved by data-send backpressure — a
+ * home rank's ACK is often exactly what unblocks the peer that would
+ * otherwise keep the ring full. */
 static inline bool net_is_ack_class(unsigned int msg_type) {
   switch (msg_type) {
-  case MSG_SHUTDOWN:
   case MSG_DB_PUBLISH_ACK:
   case MSG_DB_PUBLISH_CTS:
     return true;
@@ -426,15 +432,24 @@ static struct net_txn_s *net_txn_new(fi_addr_t addr, void *buf, size_t len,
   return txn;
 }
 
+/* Record that the provider accepted a post to `addr` (an AV handle, which is
+ * the rank).  The load keeps a byte already set shared among the posters. */
+static inline void net_mark_contacted(fi_addr_t addr) {
+  if (atomic_load_explicit(&g_net.contacted[addr], memory_order_relaxed) == 0) {
+    atomic_store_explicit(&g_net.contacted[addr], 1, memory_order_relaxed);
+  }
+}
+
 /* Post a txn once (fi_send or fi_writedata by op), counted on the posting
  * thread's own ring `mine`.  0 = accepted (now outstanding), -FI_EAGAIN =
  * provider busy, other = fatal. */
 static inline ssize_t net_try_post(struct net_txn_s *txn,
                                    struct net_ring_s *mine) {
-  /* Counted before the post: once posted, any thread may reap its
-   * completion. */
+  /* Counted before the post, and the peer read before it: once posted, any
+   * thread may reap its completion and free the txn. */
   uint64_t posted = atomic_load_explicit(&mine->posted, memory_order_relaxed);
   atomic_store_explicit(&mine->posted, posted + 1, memory_order_relaxed);
+  fi_addr_t addr = txn->addr;
   arts_sched_fuzz_point(); /* widen the count<->post window */
   ssize_t rc;
   if (txn->op == NET_TXN_SEND) {
@@ -457,7 +472,9 @@ static inline ssize_t net_try_post(struct net_txn_s *txn,
                     txn->raddr, txn->rkey, txn);
     }
   }
-  if (rc != 0) {
+  if (rc == 0) {
+    net_mark_contacted(addr);
+  } else {
     atomic_store_explicit(&mine->posted, posted, memory_order_relaxed);
   }
   if (rc != 0 && rc != -FI_EAGAIN) {
@@ -558,8 +575,10 @@ static bool net_reap_no_dispatch(void);
  * txns first (per-thread FIFO), tries a direct post when the ring is empty, and
  * on EAGAIN buffers the txn — or, when the ring is full for this class, applies
  * deliberate producer backpressure by spinning progress until the provider
- * accepts. */
-static void net_submit(struct net_txn_s *txn, bool is_ack) {
+ * accepts.  False when the spin found the send gate closed and dropped the txn,
+ * whose completion-gated releases have then run; true when the txn was posted
+ * or queued. */
+static bool net_submit(struct net_txn_s *txn, bool is_ack) {
   struct net_ring_s *r = net_get_ring();
   net_ring_drain(r, r);
 
@@ -568,12 +587,12 @@ static void net_submit(struct net_txn_s *txn, bool is_ack) {
   if (h == t) {
     ssize_t rc = net_try_post(txn, r);
     if (rc == 0) {
-      return;
+      return true;
     }
     atomic_fetch_add_explicit(&g_net.eagain_count, 1, memory_order_relaxed);
   }
   if (net_ring_try_enqueue(r, txn, is_ack)) {
-    return;
+    return true;
   }
   /* Ring saturated for this class: block the producer, assisting progress until
    * a slot opens, then enqueue BEHIND the existing entries — never direct-post
@@ -591,12 +610,20 @@ static void net_submit(struct net_txn_s *txn, bool is_ack) {
    * completing our TX frees the bounces/slots the ring is waiting on, and
    * draining the peer's inbound messages (onto the pending list, handled later
    * by the progress loop) advances the peer's socket so its TX un-wedges.  This
-   * breaks the mutual-saturation cycle while keeping dispatch off this stack. */
+   * breaks the mutual-saturation cycle while keeping dispatch off this stack.
+   *
+   * Each pass reads the send gate: once this rank's shutdown point has
+   * passed, the slot may never open (the peer the ring waits on may be gone),
+   * and nothing the txn carries is needed any more. */
   for (;;) {
     net_drain_all_rings();
     net_reap_no_dispatch();
+    if (atomic_load_explicit(&g_net.quiescing, memory_order_relaxed)) {
+      net_txn_complete(txn);
+      return false;
+    }
     if (net_ring_try_enqueue(r, txn, is_ack)) {
-      return;
+      return true;
     }
   }
 }
@@ -616,6 +643,7 @@ static void net_inject_header(fi_addr_t addr, const void *buf, size_t len,
   if (h == t) {
     ssize_t rc = fi_inject(g_net.ep, buf, len, addr);
     if (rc == 0) {
+      net_mark_contacted(addr);
       return;
     }
     if (rc != -FI_EAGAIN) {
@@ -625,7 +653,8 @@ static void net_inject_header(fi_addr_t addr, const void *buf, size_t len,
   }
   void *b = net_bounce(len);
   memcpy(b, buf, len);
-  net_submit(net_txn_new(addr, b, len, net_desc(b), b, NULL, NULL), is_ack);
+  (void)net_submit(net_txn_new(addr, b, len, net_desc(b), b, NULL, NULL),
+                   is_ack);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -635,9 +664,8 @@ static void net_inject_header(fi_addr_t addr, const void *buf, size_t len,
 void arts_net_send_core(int rank, char *message, unsigned int length,
                         char *payload, unsigned int offset, uint64_t size,
                         void (*free_method)(void *)) {
-  /* Teardown has begun (every runtime thread is past the ready_to_clean
-   * barrier): drop the send, but still run its completion-gated free so the
-   * caller payload is not leaked. */
+  /* The send gate is closed: drop the send, but still run its
+   * completion-gated free so the caller payload is not leaked. */
   if (atomic_load_explicit(&g_net.quiescing, memory_order_relaxed)) {
     NET_CHECK_NOT_QUIESCED("a message send");
     if (free_method != NULL) {
@@ -670,8 +698,8 @@ void arts_net_send_core(int rank, char *message, unsigned int length,
     } else {
       void *b = net_bounce(length);
       memcpy(b, message, length);
-      net_submit(net_txn_new(addr, b, length, net_desc(b), b, NULL, NULL),
-                 is_ack);
+      (void)net_submit(net_txn_new(addr, b, length, net_desc(b), b, NULL, NULL),
+                       is_ack);
     }
     return;
   }
@@ -689,7 +717,7 @@ void arts_net_send_core(int rank, char *message, unsigned int length,
   void *b = net_bounce((size_t)total);
   memcpy(b, message, length);
   memcpy((char *)b + length, payload + offset, size);
-  net_submit(
+  (void)net_submit(
       net_txn_new(addr, b, (size_t)total, net_desc(b), b, free_method, payload),
       is_ack);
 }
@@ -1293,9 +1321,10 @@ bool arts_net_rdzv_local(const void *p, uint64_t len, uint64_t *raddr,
 
 /* The pieces of one payload that the provider's ceiling cut apart.  Pieces
  * complete on whichever thread reaps the CQ, so the count is atomic; the
- * caller's hook runs on the thread that retires the last piece.  Each
- * completion's decrement is acq_rel, so the last one runs the hook and frees
- * the group after every other piece's completion. */
+ * caller's hook runs on the thread that retires the last piece.  Every drop
+ * of the count is one acq_rel RMW of this word, so the drop that reaches zero
+ * runs the hook and frees the group after every other drop, whichever thread
+ * made it. */
 struct net_put_group_s {
   _Atomic(uint64_t) remaining;
   uint64_t posted_ns; /* the whole payload's post time; 0 = not timed */
@@ -1303,10 +1332,12 @@ struct net_put_group_s {
   void *arg;
 };
 
-static void net_put_piece_done(void *arg) {
-  struct net_put_group_s *group = (struct net_put_group_s *)arg;
-  if (atomic_fetch_sub_explicit(&group->remaining, 1,
-                                memory_order_acq_rel) == 1) {
+/* Drop `n` pieces from the group's count: a piece's completion, or the
+ * pieces a stopped PUT never submitted.  The value its own RMW returned
+ * decides, never a reload: other pieces may complete at the same time. */
+static void net_put_group_drop(struct net_put_group_s *group, uint64_t n) {
+  if (atomic_fetch_sub_explicit(&group->remaining, n, memory_order_acq_rel) ==
+      n) {
     net_put_retired(group->posted_ns);
     if (group->on_local_done != NULL) {
       group->on_local_done(group->arg);
@@ -1315,8 +1346,13 @@ static void net_put_piece_done(void *arg) {
   }
 }
 
+static void net_put_piece_done(void *arg) {
+  net_put_group_drop((struct net_put_group_s *)arg, 1);
+}
+
 /* The one-sided PUT itself, counted by its caller and timed when `timed`;
- * false when teardown dropped it (the local-done hook has then run). */
+ * false when the send gate dropped it (its local-done hook has then run, or
+ * runs once the pieces it already submitted complete). */
 static bool net_put(int rank, uint64_t raddr, uint64_t rkey, uint64_t txid,
                     const void *src, uint64_t len,
                     void (*on_local_done)(void *), void *arg, bool timed) {
@@ -1325,9 +1361,9 @@ static bool net_put(int rank, uint64_t raddr, uint64_t rkey, uint64_t txid,
                "(len=%llu txid=%llx)",
                (unsigned long long)len, (unsigned long long)txid);
   }
-  /* Teardown has begun: drop the PUT but still run the local-done hook so the
-   * source buffer's completion-gated release is not leaked (mirrors
-   * arts_net_send_core's quiescing contract). */
+  /* The send gate is closed: drop the PUT but still run the local-done hook
+   * so the source buffer's completion-gated release is not leaked (mirrors
+   * arts_net_send_core's gate). */
   if (atomic_load_explicit(&g_net.quiescing, memory_order_relaxed)) {
     NET_CHECK_NOT_QUIESCED("a one-sided write");
     if (on_local_done != NULL) {
@@ -1346,15 +1382,16 @@ static bool net_put(int rank, uint64_t raddr, uint64_t rkey, uint64_t txid,
     txn->rkey = rkey;
     txn->imm = txid;
     txn->posted_ns = timed ? net_put_stamp() : 0;
-    net_submit(txn, /*is_ack=*/false);
-    return true;
+    return net_submit(txn, /*is_ack=*/false);
   }
   /* Above the ceiling the payload goes as consecutive pieces of at most the
    * ceiling each, submitted in order from this thread to one endpoint, so
    * the peer's completion for the last piece — the only one carrying the
    * immediate — is generated after every earlier piece has been placed.
    * The caller's release hook runs once, when the last piece has left the
-   * source. */
+   * source.  A piece the send gate dropped ends the PUT: the pieces after it
+   * are never submitted, and their share of the count goes with them, so the
+   * hook runs once every submitted piece has completed. */
   if (!g_net.waw_ordered) {
     ARTS_ERROR("arts_net: a %llu-byte payload exceeds the provider's %zu-byte "
                "message ceiling, and the provider orders no write after "
@@ -1370,10 +1407,11 @@ static bool net_put(int rank, uint64_t raddr, uint64_t rkey, uint64_t txid,
   group->posted_ns = timed ? net_put_stamp() : 0;
   group->on_local_done = on_local_done;
   group->arg = arg;
-  for (uint64_t off = 0; off < len; off += ceiling) {
+  for (uint64_t k = 0; k < pieces; k++) {
+    uint64_t off = k * ceiling;
     size_t plen = (size_t)(len - off < ceiling ? len - off : ceiling);
     const char *piece = (const char *)src + off;
-    bool last = off + plen == len;
+    bool last = k + 1 == pieces;
     struct net_txn_s *txn =
         net_txn_new(addr, (void *)piece, plen, net_desc(piece),
                     /*bounce=*/NULL, net_put_piece_done, group);
@@ -1381,7 +1419,14 @@ static bool net_put(int rank, uint64_t raddr, uint64_t rkey, uint64_t txid,
     txn->raddr = raddr + off;
     txn->rkey = rkey;
     txn->imm = last ? txid : 0;
-    net_submit(txn, /*is_ack=*/false);
+    if (!net_submit(txn, /*is_ack=*/false)) {
+      /* The dropped piece's own release took its one.  Until the rest is
+       * taken the count stays above zero, so the group is still live. */
+      if (pieces - k - 1 != 0) {
+        net_put_group_drop(group, pieces - k - 1);
+      }
+      return false;
+    }
   }
   return true;
 }
@@ -2229,6 +2274,10 @@ void arts_net_init(const char *provider, const char *fabric_domain,
   if (g_rdzv_level0 == NULL) {
     g_rdzv_level0 = net_rdzv_level_new(0);
   }
+  if (g_net.contacted == NULL) {
+    g_net.contacted = (_Atomic(uint8_t) *)arts_calloc(arts_global_rank_count,
+                                                      sizeof(*g_net.contacted));
+  }
   bool provider_pinned = provider && provider[0] != '\0';
   if (provider_pinned) {
     /* Config is the deliberate artifact, the env var is ambient: overwrite
@@ -2620,15 +2669,14 @@ void arts_net_rx_arm(void) {
 bool arts_net_quiesce(void) {
   /* Phase 1 of teardown, run once every runtime thread has passed the
    * ready_to_clean barrier: none touches the fabric again, joined or not, and
-   * the barrier's arrivals order each one's last access before this.
+   * the barrier's arrivals order each one's last access before this.  The
+   * send gate closed at the shutdown point, before any teardown can begin.
    * Discarding sends that were never accepted by the provider at final
-   * teardown is deliberate — it mirrors a bounded drain-then-exit and must
-   * never block shutdown on a peer that has already gone.  The ordering
-   * matters: send bounces still queued are released here and the recv
-   * buffers by reclaim, both while the pool is still live, so the pool
-   * cleanup that follows can close those MRs without any outstanding
-   * reference — and no desc ever names a closed MR. */
-  atomic_store_explicit(&g_net.quiescing, true, memory_order_relaxed);
+   * teardown is deliberate: the shutdown must never block on a peer that has
+   * already gone.  The ordering matters: send bounces still queued are
+   * released here and the recv buffers by reclaim, both while the pool is
+   * still live, so the pool cleanup that follows can close those MRs without
+   * any outstanding reference — and no desc ever names a closed MR. */
 #ifndef NDEBUG
   t_net_quiesced = true;
 #endif
@@ -2801,44 +2849,32 @@ void arts_net_teardown(void) {
     g_net.peers = NULL;
   }
   g_net.peer_count = 0;
+  arts_free((void *)g_net.contacted);
+  g_net.contacted = NULL;
 }
 
-void arts_net_drain_outstanding(unsigned int deadline_ms) {
-  /* Bounded wait until no counted send of any thread is in progress: a post
-   * not yet completed, or one the provider keeps refusing while each attempt
-   * runs.  A send that left by fi_inject is never counted, so an injected
-   * SHUTDOWN frame is not waited for.  This assists with the transmit side
-   * only -- it posts queued sends, reaps the completion queue without
-   * dispatching and polls the outstanding count -- since a handler run here
-   * could ready an EDT on a thread that owns no deque.  So the counted sends
-   * complete through its own reaps, and any thread may call it, a progress
-   * thread too: when that is the only one, nothing is dispatched on this rank
-   * until the drain returns.  Single-node never brought the fabric up. */
-  if (arts_global_rank_count <= 1) {
-    return;
-  }
-  uint64_t deadline_ns =
-      (uint64_t)deadline_ms * 1000000ULL; /* ms -> ns budget */
-  struct timespec start;
-  (void)clock_gettime(CLOCK_MONOTONIC, &start);
-  for (;;) {
-    if (net_tx_outstanding() == 0) {
-      ARTS_INFO("arts_net: shutdown TX drain complete");
-      return;
+void arts_net_close_gate(void) {
+  atomic_store_explicit(&g_net.quiescing, true, memory_order_relaxed);
+}
+
+unsigned int arts_net_post_shutdown(void) {
+  struct arts_msg_header_s hdr;
+  arts_fill_packet_header(&hdr, sizeof(hdr), MSG_SHUTDOWN);
+  unsigned int posted = 0;
+  for (unsigned int p = 0; p < arts_global_rank_count; p++) {
+    if (p == arts_global_rank_id ||
+        atomic_load_explicit(&g_net.contacted[p], memory_order_relaxed) == 0 ||
+        arts_socket_peer_gone(p)) {
+      continue;
     }
-    net_drain_all_rings();
-    net_reap_no_dispatch();
-    struct timespec now;
-    (void)clock_gettime(CLOCK_MONOTONIC, &now);
-    uint64_t elapsed = (uint64_t)(now.tv_sec - start.tv_sec) * 1000000000ULL +
-                       (uint64_t)(now.tv_nsec - start.tv_nsec);
-    if (elapsed >= deadline_ns) {
-      ARTS_WARN("arts_net: shutdown TX drain timeout (%llu sends still "
-                "outstanding)",
-                (unsigned long long)net_tx_outstanding());
-      return;
+    /* Best effort: a refused frame is not retried, and that peer learns of
+     * the end when this rank's connection to it closes. */
+    if (fi_inject(g_net.ep, &hdr, sizeof(hdr), g_net.peers[p]) != 0) {
+      continue;
     }
-    struct timespec ts = {.tv_sec = 0, .tv_nsec = 200000L /* 0.2 ms */};
-    nanosleep(&ts, NULL);
+    INCREMENT_NUM_REMOTE_SEND_BY(1);
+    INCREMENT_BYTES_REMOTE_SENT_BY(sizeof(hdr));
+    posted++;
   }
+  return posted;
 }
