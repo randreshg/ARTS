@@ -91,7 +91,7 @@ if(ARTS_BUILD_TESTS AND ARTS_TEST_REFERENCE_TREE)
     foreach(_t ocr_shim_finish_release ocr_shim_finish_release_2n_9w_1p
             ocr_shim_finish_release_4n_4w_1p
             ocr_shim_finish_release_2n_8w_2p)
-        set_tests_properties(${_t} PROPERTIES
+        arts_test_properties(${_t} PROPERTIES
             PASS_REGULAR_EXPRESSION "PASS: finish EDT output fired"
             FAIL_REGULAR_EXPRESSION "FAIL")
     endforeach()
@@ -119,7 +119,7 @@ if(ARTS_BUILD_TESTS AND ARTS_TEST_REFERENCE_TREE)
     register_multinode_test(ocr_shim_finish_nested TIMEOUT 60
                             VARIANTS 2n_9w_1p)
     foreach(_t ocr_shim_finish_nested ocr_shim_finish_nested_2n_9w_1p)
-        set_tests_properties(${_t} PROPERTIES
+        arts_test_properties(${_t} PROPERTIES
             PASS_REGULAR_EXPRESSION "PASS: the outer finish EDT waited"
             FAIL_REGULAR_EXPRESSION "FAIL")
     endforeach()

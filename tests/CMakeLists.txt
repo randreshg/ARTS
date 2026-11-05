@@ -404,6 +404,18 @@ endfunction()
 set(ARTS_TEST_RUNNER "${CMAKE_CURRENT_SOURCE_DIR}/cmake/run_test.cmake"
     CACHE INTERNAL "the script every program test runs under" FORCE)
 
+# A test registers only where it can pass by design: the registered pool backs
+# every one-sided payload, so a tree on the system allocator is single-node
+# and registers no multinode test.  CACHE INTERNAL because the example and
+# shim directories read it too.
+if(ARTS_MALLOC STREQUAL "mimalloc")
+    set(ARTS_TEST_MULTINODE ON
+        CACHE INTERNAL "whether this tree registers multinode tests" FORCE)
+else()
+    set(ARTS_TEST_MULTINODE OFF
+        CACHE INTERNAL "whether this tree registers multinode tests" FORCE)
+endif()
+
 function(arts_add_test test_name)
     cmake_parse_arguments(ARG "" "STATUS" "COMMAND" ${ARGN})
     if(NOT DEFINED ARG_STATUS)
@@ -427,6 +439,60 @@ function(arts_add_test test_name)
         set_property(DIRECTORY PROPERTY ARTS_TEST_FINALIZE_SCHEDULED TRUE)
         cmake_language(DEFER CALL arts_test_finalize)
     endif()
+endfunction()
+
+# A multinode test is recorded in every tree and registered only where
+# ARTS_TEST_MULTINODE is ON.
+function(arts_add_multinode_test test_name)
+    set_property(GLOBAL APPEND PROPERTY ARTS_MULTINODE_TEST_NAMES ${test_name})
+    if(ARTS_TEST_MULTINODE)
+        arts_add_test(${test_name} ${ARGN})
+    endif()
+endfunction()
+
+# arts_test_properties(<test>... [APPEND] PROPERTIES <name> <value> ...) sets
+# the properties of each named test.  A multinode test that this tree does not
+# register is skipped; any other name without a test is an error.
+function(arts_test_properties)
+    get_property(_multinode GLOBAL PROPERTY ARTS_MULTINODE_TEST_NAMES)
+    set(_kept "")
+    set(_append FALSE)
+    set(_i 0)
+    while(_i LESS ARGC)
+        set(_a "${ARGV${_i}}")
+        if(_a STREQUAL "APPEND")
+            set(_append TRUE)
+        elseif(_a STREQUAL "PROPERTIES")
+            break()
+        elseif(TEST ${_a})
+            list(APPEND _kept ${_a})
+        elseif(NOT ARTS_TEST_MULTINODE AND _a IN_LIST _multinode)
+        else()
+            message(FATAL_ERROR "arts_test_properties: no test named '${_a}'")
+        endif()
+        math(EXPR _i "${_i} + 1")
+    endwhile()
+    if(_i EQUAL ARGC)
+        message(FATAL_ERROR "arts_test_properties: PROPERTIES missing")
+    endif()
+    math(EXPR _i "${_i} + 1")
+    while(_i LESS ARGC)
+        math(EXPR _j "${_i} + 1")
+        if(_j EQUAL ARGC)
+            message(FATAL_ERROR
+                    "arts_test_properties: '${ARGV${_i}}' has no value")
+        endif()
+        if(_kept)
+            if(_append)
+                set_property(TEST ${_kept} APPEND
+                             PROPERTY "${ARGV${_i}}" "${ARGV${_j}}")
+            else()
+                set_property(TEST ${_kept}
+                             PROPERTY "${ARGV${_i}}" "${ARGV${_j}}")
+            endif()
+        endif()
+        math(EXPR _i "${_i} + 2")
+    endwhile()
 endfunction()
 
 function(register_single_node_test test_name)
@@ -473,9 +539,9 @@ function(register_multinode_test test_name)
     endif()
     foreach(variant IN LISTS ARG_VARIANTS)
         arts_test_cfg(_cfg ${variant})
-        arts_add_test(${test_name}_${variant} STATUS ${ARG_STATUS}
-                      COMMAND ${test_name} ${ARG_ARGS})
-        set_tests_properties(${test_name}_${variant} PROPERTIES
+        arts_add_multinode_test(${test_name}_${variant} STATUS ${ARG_STATUS}
+                                COMMAND ${test_name} ${ARG_ARGS})
+        arts_test_properties(${test_name}_${variant} PROPERTIES
             LABELS "multinode"
             TIMEOUT ${ARG_TIMEOUT}
             RESOURCE_LOCK "arts_runtime"
@@ -760,7 +826,7 @@ function(register_cxl_multinode_test test_name)
     register_multinode_test(${test_name} TIMEOUT ${ARG_TIMEOUT}
                             VARIANTS ${ARG_VARIANTS})
     foreach(variant IN LISTS ARG_VARIANTS)
-        set_tests_properties(${test_name}_${variant} PROPERTIES
+        arts_test_properties(${test_name}_${variant} PROPERTIES
             FAIL_REGULAR_EXPRESSION "${ARG_FAIL_REGEX}")
     endforeach()
 endfunction()
@@ -836,7 +902,7 @@ register_multinode_test(edt_dep_slot_handoff TIMEOUT 60
                         VARIANTS 2n_9w_1p 2n_8w_2p)
 foreach(_t edt_dep_slot_handoff edt_dep_slot_handoff_2n_9w_1p
         edt_dep_slot_handoff_2n_8w_2p)
-    set_tests_properties(${_t} PROPERTIES
+    arts_test_properties(${_t} PROPERTIES
         PASS_REGULAR_EXPRESSION "PASS: edt_dep_slot_handoff"
         FAIL_REGULAR_EXPRESSION "FAIL:")
 endforeach()
@@ -850,7 +916,7 @@ register_single_node_test(edt_null_guid_db_mode TIMEOUT 30)
 register_multinode_test(edt_null_guid_db_mode TIMEOUT 60)
 foreach(_t edt_null_guid_db_mode edt_null_guid_db_mode_2n_9w_1p
         edt_null_guid_db_mode_4n_4w_1p edt_null_guid_db_mode_2n_8w_2p)
-    set_tests_properties(${_t} PROPERTIES
+    arts_test_properties(${_t} PROPERTIES
         PASS_REGULAR_EXPRESSION "PASS: edt_null_guid_db_mode"
         FAIL_REGULAR_EXPRESSION "FAIL:")
 endforeach()
@@ -903,42 +969,42 @@ if(ARTS_DEBUG_INJECTION)
         RESOURCE_LOCK "arts_runtime"
         ENVIRONMENT "ARTS_CONFIG=${_cfg};ARTS_SCHED_FUZZ=fast"
         PASS_REGULAR_EXPRESSION "is not a percentage")
-    arts_add_test(injection_value_refused_net_max_msg STATUS 1
-                  COMMAND multinode_edt)
-    set_tests_properties(injection_value_refused_net_max_msg PROPERTIES
+    arts_add_multinode_test(injection_value_refused_net_max_msg STATUS 1
+                            COMMAND multinode_edt)
+    arts_test_properties(injection_value_refused_net_max_msg PROPERTIES
         LABELS "multinode"
         TIMEOUT 30
         RESOURCE_LOCK "arts_runtime"
         ENVIRONMENT "ARTS_CONFIG=${_mn_cfg};ARTS_NET_MAX_MSG=0"
         PASS_REGULAR_EXPRESSION "is not a positive byte count")
-    arts_add_test(injection_value_refused_write_delay STATUS 1
-                  COMMAND multinode_edt)
-    set_tests_properties(injection_value_refused_write_delay PROPERTIES
+    arts_add_multinode_test(injection_value_refused_write_delay STATUS 1
+                            COMMAND multinode_edt)
+    arts_test_properties(injection_value_refused_write_delay PROPERTIES
         LABELS "multinode"
         TIMEOUT 30
         RESOURCE_LOCK "arts_runtime"
         ENVIRONMENT "ARTS_CONFIG=${_mn_cfg};ARTS_WRITE_COMPLETION_DELAY_MS=soon"
         PASS_REGULAR_EXPRESSION "is not a delay")
-    arts_add_test(injection_value_refused_request_delay STATUS 1
-                  COMMAND multinode_edt)
-    set_tests_properties(injection_value_refused_request_delay PROPERTIES
+    arts_add_multinode_test(injection_value_refused_request_delay STATUS 1
+                            COMMAND multinode_edt)
+    arts_test_properties(injection_value_refused_request_delay PROPERTIES
         LABELS "multinode"
         TIMEOUT 30
         RESOURCE_LOCK "arts_runtime"
         ENVIRONMENT "ARTS_CONFIG=${_mn_cfg};ARTS_REQUEST_DELAY_MS=5:rw"
         PASS_REGULAR_EXPRESSION
         "ARTS_REQUEST_DELAY_MS=\"5:rw\" is not a delay of 0-60000 ms")
-    arts_add_test(injection_value_refused_rdzv_cut STATUS 1
-                  COMMAND multinode_edt)
-    set_tests_properties(injection_value_refused_rdzv_cut PROPERTIES
+    arts_add_multinode_test(injection_value_refused_rdzv_cut STATUS 1
+                            COMMAND multinode_edt)
+    arts_test_properties(injection_value_refused_rdzv_cut PROPERTIES
         LABELS "multinode"
         TIMEOUT 30
         RESOURCE_LOCK "arts_runtime"
         ENVIRONMENT "ARTS_CONFIG=${_mn_cfg};ARTS_NET_RDZV_CUT=0"
         PASS_REGULAR_EXPRESSION "ARTS_NET_RDZV_CUT=\"0\" is not a positive count")
-    arts_add_test(injection_value_refused_refuse_ep_close STATUS 1
-                  COMMAND multinode_edt)
-    set_tests_properties(injection_value_refused_refuse_ep_close PROPERTIES
+    arts_add_multinode_test(injection_value_refused_refuse_ep_close STATUS 1
+                            COMMAND multinode_edt)
+    arts_test_properties(injection_value_refused_refuse_ep_close PROPERTIES
         LABELS "multinode"
         TIMEOUT 30
         RESOURCE_LOCK "arts_runtime"
@@ -996,7 +1062,7 @@ set_tests_properties(edt_satisfy_out_of_range PROPERTIES
     PASS_REGULAR_EXPRESSION "names slot 5, but the EDT has 2 dependence slot")
 register_multinode_test(edt_satisfy_out_of_range TIMEOUT 30 STATUS 1
                         VARIANTS 2n_9w_1p)
-set_tests_properties(edt_satisfy_out_of_range_2n_9w_1p PROPERTIES
+arts_test_properties(edt_satisfy_out_of_range_2n_9w_1p PROPERTIES
     PASS_REGULAR_EXPRESSION "names slot 5, but the EDT has 2 dependence slot"
     ARTS_EXPECTS_RANK_FAILURE 1)
 # A satisfy of an in-range slot once every dependence is satisfied: fatal on
@@ -1006,7 +1072,7 @@ set_tests_properties(edt_satisfy_over_count PROPERTIES
     PASS_REGULAR_EXPRESSION "slot 1 exceeds its 2 dependence")
 register_multinode_test(edt_satisfy_over_count TIMEOUT 30 STATUS 1
                         VARIANTS 2n_9w_1p)
-set_tests_properties(edt_satisfy_over_count_2n_9w_1p PROPERTIES
+arts_test_properties(edt_satisfy_over_count_2n_9w_1p PROPERTIES
     PASS_REGULAR_EXPRESSION "slot 1 exceeds its 2 dependence"
     ARTS_EXPECTS_RANK_FAILURE 1)
 
@@ -1016,7 +1082,7 @@ set_tests_properties(edt_satisfy_over_count_2n_9w_1p PROPERTIES
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     register_multinode_test(edt_create_remote_group_rejected
         VARIANTS 2n_9w_1p STATUS 1)
-    set_tests_properties(edt_create_remote_group_rejected_2n_9w_1p PROPERTIES
+    arts_test_properties(edt_create_remote_group_rejected_2n_9w_1p PROPERTIES
         PASS_REGULAR_EXPRESSION "must be homed on the creating rank"
         ARTS_EXPECTS_RANK_FAILURE 1)
 endif()
@@ -1725,7 +1791,7 @@ endif()
 register_single_node_test(db_create_after_first_touch TIMEOUT 60)
 register_multinode_test(db_create_after_first_touch TIMEOUT 120 VARIANTS 2n_9w_1p)
 foreach(_t db_create_after_first_touch db_create_after_first_touch_2n_9w_1p)
-    set_tests_properties(${_t} PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+    arts_test_properties(${_t} PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 endforeach()
 
 # arts_db_downgrade: a write hold becomes a read hold.  Every program ends
@@ -1766,15 +1832,15 @@ function(arts_downgrade_test test program)
         if(NOT _r STREQUAL _v)
             list(APPEND _env "ARTS_SCHED_FUZZ=25")
         endif()
-        arts_add_test(${test}_${_r} COMMAND ${program} ${ARG_ARGS})
-        set_tests_properties(${test}_${_r} PROPERTIES
+        arts_add_multinode_test(${test}_${_r} COMMAND ${program} ${ARG_ARGS})
+        arts_test_properties(${test}_${_r} PROPERTIES
             LABELS "multinode;coherence_stress"
             TIMEOUT 180
             RESOURCE_LOCK "arts_runtime"
             ENVIRONMENT "${_env}")
         list(APPEND _names ${test}_${_r})
     endforeach()
-    set_tests_properties(${_names} PROPERTIES
+    arts_test_properties(${_names} PROPERTIES
         PASS_REGULAR_EXPRESSION "PASS: ${program}"
         FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
 endfunction()
@@ -1877,12 +1943,12 @@ if(ARTS_TEST_REFERENCE_TREE)
 register_multinode_test(group_stress TIMEOUT 60
                         VARIANTS 2n_9w_1p 4n_4w_1p)
 foreach(_v 2n_9w_1p 4n_4w_1p)
-    set_tests_properties(group_stress_${_v} PROPERTIES
+    arts_test_properties(group_stress_${_v} PROPERTIES
         FAIL_REGULAR_EXPRESSION "FAIL")
 endforeach()
 
 register_multinode_test(multinode_edt VARIANTS 2n_9w_1p)
-set_tests_properties(multinode_edt_2n_9w_1p PROPERTIES
+arts_test_properties(multinode_edt_2n_9w_1p PROPERTIES
     PASS_REGULAR_EXPRESSION
     "PASS: multinode_edt every check reported before the group fired")
 register_multinode_test(event_scalar_return TIMEOUT 30 VARIANTS 2n_9w_1p)
@@ -1893,18 +1959,18 @@ register_multinode_test(event_payload_policy TIMEOUT 15
 # the guard; one node shape states it as well as four.
 register_multinode_test(edt_create_oversize_guard VARIANTS 2n_9w_1p TIMEOUT 60
                         STATUS 1)
-set_tests_properties(edt_create_oversize_guard_2n_9w_1p PROPERTIES
+arts_test_properties(edt_create_oversize_guard_2n_9w_1p PROPERTIES
     PASS_REGULAR_EXPRESSION "over the [0-9]+-byte control-message bound")
 register_multinode_test(multinode_event_types VARIANTS 2n_9w_1p)
 register_multinode_test(multinode_stdout_forward VARIANTS 2n_9w_1p)
-set_tests_properties(multinode_stdout_forward_2n_9w_1p PROPERTIES
+arts_test_properties(multinode_stdout_forward_2n_9w_1p PROPERTIES
     PASS_REGULAR_EXPRESSION "MULTINODE_STDOUT_FORWARD_SENTINEL 42")
 # The startup check of the receive side's multi-recv threshold holds only if
 # the endpoint answers for the queue its messages land in; ofi_rxm in
 # passthru mode does not, so a run on it ends at startup with exit 1.
 arts_test_cfg(_mn_cfg 2n_9w_1p)
-arts_add_test(net_rxm_passthru_refused STATUS 1 COMMAND multinode_edt)
-set_tests_properties(net_rxm_passthru_refused PROPERTIES
+arts_add_multinode_test(net_rxm_passthru_refused STATUS 1 COMMAND multinode_edt)
+arts_test_properties(net_rxm_passthru_refused PROPERTIES
     LABELS "multinode"
     TIMEOUT 30
     RESOURCE_LOCK "arts_runtime"
@@ -1931,7 +1997,7 @@ register_multinode_test(db_no_acquire_lazy TIMEOUT 60 VARIANTS 2n_9w_1p 4n_4w_1p
 register_multinode_test(db_no_acquire_wb_first_writer TIMEOUT 60
                         VARIANTS 2n_9w_1p 4n_4w_1p)
 foreach(_v 2n_9w_1p 4n_4w_1p)
-    set_tests_properties(db_no_acquire_wb_first_writer_${_v} PROPERTIES
+    arts_test_properties(db_no_acquire_wb_first_writer_${_v} PROPERTIES
         FAIL_REGULAR_EXPRESSION "FAIL")
 endforeach()
 # The unordered reader's whole point is a race, so where the injection hooks
@@ -1942,9 +2008,9 @@ endforeach()
 # cannot be reached at all.
 if(ARTS_DEBUG_INJECTION)
     arts_test_cfg(_cfg 4n_4w_1p)
-    arts_add_test(db_no_acquire_wb_first_writer_4n_4w_1p_fuzz
-                  COMMAND db_no_acquire_wb_first_writer)
-    set_tests_properties(db_no_acquire_wb_first_writer_4n_4w_1p_fuzz PROPERTIES
+    arts_add_multinode_test(db_no_acquire_wb_first_writer_4n_4w_1p_fuzz
+                            COMMAND db_no_acquire_wb_first_writer)
+    arts_test_properties(db_no_acquire_wb_first_writer_4n_4w_1p_fuzz PROPERTIES
         LABELS "multinode"
         TIMEOUT 120
         RESOURCE_LOCK "arts_runtime"
@@ -1964,7 +2030,7 @@ if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
     register_multinode_test(db_create_after_dep_asked TIMEOUT 60
                             VARIANTS 2n_9w_1p 2n_8w_2p)
     foreach(_v 2n_9w_1p 2n_8w_2p)
-        set_tests_properties(db_create_after_dep_asked_${_v} PROPERTIES
+        arts_test_properties(db_create_after_dep_asked_${_v} PROPERTIES
             FAIL_REGULAR_EXPRESSION "FAIL")
     endforeach()
 endif()
@@ -1982,7 +2048,7 @@ register_multinode_test(db_alias_dedup_remote TIMEOUT 60
                         VARIANTS 2n_9w_1p 2n_8w_2p)
 foreach(_t db_alias_dedup_remote db_alias_dedup_remote_2n_9w_1p
         db_alias_dedup_remote_2n_8w_2p)
-    set_tests_properties(${_t} PROPERTIES
+    arts_test_properties(${_t} PROPERTIES
         FAIL_REGULAR_EXPRESSION "FAIL:"
         PASS_REGULAR_EXPRESSION "PASS: db_alias_dedup_remote")
 endforeach()
@@ -2006,10 +2072,12 @@ register_multinode_test(grant_purge_no_acquire_creator TIMEOUT 60
 if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
 register_single_node_test(grant_purge_churn TIMEOUT 60)
 register_multinode_test(grant_purge_churn TIMEOUT 90)
-if(ARTS_DEBUG_INJECTION AND ARTS_COHERENCE_ARM MATCHES "^(VAL|INV)$")
+if(ARTS_DEBUG_INJECTION AND
+   ARTS_COHERENCE_ARM MATCHES "^(VAL|INV)$")
     arts_test_cfg(_cfg 2n_8w_2p)
-    arts_add_test(grant_purge_churn_2n_8w_2p_fuzz COMMAND grant_purge_churn)
-    set_tests_properties(grant_purge_churn_2n_8w_2p_fuzz PROPERTIES
+    arts_add_multinode_test(grant_purge_churn_2n_8w_2p_fuzz
+                            COMMAND grant_purge_churn)
+    arts_test_properties(grant_purge_churn_2n_8w_2p_fuzz PROPERTIES
         LABELS "multinode"
         TIMEOUT 120
         RESOURCE_LOCK "arts_runtime"
@@ -2032,12 +2100,13 @@ endif()
 # put-down fail, and that thread's re-examination of the return latch accepts
 # it.  The schedule fuzz can delay a serve between its grant and its put-down,
 # so the two-progress-thread shape meets that window in most runs.
-if(ARTS_DEBUG_INJECTION AND ARTS_COHERENCE_ARM MATCHES "^(VAL|INV)$" AND
+if(ARTS_DEBUG_INJECTION AND
+   ARTS_COHERENCE_ARM MATCHES "^(VAL|INV)$" AND
    ARTS_RELEASE_POLICY STREQUAL "PURGE")
     arts_test_cfg(_cfg 2n_8w_2p)
-    arts_add_test(grant_purge_handback_regrant_2n_8w_2p_fuzz
-                  COMMAND grant_purge_handback_regrant)
-    set_tests_properties(grant_purge_handback_regrant_2n_8w_2p_fuzz PROPERTIES
+    arts_add_multinode_test(grant_purge_handback_regrant_2n_8w_2p_fuzz
+                            COMMAND grant_purge_handback_regrant)
+    arts_test_properties(grant_purge_handback_regrant_2n_8w_2p_fuzz PROPERTIES
         LABELS "multinode"
         TIMEOUT 120
         RESOURCE_LOCK "arts_runtime"
@@ -2047,7 +2116,7 @@ endif()
 register_multinode_test(coherence_rwro_phase TIMEOUT 30)
 foreach(_t coherence_rwro_phase coherence_rwro_phase_2n_9w_1p
         coherence_rwro_phase_4n_4w_1p coherence_rwro_phase_2n_8w_2p)
-    set_tests_properties(${_t} PROPERTIES
+    arts_test_properties(${_t} PROPERTIES
         PASS_REGULAR_EXPRESSION "coherence_rwro_phase: .* — PASS")
 endforeach()
 # The silent-wrong-answer gate for retention: an owner writes AFTER lending a
@@ -2105,9 +2174,10 @@ if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
     register_single_node_test(coherence_multi_writer_multi_db TIMEOUT 60)
     register_multinode_test(coherence_multi_writer_multi_db TIMEOUT 120)
     foreach(_v "" _2n_9w_1p _4n_4w_1p _2n_8w_2p)
-        set_property(TEST coherence_multi_writer_multi_db${_v} APPEND PROPERTY
+        arts_test_properties(coherence_multi_writer_multi_db${_v}
+            APPEND PROPERTIES
             LABELS "coherence_stress")
-        set_tests_properties(coherence_multi_writer_multi_db${_v} PROPERTIES
+        arts_test_properties(coherence_multi_writer_multi_db${_v} PROPERTIES
             FAIL_REGULAR_EXPRESSION "FAIL")
     endforeach()
 endif()
@@ -2325,11 +2395,13 @@ if(ARTS_DEBUG_INJECTION AND ARTS_DEBUG_DB_QUARANTINE AND
     add_arts_test(coherence_late_write_completion)
     register_multinode_test(coherence_late_write_completion TIMEOUT 120)
     foreach(_v 2n_9w_1p 4n_4w_1p 2n_8w_2p)
-        set_property(TEST coherence_late_write_completion_${_v} APPEND PROPERTY
+        arts_test_properties(coherence_late_write_completion_${_v}
+            APPEND PROPERTIES
             LABELS "coherence_stress")
-        set_property(TEST coherence_late_write_completion_${_v} APPEND PROPERTY
+        arts_test_properties(coherence_late_write_completion_${_v}
+            APPEND PROPERTIES
             ENVIRONMENT "ARTS_WRITE_COMPLETION_DELAY_MS=20")
-        set_tests_properties(coherence_late_write_completion_${_v} PROPERTIES
+        arts_test_properties(coherence_late_write_completion_${_v} PROPERTIES
             PASS_REGULAR_EXPRESSION "PASS: coherence_late_write_completion"
             FAIL_REGULAR_EXPRESSION
             "FAIL:;QUIESCENCE-DEBUG:;left unchecked;left unfreed")
@@ -2370,11 +2442,11 @@ endif()
 # Standard MN variants (2n_9w_1p/4n_4w_1p/2n_8w_2p).
 register_multinode_test(coherence_payload_large TIMEOUT 120)
 foreach(_v 2n_9w_1p 4n_4w_1p 2n_8w_2p)
-    set_property(TEST coherence_payload_large_${_v} APPEND PROPERTY
+    arts_test_properties(coherence_payload_large_${_v} APPEND PROPERTIES
         LABELS "coherence_stress")
     # Require the end-of-run PASS line, so a run that ends before every reader
     # has verified fails, and fail on any reader's corruption abort.
-    set_tests_properties(coherence_payload_large_${_v} PROPERTIES
+    arts_test_properties(coherence_payload_large_${_v} PROPERTIES
         PASS_REGULAR_EXPRESSION "PASS: 4 DBs"
         FAIL_REGULAR_EXPRESSION "FAIL:")
 endforeach()
@@ -2386,12 +2458,13 @@ endforeach()
 # offset, or a pairing that fires before the last piece has landed.  Where
 # payloads reach the next holder through the CXL store, the fabric moves none
 # and there is nothing to split.
-if(ARTS_DEBUG_INJECTION AND NOT ARTS_CXL_TREE_RESIDENCY)
+if(ARTS_DEBUG_INJECTION AND
+   NOT ARTS_CXL_TREE_RESIDENCY)
     foreach(_v 2n_9w_1p 4n_4w_1p 2n_8w_2p)
         arts_test_cfg(_cfg ${_v})
-        arts_add_test(coherence_payload_split_${_v}
-                      COMMAND coherence_payload_large)
-        set_tests_properties(coherence_payload_split_${_v} PROPERTIES
+        arts_add_multinode_test(coherence_payload_split_${_v}
+                                COMMAND coherence_payload_large)
+        arts_test_properties(coherence_payload_split_${_v} PROPERTIES
             LABELS "multinode;coherence_stress"
             TIMEOUT 120
             RESOURCE_LOCK "arts_runtime"
@@ -2426,9 +2499,9 @@ if(ARTS_DEBUG_INJECTION AND ARTS_DEBUG_DB_QUARANTINE AND
         "left unchecked" "left unfreed")
     foreach(_v 2n_9w_1p 2n_8w_2p)
         arts_test_cfg(_cfg ${_v})
-        arts_add_test(rdzv_cut_requester_${_v}
-                      COMMAND rdzv_cut_teardown requester)
-        set_tests_properties(rdzv_cut_requester_${_v} PROPERTIES
+        arts_add_multinode_test(rdzv_cut_requester_${_v}
+                                COMMAND rdzv_cut_teardown requester)
+        arts_test_properties(rdzv_cut_requester_${_v} PROPERTIES
             LABELS "multinode"
             TIMEOUT 120
             RESOURCE_LOCK "arts_runtime"
@@ -2441,8 +2514,9 @@ if(ARTS_DEBUG_INJECTION AND ARTS_DEBUG_DB_QUARANTINE AND
            (ARTS_COHERENCE_ARM STREQUAL "EXCL" AND
             ARTS_RELEASE_POLICY STREQUAL "PURGE") OR
            ARTS_COHERENCE_ARM STREQUAL "FLUSH")
-            arts_add_test(rdzv_cut_home_${_v} COMMAND rdzv_cut_teardown home)
-            set_tests_properties(rdzv_cut_home_${_v} PROPERTIES
+            arts_add_multinode_test(rdzv_cut_home_${_v}
+                                    COMMAND rdzv_cut_teardown home)
+            arts_test_properties(rdzv_cut_home_${_v} PROPERTIES
                 LABELS "multinode"
                 TIMEOUT 120
                 RESOURCE_LOCK "arts_runtime"
@@ -2470,8 +2544,9 @@ if(ARTS_TEST_REFERENCE_TREE AND ARTS_DEBUG_INJECTION AND
     foreach(_r 0 1)
         math(EXPR _o "1 - ${_r}")
         set(_chain "\\[${_r}:[0-9]+\\] [^\n]*fi_close\\(ep\\) failed.*\\[${_r}:[0-9]+\\] [^\n]*${_kept}")
-        arts_add_test(teardown_endpoint_kept_r${_r} COMMAND multinode_edt)
-        set_tests_properties(teardown_endpoint_kept_r${_r} PROPERTIES
+        arts_add_multinode_test(teardown_endpoint_kept_r${_r}
+                                COMMAND multinode_edt)
+        arts_test_properties(teardown_endpoint_kept_r${_r} PROPERTIES
             LABELS "multinode"
             TIMEOUT 60
             RESOURCE_LOCK "arts_runtime"
@@ -2483,8 +2558,9 @@ if(ARTS_TEST_REFERENCE_TREE AND ARTS_DEBUG_INJECTION AND
     endforeach()
     if(ARTS_DEBUG_DB_QUARANTINE AND ARTS_DEBUG_LANDING_BALANCE AND
        ARTS_LOG_LEVEL GREATER_EQUAL 3)
-        arts_add_test(rdzv_cut_kept COMMAND rdzv_cut_teardown requester)
-        set_tests_properties(rdzv_cut_kept PROPERTIES
+        arts_add_multinode_test(rdzv_cut_kept
+                                COMMAND rdzv_cut_teardown requester)
+        arts_test_properties(rdzv_cut_kept PROPERTIES
             LABELS "multinode"
             TIMEOUT 60
             RESOURCE_LOCK "arts_runtime"
@@ -2506,11 +2582,11 @@ endif()
 # pieces paired on the last.
 if(ARTS_TEST_REFERENCE_TREE)
     register_multinode_test(rdzv_payload_flood TIMEOUT 120 VARIANTS 2n_8w_2p)
-    set_tests_properties(rdzv_payload_flood_2n_8w_2p PROPERTIES
+    arts_test_properties(rdzv_payload_flood_2n_8w_2p PROPERTIES
         PASS_REGULAR_EXPRESSION "PASS: rdzv_payload_flood"
         FAIL_REGULAR_EXPRESSION "FAIL:")
     if(ARTS_DEBUG_INJECTION)
-        set_property(TEST rdzv_payload_flood_2n_8w_2p APPEND PROPERTY
+        arts_test_properties(rdzv_payload_flood_2n_8w_2p APPEND PROPERTIES
             ENVIRONMENT "ARTS_NET_MAX_MSG=8192")
     endif()
 endif()
@@ -2526,9 +2602,10 @@ endif()
 if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
 register_multinode_test(coherence_satisfy_before_release TIMEOUT 60)
 foreach(_v 2n_9w_1p 4n_4w_1p 2n_8w_2p)
-    set_property(TEST coherence_satisfy_before_release_${_v} APPEND PROPERTY
+    arts_test_properties(coherence_satisfy_before_release_${_v}
+        APPEND PROPERTIES
         LABELS "coherence_stress")
-    set_tests_properties(coherence_satisfy_before_release_${_v} PROPERTIES
+    arts_test_properties(coherence_satisfy_before_release_${_v} PROPERTIES
         PASS_REGULAR_EXPRESSION "PASS: 4 DBs observed"
         FAIL_REGULAR_EXPRESSION "FAIL:")
 endforeach()
@@ -2543,9 +2620,10 @@ endif()
 if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
 register_multinode_test(coherence_owner_ownership_reorder TIMEOUT 120)
 foreach(_v 2n_9w_1p 4n_4w_1p 2n_8w_2p)
-    set_property(TEST coherence_owner_ownership_reorder_${_v} APPEND PROPERTY
+    arts_test_properties(coherence_owner_ownership_reorder_${_v}
+        APPEND PROPERTIES
         LABELS "coherence_stress")
-    set_tests_properties(coherence_owner_ownership_reorder_${_v} PROPERTIES
+    arts_test_properties(coherence_owner_ownership_reorder_${_v} PROPERTIES
         FAIL_REGULAR_EXPRESSION "FAIL")
 endforeach()
 endif()
@@ -2573,7 +2651,7 @@ register_multinode_test(coherence_grant_chain_visibility TIMEOUT 120 VARIANTS 2n
 set_tests_properties(coherence_grant_chain_visibility PROPERTIES
     FAIL_REGULAR_EXPRESSION "FAIL")
 foreach(_v 2n_9w_1p 4n_4w_1p)
-    set_tests_properties(coherence_grant_chain_visibility_${_v} PROPERTIES
+    arts_test_properties(coherence_grant_chain_visibility_${_v} PROPERTIES
         FAIL_REGULAR_EXPRESSION "FAIL")
 endforeach()
 
@@ -2600,7 +2678,7 @@ register_multinode_test(label_reuse_ring_event TIMEOUT 120
                         VARIANTS 2n_9w_1p 2n_8w_2p)
 foreach(_t label_reuse_ring_event label_reuse_ring_event_2n_9w_1p
         label_reuse_ring_event_2n_8w_2p)
-    set_tests_properties(${_t} PROPERTIES
+    arts_test_properties(${_t} PROPERTIES
         PASS_REGULAR_EXPRESSION "PASS: label_reuse_ring_event 64 generations in order"
         FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
 endforeach()
@@ -2616,7 +2694,7 @@ add_arts_test(edt_destroy_before_create)
 register_single_node_test(edt_destroy_before_create TIMEOUT 30)
 register_multinode_test(edt_destroy_before_create TIMEOUT 60 VARIANTS 2n_9w_1p)
 foreach(_t edt_destroy_before_create edt_destroy_before_create_2n_9w_1p)
-    set_tests_properties(${_t} PROPERTIES
+    arts_test_properties(${_t} PROPERTIES
         PASS_REGULAR_EXPRESSION "PASS: edt_destroy_before_create"
         FAIL_REGULAR_EXPRESSION "FAIL:")
 endforeach()
@@ -2631,7 +2709,7 @@ register_multinode_test(edt_destroy_pending_group TIMEOUT 60
                         VARIANTS 2n_9w_1p 2n_8w_2p)
 foreach(_t edt_destroy_pending_group edt_destroy_pending_group_2n_9w_1p
         edt_destroy_pending_group_2n_8w_2p)
-    set_tests_properties(${_t} PROPERTIES
+    arts_test_properties(${_t} PROPERTIES
         PASS_REGULAR_EXPRESSION "PASS: edt_destroy_pending_group"
         FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
 endforeach()
@@ -2647,9 +2725,9 @@ if(ARTS_DEBUG_INJECTION AND ARTS_TEST_REFERENCE_TREE)
     register_multinode_test(edt_create_destroy_proxy TIMEOUT 90
                             VARIANTS 2n_9w_1p 2n_8w_2p)
     arts_test_cfg(_cfg 2n_8w_2p)
-    arts_add_test(edt_create_destroy_proxy_2n_8w_2p_fuzz
-                  COMMAND edt_create_destroy_proxy)
-    set_tests_properties(edt_create_destroy_proxy_2n_8w_2p_fuzz PROPERTIES
+    arts_add_multinode_test(edt_create_destroy_proxy_2n_8w_2p_fuzz
+                            COMMAND edt_create_destroy_proxy)
+    arts_test_properties(edt_create_destroy_proxy_2n_8w_2p_fuzz PROPERTIES
         LABELS "multinode"
         TIMEOUT 90
         RESOURCE_LOCK "arts_runtime"
@@ -2657,7 +2735,7 @@ if(ARTS_DEBUG_INJECTION AND ARTS_TEST_REFERENCE_TREE)
     foreach(_t edt_create_destroy_proxy_2n_9w_1p
             edt_create_destroy_proxy_2n_8w_2p
             edt_create_destroy_proxy_2n_8w_2p_fuzz)
-        set_tests_properties(${_t} PROPERTIES
+        arts_test_properties(${_t} PROPERTIES
             PASS_REGULAR_EXPRESSION "PASS: edt_create_destroy_proxy"
             FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
     endforeach()
@@ -2670,7 +2748,7 @@ add_arts_test(group_explicit_empty)
 register_single_node_test(group_explicit_empty TIMEOUT 60)
 register_multinode_test(group_explicit_empty TIMEOUT 90 VARIANTS 2n_9w_1p)
 foreach(_t group_explicit_empty group_explicit_empty_2n_9w_1p)
-    set_tests_properties(${_t} PROPERTIES
+    arts_test_properties(${_t} PROPERTIES
         PASS_REGULAR_EXPRESSION "PASS: group_explicit_empty"
         FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
 endforeach()
@@ -2684,7 +2762,7 @@ register_multinode_test(group_fires_while_opener_runs TIMEOUT 90
                         VARIANTS 2n_9w_1p)
 foreach(_t group_fires_while_opener_runs
         group_fires_while_opener_runs_2n_9w_1p)
-    set_tests_properties(${_t} PROPERTIES
+    arts_test_properties(${_t} PROPERTIES
         PASS_REGULAR_EXPRESSION "PASS: group_fires_while_opener_runs"
         FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
 endforeach()
@@ -2699,8 +2777,9 @@ set(_group_nested_chain_tests group_nested_chain_2n_9w_1p
     group_nested_chain_4n_4w_1p group_nested_chain_2n_8w_2p)
 if(ARTS_DEBUG_INJECTION)
     arts_test_cfg(_cfg 2n_8w_2p)
-    arts_add_test(group_nested_chain_2n_8w_2p_fuzz COMMAND group_nested_chain)
-    set_tests_properties(group_nested_chain_2n_8w_2p_fuzz PROPERTIES
+    arts_add_multinode_test(group_nested_chain_2n_8w_2p_fuzz
+                            COMMAND group_nested_chain)
+    arts_test_properties(group_nested_chain_2n_8w_2p_fuzz PROPERTIES
         LABELS "multinode"
         TIMEOUT 60
         RESOURCE_LOCK "arts_runtime"
@@ -2708,7 +2787,7 @@ if(ARTS_DEBUG_INJECTION)
     list(APPEND _group_nested_chain_tests group_nested_chain_2n_8w_2p_fuzz)
 endif()
 foreach(_t IN LISTS _group_nested_chain_tests)
-    set_tests_properties(${_t} PROPERTIES
+    arts_test_properties(${_t} PROPERTIES
         PASS_REGULAR_EXPRESSION "PASS: group_nested_chain"
         FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
 endforeach()
@@ -2719,7 +2798,7 @@ add_arts_test(completion_event_latch_n)
 register_single_node_test(completion_event_latch_n TIMEOUT 30)
 register_multinode_test(completion_event_latch_n TIMEOUT 60 VARIANTS 2n_9w_1p)
 foreach(_t completion_event_latch_n completion_event_latch_n_2n_9w_1p)
-    set_tests_properties(${_t} PROPERTIES
+    arts_test_properties(${_t} PROPERTIES
         PASS_REGULAR_EXPRESSION "PASS: completion_event_latch_n"
         FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
 endforeach()
@@ -2734,7 +2813,7 @@ register_multinode_test(completion_event_before_group TIMEOUT 60
                         VARIANTS 2n_9w_1p)
 foreach(_t completion_event_before_group
         completion_event_before_group_2n_9w_1p)
-    set_tests_properties(${_t} PROPERTIES
+    arts_test_properties(${_t} PROPERTIES
         PASS_REGULAR_EXPRESSION "PASS: completion_event_before_group"
         FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
 endforeach()
@@ -2751,7 +2830,7 @@ endif()
 if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
 add_arts_test(group_nested_chain_writes)
 register_multinode_test(group_nested_chain_writes TIMEOUT 60 VARIANTS 2n_9w_1p)
-set_tests_properties(group_nested_chain_writes_2n_9w_1p PROPERTIES
+arts_test_properties(group_nested_chain_writes_2n_9w_1p PROPERTIES
     PASS_REGULAR_EXPRESSION "PASS: group_nested_chain_writes"
     FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
 endif()
@@ -2765,7 +2844,7 @@ endif()
 add_arts_test(group_explicit_members)
 register_multinode_test(group_explicit_members TIMEOUT 60)
 foreach(_v 2n_9w_1p 4n_4w_1p 2n_8w_2p)
-    set_tests_properties(group_explicit_members_${_v} PROPERTIES
+    arts_test_properties(group_explicit_members_${_v} PROPERTIES
         PASS_REGULAR_EXPRESSION "PASS: group_explicit_members"
         FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
 endforeach()
@@ -2784,7 +2863,7 @@ register_multinode_test(label_reuse_ring_edt TIMEOUT 120
                         VARIANTS 2n_9w_1p 2n_8w_2p)
 foreach(_t label_reuse_ring_edt label_reuse_ring_edt_2n_9w_1p
         label_reuse_ring_edt_2n_8w_2p)
-    set_tests_properties(${_t} PROPERTIES
+    arts_test_properties(${_t} PROPERTIES
         PASS_REGULAR_EXPRESSION "PASS: label_reuse_ring_edt 64 generations in order, late and early creates"
         FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
 endforeach()
@@ -2799,7 +2878,7 @@ endforeach()
 # create's descriptor, since generations of a reused label are not told apart.
 add_arts_test(db_destroy_roster)
 register_multinode_test(db_destroy_roster TIMEOUT 60 VARIANTS 4n_4w_1p)
-set_tests_properties(db_destroy_roster_4n_4w_1p PROPERTIES
+arts_test_properties(db_destroy_roster_4n_4w_1p PROPERTIES
     PASS_REGULAR_EXPRESSION "PASS: db_destroy_roster"
     FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
 
@@ -2810,7 +2889,7 @@ set_tests_properties(db_destroy_roster_4n_4w_1p PROPERTIES
 add_arts_test(db_destroy_reaches_cachers)
 register_multinode_test(db_destroy_reaches_cachers TIMEOUT 90)
 foreach(_v IN LISTS ARTS_TEST_MULTINODE_VARIANTS)
-    set_tests_properties(db_destroy_reaches_cachers_${_v} PROPERTIES
+    arts_test_properties(db_destroy_reaches_cachers_${_v} PROPERTIES
         PASS_REGULAR_EXPRESSION "PASS: db_destroy_reaches_cachers 8 rounds x 24 blocks"
         FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
 endforeach()
@@ -2826,7 +2905,7 @@ endforeach()
 # first generation.
 add_arts_test(db_destroy_untouched_rank)
 register_multinode_test(db_destroy_untouched_rank TIMEOUT 60 VARIANTS 2n_9w_1p)
-set_tests_properties(db_destroy_untouched_rank_2n_9w_1p PROPERTIES
+arts_test_properties(db_destroy_untouched_rank_2n_9w_1p PROPERTIES
     PASS_REGULAR_EXPRESSION "PASS: db_destroy_untouched_rank"
     FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
 
@@ -2840,7 +2919,7 @@ if(ARTS_TEST_REFERENCE_TREE)
     register_multinode_test(db_destroy_gpu_kind_remote TIMEOUT 60
                             VARIANTS 2n_9w_1p 2n_8w_2p)
     foreach(_v 2n_9w_1p 2n_8w_2p)
-        set_tests_properties(db_destroy_gpu_kind_remote_${_v} PROPERTIES
+        arts_test_properties(db_destroy_gpu_kind_remote_${_v} PROPERTIES
             PASS_REGULAR_EXPRESSION "PASS: db_destroy_gpu_kind_remote"
             FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
     endforeach()
@@ -2876,8 +2955,8 @@ function(arts_cover_test name program)
         if(ARG_HOOK)
             list(APPEND _env "${ARG_HOOK}")
         endif()
-        arts_add_test(${name}_${_v} COMMAND ${program} ${ARG_ARGS})
-        set_tests_properties(${name}_${_v} PROPERTIES
+        arts_add_multinode_test(${name}_${_v} COMMAND ${program} ${ARG_ARGS})
+        arts_test_properties(${name}_${_v} PROPERTIES
             LABELS "multinode;coherence_stress"
             TIMEOUT ${ARG_TIMEOUT}
             RESOURCE_LOCK "arts_runtime"
@@ -3035,9 +3114,9 @@ if(_size_captured AND NOT ARTS_CXL_TREE_RESIDENCY)
     arts_test_cfg(_cfg 2n_9w_1p)
     foreach(_g reserved minted)
         foreach(_m writes reads)
-            arts_add_test(db_size_round_once_${_g}_${_m}
-                          COMMAND db_size_round_once ${_g} ${_m})
-            set_tests_properties(db_size_round_once_${_g}_${_m} PROPERTIES
+            arts_add_multinode_test(db_size_round_once_${_g}_${_m}
+                                    COMMAND db_size_round_once ${_g} ${_m})
+            arts_test_properties(db_size_round_once_${_g}_${_m} PROPERTIES
                 LABELS "multinode"
                 TIMEOUT 60
                 RESOURCE_LOCK "arts_runtime"
@@ -3076,7 +3155,7 @@ foreach(_t quiescent_shutdown_no_residue quiescent_shutdown_no_residue_2n_9w_1p
         quiescent_shutdown_no_residue_2n_8w_2p)
     # The quiescence walk only prints, so its markers are matched; a check's
     # FAIL: line is matched as a second channel beside the exit status.
-    set_tests_properties(${_t} PROPERTIES
+    arts_test_properties(${_t} PROPERTIES
         FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
 endforeach()
 endif()
@@ -3097,14 +3176,15 @@ add_arts_test(grant_one_request_per_grant)
 register_multinode_test(grant_one_request_per_grant TIMEOUT 120
                         VARIANTS 2n_9w_1p 2n_8w_2p)
 foreach(_v 2n_9w_1p 2n_8w_2p)
-    set_tests_properties(grant_one_request_per_grant_${_v} PROPERTIES
+    arts_test_properties(grant_one_request_per_grant_${_v} PROPERTIES
         FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
 endforeach()
-if(ARTS_DEBUG_INJECTION AND ARTS_COHERENCE_ARM MATCHES "^(VAL|INV)$")
+if(ARTS_DEBUG_INJECTION AND
+   ARTS_COHERENCE_ARM MATCHES "^(VAL|INV)$")
     arts_test_cfg(_cfg 2n_8w_2p)
-    arts_add_test(grant_one_request_per_grant_2n_8w_2p_fuzz
-                  COMMAND grant_one_request_per_grant)
-    set_tests_properties(grant_one_request_per_grant_2n_8w_2p_fuzz PROPERTIES
+    arts_add_multinode_test(grant_one_request_per_grant_2n_8w_2p_fuzz
+                            COMMAND grant_one_request_per_grant)
+    arts_test_properties(grant_one_request_per_grant_2n_8w_2p_fuzz PROPERTIES
         LABELS "multinode"
         TIMEOUT 120
         RESOURCE_LOCK "arts_runtime"
@@ -3122,9 +3202,9 @@ endif()
 if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
 register_multinode_test(coherence_multi_writer_dist TIMEOUT 120)
 foreach(_v 2n_9w_1p 4n_4w_1p 2n_8w_2p)
-    set_property(TEST coherence_multi_writer_dist_${_v} APPEND PROPERTY
+    arts_test_properties(coherence_multi_writer_dist_${_v} APPEND PROPERTIES
         LABELS "coherence_stress")
-    set_tests_properties(coherence_multi_writer_dist_${_v} PROPERTIES
+    arts_test_properties(coherence_multi_writer_dist_${_v} PROPERTIES
         FAIL_REGULAR_EXPRESSION "FAIL"
         PASS_REGULAR_EXPRESSION "PASS: coherence_multi_writer_dist")
 endforeach()
@@ -3152,7 +3232,7 @@ register_multinode_test(coherence_writer_ro_overlap TIMEOUT 180)
 # keep the budget that detects a hang.
 if(ARTS_DEBUG_SANITIZER STREQUAL "THREAD")
     foreach(_v IN LISTS ARTS_TEST_MULTINODE_VARIANTS)
-        set_tests_properties(coherence_writer_ro_overlap_${_v} PROPERTIES
+        arts_test_properties(coherence_writer_ro_overlap_${_v} PROPERTIES
             TIMEOUT 480)
     endforeach()
 endif()
@@ -3162,14 +3242,14 @@ set(_writer_ro_cases
     coherence_writer_ro_overlap_4n_4w_1p
     coherence_writer_ro_overlap_2n_8w_2p)
 foreach(_t IN LISTS _writer_ro_cases)
-    set_property(TEST ${_t} APPEND PROPERTY LABELS "coherence_stress")
+    arts_test_properties(${_t} APPEND PROPERTIES LABELS "coherence_stress")
     # A protocol that ends the run early (spurious shutdown) would exit 0 with
     # nothing verified — require the end-of-run scalar.  Fail on any
     # acquirer's violation report, and on a wait-structure that survives to
     # teardown: a lost wake this run's own pass criteria may have masked.
     # One property, both patterns: a later set of FAIL_REGULAR_EXPRESSION
     # replaces an earlier one.
-    set_tests_properties(${_t} PROPERTIES
+    arts_test_properties(${_t} PROPERTIES
         PASS_REGULAR_EXPRESSION "PASS: rw-write window/ro-overlap rounds=16 dbs=8 reads=1024 writes=1152"
         FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
 endforeach()
@@ -3195,7 +3275,7 @@ if(ARTS_COHERENCE_ARM STREQUAL "FLUSH")
     register_multinode_test(wrf_flush TIMEOUT 120)
     foreach(_t wrf_flush wrf_flush_2n_9w_1p wrf_flush_4n_4w_1p
             wrf_flush_2n_8w_2p)
-        set_tests_properties(${_t} PROPERTIES
+        arts_test_properties(${_t} PROPERTIES
             PASS_REGULAR_EXPRESSION "PASS: wrf_flush"
             FAIL_REGULAR_EXPRESSION "FAIL:")
     endforeach()

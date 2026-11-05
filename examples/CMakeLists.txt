@@ -150,11 +150,11 @@ function(arts_example)
         PASS_REGULAR_EXPRESSION "${EX_PASS_REGEX_SINGLE}")
     set(_tests ${_registered})
     foreach(_v IN LISTS ARTS_TEST_MULTINODE_VARIANTS)
-        set_tests_properties(${_registered}_${_v} PROPERTIES
+        arts_test_properties(${_registered}_${_v} PROPERTIES
             PASS_REGULAR_EXPRESSION "${EX_PASS_REGEX}")
         list(APPEND _tests ${_registered}_${_v})
     endforeach()
-    set_property(TEST ${_tests} APPEND PROPERTY LABELS examples)
+    arts_test_properties(${_tests} APPEND PROPERTIES LABELS examples)
 endfunction()
 
 add_subdirectory(basics)

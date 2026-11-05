@@ -239,7 +239,7 @@ endif()
 add_arts_test(db_acquire_all_bias)
 register_multinode_test(db_acquire_all_bias TIMEOUT 60 VARIANTS 2n_9w_1p 2n_8w_2p)
 foreach(_v 2n_9w_1p 2n_8w_2p)
-    set_tests_properties(db_acquire_all_bias_${_v} PROPERTIES
+    arts_test_properties(db_acquire_all_bias_${_v} PROPERTIES
         PASS_REGULAR_EXPRESSION "PASS: db_acquire_all_bias")
 endforeach()
 
@@ -351,7 +351,7 @@ add_arts_test(grant_purge_possession)
 register_multinode_test(grant_purge_possession TIMEOUT 120
                         VARIANTS 2n_9w_1p 2n_8w_2p)
 foreach(_v 2n_9w_1p 2n_8w_2p)
-    set_tests_properties(grant_purge_possession_${_v} PROPERTIES
+    arts_test_properties(grant_purge_possession_${_v} PROPERTIES
         PASS_REGULAR_EXPRESSION "PASS grant_purge_possession"
         FAIL_REGULAR_EXPRESSION "FAIL;QUIESCENCE-DEBUG:")
 endforeach()
@@ -392,7 +392,7 @@ register_single_node_test(excl_samerank_rw_grant_race TIMEOUT 60)
 register_multinode_test(excl_samerank_rw_grant_race TIMEOUT 60
                         VARIANTS 2n_9w_1p 2n_8w_2p)
 foreach(_v "" _2n_9w_1p _2n_8w_2p)
-    set_tests_properties(excl_samerank_rw_grant_race${_v} PROPERTIES
+    arts_test_properties(excl_samerank_rw_grant_race${_v} PROPERTIES
         PASS_REGULAR_EXPRESSION "excl_samerank_rw_grant_race: .* PASS")
 endforeach()
 
@@ -412,7 +412,7 @@ if(NOT ARTS_USE_CXL)
 add_arts_test(excl_self_home_no_landing)
 register_multinode_test(excl_self_home_no_landing TIMEOUT 120
                         VARIANTS 2n_8w_2p)
-set_tests_properties(excl_self_home_no_landing_2n_8w_2p PROPERTIES
+arts_test_properties(excl_self_home_no_landing_2n_8w_2p PROPERTIES
     PASS_REGULAR_EXPRESSION "PASS excl_self_home_no_landing")
 endif()
 
@@ -422,7 +422,7 @@ register_multinode_test(excl_purge_grant_d6_d7 TIMEOUT 60)
 # The end-of-run line is printed only once both halves have finished, so
 # requiring it on every variant turns a stranded writer into a failure.
 foreach(_v "" _2n_9w_1p _4n_4w_1p _2n_8w_2p)
-    set_tests_properties(excl_purge_grant_d6_d7${_v} PROPERTIES
+    arts_test_properties(excl_purge_grant_d6_d7${_v} PROPERTIES
         PASS_REGULAR_EXPRESSION
         "excl_purge_grant_d6_d7 D7: .* D6 chain verified — PASS")
 endforeach()
@@ -438,7 +438,7 @@ add_arts_test(excl_multiconsumer_queue)
 register_single_node_test(excl_multiconsumer_queue TIMEOUT 60)
 register_multinode_test(excl_multiconsumer_queue TIMEOUT 60)
 foreach(_v "" _2n_9w_1p _4n_4w_1p _2n_8w_2p)
-    set_tests_properties(excl_multiconsumer_queue${_v} PROPERTIES
+    arts_test_properties(excl_multiconsumer_queue${_v} PROPERTIES
         PASS_REGULAR_EXPRESSION "excl_multiconsumer_queue: .* PASS")
 endforeach()
 endif()
@@ -451,7 +451,8 @@ endif()
 if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
 add_arts_test(excl_req_before_create)
 register_multinode_test(excl_req_before_create TIMEOUT 90 VARIANTS 4n_4w_1p)
-set_tests_properties(excl_req_before_create_4n_4w_1p PROPERTIES PASS_REGULAR_EXPRESSION "PASS: [0-9]+ iterations completed")
+arts_test_properties(excl_req_before_create_4n_4w_1p PROPERTIES
+    PASS_REGULAR_EXPRESSION "PASS: [0-9]+ iterations completed")
 endif()
 
 # --- self-send vs dispatch, first-touch claim, Cat-C references, publish-ack
@@ -462,7 +463,7 @@ add_arts_test(self_send_vs_dispatcher_parity)
 register_single_node_test(self_send_vs_dispatcher_parity TIMEOUT 120)
 register_multinode_test(self_send_vs_dispatcher_parity TIMEOUT 120)
 foreach(_v "" _2n_9w_1p _4n_4w_1p _2n_8w_2p)
-    set_tests_properties(self_send_vs_dispatcher_parity${_v} PROPERTIES
+    arts_test_properties(self_send_vs_dispatcher_parity${_v} PROPERTIES
         PASS_REGULAR_EXPRESSION "PASS: self_send_vs_dispatcher_parity")
 endforeach()
 
@@ -482,7 +483,7 @@ add_arts_test(cat_c_ref_balance)
 register_single_node_test(cat_c_ref_balance TIMEOUT 120)
 register_multinode_test(cat_c_ref_balance TIMEOUT 120)
 foreach(_v "" _2n_9w_1p _4n_4w_1p _2n_8w_2p)
-    set_tests_properties(cat_c_ref_balance${_v} PROPERTIES
+    arts_test_properties(cat_c_ref_balance${_v} PROPERTIES
         PASS_REGULAR_EXPRESSION "PASS: cat_c_ref_balance")
 endforeach()
 endif()
@@ -515,16 +516,16 @@ add_arts_test(await_publish_ack_shutdown)
 register_multinode_test(await_publish_ack_shutdown TIMEOUT 120
                         VARIANTS 2n_9w_1p 2n_8w_2p)
 foreach(_v 2n_9w_1p 2n_8w_2p)
-    set_tests_properties(await_publish_ack_shutdown_${_v} PROPERTIES
+    arts_test_properties(await_publish_ack_shutdown_${_v} PROPERTIES
         PASS_REGULAR_EXPRESSION "PASS: await_publish_ack_shutdown reached shutdown")
 endforeach()
 endif()
 if(_await_publishes)
 foreach(_v 2n_9w_1p 2n_8w_2p)
     arts_test_cfg(_cfg ${_v})
-    arts_add_test(await_publish_ack_shutdown_contended_${_v}
-                  COMMAND await_publish_ack_shutdown contended)
-    set_tests_properties(await_publish_ack_shutdown_contended_${_v} PROPERTIES
+    arts_add_multinode_test(await_publish_ack_shutdown_contended_${_v}
+                            COMMAND await_publish_ack_shutdown contended)
+    arts_test_properties(await_publish_ack_shutdown_contended_${_v} PROPERTIES
         LABELS "multinode"
         TIMEOUT 120
         RESOURCE_LOCK "arts_runtime"
@@ -558,7 +559,7 @@ register_multinode_test(route_fresh_path_taken TIMEOUT 90
                         VARIANTS 2n_9w_1p 2n_8w_2p)
 foreach(_t route_fresh_path_taken route_fresh_path_taken_2n_9w_1p
         route_fresh_path_taken_2n_8w_2p)
-    set_tests_properties(${_t} PROPERTIES
+    arts_test_properties(${_t} PROPERTIES
         PASS_REGULAR_EXPRESSION "PASS: route_fresh_path_taken"
         FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
 endforeach()
@@ -573,12 +574,13 @@ register_multinode_test(route_growth_labeled TIMEOUT 180
                         VARIANTS 2n_9w_1p 2n_8w_2p)
 foreach(_t route_growth_labeled route_growth_labeled_2n_9w_1p
         route_growth_labeled_2n_8w_2p)
-    set_property(TEST ${_t} APPEND PROPERTY ENVIRONMENT "route_table_size=1")
+    arts_test_properties(${_t} APPEND PROPERTIES
+        ENVIRONMENT "route_table_size=1")
     if(ARTS_DEBUG_INJECTION)
-        set_property(TEST ${_t} APPEND PROPERTY ENVIRONMENT
+        arts_test_properties(${_t} APPEND PROPERTIES ENVIRONMENT
                      "ARTS_SCHED_FUZZ=20")
     endif()
-    set_tests_properties(${_t} PROPERTIES
+    arts_test_properties(${_t} PROPERTIES
         PASS_REGULAR_EXPRESSION "PASS: route_growth_labeled 2048 events fired once each"
         FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
 endforeach()
@@ -606,7 +608,7 @@ endif()
 add_arts_test(stub_install_winner)
 register_multinode_test(stub_install_winner TIMEOUT 180 VARIANTS 2n_9w_1p 2n_8w_2p)
 foreach(_v 2n_9w_1p 2n_8w_2p)
-    set_tests_properties(stub_install_winner_${_v} PROPERTIES
+    arts_test_properties(stub_install_winner_${_v} PROPERTIES
         PASS_REGULAR_EXPRESSION "PASS: stub_install_winner")
 endforeach()
 
@@ -679,7 +681,7 @@ set_tests_properties(app_status_reaches_exit PROPERTIES
     PASS_REGULAR_EXPRESSION "APP_STATUS_RECORDED app_status_reaches_exit")
 register_multinode_test(app_status_reaches_exit TIMEOUT 60 STATUS 1
                         VARIANTS 2n_9w_1p)
-set_tests_properties(app_status_reaches_exit_2n_9w_1p PROPERTIES
+arts_test_properties(app_status_reaches_exit_2n_9w_1p PROPERTIES
     PASS_REGULAR_EXPRESSION "APP_STATUS_RECORDED app_status_reaches_exit"
     ARTS_EXPECTS_RANK_FAILURE 1)
 if(TARGET arts_shared)
@@ -723,7 +725,8 @@ set_tests_properties(main_rank_overflow_abort PROPERTIES
 add_arts_test(shutdown_abort_eof)
 register_multinode_test(shutdown_abort_eof TIMEOUT 120)
 foreach(_v 2n_9w_1p 4n_4w_1p 2n_8w_2p)
-    set_tests_properties(shutdown_abort_eof_${_v} PROPERTIES PASS_REGULAR_EXPRESSION "ABORT_EOF_EXIT"
+    arts_test_properties(shutdown_abort_eof_${_v} PROPERTIES
+        PASS_REGULAR_EXPRESSION "ABORT_EOF_EXIT"
         ARTS_EXPECTS_RANK_FAILURE 37)
 endforeach()
 
@@ -733,7 +736,8 @@ add_arts_test(shutdown_idempotent_concurrent_init)
 register_multinode_test(shutdown_idempotent_concurrent_init TIMEOUT 120
                         VARIANTS 2n_9w_1p 4n_4w_1p)
 foreach(_v 2n_9w_1p 4n_4w_1p)
-    set_tests_properties(shutdown_idempotent_concurrent_init_${_v} PROPERTIES PASS_REGULAR_EXPRESSION "IDEMPOTENT_INIT_EXIT")
+    arts_test_properties(shutdown_idempotent_concurrent_init_${_v} PROPERTIES
+        PASS_REGULAR_EXPRESSION "IDEMPOTENT_INIT_EXIT")
 endforeach()
 
 # A SIGTERM to rank 0 while every other rank keeps satisfies in flight to it:
@@ -742,7 +746,7 @@ endforeach()
 add_arts_test(shutdown_sigterm_inflight_drain)
 register_multinode_test(shutdown_sigterm_inflight_drain TIMEOUT 120)
 foreach(_v 2n_9w_1p 4n_4w_1p 2n_8w_2p)
-    set_tests_properties(shutdown_sigterm_inflight_drain_${_v} PROPERTIES
+    arts_test_properties(shutdown_sigterm_inflight_drain_${_v} PROPERTIES
         PASS_REGULAR_EXPRESSION "\\[rank 0\\] SIGTERM_DRAIN_EXIT")
 endforeach()
 
@@ -753,7 +757,7 @@ endforeach()
 add_arts_test(shutdown_sends_after_shutdown)
 register_multinode_test(shutdown_sends_after_shutdown TIMEOUT 60)
 foreach(_v 2n_9w_1p 4n_4w_1p 2n_8w_2p)
-    set_tests_properties(shutdown_sends_after_shutdown_${_v} PROPERTIES
+    arts_test_properties(shutdown_sends_after_shutdown_${_v} PROPERTIES
         PASS_REGULAR_EXPRESSION "SENDS_AFTER_SHUTDOWN: ending the run"
         FAIL_REGULAR_EXPRESSION
         "fi_inject failed;cq error on a live run;after this thread began the teardown")
@@ -765,9 +769,9 @@ add_arts_test(shutdown_initiators_off_zero)
 register_multinode_test(shutdown_initiators_off_zero TIMEOUT 60
                         VARIANTS 4n_4w_1p)
 arts_test_cfg(_cfg 4n_4w_1p)
-arts_add_test(shutdown_initiators_off_zero_3n_4w_1p
-              COMMAND shutdown_initiators_off_zero)
-set_tests_properties(shutdown_initiators_off_zero_3n_4w_1p PROPERTIES
+arts_add_multinode_test(shutdown_initiators_off_zero_3n_4w_1p
+                        COMMAND shutdown_initiators_off_zero)
+arts_test_properties(shutdown_initiators_off_zero_3n_4w_1p PROPERTIES
     LABELS "multinode" TIMEOUT 60 RESOURCE_LOCK "arts_runtime"
     ENVIRONMENT "ARTS_CONFIG=${_cfg};node_count=3")
 
@@ -781,11 +785,11 @@ register_multinode_test(shutdown_first_contact TIMEOUT 60 VARIANTS 4n_4w_1p)
 if(ARTS_LOG_LEVEL GREATER_EQUAL 2)
     set(_fc_r3 "\\[3:[0-9]+\\] \\[INFO\\] arts_enter_shutdown_state: rank=3 origin=SENTINEL")
     set(_fc_r1 "\\[1:[0-9]+\\] \\[INFO\\] arts_enter_shutdown_state: posted SHUTDOWN to")
-    set_tests_properties(shutdown_first_contact_4n_4w_1p PROPERTIES
+    arts_test_properties(shutdown_first_contact_4n_4w_1p PROPERTIES
         PASS_REGULAR_EXPRESSION "${_fc_r3}.*${_fc_r1} 2 peer|${_fc_r1} 2 peer.*${_fc_r3}"
         FAIL_REGULAR_EXPRESSION "${_fc_r1} ([013-9]|[0-9][0-9]+) peer")
 else()
-    set_tests_properties(shutdown_first_contact_4n_4w_1p PROPERTIES
+    arts_test_properties(shutdown_first_contact_4n_4w_1p PROPERTIES
         PASS_REGULAR_EXPRESSION "FIRST_CONTACT: rank 1 ends the run")
 endif()
 
@@ -802,13 +806,13 @@ set(_uf_fail
     "fi_inject failed;cq error on a live run;after this thread began the teardown")
 if(ARTS_LOG_LEVEL GREATER_EQUAL 2)
     set(_uf_r1 "\\[1:[0-9]+\\] \\[INFO\\] arts_enter_shutdown_state: rank=1 origin=")
-    set_tests_properties(shutdown_under_flood_4n_4w_1p PROPERTIES
+    arts_test_properties(shutdown_under_flood_4n_4w_1p PROPERTIES
         PASS_REGULAR_EXPRESSION
         "${_uf_end}.*${_uf_r1}(WIRE|SENTINEL|BACKPRESSURE)|${_uf_r1}(WIRE|SENTINEL|BACKPRESSURE).*${_uf_end}"
         FAIL_REGULAR_EXPRESSION
         "${_uf_fail};${_uf_r1}(APP|SIGNAL|FAULT|RUNTIME_ERROR)")
 else()
-    set_tests_properties(shutdown_under_flood_4n_4w_1p PROPERTIES
+    arts_test_properties(shutdown_under_flood_4n_4w_1p PROPERTIES
         PASS_REGULAR_EXPRESSION "${_uf_end}"
         FAIL_REGULAR_EXPRESSION "${_uf_fail}")
 endif()
@@ -830,7 +834,7 @@ set_tests_properties(counter_timer_balance PROPERTIES PASS_REGULAR_EXPRESSION "P
 add_arts_test(argv_params)
 register_single_node_test(argv_params TIMEOUT 30)
 register_multinode_test(argv_params TIMEOUT 60 VARIANTS 2n_9w_1p)
-set_tests_properties(argv_params argv_params_2n_9w_1p PROPERTIES
+arts_test_properties(argv_params argv_params_2n_9w_1p PROPERTIES
     PASS_REGULAR_EXPRESSION "PASS argv_params"
     FAIL_REGULAR_EXPRESSION "FAIL")
 
@@ -1097,9 +1101,10 @@ if(_c)
             if(DEFINED _hook_${_shape})
                 list(APPEND _env "${_hook_${_shape}}")
             endif()
-            arts_add_test(counter_exact_${_shape}_${_v}
-                          COMMAND counter_exact ${_shape} ${_${_shape}})
-            set_tests_properties(counter_exact_${_shape}_${_v} PROPERTIES
+            arts_add_multinode_test(counter_exact_${_shape}_${_v}
+                                    COMMAND counter_exact ${_shape}
+                                            ${_${_shape}})
+            arts_test_properties(counter_exact_${_shape}_${_v} PROPERTIES
                 LABELS "multinode" TIMEOUT 60 RESOURCE_LOCK "arts_runtime"
                 ENVIRONMENT "${_env}"
                 PASS_REGULAR_EXPRESSION "PASS: counter_exact ${_shape}"
@@ -1136,9 +1141,9 @@ if(_c AND ARTS_TEST_REFERENCE_TREE)
             arts_test_cfg(_cfg ${_v})
             set(_env "ARTS_CONFIG=${_cfg}")
         endif()
-        arts_add_test(counter_exact_ping_${_v}
-                      COMMAND counter_exact ping ${_ping})
-        set_tests_properties(counter_exact_ping_${_v} PROPERTIES
+        arts_add_multinode_test(counter_exact_ping_${_v}
+                                COMMAND counter_exact ping ${_ping})
+        arts_test_properties(counter_exact_ping_${_v} PROPERTIES
             LABELS "multinode" TIMEOUT 60 RESOURCE_LOCK "arts_runtime"
             ENVIRONMENT "${_env}"
             PASS_REGULAR_EXPRESSION "PASS: counter_exact ping"
@@ -1155,7 +1160,8 @@ add_arts_test(csr_graph)
 register_single_node_test(csr_graph TIMEOUT 60)
 register_multinode_test(csr_graph TIMEOUT 120)
 foreach(_t csr_graph csr_graph_2n_9w_1p csr_graph_4n_4w_1p csr_graph_2n_8w_2p)
-    set_tests_properties(${_t} PROPERTIES PASS_REGULAR_EXPRESSION "PASS csr_graph")
+    arts_test_properties(${_t} PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS csr_graph")
 endforeach()
 
 # Many EDTs race into arts_shutdown: one wins the shutdown gate, the run ends,
@@ -1209,7 +1215,7 @@ add_arts_test(edt_completion_event)
 register_single_node_test(edt_completion_event TIMEOUT 30)
 register_multinode_test(edt_completion_event TIMEOUT 60 VARIANTS 2n_9w_1p)
 foreach(_v "" _2n_9w_1p)
-    set_tests_properties(edt_completion_event${_v} PROPERTIES
+    arts_test_properties(edt_completion_event${_v} PROPERTIES
         FAIL_REGULAR_EXPRESSION "FAIL")
 endforeach()
 endif()
@@ -1220,7 +1226,8 @@ add_arts_test(edt_group_balance)
 register_single_node_test(edt_group_balance TIMEOUT 30)
 register_multinode_test(edt_group_balance TIMEOUT 60 VARIANTS 2n_9w_1p)
 foreach(_v "" _2n_9w_1p)
-    set_tests_properties(edt_group_balance${_v} PROPERTIES PASS_REGULAR_EXPRESSION "PASS edt_group_balance")
+    arts_test_properties(edt_group_balance${_v} PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS edt_group_balance")
 endforeach()
 
 # edt_remote_create_reordered_satisfy: needs 2+ ranks, so it is multinode
@@ -1230,7 +1237,7 @@ add_arts_test(edt_remote_create_reordered_satisfy)
 register_multinode_test(edt_remote_create_reordered_satisfy TIMEOUT 60
                         VARIANTS 2n_9w_1p 2n_8w_2p)
 foreach(_v 2n_9w_1p 2n_8w_2p)
-    set_tests_properties(edt_remote_create_reordered_satisfy_${_v} PROPERTIES
+    arts_test_properties(edt_remote_create_reordered_satisfy_${_v} PROPERTIES
         PASS_REGULAR_EXPRESSION "PASS edt_remote_create_reordered_satisfy")
 endforeach()
 
@@ -1393,13 +1400,17 @@ function(arts_route_budget_test shape n probes pins)
         set(_label multinode)
         set(_timeout 120)
     endif()
-    arts_add_test(route_budget_${shape}
+    set(_add arts_add_test)
+    if(_label STREQUAL "multinode")
+        set(_add arts_add_multinode_test)
+    endif()
+    cmake_language(CALL ${_add} route_budget_${shape}
         COMMAND ${CMAKE_COMMAND}
                 -DPROGRAM=$<TARGET_FILE:route_budget> -DSHAPE=${shape}
                 -DN=${n} -DRANK=${ARG_RANK}
                 -DPROBES_PER_UNIT=${probes} -DPINS_PER_UNIT=${pins}
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/route_budget_diff.cmake)
-    set_tests_properties(route_budget_${shape} PROPERTIES
+    arts_test_properties(route_budget_${shape} PROPERTIES
         LABELS ${_label} TIMEOUT ${_timeout} RESOURCE_LOCK "arts_runtime"
         ENVIRONMENT "ARTS_CONFIG=${_cfg}"
         PASS_REGULAR_EXPRESSION "PASS: route_budget_diff ${shape}"
