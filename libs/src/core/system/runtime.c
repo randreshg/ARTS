@@ -583,7 +583,8 @@ void arts_thread_zero_node_start(int argc, char **argv, arts_edt_t entry) {
   ARTS_INFO("Thread 0: starting node initialization");
 
   // PERIODIC counter capture starts AFTER the barriers below (see
-  // arts_counter_capture_start), when progress threads are running.
+  // arts_counter_capture_start), when progress threads are running; only its
+  // time-sync request leaves before the last one.
   //
   // End-to-end marker (rank 0): take the start stamp here — initialization is
   // complete and the application, the main EDT, is about to run — so the
@@ -606,10 +607,12 @@ void arts_thread_zero_node_start(int argc, char **argv, arts_edt_t entry) {
     arts_edt_create(entry, 2, main_args, 0, &main_hint);
   }
 
+  // No EDT of this rank runs before this barrier releases the other threads.
+  arts_counter_capture_sync_begin();
   arts_runtime_barrier(&arts_node_info.ready_to_inspect);
 
-  // Start counter capture AFTER all barriers, when progress threads are in
-  // their runtime loops. This ensures time sync requests can be processed.
+  // Its wait for the time-sync response needs this rank's progress threads,
+  // which the barrier above released.
   arts_counter_capture_start();
 }
 

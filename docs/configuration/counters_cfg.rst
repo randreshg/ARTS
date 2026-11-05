@@ -16,8 +16,11 @@ configure time; the ``ARTS_COUNTER_CONFIG`` CMake cache variable names it.
 The default, ``configs/counters_off.cfg``, turns every counter off;
 ``configs/counters.cfg`` is the profiling example a campaign opts into, and
 ``configs/counters_validation.cfg`` is the validation trees' set, which
-captures only the counters a test reads back.  After editing, re-run
-``cmake`` to regenerate counter code.
+captures only the counters a test reads back.  The reference validation tree
+and its sanitizer twins use ``configs/counters_validation_capture.cfg``, the
+same set plus one PERIODIC counter no test reads back, which starts the
+capture thread and, on a run of several ranks, the counters' time sync.
+After editing, re-run ``cmake`` to regenerate counter code.
 
 Each line follows the format:
 

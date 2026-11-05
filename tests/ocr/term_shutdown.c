@@ -3,20 +3,27 @@
 ** Licensed under the Apache License, Version 2.0
 ******************************************************************************/
 /* A run that does nothing but shut down: an EDT on the rank argv[1] names (0
- * by default) calls arts_shutdown(), and main() prints TERM_TEST_EXIT after
- * arts_rt returns.  The injection-hook refusal tests run it: a refused run
- * must end at startup, before any of this. */
+ * by default) calls arts_shutdown() argv[2] milliseconds after it starts (0 by
+ * default), and main() prints TERM_TEST_EXIT after arts_rt returns.  The
+ * injection-hook refusal tests run it: a refused run must end at startup,
+ * before any of this. */
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
 
 #include "arts.h"
 
 void trigger_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                  arts_edt_dep_t depv[]) {
   (void)paramc;
-  (void)paramv;
   (void)depc;
   (void)depv;
+  uint64_t delay_ms = paramv[0];
+  struct timespec left = {.tv_sec = (time_t)(delay_ms / 1000),
+                          .tv_nsec = (long)(delay_ms % 1000) * 1000000L};
+  while (clock_nanosleep(CLOCK_MONOTONIC, 0, &left, &left) == EINTR) {
+  }
   arts_shutdown();
 }
 
@@ -35,7 +42,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_shutdown();
     return;
   }
-  arts_edt_create(trigger_edt, 0, NULL, 0, &(arts_edt_hint_t){.rank = origin});
+  uint64_t delay_ms = (argc > 2) ? strtoull(argv[2], NULL, 10) : 0;
+  arts_edt_create(trigger_edt, 1, &delay_ms, 0,
+                  &(arts_edt_hint_t){.rank = origin});
 }
 
 int main(int argc, char **argv) {

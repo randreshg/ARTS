@@ -39,6 +39,7 @@
 #include "arts/counter/counter.h"
 
 #include "arts/utils/stdatomic_compat.h"
+#include <assert.h>
 #include <errno.h>
 #include <inttypes.h>
 #include <pthread.h>
@@ -46,6 +47,7 @@
 #include <string.h>
 #include <strings.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "arts.h"
@@ -65,17 +67,28 @@
 // No captures here - capture thread handles periodic snapshots separately.
 ARTS_THREAD_LOCAL arts_counter_t arts_thread_local_counters[NUM_COUNTER_TYPES];
 
-// Capture thread state - only used for periodic counter capture
+// Capture thread state - only used for periodic counter capture.
+//
+// One word decides the capture thread's life against the stop.  The start
+// creates the thread, stores its handle and only then moves the word
+// IDLE -> RUNNING (release).  The stop moves it RUNNING -> STOPPED (acquire,
+// so it reads the handle) and joins, or IDLE -> STOPPED and joins nothing; a
+// start whose CAS then finds STOPPED joins its own thread, which never
+// captured.  The start and the stop change the word, and signal capture_cond,
+// only under capture_mutex, and the thread reads the word under it before
+// each wait, so no signal falls between a check and a wait.
+enum { CAPTURE_IDLE, CAPTURE_RUNNING, CAPTURE_STOPPED };
+static _Atomic(unsigned int) capture_state = CAPTURE_IDLE;
 static pthread_t capture_thread;
-/* Stored true (release) before the thread is created, false by the stop or
- * by a failed start; the capture loop and the start's check load it with
- * acquire. */
-static _Atomic(bool) capture_thread_running = false;
+static pthread_mutex_t capture_mutex = PTHREAD_MUTEX_INITIALIZER;
+/* On CLOCK_MONOTONIC; the start initializes it before the thread exists. */
+static pthread_cond_t capture_cond;
 
 // Time synchronization: offset = workerTime - masterTime (positive if the
 // worker is ahead), so local_time - offset = masterTime.
 //
-// A non-master rank's capture start sends one request and waits, bounded, for
+// A non-master rank sends one request before any of its EDTs can run
+// (arts_counter_capture_sync_begin), and its capture start waits, bounded, for
 // the response.  The word below decides the offset once: the response handler
 // claims it WAITING -> RECEIVING, stores the offset and publishes RECEIVED
 // (release); the waiter, at its timeout, moves it WAITING -> TIMED_OUT and the
@@ -84,7 +97,9 @@ static _Atomic(bool) capture_thread_running = false;
 // offset's readers come after an acquire of RECEIVED: the capture thread,
 // which the waiter starts only after its own, and the record's writer,
 // through arts_counter_clock_sync's.  The master rank's capture start stores
-// MASTER: its offset is 0, and no request or response concerns it.
+// MASTER: its offset is 0, and no request or response concerns it.  T3 is
+// taken when the response is dispatched, so the round trip includes any wait
+// for this rank's progress threads.
 enum {
   TIME_SYNC_WAITING = 0,
   TIME_SYNC_RECEIVING,
@@ -118,6 +133,13 @@ static uint64_t arts_counter_capture_counter(arts_counter_t *counter) {
     }
   }
   return atomic_load_explicit(&counter->count, memory_order_relaxed);
+}
+
+/* The CLOCK_MONOTONIC instant ns from now, as capture_cond's waits take it. */
+static struct timespec arts_capture_deadline(uint64_t ns) {
+  uint64_t at = arts_get_time_stamp() + ns;
+  return (struct timespec){.tv_sec = (time_t)(at / 1000000000ULL),
+                           .tv_nsec = (long)(at % 1000000000ULL)};
 }
 
 static void *arts_counter_capture_thread(void *args) {
@@ -161,36 +183,46 @@ static void *arts_counter_capture_thread(void *args) {
   // (i.e., baseline + interval_ns for epoch 0)
   uint64_t next_capture_time = baseline_time + interval_ns;
 
-  while (atomic_load_explicit(&capture_thread_running, memory_order_acquire)) {
+  pthread_mutex_lock(&capture_mutex);
+  for (;;) {
+    unsigned int state =
+        atomic_load_explicit(&capture_state, memory_order_acquire);
+    if (state == CAPTURE_STOPPED) {
+      break;
+    }
+    if (state == CAPTURE_IDLE) {
+      // The start signals once its CAS has decided the word.
+      pthread_cond_wait(&capture_cond, &capture_mutex);
+      continue;
+    }
+
     synced_time = arts_get_synced_time_stamp();
-    // Calculate sleep time until next aligned capture (in synced time)
-    int64_t sleep_ns = (int64_t)(next_capture_time - synced_time);
+    if (synced_time < next_capture_time) {
+      // Sleep until the aligned capture time (in synced time); the stop's
+      // signal or a spurious wake makes the pass read the word again.
+      struct timespec deadline =
+          arts_capture_deadline(next_capture_time - synced_time);
+      pthread_cond_timedwait(&capture_cond, &capture_mutex, &deadline);
+      continue;
+    }
 
-    // Track current epoch for this capture
-    uint64_t current_epoch = capture_epoch + 1;
+    // The capture time has come.  Every whole interval since it passed is an
+    // epoch the last capture overran; jump past them to avoid drift.
+    uint64_t late_ns = synced_time - next_capture_time;
+    uint64_t intervals_skipped = late_ns / interval_ns;
+    uint64_t lagging_capture_time = next_capture_time;
+    capture_epoch += intervals_skipped + 1;
+    next_capture_time += (intervals_skipped + 1) * interval_ns;
+    uint64_t current_epoch = capture_epoch;
+    pthread_mutex_unlock(&capture_mutex);
 
-    if (sleep_ns > 0) {
-      nanosleep((const struct timespec[]){{sleep_ns / 1000000000,
-                                           sleep_ns % 1000000000}},
-                NULL);
-      // Advance to the next expected capture time
-      capture_epoch++;
-      next_capture_time += interval_ns;
-    } else {
-      // We are late: next_capture_time is already in the past.
-      // Compute how many intervals we are behind and jump forward
-      // to the next future aligned capture time to avoid drift.
-      uint64_t intervals_behind =
-          (uint64_t)(((-sleep_ns) / (int64_t)interval_ns) + 1);
+    if (intervals_skipped) {
       ARTS_INFO(
           "Counter capture lagging: synced_time=%lf ms, "
           "next_capture_time=%lf ms, lateBy=%lf ms, skipping %lu interval(s)",
           (double)synced_time / 1000000.0,
-          (double)next_capture_time / 1000000.0,
-          (double)(-sleep_ns) / 1000000.0, intervals_behind);
-      capture_epoch += intervals_behind;
-      current_epoch = capture_epoch;
-      next_capture_time += intervals_behind * interval_ns;
+          (double)lagging_capture_time / 1000000.0, (double)late_ns / 1000000.0,
+          intervals_skipped);
     }
 
     // Capture counters from all threads - store in nodeInfo.capture_arrays.
@@ -210,26 +242,33 @@ static void *arts_counter_capture_thread(void *args) {
         }
       }
     }
+    pthread_mutex_lock(&capture_mutex);
   }
+  pthread_mutex_unlock(&capture_mutex);
   return NULL;
 }
 
-void arts_counter_capture_start() {
-  if (atomic_load_explicit(&capture_thread_running, memory_order_acquire)) {
-    ARTS_ERROR("Counter capture thread already running");
-  }
-
-  bool need_capture_thread = false;
-
+// Need capture thread for PERIODIC mode counters
+static bool arts_counter_capture_needed(void) {
   for (unsigned int i = 0; i < NUM_COUNTER_TYPES; i++) {
-    // Need capture thread for PERIODIC mode counters
     if (arts_counter_mode_array[i] == ARTS_COUNTER_MODE_PERIODIC) {
-      need_capture_thread = true;
-      break;
+      return true;
     }
   }
+  return false;
+}
 
-  if (need_capture_thread) {
+void arts_counter_capture_sync_begin(void) {
+  // The request leaves before any EDT of this rank can end the run, so no
+  // closed send gate drops it, whatever the program does.
+  if (arts_counter_capture_needed() &&
+      arts_global_rank_id != arts_global_master_rank_id) {
+    arts_send_time_sync_request();
+  }
+}
+
+void arts_counter_capture_start() {
+  if (arts_counter_capture_needed()) {
     // RTT-based time synchronization: workers send request to master,
     // master responds with its timestamp, workers calculate offset using RTT.
     // This provides better accuracy than one-way broadcast.
@@ -241,8 +280,8 @@ void arts_counter_capture_start() {
       ARTS_INFO("Time sync: Master node (rank %u), offset=0",
                 arts_global_master_rank_id);
     } else {
-      // Worker nodes: send sync request and wait for response
-      arts_send_time_sync_request();
+      // Worker nodes: wait for the response to the request
+      // arts_counter_capture_sync_begin sent.
       uint64_t timeout = arts_get_time_stamp() + 500000000ULL; // 500ms
       while (atomic_load_explicit(&time_sync_state, memory_order_acquire) !=
                  TIME_SYNC_RECEIVED &&
@@ -265,26 +304,60 @@ void arts_counter_capture_start() {
       }
     }
 
-    atomic_store_explicit(&capture_thread_running, true, memory_order_release);
+    pthread_condattr_t cond_attr;
+    pthread_condattr_init(&cond_attr);
+    pthread_condattr_setclock(&cond_attr, CLOCK_MONOTONIC);
+    pthread_cond_init(&capture_cond, &cond_attr);
+    pthread_condattr_destroy(&cond_attr);
 
     int ret = pthread_create(&capture_thread, NULL, arts_counter_capture_thread,
                              NULL);
     if (ret) {
+      // The word stays IDLE, so the stop joins nothing.
       ARTS_WARN("Failed to create capture thread: %d", ret);
-      atomic_store_explicit(&capture_thread_running, false,
-                            memory_order_release);
-    } else {
+      return;
+    }
+
+    pthread_mutex_lock(&capture_mutex);
+    unsigned int state = CAPTURE_IDLE;
+    bool running = atomic_compare_exchange_strong_explicit(
+        &capture_state, &state, CAPTURE_RUNNING, memory_order_release,
+        memory_order_relaxed);
+    pthread_cond_signal(&capture_cond);
+    pthread_mutex_unlock(&capture_mutex);
+    if (running) {
       ARTS_INFO("Counter capture thread started");
+      return;
+    }
+    // A stop came first and joined nothing; the capture thread reads
+    // STOPPED and ends without capturing, and its starter joins it.
+    assert(state == CAPTURE_STOPPED);
+    ret = pthread_join(capture_thread, NULL);
+    if (ret) {
+      ARTS_WARN("Failed to join capture thread: %d", ret);
     }
   }
 }
 
 void arts_counter_capture_stop() {
-  if (!atomic_load_explicit(&capture_thread_running, memory_order_acquire)) {
-    // No capture thread to stop - this is fine, counters still work
+  pthread_mutex_lock(&capture_mutex);
+  unsigned int state = CAPTURE_RUNNING;
+  bool running = atomic_compare_exchange_strong_explicit(
+      &capture_state, &state, CAPTURE_STOPPED, memory_order_acquire,
+      memory_order_relaxed);
+  if (running) {
+    pthread_cond_signal(&capture_cond);
+  } else if (state == CAPTURE_IDLE) {
+    // No capture thread was created, or its start has not decided yet; that
+    // start's CAS finds STOPPED, and it joins its own thread.
+    (void)atomic_compare_exchange_strong_explicit(
+        &capture_state, &state, CAPTURE_STOPPED, memory_order_relaxed,
+        memory_order_relaxed);
+  }
+  pthread_mutex_unlock(&capture_mutex);
+  if (!running) {
     return;
   }
-  atomic_store_explicit(&capture_thread_running, false, memory_order_release);
   int ret = pthread_join(capture_thread, NULL);
   if (ret) {
     ARTS_WARN("Failed to join capture thread: %d", ret);

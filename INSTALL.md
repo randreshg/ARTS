@@ -216,7 +216,12 @@ A test that needs a debug facility registers only in a tree that turns it on
 (`-DARTS_DEBUG_INJECTION=ON`, `-DARTS_DEBUG_DB_QUARANTINE=ON`,
 `-DARTS_DEBUG_LANDING_BALANCE=ON`, `-DARTS_DEBUG_WAKE_GUID=ON`), and a test
 that reads a counter back only where the tree's counter config captures it
-(`-DARTS_COUNTER_CONFIG=$PWD/configs/counters_validation.cfg`).
+(`-DARTS_COUNTER_CONFIG=$PWD/configs/counters_validation.cfg`).  The
+reference tree (INV × WB) and its sanitizer twins pass
+`configs/counters_validation_capture.cfg` instead: the same set plus one
+PERIODIC counter, which starts the capture thread its tests need and, on a
+run of several ranks, the counters' time sync, whose request a test that
+counts messages there allows for.
 
 Configuration
 =============

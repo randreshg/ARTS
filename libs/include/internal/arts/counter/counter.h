@@ -294,6 +294,11 @@ extern ARTS_THREAD_LOCAL arts_counter_t
 
 // Counter initialization is handled internally by runtime init/cleanup.
 
+/* Thread 0 calls this before the startup barrier that lets this rank's
+ * workers and progress threads run: a rank other than the master sends its
+ * time-sync request here, and arts_counter_capture_start, after the barriers,
+ * waits for the response. */
+void arts_counter_capture_sync_begin(void);
 void arts_counter_capture_start();
 void arts_counter_capture_stop();
 void arts_counter_increment_by(arts_counter_t *counter, uint64_t num);

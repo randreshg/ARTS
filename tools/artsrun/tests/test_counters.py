@@ -477,6 +477,25 @@ def test_the_validation_cfg_states_every_counter_and_captures_once():
     assert {settings[k] for k in captured} == {"ONCE,NODE"}
 
 
+def test_the_capture_cfg_is_the_validation_cfg_plus_one_periodic_node_line():
+    # The reference tree starts the capture path with the validation set plus
+    # one PERIODIC counter no test reads back, so every exact value checked in
+    # the other trees holds there too.
+    def settings(name):
+        cfg = (repo_root() / "configs" / name).read_text()
+        return dict(re.findall(r"^([A-Z][A-Z0-9_]*)=(\S+)$", cfg,
+                               re.MULTILINE))
+
+    base = settings("counters_validation.cfg")
+    capture = settings("counters_validation_capture.cfg")
+    assert set(capture) == set(base)
+    differ = {k for k in base if base[k] != capture[k]}
+    assert len(differ) == 1
+    (name,) = differ
+    assert base[name] == "OFF"
+    assert capture[name] == "PERIODIC,NODE"
+
+
 def test_the_build_defaults_to_the_all_off_counter_file():
     # A fresh experiment tree measures; the profiling example is opted into.
     text = (repo_root() / "CMakeLists.txt").read_text()

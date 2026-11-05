@@ -860,6 +860,20 @@ function(arts_counters_captured out)
     set(${out} ${_all} PARENT_SCOPE)
 endfunction()
 
+# arts_counters_periodic(out) is TRUE when the config captures some counter
+# PERIODIC, so every run starts the capture thread and, on a run of several
+# ranks, the counters' time sync, whose request is one more message from every
+# rank but the master.
+function(arts_counters_periodic out)
+    file(STRINGS "${COUNTER_CONFIG_FILE}" _lines
+         REGEX "^[A-Za-z0-9_]+[ \t]*=[ \t]*PERIODIC")
+    if(_lines)
+        set(${out} TRUE PARENT_SCOPE)
+    else()
+        set(${out} FALSE PARENT_SCOPE)
+    endif()
+endfunction()
+
 # counter_smoke_value: the EDTs a program creates and runs are counted exactly,
 # main EDT included.  No cell changes how EDTs are counted.
 if(ARTS_TEST_REFERENCE_TREE)
@@ -896,6 +910,22 @@ if(ARTS_TEST_REFERENCE_TREE)
                 LABELS "multinode" TIMEOUT 60 RESOURCE_LOCK "arts_runtime"
                 ENVIRONMENT "ARTS_CONFIG=${_cfg}")
         endforeach()
+    endif()
+endif()
+
+# The stop wakes the capture thread: with a capture interval of a day, a run
+# that ends 200 ms after its EDT starts, when the capture thread is waiting for
+# its first capture, still ends well within the test's 10 s, since the stop
+# signals the thread's wait instead of leaving it to sleep out the interval.
+if(ARTS_TEST_REFERENCE_TREE)
+    arts_counters_periodic(_p)
+    if(_p)
+        arts_test_cfg(_cfg 1n_20w)
+        arts_add_test(capture_stop_wakes COMMAND term_shutdown 0 200)
+        set_tests_properties(capture_stop_wakes PROPERTIES
+            LABELS "single_node" TIMEOUT 10 RESOURCE_LOCK "arts_runtime"
+            ENVIRONMENT
+            "ARTS_CONFIG=${_cfg};counter_capture_interval=86400000")
     endif()
 endif()
 
@@ -1160,14 +1190,25 @@ endif()
 # takes in the shutdown message is not fixed (a receiver also stops when it
 # sees the initiator's connection close), so its receives are left out.  The
 # read is served by one one-sided payload from the home under this tree's
-# cell.
+# cell.  Rank 1 sends its read request and the SHUTDOWN post and, where the
+# tree captures a PERIODIC counter, its time-sync request, which leaves before
+# any EDT of rank 1 can run and which rank 0 answers: 3 sends there, else 2.
+# The post is best effort and counts only when the transport accepts it; the
+# connection is up here, since rank 1 has just sent its read request, so a
+# refused post would read as one send less.
 arts_counters_captured(_c NUM_REMOTE_SEND NUM_REMOTE_RECEIVE BYTES_REMOTE_SENT
                        BYTES_REMOTE_RECEIVED NUM_DB_PAYLOAD_SENT
                        BYTES_DB_PAYLOAD_SENT)
 if(_c AND ARTS_TEST_REFERENCE_TREE)
+    arts_counters_periodic(_p)
+    if(_p)
+        set(_ping_sends 3)
+    else()
+        set(_ping_sends 2)
+    endif()
     set(_ping 1:NUM_REMOTE_RECEIVE=0:NUM_REMOTE_SEND
               1:BYTES_REMOTE_RECEIVED=0:BYTES_REMOTE_SENT
-              1:NUM_REMOTE_SEND=2
+              1:NUM_REMOTE_SEND=${_ping_sends}
               0:NUM_DB_PAYLOAD_SENT=1 0:BYTES_DB_PAYLOAD_SENT=65536
               1:NUM_DB_PAYLOAD_SENT=0 1:BYTES_DB_PAYLOAD_SENT=0)
     set(_ping_runs 2n_9w_1p 2n_8w_2p)
