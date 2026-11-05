@@ -58,6 +58,8 @@
  * no entry, and arts_rt refuses to start a program no main_edt reached. */
 #pragma weak main_edt
 
+__attribute__((weak)) int arts_app_exit_status(void) { return 0; }
+
 int arts_rt(int argc, char **argv) {
   if (main_edt == NULL) {
     (void)fputs("[ARTS] arts_rt: no main_edt reached the runtime: none is "
@@ -114,7 +116,7 @@ int arts_rt(int argc, char **argv) {
      * begun during startup reports nothing: only the signal watcher begins
      * one there, and it reports the signal. */
     if (!arts_transport_setup_incoming()) {
-      return -1;
+      return 1;
     }
   }
 
@@ -138,5 +140,5 @@ int arts_rt(int argc, char **argv) {
   /* The run is only successful if every rank was.  This process cannot see a
      peer's status on a distributed launcher, but for the ranks it spawned
      itself it can, and it is the only process whose status the caller sees. */
-  return spawned_rank_failures > 0 ? -1 : 0;
+  return spawned_rank_failures > 0 ? 1 : arts_app_exit_status();
 }

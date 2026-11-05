@@ -128,6 +128,5 @@ int main(int argc, char **argv) {
   /* Merge the EDT-side verdict with the runtime's: checks run on worker
      threads, so a test that only printed would stay green through the very
      defect it exists to catch. */
-  int rc = arts_rt(argc, argv);
-  return rc != 0 ? 1 : arts_test_status();
+  return arts_rt(argc, argv);
 }

@@ -21,9 +21,8 @@
  * Pins the NULL-group and inherit return values.
  */
 #include "arts.h"
+#include "../test_failure_status.h"
 #include <stdint.h>
-
-static int g_failed = 0;
 
 /* Runs inside group g (passed both as paramv[0] and as the EDT's
  * group).  Verifies the accessor returns g, then spawns a child that
@@ -43,7 +42,7 @@ void child_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_printf("FAIL api_current_group_null: child did not inherit "
                 "current group (got %ld want %ld)\n",
                 (long)cur, (long)g);
-    g_failed = 1;
+    arts_test_fail();
   } else {
     arts_printf("  ok: child inherited current group %ld\n", (long)g);
   }
@@ -59,7 +58,7 @@ void member_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_printf("FAIL api_current_group_null: group member EDT current group "
                 "%ld != joined group %ld\n",
                 (long)cur, (long)g);
-    g_failed = 1;
+    arts_test_fail();
   } else {
     arts_printf("  ok: group member EDT reports joined group %ld\n", (long)g);
   }
@@ -75,7 +74,7 @@ void done_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)paramv;
   (void)depc;
   (void)depv;
-  if (!g_failed) {
+  if (arts_test_status() == 0) {
     arts_printf("PASS api_current_group_null: NULL outside group, g "
                 "inside, inherited by child\n");
   }
@@ -97,7 +96,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_printf("FAIL api_current_group_null: top-level group is %ld, "
                 "expected NULL_GUID\n",
                 (long)top);
-    g_failed = 1;
+    arts_test_fail();
   } else {
     arts_printf("  ok: top-level main_edt has no group (NULL_GUID)\n");
   }
@@ -119,6 +118,5 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 int main(int argc, char **argv) {
-  arts_rt(argc, argv);
-  return g_failed;
+  return arts_rt(argc, argv);
 }

@@ -161,6 +161,5 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 int main(int argc, char **argv) {
-  int rc = arts_rt(argc, argv);
-  return rc ? 1 : arts_test_status();
+  return arts_rt(argc, argv);
 }

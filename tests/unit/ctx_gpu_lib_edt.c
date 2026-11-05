@@ -35,6 +35,7 @@
  * Pins correct lib-EDT nested context handling.
  */
 #include "arts.h"
+#include "../test_failure_status.h"
 
 #if !defined(ARTS_TEST_GPU)
 
@@ -52,8 +53,6 @@ int main(void) {
 
 #include <stdint.h>
 
-static int g_failed = 0;
-
 /* Library EDT body: runs on the worker thread with the GPU stream available,
  * bracketed by set/unset.  depv[0] = counter DB (RW). */
 void lib_body(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
@@ -67,7 +66,7 @@ void lib_body(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   if (arts_current_edt == NULL) {
     arts_printf(
         "FAIL ctx_gpu_lib_edt: lib body has no arts_current_edt context\n");
-    g_failed = 1;
+    arts_test_fail();
   }
 
   /* (1) a DB created here is tracked into the lib EDT's context: the previous
@@ -83,7 +82,7 @@ void lib_body(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   if (arts_vector_count(list) != 1) {
     arts_printf("FAIL ctx_gpu_lib_edt: lib-body created_db_list length != 1 "
                 "(epilogue did not drain / track did not append)\n");
-    g_failed = 1;
+    arts_test_fail();
   }
   /* Leave ndb to the worker-side epilogue arts_release_created_dbs (do NOT
    * explicitly release): exercises the worker-thread release path. */
@@ -103,9 +102,9 @@ void successor(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   int *c = (int *)depv[0].ptr;
   if (c == NULL || c[0] != 1) {
     arts_printf("FAIL ctx_gpu_lib_edt: counter not written by lib body\n");
-    g_failed = 1;
+    arts_test_fail();
   }
-  if (!g_failed) {
+  if (arts_test_status() == 0) {
     arts_printf("PASS ctx_gpu_lib_edt: lib-EDT nested set/unset + tracking + "
                 "worker-side release OK\n");
   }
@@ -149,8 +148,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 int main(int argc, char **argv) {
-  arts_rt(argc, argv);
-  return g_failed;
+  return arts_rt(argc, argv);
 }
 
 #endif /* ARTS_TEST_GPU */

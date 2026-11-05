@@ -21,6 +21,7 @@
  *      (ctest TIMEOUT).
  */
 #include "arts.h"
+#include "../test_failure_status.h"
 #include "arts/utils/vector.h"
 
 #include "arts/edt_context.h" /* created-DB list */
@@ -30,11 +31,9 @@
 /* Exceeds the container's initial capacity (8) so growth is exercised. */
 #define NDB 12
 
-static int g_failed = 0;
-
 static void fail(const char *what) {
   arts_printf("FAIL ctx_created_db_release_order: %s\n", what);
-  g_failed = 1;
+  arts_test_fail();
   arts_shutdown();
 }
 
@@ -138,6 +137,5 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 int main(int argc, char **argv) {
-  int rc = arts_rt(argc, argv);
-  return rc ? 1 : g_failed;
+  return arts_rt(argc, argv);
 }

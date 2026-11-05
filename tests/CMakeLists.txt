@@ -243,12 +243,16 @@ if(ARTS_CXL_TREE_RESIDENCY)
     list(APPEND TEST_PROGRAMS cxl_home_turn_costs)
 endif()
 
-# Function to create a test executable.  RUNTIME names the runtime library it
+# Function to create a test executable.  SOURCE names the source file's stem
+# when it differs from the target's.  RUNTIME names the runtime library it
 # links, arts_static unless a test needs a twin of it.
 function(add_arts_test test_name)
-    cmake_parse_arguments(ARG "" "RUNTIME" "" ${ARGN})
+    cmake_parse_arguments(ARG "" "RUNTIME;SOURCE" "" ${ARGN})
     if(NOT ARG_RUNTIME)
         set(ARG_RUNTIME arts_static)
+    endif()
+    if(NOT ARG_SOURCE)
+        set(ARG_SOURCE ${test_name})
     endif()
     # Sources live under one of the ocr/ unit/ subdirectories.
     #   ocr/  — portable OCR programs (arts_rt main, no protocol #if; valid
@@ -257,8 +261,8 @@ function(add_arts_test test_name)
     #           guards; exercise ARTS-internal mechanisms)
     set(_src "")
     foreach(_sub ocr unit)
-        if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/${_sub}/${test_name}.c)
-            set(_src ${_sub}/${test_name}.c)
+        if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/${_sub}/${ARG_SOURCE}.c)
+            set(_src ${_sub}/${ARG_SOURCE}.c)
         endif()
     endforeach()
     add_executable(${test_name} ${_src})
@@ -3366,7 +3370,8 @@ endif()
 # ctest sees the MASTER rank's exit status, and the local launcher folds every
 # rank it spawned into it: a rank that dies on a signal or exits non-zero makes
 # the master's arts_rt() return non-zero.  A rank's own verdict therefore
-# reaches ctest when that rank's main() returns arts_test_status() (see
+# reaches ctest when that rank's main() returns arts_rt()'s result, which is
+# arts_test_status() through arts_app_exit_status (see
 # tests/test_failure_status.h).
 #
 # This gate is the second net, on every rank and single-node alike: a check

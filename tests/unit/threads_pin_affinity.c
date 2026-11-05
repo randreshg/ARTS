@@ -114,6 +114,5 @@ int main(int argc, char **argv) {
   arts_config_load(&cfg);
   g_pin_requested = cfg.pin_threads;
   arts_config_destroy(&cfg);
-  int rc = arts_rt(argc, argv);
-  return rc ? 1 : arts_test_status();
+  return arts_rt(argc, argv);
 }

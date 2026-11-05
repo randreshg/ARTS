@@ -513,10 +513,22 @@ int arts_printf(const char *format, ...);
  *
  * @param argc Argument count from main().
  * @param argv Argument vector from main().
- * @return 0 on success.
+ * @return 1 when no main_edt reached the runtime, a rank this process spawned
+ *         failed, or the rank mesh could not be established; otherwise
+ *         arts_app_exit_status().
  * @see arts_shutdown
+ * @see arts_app_exit_status
  */
 int arts_rt(int argc, char **argv);
+
+/**
+ * @brief The program's own exit status, read by arts_rt() once the run ended.
+ *
+ * The runtime defines a weak default returning 0; a program defines it to
+ * carry a verdict its tasks reached out of the run.  It is called on the
+ * thread that called arts_rt(), after every runtime thread has joined.
+ */
+int arts_app_exit_status(void);
 
 /**
  * @brief Shut down the ARTS runtime.

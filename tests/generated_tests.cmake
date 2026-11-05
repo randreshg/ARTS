@@ -665,6 +665,27 @@ register_pure_unit_test(dep_alias_classify TIMEOUT 30)
 set_tests_properties(dep_alias_classify PROPERTIES PASS_REGULAR_EXPRESSION "PASS dep_alias_classify")
 
 # --- runtime startup/shutdown/threads/signals ---
+# A verdict recorded by a task on the last rank is the exit status arts_rt
+# returns, through the program's arts_app_exit_status.  The shared-library
+# twin pins that the library's weak default yields to the program's definition.
+add_arts_test(app_status_reaches_exit)
+register_single_node_test(app_status_reaches_exit TIMEOUT 30 STATUS 1)
+set_tests_properties(app_status_reaches_exit PROPERTIES
+    PASS_REGULAR_EXPRESSION "APP_STATUS_RECORDED app_status_reaches_exit")
+register_multinode_test(app_status_reaches_exit TIMEOUT 60 STATUS 1
+                        VARIANTS 2n_9w_1p)
+set_tests_properties(app_status_reaches_exit_2n_9w_1p PROPERTIES
+    PASS_REGULAR_EXPRESSION "APP_STATUS_RECORDED app_status_reaches_exit"
+    ARTS_EXPECTS_RANK_FAILURE 1)
+if(TARGET arts_shared)
+    add_arts_test(app_status_reaches_exit_shared
+                  SOURCE app_status_reaches_exit RUNTIME arts_shared)
+    register_single_node_test(app_status_reaches_exit_shared TIMEOUT 30
+                              STATUS 1)
+    set_tests_properties(app_status_reaches_exit_shared PROPERTIES
+        PASS_REGULAR_EXPRESSION "APP_STATUS_RECORDED app_status_reaches_exit")
+endif()
+
 add_arts_test(runtime_barrier_counts)
 register_single_node_test(runtime_barrier_counts TIMEOUT 60)
 

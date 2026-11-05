@@ -29,6 +29,7 @@
  * Pins correct lib-EDT GPU-context reads.
  */
 #include "arts.h"
+#include "../test_failure_status.h"
 
 #if !defined(ARTS_TEST_GPU)
 
@@ -43,8 +44,6 @@ int main(void) {
 
 #include "arts/gpu.h"
 #include <stdint.h>
-
-static int g_failed = 0;
 
 /* Grid/block dims the lib EDT is created with; the lib body reads them back. */
 #define GX 7u
@@ -104,7 +103,7 @@ void successor(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   int *verdict = (int *)depv[0].ptr;
   if (verdict == NULL || *verdict != 1) {
     arts_printf("FAIL api_gpu_context_accessors: lib body reported failure\n");
-    g_failed = 1;
+    arts_test_fail();
   } else {
     arts_printf("PASS api_gpu_context_accessors: grid/block/stream/id correct "
                 "inside lib EDT\n");
@@ -147,8 +146,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 int main(int argc, char **argv) {
-  arts_rt(argc, argv);
-  return g_failed;
+  return arts_rt(argc, argv);
 }
 
 #endif /* ARTS_TEST_GPU */

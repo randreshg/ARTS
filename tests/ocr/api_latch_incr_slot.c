@@ -22,10 +22,9 @@
  * Config-agnostic single-node public-API check.
  */
 #include "arts.h"
+#include "../test_failure_status.h"
 #include <stdatomic.h>
 #include <stdint.h>
-
-static int g_failed = 0;
 
 enum { SEEN_INCR, SEEN_LINGER, SEEN_NO_INCR, SEEN_COUNT };
 
@@ -57,7 +56,7 @@ static void expect_seen(const record_t *rec, unsigned int idx, int decr,
                 "DECR #%d (0x%lx)\n",
                 what, (unsigned long)got, decr,
                 (unsigned long)DECR_DATA(decr));
-    g_failed = 1;
+    arts_test_fail();
   }
 }
 
@@ -73,12 +72,12 @@ void check_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_printf("FAIL api_latch_incr_slot: dependents fired %u times, "
                 "expected %d\n",
                 n, SEEN_COUNT);
-    g_failed = 1;
+    arts_test_fail();
   }
   expect_seen(rec, SEEN_INCR, 4, "latch=3 + INCR");
   expect_seen(rec, SEEN_LINGER, 4, "the late binder of latch=3 + INCR");
   expect_seen(rec, SEEN_NO_INCR, 3, "latch=3 without INCR");
-  if (!g_failed) {
+  if (arts_test_status() == 0) {
     arts_printf("PASS api_latch_incr_slot: INCR held the fire to the 4th "
                 "DECR, no INCR fired at the 3rd, linger re-bind fired once\n");
   }
@@ -149,6 +148,5 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 int main(int argc, char **argv) {
-  int rc = arts_rt(argc, argv);
-  return rc ? 1 : g_failed;
+  return arts_rt(argc, argv);
 }

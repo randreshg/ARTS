@@ -43,18 +43,20 @@
 /* Carries a failure detected inside an EDT out to the process exit status.
  *
  * A test that only PRINTS its verdict cannot fail: the checks run on worker
- * threads, and by the time main() regains control after arts_rt() it has
- * nothing left to look at, so it returns 0 no matter what happened.  The
- * counter below is the missing channel — bumped where the failure is found,
- * read where the process reports.
+ * threads, and main() regains control only after arts_rt() with nothing left
+ * to look at.  The counter below is the channel — bumped where the failure is
+ * found, returned by arts_rt() through arts_app_exit_status() below.
  *
  * Atomic because the checks run on whatever worker the scheduler picked, and
  * several may find a failure at once.
  *
  * SCOPE: one process, so this carries a rank's OWN verdict.  Every rank's
- * main() returns it; the local launcher judges each spawned rank's exit status,
- * so a failing peer makes the master's arts_rt() return non-zero.
+ * main() returns arts_rt()'s result, which carries this status; the local
+ * launcher judges each spawned rank's exit status, so a failing peer makes
+ * the master's arts_rt() return non-zero.
  */
+
+#include "arts.h"
 
 #include <stdatomic.h>
 
@@ -68,5 +70,9 @@ static inline void arts_test_fail(void) {
 static inline int arts_test_status(void) {
   return atomic_load_explicit(&arts_test_failures, memory_order_relaxed) ? 1 : 0;
 }
+
+/* The program's verdict as arts_rt's result.  Defined strongly here, so a
+ * program includes this header in exactly one translation unit. */
+int arts_app_exit_status(void) { return arts_test_status(); }
 
 #endif /* ARTS_TEST_FAILURE_STATUS_H */

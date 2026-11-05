@@ -14,6 +14,7 @@
  * the default (CPU) build dir.
  */
 #include "arts.h"
+#include "../test_failure_status.h"
 
 #if !defined(ARTS_USE_GPU)
 
@@ -30,8 +31,6 @@ int main(void) {
 
 #include <stdint.h>
 #include <stdio.h>
-
-static int g_failed = 0;
 
 /* GPU LC DB element count. */
 #define LC_ELEMS 16u
@@ -66,7 +65,7 @@ void consumer(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
         "after wrapper invalidations drained\n");
   } else {
     arts_printf("FAIL edt_gpu_lc_force_defer: consumer got NULL LC data\n");
-    g_failed = 1;
+    arts_test_fail();
   }
   arts_shutdown();
 }
@@ -97,8 +96,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 int main(int argc, char **argv) {
-  arts_rt(argc, argv);
-  return g_failed;
+  return arts_rt(argc, argv);
 }
 
 #endif /* ARTS_USE_GPU */
