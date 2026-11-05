@@ -148,6 +148,9 @@ add_pure_unit_src(rank_u64_map_advance SOURCES ${CMAKE_SOURCE_DIR}/libs/src/core
 # by the rank-matching scan rather than dereferenced.
 add_pure_unit_src(socket_set_ip_null_ifa PASS_REGEX "PASS socket_set_ip_null_ifa" TIMEOUT 60)
 add_pure_unit_src(socket_helpers PASS_REGEX "PASS socket_helpers" TIMEOUT 60)
+# Every mesh socket is close-on-exec and kept alive at both ends, and a
+# peer's closed or reset connection reads as gone once the mesh is armed.
+add_pure_unit_src(socket_mesh_liveness PASS_REGEX "PASS socket_mesh_liveness" TIMEOUT 60)
 add_pure_unit_src(socket_net_interface_remap PASS_REGEX "PASS socket_net_interface_remap" TIMEOUT 60)
 add_pure_unit_src(launcher_shell_quote PASS_REGEX "PASS launcher_shell_quote" TIMEOUT 60)
 add_pure_unit_src(stdio_forward_fidelity PASS_REGEX "PASS stdio_forward_fidelity" TIMEOUT 60)

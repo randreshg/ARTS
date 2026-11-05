@@ -50,7 +50,7 @@
 #include <net/if.h>
 #include <netdb.h>
 #include <netinet/in.h>
-#include <netinet/tcp.h> /* TCP_NODELAY */
+#include <netinet/tcp.h> /* TCP_NODELAY, TCP_KEEP* */
 #include <poll.h>
 #include <unistd.h>
 
@@ -74,6 +74,30 @@ static inline void arts_socket_set_nodelay(int fd) {
   setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
 }
 
+/* Keepalive on both ends of every established mesh connection.  An
+ * acknowledgement from the peer, its answer to this end's own probe included,
+ * restarts the idle clock, and four unanswered probes 10 s apart drop the
+ * connection 70 s after the peer's last answer, which arts_socket_peer_gone
+ * then reports: a host that died silently is a peer gone in bounded time. */
+static void socket_set_keepalive(int fd) {
+  static const struct {
+    int level;
+    int name;
+    int value;
+    const char *what;
+  } opts[] = {{SOL_SOCKET, SO_KEEPALIVE, 1, "SO_KEEPALIVE"},
+              {IPPROTO_TCP, TCP_KEEPIDLE, 30, "TCP_KEEPIDLE"},
+              {IPPROTO_TCP, TCP_KEEPINTVL, 10, "TCP_KEEPINTVL"},
+              {IPPROTO_TCP, TCP_KEEPCNT, 4, "TCP_KEEPCNT"}};
+  for (size_t i = 0; i < sizeof(opts) / sizeof(opts[0]); i++) {
+    if (setsockopt(fd, opts[i].level, opts[i].name, &opts[i].value,
+                   sizeof(opts[i].value)) != 0) {
+      ARTS_ERROR("setsockopt(%s) on a mesh connection: %s", opts[i].what,
+                 strerror(errno));
+    }
+  }
+}
+
 struct arts_config_s *arts_global_message_table;
 unsigned int arts_socket_ports;
 // SOCKETS!
@@ -86,6 +110,13 @@ int *arts_socket_receive_list;
 static struct pollfd *poll_incoming;
 
 static char *ip_list;
+
+/* Set once, by the main thread as the last act of arts_socket_sentinel_arm
+ * (release), and read by any thread through arts_socket_armed (acquire).  Its
+ * store publishes everything the main thread wrote before the arm: the
+ * fabric's peer table and endpoint, this rank's id and the mesh's arrays and
+ * descriptors. */
+static _Atomic(bool) g_socket_armed;
 
 void arts_transport_set_config(struct arts_config_s *config) {
   arts_global_message_table = config;
@@ -350,7 +381,7 @@ void arts_socket_setup(struct arts_config_s *config) {
  * will do there.  Availability is a point-in-time observation, never a
  * reservation: the port is released again before this returns. */
 static bool port_is_bindable(unsigned int port) {
-  int fd = socket(PF_INET, SOCK_STREAM, 0);
+  int fd = socket(PF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
   if (fd < 0) {
     return false;
   }
@@ -463,7 +494,7 @@ bool arts_transport_select_local_ports(struct arts_config_s *config) {
 void arts_socket_sentinel_arm(void) {
   /* Called once the bootstrap fi-address exchange has finished: no payload will
    * ever ride the TCP mesh again, but the connections themselves are kept open
-   * as zero-traffic LIVENESS SENTINELS — connection lifetime doubles as peer
+   * as payload-free LIVENESS SENTINELS — connection lifetime doubles as peer
    * liveness, and an orderly peer exit and a peer process death both surface as
    * HUP/EOF on the accept-side socket.  Closing any established socket here
    * would instead signal a false death to its peer, so only the listening
@@ -480,6 +511,32 @@ void arts_socket_sentinel_arm(void) {
       }
     }
   }
+  atomic_store_explicit(&g_socket_armed, true, memory_order_release);
+}
+
+bool arts_socket_armed(void) {
+  return atomic_load_explicit(&g_socket_armed, memory_order_acquire);
+}
+
+bool arts_socket_peer_gone(unsigned int rank) {
+  if (!arts_socket_armed() || rank == arts_global_rank_id) {
+    return false;
+  }
+  int fd = arts_socket_send_list[(size_t)rank * arts_socket_ports];
+  struct pollfd pfd = {.fd = fd, .events = POLLRDHUP};
+  if (poll(&pfd, 1, 0) > 0 &&
+      (pfd.revents & (POLLRDHUP | POLLHUP | POLLERR)) != 0) {
+    return true;
+  }
+  /* No byte rides this connection toward this rank, so none can hide an end
+   * of file from the peek.  A pending error the peek returns is cleared, but
+   * the end that raised it left the connection closed, so every later poll
+   * reports POLLHUP and every later peek reads 0. */
+  char b;
+  ssize_t r = recv(fd, &b, 1, MSG_PEEK | MSG_DONTWAIT);
+  return r == 0 || (r < 0 && (errno == ECONNRESET || errno == ETIMEDOUT ||
+                              errno == EPIPE || errno == EHOSTUNREACH ||
+                              errno == ENETUNREACH));
 }
 
 /* Single prober at a time: two progress threads polling the shared pollfd
@@ -612,63 +669,47 @@ static unsigned int arts_startup_budget_ms(void) {
 }
 
 static inline bool arts_transport_connect(int rank, unsigned int port) {
-
-  if (!remote_connection_alive[(rank * arts_socket_ports) + port]) {
-    int res =
-        connect(arts_socket_send_list[(rank * arts_socket_ports) + port],
-                (struct sockaddr *)(remote_server_send_list +
-                                    ((size_t)rank * arts_socket_ports) + port),
-                sizeof(struct sockaddr_in));
-    if (res < 0) {
-      remote_connection_alive[(rank * arts_socket_ports) + port] = false;
-
-      close(arts_socket_send_list[(rank * arts_socket_ports) + port]);
-      arts_socket_send_list[(rank * arts_socket_ports) + port] =
-          arts_get_new_socket();
-
-      /* The peer may not be listening yet: ranks of one job start with a
-       * skew the launcher does not bound, so retry until the startup budget
-       * is spent. */
-      int max_retries = (int)(arts_startup_budget_ms() / 100u);
-      int retry_count = 0;
-      while (connect(arts_socket_send_list[(rank * arts_socket_ports) + port],
-                     (struct sockaddr *)(remote_server_send_list +
-                                         ((size_t)rank * arts_socket_ports) +
-                                         port),
-                     sizeof(struct sockaddr_in)) < 0) {
-        /* Stop retrying once this rank's shutdown has begun.  During startup
-         * only the signal watcher begins one, and it reports the signal. */
-        if (atomic_load_explicit(&arts_node_info.shutdown_state,
-                                 memory_order_acquire)) {
-          return false;
-        }
-        if (++retry_count >= max_retries) {
-          struct sockaddr_in *addr = remote_server_send_list +
-                                     ((size_t)rank * arts_socket_ports) + port;
-          /* Loud: the caller exits the rank on this, and a rank that dies
-           * before its fabric is up leaves no other trace of why. */
-          ARTS_WARN("arts_transport_connect: rank %u could not connect to "
-                    "rank %d port %d in %d retries 100 ms apart (target "
-                    "%s:%d, errno=%d: %s)",
-                    arts_global_rank_id, rank, port, max_retries,
-                    inet_ntoa(addr->sin_addr), ntohs(addr->sin_port), errno,
-                    strerror(errno));
-          return false;
-        }
-        close(arts_socket_send_list[(rank * arts_socket_ports) + port]);
-        arts_socket_send_list[(rank * arts_socket_ports) + port] =
-            arts_get_new_socket();
-        usleep(100000);
-      }
-
-      remote_connection_alive[(rank * arts_socket_ports) + port] = true;
-
-      return true;
-    }
-
-    remote_connection_alive[(rank * arts_socket_ports) + port] = true;
+  size_t idx = ((size_t)rank * arts_socket_ports) + port;
+  if (remote_connection_alive[idx]) {
+    return true;
   }
+  struct sockaddr_in *addr = remote_server_send_list + idx;
+  if (connect(arts_socket_send_list[idx], (struct sockaddr *)addr,
+              sizeof(struct sockaddr_in)) < 0) {
+    close(arts_socket_send_list[idx]);
+    arts_socket_send_list[idx] = arts_get_new_socket();
 
+    /* The peer may not be listening yet: ranks of one job start with a
+     * skew the launcher does not bound, so retry until the startup budget
+     * is spent. */
+    int max_retries = (int)(arts_startup_budget_ms() / 100u);
+    int retry_count = 0;
+    while (connect(arts_socket_send_list[idx], (struct sockaddr *)addr,
+                   sizeof(struct sockaddr_in)) < 0) {
+      /* Stop retrying once this rank's shutdown has begun.  During startup
+       * only the signal watcher begins one, and it reports the signal. */
+      if (atomic_load_explicit(&arts_node_info.shutdown_state,
+                               memory_order_acquire)) {
+        return false;
+      }
+      if (++retry_count >= max_retries) {
+        /* Loud: the caller exits the rank on this, and a rank that dies
+         * before its fabric is up leaves no other trace of why. */
+        ARTS_WARN("arts_transport_connect: rank %u could not connect to "
+                  "rank %d port %d in %d retries 100 ms apart (target "
+                  "%s:%d, errno=%d: %s)",
+                  arts_global_rank_id, rank, port, max_retries,
+                  inet_ntoa(addr->sin_addr), ntohs(addr->sin_port), errno,
+                  strerror(errno));
+        return false;
+      }
+      close(arts_socket_send_list[idx]);
+      arts_socket_send_list[idx] = arts_get_new_socket();
+      usleep(100000);
+    }
+  }
+  socket_set_keepalive(arts_socket_send_list[idx]);
+  remote_connection_alive[idx] = true;
   return true;
 }
 
@@ -776,8 +817,9 @@ bool arts_transport_setup_incoming() {
             return false;
           }
 
-          arts_socket_receive_list[z + (j * arts_socket_ports)] = accept(
-              local_socket_receive[z], (struct sockaddr *)&test, &s_length);
+          arts_socket_receive_list[z + (j * arts_socket_ports)] =
+              accept4(local_socket_receive[z], (struct sockaddr *)&test,
+                      &s_length, SOCK_CLOEXEC);
           if (arts_socket_receive_list[z + (j * arts_socket_ports)] < 0) {
             ARTS_WARN("arts_transport_setup_incoming: rank %u accept failed "
                       "on port index %d: %s",
@@ -785,6 +827,8 @@ bool arts_transport_setup_incoming() {
             return false;
           }
           arts_socket_set_nodelay(
+              arts_socket_receive_list[z + (j * arts_socket_ports)]);
+          socket_set_keepalive(
               arts_socket_receive_list[z + (j * arts_socket_ports)]);
 
           poll_incoming[z + (j * arts_socket_ports)].fd =
@@ -832,7 +876,7 @@ void arts_transport_setup_outgoing() {
 }
 
 int arts_get_new_socket() {
-  int socket_out = socket(PF_INET, SOCK_STREAM, 0);
+  int socket_out = socket(PF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
   if (socket_out < 0) {
     ARTS_ERROR("socket() failed: %s", strerror(errno));
   }
@@ -843,7 +887,7 @@ int arts_get_new_socket() {
 int arts_get_socket_listening(struct sockaddr_in *listening_socket,
                               unsigned int port) {
   memset((char *)listening_socket, 0, sizeof(*listening_socket));
-  int socket_out = socket(PF_INET, SOCK_STREAM, 0);
+  int socket_out = socket(PF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
   if (socket_out < 0) {
     ARTS_ERROR("socket() failed: %s", strerror(errno));
   }
@@ -856,7 +900,7 @@ int arts_get_socket_listening(struct sockaddr_in *listening_socket,
 int arts_get_socket_outgoing(struct sockaddr_in *outgoing_socket,
                              unsigned int port, in_addr_t s_addr) {
   memset((char *)outgoing_socket, 0, sizeof(*outgoing_socket));
-  int socket_out = socket(PF_INET, SOCK_STREAM, 0);
+  int socket_out = socket(PF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
   if (socket_out < 0) {
     ARTS_ERROR("socket() failed: %s", strerror(errno));
   }

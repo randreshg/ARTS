@@ -48,8 +48,9 @@ extern "C" {
 #include <stdint.h>
 
 /* The bootstrap mesh's sockets, set up by arts_transport_setup_outgoing /
- * _incoming before any runtime thread exists and read by the address
- * exchange on that same thread:
+ * _incoming on the main thread and read by the address exchange on that same
+ * thread, and by any thread from arts_socket_armed returning true until
+ * arts_socket_cleanup:
  *   arts_socket_send_list[peer * arts_socket_ports + port]  this rank's
  *     connection to peer;
  *   arts_socket_receive_list[port + conn * arts_socket_ports]  accepted peer
@@ -75,12 +76,29 @@ void arts_transport_set_config(struct arts_config_s *config);
 bool arts_transport_select_local_ports(struct arts_config_s *config);
 void arts_transport_setup_outgoing();
 bool arts_transport_setup_incoming();
-/* Convert the bootstrap TCP mesh into zero-traffic liveness sentinels once the
+/* Convert the bootstrap TCP mesh into payload-free liveness sentinels once the
  * fi-address exchange has finished: every established connection stays open
  * (connection lifetime doubles as peer liveness — orderly close and process
  * death both surface as HUP on the peer's accept-side socket); only the
- * listening sockets are closed.  The launcher / stdio sockets are untouched. */
+ * listening sockets are closed.  The launcher / stdio sockets are untouched.
+ * Its last act arms the mesh (arts_socket_armed). */
 void arts_socket_sentinel_arm(void);
+
+/* Whether the mesh is armed.  True only after arts_socket_sentinel_arm, whose
+ * arming publishes to the caller, whatever its thread, the fabric's peer
+ * table and endpoint, this rank's id and the mesh's sockets.  Callable from
+ * any thread and from a signal handler (one lock-free atomic load).  What it
+ * publishes stays valid until arts_socket_cleanup, which must run only once
+ * every thread that may call this or arts_socket_peer_gone has stopped. */
+bool arts_socket_armed(void);
+
+/* Whether this rank's connection to `rank` (< arts_global_rank_count) shows
+ * the peer gone: closed or reset by it, or dropped by keepalive.  False for
+ * this rank and before the mesh is armed.  Non-blocking, callable from any
+ * thread and async-signal-safe (an atomic load, poll and recv; it may change
+ * errno), until arts_socket_cleanup.  It never clears what it reports: once
+ * true, it stays true. */
+bool arts_socket_peer_gone(unsigned int rank);
 
 /* Non-blocking probe of the accept-side sentinels for a closed peer
  * (POLLHUP/POLLERR/EOF).  Called from a progress thread's idle cycle; on a

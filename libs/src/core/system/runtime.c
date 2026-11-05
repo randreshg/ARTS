@@ -140,7 +140,7 @@ void arts_runtime_node_init(struct arts_config_s *config) {
     arts_net_selfcheck();
     /* Bootstrap is complete: the fi-address exchange was the last payload to
      * ride the TCP mesh.  All live traffic now flows over the fabric; the mesh
-     * connections stay open as zero-traffic liveness sentinels (a peer's
+     * connections stay open as payload-free liveness sentinels (a peer's
      * close surfaces as HUP, probed by a progress thread) and only the
      * listeners close. */
     arts_socket_sentinel_arm();
