@@ -789,6 +789,30 @@ else()
         PASS_REGULAR_EXPRESSION "FIRST_CONTACT: rank 1 ends the run")
 endif()
 
+# Every worker of rank 1 floods rank 2, which never contacted rank 1, while
+# rank 2 ends the run: rank 1 learns of the end from rank 2's closed
+# connection, at a probe of its progress loop or of a send held in the
+# ring-full spin, and drops its sends from then on, within the liveness bound
+# of startup, 10 s and teardown.  Where the build prints INFO, rank 1's entry
+# must name an origin of a rank that learned of the end.
+add_arts_test(shutdown_under_flood)
+register_multinode_test(shutdown_under_flood TIMEOUT 40 VARIANTS 4n_4w_1p)
+set(_uf_end "SHUTDOWN_UNDER_FLOOD: rank 2 ends the run")
+set(_uf_fail
+    "fi_inject failed;cq error on a live run;after this thread began the teardown")
+if(ARTS_LOG_LEVEL GREATER_EQUAL 2)
+    set(_uf_r1 "\\[1:[0-9]+\\] \\[INFO\\] arts_enter_shutdown_state: rank=1 origin=")
+    set_tests_properties(shutdown_under_flood_4n_4w_1p PROPERTIES
+        PASS_REGULAR_EXPRESSION
+        "${_uf_end}.*${_uf_r1}(WIRE|SENTINEL|BACKPRESSURE)|${_uf_r1}(WIRE|SENTINEL|BACKPRESSURE).*${_uf_end}"
+        FAIL_REGULAR_EXPRESSION
+        "${_uf_fail};${_uf_r1}(APP|SIGNAL|FAULT|RUNTIME_ERROR)")
+else()
+    set_tests_properties(shutdown_under_flood_4n_4w_1p PROPERTIES
+        PASS_REGULAR_EXPRESSION "${_uf_end}"
+        FAIL_REGULAR_EXPRESSION "${_uf_fail}")
+endif()
+
 # --- random ---
 # Concurrent draws from the runtime's generator stay in range and do not
 # collide.  Its draws are recorded into one block with no order among them.
@@ -1087,7 +1111,7 @@ endif()
 # on rank 1 that reads it and shuts the run down.  Rank 1 dispatches every
 # message rank 0 sends, and takes in the payload whole however many pieces it
 # travels in (the split variant cuts it into sixteen); whether rank 0
-# dispatches the shutdown message is not fixed (a receiver also stops when it
+# takes in the shutdown message is not fixed (a receiver also stops when it
 # sees the initiator's connection close), so its receives are left out.  The
 # read is served by one one-sided payload from the home under this tree's
 # cell.

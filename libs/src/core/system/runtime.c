@@ -144,8 +144,8 @@ void arts_runtime_node_init(struct arts_config_s *config) {
     /* Bootstrap is complete: the fi-address exchange was the last payload to
      * ride the TCP mesh.  All live traffic now flows over the fabric; the mesh
      * connections stay open as payload-free liveness sentinels (a peer's
-     * close surfaces as HUP, probed by a progress thread) and only the
-     * listeners close. */
+     * close surfaces as HUP, probed by the progress loop and the ring-full
+     * spin) and only the listeners close. */
     arts_socket_sentinel_arm();
   } else {
 #ifdef ARTS_DEBUG_INJECTION
@@ -772,7 +772,7 @@ int arts_runtime_loop() {
              arts_thread_info.thread_id, arts_thread_info.role);
   switch (arts_thread_info.role) {
   case ARTS_ROLE_PROGRESS: {
-    unsigned int sentinel_spin = 0;
+    uint64_t probe_ns = 0;
     while (
         atomic_load_explicit(&arts_thread_info.alive, memory_order_acquire)) {
       /* Busy-poll by design: the thread budget dedicates a PU to every
@@ -784,15 +784,15 @@ int arts_runtime_loop() {
       if (!arts_net_progress()) {
         arts_runtime_idle_pause();
       }
-      /* Peer-liveness probe: the fabric is connectionless, so a peer that dies
-       * without the shutdown handshake produces no fabric event — the TCP
-       * liveness sentinels carry that signal instead.  poll() is a syscall, so
-       * throttle it to every N loop iterations (an idle iteration is now
-       * nanoseconds, not a sleep); N trades a few ms of dead-peer detection
-       * latency for staying off the syscall path — ample for liveness. */
-      if (++sentinel_spin >= 16384u) {
-        sentinel_spin = 0;
-        arts_socket_sentinel_check();
+      /* Peer-liveness probe: the fabric is connectionless, so a peer that
+       * ends without a SHUTDOWN reaching this rank produces no fabric event,
+       * and the TCP liveness sentinels carry that signal instead.  Their
+       * poll is a syscall, so it runs on a clock cadence rather than on
+       * every iteration, which keeps the detection latency independent of
+       * how many iterations run. */
+      if (arts_socket_probe_due(&probe_ns) && arts_socket_sentinel_check()) {
+        arts_enter_shutdown_state(ARTS_EXIT_SENTINEL);
+        arts_runtime_stop();
       }
     }
     break;

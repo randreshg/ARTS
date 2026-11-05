@@ -1538,6 +1538,24 @@ if(ARTS_MALLOC STREQUAL "mimalloc")
     target_link_libraries(net_src_bind PRIVATE
         Threads::Threads mimalloc-static arts::libfabric ${RT_LIBRARY})
     register_pure_unit_test(net_src_bind TIMEOUT 60)
+
+    # net_gate_drop_fabric — whitebox for a SHUTDOWN frame at the reap, over a
+    # self-only fabric: a progress call enters the shutdown before it
+    # dispatches the rest of its burst and never dispatches the frame, and a
+    # send held in the ring-full spin stands down once its own reap took the
+    # frame in.  Same standalone harness shape as net_selfsend.
+    add_executable(net_gate_drop_fabric unit/net_gate_drop_fabric.c $<TARGET_OBJECTS:arts_regpool>)
+    target_include_directories(net_gate_drop_fabric PRIVATE
+        ${ARTS_PUBLIC_INCLUDE_DIR} ${ARTS_INTERNAL_INCLUDE_DIR}
+        ${ARTS_BUILD_INTERNAL_INCLUDE_DIR})
+    arts_apply_protocol(net_gate_drop_fabric ${ARTS_COHERENCE_ARM} ${ARTS_WRITE_POLICY} ${ARTS_RELEASE_POLICY})
+    set_test_log_level(net_gate_drop_fabric 2)
+    target_link_libraries(net_gate_drop_fabric PRIVATE
+        Threads::Threads mimalloc-static arts::libfabric ${RT_LIBRARY})
+    register_pure_unit_test(net_gate_drop_fabric TIMEOUT 60)
+    set_tests_properties(net_gate_drop_fabric PROPERTIES
+        ENVIRONMENT "FI_PROVIDER=tcp"
+        PASS_REGULAR_EXPRESSION "PASS net_gate_drop_fabric")
 endif()
 
 # net_gate_drop — whitebox for the send gate (transport/net.c): a send after

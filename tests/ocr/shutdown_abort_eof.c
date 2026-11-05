@@ -8,10 +8,10 @@
 ///
 /// arts_abort exits at once with no SHUTDOWN post, so the other ranks
 /// learn of the departure only through the liveness sentinel: the departed
-/// rank's connection closes, and the probe enters the same idempotent shutdown
-/// an inbound shutdown message does.  The property under test: a non-master
-/// abort makes every surviving rank detect the departure and exit cleanly (no
-/// hang).
+/// rank's connection closes, and the thread whose probe sees it enters the
+/// same idempotent shutdown an inbound shutdown message does.  The property
+/// under test: a non-master abort makes every surviving rank detect the
+/// departure and exit cleanly (no hang).
 ///
 /// An EDT placed on a NON-master rank (the last rank) calls arts_abort with a
 /// sentinel code.  That rank exits with the code, which the registration names

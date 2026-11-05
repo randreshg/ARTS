@@ -54,7 +54,6 @@
 #include "arts/ooo.h"
 #include "arts/runtime_state.h"
 #include "arts/system/print.h"
-#include "arts/system/shutdown.h"
 #include "arts/system/threads.h"
 #include "arts/transport/net.h"
 #include "arts/transport/protocol.h"
@@ -69,13 +68,9 @@ void arts_transport_setup(struct arts_config_s *config) {
 
 void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
   switch (packet->message_type) {
-  case MSG_SHUTDOWN: {
-    ARTS_INFO("Node %u: Received shutdown message from node %u",
-              arts_global_rank_id, packet->rank);
-    /* Another rank's end: this rank learns of it and posts nothing. */
-    arts_enter_shutdown_state(ARTS_EXIT_WIRE);
+  case MSG_SHUTDOWN:
+    /* Recognized by the reap that takes it in, and never dispatched. */
     break;
-  }
   case MSG_EDT_SATISFY_SLOT: {
     struct arts_msg_edt_satisfy_slot_packet_s *pack =
         (struct arts_msg_edt_satisfy_slot_packet_s *)(packet);

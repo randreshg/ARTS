@@ -20,6 +20,12 @@
  *      reads gone, and so does the RST once the peek took its error; each
  *      errno of the peek's list reads gone, an empty or interrupted peek
  *      does not.
+ *   5. arts_socket_probe_due is false before the arm whatever the cadence;
+ *      after it, false until the coarse monotonic clock reaches *next_ns,
+ *      and once it has, true with *next_ns moved 1 ms past the clock's
+ *      reading.  arts_socket_sentinel_check reports the accepted connection
+ *      a peer closed, and enters nothing (this test links no shutdown
+ *      entry).
  *
  * HARNESS: a two-rank mesh on loopback, one port per rank.  The port block is
  * chosen by arts_transport_select_local_ports, as a spawning rank does; the
@@ -52,6 +58,7 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <ifaddrs.h>
@@ -64,7 +71,6 @@
 #include "arts/runtime_state.h"
 #include "arts/system/config.h"
 #include "arts/system/print.h"
-#include "arts/system/shutdown.h"
 #include "arts/system/threads.h"
 #include "arts/transport/dispatcher.h"
 #include "arts/transport/netif.h"
@@ -85,8 +91,6 @@ void arts_abort(uint8_t code) { _exit(70 + code); }
 void *arts_malloc(size_t s) { return malloc(s); }
 void *arts_calloc(size_t n, size_t s) { return calloc(n, s); }
 void arts_free(void *p) { free(p); }
-void arts_enter_shutdown_state(enum arts_exit_origin origin) { (void)origin; }
-void arts_runtime_stop(void) {}
 void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
   (void)packet;
 }
@@ -186,6 +190,12 @@ static bool loopback_pair(int *near, int *far) {
   return *far >= 0;
 }
 
+static uint64_t coarse_now_ns(void) {
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC_COARSE, &ts);
+  return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+}
+
 /* Wait until the kernel delivered the far end's FIN or RST to fd. */
 static bool await_hangup(int fd) {
   struct pollfd p = {.fd = fd, .events = POLLRDHUP};
@@ -264,6 +274,9 @@ int main(void) {
   arts_socket_send_list[1 * arts_socket_ports] = near_a;
   CHECK(!arts_socket_armed(), "armed before the arm");
   CHECK(!arts_socket_peer_gone(1), "a peer reported gone before the arm");
+  uint64_t next_ns = 0;
+  CHECK(!arts_socket_probe_due(&next_ns) && next_ns == 0,
+        "a probe due before the arm");
 
   arts_socket_sentinel_arm();
   CHECK(arts_socket_armed(), "not armed after the arm");
@@ -337,6 +350,22 @@ int main(void) {
   g_recv_errno = 0;
   g_poll_eintr = false;
   CHECK(!arts_socket_peer_gone(1), "an open peer reported gone");
+
+  /* ---- 5. the probe's cadence and the sentinel check ---- */
+  uint64_t now = coarse_now_ns();
+  next_ns = now + 3600ull * 1000000000ull;
+  uint64_t later = next_ns;
+  CHECK(!arts_socket_probe_due(&next_ns) && next_ns == later,
+        "a probe due before its time");
+  next_ns = now;
+  uint64_t before = coarse_now_ns();
+  CHECK(arts_socket_probe_due(&next_ns), "a due probe not reported");
+  uint64_t after = coarse_now_ns();
+  CHECK(next_ns >= before + 1000000ull && next_ns <= after + 1000000ull,
+        "a due probe did not move the cadence 1 ms past the clock");
+  CHECK(await_hangup(arts_socket_receive_list[0]),
+        "rank 1's end never reached its accepted connection");
+  CHECK(arts_socket_sentinel_check(), "a closed peer's sentinel not reported");
 
   printf("PASS socket_mesh_liveness\n");
   return 0;

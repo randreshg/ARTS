@@ -100,16 +100,22 @@ bool arts_socket_armed(void);
  * true, it stays true. */
 bool arts_socket_peer_gone(unsigned int rank);
 
+/* Whether a probe of the sentinels is due for the prober whose cadence
+ * *next_ns holds (0 = due at once): true when the mesh is armed
+ * (arts_socket_armed) and the coarse monotonic clock has reached *next_ns,
+ * which it then moves 1 ms past the clock's reading.  Each prober keeps its
+ * own *next_ns. */
+bool arts_socket_probe_due(uint64_t *next_ns);
+
 /* Non-blocking probe of the accept-side sentinels for a closed peer
- * (POLLHUP/POLLERR/EOF).  Called from a progress thread's idle cycle; on a
- * closed peer it enters the same idempotent shutdown entry an inbound
- * shutdown message does, as a rank that learned of the end, and returns true.
- * Stands down (false) once this rank's shutdown is in progress.  Nothing
- * orders any rank's close after every other rank has taken in a SHUTDOWN
- * post — the post is best effort and reaches only the peers its rank
- * contacted, and no rank waits for anyone before it tears down — so an
- * orderly teardown can reach the probe first; it joins the same shutdown.
- * Serialized internally to a single prober. */
+ * (POLLHUP/POLLERR/EOF): true when a peer's connection closed.  It enters
+ * nothing: its caller starts the shutdown, as a rank that learned of the
+ * end.  Stands down (false) once this rank's shutdown is in progress.
+ * Nothing orders any rank's close after every other rank has taken in a
+ * SHUTDOWN post — the post is best effort and reaches only the peers its
+ * rank contacted, and no rank waits for anyone before it tears down — so an
+ * orderly teardown can reach the probe first; its caller joins the same
+ * shutdown.  Serialized internally to a single prober. */
 bool arts_socket_sentinel_check(void);
 #ifdef __cplusplus
 }

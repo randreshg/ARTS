@@ -63,6 +63,7 @@
 #include "arts/defs.h"
 #include "arts/utils/malloc.h"
 #include "arts/memory/regpool.h"
+#include "arts/runtime.h"         /* arts_runtime_stop */
 #include "arts/system/identity.h" /* arts_global_rank_id / arts_global_rank_count */
 #include "arts/system/print.h"
 #include "arts/system/schedfuzz.h"
@@ -70,7 +71,7 @@
 #include "arts/transport/dispatcher.h"  /* arts_transport_dispatch_packet */
 #include "arts/transport/netif.h"       /* arts_netif_ipv4_addr */
 #include "arts/transport/protocol.h"    /* arts_msg_header_s, MSG_* */
-#include "arts/transport/socket.h"      /* arts_socket_peer_gone */
+#include "arts/transport/socket.h"      /* the post's and spin's mesh checks */
 
 /* ------------------------------------------------------------------------- */
 /* Tunables                                                                    */
@@ -291,6 +292,10 @@ static struct net_ring_s *g_rings[ARTS_NET_MAX_RINGS];
 static _Atomic(uint32_t) g_ring_count;
 static pthread_mutex_t g_ring_reg_lock = PTHREAD_MUTEX_INITIALIZER;
 static ARTS_THREAD_LOCAL struct net_ring_s *t_ring;
+/* When this thread's next sentinel probe from the ring-full spin is due, kept
+ * across its spins, so a thread that keeps re-entering one probes at most
+ * once per interval. */
+static ARTS_THREAD_LOCAL uint64_t t_spin_probe_ns;
 
 /* ------------------------------------------------------------------------- */
 /* Small helpers                                                               */
@@ -568,7 +573,9 @@ static bool net_ring_try_enqueue(struct net_ring_s *r, struct net_txn_s *txn,
  * landing buffers — but runs no handler.  Used by the backpressure spin so a
  * saturating producer keeps the CQ moving (its own TX completions free ring
  * slots; draining RX un-sticks a mutually-saturating peer) without re-entering
- * dispatch on a stack that may already hold a coherence lock. */
+ * dispatch on a stack that may already hold a coherence lock.  A SHUTDOWN it
+ * takes in starts this rank's shutdown on the calling thread once the token
+ * is released. */
 static bool net_reap_no_dispatch(void);
 
 /* Hand an already-materialized txn to the fabric.  Drains any earlier queued
@@ -614,10 +621,18 @@ static bool net_submit(struct net_txn_s *txn, bool is_ack) {
    *
    * Each pass reads the send gate: once this rank's shutdown point has
    * passed, the slot may never open (the peer the ring waits on may be gone),
-   * and nothing the txn carries is needed any more. */
+   * and nothing the txn carries is needed any more.  A pass also probes the
+   * liveness sentinels when this thread's probe is due: a peer that ended
+   * without a SHUTDOWN reaching this rank is otherwise seen only by a
+   * progress loop, and this spin may be running on that loop's thread. */
   for (;;) {
     net_drain_all_rings();
     net_reap_no_dispatch();
+    if (arts_socket_probe_due(&t_spin_probe_ns) &&
+        arts_socket_sentinel_check()) {
+      arts_enter_shutdown_state(ARTS_EXIT_BACKPRESSURE);
+      arts_runtime_stop();
+    }
     if (atomic_load_explicit(&g_net.quiescing, memory_order_relaxed)) {
       net_txn_complete(txn);
       return false;
@@ -784,7 +799,8 @@ static inline void net_cq_unlock(void) {
  * never runs under the CQ consumer lock.  Two node kinds share the list:
  *   - a MESSAGE node (rdzv_txid == 0): the fi_send bytes were COPIED off the
  *     multi-recv landing buffer (len bytes follow the node inline) and are
- *     dispatched through arts_transport_dispatch_packet;
+ *     dispatched through arts_transport_dispatch_packet; a SHUTDOWN frame
+ *     never becomes one (the reap that takes it in recognizes it);
  *   - a RENDEZVOUS-DATA node (rdzv_txid != 0, len == 0): a remote-write
  *     completion (FI_REMOTE_CQ_DATA) whose immediate is the rendezvous txid;
  *     dispatch runs the txid pairing (net_rdzv_data_arrived) — the pairing
@@ -1940,8 +1956,11 @@ static void net_quiesce_held_requests(void) {
  * when (net_reap_and_dispatch dispatches after releasing the token; net_reap_no_
  * dispatch never dispatches).  The RX bytes are copied out while the token is
  * held so the multi-recv buffer can be reposted immediately with no borrow
- * outliving the reap.  Returns true if any completion or error entry was seen. */
-static bool net_reap_locked(void) {
+ * outliving the reap.  A SHUTDOWN frame is counted as received and copied
+ * nowhere: it sets *saw_shutdown, and the caller starts this rank's shutdown
+ * once it has released the token, so the token never covers an entry.
+ * Returns true if any completion or error entry was seen. */
+static bool net_reap_locked(bool *saw_shutdown) {
   uint64_t done = net_run_held_writes(false);
   /* Retry any landing-buffer repost the provider EAGAIN-deferred: this runs
    * under the CQ token on every reap pass, and each pass drains completions —
@@ -1984,18 +2003,24 @@ static bool net_reap_locked(void) {
                      (unsigned long long)hdr->size, e->len, hdr->message_type,
                      hdr->rank);
         }
-        struct net_pending_s *pn = (struct net_pending_s *)arts_malloc(
-            sizeof(struct net_pending_s) + e->len);
-        pn->next = NULL;
-        pn->len = (unsigned)e->len;
-        pn->rdzv_txid = 0;
-        memcpy(pn + 1, e->buf, e->len);
-        if (g_pending_tail != NULL) {
-          g_pending_tail->next = pn;
+        if (hdr->message_type == MSG_SHUTDOWN) {
+          *saw_shutdown = true;
+          INCREMENT_BYTES_REMOTE_RECEIVED_BY(e->len);
+          INCREMENT_NUM_REMOTE_RECEIVE_BY(1);
         } else {
-          g_pending_head = pn;
+          struct net_pending_s *pn = (struct net_pending_s *)arts_malloc(
+              sizeof(struct net_pending_s) + e->len);
+          pn->next = NULL;
+          pn->len = (unsigned)e->len;
+          pn->rdzv_txid = 0;
+          memcpy(pn + 1, e->buf, e->len);
+          if (g_pending_tail != NULL) {
+            g_pending_tail->next = pn;
+          } else {
+            g_pending_head = pn;
+          }
+          g_pending_tail = pn;
         }
-        g_pending_tail = pn;
       }
       if (e->flags & FI_MULTI_RECV) {
         net_post_recv(((struct net_recv_ctx_s *)e->op_context)->idx);
@@ -2059,18 +2084,23 @@ static bool net_reap_locked(void) {
  * The whole pending list is spliced out under the token (this burst's messages
  * at the tail, plus anything a backpressured producer's net_reap_no_dispatch
  * left at the head) and dispatched FIFO with the token released, preserving
- * per-peer arrival order (oldest first).  Returns true if it reaped or
- * dispatched anything. */
+ * per-peer arrival order (oldest first).  A SHUTDOWN the burst took in starts
+ * this rank's shutdown on this thread before it dispatches the spliced list.
+ * Returns true if it reaped or dispatched anything. */
 static bool net_reap_and_dispatch(void) {
   if (!net_cq_trylock()) {
     return false; /* another progress thread is consuming the CQ */
   }
-  bool progressed = net_reap_locked();
+  bool saw_shutdown = false;
+  bool progressed = net_reap_locked(&saw_shutdown);
   struct net_pending_s *head = g_pending_head;
   g_pending_head = NULL;
   g_pending_tail = NULL;
   net_cq_unlock();
 
+  if (saw_shutdown) {
+    arts_enter_shutdown_state(ARTS_EXIT_WIRE);
+  }
   while (head != NULL) {
     struct net_pending_s *next = head->next;
     if (head->rdzv_txid != 0) {
@@ -2091,18 +2121,23 @@ static bool net_reap_and_dispatch(void) {
 
 /* Backpressure-assist reap: reap a bounded CQ burst under the token but do NOT
  * dispatch — leave the inbound messages on the pending list for the progress
- * loop.  Safe from any thread that does not already hold the CQ token (dispatch
- * always runs with the token released, so a producer stalled in net_submit never
- * holds it, and a worker never touches the CQ except here).  Completing TX frees
- * the ring slots the caller is spinning on; draining RX advances a mutually
+ * loop, and enter a SHUTDOWN it took in once the token is released.  Safe from
+ * any thread that does not already hold the CQ token (dispatch always runs
+ * with the token released, so a producer stalled in net_submit never holds it,
+ * and a worker never touches the CQ except here).  Completing TX frees the
+ * ring slots the caller is spinning on; draining RX advances a mutually
  * saturated peer's socket so its wedged TX progresses.  Returns true if it
  * reaped anything. */
 static bool net_reap_no_dispatch(void) {
   if (!net_cq_trylock()) {
     return false; /* the progress thread (or another producer) has the CQ */
   }
-  bool progressed = net_reap_locked();
+  bool saw_shutdown = false;
+  bool progressed = net_reap_locked(&saw_shutdown);
   net_cq_unlock();
+  if (saw_shutdown) {
+    arts_enter_shutdown_state(ARTS_EXIT_BACKPRESSURE);
+  }
   return progressed;
 }
 

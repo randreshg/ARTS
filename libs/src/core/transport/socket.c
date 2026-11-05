@@ -52,13 +52,13 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h> /* TCP_NODELAY, TCP_KEEP* */
 #include <poll.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "arts.h"
 #include "arts/runtime_state.h"
 #include "arts/system/config.h"
 #include "arts/system/print.h"
-#include "arts/system/shutdown.h"
 #include "arts/system/threads.h"
 #include "arts/transport/dispatcher.h"
 #include "arts/transport/netif.h"
@@ -540,25 +540,38 @@ bool arts_socket_peer_gone(unsigned int rank) {
                               errno == ENETUNREACH));
 }
 
-/* Single prober at a time: two progress threads polling the shared pollfd
- * array would race on its revents fields.  A try-lock: the winning CAS
- * acquires and the return stores release, so each prober sees the entries
- * the previous one retired; a loser returns, and the next pass probes. */
+/* The sentinels' probe cadence on the coarse monotonic clock, whose
+ * resolution may be coarser still: a due probe then waits for its tick. */
+#define SOCKET_PROBE_INTERVAL_NS 1000000ull
+
+bool arts_socket_probe_due(uint64_t *next_ns) {
+  struct timespec ts;
+  (void)clock_gettime(CLOCK_MONOTONIC_COARSE, &ts);
+  uint64_t now = (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+  if (now < *next_ns || !arts_socket_armed()) {
+    return false;
+  }
+  *next_ns = now + SOCKET_PROBE_INTERVAL_NS;
+  return true;
+}
+
+/* Single prober at a time: two threads polling the shared pollfd array would
+ * race on its revents fields.  A try-lock: the winning CAS acquires and the
+ * return stores release, so each prober sees the entries the previous one
+ * retired; a loser returns, and its next due probe tries again. */
 static _Atomic(int) g_sentinel_probing;
 
 bool arts_socket_sentinel_check(void) {
   /* Probe the accept-side mesh for peer death (POLLHUP/POLLERR/EOF), with a
-   * zero timeout — called from a progress thread's idle cycle, never blocking,
-   * and never reading data beyond draining the EOF condition (no payload ever
-   * rides these sockets after bootstrap).  A dead peer funnels into the same
-   * idempotent shutdown entry an inbound shutdown message uses.  Once this
-   * rank's shutdown is in progress the probe stands down.  Nothing orders any
-   * rank's close after every other rank has taken in a SHUTDOWN post (the
-   * post is best effort and reaches only the peers its rank contacted, and no
-   * rank waits for anyone before it tears down), so an orderly teardown can
-   * reach this probe first too, and for a peer the post skipped it is the
-   * only way to learn of the end; both enter the same shutdown, so the probe
-   * need not tell them apart. */
+   * zero timeout — never blocking, and never reading data beyond draining
+   * the EOF condition (no payload ever rides these sockets after bootstrap).
+   * Once this rank's shutdown is in progress the probe stands down.  Nothing
+   * orders any rank's close after every other rank has taken in a SHUTDOWN
+   * post (the post is best effort and reaches only the peers its rank
+   * contacted, and no rank waits for anyone before it tears down), so an
+   * orderly teardown can reach this probe first too, and for a peer the post
+   * skipped it is the only way to learn of the end; the caller enters the
+   * same shutdown for both, so the probe need not tell them apart. */
   if (!arts_global_message_table || poll_incoming == NULL ||
       atomic_load_explicit(&arts_node_info.shutdown_state,
                            memory_order_acquire)) {
@@ -599,29 +612,23 @@ bool arts_socket_sentinel_check(void) {
       }
       if (dead_peer) {
         ARTS_INFO("liveness sentinel %d: peer connection closed before "
-                  "this rank's shutdown began — entering shutdown",
+                  "this rank's shutdown began",
                   i);
         poll_incoming[i].fd = -1; /* negative fd: poll ignores this entry */
       }
     }
   }
   atomic_store_explicit(&g_sentinel_probing, 0, memory_order_release);
-  if (dead_peer) {
-    /* Same entry the wire shutdown handler uses (idempotent CAS), then stop
-     * the local threads — this thread's own loop exits on the cleared flag. */
-    arts_enter_shutdown_state(ARTS_EXIT_SENTINEL);
-    arts_runtime_stop();
-  }
   return dead_peer;
 }
 
 void arts_socket_cleanup() {
-  /* Close of the liveness sentinels, at the very end of this rank's teardown.
-   * Nothing orders it after every other rank has taken in a SHUTDOWN post
+  /* Close of the liveness sentinels, in this rank's teardown.  Nothing
+   * orders it after every other rank has taken in a SHUTDOWN post
    * (the post is best effort and reaches only the peers its rank contacted,
    * and no rank waits for anyone before it tears down), so a peer may still
-   * observe the HUP before its own shutdown began; its probe then enters the
-   * same idempotent shutdown. */
+   * observe the HUP before its own shutdown began; the thread whose probe
+   * sees it enters the same idempotent shutdown. */
   if (arts_global_message_table != NULL) {
     int count = (int)arts_global_message_table->table_length;
     if (arts_socket_receive_list) {

@@ -21,12 +21,18 @@
  *   (p) The post skips this rank and every peer it never contacted without
  *       asking the mesh, and a contacted peer the mesh reports gone without
  *       injecting.
+ *   (f) A send spinning on a full ring while every pass's sentinel probe is
+ *       due: from the third probe on the sentinel reports a closed peer, and
+ *       the spin enters the shutdown once, with origin BACKPRESSURE, stops
+ *       the threads once and returns false within 1 s, its free run once.
  *
  * Nothing reaches the provider and no fabric comes up: each sending thread
  * holds its own ring's drain token and the main thread holds the CQ token,
  * so a spin can neither post a queued entry nor reap.  Standalone: #includes
  * net.c (its statics) with libc-backed runtime shims and recording mesh
- * shims.  Under a sanitizer a report here is a defect.
+ * shims, a sentinel probe and check the test switches on, and a shutdown
+ * entry that records its origin and closes the gate, as the real one does on
+ * a multi-rank run.  Under a sanitizer a report here is a defect.
  */
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
@@ -43,6 +49,7 @@
 
 #include "arts/memory/regpool.h"
 #include "arts/runtime_state.h"
+#include "arts/system/shutdown.h"
 #include "arts/system/threads.h"
 #include "arts/transport/dispatcher.h"
 #include "arts/transport/protocol.h"
@@ -141,6 +148,45 @@ static void sleep_ms(unsigned ms) {
   struct timespec ts = {.tv_sec = ms / 1000u,
                         .tv_nsec = (long)(ms % 1000u) * 1000000L};
   nanosleep(&ts, NULL);
+}
+
+/* The sentinel probe, off but in (f): then every probe is due, and the check
+ * reports a closed peer from call g_sentinel_true_from on. */
+static _Atomic(bool) g_probe_on;
+static int g_sentinel_true_from;
+static _Atomic(int) g_sentinel_calls;
+static _Atomic(uint64_t) g_sentinel_true_ns;
+
+bool arts_socket_probe_due(uint64_t *next_ns) {
+  (void)next_ns;
+  return atomic_load_explicit(&g_probe_on, memory_order_relaxed);
+}
+
+bool arts_socket_sentinel_check(void) {
+  int n =
+      atomic_fetch_add_explicit(&g_sentinel_calls, 1, memory_order_relaxed) + 1;
+  if (n < g_sentinel_true_from) {
+    return false;
+  }
+  uint64_t none = 0;
+  atomic_compare_exchange_strong_explicit(&g_sentinel_true_ns, &none, now_ns(),
+                                          memory_order_relaxed,
+                                          memory_order_relaxed);
+  return true;
+}
+
+static _Atomic(int) g_entries;
+static _Atomic(int) g_entry_origin;
+static _Atomic(int) g_stops;
+
+void arts_enter_shutdown_state(enum arts_exit_origin origin) {
+  atomic_store_explicit(&g_entry_origin, (int)origin, memory_order_relaxed);
+  atomic_fetch_add_explicit(&g_entries, 1, memory_order_relaxed);
+  arts_net_close_gate();
+}
+
+void arts_runtime_stop(void) {
+  atomic_fetch_add_explicit(&g_stops, 1, memory_order_relaxed);
 }
 
 static void count_run(void *arg) {
@@ -317,6 +363,7 @@ static void case_b(uint32_t gap) {
 
 struct spin_case {
   _Atomic(bool) spinning;
+  _Atomic(bool) done;
   _Atomic(uint64_t) closed_ns;
   _Atomic(int) frees;
   bool returned;
@@ -332,6 +379,7 @@ static void *spin_sender(void *arg) {
   c->returned = net_submit(txn, /*is_ack=*/true);
   c->returned_ns = now_ns();
   ring_release(r);
+  atomic_store_explicit(&c->done, true, memory_order_release);
   return NULL;
 }
 
@@ -425,6 +473,59 @@ static void case_p(void) {
   arts_global_rank_count = 1;
 }
 
+/* ---- (f) ----------------------------------------------------------------- */
+
+/* False when the sender never left the spin, which it is left in. */
+static bool case_f(void) {
+  struct spin_case c;
+  memset(&c, 0, sizeof(c));
+  g_sentinel_true_from = 3;
+  atomic_store_explicit(&g_probe_on, true, memory_order_relaxed);
+  pthread_t t;
+  pthread_create(&t, NULL, spin_sender, &c);
+  uint64_t deadline = now_ns() + 3ull * 1000000000ull;
+  while (!atomic_load_explicit(&c.done, memory_order_acquire)) {
+    if (now_ns() > deadline) {
+      FAIL("(f) net_submit still spins 3 s after it began, after %d "
+           "sentinel check(s)\n",
+           atomic_load_explicit(&g_sentinel_calls, memory_order_relaxed));
+      return false;
+    }
+    sleep_ms(1);
+  }
+  pthread_join(t, NULL);
+  uint64_t seen =
+      atomic_load_explicit(&g_sentinel_true_ns, memory_order_relaxed);
+  int calls = atomic_load_explicit(&g_sentinel_calls, memory_order_relaxed);
+  int entries = atomic_load_explicit(&g_entries, memory_order_relaxed);
+  int origin = atomic_load_explicit(&g_entry_origin, memory_order_relaxed);
+  int stops = atomic_load_explicit(&g_stops, memory_order_relaxed);
+  int frees = atomic_load_explicit(&c.frees, memory_order_relaxed);
+  if (c.returned) {
+    FAIL("(f) net_submit returned true after its spin saw a closed peer\n");
+  }
+  if (seen == 0 || calls < g_sentinel_true_from) {
+    FAIL("(f) the spin made %d sentinel check(s), want at least %d\n", calls,
+         g_sentinel_true_from);
+  } else if (c.returned_ns - seen >= 1000000000ull) {
+    FAIL("(f) net_submit returned %.3f s after the closed peer was seen\n",
+         (double)(c.returned_ns - seen) / 1e9);
+  }
+  if (entries != 1 || origin != (int)ARTS_EXIT_BACKPRESSURE) {
+    FAIL("(f) %d entry, the last with origin %s; want 1, BACKPRESSURE\n",
+         entries, arts_exit_origin_name((enum arts_exit_origin)origin));
+  }
+  if (stops != 1) {
+    FAIL("(f) the threads were stopped %d time(s), want 1\n", stops);
+  }
+  if (frees != 1) {
+    FAIL("(f) the dropped send's free ran %d time(s), want 1\n", frees);
+  }
+  atomic_store_explicit(&g_probe_on, false, memory_order_relaxed);
+  gate_open();
+  return true;
+}
+
 int main(void) {
   g_watch_size = sizeof(struct net_put_group_s);
   g_net.peers = g_peers;
@@ -439,6 +540,13 @@ int main(void) {
   case_b(15);
   case_c();
   case_p();
+  if (!case_f()) {
+    /* The sender is still in the spin: end without exit handlers. */
+    printf("FAIL net_gate_drop: %d failure(s)\n",
+           atomic_load_explicit(&g_failures, memory_order_relaxed));
+    fflush(stdout);
+    _exit(1);
+  }
 
   int failures = atomic_load_explicit(&g_failures, memory_order_relaxed);
   if (failures != 0) {
