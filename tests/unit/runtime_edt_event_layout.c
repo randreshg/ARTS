@@ -175,7 +175,6 @@ typedef struct arts_rank_bitset_s rank_bitset_t;
 typedef struct arts_route_table_s route_table_t;
 typedef struct arts_runtime_shared_s runtime_shared_t;
 typedef struct arts_runtime_private_s runtime_private_t;
-typedef struct arts_shutdown_abandon_s shutdown_abandon_t;
 typedef struct arts_thread_stop_s thread_stop_t;
 
 static void print_fingerprint(void) {
@@ -276,8 +275,6 @@ static void print_fingerprint(void) {
   MEMBER(runtime_private_t, my_deque);
   MEMBER(runtime_private_t, alive);
   MEMBER(runtime_private_t, rng_key);
-  TYPE(shutdown_abandon_t);
-  MEMBER(shutdown_abandon_t, queued_edts);
   TYPE(thread_stop_t);
   MEMBER(thread_stop_t, state);
   MEMBER(thread_stop_t, caller_edt);

@@ -92,10 +92,12 @@ void arts_shared_abandon(arts_shared_ptr_t *p);
 /* Raw managed-object pointer; valid while the caller holds a ref. */
 void *arts_shared_get(arts_shared_ptr_t p);
 
+#ifdef ARTS_DEBUG_TEARDOWN
 /* The deleter the cb was made with (NULL for an unmanaged object, or when p
  * is NULL): what tells an object the runtime owns as a given kind from one a
  * caller published under that kind's key without handing it over. */
 void (*arts_shared_deleter(arts_shared_ptr_t p))(void *);
+#endif
 
 /* Identity tag: the key a cb is published under, stamped by the publisher
  * BEFORE the cb first enters any slot (re-stamped only while the cb is

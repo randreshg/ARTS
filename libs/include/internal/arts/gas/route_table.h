@@ -403,9 +403,11 @@ uint64_t arts_route_table_sweep(arts_route_table_t *route_table,
 unsigned int arts_route_table_parked_count(arts_route_table_t *route_table);
 /* Frees a chain no thread can reach any more, with its parked payloads. */
 void arts_route_table_delete(arts_route_table_t *route_table);
+#ifdef ARTS_DEBUG_TEARDOWN
 /* arts_route_table_sweep over every route table of this rank. */
 uint64_t arts_route_table_node_sweep(bool (*keep)(arts_shared_ptr_t),
                                      void (*detach)(arts_shared_ptr_t));
+#endif
 
 #ifdef __cplusplus
 }

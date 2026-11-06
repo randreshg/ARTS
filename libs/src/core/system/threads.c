@@ -139,8 +139,8 @@ void arts_thread_init(struct arts_config_s *config) {
     }
 #endif
     /* A worker slot that was never created is fatal, not degraded service:
-     * its stop never comes at shutdown and its share of the placement is
-     * silently missing from the run. */
+     * its share of the placement is silently missing from the run, and a
+     * teardown would wait for a stop that never comes. */
     int rc = pthread_create(&arts_thread_handles[i], &attr, &arts_thread_loop,
                             &arts_thread_masks[i]);
     if (rc != 0) {

@@ -66,6 +66,7 @@ void arts_runtime_node_init(struct arts_config_s *config);
 _Noreturn
 #endif
 void arts_runtime_thread_park(void);
+#ifdef ARTS_DEBUG_TEARDOWN
 /* The orderly teardown after the rank's counter record, on the thread that
  * owns the rank's end: when that thread took it at a safe point, the node
  * became ready and every other runtime thread stops within two seconds, safe,
@@ -75,6 +76,7 @@ void arts_runtime_thread_park(void);
  * the readiness the owner's marker and post were decided by, so one end
  * decides it once. */
 void arts_runtime_teardown_oracle(bool node_ready);
+#endif
 void arts_handle_ready_edt(struct arts_edt_s *edt);
 void arts_run_edt(struct arts_edt_s *edt);
 /* Schedule a fully DB-acquired EDT onto the calling thread's own

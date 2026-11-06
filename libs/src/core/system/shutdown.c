@@ -134,7 +134,9 @@ enum exit_phase {
   EXIT_PHASE_CAPTURE,
   EXIT_PHASE_REGPOOL,
   EXIT_PHASE_RECORD,
+#ifdef ARTS_DEBUG_TEARDOWN
   EXIT_PHASE_ORACLE,
+#endif
   EXIT_PHASE_LEAK,
   EXIT_PHASE_FLUSH,
 };
@@ -468,8 +470,10 @@ _Noreturn void arts_exit_resume(void) {
   exit_phase(EXIT_PHASE_RECORD);
   exit_watchdog_extend(arts_counter_record_estimate());
   arts_counter_record();
+#ifdef ARTS_DEBUG_TEARDOWN
   exit_phase(EXIT_PHASE_ORACLE);
   arts_runtime_teardown_oracle(ready);
+#endif
 #ifdef ARTS_EXIT_LEAK_CHECK
   exit_phase(EXIT_PHASE_LEAK);
   __lsan_do_leak_check();
@@ -517,8 +521,10 @@ static const char *exit_phase_name(unsigned int phase) {
     return "regpool";
   case EXIT_PHASE_RECORD:
     return "record";
+#ifdef ARTS_DEBUG_TEARDOWN
   case EXIT_PHASE_ORACLE:
     return "oracle";
+#endif
   case EXIT_PHASE_LEAK:
     return "leak";
   case EXIT_PHASE_FLUSH:

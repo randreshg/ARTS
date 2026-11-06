@@ -49,8 +49,8 @@ extern "C" {
 
 /* The bootstrap mesh's sockets, set up by arts_transport_setup_outgoing /
  * _incoming on the main thread and read by the address exchange on that same
- * thread, and by any thread from arts_socket_armed returning true until
- * arts_socket_cleanup:
+ * thread, and by any thread from arts_socket_armed returning true until the
+ * process ends or, in a tree with a teardown, arts_socket_cleanup:
  *   arts_socket_send_list[peer * arts_socket_ports + port]  this rank's
  *     connection to peer;
  *   arts_socket_receive_list[port + conn * arts_socket_ports]  accepted peer
@@ -91,16 +91,17 @@ void arts_socket_sentinel_arm(void);
  * arming publishes to the caller, whatever its thread, the fabric's peer
  * table and endpoint, this rank's id and the mesh's sockets.  Callable from
  * any thread and from a signal handler (one lock-free atomic load).  What it
- * publishes stays valid until arts_socket_cleanup, which must run only once
- * every thread that may call this or arts_socket_peer_gone has stopped. */
+ * publishes stays valid until the process ends or, in a tree with a teardown,
+ * arts_socket_cleanup, which must run only once every thread that may call
+ * this or arts_socket_peer_gone has stopped. */
 bool arts_socket_armed(void);
 
 /* Whether this rank's connection to `rank` (< arts_global_rank_count) shows
  * the peer gone: closed or reset by it, or dropped by keepalive.  False for
  * this rank and before the mesh is armed.  Non-blocking, callable from any
  * thread and async-signal-safe (an atomic load, poll and recv; it may change
- * errno), until arts_socket_cleanup.  It never clears what it reports: once
- * true, it stays true. */
+ * errno), until arts_socket_cleanup where a tree has one.  It never clears
+ * what it reports: once true, it stays true. */
 bool arts_socket_peer_gone(unsigned int rank);
 
 /* Whether a probe of the sentinels is due for the prober whose cadence

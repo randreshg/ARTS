@@ -256,14 +256,16 @@ void arts_prep_dbs(struct arts_edt_s *edt, bool gpu);
 
 void arts_db_free(void *ptr);
 
+#ifdef ARTS_DEBUG_TEARDOWN
 /* The teardown sweep's hand-off of each object it retires (the `detach` of
  * arts_route_table_node_sweep): a coherent descriptor goes to its arm's rows
  * (arts_db_sweep_open_items); any other object is left as it is. */
 void arts_db_sweep_detach(arts_shared_ptr_t h);
+#endif
 
 /* Free a coherent descriptor's storage.  Under ARTS_DEBUG_DB_QUARANTINE it is
- * filled and held back instead, and checked when it leaves the quarantine and
- * at teardown that nothing wrote to it. */
+ * filled and held back instead, and checked when it leaves the quarantine and,
+ * in a tree with the teardown, at the teardown that nothing wrote to it. */
 void arts_db_descriptor_free(struct arts_db_s *db);
 #ifdef ARTS_DEBUG_DB_QUARANTINE
 /* Check and free every descriptor still held back.  Called once every other

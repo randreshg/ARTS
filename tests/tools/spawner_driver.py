@@ -34,7 +34,9 @@ given, and every requested check holds:
                            (all, or except:<i>; with no rank pid named, the
                            spawner's end, which follows every rank's) is at
                            most n ms.  The default start is the action's
-                           signal when one is given, else first-end.
+                           signal when one is given, else first-end;
+  --end-spread-ms <n>      every one of --ranks ranks named its pid and ended,
+                           and the last end lies at most n ms after the first.
 --repeat <n> runs the program n times in sequence, judging each run.  On every
 exit path the driver kills the spawner if it still runs and then every process
 still running the program's executable, so a stopped rank never outlives the
@@ -313,6 +315,21 @@ def one_run(args, run):
                 failures.append("the run took %.0f ms from %s, over %d ms"
                                 % (took, frm, args.bound_ms))
 
+    if args.end_spread_ms is not None:
+        if len(ranks) < args.ranks or len(ends) < len(ranks) or not ends:
+            failures.append("the end spread could not be measured: %d of %d "
+                            "rank(s) named a pid, %d seen to end"
+                            % (len(ranks), args.ranks, len(ends)))
+        else:
+            gone = [k.first_gone for k in ends]
+            spread = (max(gone) - min(gone)) * 1000.0
+            if spread > args.end_spread_ms:
+                failures.append("end spread %.0f ms, over %d ms"
+                                % (spread, args.end_spread_ms))
+            else:
+                say("run %d: end spread %.0f ms within %d ms"
+                    % (run, spread, args.end_spread_ms))
+
     if args.absent and os.path.exists(args.absent):
         failures.append("%s exists after the run" % args.absent)
 
@@ -343,6 +360,7 @@ def main():
     parser.add_argument("--bound-ms", type=int)
     parser.add_argument("--bound-from")
     parser.add_argument("--bound-ranks", default="all")
+    parser.add_argument("--end-spread-ms", type=int)
     parser.add_argument("--poll-ms", type=int, default=10)
     parser.add_argument("--settle-s", type=float, default=5.0)
     parser.add_argument("command", nargs=argparse.REMAINDER)
@@ -370,6 +388,8 @@ def main():
     args.then = steps
     if args.on == "pids" and args.ranks < 1:
         parser.error("--on pids needs --ranks")
+    if args.end_spread_ms is not None and args.ranks < 2:
+        parser.error("--end-spread-ms needs --ranks")
     if args.target != "spawner" and not re.fullmatch(r"rank:[0-9]+",
                                                      args.target):
         parser.error("--target takes spawner or rank:<i>")

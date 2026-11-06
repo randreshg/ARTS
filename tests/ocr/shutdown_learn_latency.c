@@ -16,11 +16,13 @@
 /// after its first FIRST satisfies, have satisfied its latch, so rank 0 is
 /// taking in the flood when the end begins.  The registration's record check
 /// reads each rank's shutdown stamp from its counter file and requires the
-/// four to lie within one second.
+/// four to lie within one second.  Every rank prints `RANK_PID <r> <pid>`
+/// before the end, for a driver that polls the ranks' ends.
 
 #include "arts.h"
 
 #include <stdint.h>
+#include <unistd.h>
 
 #include "../test_failure_status.h"
 
@@ -68,6 +70,10 @@ void initiator(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_shutdown();
 }
 
+static void name_pid(void) {
+  arts_printf("RANK_PID %u %d\n", arts_get_current_rank(), (int)getpid());
+}
+
 /// Runs on each rank but the initiator's.  paramv = {the initiator's latch,
 /// sink}.
 void touch(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
@@ -75,6 +81,7 @@ void touch(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)paramc;
   (void)depc;
   (void)depv;
+  name_pid();
   if (arts_get_current_rank() == FLOODER) {
     unsigned int workers = arts_get_workers_per_rank();
     for (unsigned int k = 0; k < workers; k++) {
@@ -93,6 +100,7 @@ void start(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)paramc;
   (void)depc;
   (void)depv;
+  name_pid();
   arts_event_hint_t lh = ARTS_EVENT_HINT_LATCH(
       (int32_t)(RANKS - 2u + arts_get_workers_per_rank()));
   arts_guid_t touched = arts_event_create(&lh);

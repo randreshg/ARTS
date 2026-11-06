@@ -64,6 +64,7 @@
  *                                  that reads the gate closed is dropped
  *   arts_net_post_shutdown()     — (an end that begins on this rank) SHUTDOWN
  *                                  to the peers this rank contacted
+ * The process exit closes the rest, unless the tree has the teardown:
  *   arts_net_quiesce()           — discard/reap in-flight TX;
  *                                  under endpoint-bound registration, close the
  *                                  slab MRs FIRST (they hold endpoint refs);
@@ -214,11 +215,11 @@ bool arts_net_rdzv_local(const void *p, uint64_t len, uint64_t *raddr,
  * pairing adds to BYTES_REMOTE_RECEIVED: the completion reports only the last
  * piece of a payload the sender's ceiling cut apart.
  *
- * `on_discard` runs with `arg` instead of `on_data` when the teardown
- * (arts_net_reclaim) finds the expectation still unpaired, so at most one of
- * the two ever runs.  It releases what `arg` owns and reads nothing through a
- * reference `arg` only borrows: the teardown may already have dropped the
- * count that kept such an object.  NULL where `arg` owns nothing. */
+ * `on_discard` runs with `arg` instead of `on_data` when a teardown, in a tree
+ * with one (arts_net_reclaim), finds the expectation still unpaired, so at most
+ * one of the two ever runs.  It releases what `arg` owns and reads nothing
+ * through a reference `arg` only borrows: the teardown may already have dropped
+ * the count that kept such an object.  NULL where `arg` owns nothing. */
 void arts_net_rdzv_expect(uint64_t txid, uint64_t len, void (*on_data)(void *),
                           void (*on_discard)(void *), void *arg);
 

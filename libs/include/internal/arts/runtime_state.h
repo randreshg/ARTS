@@ -69,9 +69,9 @@ struct arts_runtime_shared_s {
 #endif
   /* This rank's route tables, arts_guid_table_count of them: built by
    * arts_route_table_node_init before any runtime thread exists (thread
-   * creation publishes them) and freed after the teardown's stop.  A key's
-   * table is the pure function of its key that arts_get_route_table
-   * computes. */
+   * creation publishes them) and, in a tree with the teardown, freed after its
+   * stop.  A key's table is the pure function of its key that
+   * arts_get_route_table computes. */
   struct arts_route_table_s **route_table;
   struct arts_route_table_s **gpu_route_table;
   /* local_spin[i] points at thread i's `alive`, stored by thread i before its
@@ -179,19 +179,6 @@ struct arts_thread_stop_s {
 /* This thread's slot in arts_node_info.thread_stop; NULL on a thread the
  * runtime did not create. */
 extern ARTS_THREAD_LOCAL_IE struct arts_thread_stop_s *arts_thread_stop_slot;
-
-/* Pending work a shutdown dropped instead of performing, counted by the
- * sites that drop it (relaxed increments; the teardown's acquire of every
- * thread's stop slot is what makes a later read see them).  Together with
- * what the teardown can still count in place -- EDTs admitted but never
- * finished, messages still parked on a route slot's OoO list (a create whose
- * occupant was never destroyed, or any message whose object never installed)
- * -- it says whether a shutdown was quiescent. */
-struct arts_shutdown_abandon_s {
-  /* Runnable EDTs dropped from a deque unrun. */
-  _Atomic(unsigned int) queued_edts;
-};
-extern struct arts_shutdown_abandon_s arts_shutdown_abandon;
 
 #ifdef __cplusplus
 }

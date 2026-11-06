@@ -426,6 +426,7 @@ void arts_db_publish_sync(struct arts_db_cache_s *cache, uint64_t version);
  * release path, in every arm that has one. */
 void arts_db_await_ack(sem_t *cv);
 
+#ifdef ARTS_DEBUG_TEARDOWN
 /* What the walk below exempts: the EDTs that called the rank's end, which
  * never return, and the descriptors they hold.  An exempt EDT is not counted
  * as admitted, and an exempt descriptor's rows judge it as after a shutdown
@@ -441,9 +442,12 @@ struct arts_teardown_exempt_s {
  * the definition): once every other runtime thread has stopped, prints
  * QUIESCENCE-DEBUG markers for states the protocol can never leave behind
  * and, after a shutdown that abandoned no work, for residues a quiescent run
- * must not leave either.  Compiled out below ARTS_LOG_LEVEL DEBUG — the call
- * is always legal, the walk only exists where its messages do. */
-void arts_db_debug_quiescence_check(const struct arts_teardown_exempt_s *ex);
+ * must not leave either.  ab_queued is how many runnable EDTs the shutdown left
+ * in the deques.  Its body is empty below ARTS_LOG_LEVEL DEBUG: the walk exists
+ * only where its messages do. */
+void arts_db_debug_quiescence_check(const struct arts_teardown_exempt_s *ex,
+                                    unsigned int ab_queued);
+#endif /* ARTS_DEBUG_TEARDOWN */
 
 /* The teardown sweep's per-arm rows, run once for each coherent descriptor it
  * retires, after every other runtime thread stopped and while the install's

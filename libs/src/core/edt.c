@@ -85,8 +85,6 @@
  * Runs at the cb's last release.  Mirrors the DB pattern (the DB deleter ->
  * arts_db_free): delegates to arts_edt_free, which is the canonical
  * struct-free path.
- *
- * Foreign TUs reach the same pointer via arts_edt_get_deleter().
  */
 /* canonical struct-free path; sole caller is arts_edt_deleter in this TU. */
 static void arts_edt_free(struct arts_edt_s *edt);
@@ -101,10 +99,7 @@ __attribute__((constructor)) static void arts_edt_register_cb_deleter(void) {
   arts_route_table_register_deleter(ARTS_GUID_EDT, arts_edt_deleter);
 }
 
-/* Getter for foreign TUs that compare against or install the same deleter
- * pointer. */
-void (*arts_edt_get_deleter(void))(void *) { return arts_edt_deleter; }
-
+#ifdef ARTS_DEBUG_TEARDOWN
 bool arts_edt_admitted(arts_shared_ptr_t h) {
   if (h == NULL || arts_shared_deleter(h) != arts_edt_deleter) {
     return false;
@@ -112,6 +107,7 @@ bool arts_edt_admitted(arts_shared_ptr_t h) {
   const struct arts_edt_s *edt = (const struct arts_edt_s *)arts_shared_get(h);
   return atomic_load_explicit(&edt->depc_needed, memory_order_relaxed) == 0u;
 }
+#endif
 
 /* The engine's create args for an EDT received off the wire: the args header,
  * the blob packet, the EDT image, contiguous.  Images that fit are composed on

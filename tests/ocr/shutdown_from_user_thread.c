@@ -6,10 +6,10 @@
 /// @brief A thread the program starts, not the runtime, ends the run.
 ///
 /// An EDT on rank 0 starts a detached pthread and returns; the thread calls
-/// arts_shutdown.  The thread is no runtime thread, so the end stops every
-/// runtime thread, the main thread included, and nothing it runs is exempt:
-/// with every EDT finished, the teardown runs whole and its walk finds the
-/// shutdown quiescent.  Status 0.
+/// arts_shutdown.  The thread is no runtime thread, so where the teardown runs
+/// it stops every runtime thread, the main thread included, and nothing the
+/// thread runs is exempt: with every EDT finished, the teardown runs whole and
+/// its walk finds the shutdown quiescent.  Status 0.
 
 #include "arts.h"
 

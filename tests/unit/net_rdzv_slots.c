@@ -44,7 +44,6 @@ unsigned int arts_global_rank_id = 0;
 unsigned int arts_global_rank_count = 1;
 ARTS_THREAD_LOCAL_IE struct arts_runtime_private_s arts_thread_info;
 struct arts_runtime_shared_s arts_node_info;
-struct arts_shutdown_abandon_s arts_shutdown_abandon;
 _Noreturn void arts_exit(int rc, enum arts_exit_origin origin) {
   (void)origin;
   exit(rc ? rc : 1);

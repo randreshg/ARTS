@@ -650,6 +650,18 @@ set_tests_properties(dispatcher_default_fatal PROPERTIES
     FAIL_REGULAR_EXPRESSION "FAIL")
 
 # --- the spawner ---
+# <out> holds the given driver options in the one tree that measures the
+# product path by itself, the reference cell's Release tree, and nothing
+# elsewhere: a sanitizer, a Debug build or the orderly teardown adds time of
+# its own to an end.
+function(arts_product_bound out)
+    if(ARTS_TEST_REFERENCE_TREE AND CMAKE_BUILD_TYPE STREQUAL "Release")
+        set(${out} ${ARGN} PARENT_SCOPE)
+    else()
+        set(${out} "" PARENT_SCOPE)
+    endif()
+endfunction()
+
 # The spawner starts each rank once, rank 0 included, as its own child: every
 # rank knows its rank and the total, and every one has the same live parent;
 # four ranks make the spawn loop start more than one child past rank 0.
@@ -670,8 +682,9 @@ arts_test_properties(launcher_master_killed PROPERTIES
 
 # A hundred four-rank startups in a row, each ending with status 0.
 arts_test_cfg(_cfg 4n_4w_1p)
+arts_product_bound(_bound --bound-ms 10000 --bound-from launch)
 arts_add_multinode_test(shutdown_startup_storm
-    COMMAND ${ARTS_SPAWNER_DRIVER} --want 0 --repeat 100
+    COMMAND ${ARTS_SPAWNER_DRIVER} --want 0 --repeat 100 ${_bound}
             -- $<TARGET_FILE:term_shutdown>)
 arts_test_properties(shutdown_startup_storm PROPERTIES
     LABELS "multinode" TIMEOUT 1200 RESOURCE_LOCK "arts_runtime"
@@ -711,8 +724,9 @@ unset(_below)
 
 # A rank stopped for good is killed the end grace after the first rank ended:
 # a 10 s startup budget and a grace of that plus the shutdown bound, the
-# smallest the spawner accepts.  Only where the bound is 10 s, so the grace
-# is 20 s; the kill's status is the run's, and the grace kills rank 2 alone.
+# smallest the spawner accepts.  Only in a Release tree, whose bound is 10 s,
+# so the grace is 20 s; the kill's status is the run's, and the grace kills
+# rank 2 alone.
 if(CMAKE_BUILD_TYPE STREQUAL "Release")
     arts_test_cfg(_cfg 4n_4w_1p)
     math(EXPR _grace "10 + ${ARTS_EXIT_WATCHDOG_S}")
@@ -759,9 +773,10 @@ endif()
 # Every worker of rank 0 streams to rank 1, and rank 1 is killed: rank 0
 # learns of the end and ends, and the kill's status is the run's.
 arts_test_cfg(_cfg 2n_9w_1p)
+arts_product_bound(_bound --bound-ms 2000)
 arts_add_multinode_test(shutdown_spin_peer_killed
     COMMAND ${ARTS_SPAWNER_DRIVER} --want 137 --on line:FLOODING
-            --signal KILL --target rank:1
+            --signal KILL --target rank:1 ${_bound}
             -- $<TARGET_FILE:shutdown_spin_peer_killed>)
 arts_test_properties(shutdown_spin_peer_killed PROPERTIES
     LABELS "multinode" TIMEOUT 120 RESOURCE_LOCK "arts_runtime"
@@ -824,7 +839,7 @@ register_single_node_test(runtime_barrier_counts TIMEOUT 60)
 # DEBUG line.
 add_arts_test(shutdown_cuts_running_edt)
 register_single_node_test(shutdown_cuts_running_edt TIMEOUT 10)
-if(ARTS_LOG_LEVEL GREATER_EQUAL 3)
+if(ARTS_DEBUG_TEARDOWN AND ARTS_LOG_LEVEL GREATER_EQUAL 3)
     arts_test_cfg(_cfg 1n_20w)
     arts_add_test(teardown_stop_skips_running
                   COMMAND shutdown_cuts_running_edt)
@@ -842,7 +857,8 @@ endif()
 # has stopped, which ThreadSanitizer judges (its reports are in every fail
 # list).  The scheduler fuzz widens the windows a thief spends between its
 # loads.
-if(ARTS_DEBUG_SANITIZER STREQUAL "THREAD" AND ARTS_DEBUG_INJECTION)
+if(ARTS_DEBUG_TEARDOWN AND ARTS_DEBUG_SANITIZER STREQUAL "THREAD" AND
+   ARTS_DEBUG_INJECTION)
     add_arts_test(teardown_deques_after_stop)
     register_single_node_test(teardown_deques_after_stop TIMEOUT 60)
     register_multinode_test(teardown_deques_after_stop TIMEOUT 120
@@ -1016,9 +1032,10 @@ arts_test_properties(term_stack_overflow_2n_9w_1p PROPERTIES
 # A rank killed outright mid-run: the others learn of the end from its closed
 # connections and end with 0, and the kill's 137 is the run's status.
 arts_test_cfg(_cfg 4n_4w_1p)
+arts_product_bound(_bound --bound-ms 1000)
 arts_add_multinode_test(shutdown_peer_killed
     COMMAND ${ARTS_SPAWNER_DRIVER} --want 137 --on line:ALL_RANKS_READY
-            --signal KILL --target rank:1
+            --signal KILL --target rank:1 ${_bound}
             -- $<TARGET_FILE:spawner_rank_probe> 30000)
 arts_test_properties(shutdown_peer_killed PROPERTIES
     LABELS "multinode" TIMEOUT 60 RESOURCE_LOCK "arts_runtime"
@@ -1030,8 +1047,9 @@ arts_test_properties(shutdown_peer_killed PROPERTIES
 # the run's status is 0.
 add_arts_test(shutdown_rank_calls_exit)
 arts_test_cfg(_cfg 4n_4w_1p)
+arts_product_bound(_bound --bound-ms 1000)
 arts_add_multinode_test(shutdown_rank_calls_exit
-    COMMAND ${ARTS_SPAWNER_DRIVER} --want 0
+    COMMAND ${ARTS_SPAWNER_DRIVER} --want 0 ${_bound}
             -- $<TARGET_FILE:shutdown_rank_calls_exit>)
 arts_test_properties(shutdown_rank_calls_exit PROPERTIES
     LABELS "multinode" TIMEOUT 60 RESOURCE_LOCK "arts_runtime"
@@ -1043,6 +1061,8 @@ arts_test_properties(shutdown_rank_calls_exit PROPERTIES
 # senders dropping their sends at its gate), and rank 0, continued once they
 # are gone, learns of it and ends with 0.
 add_arts_test(shutdown_peer_stopped)
+arts_product_bound(_bound --bound-ms 3000 --bound-from signal:SIGTERM
+                   --bound-ranks except:0)
 foreach(_v 2n_9w_1p 4n_4w_1p)
     string(REGEX MATCH "^[0-9]+" _n ${_v})
     math(EXPR _last "${_n} - 1")
@@ -1051,7 +1071,7 @@ foreach(_v 2n_9w_1p 4n_4w_1p)
         COMMAND ${ARTS_SPAWNER_DRIVER} --want 143 --on line:FLOODING
                 --signal STOP --target rank:0
                 --then TERM:rank:${_last}:200
-                --then CONT:rank:0:others-gone
+                --then CONT:rank:0:others-gone ${_bound}
                 -- $<TARGET_FILE:shutdown_peer_stopped>)
     arts_test_properties(shutdown_peer_stopped_${_v} PROPERTIES
         LABELS "multinode" TIMEOUT 90 RESOURCE_LOCK "arts_runtime"
@@ -1060,6 +1080,7 @@ foreach(_v 2n_9w_1p 4n_4w_1p)
         FAIL_REGULAR_EXPRESSION "FAIL")
 endforeach()
 unset(_last)
+unset(_bound)
 
 # A child a rank forks that calls arts_abort ends with its code alone: the
 # parent sees 5, and the run ends with 0 and one marker.
@@ -1239,8 +1260,9 @@ arts_test_properties(regpool_report_at_exit_2n_9w_1p PROPERTIES
     PASS_REGULAR_EXPRESSION "${_rp}.*${_rp}")
 unset(_rp)
 
-# A thread the program starts, not the runtime, ends the run: the teardown
-# stops every runtime thread, runs whole and finds the shutdown quiescent.
+# A thread the program starts, not the runtime, ends the run: where the
+# teardown runs, it stops every runtime thread, runs whole and finds the
+# shutdown quiescent.
 if(ARTS_LOG_LEVEL GREATER_EQUAL 3)
     add_arts_test(shutdown_from_user_thread)
     register_single_node_test(shutdown_from_user_thread TIMEOUT 30)
@@ -1418,8 +1440,10 @@ endif()
 # hook, which sits between the start's handle store and its transition of the
 # capture word, sends a SIGTERM and holds until the stop it causes has marked
 # the word stopped.  The test passes on the starter's join line, a skipped
-# teardown fails it, and the run ends with the signal's status.
-if(ARTS_TEST_REFERENCE_TREE AND ARTS_DEBUG_INJECTION)
+# teardown fails it, and the run ends with the signal's status.  Only the
+# teardown's stop can show the starter parked once the start returned, so it
+# registers only where the teardown runs.
+if(ARTS_TEST_REFERENCE_TREE AND ARTS_DEBUG_TEARDOWN AND ARTS_DEBUG_INJECTION)
     arts_counters_periodic(_p)
     if(_p)
         arts_test_cfg(_cfg 1n_20w)
@@ -1447,6 +1471,22 @@ if(ARTS_TEST_REFERENCE_TREE)
             VARIANTS 4n_4w_1p RECORDS 4
             RECORD_CHECK record_meta.cmake t0_spread_ms<=1000)
     endif()
+endif()
+
+# How far apart the ranks end when nothing follows the record, in the same
+# shape: the driver polls each rank's pid, and the last rank's end lies within
+# 2 s of the first's.  Only where the teardown does not run, since its span is
+# its own.
+if(ARTS_TEST_REFERENCE_TREE AND NOT ARTS_DEBUG_TEARDOWN)
+    arts_test_cfg(_cfg 4n_4w_1p)
+    arts_add_multinode_test(shutdown_end_spread
+        COMMAND ${ARTS_SPAWNER_DRIVER} --want 0 --ranks 4 --end-spread-ms 2000
+                -- $<TARGET_FILE:shutdown_learn_latency>)
+    arts_test_properties(shutdown_end_spread PROPERTIES
+        LABELS "multinode" TIMEOUT 60 RESOURCE_LOCK "arts_runtime"
+        ENVIRONMENT "ARTS_CONFIG=${_cfg}"
+        PASS_REGULAR_EXPRESSION "end spread [0-9]+ ms within 2000 ms"
+        FAIL_REGULAR_EXPRESSION "FAIL")
 endif()
 
 # counter_exact: exact values of known programs (tests/ocr/counter_exact.c).

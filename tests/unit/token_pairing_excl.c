@@ -111,7 +111,6 @@ unsigned int arts_global_rank_id = REQ;
 unsigned int arts_global_rank_count = 4u;
 uint64_t arts_guid_table_count;
 struct arts_runtime_shared_s arts_node_info;
-struct arts_shutdown_abandon_s arts_shutdown_abandon;
 ARTS_THREAD_LOCAL_IE struct arts_runtime_private_s arts_thread_info;
 
 #include "arts/system/shutdown.h"

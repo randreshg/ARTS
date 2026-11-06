@@ -73,8 +73,8 @@ static inline uint64_t get_route_table_key(uint64_t x, unsigned int shift) {
 
 /* This rank's placement: arts_route_table_node_init writes it before any
  * runtime thread exists, and thread creation publishes it; afterwards it is
- * only read, until arts_route_table_node_cleanup clears it after the
- * teardown's stop.
+ * only read, until arts_route_table_node_cleanup clears it, in a tree with the
+ * teardown after its stop.
  * Each divisor d is taken as floor(n / d) = (2n * mul / 2^64) >> shift, with
  * shift = ceil(log2 d) and mul = ceil(2^(63 + shift) / d): exact for every
  * n < 2^63, since the multiplier's error stays below 1/d. */
@@ -1144,6 +1144,7 @@ void arts_route_table_delete(arts_route_table_t *route_table) {
   }
 }
 
+#ifdef ARTS_DEBUG_TEARDOWN
 uint64_t arts_route_table_node_sweep(bool (*keep)(arts_shared_ptr_t),
                                      void (*detach)(arts_shared_ptr_t)) {
   uint64_t kept = 0;
@@ -1152,3 +1153,4 @@ uint64_t arts_route_table_node_sweep(bool (*keep)(arts_shared_ptr_t),
   }
   return kept;
 }
+#endif

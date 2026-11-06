@@ -621,6 +621,7 @@ bool arts_socket_sentinel_check(void) {
   return dead_peer;
 }
 
+#ifdef ARTS_DEBUG_TEARDOWN
 void arts_socket_cleanup() {
   /* Close of the liveness sentinels, in this rank's teardown.  Nothing
    * orders it after every other rank has taken in a SHUTDOWN post
@@ -654,6 +655,7 @@ void arts_socket_cleanup() {
   arts_free(poll_incoming);
   arts_free(local_socket_receive);
 }
+#endif
 
 /* How long one connection of the socket mesh may take to start: 20 s unless
  * ARTS_STARTUP_TIMEOUT_S sets another.  An accept waits up to the budget for

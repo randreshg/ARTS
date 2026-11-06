@@ -59,9 +59,9 @@ extern struct thread_mask_s *arts_thread_masks;
 extern pthread_t *arts_thread_handles;
 
 void arts_thread_init(struct arts_config_s *config);
-/* The main thread's runtime loop: it runs until the teardown's stop and then
- * parks like every other runtime thread; the rank ends by arts_exit on
- * whichever thread takes its shutdown point. */
+/* The main thread's runtime loop: it runs until the teardown's stop, in a tree
+ * with a teardown, and then parks like every other runtime thread; the rank
+ * ends by arts_exit on whichever thread takes its shutdown point. */
 #ifdef __cplusplus
 [[noreturn]]
 #else

@@ -1152,11 +1152,11 @@ void arts_db_cache_common_destroy_pre(struct arts_db_cache_s *cache) {
  * QUIESCENCE-DEBUG marker; tests whose shutdown is quiescent turn that marker
  * into a failure.
  *
- * The walk exists only to produce diagnostic messages, so it is gated on
- * the log level that compiles those messages: below DEBUG the whole check
- * is compiled out — its cost (a full route-table scan at teardown) never
- * lands in a measurement build. */
-#if ARTS_LOG_LEVEL >= 3 && defined(ARTS_PROTOCOL_EXCL)
+ * The walk exists only in a tree with the teardown, and only to produce
+ * diagnostic messages, so it is also gated on the log level that compiles
+ * those messages: below DEBUG its body is empty. */
+#if defined(ARTS_DEBUG_TEARDOWN) && ARTS_LOG_LEVEL >= 3 &&                     \
+    defined(ARTS_PROTOCOL_EXCL)
 /* One axis row of the EXCL cache word: report `bad` always, or only after a
  * quiescent shutdown when `quiet_only`. */
 static unsigned int excl_axis_row(const struct arts_db_cache_s *c, uint64_t cw,
@@ -1228,7 +1228,7 @@ static unsigned int excl_cache_word_rows(const struct arts_db_cache_s *c,
 }
 #endif
 
-#if ARTS_LOG_LEVEL >= 3
+#if defined(ARTS_DEBUG_TEARDOWN) && ARTS_LOG_LEVEL >= 3
 static bool walk_exempt_edt(const struct arts_teardown_exempt_s *ex,
                             const void *edt) {
   for (unsigned int i = 0; ex != NULL && i < ex->edt_count; i++) {
@@ -1250,7 +1250,9 @@ static bool walk_exempt_db(const struct arts_teardown_exempt_s *ex,
 }
 #endif
 
-void arts_db_debug_quiescence_check(const struct arts_teardown_exempt_s *ex) {
+#ifdef ARTS_DEBUG_TEARDOWN
+void arts_db_debug_quiescence_check(const struct arts_teardown_exempt_s *ex,
+                                    unsigned int ab_queued) {
 #if ARTS_LOG_LEVEL >= 3
   /* Runs only once every other runtime thread has stopped: the stopper's
    * acquire of each thread's stop orders every write before it, so each load
@@ -1283,8 +1285,6 @@ void arts_db_debug_quiescence_check(const struct arts_teardown_exempt_s *ex) {
    * message from another rank still undelivered is not one: a release in
    * flight to a home strands no waiter, and a grant still owed to a requester
    * leaves that requester's EDT admitted and unfinished. */
-  unsigned int ab_queued = atomic_load_explicit(
-      &arts_shutdown_abandon.queued_edts, memory_order_relaxed);
   unsigned int ab_ooo = 0;
   for (unsigned int t = 0; t < nt; t++) {
     ab_ooo += arts_route_table_parked_count(arts_node_info.route_table[t]);
@@ -1836,8 +1836,10 @@ void arts_db_debug_quiescence_check(const struct arts_teardown_exempt_s *ex) {
   }
 #else
   (void)ex;
+  (void)ab_queued;
 #endif /* ARTS_LOG_LEVEL >= 3 */
 }
+#endif /* ARTS_DEBUG_TEARDOWN */
 
 /* After every other thread stopped, the words read relaxed.  Each item below
  * is an open request axis or an open round of the home (coherence.h): its

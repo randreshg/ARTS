@@ -179,13 +179,14 @@ static void *db_descriptor_alloc(arts_db_types_t db_type, uint64_t span) {
  * descriptor and writes through it changes the fill and is reported, instead
  * of landing in whatever object the allocator places there next; a write that
  * comes after the descriptor has left goes unseen, so the window is counted in
- * frees, not in time.  The descriptors still held at teardown are checked once
- * no completion can run any more.  The whole allocation is filled, a home
- * descriptor's directory as much as a stub's cache.  Under AddressSanitizer a
- * held descriptor is poisoned too, so a stray access is reported where it
- * happens, with its stack.  Each thread holds its own frees, so the quarantine
- * orders no thread's free with another's: a thread sanitizer sees no
- * synchronization between them that the program does not have. */
+ * frees, not in time.  In a tree with the teardown, the descriptors still held
+ * there are checked once no completion can run any more; without it they are
+ * not checked.  The whole allocation is filled, a home descriptor's directory
+ * as much as a stub's cache.  Under AddressSanitizer a held descriptor is
+ * poisoned too, so a stray access is reported where it happens, with its stack.
+ * Each thread holds its own frees, so the quarantine orders no thread's free
+ * with another's: a thread sanitizer sees no synchronization between them that
+ * the program does not have. */
 #define DB_QUARANTINE_SLOTS 1024u
 #define DB_FREED_FILL 0xDF
 #define DB_FREED_WORD ((arts_guid_t)0xDFDFDFDFDFDFDFDFull)
@@ -327,6 +328,7 @@ void arts_db_free(void *ptr) {
  * pointer = &db->cache (cache is the first member), which aliases arts_db_s. */
 void arts_db_deleter(void *self) { arts_db_free(self); }
 
+#ifdef ARTS_DEBUG_TEARDOWN
 void arts_db_sweep_detach(arts_shared_ptr_t h) {
   if (arts_shared_deleter(h) != arts_db_deleter) {
     return;
@@ -336,6 +338,7 @@ void arts_db_sweep_detach(arts_shared_ptr_t h) {
     arts_db_sweep_open_items(db, h);
   }
 }
+#endif
 
 /* Publish the DB cb deleter into the route_table's per-kind table at startup
  * (decoupled registration — see arts_route_table_register_deleter). */

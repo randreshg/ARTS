@@ -248,7 +248,7 @@ EXCL.*.RETAIN  arts_handler_db_acquire  rmw   cache_state          1/1  acquire
 # what it must keep.
 
 # Initialization before the object is shared, teardown, and the debug walks
-# that run after the runtime's threads have joined.
+# that run after the runtime's threads have stopped.
 INV.*.*,EXCL.*.*             arts_db_cache_init                   store cache_state   -/1  -
 INV.*.*                      arts_db_debug_quiescence_check       load  cache_state   -/2  -
 EXCL.*.*                     arts_db_debug_quiescence_check       load  cache_state   -/1  -

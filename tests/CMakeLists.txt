@@ -166,8 +166,9 @@ if(ARTS_TEST_REFERENCE_TREE OR ARTS_CXL_TREE_RESIDENCY)
     list(APPEND TEST_PROGRAMS spawner_rank_probe)
 endif()
 
-# Judged by the teardown quiescence walk, which exists only where
-# ARTS_LOG_LEVEL compiles DEBUG messages: built and registered only there.
+# Judged by the teardown quiescence walk, which prints only where
+# ARTS_LOG_LEVEL compiles DEBUG messages: built and registered only there.  A
+# tree without the teardown runs it on the program's own checks.
 if(ARTS_LOG_LEVEL GREATER_EQUAL 3)
     list(APPEND TEST_PROGRAMS quiescent_shutdown_no_residue)
 endif()
@@ -1167,6 +1168,19 @@ if(ARTS_DEBUG_INJECTION)
         ENVIRONMENT "ARTS_CONFIG=${_mn_cfg};ARTS_NET_REFUSE_EP_CLOSE=2"
         PASS_REGULAR_EXPRESSION
         "ARTS_NET_REFUSE_EP_CLOSE=\"2\" is not a rank of this run \\(0-1\\)")
+    # Only the teardown's endpoint close acts on this hook, so a tree without
+    # the teardown refuses a value that names a rank of the run.
+    if(NOT ARTS_DEBUG_TEARDOWN)
+        arts_add_multinode_test(injection_refuse_ep_close_no_teardown STATUS 1
+                                COMMAND multinode_edt)
+        arts_test_properties(injection_refuse_ep_close_no_teardown PROPERTIES
+            LABELS "multinode"
+            TIMEOUT 30
+            RESOURCE_LOCK "arts_runtime"
+            ENVIRONMENT "ARTS_CONFIG=${_mn_cfg};ARTS_NET_REFUSE_EP_CLOSE=1"
+            PASS_REGULAR_EXPRESSION
+            "ARTS_NET_REFUSE_EP_CLOSE is set, but this build runs no teardown")
+    endif()
     # A one-rank run brings no fabric up, so it refuses a fabric hook.
     foreach(_hook
             ARTS_NET_MAX_MSG
@@ -2620,9 +2634,10 @@ unset(_script)
 # came before the work; the descriptor check's abort at teardown reaches the
 # exit status, and a teardown skipped because a thread did not stop is
 # matched in its output (a rank that had to be stopped is matched as in every
-# test).
-if(ARTS_DEBUG_INJECTION AND ARTS_DEBUG_DB_QUARANTINE AND
-   NOT ARTS_CXL_TREE_RESIDENCY)
+# test).  The verdict is the teardown's drain, so it registers only where the
+# teardown runs.
+if(ARTS_DEBUG_TEARDOWN AND ARTS_DEBUG_INJECTION AND
+   ARTS_DEBUG_DB_QUARANTINE AND NOT ARTS_CXL_TREE_RESIDENCY)
     add_arts_test(coherence_late_write_completion)
     register_multinode_test(coherence_late_write_completion TIMEOUT 120)
     foreach(_v 2n_9w_1p 4n_4w_1p 2n_8w_2p)
@@ -2716,8 +2731,9 @@ endif()
 # tables before reclaim, so only there does a home discard end its
 # descriptor; a requester's stays pinned by its stalled EDT.  The program
 # needs the fabric's registered pool.
-if(ARTS_DEBUG_INJECTION AND ARTS_DEBUG_DB_QUARANTINE AND
-   ARTS_DEBUG_LANDING_BALANCE AND NOT ARTS_CXL_TREE_RESIDENCY AND
+if(ARTS_DEBUG_TEARDOWN AND ARTS_DEBUG_INJECTION AND
+   ARTS_DEBUG_DB_QUARANTINE AND ARTS_DEBUG_LANDING_BALANCE AND
+   NOT ARTS_CXL_TREE_RESIDENCY AND
    ARTS_MALLOC STREQUAL "mimalloc" AND ARTS_LOG_LEVEL GREATER_EQUAL 3)
     add_arts_test(rdzv_cut_teardown)
     if(NOT ARTS_DEBUG_SANITIZER STREQUAL "OFF")
@@ -2767,7 +2783,7 @@ endif()
 # the fail list catches.  The run itself succeeds; the verdict is in WARN
 # lines.  rdzv_cut_kept adds two unpaired expectations on that rank: reclaim
 # keeps them and their landings, which its DEBUG-level TEARDOWN-INFO reports.
-if(ARTS_TEST_REFERENCE_TREE AND ARTS_DEBUG_INJECTION AND
+if(ARTS_TEST_REFERENCE_TREE AND ARTS_DEBUG_TEARDOWN AND ARTS_DEBUG_INJECTION AND
    ARTS_MALLOC STREQUAL "mimalloc" AND ARTS_LOG_LEVEL GREATER_EQUAL 1)
     arts_test_cfg(_cfg 2n_9w_1p)
     set(_kept "registered pool, domain and fabric left unfreed: ")
@@ -3390,7 +3406,7 @@ endif()
 # written off its home (a release off the home waits for it where the arm
 # publishes, requesters park, the home runs hand-overs), plus a remote write
 # first touch.  Its writers are unordered, which DB-WRF does not admit, so
-# every other arm runs it, wherever the walk is compiled.
+# every other arm runs it, wherever the walk can print.
 if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH" AND ARTS_LOG_LEVEL GREATER_EQUAL 3)
 register_single_node_test(quiescent_shutdown_no_residue TIMEOUT 60)
 register_multinode_test(quiescent_shutdown_no_residue TIMEOUT 120)
@@ -3413,7 +3429,7 @@ endif()
 # blocks in its body, whose released block is not exempt.  Each arm judges
 # its own rows of the exempt blocks, so every tree that compiles the walk
 # runs it.
-if(ARTS_LOG_LEVEL GREATER_EQUAL 3)
+if(ARTS_DEBUG_TEARDOWN AND ARTS_LOG_LEVEL GREATER_EQUAL 3)
     add_arts_test(quiescence_walk_excludes_caller)
     register_single_node_test(quiescence_walk_excludes_caller TIMEOUT 30)
     arts_test_cfg(_cfg 1n_20w)
@@ -3437,6 +3453,40 @@ if(ARTS_LOG_LEVEL GREATER_EQUAL 3)
             "CALLER-INFO: ${_n} block\\(s\\) held by the shutdown's caller"
             FAIL_REGULAR_EXPRESSION "FAIL;QUIESCENCE-DEBUG:")
     endforeach()
+endif()
+
+# quiescence_walk_counts_abandoned: the one worker's deque still holds the EDTs
+# its main_edt made when that EDT ends the run, so the walk finds the shutdown
+# non-quiescent and names how many it left there.  What a deque holds at the
+# stop reaches the walk the same way in every cell.
+if(ARTS_TEST_REFERENCE_TREE AND ARTS_DEBUG_TEARDOWN AND
+   ARTS_LOG_LEVEL GREATER_EQUAL 3)
+    add_arts_test(quiescence_walk_counts_abandoned)
+    arts_test_cfg(_cfg 1n_20w)
+    arts_add_test(quiescence_walk_counts_abandoned
+                  COMMAND quiescence_walk_counts_abandoned)
+    set_tests_properties(quiescence_walk_counts_abandoned PROPERTIES
+        LABELS "single_node" TIMEOUT 30 RESOURCE_LOCK "arts_runtime"
+        ENVIRONMENT "ARTS_CONFIG=${_cfg};worker_threads=1"
+        PASS_REGULAR_EXPRESSION
+        "QUIESCENCE-DEBUG: 0 violation\\(s\\) \\(shutdown left undone: queued_edts=64 ooo=0 "
+        FAIL_REGULAR_EXPRESSION "FAIL;QUIESCENCE-DEBUG: ([1-9]|[^0-9 ])")
+endif()
+
+# A quiescent test fails on any marker of the walk, so a teardown that skipped
+# the walk must fail it too; a test whose shutdown leaves work undone names the
+# defect's skip forms alone, since a thread still running is legal there.  Every
+# tree where the teardown runs reads its own registrations.
+if(ARTS_DEBUG_TEARDOWN)
+    arts_add_test(quiescence_tests_fail_on_skip
+        COMMAND ${CMAKE_COMMAND}
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/check_skip_in_fail_lists.cmake
+                ${CMAKE_CURRENT_BINARY_DIR}/CTestTestfile.cmake)
+    set_tests_properties(quiescence_tests_fail_on_skip PROPERTIES
+        LABELS "single_node"
+        TIMEOUT 60
+        PASS_REGULAR_EXPRESSION "PASS quiescence_tests_fail_on_skip"
+        FAIL_REGULAR_EXPRESSION "FAIL quiescence_tests_fail_on_skip")
 endif()
 
 # grant_one_request_per_grant: rounds of concurrent write acquisitions of one
@@ -3627,7 +3677,7 @@ if(ARTS_CXL_TREE_RESIDENCY)
     # The arm's teardown walk: six blocks, every one released and every
     # dependence satisfied, must leave the walk silent -- a QUIESCENCE-DEBUG
     # marker on this shape is the oracle catching a real defect, not a test
-    # artifact.  Registered wherever the walk is compiled.
+    # artifact.  Registered wherever the walk can print.
     if(ARTS_LOG_LEVEL GREATER_EQUAL 3)
         register_cxl_multinode_test(cxl_quiescence_marker TIMEOUT 60 FAIL_REGEX "QUIESCENCE-DEBUG|FAIL|teardown skipped:")
     endif()

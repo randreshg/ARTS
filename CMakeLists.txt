@@ -456,9 +456,13 @@ option(ARTS_DEBUG_LANDING_BALANCE
 # tree sees it through the definition below, never through NDEBUG.
 option(ARTS_DEBUG_WAKE_GUID
     "Keep the parked EDT's GUID beside each waiting entry's pointer to it (and in the FLUSH fetch round) and check it at every wake through the entry, so a wake through an entry that outlived its EDT stops the run; each entry and each FLUSH fetch packet grows by 8 bytes" OFF)
+# Without it a rank's end frees nothing and leaves its threads running, and the
+# process exit reclaims all of it.  The option adds one step to that end.
+option(ARTS_DEBUG_TEARDOWN
+    "After the counter record, stop the runtime's threads and run the orderly teardown (the endpoint closed first) so the quiescence walk, the descriptor quarantine and the rendezvous discards judge the run" OFF)
 
 set(ARTS_DEBUG_FACILITIES ARTS_DEBUG_INJECTION ARTS_DEBUG_DB_QUARANTINE
-    ARTS_DEBUG_LANDING_BALANCE ARTS_DEBUG_WAKE_GUID)
+    ARTS_DEBUG_LANDING_BALANCE ARTS_DEBUG_WAKE_GUID ARTS_DEBUG_TEARDOWN)
 if(CMAKE_BUILD_TYPE STREQUAL "Release")
     # INFO and DEBUG messages, and the teardown walk that only DEBUG compiles,
     # are a Debug build's own emission.  Every refusal is named at once.
@@ -490,10 +494,10 @@ foreach(_facility IN LISTS ARTS_DEBUG_FACILITIES)
 endforeach()
 
 # The bound, in seconds, a rank's end may take once it began: longer where a
-# sanitizer or a Debug build slows the end.  One value per tree, defined for
-# every unit and read by the test registrations, so the code and the tests
-# cannot disagree on it.
-if(NOT ARTS_DEBUG_SANITIZER STREQUAL "OFF" OR CMAKE_BUILD_TYPE STREQUAL "Debug")
+# sanitizer slows the end or the orderly teardown is part of it.  One value
+# per tree, defined for every unit and read by the test registrations, so the
+# code and the tests cannot disagree on it.
+if(NOT ARTS_DEBUG_SANITIZER STREQUAL "OFF" OR ARTS_DEBUG_TEARDOWN)
     set(ARTS_EXIT_WATCHDOG_S 60)
 else()
     set(ARTS_EXIT_WATCHDOG_S 10)

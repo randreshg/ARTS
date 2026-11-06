@@ -36,8 +36,8 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
-#include "arts/coherence/buffer.h"    /* arts_db_landings_outstanding */
-#include "arts/coherence/coherence.h" /* terminal quiescence sweep */
+#include "arts/coherence/buffer.h"    /* the teardown's landing count */
+#include "arts/coherence/coherence.h" /* the teardown's quiescence walk */
 #include "arts/runtime_state.h"
 #include "arts/system/schedfuzz.h"
 #include "arts/utils/malloc.h"
@@ -151,6 +151,15 @@ void arts_runtime_node_init(struct arts_config_s *config) {
                   config->net_interface,
                   config->launcher != NULL &&
                       strcmp(config->launcher, "local") == 0);
+#if defined(ARTS_DEBUG_INJECTION) && !defined(ARTS_DEBUG_TEARDOWN)
+    /* Only the teardown's endpoint close acts on this hook: the run would read
+     * as one that exercised it. */
+    const char *refuse_ep_close = getenv("ARTS_NET_REFUSE_EP_CLOSE");
+    if (refuse_ep_close != NULL && refuse_ep_close[0] != '\0') {
+      ARTS_ERROR("ARTS_NET_REFUSE_EP_CLOSE is set, but this build runs no "
+                 "teardown (configure it with -DARTS_DEBUG_TEARDOWN=ON)");
+    }
+#endif
     if (!arts_regpool_init(arts_net_domain(), arts_net_mr_endpoint(),
                            regpool_slab_bytes, 0)) {
       ARTS_ERROR("arts_runtime_node_init: registered pool init failed");
@@ -346,18 +355,18 @@ void arts_runtime_node_init(struct arts_config_s *config) {
 #endif
 }
 
-struct arts_shutdown_abandon_s arts_shutdown_abandon;
-
-/* Count the EDTs left runnable in a deque at teardown.  The shutdown
+#ifdef ARTS_DEBUG_TEARDOWN
+/* How many EDTs were left runnable in a deque at teardown.  The shutdown
  * abandoned them, and they stay as it left them, with every ref and hold they
  * took: their memory is reclaimed by the process exit, never by ending holds
  * no thread can release any more.  Every other runtime thread has stopped,
  * so the caller is the deque's only user and pops it as its owner. */
-static void arts_count_abandoned_edts(struct arts_deque_s *dq) {
+static unsigned int arts_count_abandoned_edts(struct arts_deque_s *dq) {
+  unsigned int n = 0;
   while (arts_deque_pop_front(dq) != NULL) {
-    atomic_fetch_add_explicit(&arts_shutdown_abandon.queued_edts, 1u,
-                              memory_order_relaxed);
+    n++;
   }
+  return n;
 }
 
 /* Information, never a verdict: the discards reclaim ran, the descriptors
@@ -379,13 +388,14 @@ static void runtime_reclaim_report(size_t discarded, uint64_t ended) {
 /* The teardown proper, once every other runtime thread has stopped and the
  * deques are gone. */
 static void
-arts_runtime_global_cleanup(const struct arts_teardown_exempt_s *exempt) {
+arts_runtime_global_cleanup(const struct arts_teardown_exempt_s *exempt,
+                            unsigned int queued_edts) {
   unsigned int tc = arts_node_info.total_thread_count;
   /* Every other runtime thread has stopped, so coherence wait-structures
    * must be empty now but for what the exempt EDTs hold.  Reports (does not
    * abort); compiled out below DEBUG log level — see the check's
    * definition. */
-  arts_db_debug_quiescence_check(exempt);
+  arts_db_debug_quiescence_check(exempt, queued_edts);
   /* Fabric teardown, phase 1, before anything below frees: every other
    * runtime thread has stored its stop, so none touches the fabric again.
    * Quiesce discards or reaps in-flight txns (their bounces return to the
@@ -513,6 +523,7 @@ arts_runtime_global_cleanup(const struct arts_teardown_exempt_s *exempt) {
     arts_net_teardown();
   }
 }
+#endif /* ARTS_DEBUG_TEARDOWN */
 
 /* Arrive at a barrier counted down from the thread count and wait for every
  * other thread's arrival.  The decrement releases what this thread wrote
@@ -642,6 +653,7 @@ void arts_runtime_thread_park(void) {
   }
 }
 
+#ifdef ARTS_DEBUG_TEARDOWN
 struct arts_stop_result_s {
   unsigned int running; /* threads still RUNNING when the poll gave up */
   unsigned int unsafe;  /* threads whose slot read STOPPED_UNSAFE */
@@ -690,21 +702,22 @@ arts_runtime_stop_threads(const struct arts_thread_stop_s *self) {
   }
 }
 
-/* Counts the EDTs left in every thread's deques as abandoned and frees the
- * deques, only after a stop that left no thread running or stopped unsafe:
- * no thief or owner can reach a deque any more. */
-static void arts_runtime_delete_deques(void) {
+/* Frees every thread's deques, only after a stop that left no thread running
+ * or stopped unsafe: no thief or owner can reach a deque any more.  Returns how
+ * many EDTs they still held, which the shutdown abandoned. */
+static unsigned int arts_runtime_delete_deques(void) {
+  unsigned int abandoned = 0;
   /* An EDT still in a deque stays installed, so the deque holds no reference
    * of its own that freeing it would lose.  The pointers are cleared, so a
    * stray push or steal faults instead of writing freed memory. */
   for (unsigned int i = 0; i < arts_node_info.total_thread_count; i++) {
     if (arts_node_info.deque[i] != NULL) {
-      arts_count_abandoned_edts(arts_node_info.deque[i]);
+      abandoned += arts_count_abandoned_edts(arts_node_info.deque[i]);
       arts_deque_delete(arts_node_info.deque[i]);
       arts_node_info.deque[i] = NULL;
     }
     if (arts_node_info.gpu_deque[i] != NULL) {
-      arts_count_abandoned_edts(arts_node_info.gpu_deque[i]);
+      abandoned += arts_count_abandoned_edts(arts_node_info.gpu_deque[i]);
       arts_deque_delete(arts_node_info.gpu_deque[i]);
       arts_node_info.gpu_deque[i] = NULL;
     }
@@ -714,6 +727,7 @@ static void arts_runtime_delete_deques(void) {
   }
   arts_thread_info.my_deque = NULL;
   arts_thread_info.my_gpu_deque = NULL;
+  return abandoned;
 }
 
 /* The exemptions of the quiescence walk: the EDT running on the end's owner
@@ -807,7 +821,7 @@ void arts_runtime_teardown_oracle(bool node_ready) {
     }
     return;
   }
-  arts_runtime_delete_deques();
+  const unsigned int queued_edts = arts_runtime_delete_deques();
 
   /* Every stop slot was acquired as STOPPED, so each late entry's fields are
    * visible here. */
@@ -824,7 +838,7 @@ void arts_runtime_teardown_oracle(bool node_ready) {
   }
   b.ex.edts = b.edts;
   b.ex.dbs = b.dbs;
-  arts_runtime_global_cleanup(&b.ex);
+  arts_runtime_global_cleanup(&b.ex, queued_edts);
   arts_free((void *)b.edts);
   arts_free((void *)b.dbs);
   arts_free(arts_thread_masks);
@@ -832,6 +846,7 @@ void arts_runtime_teardown_oracle(bool node_ready) {
   arts_free(arts_thread_handles);
   arts_thread_handles = NULL;
 }
+#endif /* ARTS_DEBUG_TEARDOWN */
 
 /*
  * arts_runtime_loop — Main per-thread dispatch loop.
@@ -842,7 +857,8 @@ void arts_runtime_teardown_oracle(bool node_ready) {
  *   - worker:   Runs the selected scheduler loop until alive==false.
  *
  * On single-node configurations, all threads are workers (no progress thread).
- * The loop exits when the teardown's stop clears alive for this thread.
+ * The loop exits when the teardown's stop clears alive for this thread, and
+ * only then: a tree without the teardown runs it until the process ends.
  */
 int arts_runtime_loop() {
   /* Every data block is created inside an EDT, whose epilogue releases the

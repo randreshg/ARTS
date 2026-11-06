@@ -137,9 +137,11 @@ void arts_shared_abandon(arts_shared_ptr_t *p) {
 
 void *arts_shared_get(arts_shared_ptr_t p) { return p ? p->object : NULL; }
 
+#ifdef ARTS_DEBUG_TEARDOWN
 void (*arts_shared_deleter(arts_shared_ptr_t p))(void *) {
   return p ? p->deleter : NULL;
 }
+#endif
 
 /* Relaxed on both sides: publication order rides the slot.  The stamp
  * happens before the release-CAS that publishes the cb into a slot (in the

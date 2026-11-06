@@ -48,7 +48,9 @@ void arts_socket_setup(struct arts_config_s *config);
 
 /* Route a packet received from the wire to its handler. */
 void arts_transport_dispatch_packet(struct arts_msg_header_s *packet);
+#ifdef ARTS_DEBUG_TEARDOWN
 void arts_socket_cleanup();
+#endif
 
 void arts_transport_setup(struct arts_config_s *config);
 #ifdef __cplusplus
