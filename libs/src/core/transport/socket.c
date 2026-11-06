@@ -59,6 +59,7 @@
 #include "arts/runtime_state.h"
 #include "arts/system/config.h"
 #include "arts/system/print.h"
+#include "arts/system/shutdown.h"
 #include "arts/system/threads.h"
 #include "arts/transport/dispatcher.h"
 #include "arts/transport/netif.h"
@@ -572,8 +573,7 @@ bool arts_socket_sentinel_check(void) {
    * skipped it is the only way to learn of the end; the caller enters the
    * same shutdown for both, so the probe need not tell them apart. */
   if (!arts_global_message_table || poll_incoming == NULL ||
-      atomic_load_explicit(&arts_node_info.shutdown_state,
-                           memory_order_acquire)) {
+      arts_shutdown_taken()) {
     return false;
   }
   int n = (int)(arts_global_message_table->table_length - 1) *
@@ -696,8 +696,7 @@ static inline bool arts_transport_connect(int rank, unsigned int port) {
                    sizeof(struct sockaddr_in)) < 0) {
       /* Stop retrying once this rank's shutdown has begun.  During startup
        * only the signal watcher begins one, and it reports the signal. */
-      if (atomic_load_explicit(&arts_node_info.shutdown_state,
-                               memory_order_acquire)) {
+      if (arts_shutdown_taken()) {
         return false;
       }
       if (++retry_count >= max_retries) {
@@ -772,8 +771,7 @@ bool arts_transport_setup_incoming() {
       if (errno != EADDRINUSE) {
         break; /* a non-contention error — fail fast */
       }
-      if (atomic_load_explicit(&arts_node_info.shutdown_state,
-                               memory_order_acquire)) {
+      if (arts_shutdown_taken()) {
         return false;
       }
       if (++bind_retries >= max_bind_retries) {

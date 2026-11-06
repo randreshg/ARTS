@@ -110,17 +110,95 @@ static inline const char *arts_exit_origin_name(enum arts_exit_origin o) {
  * is 0 on a rank that has not learned it; it is a value of its own that
  * publishes nothing, stored and loaded relaxed, so a record written on any
  * thread reads either 0 or the run's id.  origin and the two t0 stamps are
- * written once, by the thread that takes the rank's shutdown point, before
- * the release that publishes the point taken, and the record's writer reads
- * them only after an acquire of that publication. */
+ * written once, by the thread that takes the rank's shutdown point, and read
+ * only by that thread.  rc is the rc that thread took the point with, the
+ * program's own status folded in; it is a value of its own, stored and read
+ * relaxed, so any thread, a signal handler included, may read it once the
+ * point is taken. */
 struct arts_exit_meta_s {
   _Atomic(uint64_t) run_id;
   uint64_t t0_mono_ns;     /* CLOCK_MONOTONIC (arts_get_time_stamp) */
   uint64_t t0_realtime_ns; /* CLOCK_REALTIME */
   enum arts_exit_origin origin;
+  _Atomic(int) rc;
 };
 
 extern struct arts_exit_meta_s arts_exit_meta;
+
+/* The rank's end.  The first thread to take the rank's shutdown point owns
+ * it: from then on the rank sends nothing but one best-effort SHUTDOWN post,
+ * writes its counter record and ends the process with exit_group, waiting for
+ * no other rank and no other thread.  Every later call, on any thread, is a
+ * late entry: its rc is folded into the rank's status and its thread parks
+ * for good, except on the owner's own thread, where the process ends at once.
+ * Before this process became a rank (arts_exit_publish_rank) the process ends
+ * with rc and nothing else. */
+#ifdef __cplusplus
+[[noreturn]]
+#else
+_Noreturn
+#endif
+void arts_exit(int rc, enum arts_exit_origin origin);
+
+/* Takes the shutdown point for an entry that may not end the process on its
+ * own stack yet: true when this call took it (it armed the end and closed the
+ * send gate), false when the point was already taken, and the caller returns
+ * to its loop.  A WIRE taker finishes the burst it reaped and resumes at its
+ * progress loop's top (arts_exit_poll); every other taker calls
+ * arts_exit_resume at once.  Called only on a rank. */
+bool arts_exit_take(int rc, enum arts_exit_origin origin);
+
+/* The rest of the end, on the thread that took the shutdown point. */
+#ifdef __cplusplus
+[[noreturn]]
+#else
+_Noreturn
+#endif
+void arts_exit_resume(void);
+
+/* A progress loop's top: resumes this thread's end when it took the shutdown
+ * point at a reap, and in a build with the injection hooks takes it for a
+ * rendezvous cut whose count completed. */
+void arts_exit_poll(void);
+
+/* Whether the rank's shutdown point was taken; acquire, so what its taker
+ * wrote before the take is visible after a true. */
+bool arts_shutdown_taken(void);
+
+/* arts_rt's first act: names this process as the one whose end arts_exit
+ * runs.  A process that forks keeps the name, so its child ends with its rc
+ * alone. */
+void arts_exit_process_init(void);
+
+/* This process became a rank: its id and the rank count are final, and
+ * `counter_folder` (copied) is where its counter record goes.  Called once,
+ * on the main thread, before any runtime thread exists. */
+void arts_exit_publish_rank(const char *counter_folder);
+
+/* The rank's node is ready: its thread table, its counter rows, its pool and
+ * the start stamp are written.  Called once, by thread 0, before any EDT of
+ * the rank can run. */
+void arts_exit_publish_node_ready(void);
+
+/* Whether the node was published ready; acquire, so what the publication
+ * covers is visible after a true. */
+bool arts_exit_node_ready(void);
+
+/* The copy of the counter folder the rank was published with; read only after
+ * the shutdown point was taken. */
+const char *arts_exit_counter_folder(void);
+
+/* The rank's status as its end stands: the owner's rc, every late entry's rc
+ * and the program's own status, whichever is highest.  Read only after the
+ * shutdown point was taken. */
+int arts_exit_status(void);
+
+#ifdef ARTS_DEBUG_INJECTION
+/* A rendezvous cut's completed count ends the run (origin APP): it may fire
+ * inside a registration or an arrival, so it only raises a flag that the
+ * next progress loop's top takes the shutdown point on. */
+void arts_exit_cut_raise(void);
+#endif
 
 /* In a build on the vendored fake CXL library, runs that library's
  * finalizers once per process, as a normal exit would: the process that

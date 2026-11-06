@@ -22,6 +22,7 @@
 #ifndef CONFIG_TEST_COMMON_H
 #define CONFIG_TEST_COMMON_H
 
+#include "arts/system/shutdown.h"
 #include <setjmp.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -36,7 +37,7 @@ void arts_free(void *p) { free(p); }
 unsigned int arts_global_rank_id = 0;
 unsigned int arts_global_rank_count = 1;
 unsigned int arts_global_master_rank_id = 0;
-ARTS_THREAD_LOCAL struct arts_runtime_private_s arts_thread_info;
+ARTS_THREAD_LOCAL_IE struct arts_runtime_private_s arts_thread_info;
 
 /* ── abort stub: jump back to a test-installed landing pad if armed,
  *    otherwise _exit so death-tests have a deterministic code. ───────────── */
@@ -44,11 +45,12 @@ static jmp_buf g_abort_jmp;
 static volatile int g_abort_armed = 0;
 static volatile int g_abort_fired = 0;
 
-void arts_abort(uint8_t code) {
+_Noreturn void arts_exit(int rc, enum arts_exit_origin origin) {
+  (void)origin;
   g_abort_fired = 1;
   if (g_abort_armed) {
     g_abort_armed = 0;
-    longjmp(g_abort_jmp, (int)code + 1);
+    longjmp(g_abort_jmp, (int)rc + 1);
   }
   _exit(70);
 }

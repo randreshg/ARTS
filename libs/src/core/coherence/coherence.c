@@ -48,11 +48,12 @@
 #include "arts/coherence/census.h"
 #include "arts/coherence/coherence.h"
 #include "arts/coherence/cover_gate.h"
-#include "arts/coherence/handlers.h"
 #include "arts/coherence/directory.h"
+#include "arts/coherence/handlers.h"
+#include "arts/counter/Preamble.h"
+#include "arts/cxl/store.h"
 #include "arts/db.h"
 #include "arts/edt.h"
-#include "arts/cxl/store.h"
 #include "arts/gas/guid.h" /* GUID kind extraction (quiescence debug check) */
 #include "arts/gas/route_table.h"
 #include "arts/memory/regpool.h"
@@ -61,12 +62,12 @@
 #include "arts/runtime_types.h"
 #include "arts/system/print.h"
 #include "arts/system/schedfuzz.h"
+#include "arts/system/shutdown.h"
 #include "arts/system/threads.h"
-#include "arts/transport/net.h" /* arts_net_put_payload */
+#include "arts/transport/net.h"       /* arts_net_put_payload */
 #include "arts/utils/lockfree_lifo.h" /* publish flight waiter stack */
 #include "arts/utils/malloc.h"
 #include "arts/utils/shared.h"
-#include "arts/counter/Preamble.h"
 
 /* ================================================================== */
 /* ===== Cache lifecycle ============================================ */
@@ -682,9 +683,7 @@ bool arts_db_await_ack(sem_t *cv) {
     if (sem_timedwait(cv, &ts) == 0) {
       return true; /* the reply arrived */
     }
-    if (errno == ETIMEDOUT &&
-        atomic_load_explicit(&arts_node_info.shutdown_state,
-                             memory_order_acquire) != 0) {
+    if (errno == ETIMEDOUT && arts_shutdown_taken()) {
       /* teardown: ACK will never come */
       atomic_fetch_add_explicit(&arts_shutdown_abandon.waits, 1u,
                                 memory_order_relaxed);
@@ -840,8 +839,7 @@ pub_flight_drive(struct arts_db_cache_s *cache, bool may_block,
     return gate;
   }
   if (!may_block) {
-    if (atomic_load_explicit(&arts_node_info.shutdown_state,
-                             memory_order_acquire) != 0) {
+    if (arts_shutdown_taken()) {
       /* A shutdown escape let the releases return and the destroy that followed
        * them stripped this ACK's credit.  Every uncovered owner has already
        * escaped (its release returned only through the escape, which read the
@@ -1310,7 +1308,29 @@ static unsigned int excl_cache_word_rows(const struct arts_db_cache_s *c,
 }
 #endif
 
-void arts_db_debug_quiescence_check(void) {
+#if ARTS_LOG_LEVEL >= 3
+static bool walk_exempt_edt(const struct arts_teardown_exempt_s *ex,
+                            const void *edt) {
+  for (unsigned int i = 0; ex != NULL && i < ex->edt_count; i++) {
+    if ((const void *)ex->edts[i] == edt) {
+      return true;
+    }
+  }
+  return false;
+}
+
+static bool walk_exempt_db(const struct arts_teardown_exempt_s *ex,
+                           const struct arts_db_s *db) {
+  for (unsigned int i = 0; ex != NULL && i < ex->db_count; i++) {
+    if (ex->dbs[i] == db) {
+      return true;
+    }
+  }
+  return false;
+}
+#endif
+
+void arts_db_debug_quiescence_check(const struct arts_teardown_exempt_s *ex) {
 #if ARTS_LOG_LEVEL >= 3
   /* Runs only once every other runtime thread has stopped: the stopper's
    * acquire of each thread's stop orders every write before it, so each load
@@ -1362,13 +1382,18 @@ void arts_db_debug_quiescence_check(void) {
         continue;
       }
       arts_shared_ptr_t h = arts_shared_slot_load(&item->value);
-      if (arts_edt_admitted(h)) {
+      /* The EDT that called the end never returns, by design. */
+      if (arts_edt_admitted(h) &&
+          !walk_exempt_edt(ex, h ? arts_shared_get(h) : NULL)) {
         ab_admitted++;
       }
       arts_shared_release(&h);
     }
   }
-  bool quiescent = (ab_queued | ab_waits | ab_ooo | ab_admitted) == 0u;
+  bool walk_quiescent = (ab_queued | ab_waits | ab_ooo | ab_admitted) == 0u;
+  /* Blocks the exempt EDTs hold, which the walk judges as after a shutdown
+   * that left work undone: their holds are never released. */
+  unsigned int caller_held = 0;
   for (unsigned int t = 0; t < nt; t++) {
     arts_route_table_iterator_t iter;
     arts_route_table_iterator_reset(&iter, arts_node_info.route_table[t]);
@@ -1382,6 +1407,10 @@ void arts_db_debug_quiescence_check(void) {
       struct arts_db_s *db = (struct arts_db_s *)(h ? arts_shared_get(h)
                                                     : NULL);
       if (db != NULL && db->db_type == ARTS_DB) {
+        const bool exempt = walk_exempt_db(ex, db);
+        caller_held += exempt ? 1u : 0u;
+        const bool quiescent = walk_quiescent && !exempt;
+        (void)quiescent;
 #ifdef ARTS_PROTOCOL_FLUSH
         /* FLUSH keeps no wait structure on a descriptor — a blocked release
          * owns a heap semaphore that the home's ACK posts — so a walk has
@@ -1876,14 +1905,21 @@ void arts_db_debug_quiescence_check(void) {
   if (marked_owed != 0) {
     ARTS_DEBUG("COVER-INFO: %u home(s) marked for teardown still wait for a "
                "declared request (quiescent=%d)",
-               marked_owed, (int)quiescent);
+               marked_owed, (int)walk_quiescent);
   }
-  if (viol != 0 || !quiescent) {
+  if (caller_held != 0) {
+    ARTS_DEBUG("CALLER-INFO: %u block(s) held by the shutdown's caller(s), "
+               "exempt",
+               caller_held);
+  }
+  if (viol != 0 || !walk_quiescent) {
     ARTS_DEBUG("QUIESCENCE-DEBUG: %u violation(s) (shutdown left undone: "
                "queued_edts=%u waits=%u ooo=%u "
                "admitted_edts=%u)",
                viol, ab_queued, ab_waits, ab_ooo, ab_admitted);
   }
+#else
+  (void)ex;
 #endif /* ARTS_LOG_LEVEL >= 3 */
 }
 

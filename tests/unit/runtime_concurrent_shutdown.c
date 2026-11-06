@@ -7,17 +7,17 @@
 ///        arts_shutdown): exactly one of them begins the rank's end, with no
 ///        deadlock and a clean end.
 ///
-/// arts_shutdown -> arts_enter_shutdown_state(ARTS_EXIT_APP) gates on a
-/// compare-exchange of shutdown_state from 0 to 1: exactly one caller wins
-/// the 0->1 transition and performs the post (MN) + stop_workers; all others
-/// observe a non-zero state and no-op.  Here we stress N worker EDTs racing
+/// arts_shutdown is arts_exit(0, APP), which takes the rank's state word by a
+/// compare-exchange: exactly one caller wins and ends the rank (posting on a
+/// multinode run); every other caller finds the word taken and parks for
+/// good.  Here we stress N worker EDTs racing
 /// into arts_shutdown simultaneously: the run must end with status 0 (ctest
 /// TIMEOUT reaps a hang), and where the tree writes counter files the
 /// registration's record check reads the rank's end from its file: origin
 /// APP, status 0.
 ///
 /// We fan out N independent EDTs that all call arts_shutdown.  A win counter in
-/// a DB lets each EDT observe how many got to run before the runtime stopped;
+/// a DB lets each EDT observe how many got to run before the rank ended;
 /// the property under test is liveness (no deadlock) and one clean end.
 ///
 /// The initiators acquire one block RW with no order among them, so the
@@ -29,9 +29,9 @@
 
 #define N_INITIATORS 8
 
-/// Each initiator EDT bumps a shared counter then calls arts_shutdown.  Because
-/// stop_workers only retires worker threads, in-flight EDTs may still be torn
-/// down; the test does not require all N to run, only that the runtime stops.
+/// Each initiator EDT bumps a shared counter then calls arts_shutdown.  The
+/// first call ends the process, so the test does not require all N to run,
+/// only that the rank ends.
 void initiator_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                    arts_edt_dep_t depv[]) {
   (void)paramc;

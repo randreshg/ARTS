@@ -428,13 +428,24 @@ void arts_db_publish_sync(struct arts_db_cache_s *cache, uint64_t version);
  * then drops the rest of its round records the waits it never began. */
 bool arts_db_await_ack(sem_t *cv);
 
+/* What the walk below exempts: the EDTs that called the rank's end, which
+ * never return, and the descriptors they hold.  An exempt EDT is not counted
+ * as admitted, and an exempt descriptor's rows judge it as after a shutdown
+ * that left work undone. */
+struct arts_teardown_exempt_s {
+  const struct arts_edt_s *const *edts;
+  unsigned int edt_count;
+  const struct arts_db_s *const *dbs;
+  unsigned int db_count;
+};
+
 /* Debug-only one-shot teardown-time invariant check over every live DB (see
  * the definition): once every other runtime thread has stopped, prints
  * QUIESCENCE-DEBUG markers for states the protocol can never leave behind
  * and, after a shutdown that abandoned no work, for residues a quiescent run
  * must not leave either.  Compiled out below ARTS_LOG_LEVEL DEBUG — the call
  * is always legal, the walk only exists where its messages do. */
-void arts_db_debug_quiescence_check(void);
+void arts_db_debug_quiescence_check(const struct arts_teardown_exempt_s *ex);
 
 /* The teardown sweep's per-arm rows, run once for each coherent descriptor it
  * retires, after every other runtime thread stopped and while the install's

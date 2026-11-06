@@ -47,7 +47,6 @@ extern "C" {
 #include <stdbool.h>
 
 #include "arts/system/config.h"
-#include "arts/system/shutdown.h"
 
 struct thread_mask_s;
 
@@ -60,27 +59,15 @@ extern struct thread_mask_s *arts_thread_masks;
 extern pthread_t *arts_thread_handles;
 
 void arts_thread_init(struct arts_config_s *config);
-void arts_thread_main_loop(void);
-
-/* The rank's one shutdown entry, from any thread: the first caller takes the
- * rank's shutdown state, and every later call changes nothing.  The taker
- * closes the send gate on a multinode run; when the end begins on this rank
- * (arts_exit_origin_originates) and the mesh is armed, it posts SHUTDOWN to
- * the peers this rank contacted; then it stops the worker threads.  It waits
- * for no other rank and for no send.  Stopping every other runtime thread,
- * the progress threads included, is the main thread's epilogue. */
-void arts_enter_shutdown_state(enum arts_exit_origin origin);
-
-/* Ends the process at once with `status`, waiting for no other thread: stdout
- * and stderr are flushed only if no thread holds them (a flush to a sink that
- * accepts nothing can still block), and no exit handler, destructor or
- * sanitizer exit-time check runs.  Callable from any thread. */
+/* The main thread's runtime loop: it runs until the teardown's stop and then
+ * parks like every other runtime thread; the rank ends by arts_exit on
+ * whichever thread takes its shutdown point. */
 #ifdef __cplusplus
 [[noreturn]]
 #else
 _Noreturn
 #endif
-void arts_exit_now(uint8_t status);
+void arts_thread_main_loop(void);
 
 /* Architectural spin-wait hint for idle poll loops (x86 `pause` / arm `yield`;
  * an empty asm statement elsewhere).  Cuts the pipeline/power cost of a

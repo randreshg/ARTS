@@ -23,16 +23,18 @@
  *       injecting.
  *   (f) A send spinning on a full ring while every pass's sentinel probe is
  *       due: from the third probe on the sentinel reports a closed peer, and
- *       the spin enters the shutdown once, with origin BACKPRESSURE, stops
- *       the threads once and returns false within 1 s, its free run once.
+ *       the spin tries to take the shutdown point once, with origin
+ *       BACKPRESSURE, and returns false within 1 s, its free run once.
  *
  * Nothing reaches the provider and no fabric comes up: each sending thread
  * holds its own ring's drain token and the main thread holds the CQ token,
  * so a spin can neither post a queued entry nor reap.  Standalone: #includes
  * net.c (its statics) with libc-backed runtime shims and recording mesh
- * shims, a sentinel probe and check the test switches on, and a shutdown
- * entry that records its origin and closes the gate, as the real one does on
- * a multi-rank run.  Under a sanitizer a report here is a defect.
+ * shims, a sentinel probe and check the test switches on, and a take of the
+ * shutdown point that records its origin and closes the gate, as the point's
+ * first taker does on a multi-rank run, and returns false, as for a point
+ * another thread took, so the caller returns to its spin.  Under a sanitizer
+ * a report here is a defect.
  */
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
@@ -57,10 +59,13 @@
 /* ---- runtime externs the module (and regpool) reference ------------------ */
 unsigned int arts_global_rank_id = 0;
 unsigned int arts_global_rank_count = 1;
-ARTS_THREAD_LOCAL struct arts_runtime_private_s arts_thread_info;
+ARTS_THREAD_LOCAL_IE struct arts_runtime_private_s arts_thread_info;
 struct arts_runtime_shared_s arts_node_info;
 struct arts_shutdown_abandon_s arts_shutdown_abandon;
-void arts_abort(uint8_t code) { exit(code ? code : 1); }
+_Noreturn void arts_exit(int rc, enum arts_exit_origin origin) {
+  (void)origin;
+  exit(rc ? rc : 1);
+}
 
 /* The piece group of the PUT under test: the first allocation of the
  * group's size after arming is watched, and its frees are counted. */
@@ -177,16 +182,23 @@ bool arts_socket_sentinel_check(void) {
 
 static _Atomic(int) g_entries;
 static _Atomic(int) g_entry_origin;
-static _Atomic(int) g_stops;
 
-void arts_enter_shutdown_state(enum arts_exit_origin origin) {
+bool arts_exit_take(int rc, enum arts_exit_origin origin) {
+  (void)rc;
   atomic_store_explicit(&g_entry_origin, (int)origin, memory_order_relaxed);
   atomic_fetch_add_explicit(&g_entries, 1, memory_order_relaxed);
   arts_net_close_gate();
+  return false;
 }
 
-void arts_runtime_stop(void) {
-  atomic_fetch_add_explicit(&g_stops, 1, memory_order_relaxed);
+_Noreturn void arts_exit_resume(void) {
+  printf("FAIL net_gate_drop: the end resumed after a take that failed\n");
+  fflush(stdout);
+  _exit(1);
+}
+
+bool arts_shutdown_taken(void) {
+  return atomic_load_explicit(&g_entries, memory_order_relaxed) != 0;
 }
 
 static void count_run(void *arg) {
@@ -288,7 +300,7 @@ static void *put_sender(void *arg) {
   atomic_store_explicit(&g_watch_ptr, NULL, memory_order_relaxed);
   atomic_store_explicit(&g_watch_armed, true, memory_order_relaxed);
   c->returned = net_put(0, 0x1000, 1, 1, g_src, PUT_LEN, count_run,
-                        &c->hook_runs, /*timed=*/false);
+                        &c->hook_runs, /*payload=*/false);
   c->hook_runs_at_return =
       atomic_load_explicit(&c->hook_runs, memory_order_relaxed);
   /* The entries ahead of the pieces, then the queued pieces: only the last
@@ -499,7 +511,6 @@ static bool case_f(void) {
   int calls = atomic_load_explicit(&g_sentinel_calls, memory_order_relaxed);
   int entries = atomic_load_explicit(&g_entries, memory_order_relaxed);
   int origin = atomic_load_explicit(&g_entry_origin, memory_order_relaxed);
-  int stops = atomic_load_explicit(&g_stops, memory_order_relaxed);
   int frees = atomic_load_explicit(&c.frees, memory_order_relaxed);
   if (c.returned) {
     FAIL("(f) net_submit returned true after its spin saw a closed peer\n");
@@ -512,11 +523,8 @@ static bool case_f(void) {
          (double)(c.returned_ns - seen) / 1e9);
   }
   if (entries != 1 || origin != (int)ARTS_EXIT_BACKPRESSURE) {
-    FAIL("(f) %d entry, the last with origin %s; want 1, BACKPRESSURE\n",
+    FAIL("(f) %d take(s), the last with origin %s; want 1, BACKPRESSURE\n",
          entries, arts_exit_origin_name((enum arts_exit_origin)origin));
-  }
-  if (stops != 1) {
-    FAIL("(f) the threads were stopped %d time(s), want 1\n", stops);
   }
   if (frees != 1) {
     FAIL("(f) the dropped send's free ran %d time(s), want 1\n", frees);

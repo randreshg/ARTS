@@ -25,17 +25,21 @@
  * guid.c + shared.c #include'd; the OoO engine is stubbed.
  */
 
+#include "arts/system/shutdown.h"
 #include <pthread.h>
-#include <time.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 unsigned int arts_global_rank_id = 0;
 unsigned int arts_global_rank_count = 1;
-void arts_abort(uint8_t code) { _exit(code ? code : 70); }
+_Noreturn void arts_exit(int rc, enum arts_exit_origin origin) {
+  (void)origin;
+  _exit(rc ? rc : 70);
+}
 void *arts_malloc(size_t s) { return malloc(s); }
 void *arts_calloc(size_t n, size_t s) { return calloc(n, s); }
 void *arts_calloc_aligned(size_t n, size_t s, size_t a) {
@@ -87,7 +91,7 @@ static arts_shared_ptr_t install_obj(void *obj, arts_guid_t key) {
 }
 
 struct arts_runtime_shared_s arts_node_info;
-ARTS_THREAD_LOCAL struct arts_runtime_private_s arts_thread_info;
+ARTS_THREAD_LOCAL_IE struct arts_runtime_private_s arts_thread_info;
 
 #define FAIL(...)                                                              \
   do {                                                                         \

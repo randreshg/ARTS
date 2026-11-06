@@ -100,8 +100,9 @@ unsigned int arts_global_rank_count = 4u;
 uint64_t arts_guid_table_count;
 struct arts_runtime_shared_s arts_node_info;
 struct arts_shutdown_abandon_s arts_shutdown_abandon;
-ARTS_THREAD_LOCAL struct arts_runtime_private_s arts_thread_info;
+ARTS_THREAD_LOCAL_IE struct arts_runtime_private_s arts_thread_info;
 
+#include "arts/system/shutdown.h"
 #include "counter_stubs.h"
 
 static const char *g_scenario = "setup";
@@ -112,12 +113,16 @@ static void fail(const char *what) {
   _exit(1);
 }
 
-void arts_abort(uint8_t code) {
+_Noreturn void arts_exit(int rc, enum arts_exit_origin origin) {
+  (void)origin;
   printf("FAIL token_home_rounds_valinv: %s: the runtime aborted\n",
          g_scenario);
   fflush(stdout);
-  _exit(code ? code : 1);
+  _exit(rc ? rc : 1);
 }
+
+/* coherence.c's release waits re-check whether the rank's end began. */
+bool arts_shutdown_taken(void) { return false; }
 
 void *arts_malloc(size_t n) { return malloc(n); }
 void *arts_calloc(size_t n, size_t s) { return calloc(n, s); }

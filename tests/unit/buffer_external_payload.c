@@ -176,10 +176,14 @@ void arts_regpool_free(void *p) {
  * advertisement/txid primitives and the runtime's fatal-print externs; a pure
  * unit run never allocates a landing, so inert stubs satisfy the link. */
 #include "arts/runtime_state.h"
+#include "arts/system/shutdown.h"
 #include "arts/system/threads.h"
 unsigned int arts_global_rank_id = 0;
-ARTS_THREAD_LOCAL struct arts_runtime_private_s arts_thread_info;
-void arts_abort(uint8_t code) { exit(code ? code : 1); }
+ARTS_THREAD_LOCAL_IE struct arts_runtime_private_s arts_thread_info;
+_Noreturn void arts_exit(int rc, enum arts_exit_origin origin) {
+  (void)origin;
+  exit(rc ? rc : 1);
+}
 bool arts_net_rdzv_local(const void *p, uint64_t len, uint64_t *raddr,
                          uint64_t *rkey) {
   (void)p;

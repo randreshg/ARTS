@@ -54,7 +54,6 @@
 #include "arts/runtime_state.h"
 #include "arts/system/print.h"
 #include "arts/system/shutdown.h"
-#include "arts/system/threads.h"
 
 /* The rank the handlers print: a handler may touch only lock-free atomic
  * objects, never arts_global_rank_id.  Stored once the rank is final; until
@@ -133,23 +132,28 @@ static void write_backtrace(void) {
   backtrace_symbols_fd(frames, depth, STDERR_FILENO);
 }
 
-// Crash signals (SIGSEGV, SIGBUS, SIGFPE) — unrecoverable, re-raise for core.
-static void arts_crash_signal_handler(int sig) {
+void arts_signal_crash_report(int sig) {
   write_signal_line("\n[ARTS] Crashed: ", signal_name(sig),
                     atomic_load_explicit(&handler_rank, memory_order_relaxed),
                     ") — stack trace:\n");
-
   write_backtrace();
+}
 
+/* Crash signals (SIGSEGV, SIGBUS, SIGFPE) end the rank with origin FAULT.
+ * The default action comes back first, so the end raises the signal again
+ * under it and a fault in the end itself takes the process at once; the
+ * report prints once the end is armed. */
+static void arts_crash_signal_handler(int sig) {
   struct sigaction sa;
   sa.sa_handler = SIG_DFL;
   sigemptyset(&sa.sa_mask);
   sa.sa_flags = 0;
   sigaction(sig, &sa, NULL);
-  (void)raise(sig);
+  arts_exit(128 + sig, ARTS_EXIT_FAULT);
 }
 
-// Termination signals (SIGTERM, SIGINT, SIGALRM, SIGHUP) — graceful exit.
+// Termination signals (SIGTERM, SIGINT, SIGALRM, SIGHUP) that reach a thread
+// other than the watcher: the signal's own default action, after one line.
 //
 // IMPORTANT: only async-signal-safe operations here. Anything that takes
 // stdio/malloc locks (e.g. fprintf) can deadlock against a worker already
@@ -183,7 +187,7 @@ void arts_install_signal_handlers(void) {
   void *warm[1];
   (void)backtrace(warm, 1);
 
-  // Crash handlers — backtrace + re-raise for core dump.
+  // Crash handlers: the rank ends with origin FAULT.
   struct sigaction crash_sa;
   crash_sa.sa_handler = arts_crash_signal_handler;
   sigemptyset(&crash_sa.sa_mask);
@@ -197,7 +201,7 @@ void arts_install_signal_handlers(void) {
    * arts_install_signal_watcher_thread).  We still install
    * arts_term_signal_handler as a *fallback*: if a signal somehow
    * reaches a non-watcher thread (e.g. before the mask was inherited,
-   * or after the watcher exits), we at least print a backtrace and
+   * or when no watcher could start), we at least print a backtrace and
    * re-raise SIG_DFL to die cleanly. */
   struct sigaction term_sa;
   term_sa.sa_handler = arts_term_signal_handler;
@@ -214,21 +218,10 @@ void arts_install_signal_handlers(void) {
 /*--- Signal-watcher thread -------------------------------------------------*/
 
 /* Dedicated thread that owns SIGTERM/SIGINT/SIGALRM/SIGHUP delivery via
- * sigwait().  Lets graceful-shutdown code paths (which may grab locks
- * and call fprintf) run in a normal thread context instead of inside an
- * async-unsafe signal handler.  Ends the run through the shutdown entry
- * (origin SIGNAL), which posts SHUTDOWN to the peers this rank contacted and
- * clears the worker threads' alive flags.
- *
- * Wake-on-stop: arts_stop_signal_watcher_thread sets the stop flag and
- * sends SIGRTMIN to break out of sigwait. */
-static pthread_t arts_signal_watcher;
-/* Install and stop both run on the main thread. */
-static bool arts_signal_watcher_started = false;
-/* Stored true (release) by arts_stop_signal_watcher_thread before it wakes
- * the watcher, which reads it (acquire) after every wake. */
-static _Atomic(bool) arts_signal_watcher_stop = false;
-
+ * sigwait(), so the rank's end runs in a normal thread context instead of
+ * inside an async-unsafe signal handler.  The first signal ends the rank
+ * (origin SIGNAL, status 128+sig); the watcher never returns from that end,
+ * and a later signal stays blocked on every thread. */
 static void *arts_signal_watcher_main(void *arg) {
   (void)arg;
 
@@ -237,53 +230,20 @@ static void *arts_signal_watcher_main(void *arg) {
   for (unsigned i = 0; i < arts_term_sig_count; i++) {
     sigaddset(&wait_set, arts_term_sigs[i]);
   }
-  sigaddset(&wait_set, SIGRTMIN);
 
-  unsigned hits = 0;
-  while (1) {
-    int sig = 0;
-    int rc = sigwait(&wait_set, &sig);
-    if (rc != 0) {
-      /* sigwait should not normally fail; if it does, bail to avoid a
-       * tight error loop. */
-      ARTS_WARN("signal watcher: sigwait failed (rc=%d), exiting", rc);
-      break;
-    }
-    if (atomic_load_explicit(&arts_signal_watcher_stop, memory_order_acquire)) {
-      break; /* normal shutdown poke */
-    }
-    if (sig == SIGRTMIN) {
-      /* Spurious wake — re-check stop_flag at top of loop. */
-      continue;
-    }
-
-    hits++;
-    if (hits == 1) {
-      ARTS_WARN("signal watcher: caught %d, initiating graceful shutdown",
-                sig);
-      /* Now safe to call non-async-signal-safe code: we are in a normal
-       * thread context.  Post SHUTDOWN to the peers and stop our own
-       * workers; main thread's arts_thread_main_loop will return,
-       * launcher cleanup will reap children, normal teardown runs. */
-      arts_enter_shutdown_state(ARTS_EXIT_SIGNAL);
-      /* Stay in the loop: a second signal forces exit. */
-    } else {
-      ARTS_WARN("signal watcher: second signal %d, forcing exit", sig);
-      /* The way out of a shutdown that hangs must not wait itself. */
-      arts_exit_now((uint8_t)(128 + sig));
-    }
+  int sig = 0;
+  int rc = sigwait(&wait_set, &sig);
+  if (rc != 0) {
+    ARTS_WARN("signal watcher: sigwait failed (rc=%d), exiting", rc);
+    return NULL;
   }
-  return NULL;
+  write_signal_line("[ARTS] Received ", signal_name(sig),
+                    atomic_load_explicit(&handler_rank, memory_order_relaxed),
+                    "); ending the run\n");
+  arts_exit(128 + sig, ARTS_EXIT_SIGNAL);
 }
 
 void arts_install_signal_watcher_thread(void) {
-  if (arts_signal_watcher_started) {
-    return; /* already installed */
-  }
-  arts_signal_watcher_started = true;
-  /* No watcher runs: the one a previous stop ended has been joined. */
-  atomic_store_explicit(&arts_signal_watcher_stop, false, memory_order_relaxed);
-
   /* Block the term signals on the calling (main) thread so that every
    * subsequently spawned thread inherits the block.  Only the watcher
    * thread will receive them via sigwait. */
@@ -292,30 +252,17 @@ void arts_install_signal_watcher_thread(void) {
   for (unsigned i = 0; i < arts_term_sig_count; i++) {
     sigaddset(&block_set, arts_term_sigs[i]);
   }
-  sigaddset(&block_set, SIGRTMIN);
   pthread_sigmask(SIG_BLOCK, &block_set, NULL);
 
-  if (pthread_create(&arts_signal_watcher, NULL, arts_signal_watcher_main,
-                     NULL) != 0) {
+  pthread_t watcher;
+  if (pthread_create(&watcher, NULL, arts_signal_watcher_main, NULL) != 0) {
     ARTS_WARN("signal watcher: pthread_create failed; "
               "falling back to sigaction handlers");
     /* Unblock so the sigaction handler can still fire. */
     pthread_sigmask(SIG_UNBLOCK, &block_set, NULL);
-    arts_signal_watcher_started = false;
-  }
-}
-
-void arts_stop_signal_watcher_thread(void) {
-  if (!arts_signal_watcher_started) {
     return;
   }
-  atomic_store_explicit(&arts_signal_watcher_stop, true, memory_order_release);
-  /* Wake watcher out of sigwait.  pthread_kill targets only the watcher
-   * thread, so other threads' masks (which also block SIGRTMIN) are
-   * irrelevant. */
-  pthread_kill(arts_signal_watcher, SIGRTMIN);
-  pthread_join(arts_signal_watcher, NULL);
-  arts_signal_watcher_started = false;
+  (void)pthread_detach(watcher);
 }
 
 #ifndef __APPLE__

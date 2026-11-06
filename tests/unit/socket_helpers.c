@@ -46,15 +46,20 @@
 #include "arts/system/config.h"
 #include "arts/transport/protocol.h"
 
+#include "arts/system/shutdown.h"
 #include "counter_stubs.h"
 
 /* ----- extern stubs ----- */
 struct arts_runtime_shared_s arts_node_info;
-ARTS_THREAD_LOCAL struct arts_runtime_private_s arts_thread_info;
+ARTS_THREAD_LOCAL_IE struct arts_runtime_private_s arts_thread_info;
 unsigned int arts_global_rank_id;
 unsigned int arts_global_rank_count;
 
-void arts_abort(uint8_t code) { _exit(70 + code); }
+_Noreturn void arts_exit(int rc, enum arts_exit_origin origin) {
+  (void)origin;
+  _exit(70 + rc);
+}
+bool arts_shutdown_taken(void) { return false; }
 void *arts_malloc(size_t s) { return malloc(s); }
 void *arts_calloc(size_t n, size_t s) { return calloc(n, s); }
 void arts_free(void *p) { free(p); }

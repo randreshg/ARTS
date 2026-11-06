@@ -5,7 +5,6 @@
 /* Termination-robustness test: trigger EDT on rank argv[1] prints
  * "TERM_ABORT rc=<code>" then calls arts_abort(<code>) where <code> is
  * argv[2].  The rank exits with that code, printing the sentinel. */
-#include <stdio.h>
 #include <stdlib.h>
 
 #include "arts.h"
@@ -39,8 +38,4 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_edt_create(trigger_edt, 1, args, 0, &(arts_edt_hint_t){.rank = origin});
 }
 
-int main(int argc, char **argv) {
-  arts_rt(argc, argv);
-  printf("[rank %u] TERM_TEST_EXIT\n", arts_get_current_rank());
-  return 0;
-}
+int main(int argc, char **argv) { return arts_rt(argc, argv); }

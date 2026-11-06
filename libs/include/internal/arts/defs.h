@@ -107,6 +107,19 @@
 #define ARTS_THREAD_LOCAL _Thread_local
 #endif
 
+/* Thread-local storage a fault's signal handler reads: the initial-exec model
+ * reaches it without a call that may allocate.  libarts is linked into the
+ * program, never dlopen'd, so its thread-local block is static and the model
+ * always applies.  Every declaration and the definition carry it; nvcc does
+ * not take the attribute, so a CUDA unit reaches these through the default
+ * model while the C definitions keep initial-exec. */
+#ifdef __CUDACC__
+#define ARTS_THREAD_LOCAL_IE ARTS_THREAD_LOCAL
+#else
+#define ARTS_THREAD_LOCAL_IE                                                   \
+  __attribute__((tls_model("initial-exec"))) ARTS_THREAD_LOCAL
+#endif
+
 /** 128-bit unsigned integer type (used for 128-bit CAS in lock-free queues).
  *  Not available under NVCC — CUDA does not support 128-bit integers. */
 #ifndef __CUDACC__

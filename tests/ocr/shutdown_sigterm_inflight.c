@@ -2,9 +2,9 @@
 ** Copyright 2019 Battelle Memorial Institute
 ** Licensed under the Apache License, Version 2.0
 ******************************************************************************/
-/// @file shutdown_sigterm_inflight_drain.c
+/// @file shutdown_sigterm_inflight.c
 /// @brief A SIGTERM to rank 0 while satisfies from every other rank are in
-///        flight to it ends the run gracefully.
+///        flight to it ends the run with 143.
 ///
 /// Rank 0 keeps LANES chains per other rank running.  One round of a chain:
 /// rank 0 creates an event and a consumer EDT whose only dependence is that
@@ -13,18 +13,18 @@
 /// consumer starts the chain's next round.  Once one chain has run ROUNDS
 /// rounds, its consumer signals the process with a process-directed SIGTERM
 /// (never raise(): a thread-directed signal stays pending on the worker, which
-/// blocks the termination signals).  The signal watcher then initiates the
-/// shutdown: it closes rank 0's send gate and posts SHUTDOWN to the other
-/// ranks while satisfies keep arriving, and waits for no send.
+/// blocks the termination signals); it prints its pass line first, since
+/// the signal ends the rank.  The signal watcher then ends rank 0 (status
+/// 143): it closes rank 0's send gate and posts SHUTDOWN to the other ranks
+/// while satisfies keep arriving, and waits for no send.
 ///
 /// Every rank's status says how its run ended; the spawner's is the highest
-/// of them.
+/// of them, 143, and every other rank ends with 0.
 
 #include "arts.h"
 
 #include <signal.h>
 #include <stdint.h>
-#include <stdio.h>
 #include <unistd.h>
 
 #include "../test_failure_status.h"
@@ -62,6 +62,7 @@ void consumer(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   if (peer == 1 && lane == 0 && round == ROUNDS) {
     arts_printf("  signalling rank 0 with %u chains per rank in flight\n",
                 LANES);
+    arts_printf("[rank 0] SIGTERM_INFLIGHT_EXIT\n");
     kill(getpid(), SIGTERM);
   }
   arm(peer, lane, round + 1);
@@ -86,7 +87,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depc;
   (void)depv;
   unsigned int ranks = arts_get_total_ranks();
-  arts_printf("=== shutdown_sigterm_inflight_drain: %u ranks ===\n", ranks);
+  arts_printf("=== shutdown_sigterm_inflight: %u ranks ===\n", ranks);
   if (ranks < 2) {
     arts_printf("  FAIL: needs at least two ranks\n");
     arts_test_fail();
@@ -100,8 +101,4 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
 }
 
-int main(int argc, char **argv) {
-  int rc = arts_rt(argc, argv);
-  printf("[rank %u] SIGTERM_DRAIN_EXIT\n", arts_get_current_rank());
-  return rc ? 1 : arts_test_status();
-}
+int main(int argc, char **argv) { return arts_rt(argc, argv); }

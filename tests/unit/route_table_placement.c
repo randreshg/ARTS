@@ -37,6 +37,7 @@
  * engine is a stub whose drain records the chain it takes.
  */
 
+#include "arts/system/shutdown.h"
 #include "arts/utils/stdatomic_compat.h"
 #include <pthread.h>
 #include <signal.h>
@@ -50,7 +51,10 @@
 
 unsigned int arts_global_rank_id = 0;
 unsigned int arts_global_rank_count = 1;
-void arts_abort(uint8_t code) { _exit(code ? code : 70); }
+_Noreturn void arts_exit(int rc, enum arts_exit_origin origin) {
+  (void)origin;
+  _exit(rc ? rc : 70);
+}
 void *arts_malloc(size_t s) { return malloc(s); }
 void *arts_calloc(size_t n, size_t s) { return calloc(n, s); }
 void *arts_calloc_aligned(size_t n, size_t s, size_t a) {
@@ -80,7 +84,7 @@ static void after_install_cas(unsigned long key);
 #include "counter_stubs.h"
 
 struct arts_runtime_shared_s arts_node_info;
-ARTS_THREAD_LOCAL struct arts_runtime_private_s arts_thread_info;
+ARTS_THREAD_LOCAL_IE struct arts_runtime_private_s arts_thread_info;
 
 static unsigned long g_failures;
 #define CHECK(cond, ...)                                                       \

@@ -39,6 +39,7 @@
 
 #include "arts/memory/regpool.h"
 #include "arts/runtime_state.h"
+#include "arts/system/shutdown.h"
 #include "arts/system/threads.h"
 #include "arts/transport/dispatcher.h"
 #include "arts/transport/protocol.h"
@@ -46,10 +47,13 @@
 /* ---- runtime externs the module (and regpool) reference ------------------ */
 unsigned int arts_global_rank_id = 0;
 unsigned int arts_global_rank_count = 1; /* self-only fabric */
-ARTS_THREAD_LOCAL struct arts_runtime_private_s arts_thread_info;
+ARTS_THREAD_LOCAL_IE struct arts_runtime_private_s arts_thread_info;
 struct arts_runtime_shared_s arts_node_info;
 struct arts_shutdown_abandon_s arts_shutdown_abandon;
-void arts_abort(uint8_t code) { exit(code ? code : 1); }
+_Noreturn void arts_exit(int rc, enum arts_exit_origin origin) {
+  (void)origin;
+  exit(rc ? rc : 1);
+}
 void *arts_malloc(size_t size) { return malloc(size); }
 void *arts_calloc(size_t n, size_t size) { return calloc(n, size); }
 void *arts_calloc_aligned(size_t n, size_t size, size_t align) {

@@ -48,6 +48,7 @@ extern "C" {
 #include "arts/system/topology.h"
 #include "arts/utils/array_list.h"
 #include "arts/utils/stdatomic_compat.h"
+#include "arts/utils/vector.h"
 #ifdef ARTS_USE_CXL
 #include "arts/cxl/arena.h"
 #include <pthread.h>
@@ -73,22 +74,14 @@ struct arts_runtime_shared_s {
    * computes. */
   struct arts_route_table_s **route_table;
   struct arts_route_table_s **gpu_route_table;
-  /* local_spin[i] points at thread i's `alive`: NULL until thread i has
-   * written its role and set `alive`, which the store of the pointer
-   * publishes.  That store and its load of shutdown_state
-   * (arts_runtime_private_init) against the shutdown CAS and the stop walk's
-   * load of the pointer (arts_enter_shutdown_state) are a store->load pair:
-   * all four are seq_cst, so a stop that began before thread i registered is
-   * seen by one of the two sides.  The teardown's stopper acquires the
-   * pointer, so its false lands after thread i's true. */
-  _Atomic(_Atomic(bool) *) *local_spin;
+  /* local_spin[i] points at thread i's `alive`, stored by thread i before its
+   * ready_to_push arrival; read only after node_ready is acquired (by the
+   * teardown's stopper), which orders the store before the read and thread
+   * i's own true before the stopper's false. */
+  _Atomic(bool) **local_spin;
   /* [thread_id] -> that thread's stop slot, the one arts_thread_stop_slot
    * names on the thread. */
   struct arts_thread_stop_s *thread_stop;
-  /* Per-thread role, indexed by thread_id (0..total_thread_count-1).
-   * Populated during arts_runtime_private_init so that shutdown paths
-   * can filter threads by role (workers vs. progress). */
-  unsigned int *thread_roles;
   unsigned int worker_thread_count;
   unsigned int progress_thread_count;
   unsigned int total_thread_count;
@@ -98,28 +91,13 @@ struct arts_runtime_shared_s {
   _Atomic(unsigned int) ready_to_push;
   _Atomic(unsigned int) ready_to_parallel_start;
   _Atomic(unsigned int) ready_to_inspect;
-  /* 0 = running, 1 = shutting down.  Written only by the 0 -> 1 CAS in
-   * arts_enter_shutdown_state, which every path into the shutdown takes
-   * first, and seq_cst there as one side of the stop-registration pair (see
-   * local_spin).  Reads outside the pair are acquire and learn only that a
-   * shutdown began, so long-running loops (the connect retry) can bail out. */
-  _Atomic(unsigned int) shutdown_state;
-  /* Stored (release) once the CAS winner's entry has finished, its stop walk
-   * included; teardown waits for it (acquire) before it frees anything the
-   * entry touches or reads the end stamp the entry took. */
-  _Atomic(unsigned int) shutdown_entry_done;
   /* End-to-end wall-clock marker (rank 0 only), independent of the counter
-   * subsystem.  e2e_start_stamp is taken when the main application EDT
-   * becomes runnable (init complete — so application init callbacks run
-   * inside the span); e2e_end_stamp is taken at shutdown recognition (the
-   * enter-shutdown CAS, before any teardown).  When e2e_marker_enabled
-   * their difference is printed as "[E2E] <ns>" on rank 0 at exit.  Gated so
-   * a normal run is never perturbed.  The flag is set from $ARTS_E2E_MARKER
-   * before any other thread exists, the start stamp is written and read by
-   * thread 0 alone, and the end stamp is read only after
-   * shutdown_entry_done. */
+   * subsystem: the start stamp is taken when the main application EDT is
+   * about to become runnable, and the end is the rank's shutdown point; their
+   * difference is printed as "[E2E] <ns>" at the end when e2e_marker_enabled.
+   * The flag is set from $ARTS_E2E_MARKER before any other thread exists, and
+   * the start stamp is published by node_ready. */
   uint64_t e2e_start_stamp;
-  uint64_t e2e_end_stamp;
   int e2e_marker_enabled;
   /* Round-robin counter used by arts_db_create when the caller passes
    * NULL hint (no node preference) — distributes home rank across all
@@ -145,17 +123,11 @@ struct arts_runtime_shared_s {
   bool delete_zeros_gpu_gc;
   bool gpu_buff_on;
   uint64_t **keys;
-  const char *counter_folder;
   /* [thread_id] -> that thread's counters, stored before the thread's first
-   * barrier arrival; the capture thread starts after the last startup
-   * barrier, and a runtime thread never exits, so every row it reads stays
-   * alive. */
+   * barrier arrival, which node_ready orders before the record's reads; the
+   * capture thread starts after the last startup barrier, and a runtime
+   * thread never exits, so every row stays alive. */
   arts_counter_t **live_counters;
-  /* [thread_id][counter_index]: each thread's final counts, stored before
-   * its stop slot's release.  The counter writers read a row only once they
-   * have acquired its slot as STOPPED, or when it is their own thread's, so
-   * no read meets a store. */
-  uint64_t **saved_counters;
   arts_array_list_t ***capture_arrays; // [thread_id][counter_index] - capture
                                        // history (PERIODIC)
   uint64_t counter_capture_interval;
@@ -170,8 +142,9 @@ struct arts_runtime_private_s {
   unsigned int numa_domain_id;
   /* Cleared (release) by a stopper on another thread; the thread's loops
    * read it with acquire, so a stopped thread sees what preceded the stop.
-   * The owner's own stores are relaxed: only it reads them, and the seq_cst
-   * publication of local_spin orders its first store before any stop. */
+   * The owner's own store is relaxed: only it reads it, and its ready_to_push
+   * arrival, which node_ready carries to the stopper, orders it before any
+   * stop. */
   _Atomic(bool) alive;
   enum arts_thread_role role;
   /* This thread's pseudo-random stream: a private counter, and a key that
@@ -182,7 +155,7 @@ struct arts_runtime_private_s {
 };
 
 extern struct arts_runtime_shared_s arts_node_info;
-extern ARTS_THREAD_LOCAL struct arts_runtime_private_s arts_thread_info;
+extern ARTS_THREAD_LOCAL_IE struct arts_runtime_private_s arts_thread_info;
 
 /* A runtime thread's stop slot.  Its owner stores a stopped value (release)
  * once it has left its loop for good, after every access it makes to shared
@@ -197,10 +170,15 @@ enum {
 };
 struct arts_thread_stop_s {
   _Atomic(unsigned int) state;
+  /* Written by a thread that entered the rank's end after another thread took
+   * it, before its stopped release: the EDT it was running and its
+   * created-DB list, both left as they were. */
+  struct arts_edt_s *caller_edt;
+  arts_vector_t *caller_dbs;
 } ARTS_ALIGNED(64);
 /* This thread's slot in arts_node_info.thread_stop; NULL on a thread the
  * runtime did not create. */
-extern ARTS_THREAD_LOCAL struct arts_thread_stop_s *arts_thread_stop_slot;
+extern ARTS_THREAD_LOCAL_IE struct arts_thread_stop_s *arts_thread_stop_slot;
 
 /* Pending work a shutdown dropped instead of performing, counted by the
  * sites that drop it (relaxed increments; the teardown's acquire of every

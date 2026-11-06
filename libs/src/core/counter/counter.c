@@ -42,6 +42,7 @@
 #include <assert.h>
 #include <errno.h>
 #include <inttypes.h>
+#include <limits.h>
 #include <pthread.h>
 #include <string.h>
 #include <strings.h>
@@ -64,7 +65,8 @@
 // Thread-local counter storage - simple array of counters.
 // Each thread updates these directly during execution.
 // No captures here - capture thread handles periodic snapshots separately.
-ARTS_THREAD_LOCAL arts_counter_t arts_thread_local_counters[NUM_COUNTER_TYPES];
+ARTS_THREAD_LOCAL_IE arts_counter_t
+    arts_thread_local_counters[NUM_COUNTER_TYPES];
 
 // Capture thread state - only used for periodic counter capture.
 //
@@ -509,15 +511,13 @@ static const char *arts_clock_sync_name(enum arts_clock_sync sync) {
 }
 
 /* The metadata every counter file carries: the run, this rank and how its end
- * began.  The caller runs after the shutdown entry's publication of the
- * stamps has been acquired. */
-static void arts_write_common_metadata(arts_json_writer_t *writer) {
+ * began.  Written by the thread that took the rank's shutdown point, which
+ * wrote the stamps and the origin itself. */
+static void arts_write_common_metadata(arts_json_writer_t *writer,
+                                       const char *folder) {
   arts_json_writer_write_u_int64(writer, "timestamp", (uint64_t)time(NULL));
   arts_json_writer_write_string(writer, "version", "1.7.0");
-  if (arts_node_info.counter_folder) {
-    arts_json_writer_write_string(writer, "counter_folder",
-                                  arts_node_info.counter_folder);
-  }
+  arts_json_writer_write_string(writer, "counter_folder", folder);
   enum arts_clock_sync sync = arts_counter_clock_sync();
   uint64_t run_id =
       atomic_load_explicit(&arts_exit_meta.run_id, memory_order_relaxed);
@@ -525,7 +525,7 @@ static void arts_write_common_metadata(arts_json_writer_t *writer) {
   if (run_id != 0) {
     (void)snprintf(run, sizeof(run), "%016" PRIx64, run_id);
   }
-  arts_json_writer_write_int64(writer, "rc", arts_app_exit_status());
+  arts_json_writer_write_int64(writer, "rc", arts_exit_status());
   arts_json_writer_write_string(writer, "run", run);
   arts_json_writer_write_u_int64(writer, "rank", arts_global_rank_id);
   arts_json_writer_write_string(writer, "origin",
@@ -556,49 +556,75 @@ static unsigned int arts_counters_at_level(unsigned int level) {
   return count;
 }
 
-/* Open one output file, creating the folder if it is absent.
+/* One counter file in the making: written to <name>.tmp through a large
+ * stdio buffer, then renamed, so a reader never meets a partial file.
  *
- * Only the final component is created: a caller naming a path whose parents do
- * not exist gets a diagnosed failure, not a silently discarded measurement —
- * counters that vanish are worse than counters that were never asked for,
- * because the run still reports success. */
-static FILE *arts_open_counter_file(const char *output_folder,
-                                    const char *filename) {
+ * Only the folder's final component is created: a caller naming a path whose
+ * parents do not exist gets a diagnosed failure, not a silently discarded
+ * measurement -- counters that vanish are worse than counters that were never
+ * asked for, because the run still reports success.  A failure prints one
+ * WARN and changes no status. */
+struct arts_counter_file_s {
+  FILE *fp;
+  char path[PATH_MAX];
+  char tmp[PATH_MAX];
+};
+
+static bool arts_open_counter_file(struct arts_counter_file_s *f,
+                                   const char *output_folder,
+                                   const char *filename) {
   /* Ranks dumping into one shared folder all attempt the mkdir; EEXIST is
    * another creator's success, and probing with stat first would open a
    * window in which the loser mistakes that success for a failure. */
   if (mkdir(output_folder, 0755) == -1 && errno != EEXIST) {
     ARTS_WARN("counters: cannot create %s: %s — no counters written",
               output_folder, strerror(errno));
-    return NULL;
+    return false;
   }
-  char filepath[1024];
-  (void)snprintf(filepath, sizeof(filepath), "%s/%s", output_folder, filename);
-  FILE *fp = fopen(filepath, "w");
-  if (!fp) {
-    ARTS_WARN("counters: cannot write %s: %s", filepath, strerror(errno));
+  int n = snprintf(f->path, sizeof(f->path), "%s/%s", output_folder, filename);
+  int m =
+      snprintf(f->tmp, sizeof(f->tmp), "%s/%s.tmp", output_folder, filename);
+  if (n < 0 || m < 0 || (size_t)m >= sizeof(f->tmp)) {
+    ARTS_WARN("counters: the path of %s in %s is too long", filename,
+              output_folder);
+    return false;
   }
-  return fp;
+  f->fp = fopen(f->tmp, "w");
+  if (!f->fp) {
+    ARTS_WARN("counters: cannot write %s: %s", f->tmp, strerror(errno));
+    return false;
+  }
+  (void)setvbuf(f->fp, NULL, _IOFBF, (size_t)1 << 20);
+  return true;
 }
 
-// Helper: finalize and close JSON file
-static void arts_close_counter_file(arts_json_writer_t *writer, FILE *fp) {
+static void arts_close_counter_file(arts_json_writer_t *writer,
+                                    struct arts_counter_file_s *f) {
   arts_json_writer_end_object(writer);
   arts_json_writer_finish(writer);
-  (void)fputc('\n', fp);
-  (void)fclose(fp);
+  (void)fputc('\n', f->fp);
+  bool written = !ferror(f->fp);
+  if (fclose(f->fp) != 0) {
+    written = false;
+  }
+  if (!written) {
+    ARTS_WARN("counters: cannot write %s: %s", f->tmp, strerror(errno));
+    (void)unlink(f->tmp);
+    return;
+  }
+  if (rename(f->tmp, f->path) != 0) {
+    ARTS_WARN("counters: cannot rename %s to %s: %s", f->tmp, f->path,
+              strerror(errno));
+    (void)unlink(f->tmp);
+  }
 }
 
-/* Whether thread t's counts go into the files: its saved row is final once
- * this acquire reads STOPPED, which orders the row's stores before the reads;
- * the writer's own row is final by program order.  A thread the teardown's
- * stop did not stop is left out of every file. */
-static bool arts_counter_thread_counted(unsigned int t) {
-  if (&arts_node_info.thread_stop[t] == arts_thread_stop_slot) {
-    return true;
-  }
-  return atomic_load_explicit(&arts_node_info.thread_stop[t].state,
-                              memory_order_acquire) == ARTS_THREAD_STOPPED;
+/* Thread t's count of counter i, read live: every row stays alive, and each
+ * count carries only its own value. */
+static uint64_t arts_counter_live(unsigned int t, unsigned int i) {
+  const arts_counter_t *row = arts_node_info.live_counters[t];
+  return row != NULL ? atomic_load_explicit(&row[i].count, memory_order_relaxed)
+                     : 0;
 }
 
 // Helper function to compute node-level reduced value across all threads
@@ -608,12 +634,8 @@ static uint64_t arts_compute_node_reduced_value(unsigned int index) {
   uint64_t node_value =
       (reduce_method == ARTS_COUNTER_REDUCE_MIN) ? UINT64_MAX : 0;
   for (unsigned int t = 0; t < arts_node_info.total_thread_count; t++) {
-    uint64_t *saved = arts_node_info.saved_counters[t];
-    if (!saved || !arts_counter_thread_counted(t)) {
-      continue; // Thread never registered or data not available
-    }
-    node_value =
-        arts_apply_reduction(node_value, saved[index], reduce_method, t);
+    node_value = arts_apply_reduction(node_value, arts_counter_live(t, index),
+                                      reduce_method, t);
   }
   return node_value;
 }
@@ -656,9 +678,6 @@ static void arts_compute_node_reduced_captures(unsigned int counter_index,
                                              sizeof(arts_counter_capture_t *));
 
   for (unsigned int t = 0; t < tc; t++) {
-    if (!arts_counter_thread_counted(t)) {
-      continue;
-    }
     arts_array_list_t *thread_list =
         arts_node_info.capture_arrays[t][counter_index];
     if (thread_list && thread_list->index > 0) {
@@ -723,35 +742,29 @@ static void arts_compute_node_reduced_captures(unsigned int counter_index,
 static void arts_counter_write_thread(const char *output_folder,
                                       unsigned int node_id,
                                       unsigned int thread_id) {
-  if (!arts_counters_at_level(ARTS_COUNTER_LEVEL_THREAD) ||
-      !arts_counter_thread_counted(thread_id)) {
-    return;
-  }
-
   char filename[64];
   (void)snprintf(filename, sizeof(filename), "n%u_t%u.json", node_id,
                  thread_id);
-  FILE *fp = arts_open_counter_file(output_folder, filename);
-  if (!fp) {
+  struct arts_counter_file_s file;
+  if (!arts_open_counter_file(&file, output_folder, filename)) {
     return;
   }
 
   arts_json_writer_t writer;
-  arts_json_writer_init(&writer, fp, 2);
+  arts_json_writer_init(&writer, file.fp, 2);
   arts_json_writer_begin_object(&writer, NULL);
 
   // Metadata
   arts_json_writer_begin_object(&writer, "metadata");
   arts_json_writer_write_u_int64(&writer, "node_id", node_id);
   arts_json_writer_write_u_int64(&writer, "thread_id", thread_id);
-  arts_write_common_metadata(&writer);
+  arts_write_common_metadata(&writer, output_folder);
   arts_json_writer_write_u_int64(&writer, "counter_capture_interval",
                                  arts_node_info.counter_capture_interval);
   arts_json_writer_end_object(&writer);
 
   // Counters
   arts_json_writer_begin_object(&writer, "counters");
-  uint64_t *saved = arts_node_info.saved_counters[thread_id];
   for (unsigned int i = 0; i < NUM_COUNTER_TYPES; i++) {
     if (arts_counter_mode_array[i] == ARTS_COUNTER_MODE_OFF ||
         arts_counter_level_array[i] != ARTS_COUNTER_LEVEL_THREAD) {
@@ -765,7 +778,7 @@ static void arts_counter_write_thread(const char *output_folder,
     arts_json_writer_write_string(&writer, "captureLevel", "THREAD");
 
     // Always write final value
-    uint64_t final_value = saved[i];
+    uint64_t final_value = arts_counter_live(thread_id, i);
     arts_json_writer_write_u_int64(&writer, "value", final_value);
     if (arts_counter_is_time_counter(arts_counter_names[i])) {
       arts_json_writer_write_double(&writer, "value_ms",
@@ -799,39 +812,38 @@ static void arts_counter_write_thread(const char *output_folder,
   }
   arts_json_writer_end_object(&writer);
 
-  arts_close_counter_file(&writer, fp);
+  arts_close_counter_file(&writer, &file);
 }
 
+/* The node file.  Before the node was ready no counter row exists, so it
+ * carries the metadata and no counter value. */
 static void arts_counter_write_node(const char *output_folder,
-                                    unsigned int node_id) {
-  if (!arts_counters_at_level(ARTS_COUNTER_LEVEL_NODE)) {
-    return;
-  }
-
+                                    unsigned int node_id, bool ready) {
   char filename[64];
   (void)snprintf(filename, sizeof(filename), "n%u.json", node_id);
-  FILE *fp = arts_open_counter_file(output_folder, filename);
-  if (!fp) {
+  struct arts_counter_file_s file;
+  if (!arts_open_counter_file(&file, output_folder, filename)) {
     return;
   }
 
   arts_json_writer_t writer;
-  arts_json_writer_init(&writer, fp, 2);
+  arts_json_writer_init(&writer, file.fp, 2);
   arts_json_writer_begin_object(&writer, NULL);
 
   // Metadata
   arts_json_writer_begin_object(&writer, "metadata");
   arts_json_writer_write_u_int64(&writer, "node_id", node_id);
-  arts_write_common_metadata(&writer);
+  arts_write_common_metadata(&writer, output_folder);
   arts_json_writer_write_u_int64(&writer, "captureInterval",
-                                 arts_node_info.counter_capture_interval);
+                                 ready ? arts_node_info.counter_capture_interval
+                                       : 0);
   arts_json_writer_write_u_int64(&writer, "total_threads",
-                                 arts_node_info.total_thread_count);
+                                 ready ? arts_node_info.total_thread_count : 0);
   arts_json_writer_end_object(&writer);
 
   // Counters
   arts_json_writer_begin_object(&writer, "counters");
-  for (unsigned int i = 0; i < NUM_COUNTER_TYPES; i++) {
+  for (unsigned int i = 0; ready && i < NUM_COUNTER_TYPES; i++) {
     if (arts_counter_mode_array[i] == ARTS_COUNTER_MODE_OFF ||
         arts_counter_level_array[i] != ARTS_COUNTER_LEVEL_NODE) {
       continue;
@@ -871,23 +883,53 @@ static void arts_counter_write_node(const char *output_folder,
 
   arts_json_writer_end_object(&writer);
 
-  arts_close_counter_file(&writer, fp);
+  arts_close_counter_file(&writer, &file);
 }
 
-// Unified counter write function - single entry point
-void arts_counter_write(const char *output_folder, unsigned int node_id,
-                        unsigned int thread_id) {
-  if (!output_folder) {
+void arts_counter_record(void) {
+  const char *folder = arts_exit_counter_folder();
+  if (folder[0] == '\0') {
     return;
   }
-
-  // Write thread-level counters for this thread
-  arts_counter_write_thread(output_folder, node_id, thread_id);
-
-  // Thread 0 handles node level output
-  if (thread_id == 0) {
-    arts_counter_write_node(output_folder, node_id);
+  bool ready = arts_exit_node_ready();
+  if (arts_counters_at_level(ARTS_COUNTER_LEVEL_THREAD) && ready) {
+    for (unsigned int t = 0; t < arts_node_info.total_thread_count; t++) {
+      arts_counter_write_thread(folder, arts_global_rank_id, t);
+    }
   }
+  if (arts_counters_at_level(ARTS_COUNTER_LEVEL_NODE)) {
+    arts_counter_write_node(folder, arts_global_rank_id, ready);
+  }
+}
+
+uint64_t arts_counter_record_estimate(void) {
+  bool ready = arts_exit_node_ready();
+  uint64_t tc = ready ? arts_node_info.total_thread_count : 0;
+  uint64_t bytes = 4096;
+  for (unsigned int i = 0; i < NUM_COUNTER_TYPES; i++) {
+    if (arts_counter_mode_array[i] == ARTS_COUNTER_MODE_OFF) {
+      continue;
+    }
+    bool thread_level =
+        arts_counter_level_array[i] == ARTS_COUNTER_LEVEL_THREAD;
+    bytes += 160;
+    if (thread_level) {
+      bytes += 160 * tc;
+    }
+    if (arts_counter_mode_array[i] != ARTS_COUNTER_MODE_PERIODIC) {
+      continue;
+    }
+    /* A node file reduces the threads' histories by epoch into one, as
+     * long as the longest; a thread file writes each thread's own. */
+    uint64_t entries = 0;
+    for (uint64_t t = 0; t < tc; t++) {
+      const arts_array_list_t *list = arts_node_info.capture_arrays[t][i];
+      uint64_t n = list != NULL ? list->index : 0;
+      entries = thread_level ? entries + n : (n > entries ? n : entries);
+    }
+    bytes += 40 * entries;
+  }
+  return bytes;
 }
 
 // RTT-based time synchronization for counter capture alignment

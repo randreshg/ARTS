@@ -4,11 +4,9 @@
 ******************************************************************************/
 /* A run that does nothing but shut down: an EDT on the rank argv[1] names (0
  * by default) calls arts_shutdown() argv[2] milliseconds after it starts (0 by
- * default), and main() prints TERM_TEST_EXIT after arts_rt returns.  The
- * injection-hook refusal tests run it: a refused run must end at startup,
- * before any of this. */
+ * default), which ends the run.  The injection-hook refusal tests run it: a
+ * refused run must end at startup, before any of this. */
 #include <errno.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
 
@@ -47,8 +45,4 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                   &(arts_edt_hint_t){.rank = origin});
 }
 
-int main(int argc, char **argv) {
-  arts_rt(argc, argv);
-  printf("[rank %u] TERM_TEST_EXIT\n", arts_get_current_rank());
-  return 0;
-}
+int main(int argc, char **argv) { return arts_rt(argc, argv); }

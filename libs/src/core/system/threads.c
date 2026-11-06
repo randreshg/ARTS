@@ -37,7 +37,6 @@
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
 #include "arts/system/threads.h"
-#include "arts/counter/Preamble.h"
 
 #include <limits.h>
 #include <stdlib.h>
@@ -49,9 +48,6 @@
 #include <sched.h>
 #endif
 
-#include "arts/counter/counter.h"
-#include "arts/db.h"             /* arts_db_resume_list_free */
-#include "arts/edt_context.h"    /* arts_cleanup_edt_tls */
 #include "arts/memory/regpool.h" /* the pool learns this rank's NUMA nodes */
 #include "arts/runtime_state.h"
 #include "arts/system/config.h"
@@ -69,91 +65,17 @@ struct arts_config_s *arts_thread_config;
 struct thread_mask_s *arts_thread_masks;
 pthread_t *arts_thread_handles;
 
-/* A thread's final counts, read by the counter writers only once they have
- * acquired the thread's stop. */
-static void arts_thread_save_counters(unsigned int thread_id) {
-  uint64_t *saved = arts_node_info.saved_counters[thread_id];
-  for (unsigned int i = 0; i < NUM_COUNTER_TYPES; i++) {
-    saved[i] = atomic_load_explicit(&arts_thread_local_counters[i].count,
-                                    memory_order_relaxed);
-  }
-}
-
 void *arts_thread_loop(void *data) {
   struct thread_mask_s *thread = (struct thread_mask_s *)data;
   arts_runtime_private_init(thread, arts_thread_config);
   arts_runtime_loop();
-  arts_thread_save_counters(thread->id);
   arts_runtime_thread_park();
 }
 
-/*
- * arts_thread_main_loop — Main thread (thread 0) entry after initialization.
- *
- * Runs the runtime loop until alive==false, then stops every other runtime
- * thread and, once all have stopped, tears the node down.  No thread is
- * joined: a stopped thread parks for the rest of the process.
- */
-void arts_thread_main_loop() {
+void arts_thread_main_loop(void) {
   ARTS_DEBUG("arts_thread_main_loop: main thread entering runtime_loop");
   arts_runtime_loop();
-  ARTS_DEBUG("arts_thread_main_loop: main thread exited runtime_loop, "
-             "stopping %u threads",
-             arts_node_info.total_thread_count - 1);
-
-  /* End-to-end marker (rank 0): e2e_start_stamp is taken at the application
-   * start (runtime.c) and e2e_end_stamp by the shutdown entry's CAS winner
-   * (shutdown.c), so the span is printed once that entry has finished, and
-   * ahead of any teardown step that could hang.  Print it on stderr, gated by
-   * $ARTS_E2E_MARKER, in the same "[E2E] <ns>" form the reference runtimes
-   * use, so the harness parses all three runtimes identically.  A shutdown
-   * recognised before the application started has no span, so nothing is
-   * printed for it. */
-  arts_runtime_wait_shutdown_entry();
-  if (!arts_global_rank_id && arts_node_info.e2e_marker_enabled &&
-      arts_node_info.e2e_end_stamp != 0 &&
-      arts_node_info.e2e_end_stamp >= arts_node_info.e2e_start_stamp) {
-    fprintf(stderr, "[E2E] %lu\n",
-            (unsigned long)(arts_node_info.e2e_end_stamp -
-                            arts_node_info.e2e_start_stamp));
-    fflush(stderr);
-  }
-
-  /* The capture thread reads every runtime thread's counters in that
-   * thread's own storage, which a stopped thread keeps, and is joined before
-   * any thread's saved counts are read. */
-  arts_counter_capture_stop();
-  arts_cleanup_edt_tls();
-  arts_db_resume_list_free();
-  arts_thread_save_counters(0);
-
-  /* A thread that leaves its loop saves its counts and parks.  The counter
-   * files are written either way; a thread that did not stop is left out of
-   * them. */
-  struct arts_stop_result_s stop =
-      arts_runtime_stop_threads(arts_thread_stop_slot);
-  for (unsigned int t = 0; t < arts_node_info.total_thread_count; t++) {
-    arts_counter_write(arts_node_info.counter_folder, arts_global_rank_id, t);
-  }
-  if (stop.unsafe != 0 || stop.running != 0) {
-    /* A thread that may still be in the middle of an update can reach
-     * anything the teardown would read or free, so nothing is freed and the
-     * process exit reclaims it all. */
-    if (stop.unsafe != 0) {
-      ARTS_DEBUG("teardown skipped: %u thread(s) stopped mid-transition",
-                 stop.unsafe);
-    } else {
-      ARTS_DEBUG("teardown skipped: %u thread(s) still running", stop.running);
-    }
-    arts_regpool_report_if_requested();
-    return;
-  }
-  arts_runtime_delete_deques();
-  arts_runtime_global_cleanup();
-  arts_free(arts_thread_masks);
-  arts_thread_masks = NULL;
-  arts_free(arts_thread_handles);
-  arts_thread_handles = NULL;
+  arts_runtime_thread_park();
 }
 
 void arts_thread_init(struct arts_config_s *config) {

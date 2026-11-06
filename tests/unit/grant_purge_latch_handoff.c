@@ -31,14 +31,18 @@
  */
 #include "coherence/grant_purge.c"
 
+#include "arts/system/shutdown.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 unsigned int arts_global_rank_id = 0u;
 unsigned int arts_global_rank_count = 2u;
-ARTS_THREAD_LOCAL struct arts_runtime_private_s arts_thread_info;
-void arts_abort(uint8_t code) { exit(code ? code : 1); }
+ARTS_THREAD_LOCAL_IE struct arts_runtime_private_s arts_thread_info;
+_Noreturn void arts_exit(int rc, enum arts_exit_origin origin) {
+  (void)origin;
+  exit(rc ? rc : 1);
+}
 
 #include "counter_stubs.h"
 

@@ -30,6 +30,7 @@
  *    ARTS_ERROR => arts_abort (death test via fork, expect nonzero exit).
  */
 
+#include "arts/system/shutdown.h"
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -40,10 +41,11 @@
 
 /* Standalone stubs for runtime symbols referenced by ARTS_ERROR/ARTS_INFO. */
 unsigned int arts_global_rank_id = 0;
-_Noreturn void arts_abort(uint8_t code);
-_Noreturn void arts_abort(uint8_t code) {
-  fprintf(stderr, "arts_abort(%u)\n", (unsigned)code);
-  _exit(code ? code : 1);
+_Noreturn void arts_exit(int rc, enum arts_exit_origin origin);
+_Noreturn void arts_exit(int rc, enum arts_exit_origin origin) {
+  (void)origin;
+  fprintf(stderr, "arts_abort(%u)\n", (unsigned)rc);
+  _exit(rc ? rc : 1);
 }
 void *arts_malloc(size_t size) { return malloc(size); }
 void arts_free(void *ptr) { free(ptr); }
@@ -52,7 +54,7 @@ void arts_free(void *ptr) { free(ptr); }
 
 /* Storage for the thread-local arts_thread_info that print.h inline macros
  * reference (declared extern in runtime_state.h via the include above). */
-ARTS_THREAD_LOCAL struct arts_runtime_private_s arts_thread_info;
+ARTS_THREAD_LOCAL_IE struct arts_runtime_private_s arts_thread_info;
 
 /* ------------------------------------------------------------------------- */
 

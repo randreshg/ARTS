@@ -5,8 +5,8 @@
  * #includes threads.c so the real derivation code runs; the runtime
  * collaborators arts_thread_init calls (arts_get_thread_mask,
  * arts_runtime_node_init, arts_print_mask, private_init/loop/park,
- * arts_malloc/calloc/free, counters, ARTS_ERROR->arts_abort) are stubbed so the
- * unit links standalone and we can inspect the derived counts WITHOUT the full
+ * arts_malloc/calloc/free, ARTS_ERROR->arts_exit) are stubbed so the unit
+ * links standalone and we can inspect the derived counts WITHOUT the full
  * runtime.
  *
  * Property under test
@@ -32,6 +32,7 @@
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
 #endif
+#include "arts/system/shutdown.h"
 #include <limits.h>
 #include <pthread.h>
 #include <stdbool.h>
@@ -47,10 +48,11 @@
 unsigned int
     arts_global_rank_id_unused; /* not used; real one is in threads.c */
 
-_Noreturn void arts_abort(uint8_t code);
-_Noreturn void arts_abort(uint8_t code) {
-  fprintf(stderr, "arts_abort(%u)\n", (unsigned)code);
-  _exit(code ? code : 1);
+_Noreturn void arts_exit(int rc, enum arts_exit_origin origin);
+_Noreturn void arts_exit(int rc, enum arts_exit_origin origin) {
+  (void)origin;
+  fprintf(stderr, "arts_abort(%u)\n", (unsigned)rc);
+  _exit(rc ? rc : 1);
 }
 
 void *arts_malloc(size_t n);
@@ -68,11 +70,12 @@ void arts_free(void *p) { free(p); }
 /* ---- stubs for the symbols threads.c references at link time --------------
  */
 
-ARTS_THREAD_LOCAL struct arts_runtime_private_s arts_thread_info;
-ARTS_THREAD_LOCAL struct arts_thread_stop_s *arts_thread_stop_slot;
+ARTS_THREAD_LOCAL_IE struct arts_runtime_private_s arts_thread_info;
+ARTS_THREAD_LOCAL_IE struct arts_thread_stop_s *arts_thread_stop_slot;
 struct arts_runtime_shared_s arts_node_info;
 struct arts_shutdown_abandon_s arts_shutdown_abandon;
-ARTS_THREAD_LOCAL arts_counter_t arts_thread_local_counters[NUM_COUNTER_TYPES];
+ARTS_THREAD_LOCAL_IE arts_counter_t
+    arts_thread_local_counters[NUM_COUNTER_TYPES];
 
 void arts_get_thread_mask(struct arts_config_s *config,
                           struct thread_mask_s *flat,
@@ -111,34 +114,10 @@ void arts_runtime_private_init(struct thread_mask_s *m,
   (void)m;
   (void)c;
 }
-void arts_runtime_wait_shutdown_entry(void) {}
 int arts_runtime_loop(void) { return 0; }
-void arts_runtime_global_cleanup(void) {}
-void arts_runtime_stop(void) {}
 /* The spawned threads end here instead of parking, so the harness can join
  * them. */
 void arts_runtime_thread_park(void) { pthread_exit(NULL); }
-struct arts_stop_result_s
-arts_runtime_stop_threads(const struct arts_thread_stop_s *self) {
-  (void)self;
-  return (struct arts_stop_result_s){0u, 0u};
-}
-void arts_runtime_delete_deques(void) {}
-void arts_cleanup_edt_tls(void) {}
-void arts_db_resume_list_free(void) {}
-void arts_regpool_report_if_requested(void) {}
-void arts_counter_write(const char *output_folder, unsigned int node_id,
-                        unsigned int thread_id) {
-  (void)output_folder;
-  (void)node_id;
-  (void)thread_id;
-}
-void arts_counter_timer_end(arts_counter_t *counter) { (void)counter; }
-void arts_counter_capture_stop(void) {}
-
-/* arts_thread_loop is DEFINED in threads.c (real); it will run the counter-save
- * path which touches arts_node_info.saved_counters.  Provide a single-thread
- * sized counter storage so it does not deref NULL. */
 
 /* ------------------------------------------------------------------------- */
 
@@ -149,15 +128,7 @@ static unsigned int run_derivation(unsigned int rank_count,
   /* Set up the global rank count the derivation reads. */
   arts_global_rank_count = rank_count;
 
-  /* Provide counter storage sized to thread_count so arts_thread_loop's
-   * save-path (saved_counters[tid]) is valid for any spawned worker. */
   arts_node_info.total_thread_count = thread_count;
-  arts_node_info.saved_counters =
-      calloc(thread_count, sizeof(*arts_node_info.saved_counters));
-  for (unsigned int i = 0; i < thread_count; i++) {
-    arts_node_info.saved_counters[i] =
-        calloc(NUM_COUNTER_TYPES, sizeof(**arts_node_info.saved_counters));
-  }
 
   struct arts_config_s c;
   memset(&c, 0, sizeof(c));
@@ -176,7 +147,7 @@ static unsigned int run_derivation(unsigned int rank_count,
 
   /* Join the worker threads arts_thread_init spawned (indices 1..tc-1) so the
    * stubbed loop's threads finish, then free the globals arts_thread_init
-   * allocated (normally freed by arts_thread_main_loop, which we do not call).
+   * allocated (normally freed by the teardown, which never runs here).
    * This keeps the test leak-clean under LSan; any leak reported is then a
    * RUNTIME leak, not a test-harness artifact.  arts_thread_handles /
    * arts_thread_masks are globals of the included threads.c. */
@@ -187,12 +158,6 @@ static unsigned int run_derivation(unsigned int rank_count,
   arts_free(arts_thread_handles);
   arts_thread_masks = NULL;
   arts_thread_handles = NULL;
-
-  for (unsigned int i = 0; i < thread_count; i++) {
-    free(arts_node_info.saved_counters[i]);
-  }
-  free(arts_node_info.saved_counters);
-  arts_node_info.saved_counters = NULL;
 
   return worker;
 }

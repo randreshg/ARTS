@@ -171,7 +171,7 @@ void arts_free(void *p) { free(p); }
 #include "../../libs/src/core/ooo.c"
 
 /* The running EDT, read by the engine's Debug force-defer check: none. */
-ARTS_THREAD_LOCAL struct arts_edt_s *arts_current_edt;
+ARTS_THREAD_LOCAL_IE struct arts_edt_s *arts_current_edt;
 
 #include "counter_stubs.h"
 

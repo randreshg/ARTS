@@ -9,7 +9,7 @@
 /// arts_rt guards config.table_length among its checks of the run as a whole,
 /// BEFORE any transport setup or process launch:
 ///   if (table_length > ARTS_GUID_RANK_MASK - 1U) ARTS_ERROR(...);
-/// ARTS_ERROR calls arts_abort(1) (process exits 1).  The check comes first
+/// ARTS_ERROR ends the process with status 1.  The check comes first
 /// so an over-limit node count aborts before the spawner would ever fork that
 /// many processes.
 ///
@@ -68,9 +68,5 @@ int main(int argc, char **argv) {
    * GUID rank field is 14 bits (max usable 16382); 16383 is one past it. */
   setenv("node_count", "16383", 1);
 
-  arts_rt(argc, argv);
-
-  /* If arts_rt returned, the overflow guard did NOT abort -> regression. */
-  printf("RANK_OVERFLOW_NO_ABORT\n");
-  return 0;
+  return arts_rt(argc, argv);
 }

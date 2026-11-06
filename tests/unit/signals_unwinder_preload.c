@@ -22,12 +22,14 @@
 #include "arts/system/shutdown.h"
 
 unsigned int arts_global_rank_id = 0;
-void arts_enter_shutdown_state(enum arts_exit_origin origin) { (void)origin; }
-_Noreturn void arts_exit_now(uint8_t status) { _exit(status); }
+_Noreturn void arts_exit(int rc, enum arts_exit_origin origin) {
+  (void)origin;
+  _exit(rc);
+}
 
 #include "../../libs/src/core/system/signals.c"
 
-ARTS_THREAD_LOCAL struct arts_runtime_private_s arts_thread_info;
+ARTS_THREAD_LOCAL_IE struct arts_runtime_private_s arts_thread_info;
 
 static int match_unwinder(struct dl_phdr_info *info, size_t size, void *arg) {
   (void)size;

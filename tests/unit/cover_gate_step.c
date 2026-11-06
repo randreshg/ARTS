@@ -23,11 +23,15 @@
 #include "arts/coherence/cover_gate.h"
 #include "arts/runtime_state.h"
 #include "arts/system/identity.h"
+#include "arts/system/shutdown.h"
 
 /* What the fatal path references; no fatal step is driven. */
 unsigned int arts_global_rank_id = 0;
-ARTS_THREAD_LOCAL struct arts_runtime_private_s arts_thread_info;
-void arts_abort(uint8_t code) { _exit(code ? code : 1); }
+ARTS_THREAD_LOCAL_IE struct arts_runtime_private_s arts_thread_info;
+_Noreturn void arts_exit(int rc, enum arts_exit_origin origin) {
+  (void)origin;
+  _exit(rc ? rc : 1);
+}
 
 static int g_fails;
 

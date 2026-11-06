@@ -8,7 +8,6 @@
  * ARTS's "[ARTS] Crashed: SIGFPE" line and its backtrace to stderr and dies
  * by the signal. */
 #include <signal.h>
-#include <stdio.h>
 #include <stdlib.h>
 
 #include "arts.h"
@@ -40,8 +39,4 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_edt_create(trigger_edt, 0, NULL, 0, &(arts_edt_hint_t){.rank = origin});
 }
 
-int main(int argc, char **argv) {
-  arts_rt(argc, argv);
-  printf("[rank %u] TERM_TEST_EXIT\n", arts_get_current_rank());
-  return 0;
-}
+int main(int argc, char **argv) { return arts_rt(argc, argv); }

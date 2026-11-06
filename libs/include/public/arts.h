@@ -539,6 +539,11 @@ int arts_app_exit_status(void);
  *
  * @see arts_rt
  */
+#ifdef __cplusplus
+[[noreturn]]
+#else
+_Noreturn
+#endif
 void arts_shutdown();
 
 /**

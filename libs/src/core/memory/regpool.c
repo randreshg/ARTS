@@ -2877,8 +2877,6 @@ void arts_regpool_set_topology(unsigned int node_count, uint64_t node_set,
 
 void arts_regpool_cleanup(void) {
   pthread_mutex_lock(&g_lock);
-  if (g_report_enabled)
-    regpool_report_locked(stderr);
   size_t n = atomic_load_explicit(&g_slab_count, memory_order_acquire);
   for (size_t i = 0; i < n; i++) {
     regpool_slab_t *s = &g_slabs[i];
@@ -2947,14 +2945,32 @@ void arts_regpool_cleanup(void) {
   pthread_mutex_unlock(&g_lock);
 }
 
-/* The teardown's report when ARTS_REGPOOL_REPORT was set at init, for a
- * teardown that leaves the pool to the process exit instead of cleaning it up
- * (cleanup prints the same report itself). */
-void arts_regpool_report_if_requested(void) {
-  pthread_mutex_lock(&g_lock);
-  if (g_report_enabled)
-    regpool_report_locked(stderr);
+void arts_regpool_report_at_exit(void) {
+  if (!g_report_enabled)
+    return;
+  /* A thread that stopped while holding the lock never lets it go, and the
+   * end waits for no thread. */
+  if (pthread_mutex_trylock(&g_lock) != 0) {
+    static const char skipped[] =
+        "[REGPOOL] report skipped: the pool lock is held\n";
+    arts_write_all(STDERR_FILENO, skipped, sizeof(skipped) - 1);
+    return;
+  }
+  /* Only the end's owner reaches here, once per process. */
+  static char buf[65536];
+  size_t len = 0;
+  FILE *out = fmemopen(buf, sizeof(buf), "w");
+  if (out != NULL) {
+    regpool_report_locked(out);
+    long at = ftell(out);
+    (void)fclose(out);
+    len = at > 0 ? (size_t)at : 0;
+    if (len >= sizeof(buf))
+      len = sizeof(buf) - 1;
+  }
   pthread_mutex_unlock(&g_lock);
+  if (len != 0)
+    arts_write_all(STDERR_FILENO, buf, len);
 }
 
 bool arts_regpool_unregister(void) {
@@ -3144,7 +3160,7 @@ bool arts_regpool_init(struct fid_domain *domain_or_null,
 }
 void arts_regpool_cleanup(void) {}
 bool arts_regpool_unregister(void) { return true; }
-void arts_regpool_report_if_requested(void) {}
+void arts_regpool_report_at_exit(void) {}
 void arts_regpool_report(FILE *out) {
   /* No slabs, no nodes, no direct mappings to describe — say so rather than
    * print a shape this build does not have. */

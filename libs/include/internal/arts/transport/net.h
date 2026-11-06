@@ -158,10 +158,15 @@ void arts_net_close_gate(void);
  * this rank that this rank contacted (the provider accepted a post to it) and
  * whose mesh connection does not read as gone; a refused inject skips that
  * peer.  Nothing completes or waits: a peer it misses learns of the end when
- * a connection closes.  Returns the number posted, each counted as a remote
- * send.  It bypasses the send gate, so it may follow arts_net_close_gate; it
- * runs only once the mesh is armed (arts_socket_armed). */
+ * a connection closes.  Returns the number posted; the caller counts them.
+ * It bypasses the send gate, so it may follow arts_net_close_gate; it runs
+ * only once the mesh is armed (arts_socket_armed). */
 unsigned int arts_net_post_shutdown(void);
+
+/* The thread that owns this rank's end has posted SHUTDOWN, or passed the post
+ * as a rank that learned of the end: in a Debug build any send it attempts
+ * from here on stops the run.  Nothing in a Release build. */
+void arts_net_owner_posted(void);
 
 /* ==========================================================================
  * Rendezvous one-sided data plane.
@@ -354,8 +359,8 @@ bool arts_net_progress(void);
  * its CQ and AV, so none of the three is closed or forgotten, a peer's write
  * may still land anywhere this rank registered, and the caller leaves the
  * pool, the domain and the fabric to the process exit (no pool cleanup, no
- * phase 3).  The calling thread sends nothing from here on: in a Debug build
- * a send it attempts after this call began stops the run. */
+ * phase 3).  The calling thread, the owner of the rank's end, sends nothing:
+ * it passed its post before (arts_net_owner_posted). */
 bool arts_net_quiesce(void);
 
 /* Teardown phase 2, run after phase 1 and BEFORE arts_regpool_cleanup: run the

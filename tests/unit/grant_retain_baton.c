@@ -46,6 +46,7 @@ static _Atomic(uint64_t) g_reclaims;
 #include "coherence/grant_wb.c"
 #include "coherence/grantreq_queue.c"
 
+#include "arts/system/shutdown.h"
 #include <pthread.h>
 #include <sched.h>
 #include <stdio.h>
@@ -62,8 +63,11 @@ static _Atomic(uint64_t) g_reclaims;
 /* No request names this rank, so every CONFIRM_ACK leaves by the wire. */
 unsigned int arts_global_rank_id = 0xffffff00u;
 unsigned int arts_global_rank_count = NPROD + 1u;
-ARTS_THREAD_LOCAL struct arts_runtime_private_s arts_thread_info;
-void arts_abort(uint8_t code) { _exit(code ? code : 1); }
+ARTS_THREAD_LOCAL_IE struct arts_runtime_private_s arts_thread_info;
+_Noreturn void arts_exit(int rc, enum arts_exit_origin origin) {
+  (void)origin;
+  _exit(rc ? rc : 1);
+}
 
 #include "counter_stubs.h"
 

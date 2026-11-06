@@ -674,7 +674,8 @@ endfunction()
 # environment when it loads, before the runtime parses a cfg:
 #   - ARTS_FLUSH_LOG: the vendored fake library dumps a flush trace at exit into
 #     the working directory unless this names another path, and a test's
-#     working directory is the build tree, so the trace goes nowhere.
+#     working directory is the build tree, so the trace goes nowhere unless
+#     the test names a path of its own.
 #   - ARTS_FAKE_CXL_REGION_SIZE (fake library only): the size of the one region
 #     it maps, which must hold the build-time arena plus the library's own
 #     structures.  One value for the tree (ARTS_CXL_TEST_REGION_BYTES, derived
@@ -698,7 +699,13 @@ function(arts_cxl_test_env)
     if(NOT _tests)
         return()
     endif()
-    set_property(TEST ${_tests} APPEND PROPERTY ENVIRONMENT "ARTS_FLUSH_LOG=/dev/null")
+    foreach(_t IN LISTS _tests)
+        get_test_property(${_t} ENVIRONMENT _env)
+        if(NOT _env MATCHES "(^|;)ARTS_FLUSH_LOG=")
+            set_property(TEST ${_t} APPEND PROPERTY ENVIRONMENT
+                         "ARTS_FLUSH_LOG=/dev/null")
+        endif()
+    endforeach()
     if(NOT ARTS_CXL_REAL)
         set_property(TEST ${_tests} APPEND PROPERTY ENVIRONMENT
                      "ARTS_FAKE_CXL_REGION_SIZE=${ARTS_CXL_TEST_REGION_BYTES}")
@@ -1198,8 +1205,23 @@ if(ARTS_DEBUG_INJECTION)
     endif()
 endif()
 
-register_single_node_test(term_abort ARGS 0 42 STATUS 42)
+# arts_abort's code is the rank's status and the run's: on one rank, and on
+# rank 1 of two, whose peer learns of the end and ends with 0.  Where records
+# exist, each rank's record names its own status.
+arts_counters_node_level(_records)
+if(_records)
+    register_single_node_test(term_abort ARGS 0 42 STATUS 42 RECORDS 1
+        RECORD_CHECK record_meta.cmake rc@0=42)
+    register_multinode_test(term_abort ARGS 1 42 STATUS 42 VARIANTS 2n_9w_1p
+        RECORDS 2 RECORD_CHECK record_meta.cmake rc@1=42 rc@0=0)
+else()
+    register_single_node_test(term_abort ARGS 0 42 STATUS 42)
+    register_multinode_test(term_abort ARGS 1 42 STATUS 42 VARIANTS 2n_9w_1p)
+endif()
+unset(_records)
 set_tests_properties(term_abort PROPERTIES
+    PASS_REGULAR_EXPRESSION "TERM_ABORT rc=42")
+arts_test_properties(term_abort_2n_9w_1p PROPERTIES
     PASS_REGULAR_EXPRESSION "TERM_ABORT rc=42")
 
 # A satisfy naming a slot past an EDT's depc is fatal on the rank holding the
@@ -1232,32 +1254,55 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
         PASS_REGULAR_EXPRESSION "must be homed on the creating rank")
 endif()
 
-# term_sigfpe / term_sigsegv crash via signal.  A death by a signal is not an
-# exit status the runner can be told to expect, so a bash wrapper turns the
-# expected one (128 + the signal's number) into status 0 and any other end
-# into a failure, and the crash handler's line is the pass regex.
+# term_sigfpe / term_sigsegv crash via signal: the rank's end raises the
+# signal again under its default action, so the status is 128 + the signal's
+# number, after the crash handler's line.  expect_fault.sh turns that status
+# into 0 and any other end into a failure.  Outside a sanitizer tree the run
+# also dumps a core (core_dump=1) into the test's own working directory, where
+# the check finds it under a core pattern that names a file there and removes
+# it; a sanitizer reserves shadow memory a core would hold, and its runtime
+# turns core dumps off.  The cfg's small pool keeps the core small.  The end
+# of a fault runs in the fault's own handler, its counter record's stdio
+# included (the end's watchdog bounds a step that cannot finish there), so a
+# ThreadSanitizer tree turns off the check that reports any allocation made
+# inside a signal handler, for these two runs alone.
 # Hand-registered, so ARTS_CONFIG has to be set here too: without it the
 # runtime falls back to ./arts.cfg in the working directory, which the build
 # tree does not contain.
 arts_test_cfg(_cfg 1n_20w)
-arts_add_test(term_sigfpe COMMAND bash -c
-    "ASAN_OPTIONS=handle_sigfpe=0:handle_segv=0 ${CMAKE_CURRENT_BINARY_DIR}/term_sigfpe 2>&1\ntest $? -eq 136")
-set_tests_properties(term_sigfpe PROPERTIES
-    LABELS "single_node"
-    TIMEOUT 10
-    RESOURCE_LOCK "arts_runtime"
-    ENVIRONMENT "ARTS_CONFIG=${_cfg}"
-    PASS_REGULAR_EXPRESSION "\\[ARTS\\] Crashed: SIGFPE")
-
-arts_test_cfg(_cfg 1n_20w)
-arts_add_test(term_sigsegv COMMAND bash -c
-    "ASAN_OPTIONS=handle_segv=0 ${CMAKE_CURRENT_BINARY_DIR}/term_sigsegv 2>&1\ntest $? -eq 139")
-set_tests_properties(term_sigsegv PROPERTIES
-    LABELS "single_node"
-    TIMEOUT 10
-    RESOURCE_LOCK "arts_runtime"
-    ENVIRONMENT "ARTS_CONFIG=${_cfg}"
-    PASS_REGULAR_EXPRESSION "\\[ARTS\\] Crashed: SIGSEGV")
+if(ARTS_DEBUG_SANITIZER STREQUAL "OFF")
+    set(_core yes)
+    set(_core_env ";core_dump=1")
+else()
+    set(_core no)
+    set(_core_env "")
+endif()
+foreach(_case "term_sigfpe;136;SIGFPE;handle_sigfpe=0:handle_segv=0"
+              "term_sigsegv;139;SIGSEGV;handle_segv=0")
+    list(GET _case 0 _t)
+    list(GET _case 1 _status)
+    list(GET _case 2 _sig)
+    list(GET _case 3 _asan)
+    set(_dir "${CMAKE_CURRENT_BINARY_DIR}/work/${_t}")
+    file(MAKE_DIRECTORY "${_dir}")
+    arts_add_test(${_t} COMMAND bash
+        "${CMAKE_CURRENT_SOURCE_DIR}/tools/expect_fault.sh" ${_status} ${_core}
+        env ASAN_OPTIONS=${_asan} $<TARGET_FILE:${_t}>)
+    set_tests_properties(${_t} PROPERTIES
+        LABELS "single_node"
+        TIMEOUT 30
+        RESOURCE_LOCK "arts_runtime"
+        WORKING_DIRECTORY "${_dir}"
+        ENVIRONMENT "ARTS_CONFIG=${_cfg}${_core_env}"
+        PASS_REGULAR_EXPRESSION "\\[ARTS\\] Crashed: ${_sig}")
+    if(ARTS_DEBUG_SANITIZER STREQUAL "THREAD")
+        set_tests_properties(${_t} PROPERTIES ENVIRONMENT_MODIFICATION
+            "TSAN_OPTIONS=path_list_append:report_signal_unsafe=0")
+    endif()
+endforeach()
+unset(_core)
+unset(_core_env)
+unset(_dir)
 endif()
 
 # --- Pure unit tests (no ARTS runtime) ---
@@ -3352,6 +3397,41 @@ foreach(_t quiescent_shutdown_no_residue quiescent_shutdown_no_residue_2n_9w_1p
 endforeach()
 endif()
 
+# quiescence_walk_excludes_caller: an EDT that calls arts_shutdown never
+# returns, so it never finishes and never releases what it holds; the walk
+# exempts it and its blocks, names them in one CALLER-INFO line, and finds
+# the shutdown quiescent.  main_edt holding the block it created; two EDTs
+# each holding a block through a write dependence (the second enters after
+# the first took the end and parks); and an EDT that released one of its two
+# blocks in its body, whose released block is not exempt.  Each arm judges
+# its own rows of the exempt blocks, so every tree that compiles the walk
+# runs it.
+if(ARTS_LOG_LEVEL GREATER_EQUAL 3)
+    add_arts_test(quiescence_walk_excludes_caller)
+    register_single_node_test(quiescence_walk_excludes_caller TIMEOUT 30)
+    arts_test_cfg(_cfg 1n_20w)
+    arts_add_test(quiescence_walk_excludes_caller_two
+                  COMMAND quiescence_walk_excludes_caller two)
+    set_tests_properties(quiescence_walk_excludes_caller_two PROPERTIES
+        LABELS "single_node" TIMEOUT 30 RESOURCE_LOCK "arts_runtime"
+        ENVIRONMENT "ARTS_CONFIG=${_cfg}")
+    arts_add_test(quiescence_walk_excludes_caller_released
+                  COMMAND quiescence_walk_excludes_caller released)
+    set_tests_properties(quiescence_walk_excludes_caller_released PROPERTIES
+        LABELS "single_node" TIMEOUT 30 RESOURCE_LOCK "arts_runtime"
+        ENVIRONMENT "ARTS_CONFIG=${_cfg}")
+    foreach(_case "quiescence_walk_excludes_caller;1"
+                  "quiescence_walk_excludes_caller_two;2"
+                  "quiescence_walk_excludes_caller_released;1")
+        list(GET _case 0 _t)
+        list(GET _case 1 _n)
+        set_tests_properties(${_t} PROPERTIES
+            PASS_REGULAR_EXPRESSION
+            "CALLER-INFO: ${_n} block\\(s\\) held by the shutdown's caller"
+            FAIL_REGULAR_EXPRESSION "FAIL;QUIESCENCE-DEBUG:")
+    endforeach()
+endif()
+
 # grant_one_request_per_grant: rounds of concurrent write acquisitions of one
 # block off its home, each round starting with no write right there.  Every
 # waiter is served (the count), and where a grant is handed back at release
@@ -3564,6 +3644,25 @@ if(ARTS_CXL_TREE_RESIDENCY)
         arts_test_properties(cxl_region_released_3n PROPERTIES
             LABELS "multinode" TIMEOUT 60 RESOURCE_LOCK "arts_runtime"
             ENVIRONMENT "ARTS_CONFIG=${_cfg};node_count=3")
+        # A one-rank run ends with exit_group, which runs no finalizer: its
+        # end replays the library's own, which write the flush trace to
+        # ARTS_FLUSH_LOG and release the region the run created.  The trace
+        # is removed before the run, so an earlier run's cannot stand in.
+        add_arts_test(cxl_flush_trace_at_exit)
+        set(_dir "${CMAKE_CURRENT_BINARY_DIR}/work/cxl_flush_trace_at_exit")
+        file(MAKE_DIRECTORY "${_dir}")
+        arts_test_cfg(_cfg 1n_20w)
+        arts_add_test(cxl_flush_trace_at_exit
+            RECORD_CHECK flush_trace_check.cmake ${_dir}/trace arts_fake_cxl
+            COMMAND bash -c
+            "rm -f ${_dir}/trace && exec $<TARGET_FILE:cxl_flush_trace_at_exit>")
+        set_tests_properties(cxl_flush_trace_at_exit PROPERTIES
+            LABELS "single_node" TIMEOUT 30 RESOURCE_LOCK "arts_runtime"
+            WORKING_DIRECTORY "${_dir}"
+            ENVIRONMENT "ARTS_CONFIG=${_cfg};ARTS_FLUSH_LOG=${_dir}/trace"
+            PASS_REGULAR_EXPRESSION "CXL_FLUSH_TRACE: the reader read the block"
+            FAIL_REGULAR_EXPRESSION "FAIL")
+        unset(_dir)
     endif()
 endif()
 

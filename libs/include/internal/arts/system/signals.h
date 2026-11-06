@@ -50,15 +50,15 @@ void arts_configure_core_dumps(bool enabled);
  * final.  Until then they print rank 0. */
 void arts_signal_handlers_set_rank(unsigned int rank);
 
+/* The crash report of a fault by `sig`: one line naming the signal and the
+ * rank, then the stack.  Async-signal-safe. */
+void arts_signal_crash_report(int sig);
+
 /* Block termination signals on the calling thread + start a dedicated
- * sigwait watcher thread that drives graceful shutdown. Must be called
+ * sigwait watcher thread whose first signal ends the rank.  Must be called
  * from the main thread BEFORE any worker or progress thread is spawned, so
  * the SIG_BLOCK mask is inherited by every downstream thread. */
 void arts_install_signal_watcher_thread(void);
-
-/* Stop the watcher thread (called from the cleanup path so it does not
- * outlive the runtime).  Safe to call multiple times. */
-void arts_stop_signal_watcher_thread(void);
 
 #ifdef __cplusplus
 }

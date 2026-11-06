@@ -28,6 +28,7 @@
 #include "arts/runtime_state.h"
 #include "arts/runtime_types.h"
 #include "arts/system/print.h"
+#include "arts/system/shutdown.h"
 #include "arts/system/threads.h"
 #include "arts/transport/net.h"
 #include "arts/transport/protocol.h"
@@ -404,10 +405,7 @@ static void send_flush_commit(unsigned int home, arts_guid_t db_guid,
   arts_transport_send_async((int)home, (char *)&p, sizeof(p));
 }
 
-static bool shutting_down(void) {
-  return atomic_load_explicit(&arts_node_info.shutdown_state,
-                              memory_order_acquire) != 0;
-}
+static bool shutting_down(void) { return arts_shutdown_taken(); }
 
 /* The write-back round every non-home RW release runs: the bytes at `payload`
  * into the home's line, then the wait for the home's ACK.  The credit is

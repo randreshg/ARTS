@@ -47,6 +47,7 @@
  * handlers are counting stubs.
  */
 
+#include "arts/system/shutdown.h"
 #include "arts/utils/stdatomic_compat.h"
 #include <inttypes.h>
 #include <pthread.h>
@@ -59,7 +60,10 @@
 
 unsigned int arts_global_rank_id = 0;
 unsigned int arts_global_rank_count = 1;
-void arts_abort(uint8_t code) { _exit(code ? code : 70); }
+_Noreturn void arts_exit(int rc, enum arts_exit_origin origin) {
+  (void)origin;
+  _exit(rc ? rc : 70);
+}
 void *arts_malloc(size_t s) { return malloc(s); }
 void *arts_calloc(size_t n, size_t s) { return calloc(n, s); }
 void *arts_calloc_aligned(size_t n, size_t s, size_t a) {
@@ -109,12 +113,12 @@ static void after_park(void) {
 #include "../../libs/src/core/utils/shared.c"
 
 /* The running EDT, read by the engine's Debug force-defer check: none. */
-ARTS_THREAD_LOCAL struct arts_edt_s *arts_current_edt;
+ARTS_THREAD_LOCAL_IE struct arts_edt_s *arts_current_edt;
 
 #include "counter_stubs.h"
 
 struct arts_runtime_shared_s arts_node_info;
-ARTS_THREAD_LOCAL struct arts_runtime_private_s arts_thread_info;
+ARTS_THREAD_LOCAL_IE struct arts_runtime_private_s arts_thread_info;
 
 /* ── Round state: written by main between the two barriers of a round ──── */
 static arts_guid_t g_guid;

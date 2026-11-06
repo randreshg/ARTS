@@ -84,15 +84,7 @@
 #endif
 
 struct arts_runtime_shared_s arts_node_info;
-ARTS_THREAD_LOCAL struct arts_thread_stop_s *arts_thread_stop_slot;
-
-#ifdef ARTS_DEBUG_INJECTION
-/* ARTS_NET_RDZV_CUT's end: the shutdown starts on the thread whose event
- * completed the hook's count, as an arts_shutdown call there would. */
-static void runtime_rdzv_cut_done(void) {
-  arts_enter_shutdown_state(ARTS_EXIT_APP);
-}
-#endif
+ARTS_THREAD_LOCAL_IE struct arts_thread_stop_s *arts_thread_stop_slot;
 
 /* A run's id: never 0, which names a rank that has not learned one. */
 static uint64_t runtime_draw_run_id(void) {
@@ -112,7 +104,7 @@ static uint64_t runtime_draw_run_id(void) {
 
 void arts_runtime_node_init(struct arts_config_s *config) {
 #ifdef ARTS_DEBUG_INJECTION
-  arts_net_rdzv_cut_done = runtime_rdzv_cut_done;
+  arts_net_rdzv_cut_done = arts_exit_cut_raise;
   arts_sched_fuzz_init();
 #elif !defined(NDEBUG)
   /* A hook's variable set where the hooks are not compiled would leave the
@@ -228,10 +220,8 @@ void arts_runtime_node_init(struct arts_config_s *config) {
       config->gpu ? (arts_route_table_t **)arts_calloc(
                         config->gpu, sizeof(arts_route_table_t *))
                   : NULL;
-  arts_node_info.local_spin = (_Atomic(_Atomic(bool) *) *)arts_calloc(
-      tc, sizeof(_Atomic(_Atomic(bool) *)));
-  arts_node_info.thread_roles =
-      (unsigned int *)arts_calloc(tc, sizeof(unsigned int));
+  arts_node_info.local_spin =
+      (_Atomic(bool) **)arts_calloc(tc, sizeof(_Atomic(bool) *));
   arts_node_info.thread_stop = (struct arts_thread_stop_s *)arts_calloc_aligned(
       tc, sizeof(struct arts_thread_stop_s), sizeof(struct arts_thread_stop_s));
   for (unsigned int t = 0; t < tc; t++) {
@@ -331,18 +321,10 @@ void arts_runtime_node_init(struct arts_config_s *config) {
                              config->route_table_size);
 
   /* Performance counters */
-  arts_node_info.counter_folder = config->counter_folder;
   arts_node_info.counter_capture_interval = config->counter_capture_interval;
 
   arts_node_info.live_counters =
       (arts_counter_t **)arts_calloc(tc, sizeof(arts_counter_t *));
-
-  arts_node_info.saved_counters =
-      (uint64_t **)arts_calloc(tc, sizeof(uint64_t *));
-  for (unsigned int t = 0; t < tc; t++) {
-    arts_node_info.saved_counters[t] =
-        (uint64_t *)arts_calloc(NUM_COUNTER_TYPES, sizeof(uint64_t));
-  }
 
   arts_node_info.capture_arrays =
       (arts_array_list_t ***)arts_calloc(tc, sizeof(arts_array_list_t **));
@@ -394,12 +376,16 @@ static void runtime_reclaim_report(size_t discarded, uint64_t ended) {
   }
 }
 
-void arts_runtime_global_cleanup() {
+/* The teardown proper, once every other runtime thread has stopped and the
+ * deques are gone. */
+static void
+arts_runtime_global_cleanup(const struct arts_teardown_exempt_s *exempt) {
   unsigned int tc = arts_node_info.total_thread_count;
   /* Every other runtime thread has stopped, so coherence wait-structures
-   * must be empty now.  Reports (does not abort); compiled out below DEBUG
-   * log level — see the check's definition. */
-  arts_db_debug_quiescence_check();
+   * must be empty now but for what the exempt EDTs hold.  Reports (does not
+   * abort); compiled out below DEBUG log level — see the check's
+   * definition. */
+  arts_db_debug_quiescence_check(exempt);
   /* Fabric teardown, phase 1, before anything below frees: every other
    * runtime thread has stored its stop, so none touches the fabric again.
    * Quiesce discards or reaps in-flight txns (their bounces return to the
@@ -445,12 +431,8 @@ void arts_runtime_global_cleanup() {
       }
       arts_free(arts_node_info.capture_arrays[t]);
     }
-    if (arts_node_info.saved_counters) {
-      arts_free(arts_node_info.saved_counters[t]);
-    }
   }
   arts_free(arts_node_info.capture_arrays);
-  arts_free(arts_node_info.saved_counters);
   arts_free(arts_node_info.live_counters);
 
 #ifdef ARTS_USE_CXL
@@ -477,7 +459,6 @@ void arts_runtime_global_cleanup() {
   arts_free(arts_node_info.gpu_deque);
   arts_free(arts_node_info.gpu_route_table);
   arts_free((void *)arts_node_info.local_spin);
-  arts_free(arts_node_info.thread_roles);
   /* A stopped thread never reads its slot again. */
   arts_free(arts_node_info.thread_stop);
   arts_node_info.thread_stop = NULL;
@@ -519,7 +500,6 @@ void arts_runtime_global_cleanup() {
    * a peer's write may still land in a slab, so both are left to the process
    * exit. */
   if (!writes_shut_out) {
-    arts_regpool_report_if_requested();
     ARTS_WARN("registered pool, domain and fabric left unfreed: the fabric "
               "may still write");
     return;
@@ -577,6 +557,9 @@ void arts_thread_zero_node_start(int argc, char **argv, arts_edt_t entry) {
   if (!arts_global_rank_id && arts_node_info.e2e_marker_enabled) {
     arts_node_info.e2e_start_stamp = arts_get_time_stamp();
   }
+  /* Every thread has registered (ready_to_push), the start stamp is taken,
+   * and no EDT of this rank has run yet. */
+  arts_exit_publish_node_ready();
 
 #ifdef ARTS_USE_GPU
   arts_init_per_gpu_wrapper(argc, argv);
@@ -623,24 +606,9 @@ void arts_runtime_private_init(struct thread_mask_s *thread,
     arts_node_info.progress_deque[thread->group_pos] =
         arts_node_info.deque[thread->id];
   }
-  arts_node_info.thread_roles[thread->id] = (unsigned int)thread->role;
   arts_thread_stop_slot = &arts_node_info.thread_stop[thread->id];
   atomic_store_explicit(&arts_thread_info.alive, true, memory_order_relaxed);
-  /* Published last: a stopper that finds the pointer reads the role above and
-   * stores its false after this thread's true.  A stop that began before the
-   * stopper could find the pointer is claimed here instead.  seq_cst: this
-   * store and the load of shutdown_state below are one side of a
-   * store->load pair whose other side is arts_enter_shutdown_state's CAS of
-   * shutdown_state and its stop walk's load of the pointer
-   * (arts_runtime_stop_by_role), so at least one side sees the other. */
-  atomic_store_explicit(&arts_node_info.local_spin[thread->id],
-                        &arts_thread_info.alive, memory_order_seq_cst);
-  if (thread->role == ARTS_ROLE_WORKER &&
-      atomic_load_explicit(&arts_node_info.shutdown_state,
-                           memory_order_seq_cst) != 0U) {
-    /* Relaxed: this thread is the only reader of its own store. */
-    atomic_store_explicit(&arts_thread_info.alive, false, memory_order_relaxed);
-  }
+  arts_node_info.local_spin[thread->id] = &arts_thread_info.alive;
   arts_thread_info.pu_id = thread->pu_id;
   arts_thread_info.thread_id = thread->id;
   arts_thread_info.group_pos = thread->group_pos;
@@ -660,23 +628,13 @@ void arts_runtime_private_init(struct thread_mask_s *thread,
   arts_thread_random_init(arts_global_rank_id, thread->id);
 }
 
-/* A thread calls this only after a stop ended its loop, and every stop
- * follows the CAS of an entry whose winner never waits on teardown, so the
- * wait ends. */
-void arts_runtime_wait_shutdown_entry(void) {
-  while (atomic_load_explicit(&arts_node_info.shutdown_entry_done,
-                              memory_order_acquire) == 0U) {
-    sched_yield();
-  }
-}
-
 void arts_runtime_thread_park(void) {
   arts_cleanup_edt_tls();
   arts_db_resume_list_free();
-  /* Release: this thread's last accesses, its steals and its saved counters
-   * among them, happen before what the stopper does once it acquires the
-   * store.  The thread stays, so its thread-local storage, which a stopper
-   * may still reach through local_spin, outlives every reader. */
+  /* Release: this thread's last accesses, its steals among them, happen
+   * before what the stopper does once it acquires the store.  The thread
+   * stays, so its thread-local storage, which a stopper may still reach
+   * through local_spin, outlives every reader. */
   atomic_store_explicit(&arts_thread_stop_slot->state, ARTS_THREAD_STOPPED,
                         memory_order_release);
   for (;;) {
@@ -684,22 +642,27 @@ void arts_runtime_thread_park(void) {
   }
 }
 
-struct arts_stop_result_s
+struct arts_stop_result_s {
+  unsigned int running; /* threads still RUNNING when the poll gave up */
+  unsigned int unsafe;  /* threads whose slot read STOPPED_UNSAFE */
+};
+
+/* Stops every runtime thread but the one whose slot is `self` (NULL on a
+ * thread the runtime did not create) and polls their slots with acquire
+ * loads for at most two seconds.  Zero in both counts means every other
+ * runtime thread has stopped, and its last access to shared runtime state
+ * happens before the return.  Only after node_ready was acquired, which
+ * publishes every thread's local_spin entry. */
+static struct arts_stop_result_s
 arts_runtime_stop_threads(const struct arts_thread_stop_s *self) {
   const unsigned int tc = arts_node_info.total_thread_count;
   for (unsigned int i = 0; i < tc; i++) {
     if (&arts_node_info.thread_stop[i] == self) {
       continue;
     }
-    /* Acquire: the thread's own true, stored before it published the
-     * pointer, precedes the false below.  A thread that never published one
-     * keeps its slot RUNNING, and the poll counts it. */
-    _Atomic(bool) *flag = atomic_load_explicit(&arts_node_info.local_spin[i],
-                                               memory_order_acquire);
-    if (flag != NULL) {
-      /* Release: a thread that sees the stop sees what preceded it here. */
-      atomic_store_explicit(flag, false, memory_order_release);
-    }
+    _Atomic(bool) *flag = arts_node_info.local_spin[i];
+    /* Release: a thread that sees the stop sees what preceded it here. */
+    atomic_store_explicit(flag, false, memory_order_release);
   }
   const uint64_t budget_ns = 2000000000ULL;
   const uint64_t begin = arts_get_time_stamp();
@@ -727,7 +690,10 @@ arts_runtime_stop_threads(const struct arts_thread_stop_s *self) {
   }
 }
 
-void arts_runtime_delete_deques(void) {
+/* Counts the EDTs left in every thread's deques as abandoned and frees the
+ * deques, only after a stop that left no thread running or stopped unsafe:
+ * no thief or owner can reach a deque any more. */
+static void arts_runtime_delete_deques(void) {
   /* An EDT still in a deque stays installed, so the deque holds no reference
    * of its own that freeing it would lose.  The pointers are cleared, so a
    * stray push or steal faults instead of writing freed memory. */
@@ -750,66 +716,121 @@ void arts_runtime_delete_deques(void) {
   arts_thread_info.my_gpu_deque = NULL;
 }
 
-/*
- * Walk the thread table and clear alive for every thread whose role matches
- * `role_mask`: wait for each thread to register its local_spin pointer
- * (non-NULL once it has finished arts_runtime_private_init; its role is
- * readable from then on), then, if the role matches, set *local_spin[i] =
- * false, which makes it leave its scheduler/progress loop.  The registration
- * spin is bounded to avoid an infinite busy-wait if a thread crashed during
- * init.
- */
-static void arts_runtime_stop_by_role(unsigned int role_mask,
-                                      const char *role_label) {
-  const unsigned int max_spin = 10000000; /* ~sub-second upper bound */
-  unsigned int i;
-  for (i = 0; i < arts_node_info.total_thread_count; i++) {
-    _Atomic(bool) *flag;
-    unsigned int spin = 0;
-    /* seq_cst: the other half of this side of the stop-registration pair
-     * (see arts_runtime_private_init), after the shutdown CAS. */
-    while ((flag = atomic_load_explicit(&arts_node_info.local_spin[i],
-                                        memory_order_seq_cst)) == NULL) {
-      if (++spin >= max_spin) {
-        ARTS_WARN("arts_runtime_stop_%s: thread %u has not registered its "
-                  "stop flag; a worker that registers later stops itself, "
-                  "and the teardown stops a progress thread",
-                  role_label, i);
-        goto next;
+/* The exemptions of the quiescence walk: the EDT running on the end's owner
+ * and on every late entry that stopped at its safe point, which never return,
+ * and the blocks those EDTs hold (their acquired slots and their created
+ * blocks).  Each descriptor appears once. */
+struct runtime_exempt_build_s {
+  struct arts_teardown_exempt_s ex;
+  const struct arts_edt_s **edts;
+  const struct arts_db_s **dbs;
+  unsigned int db_cap;
+};
+
+static void runtime_exempt_db(struct runtime_exempt_build_s *b,
+                              const struct arts_db_s *db) {
+  if (db == NULL) {
+    return;
+  }
+  for (unsigned int i = 0; i < b->ex.db_count; i++) {
+    if (b->dbs[i] == db) {
+      return;
+    }
+  }
+  if (b->ex.db_count == b->db_cap) {
+    unsigned int cap = b->db_cap != 0 ? 2 * b->db_cap : 16;
+    const struct arts_db_s **grown =
+        (const struct arts_db_s **)arts_malloc(sizeof(*grown) * cap);
+    if (b->ex.db_count != 0) {
+      memcpy(grown, b->dbs, sizeof(*grown) * b->ex.db_count);
+    }
+    arts_free(b->dbs);
+    b->dbs = grown;
+    b->db_cap = cap;
+  }
+  b->dbs[b->ex.db_count++] = db;
+}
+
+static void runtime_exempt_caller(struct runtime_exempt_build_s *b,
+                                  const struct arts_edt_s *edt,
+                                  const arts_vector_t *created) {
+  if (edt != NULL) {
+    b->edts[b->ex.edt_count++] = edt;
+    if (edt->dep_acq != NULL) {
+      /* A slot holds its pin until its release, which a release in the body
+       * marks by the slot's NULL mode (as the epilogue reads it). */
+      const arts_edt_dep_t *depv =
+          (const arts_edt_dep_t *)arts_get_depv((void *)edt);
+      for (uint32_t i = 0; i < edt->depc; i++) {
+        arts_shared_ptr_t pin = edt->dep_acq[i].pin;
+        if (depv[i].mode != DB_MODE_NULL && pin) {
+          runtime_exempt_db(b, (const struct arts_db_s *)arts_shared_get(pin));
+        }
       }
     }
-    if ((1U << arts_node_info.thread_roles[i]) & role_mask) {
-      /* Release: a thread that sees the stop sees what preceded it here. */
-      atomic_store_explicit(flag, false, memory_order_release);
-      ARTS_DEBUG("arts_runtime_stop_%s: thread %u signaled to stop", role_label,
-                 i);
+  }
+  if (created != NULL) {
+    for (uint64_t i = 0; i < arts_vector_count(created); i++) {
+      const struct arts_created_db_s *c =
+          (const struct arts_created_db_s *)arts_vector_at(created, i);
+      if (c->db) {
+        runtime_exempt_db(b, (const struct arts_db_s *)arts_shared_get(c->db));
+      }
     }
-  next:
-    continue;
   }
 }
 
-/*
- * arts_runtime_stop_workers — clear alive on worker threads only.
- * Progress threads stay alive so they can keep handling shutdown-related
- * traffic.
- */
-void arts_runtime_stop_workers() {
-  ARTS_INFO("arts_runtime_stop_workers");
-  arts_runtime_stop_by_role(1U << ARTS_ROLE_WORKER, "workers");
-}
+void arts_runtime_teardown_oracle(bool node_ready) {
+  /* An owner that took the end in the middle of a transition never finishes
+   * it, so shared state may be half-way through an update. */
+  enum arts_exit_origin origin = arts_exit_meta.origin;
+  if (origin == ARTS_EXIT_FAULT || origin == ARTS_EXIT_RUNTIME_ERROR ||
+      origin == ARTS_EXIT_BACKPRESSURE) {
+    ARTS_DEBUG("teardown skipped: origin %s", arts_exit_origin_name(origin));
+    return;
+  }
+  if (!node_ready) {
+    ARTS_DEBUG("teardown skipped: the node never became ready");
+    return;
+  }
+  struct arts_stop_result_s stop =
+      arts_runtime_stop_threads(arts_thread_stop_slot);
+  if (stop.unsafe != 0 || stop.running != 0) {
+    /* A thread that may still be in the middle of an update can reach
+     * anything the teardown would read or free, so nothing is freed and the
+     * process exit reclaims it all. */
+    if (stop.unsafe != 0) {
+      ARTS_DEBUG("teardown skipped: %u thread(s) stopped mid-transition",
+                 stop.unsafe);
+    } else {
+      ARTS_DEBUG("teardown skipped: %u thread(s) still running", stop.running);
+    }
+    return;
+  }
+  arts_runtime_delete_deques();
 
-void arts_runtime_stop() {
-  /* Stop every thread, progress threads included, in one call: the liveness
-   * sentinel's path once a peer has closed its connection.  Nothing orders
-   * any rank's close after every other rank has taken in a SHUTDOWN post
-   * (the post is best effort and reaches only the peers its rank contacted,
-   * and no rank waits for anyone before it tears down), so an orderly
-   * teardown takes this path too and joins the same shutdown. */
-  ARTS_INFO("arts_runtime_stop: stopping %u threads",
-            arts_node_info.total_thread_count);
-  arts_runtime_stop_by_role(0xFFFFFFFFU, "all");
-  ARTS_INFO("arts_runtime_stop: all threads signaled");
+  /* Every stop slot was acquired as STOPPED, so each late entry's fields are
+   * visible here. */
+  const unsigned int tc = arts_node_info.total_thread_count;
+  struct runtime_exempt_build_s b;
+  memset(&b, 0, sizeof(b));
+  b.edts = (const struct arts_edt_s **)arts_malloc(sizeof(*b.edts) * (tc + 1));
+  runtime_exempt_caller(&b, arts_current_edt, arts_get_created_db_list());
+  for (unsigned int i = 0; i < tc; i++) {
+    const struct arts_thread_stop_s *slot = &arts_node_info.thread_stop[i];
+    if (slot != arts_thread_stop_slot) {
+      runtime_exempt_caller(&b, slot->caller_edt, slot->caller_dbs);
+    }
+  }
+  b.ex.edts = b.edts;
+  b.ex.dbs = b.dbs;
+  arts_runtime_global_cleanup(&b.ex);
+  arts_free((void *)b.edts);
+  arts_free((void *)b.dbs);
+  arts_free(arts_thread_masks);
+  arts_thread_masks = NULL;
+  arts_free(arts_thread_handles);
+  arts_thread_handles = NULL;
 }
 
 /*
@@ -821,7 +842,7 @@ void arts_runtime_stop() {
  *   - worker:   Runs the selected scheduler loop until alive==false.
  *
  * On single-node configurations, all threads are workers (no progress thread).
- * The loop exits when arts_runtime_stop() sets alive=false for this thread.
+ * The loop exits when the teardown's stop clears alive for this thread.
  */
 int arts_runtime_loop() {
   /* Every data block is created inside an EDT, whose epilogue releases the
@@ -836,6 +857,9 @@ int arts_runtime_loop() {
     uint64_t probe_ns = 0;
     while (
         atomic_load_explicit(&arts_thread_info.alive, memory_order_acquire)) {
+      /* A SHUTDOWN this thread reaped ends the rank here, once the rest of
+       * that burst was dispatched. */
+      arts_exit_poll();
       /* Busy-poll by design: the thread budget dedicates a PU to every
        * progress thread (startup aborts on PU oversubscription when the
        * topology mask is built), so idle waiting spins with the architectural
@@ -851,9 +875,9 @@ int arts_runtime_loop() {
        * poll is a syscall, so it runs on a clock cadence rather than on
        * every iteration, which keeps the detection latency independent of
        * how many iterations run. */
-      if (arts_socket_probe_due(&probe_ns) && arts_socket_sentinel_check()) {
-        arts_enter_shutdown_state(ARTS_EXIT_SENTINEL);
-        arts_runtime_stop();
+      if (arts_socket_probe_due(&probe_ns) && arts_socket_sentinel_check() &&
+          arts_exit_take(0, ARTS_EXIT_SENTINEL)) {
+        arts_exit_resume();
       }
     }
     break;

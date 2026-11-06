@@ -28,6 +28,7 @@
  * stubbed.
  */
 
+#include "arts/system/shutdown.h"
 #include "arts/utils/stdatomic_compat.h"
 #include <pthread.h>
 #include <sched.h>
@@ -42,8 +43,9 @@
 unsigned int arts_global_rank_id = 0;
 unsigned int arts_global_rank_count = 1;
 #define ABORT_EXIT 71
-void arts_abort(uint8_t code) {
-  (void)code;
+_Noreturn void arts_exit(int rc, enum arts_exit_origin origin) {
+  (void)origin;
+  (void)rc;
   fflush(stdout);
   fflush(stderr);
   _exit(ABORT_EXIT);
@@ -82,7 +84,7 @@ void arts_ooo_free_all(struct arts_route_item_s *s) { (void)s; }
 #include "route_table_segment_probe.h"
 
 struct arts_runtime_shared_s arts_node_info;
-ARTS_THREAD_LOCAL struct arts_runtime_private_s arts_thread_info;
+ARTS_THREAD_LOCAL_IE struct arts_runtime_private_s arts_thread_info;
 
 static int g_failed;
 #define CHECK(cond, ...)                                                       \

@@ -3,18 +3,17 @@
 ** Licensed under the Apache License, Version 2.0
 ******************************************************************************/
 /// @file shutdown_idempotent_concurrent_init.c
-/// @brief Two ranks initiate shutdown concurrently; the per-node CAS 0->1 gate
-///        in arts_enter_shutdown_state keeps exactly one post per node and
-///        idempotent stops, with clean cluster teardown.
+/// @brief Two ranks initiate shutdown concurrently; each rank's end is taken
+///        once, by one compare-exchange of its state word, so each posts at
+///        most once and the cluster ends cleanly.
 ///
-/// When more than one rank calls arts_shutdown at the same time, each rank's
-/// arts_enter_shutdown_state(ARTS_EXIT_APP) gates on a compare-exchange of
-/// shutdown_state from 0 to 1.  Locally exactly one caller wins and performs
-/// the post + stop_workers; concurrently a peer's post may arrive and run
-/// arts_enter_shutdown_state(ARTS_EXIT_WIRE), which the same CAS gate makes
-/// idempotent (no second post, no double stop).  The required property: with
-/// multiple ranks initiating at once, the cluster tears down cleanly — no
-/// post storm, no deadlock.
+/// When more than one rank calls arts_shutdown at the same time, each call
+/// enters arts_exit(0, APP), which takes the rank's state word by a
+/// compare-exchange.  Locally exactly one caller wins and posts; every later
+/// entry, a peer's SHUTDOWN reaped by a progress thread included, finds the
+/// word taken and posts nothing.  The required property: with multiple ranks
+/// initiating at once, the cluster ends cleanly — no post storm, no
+/// deadlock.
 ///
 /// Each of the first two ranks schedules a LOCAL shutdown initiator EDT, so two
 /// independent initiations race across the cluster.  Each initiator prints

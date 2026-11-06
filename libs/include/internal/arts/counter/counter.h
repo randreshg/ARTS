@@ -221,7 +221,7 @@ extern "C" {
    * write turn a rank other than the home gives back. */                      \
   X(NUM_PURGE_RETURN)
 /* End-to-end wall time is not a counter: it is the env-gated "[E2E] <ns>"
- * stderr marker (rank 0; see runtime.c / shutdown.c / threads.c), identical
+ * stderr marker (rank 0; see runtime.c / shutdown.c), identical
  * across arts/xsocr/ocr-vx. */
 
 // Generate enum from X-macro
@@ -279,12 +279,11 @@ typedef struct {
 // Thread-local counter storage - simple array of counters only.
 // Each thread updates these directly. No captures here.
 // Defined in Counter.c, each thread has its own copy.
-extern ARTS_THREAD_LOCAL arts_counter_t
+extern ARTS_THREAD_LOCAL_IE arts_counter_t
     arts_thread_local_counters[NUM_COUNTER_TYPES];
 
-// Note: Saved counter data is stored directly in arts_node_info:
-// - saved_counters[thread_id][counter_index]: final counts
-// - capture_arrays[thread_id][counter_index]: capture history (PERIODIC)
+// Note: the capture history (PERIODIC) is stored directly in arts_node_info:
+// - capture_arrays[thread_id][counter_index]
 
 // We do not implement system-wide counters due to the overhead of
 // synchronization and network communication
@@ -304,8 +303,16 @@ void arts_counter_increment_by(arts_counter_t *counter, uint64_t num);
 void arts_counter_decrement_by(arts_counter_t *counter, uint64_t num);
 void arts_counter_timer_start(arts_counter_t *counter);
 void arts_counter_timer_end(arts_counter_t *counter);
-void arts_counter_write(const char *output_folder, unsigned int node_id,
-                        unsigned int thread_id);
+/* The rank's counter record, on the thread that took its shutdown point,
+ * after the capture thread's stop: n<rank>_t<t>.json for each thread when a
+ * THREAD-level counter is compiled in and n<rank>.json when a NODE-level one
+ * is, in the folder the rank was published with, each written whole under a
+ * temporary name and renamed.  A file that cannot be written prints one WARN
+ * and changes no status; with counters compiled out nothing is written. */
+void arts_counter_record(void);
+/* The record's size bound in bytes: 4,096 plus 160 per enabled counter (and
+ * per thread for a THREAD-level one) plus 40 per history entry it writes. */
+uint64_t arts_counter_record_estimate(void);
 
 /* How this rank's clock relates to the master rank's: RTT where the counter
  * capture's time sync ran (on the master, whose offset is 0, and on a rank

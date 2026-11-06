@@ -44,8 +44,8 @@
 #include "arts/utils/shared.h"
 #include "arts/utils/vector.h"
 
-ARTS_THREAD_LOCAL struct arts_edt_s *arts_current_edt = NULL;
-static ARTS_THREAD_LOCAL arts_vector_t created_db_list = {0};
+ARTS_THREAD_LOCAL_IE struct arts_edt_s *arts_current_edt = NULL;
+static ARTS_THREAD_LOCAL_IE arts_vector_t created_db_list = {0};
 
 arts_guid_t arts_current_group(void) {
   return arts_current_edt ? arts_current_edt->group : NULL_GUID;

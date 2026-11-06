@@ -182,10 +182,11 @@ unsigned int arts_regpool_node_order(int from, int *out, unsigned int max);
  * pointer freed after it resolves to no slab, which is fatal. */
 void arts_regpool_cleanup(void);
 
-/* At a teardown that leaves the pool to the process exit instead of cleaning
- * it up, print the report cleanup would print (see arts_regpool_report) when
- * ARTS_REGPOOL_REPORT was set at init; otherwise nothing. */
-void arts_regpool_report_if_requested(void);
+/* At the rank's end, on the thread that owns it: when ARTS_REGPOOL_REPORT was
+ * set at init, the report (see arts_regpool_report) written whole to stderr
+ * from one buffer, or one line saying it was skipped when another thread
+ * holds the pool lock; otherwise nothing.  It waits for no lock. */
+void arts_regpool_report_at_exit(void);
 
 /* Close every live slab registration and detach the pool from the fabric
  * (domain and endpoint references cleared): later allocations still succeed
@@ -302,9 +303,9 @@ void arts_regpool_set_forced_full(uint64_t node_mask);
  * since init that found an arena with no free slice for the calling thread's
  * part of its heap (theap_refusals; that thread was then served elsewhere).
  * Takes the pool lock, so the lines are consistent with each other.
- * Printed to stderr at teardown when ARTS_REGPOOL_REPORT is set in the
- * environment (by cleanup, or by arts_regpool_report_if_requested), and
- * before the fatal error of an allocation the pool could not satisfy. */
+ * Printed to stderr at the rank's end when ARTS_REGPOOL_REPORT is set in the
+ * environment (arts_regpool_report_at_exit), and before the fatal error of an
+ * allocation the pool could not satisfy. */
 void arts_regpool_report(FILE *out);
 
 #ifdef __cplusplus

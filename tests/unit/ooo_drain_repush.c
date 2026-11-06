@@ -162,11 +162,12 @@ void arts_route_table_delete_unpublished(arts_guid_t key, void *obj) {
 #include "../../libs/src/core/ooo.c"
 
 /* The running EDT, read by the engine's Debug force-defer check: none. */
-ARTS_THREAD_LOCAL struct arts_edt_s *arts_current_edt;
+ARTS_THREAD_LOCAL_IE struct arts_edt_s *arts_current_edt;
 
 /* The engine's counter increments, recorded so part 3 can count the pins a
  * drain spends where the tree captures NUM_ROUTE_PIN. */
-ARTS_THREAD_LOCAL arts_counter_t arts_thread_local_counters[NUM_COUNTER_TYPES];
+ARTS_THREAD_LOCAL_IE arts_counter_t
+    arts_thread_local_counters[NUM_COUNTER_TYPES];
 void arts_counter_increment_by(arts_counter_t *counter, uint64_t num) {
   atomic_fetch_add_explicit(&counter->count, num, memory_order_relaxed);
 }

@@ -40,6 +40,7 @@ void probe_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   /* Reaching here means the worker scheduler loop (GPU loop after promotion) is
    * running and draining ready EDTs. */
   arts_printf("  probe EDT ran under GPU scheduler\n");
+  arts_printf("GPU_SCHED_PROMOTION_DONE\n");
   arts_shutdown();
 }
 
@@ -59,6 +60,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_printf(
         "PASS runtime_gpu_scheduler_promotion: no GPU visible (gpus=0), "
         "promotion arm not exercised\n");
+    arts_printf("GPU_SCHED_PROMOTION_DONE\n");
     arts_shutdown();
     return;
   }
@@ -69,10 +71,6 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_edt_create(probe_edt, 0, NULL, 0, &(arts_edt_hint_t){.rank = 0});
 }
 
-int main(int argc, char **argv) {
-  arts_rt(argc, argv);
-  arts_printf("GPU_SCHED_PROMOTION_DONE\n");
-  return 0;
-}
+int main(int argc, char **argv) { return arts_rt(argc, argv); }
 
 #endif /* ARTS_USE_GPU */

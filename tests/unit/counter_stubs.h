@@ -15,7 +15,8 @@
 #include "arts/counter/counter.h"
 #include "arts/defs.h"
 
-ARTS_THREAD_LOCAL arts_counter_t arts_thread_local_counters[NUM_COUNTER_TYPES];
+ARTS_THREAD_LOCAL_IE arts_counter_t
+    arts_thread_local_counters[NUM_COUNTER_TYPES];
 
 void arts_counter_increment_by(arts_counter_t *counter, uint64_t num) {
   (void)counter;

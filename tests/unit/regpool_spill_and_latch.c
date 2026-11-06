@@ -42,18 +42,20 @@
 #include "arts/memory/regpool.h"
 #include "arts/runtime_state.h"
 #include "arts/system/identity.h"
+#include "arts/system/shutdown.h"
 #include "regpool_numa_sim.h"
 
 /* What the pool's log and fatal paths and its per-thread tables reference. */
 unsigned int arts_global_rank_id = 0;
-ARTS_THREAD_LOCAL struct arts_runtime_private_s arts_thread_info;
+ARTS_THREAD_LOCAL_IE struct arts_runtime_private_s arts_thread_info;
 void *arts_calloc(size_t nmemb, size_t size) { return mi_calloc(nmemb, size); }
 void arts_free(void *ptr) { mi_free(ptr); }
 #define FATAL_STATUS 3
 /* The fatal path also reports how many placement policies the process set,
  * so a process that dies on it can still be checked for maps it made. */
-void arts_abort(uint8_t code) {
-  (void)code;
+_Noreturn void arts_exit(int rc, enum arts_exit_origin origin) {
+  (void)origin;
+  (void)rc;
   fprintf(stderr, "SIM-MBIND-CALLS=%u\n",
           atomic_load_explicit(&regpool_sim_mbind_calls, memory_order_relaxed));
   fflush(stdout);

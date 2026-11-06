@@ -808,11 +808,13 @@ endif()
 add_arts_test(runtime_barrier_counts)
 register_single_node_test(runtime_barrier_counts TIMEOUT 60)
 
-# A shutdown while an EDT body runs on and never returns: the teardown's stop
+# A shutdown while an EDT body runs on and never returns: the run still ends
+# with status 0, well within its 10 s.  Where the teardown runs, its stop
 # cannot stop that worker, so the teardown frees nothing and says so in a
-# DEBUG line, and the run still ends with status 0.
+# DEBUG line.
+add_arts_test(shutdown_cuts_running_edt)
+register_single_node_test(shutdown_cuts_running_edt TIMEOUT 10)
 if(ARTS_LOG_LEVEL GREATER_EQUAL 3)
-    add_arts_test(shutdown_cuts_running_edt)
     arts_test_cfg(_cfg 1n_20w)
     arts_add_test(teardown_stop_skips_running
                   COMMAND shutdown_cuts_running_edt)
@@ -846,17 +848,16 @@ endif()
 add_arts_test(threads_pin_affinity)
 register_single_node_test(threads_pin_affinity TIMEOUT 60)
 
-add_arts_test(signals_sigterm_graceful)
-register_single_node_test(signals_sigterm_graceful TIMEOUT 60)
-set_tests_properties(signals_sigterm_graceful PROPERTIES PASS_REGULAR_EXPRESSION "SIGTERM_GRACEFUL_OK")
-
-# signals_double_sigterm: success is exit code 143 (= 128+SIGTERM), the escalation's own exit.
-add_arts_test(signals_double_sigterm)
-register_single_node_test(signals_double_sigterm STATUS 143 TIMEOUT 60)
+# One SIGTERM the program sends its own process ends the rank with 143,
+# after the watcher's line naming it.
+add_arts_test(signals_sigterm_status)
+register_single_node_test(signals_sigterm_status TIMEOUT 60 STATUS 143)
+set_tests_properties(signals_sigterm_status PROPERTIES PASS_REGULAR_EXPRESSION
+    "\\[ARTS\\] Received SIGTERM \\(rank 0\\); ending the run")
 
 # main_rank_overflow_abort: success is the overflow guard's own abort: exit
 # code 1, with the guard's message (any other fatal error exits 1 too).  A
-# launched rank, or an arts_rt that returned, reports RANK_OVERFLOW_NO_ABORT.
+# launched rank reports RANK_OVERFLOW_NO_ABORT.
 add_arts_test(main_rank_overflow_abort)
 register_single_node_test(main_rank_overflow_abort STATUS 1 TIMEOUT 60)
 arts_test_cfg(_cfg 1n_20w)
@@ -865,14 +866,15 @@ set_tests_properties(main_rank_overflow_abort PROPERTIES
     PASS_REGULAR_EXPRESSION "exceeds GUID layout limit"
     FAIL_REGULAR_EXPRESSION "RANK_OVERFLOW_NO_ABORT")
 
-# A rank that exits mid-run ends every peer's run, by the end of its stream;
-# the two progress threads race the probes of that end.  The aborted rank's
-# status is the run's.
-add_arts_test(shutdown_abort_eof)
-register_multinode_test(shutdown_abort_eof TIMEOUT 120 STATUS 37)
+# A rank that aborts mid-run ends every peer's run, by its post or by the end
+# of its stream; the two progress threads race to learn of that end.  The
+# aborted rank's status is the run's, and every other rank ends with 0 (no
+# other rank status is allowed).
+add_arts_test(shutdown_abort_status)
+register_multinode_test(shutdown_abort_status TIMEOUT 120 STATUS 37)
 foreach(_v 2n_9w_1p 4n_4w_1p 2n_8w_2p)
-    arts_test_properties(shutdown_abort_eof_${_v} PROPERTIES
-        PASS_REGULAR_EXPRESSION "ABORT_EOF_EXIT")
+    arts_test_properties(shutdown_abort_status_${_v} PROPERTIES
+        PASS_REGULAR_EXPRESSION "ABORT_STATUS: [0-9]+ ranks")
 endforeach()
 
 # Concurrent initialization calls and shutdowns on every rank: one wins on each
@@ -886,26 +888,26 @@ foreach(_v 2n_9w_1p 4n_4w_1p)
 endforeach()
 
 # A SIGTERM to rank 0 while every other rank keeps satisfies in flight to it:
-# the signal watcher begins the shutdown, which closes rank 0's send gate and
-# posts SHUTDOWN while those satisfies arrive, and the run ends gracefully.
-add_arts_test(shutdown_sigterm_inflight_drain)
-register_multinode_test(shutdown_sigterm_inflight_drain TIMEOUT 120)
+# the signal watcher ends rank 0, closing its send gate and posting SHUTDOWN
+# while those satisfies arrive, and the run's status is rank 0's 143.
+add_arts_test(shutdown_sigterm_inflight)
+register_multinode_test(shutdown_sigterm_inflight TIMEOUT 120 STATUS 143)
 foreach(_v 2n_9w_1p 4n_4w_1p 2n_8w_2p)
-    arts_test_properties(shutdown_sigterm_inflight_drain_${_v} PROPERTIES
-        PASS_REGULAR_EXPRESSION "\\[rank 0\\] SIGTERM_DRAIN_EXIT")
+    arts_test_properties(shutdown_sigterm_inflight_${_v} PROPERTIES
+        PASS_REGULAR_EXPRESSION "\\[rank 0\\] SIGTERM_INFLIGHT_EXIT")
 endforeach()
 
 # Every rank still sending when the shutdown begins: each rank drops its sends
 # after its shutdown point, so none waits on a peer that has gone, a refused
-# inject, a transfer lost on a live run and a send after the teardown began
-# being the failures.
+# inject, a transfer lost on a live run and a send by the end's owner after
+# its post being the failures.
 add_arts_test(shutdown_sends_after_shutdown)
 register_multinode_test(shutdown_sends_after_shutdown TIMEOUT 60)
 foreach(_v 2n_9w_1p 4n_4w_1p 2n_8w_2p)
     arts_test_properties(shutdown_sends_after_shutdown_${_v} PROPERTIES
         PASS_REGULAR_EXPRESSION "SENDS_AFTER_SHUTDOWN: ending the run"
         FAIL_REGULAR_EXPRESSION
-        "fi_inject failed;cq error on a live run;after this thread began the teardown")
+        "fi_inject failed;cq error on a live run;after this thread's shutdown post")
 endforeach()
 
 # Two ranks other than rank 0 end the run at once, on four ranks and on three
@@ -928,8 +930,8 @@ arts_test_properties(shutdown_initiators_off_zero_3n_4w_1p PROPERTIES
 add_arts_test(shutdown_first_contact)
 register_multinode_test(shutdown_first_contact TIMEOUT 60 VARIANTS 4n_4w_1p)
 if(ARTS_LOG_LEVEL GREATER_EQUAL 2)
-    set(_fc_r3 "\\[3:[0-9]+\\] \\[INFO\\] arts_enter_shutdown_state: rank=3 origin=SENTINEL")
-    set(_fc_r1 "\\[1:[0-9]+\\] \\[INFO\\] arts_enter_shutdown_state: posted SHUTDOWN to")
+    set(_fc_r3 "\\[3:[0-9]+\\] \\[INFO\\] arts_exit: rank=3 origin=SENTINEL")
+    set(_fc_r1 "\\[1:[0-9]+\\] \\[INFO\\] arts_exit: posted SHUTDOWN to")
     arts_test_properties(shutdown_first_contact_4n_4w_1p PROPERTIES
         PASS_REGULAR_EXPRESSION "${_fc_r3}.*${_fc_r1} 2 peer|${_fc_r1} 2 peer.*${_fc_r3}"
         FAIL_REGULAR_EXPRESSION "${_fc_r1} ([013-9]|[0-9][0-9]+) peer")
@@ -948,9 +950,9 @@ add_arts_test(shutdown_under_flood)
 register_multinode_test(shutdown_under_flood TIMEOUT 40 VARIANTS 4n_4w_1p)
 set(_uf_end "SHUTDOWN_UNDER_FLOOD: rank 2 ends the run")
 set(_uf_fail
-    "fi_inject failed;cq error on a live run;after this thread began the teardown")
+    "fi_inject failed;cq error on a live run;after this thread's shutdown post")
 if(ARTS_LOG_LEVEL GREATER_EQUAL 2)
-    set(_uf_r1 "\\[1:[0-9]+\\] \\[INFO\\] arts_enter_shutdown_state: rank=1 origin=")
+    set(_uf_r1 "\\[1:[0-9]+\\] \\[INFO\\] arts_exit: rank=1 origin=")
     arts_test_properties(shutdown_under_flood_4n_4w_1p PROPERTIES
         PASS_REGULAR_EXPRESSION
         "${_uf_end}.*${_uf_r1}(WIRE|SENTINEL|BACKPRESSURE)|${_uf_r1}(WIRE|SENTINEL|BACKPRESSURE).*${_uf_end}"
@@ -961,6 +963,224 @@ else()
         PASS_REGULAR_EXPRESSION "${_uf_end}"
         FAIL_REGULAR_EXPRESSION "${_uf_fail}")
 endif()
+
+# --- the rank's end (arts_exit) ---
+# Records exist where some counter is captured at NODE level; a test that
+# reads one registers only there.
+arts_counters_node_level(_records)
+
+# Every rank ends the run at once: each takes its own shutdown point or learns
+# of another's first, every rank ends with 0, and rank 0 prints one marker.
+# On four ranks and on three (the four-rank cfg with node_count=3).
+add_arts_test(shutdown_concurrent_initiators)
+arts_test_cfg(_cfg 4n_4w_1p)
+foreach(_case "4n_4w_1p;4;" "3n_4w_1p;3;node_count=3")
+    list(GET _case 0 _v)
+    list(GET _case 1 _n)
+    list(GET _case 2 _extra)
+    set(_rec "")
+    if(_records)
+        set(_rec RECORDS ${_n})
+    endif()
+    arts_add_multinode_test(shutdown_concurrent_initiators_${_v} ${_rec}
+                            COMMAND shutdown_concurrent_initiators)
+    arts_test_properties(shutdown_concurrent_initiators_${_v} PROPERTIES
+        LABELS "multinode" TIMEOUT 60 RESOURCE_LOCK "arts_runtime"
+        ENVIRONMENT "ARTS_CONFIG=${_cfg};ARTS_E2E_MARKER=1;${_extra}"
+        PASS_REGULAR_EXPRESSION "\\[E2E\\] [0-9]+"
+        FAIL_REGULAR_EXPRESSION "\\[E2E\\].*\\[E2E\\];\\[SHUTDOWN\\]")
+endforeach()
+
+# A stack overflow on rank 1: no alternate signal stack exists, so the kernel
+# ends that rank by SIGSEGV under the default action (139, the run's status),
+# and rank 0 learns of the end from its closed connection.  A sanitizer's own
+# SIGSEGV handler is turned off, so the kernel's action is the one judged.
+add_arts_test(term_stack_overflow)
+register_multinode_test(term_stack_overflow TIMEOUT 60 STATUS 139 ARGS 1
+                        VARIANTS 2n_9w_1p)
+arts_test_properties(term_stack_overflow_2n_9w_1p PROPERTIES
+    ENVIRONMENT_MODIFICATION
+    "ASAN_OPTIONS=path_list_append:handle_segv=0;TSAN_OPTIONS=path_list_append:handle_segv=0"
+    PASS_REGULAR_EXPRESSION "STACK_OVERFLOW: rank 1 recurses")
+
+# A rank killed outright mid-run: the others learn of the end from its closed
+# connections and end with 0, and the kill's 137 is the run's status.
+arts_test_cfg(_cfg 4n_4w_1p)
+arts_add_multinode_test(shutdown_peer_killed
+    COMMAND ${ARTS_SPAWNER_DRIVER} --want 137 --on line:ALL_RANKS_READY
+            --signal KILL --target rank:1
+            -- $<TARGET_FILE:spawner_rank_probe> 30000)
+arts_test_properties(shutdown_peer_killed PROPERTIES
+    LABELS "multinode" TIMEOUT 60 RESOURCE_LOCK "arts_runtime"
+    ENVIRONMENT "ARTS_CONFIG=${_cfg}"
+    ARTS_RANK_STATUSES 137)
+
+# A rank whose program calls _exit(0) mid-run: no runtime code runs on its way
+# out, every other rank learns of the end from its closed connections, and
+# the run's status is 0.
+add_arts_test(shutdown_rank_calls_exit)
+arts_test_cfg(_cfg 4n_4w_1p)
+arts_add_multinode_test(shutdown_rank_calls_exit
+    COMMAND ${ARTS_SPAWNER_DRIVER} --want 0
+            -- $<TARGET_FILE:shutdown_rank_calls_exit>)
+arts_test_properties(shutdown_rank_calls_exit PROPERTIES
+    LABELS "multinode" TIMEOUT 60 RESOURCE_LOCK "arts_runtime"
+    ENVIRONMENT "ARTS_CONFIG=${_cfg}"
+    PASS_REGULAR_EXPRESSION "RANK_CALLS_EXIT: rank 1")
+
+# Rank 1 floods rank 0, which the driver stops; the last rank, signalled,
+# ends with 143, every rank but 0 learns of the end and ends (rank 1's
+# senders dropping their sends at its gate), and rank 0, continued once they
+# are gone, learns of it and ends with 0.
+add_arts_test(shutdown_peer_stopped)
+foreach(_v 2n_9w_1p 4n_4w_1p)
+    string(REGEX MATCH "^[0-9]+" _n ${_v})
+    math(EXPR _last "${_n} - 1")
+    arts_test_cfg(_cfg ${_v})
+    arts_add_multinode_test(shutdown_peer_stopped_${_v}
+        COMMAND ${ARTS_SPAWNER_DRIVER} --want 143 --on line:FLOODING
+                --signal STOP --target rank:0
+                --then TERM:rank:${_last}:200
+                --then CONT:rank:0:others-gone
+                -- $<TARGET_FILE:shutdown_peer_stopped>)
+    arts_test_properties(shutdown_peer_stopped_${_v} PROPERTIES
+        LABELS "multinode" TIMEOUT 90 RESOURCE_LOCK "arts_runtime"
+        ENVIRONMENT "ARTS_CONFIG=${_cfg}"
+        ARTS_RANK_STATUSES 143
+        FAIL_REGULAR_EXPRESSION "FAIL")
+endforeach()
+unset(_last)
+
+# A child a rank forks that calls arts_abort ends with its code alone: the
+# parent sees 5, and the run ends with 0 and one marker.
+add_arts_test(shutdown_fork_child_abort)
+register_single_node_test(shutdown_fork_child_abort TIMEOUT 30)
+set_tests_properties(shutdown_fork_child_abort PROPERTIES
+    PASS_REGULAR_EXPRESSION
+    "FORK_CHILD_ABORT: the child ended with 5.*\\[E2E\\] [0-9]+|\\[E2E\\] [0-9]+.*FORK_CHILD_ABORT: the child ended with 5"
+    FAIL_REGULAR_EXPRESSION "FAIL;\\[E2E\\].*\\[E2E\\];\\[SHUTDOWN\\]")
+set_property(TEST shutdown_fork_child_abort APPEND PROPERTY ENVIRONMENT
+             "ARTS_E2E_MARKER=1")
+
+# A run whose standard output's reader has gone (`| head -1`): its writes and
+# its end's flush fail, and its status is still 0, with no hang.
+add_arts_test(shutdown_stdout_closed)
+arts_test_cfg(_cfg 1n_20w)
+arts_add_test(shutdown_stdout_closed COMMAND bash -o pipefail -c
+    "$<TARGET_FILE:shutdown_stdout_closed> | head -1")
+set_tests_properties(shutdown_stdout_closed PROPERTIES
+    LABELS "single_node" TIMEOUT 30 RESOURCE_LOCK "arts_runtime"
+    ENVIRONMENT "ARTS_CONFIG=${_cfg}"
+    PASS_REGULAR_EXPRESSION "STDOUT_CLOSED: first line")
+
+# A SIGTERM to the spawner at once, while its ranks start: each rank ends by
+# it (143), or by its mesh's give-up (75) where a peer it waits for ended
+# first, and nothing is left running.
+arts_test_cfg(_cfg 2n_9w_1p)
+arts_add_multinode_test(shutdown_sigterm_during_bootstrap
+    COMMAND ${ARTS_SPAWNER_DRIVER} --want 143,75 --on launch
+            --signal TERM --target spawner
+            -- $<TARGET_FILE:spawner_rank_probe> 30000)
+arts_test_properties(shutdown_sigterm_during_bootstrap PROPERTIES
+    LABELS "multinode" TIMEOUT 90 RESOURCE_LOCK "arts_runtime"
+    ENVIRONMENT "ARTS_CONFIG=${_cfg}"
+    ARTS_RANK_STATUSES "143;75")
+
+# A fault after rank 1 wrote its record: the fault's 139 is the run's status,
+# and the record keeps the rc 0 it was written with.
+if(_records)
+    add_arts_test(shutdown_status_above_record)
+    register_multinode_test(shutdown_status_above_record TIMEOUT 60
+        STATUS 139 VARIANTS 2n_9w_1p RECORDS 2
+        RECORD_CHECK record_meta.cmake rc@1=0 rc@0=0)
+    arts_test_properties(shutdown_status_above_record_2n_9w_1p PROPERTIES
+        PASS_REGULAR_EXPRESSION "STATUS_ABOVE_RECORD: rank 1 waits"
+        FAIL_REGULAR_EXPRESSION "FAIL")
+endif()
+
+# The rank's end runs the leak checker: a block an EDT leaked is reported, and
+# the process ends with ASan's exit status 1.  Only in the AddressSanitizer
+# tree on the system allocator, the one whose leak checker sees the
+# runtime's allocations; the driver keeps the report out of the test's
+# output, whose fail list matches every sanitizer report.
+if(ARTS_DEBUG_SANITIZER STREQUAL "ADDRESS" AND ARTS_MALLOC STREQUAL "system")
+    add_arts_test(lsan_check_runs)
+    arts_test_cfg(_cfg 1n_20w)
+    arts_add_test(lsan_check_runs COMMAND ${CMAKE_COMMAND}
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/expect_lsan_report.cmake
+        -- $<TARGET_FILE:lsan_check_runs>)
+    set_tests_properties(lsan_check_runs PROPERTIES
+        LABELS "single_node" TIMEOUT 60 RESOURCE_LOCK "arts_runtime"
+        ENVIRONMENT "ARTS_CONFIG=${_cfg}"
+        PASS_REGULAR_EXPRESSION "PASS lsan_check_runs")
+endif()
+
+# The pool's report at the rank's end, from every rank (ARTS_REGPOOL_REPORT):
+# its totals line, or the one line saying it was skipped, legal where another
+# thread held the pool's lock at the end.
+arts_test_cfg(_cfg 2n_9w_1p)
+set(_rp "\\[REGPOOL\\] (total:|report skipped: the pool lock is held)")
+arts_add_multinode_test(regpool_report_at_exit_2n_9w_1p COMMAND term_shutdown)
+arts_test_properties(regpool_report_at_exit_2n_9w_1p PROPERTIES
+    LABELS "multinode" TIMEOUT 60 RESOURCE_LOCK "arts_runtime"
+    ENVIRONMENT "ARTS_CONFIG=${_cfg};ARTS_REGPOOL_REPORT=1"
+    PASS_REGULAR_EXPRESSION "${_rp}.*${_rp}")
+unset(_rp)
+
+# A thread the program starts, not the runtime, ends the run: the teardown
+# stops every runtime thread, runs whole and finds the shutdown quiescent.
+if(ARTS_LOG_LEVEL GREATER_EQUAL 3)
+    add_arts_test(shutdown_from_user_thread)
+    register_single_node_test(shutdown_from_user_thread TIMEOUT 30)
+    register_multinode_test(shutdown_from_user_thread TIMEOUT 60
+                            VARIANTS 2n_9w_1p)
+    arts_test_properties(shutdown_from_user_thread
+        shutdown_from_user_thread_2n_9w_1p PROPERTIES
+        PASS_REGULAR_EXPRESSION "USER_THREAD: a program thread ends the run"
+        FAIL_REGULAR_EXPRESSION "FAIL;teardown skipped:;QUIESCENCE-DEBUG:")
+endif()
+
+# A counter folder that cannot be made: one WARN naming it per file the
+# record would write, status 0, and no temporary file left under the test's
+# own working directory.  The program alone sees that folder; the test's
+# runner keeps the test's own.
+if(_records)
+    set(_dir "${CMAKE_CURRENT_BINARY_DIR}/work/record_folder_unwritable")
+    file(MAKE_DIRECTORY "${_dir}")
+    arts_test_cfg(_cfg 1n_20w)
+    arts_add_test(record_folder_unwritable
+        RECORD_CHECK record_no_tmp.cmake ${_dir}
+        COMMAND env counter_folder=/dev/null/x $<TARGET_FILE:term_shutdown>)
+    set_tests_properties(record_folder_unwritable PROPERTIES
+        LABELS "single_node" TIMEOUT 10 RESOURCE_LOCK "arts_runtime"
+        WORKING_DIRECTORY "${_dir}"
+        ENVIRONMENT "ARTS_CONFIG=${_cfg}"
+        PASS_REGULAR_EXPRESSION "counters: cannot create /dev/null/x"
+        FAIL_REGULAR_EXPRESSION
+        "cannot create /dev/null/x.*cannot create /dev/null/x")
+    unset(_dir)
+endif()
+
+# Rank 0's marker names a failed end: rank 0's own abort prints
+# "[SHUTDOWN] rc=5" and no span; rank 1's abort leaves rank 0's end, which it
+# learns of, a success, so rank 0 prints its span.  The run's status is 5
+# either way.
+arts_test_cfg(_cfg 2n_9w_1p)
+foreach(_case "rank0;0;\\[SHUTDOWN\\] rc=5;\\[E2E\\]"
+              "rank1;1;\\[E2E\\] [0-9]+;\\[SHUTDOWN\\]")
+    list(GET _case 0 _name)
+    list(GET _case 1 _rank)
+    list(GET _case 2 _pass)
+    list(GET _case 3 _fail)
+    arts_add_multinode_test(e2e_marker_on_failure_${_name} STATUS 5
+                            COMMAND term_abort ${_rank} 5)
+    arts_test_properties(e2e_marker_on_failure_${_name} PROPERTIES
+        LABELS "multinode" TIMEOUT 60 RESOURCE_LOCK "arts_runtime"
+        ENVIRONMENT "ARTS_CONFIG=${_cfg};ARTS_E2E_MARKER=1"
+        PASS_REGULAR_EXPRESSION "${_pass}"
+        FAIL_REGULAR_EXPRESSION "${_fail}")
+endforeach()
+unset(_records)
 
 # --- random ---
 # Concurrent draws from the runtime's generator stay in range and do not
@@ -989,15 +1209,19 @@ set_tests_properties(api_current_group_null PROPERTIES PASS_REGULAR_EXPRESSION "
 endif()
 
 # --- counters ---
-# counter_smoke_value: the EDTs a program creates and runs are counted exactly,
-# main EDT included.  No cell changes how EDTs are counted.
+# counter_smoke_value: the EDTs a program creates are counted exactly, main
+# EDT included.  No cell changes how EDTs are counted.  The one that calls
+# arts_shutdown (done_edt) never returns from its body, so it is created and
+# not finished; main_edt's own FINISH increment comes after its body, which
+# may make done_edt runnable, and nothing orders it before the record's live
+# read, so the record holds 64 or 65 finished EDTs.
 if(ARTS_TEST_REFERENCE_TREE)
     add_arts_test(counter_smoke_value)
     arts_counters_captured(_c NUM_EDT_CREATE NUM_EDT_FINISH)
     if(_c)
         register_single_node_test(counter_smoke_value TIMEOUT 30 RECORDS 1
             RECORD_CHECK record_values.cmake 0:NUM_EDT_CREATE=66
-                                             0:NUM_EDT_FINISH=66)
+                                             0:NUM_EDT_FINISH=64..65)
     endif()
 endif()
 
@@ -1101,13 +1325,19 @@ arts_counters_captured(_c NUM_DB_ACQUIRE_READ NUM_DB_ACQUIRE_WRITE
                        NUM_DB_ACQUIRE_LOCAL_HIT NUM_DB_ACQUIRE_REMOTE)
 if(_c)
     # 10 blocks: 4 with the creator's hold, 4 without (one on a reserved
-    # GUID), 2 of size zero with the hold; one read and one write each.
+    # GUID), 2 of size zero with the hold; one read and one write each.  Of
+    # the 22 EDTs, the one that calls arts_shutdown (terminal) never returns
+    # from its body, so 21 finish.  main_edt's last act is the reserved
+    # block's create, whose install makes that block's readers runnable; a
+    # create counts before its install, so the record holds all 10, but
+    # main_edt's FINISH increment comes after its body and nothing orders it
+    # before the record's live read, so 20 or 21 EDTs finished.
     set(_one 0:NUM_DB_ACQUIRE_READ=10 0:NUM_DB_ACQUIRE_WRITE=16
              0:NUM_DB_ACQUIRE_LOCAL_HIT=26 0:NUM_DB_ACQUIRE_REMOTE=0)
     if(ARTS_TEST_REFERENCE_TREE)
         list(APPEND _one 0:NUM_DB_CREATE=10 0:NUM_DB_CREATE_NO_ACQUIRE=4
                          0:BYTES_DB_CREATE=2048 0:NUM_DB_DESTROY=10
-                         0:NUM_EDT_CREATE=22 0:NUM_EDT_FINISH=22
+                         0:NUM_EDT_CREATE=22 0:NUM_EDT_FINISH=20..21
                          0:NUM_REMOTE_SEND=0 0:NUM_REMOTE_RECEIVE=0
                          0:BYTES_REMOTE_SENT=0 0:BYTES_REMOTE_RECEIVED=0
                          0:NUM_DB_PAYLOAD_SENT=0 0:BYTES_DB_PAYLOAD_SENT=0)
@@ -1333,32 +1563,36 @@ if(_c)
 endif()
 # A two-rank exchange: rank 0 creates a 64 KiB block with the hold and an EDT
 # on rank 1 that reads it and shuts the run down.  Rank 1 dispatches every
-# message rank 0 sends, and takes in the payload whole however many pieces it
-# travels in (the split variant cuts it into sixteen); whether rank 0
-# takes in the shutdown message is not fixed (a receiver also stops when it
-# sees the initiator's connection close), so its receives are left out.  The
-# read is served by one one-sided payload from the home under this tree's
-# cell.  Rank 1 sends its read request and the SHUTDOWN post and, where the
-# tree captures a PERIODIC counter, its time-sync request, which leaves before
-# any EDT of rank 1 can run and which rank 0 answers: 3 sends there, else 2.
-# The post is best effort and counts only when the transport accepts it; the
-# connection is up here, since rank 1 has just sent its read request, so a
-# refused post would read as one send less.
+# message rank 0 sends before its end, and takes in the payload whole however
+# many pieces it travels in (the split variant cuts it into sixteen); whether
+# rank 0 takes in the shutdown message is not fixed (a receiver also stops
+# when it sees the initiator's connection close), so its receives are left
+# out.  The read is served by one one-sided payload from the home under this
+# tree's cell.  Rank 1 sends its read request and the SHUTDOWN post and, where
+# the tree captures a PERIODIC counter, its time-sync request, which leaves
+# before any EDT of rank 1 can run and which rank 0 answers: 3 sends there,
+# else 2.  Nothing rank 1 does waits for that answer, so it may land after
+# rank 1's record reads its counters: there rank 1 receives every message of
+# rank 0 or every one but the answer (one message of 32 bytes).  The post is
+# best effort and counts only when the transport accepts it; the connection
+# is up here, since rank 1 has just sent its read request, so a refused post
+# would read as one send less.
 arts_counters_captured(_c NUM_REMOTE_SEND NUM_REMOTE_RECEIVE BYTES_REMOTE_SENT
                        BYTES_REMOTE_RECEIVED NUM_DB_PAYLOAD_SENT
                        BYTES_DB_PAYLOAD_SENT)
 if(_c AND ARTS_TEST_REFERENCE_TREE)
     arts_counters_periodic(_p)
     if(_p)
-        set(_ping_sends 3)
+        set(_ping 1:NUM_REMOTE_RECEIVE=0:NUM_REMOTE_SEND-0..1
+                  1:BYTES_REMOTE_RECEIVED=0:BYTES_REMOTE_SENT-0..32
+                  1:NUM_REMOTE_SEND=3)
     else()
-        set(_ping_sends 2)
+        set(_ping 1:NUM_REMOTE_RECEIVE=0:NUM_REMOTE_SEND
+                  1:BYTES_REMOTE_RECEIVED=0:BYTES_REMOTE_SENT
+                  1:NUM_REMOTE_SEND=2)
     endif()
-    set(_ping 1:NUM_REMOTE_RECEIVE=0:NUM_REMOTE_SEND
-              1:BYTES_REMOTE_RECEIVED=0:BYTES_REMOTE_SENT
-              1:NUM_REMOTE_SEND=${_ping_sends}
-              0:NUM_DB_PAYLOAD_SENT=1 0:BYTES_DB_PAYLOAD_SENT=65536
-              1:NUM_DB_PAYLOAD_SENT=0 1:BYTES_DB_PAYLOAD_SENT=0)
+    list(APPEND _ping 0:NUM_DB_PAYLOAD_SENT=1 0:BYTES_DB_PAYLOAD_SENT=65536
+                      1:NUM_DB_PAYLOAD_SENT=0 1:BYTES_DB_PAYLOAD_SENT=0)
     set(_ping_runs 2n_9w_1p 2n_8w_2p)
     if(ARTS_DEBUG_INJECTION)
         list(APPEND _ping_runs split)

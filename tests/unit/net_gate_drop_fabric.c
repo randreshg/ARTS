@@ -3,23 +3,25 @@
  * net_gate_drop_fabric — a SHUTDOWN frame taken in by the libfabric
  * transport's reap (transport/net.c), over a self-only fabric.  The reap
  * recognizes the frame itself: it is never dispatched, and the reaping
- * thread starts the shutdown once it has released the completion queue.
+ * thread takes the rank's shutdown point once it has released the completion
+ * queue.
  *
  *   (d) A SHUTDOWN header and then an ordinary header-only message, injected
- *       to this rank and taken in by one arts_net_progress call: the
- *       shutdown entry runs with origin WIRE before the dispatcher sees the
- *       ordinary message, the dispatcher never sees the SHUTDOWN, and the
+ *       to this rank and taken in by one arts_net_progress call: the take of
+ *       the shutdown point runs with origin WIRE before the dispatcher sees
+ *       the ordinary message, the dispatcher never sees the SHUTDOWN, and the
  *       reaping thread counted both frames as received.
  *   (e) A send held in the ring-full spin while a SHUTDOWN header is
- *       injected to this rank: the spin's own reap enters the shutdown once,
- *       with origin BACKPRESSURE, and the send returns false within 1 s,
- *       its free run once.
+ *       injected to this rank: the spin's own reap tries the take once, with
+ *       origin BACKPRESSURE, and the send returns false within 1 s, its free
+ *       run once.
  *
  * Standalone: #includes net.c (its statics) and links the real regpool
  * object (the receive buffers need registered memory) and libfabric.  The
- * runtime externs are libc-backed shims; the shutdown entry is a shim that
- * records its origin and closes the send gate, as the real one does on a
- * multi-rank run; the counters are counted per thread.  FI_PROVIDER=tcp is
+ * runtime externs are libc-backed shims; the take of the shutdown point is a
+ * shim that records its origin and closes the send gate, as the point's first
+ * taker does on a multi-rank run, and returns false, as for a point another
+ * thread took; the counters are counted per thread.  FI_PROVIDER=tcp is
  * pinned by the test's environment, whose provider progresses on its own
  * thread, so injected frames reach the completion queue while no thread of
  * this test reaps.
@@ -48,10 +50,13 @@
 /* ---- runtime externs the module (and regpool) reference ------------------ */
 unsigned int arts_global_rank_id = 0;
 unsigned int arts_global_rank_count = 1; /* self-only fabric */
-ARTS_THREAD_LOCAL struct arts_runtime_private_s arts_thread_info;
+ARTS_THREAD_LOCAL_IE struct arts_runtime_private_s arts_thread_info;
 struct arts_runtime_shared_s arts_node_info;
 struct arts_shutdown_abandon_s arts_shutdown_abandon;
-void arts_abort(uint8_t code) { exit(code ? code : 1); }
+_Noreturn void arts_exit(int rc, enum arts_exit_origin origin) {
+  (void)origin;
+  exit(rc ? rc : 1);
+}
 void *arts_malloc(size_t size) { return malloc(size); }
 void *arts_calloc(size_t n, size_t size) { return calloc(n, size); }
 void *arts_calloc_aligned(size_t n, size_t size, size_t align) {
@@ -67,7 +72,8 @@ void arts_free(void *ptr) { free(ptr); }
 void arts_sched_fuzz_point(void) {}
 #endif
 
-ARTS_THREAD_LOCAL arts_counter_t arts_thread_local_counters[NUM_COUNTER_TYPES];
+ARTS_THREAD_LOCAL_IE arts_counter_t
+    arts_thread_local_counters[NUM_COUNTER_TYPES];
 void arts_counter_increment_by(arts_counter_t *counter, uint64_t num) {
   atomic_fetch_add_explicit(&counter->count, num, memory_order_relaxed);
 }
@@ -100,7 +106,6 @@ bool arts_socket_probe_due(uint64_t *next_ns) {
   return false;
 }
 bool arts_socket_sentinel_check(void) { return false; }
-void arts_runtime_stop(void) {}
 
 /* Compile the module under test (its statics: g_net, the rings, the reaps). */
 #include "../../libs/src/core/transport/net.c"
@@ -111,12 +116,25 @@ static _Atomic(int) g_entries;
 static _Atomic(int) g_entry_origin;
 static _Atomic(int) g_entry_seq;
 
-void arts_enter_shutdown_state(enum arts_exit_origin origin) {
+bool arts_exit_take(int rc, enum arts_exit_origin origin) {
+  (void)rc;
   int seq = atomic_fetch_add_explicit(&g_seq, 1, memory_order_relaxed) + 1;
   atomic_store_explicit(&g_entry_seq, seq, memory_order_relaxed);
   atomic_store_explicit(&g_entry_origin, (int)origin, memory_order_relaxed);
   atomic_fetch_add_explicit(&g_entries, 1, memory_order_relaxed);
   atomic_store_explicit(&g_net.quiescing, true, memory_order_relaxed);
+  return false;
+}
+
+_Noreturn void arts_exit_resume(void) {
+  printf("FAIL net_gate_drop_fabric: the end resumed after a take that "
+         "failed\n");
+  fflush(stdout);
+  _exit(1);
+}
+
+bool arts_shutdown_taken(void) {
+  return atomic_load_explicit(&g_entries, memory_order_relaxed) != 0;
 }
 
 static _Atomic(int) g_failures;

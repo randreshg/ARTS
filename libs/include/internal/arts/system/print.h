@@ -47,6 +47,7 @@
 
 #include "arts/runtime_state.h"
 #include "arts/system/identity.h" /* arts_global_rank_id for the log prefix */
+#include "arts/system/shutdown.h" /* ARTS_ERROR ends the rank */
 
 #ifdef __cplusplus
 extern "C" {
@@ -100,7 +101,8 @@ static inline void arts_print_line(const char *format, ...) {
  *
  * ARTS_LOG_LEVEL (set by the build: Debug 3, Release 1 unless chosen; 1 for
  * a file compiled outside it):
- *   0 = ERROR   — print + abort (abort fires even when print is compiled out)
+ *   0 = ERROR   — print + end the rank (arts_exit with origin RUNTIME_ERROR,
+ *                 status 1; it ends the rank even when print is compiled out)
  *   1 = WARN    — print only
  *   2 = INFO    — print only
  *   3 = DEBUG   — print only
@@ -119,19 +121,19 @@ static inline void arts_print_line(const char *format, ...) {
 #define ARTS_CLR_DIM "\033[2m"
 #define ARTS_CLR_RESET "\033[0m"
 
-/* Level 0: ERROR — abort always fires */
+/* Level 0: ERROR — the rank's end always follows */
 #if ARTS_LOG_LEVEL >= 0
 #define ARTS_ERROR(format, ...)                                                \
   do {                                                                         \
     arts_print_line(                                                           \
         ARTS_CLR_RED "[%u:%u] [ERROR] " format ARTS_CLR_RESET "\n",            \
         arts_global_rank_id, arts_thread_info.group_pos, ##__VA_ARGS__);       \
-    arts_abort(1);                                                             \
+    arts_exit(1, ARTS_EXIT_RUNTIME_ERROR);                                     \
   } while (0)
 #else
 #define ARTS_ERROR(format, ...)                                                \
   do {                                                                         \
-    arts_abort(1);                                                             \
+    arts_exit(1, ARTS_EXIT_RUNTIME_ERROR);                                     \
   } while (0)
 #endif
 

@@ -13,9 +13,12 @@ saw it gone (a zombie counts as gone): a lower bound on a time measured from
 an end is taken from the former, an upper bound from the latter.
 
 One action may be given: when its trigger fires (--on pids: every one of
---ranks ranks named its pid; --on line:<regex>: a line matches), the driver
-sends --signal to --target (spawner, or rank:<i> once that rank named its
-pid).
+--ranks ranks named its pid; --on line:<regex>: a line matches; --on launch:
+at once), the driver sends --signal to --target (spawner, or rank:<i> once
+that rank named its pid).  Each --then <SIGNAL>:<target>:<when> adds a step
+after it, in order: the driver sends that signal to that target <when> ms
+after the previous step fired, or, with <when> others-gone, once every rank
+but the target's is gone (the target a rank).
 
 The run passes when the spawner's status (an exit status, or 128 + the signal
 that ended it) is one of --want (or --want any), the action fired if one was
@@ -130,6 +133,21 @@ def reader(stream, lines):
     lines.put((time.monotonic(), None))
 
 
+def target_pid(target, proc, ranks):
+    if target == "spawner":
+        return proc.pid
+    r = int(target.split(":", 1)[1])
+    return ranks[r].pid if r in ranks else None
+
+
+def send(run, name, target, pid):
+    try:
+        os.kill(pid, getattr(signal, "SIG" + name))
+    except OSError:
+        pass
+    say("run %d: sent SIG%s to %s (pid %d)" % (run, name, target, pid))
+
+
 class Rank:
     def __init__(self, pid):
         self.pid = pid
@@ -161,6 +179,8 @@ def one_run(args, run):
     triggered = False
     eof = False
     ended_at = None
+    step = 0
+    last_step_at = None
     while True:
         try:
             stamp, text = lines.get(timeout=args.poll_ms / 1000.0)
@@ -191,24 +211,31 @@ def one_run(args, run):
                 else:
                     rank.first_gone = now
 
+        if args.on == "launch":
+            triggered = True
         if triggered and fired_at is None and args.on:
-            target = None
-            if args.target == "spawner":
-                target = proc.pid
-            else:
-                r = int(args.target.split(":", 1)[1])
-                if r in ranks:
-                    target = ranks[r].pid
+            target = target_pid(args.target, proc, ranks)
             if target is not None:
-                sig = getattr(signal, "SIG" + args.signal)
-                try:
-                    os.kill(target, sig)
-                except OSError:
-                    pass
+                send(run, args.signal, args.target, target)
                 fired_at = time.monotonic()
                 signal_at[args.signal] = fired_at
-                say("run %d: sent SIG%s to %s (pid %d)"
-                    % (run, args.signal, args.target, target))
+                last_step_at = fired_at
+        if fired_at is not None and step < len(args.then):
+            name, tgt, when = args.then[step]
+            ready = False
+            if when == "others-gone":
+                me = int(tgt.split(":", 1)[1])
+                ready = bool(ranks) and all(
+                    k.first_gone is not None
+                    for r, k in ranks.items() if r != me)
+            else:
+                ready = time.monotonic() - last_step_at >= int(when) / 1000.0
+            target = target_pid(tgt, proc, ranks) if ready else None
+            if target is not None:
+                send(run, name, tgt, target)
+                last_step_at = time.monotonic()
+                signal_at.setdefault(name, last_step_at)
+                step += 1
 
         if ended_at is None and proc.poll() is not None:
             ended_at = time.monotonic()
@@ -227,6 +254,8 @@ def one_run(args, run):
                         % (status, ",".join(args.want)))
     if args.on and fired_at is None:
         failures.append("the trigger %s never fired" % args.on)
+    if step < len(args.then):
+        failures.append("step %d of --then never fired" % (step + 1))
 
     if args.dead_after_ms is not None and fired_at is not None:
         deadline = fired_at + args.dead_after_ms / 1000.0
@@ -307,6 +336,7 @@ def main():
     parser.add_argument("--on")
     parser.add_argument("--signal", default="KILL")
     parser.add_argument("--target", default="spawner")
+    parser.add_argument("--then", action="append", default=[])
     parser.add_argument("--dead-after-ms", type=int)
     parser.add_argument("--line-window", nargs=3)
     parser.add_argument("--absent")
@@ -321,8 +351,23 @@ def main():
         args.command = args.command[1:]
     if not args.command:
         parser.error("no program after --")
-    if args.on and args.on != "pids" and not args.on.startswith("line:"):
-        parser.error("--on takes pids or line:<regex>")
+    if args.on and args.on not in ("pids", "launch") \
+            and not args.on.startswith("line:"):
+        parser.error("--on takes pids, launch or line:<regex>")
+    steps = []
+    for spec in args.then:
+        m = re.fullmatch(r"([A-Z0-9]+):(spawner|rank:[0-9]+):"
+                         r"([0-9]+|others-gone)", spec)
+        if not m or not args.on:
+            parser.error("--then takes <SIGNAL>:<target>:<ms|others-gone> "
+                         "after an --on action, not %s" % spec)
+        name = signal_name(m.group(1))
+        if not hasattr(signal, "SIG" + name):
+            parser.error("no signal SIG%s" % name)
+        if m.group(3) == "others-gone" and m.group(2) == "spawner":
+            parser.error("--then ...:others-gone needs a rank target")
+        steps.append((name, m.group(2), m.group(3)))
+    args.then = steps
     if args.on == "pids" and args.ranks < 1:
         parser.error("--on pids needs --ranks")
     if args.target != "spawner" and not re.fullmatch(r"rank:[0-9]+",

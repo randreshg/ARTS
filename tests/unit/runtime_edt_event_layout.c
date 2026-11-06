@@ -266,8 +266,6 @@ static void print_fingerprint(void) {
   MEMBER(runtime_shared_t, ready_to_push);
   MEMBER(runtime_shared_t, ready_to_parallel_start);
   MEMBER(runtime_shared_t, ready_to_inspect);
-  MEMBER(runtime_shared_t, shutdown_state);
-  MEMBER(runtime_shared_t, shutdown_entry_done);
   MEMBER(runtime_shared_t, e2e_start_stamp);
   MEMBER(runtime_shared_t, e2e_marker_enabled);
   MEMBER(runtime_shared_t, db_rr_route);
@@ -283,6 +281,8 @@ static void print_fingerprint(void) {
   MEMBER(shutdown_abandon_t, waits);
   TYPE(thread_stop_t);
   MEMBER(thread_stop_t, state);
+  MEMBER(thread_stop_t, caller_edt);
+  MEMBER(thread_stop_t, caller_dbs);
   TYPE(arts_counter_t);
   MEMBER(arts_counter_t, count);
   MEMBER(arts_counter_t, start);

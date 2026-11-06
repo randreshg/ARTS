@@ -1,9 +1,11 @@
 # Checks counter values in a run's rank files:
 #   cmake -DRECORD_DIR=<folder> -P record_values.cmake -- <expectation>...
 # An expectation is <rank>:<NAME>=<value> (the "value" of counter NAME in
-# n<rank>.json) or <rank>:<NAME>=<rank2>:<NAME2> (equal to that of NAME2 in
-# n<rank2>.json).  Every expectation is checked, and every mismatch is named,
-# before the check fails.
+# n<rank>.json), <rank>:<NAME>=<lo>..<hi> (a value from lo to hi, both
+# included), <rank>:<NAME>=<rank2>:<NAME2> (equal to that of NAME2 in
+# n<rank2>.json) or <rank>:<NAME>=<rank2>:<NAME2>-<lo>..<hi> (that value less
+# lo to hi, both included).  Every expectation is checked, and every mismatch
+# is named, before the check fails.
 if(NOT DEFINED RECORD_DIR)
     message(FATAL_ERROR "record_values: -DRECORD_DIR= is required")
 endif()
@@ -45,7 +47,34 @@ endfunction()
 set(_bad "")
 list(LENGTH _expect _count)
 foreach(_e IN LISTS _expect)
-    if(_e MATCHES "^([0-9]+):([A-Z0-9_]+)=([0-9]+):([A-Z0-9_]+)$")
+    if(_e MATCHES
+       "^([0-9]+):([A-Z0-9_]+)=([0-9]+):([A-Z0-9_]+)-([0-9]+)\\.\\.([0-9]+)$")
+        set(_rank ${CMAKE_MATCH_1})
+        set(_name ${CMAKE_MATCH_2})
+        set(_rank2 ${CMAKE_MATCH_3})
+        set(_name2 ${CMAKE_MATCH_4})
+        set(_lo ${CMAKE_MATCH_5})
+        set(_hi ${CMAKE_MATCH_6})
+        _record_value(${_rank} ${_name} _got _ok)
+        _record_value(${_rank2} ${_name2} _ref _ok2)
+        if(NOT _ok)
+            list(APPEND _bad "${_got}")
+        elseif(NOT _ok2)
+            list(APPEND _bad "${_ref}")
+        else()
+            math(EXPR _short "${_ref} - ${_got}")
+            if(_short LESS _lo OR _short GREATER _hi)
+                string(CONCAT _m "rank ${_rank} ${_name} = ${_got}, "
+                       "rank ${_rank2} ${_name2} = ${_ref}, expected a "
+                       "shortfall of ${_lo}..${_hi}")
+                list(APPEND _bad "${_m}")
+            else()
+                message(STATUS "record_values: rank ${_rank} ${_name} = "
+                        "${_got} = rank ${_rank2} ${_name2} - ${_short} "
+                        "(${_lo}..${_hi})")
+            endif()
+        endif()
+    elseif(_e MATCHES "^([0-9]+):([A-Z0-9_]+)=([0-9]+):([A-Z0-9_]+)$")
         set(_rank ${CMAKE_MATCH_1})
         set(_name ${CMAKE_MATCH_2})
         set(_rank2 ${CMAKE_MATCH_3})
@@ -63,6 +92,21 @@ foreach(_e IN LISTS _expect)
         else()
             message(STATUS "record_values: rank ${_rank} ${_name} = rank "
                     "${_rank2} ${_name2} = ${_got}")
+        endif()
+    elseif(_e MATCHES "^([0-9]+):([A-Z0-9_]+)=([0-9]+)\\.\\.([0-9]+)$")
+        set(_rank ${CMAKE_MATCH_1})
+        set(_name ${CMAKE_MATCH_2})
+        set(_lo ${CMAKE_MATCH_3})
+        set(_hi ${CMAKE_MATCH_4})
+        _record_value(${_rank} ${_name} _got _ok)
+        if(NOT _ok)
+            list(APPEND _bad "${_got}")
+        elseif(_got LESS _lo OR _got GREATER _hi)
+            list(APPEND _bad
+                 "rank ${_rank} ${_name} = ${_got}, expected ${_lo}..${_hi}")
+        else()
+            message(STATUS "record_values: rank ${_rank} ${_name} = ${_got} "
+                    "(${_lo}..${_hi})")
         endif()
     elseif(_e MATCHES "^([0-9]+):([A-Z0-9_]+)=([0-9]+)$")
         set(_rank ${CMAKE_MATCH_1})

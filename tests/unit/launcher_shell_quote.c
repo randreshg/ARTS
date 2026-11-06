@@ -62,6 +62,7 @@
  */
 
 /* ---- stubs for spawner.c's external references ---- */
+#include "arts/system/shutdown.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -85,7 +86,10 @@ void *arts_calloc_aligned(size_t n, size_t size, size_t align) {
   (void)align;
   return calloc(n, size);
 }
-_Noreturn void arts_abort(uint8_t code) { exit(code ? code : 1); }
+_Noreturn void arts_exit(int rc, enum arts_exit_origin origin) {
+  (void)origin;
+  exit(rc ? rc : 1);
+}
 
 /* Pull in spawner.c (and through it the real declaration of
  * struct arts_runtime_private_s + the extern arts_thread_info). */
@@ -103,11 +107,11 @@ const char *const *arts_config_key_names(size_t *count) {
   return keys;
 }
 
-/* arts_thread_info is declared `extern ARTS_THREAD_LOCAL` by runtime_state.h
+/* arts_thread_info is declared `extern ARTS_THREAD_LOCAL_IE` by runtime_state.h
  * (pulled via spawner.c -> print.h).  Define the object so the link
  * resolves; only the ARTS_ERROR paths, which this test does not reach, read
  * it (the spawner's own debug lines do not). */
-ARTS_THREAD_LOCAL struct arts_runtime_private_s arts_thread_info;
+ARTS_THREAD_LOCAL_IE struct arts_runtime_private_s arts_thread_info;
 
 #include <fcntl.h>
 #include <poll.h>

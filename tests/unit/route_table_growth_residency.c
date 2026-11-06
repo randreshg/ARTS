@@ -36,6 +36,7 @@
  * shared.c #include'd.
  */
 
+#include "arts/system/shutdown.h"
 #include "arts/utils/stdatomic_compat.h"
 #include <fcntl.h>
 #include <pthread.h>
@@ -50,7 +51,10 @@
 
 unsigned int arts_global_rank_id = 0;
 unsigned int arts_global_rank_count = 1;
-void arts_abort(uint8_t code) { _exit(code ? code : 70); }
+_Noreturn void arts_exit(int rc, enum arts_exit_origin origin) {
+  (void)origin;
+  _exit(rc ? rc : 70);
+}
 void *arts_malloc(size_t s) { return malloc(s); }
 void *arts_calloc(size_t n, size_t s) { return calloc(n, s); }
 void *arts_calloc_aligned(size_t n, size_t s, size_t a) {
@@ -84,7 +88,7 @@ void arts_ooo_redrive_all(struct arts_route_item_s *s) { (void)s; }
 #include "route_table_segment_probe.h"
 
 struct arts_runtime_shared_s arts_node_info;
-ARTS_THREAD_LOCAL struct arts_runtime_private_s arts_thread_info;
+ARTS_THREAD_LOCAL_IE struct arts_runtime_private_s arts_thread_info;
 
 /* As the engine's: freeing a slot's parked payloads detaches its list, a
  * write to the slot. */

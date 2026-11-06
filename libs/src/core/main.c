@@ -45,6 +45,7 @@
 #include "arts/runtime_state.h"
 #include "arts/system/config.h"
 #include "arts/system/print.h"
+#include "arts/system/shutdown.h"
 #include "arts/system/signals.h"
 #include "arts/system/threads.h"
 #include "arts/transport/dispatcher.h"
@@ -53,6 +54,7 @@
 
 #include <errno.h>
 #include <sched.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -96,6 +98,10 @@ int arts_rt(int argc, char **argv) {
                 stderr);
     return 1;
   }
+  arts_exit_process_init();
+  /* A rank a remote shell started in the background inherits SIGINT ignored;
+   * the default lets an interrupt end it before its handling is installed. */
+  (void)signal(SIGINT, SIG_DFL);
   struct arts_config_s config;
   arts_config_load(&config);
 
@@ -128,42 +134,41 @@ int arts_rt(int argc, char **argv) {
       config.table_length > 1) {
     arts_spawn(&config, argc, argv);
   }
+  /* A process of a run of several takes its rank from its launcher's word in
+   * the transport setup below. */
+  arts_global_rank_id = 0;
+  arts_global_rank_count = config.table_length;
+  if (config.table_length <= 1) {
+    arts_exit_publish_rank(config.counter_folder);
+  }
 
-  /* Read before any other thread exists: the shutdown entry that reads it
-   * can run on the signal watcher. */
+  /* Read before any other thread exists: the end that reads it can run on
+   * the signal watcher. */
   arts_node_info.e2e_marker_enabled = (getenv("ARTS_E2E_MARKER") != NULL);
   arts_install_signal_handlers();
   /* Start the dedicated SIGTERM/SIGINT/SIGHUP/SIGALRM watcher thread BEFORE
    * any worker or progress thread is spawned, so the SIG_BLOCK mask is
-   * inherited by every downstream thread.  Watcher then drives graceful
-   * shutdown via arts_enter_shutdown_state on signal arrival. */
+   * inherited by every downstream thread. */
   arts_install_signal_watcher_thread();
   arts_configure_core_dumps(config.core_dump);
 
-  arts_global_rank_id = 0;
-  arts_global_rank_count = config.table_length;
   if (config.table_length > 1) {
     arts_transport_setup(&config);
+    arts_exit_publish_rank(config.counter_folder);
   }
   arts_signal_handlers_set_rank(arts_global_rank_id);
   arts_global_master_rank_id = config.master_rank;
 
   if (arts_global_rank_count > 1) {
     arts_transport_setup_outgoing();
-    /* Each failure was reported where it happened.  A return for a shutdown
-     * begun during startup reports nothing: only the signal watcher begins
-     * one there, and it reports the signal. */
+    /* Each failure was reported where it happened, and a rank whose own end
+     * began during its startup stops trying. */
     if (!arts_transport_setup_incoming()) {
-      return 1;
+      arts_exit(75, ARTS_EXIT_RUNTIME_ERROR);
     }
   }
 
   arts_thread_init(&config);
   arts_thread_zero_node_start(argc, argv, main_edt);
-
   arts_thread_main_loop();
-
-  arts_stop_signal_watcher_thread();
-  arts_config_destroy(&config);
-  return arts_app_exit_status();
 }

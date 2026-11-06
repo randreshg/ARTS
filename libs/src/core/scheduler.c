@@ -67,7 +67,7 @@
 #include "arts/gpu/gpu_stream.h"
 #endif
 
-ARTS_THREAD_LOCAL struct arts_runtime_private_s arts_thread_info;
+ARTS_THREAD_LOCAL_IE struct arts_runtime_private_s arts_thread_info;
 
 #ifdef ARTS_USE_GPU
 scheduler_t arts_scheduler_loop[] = {

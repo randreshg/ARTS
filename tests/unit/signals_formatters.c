@@ -4,8 +4,7 @@
  * plus arts_print_line truncation (print.h).  write_signal_line and
  * signal_name are file-static in signals.c, so this TU #includes signals.c to
  * pull them in; the runtime symbols signals.c references (arts_global_rank_id,
- * arts_enter_shutdown_state, arts_exit_now) are stubbed so the unit links
- * standalone.
+ * arts_exit) are stubbed so the unit links standalone.
  *
  * Properties under test
  * -------------------
@@ -58,8 +57,10 @@
 /* arts_global_rank_id is declared extern in identity.h (pulled in via the
  * include below); define storage here. */
 unsigned int arts_global_rank_id = 0;
-void arts_enter_shutdown_state(enum arts_exit_origin origin) { (void)origin; }
-_Noreturn void arts_exit_now(uint8_t status) { _exit(status); }
+_Noreturn void arts_exit(int rc, enum arts_exit_origin origin) {
+  (void)origin;
+  _exit(rc);
+}
 
 /* Pull in the real signals.c (static write_signal_line + signal_name). */
 #include "../../libs/src/core/system/signals.c"
@@ -67,7 +68,7 @@ _Noreturn void arts_exit_now(uint8_t status) { _exit(status); }
 /* signals.c also references the thread-local arts_thread_info (declared extern
  * in runtime_state.h, now visible via signals.c's include chain). Provide
  * standalone storage so the TU links without the full runtime. */
-ARTS_THREAD_LOCAL struct arts_runtime_private_s arts_thread_info;
+ARTS_THREAD_LOCAL_IE struct arts_runtime_private_s arts_thread_info;
 
 /* print.h (arts_print_line) is reachable via signals.c's includes. */
 #include "arts/system/print.h"

@@ -61,17 +61,17 @@
 #include "arts/counter/Preamble.h" /* INCREMENT_{BYTES,NUM}_REMOTE_* */
 #include "arts/counter/counter.h"
 #include "arts/defs.h"
-#include "arts/utils/malloc.h"
 #include "arts/memory/regpool.h"
-#include "arts/runtime.h"         /* arts_runtime_stop */
 #include "arts/system/identity.h" /* arts_global_rank_id / arts_global_rank_count */
 #include "arts/system/print.h"
 #include "arts/system/schedfuzz.h"
-#include "arts/system/threads.h"        /* arts_thread_info, ARTS_THREAD_LOCAL */
-#include "arts/transport/dispatcher.h"  /* arts_transport_dispatch_packet */
-#include "arts/transport/netif.h"       /* arts_netif_ipv4_addr */
-#include "arts/transport/protocol.h"    /* arts_msg_header_s, MSG_* */
-#include "arts/transport/socket.h"      /* the post's and spin's mesh checks */
+#include "arts/system/shutdown.h"
+#include "arts/system/threads.h"       /* arts_thread_info, ARTS_THREAD_LOCAL */
+#include "arts/transport/dispatcher.h" /* arts_transport_dispatch_packet */
+#include "arts/transport/netif.h"      /* arts_netif_ipv4_addr */
+#include "arts/transport/protocol.h"   /* arts_msg_header_s, MSG_* */
+#include "arts/transport/socket.h"     /* the post's and spin's mesh checks */
+#include "arts/utils/malloc.h"
 
 /* ------------------------------------------------------------------------- */
 /* Tunables                                                                    */
@@ -266,18 +266,19 @@ static struct {
 } g_net;
 
 #ifndef NDEBUG
-/* Set on the thread that runs the teardown when its quiesce begins.  Nothing
- * that thread runs afterwards sends (a rendezvous discard releases what its
- * context owns and nothing else), so a send it attempts is a defect. */
-static ARTS_THREAD_LOCAL bool t_net_quiesced;
-#define NET_CHECK_NOT_QUIESCED(what)                                           \
+/* Set on the thread that owns this rank's end once it has posted SHUTDOWN, or
+ * passed the post as a rank that learned of the end.  Nothing that thread
+ * runs afterwards sends (the teardown's discards release what their contexts
+ * own and nothing else), so a send it attempts is a defect. */
+static ARTS_THREAD_LOCAL_IE bool t_net_owner_posted;
+#define NET_CHECK_OWNER_POSTED(what)                                           \
   do {                                                                         \
-    if (t_net_quiesced) {                                                      \
-      ARTS_ERROR("arts_net: %s after this thread began the teardown", what);   \
+    if (t_net_owner_posted) {                                                  \
+      ARTS_ERROR("arts_net: %s after this thread's shutdown post", what);      \
     }                                                                          \
   } while (0)
 #else
-#define NET_CHECK_NOT_QUIESCED(what) ((void)0)
+#define NET_CHECK_OWNER_POSTED(what) ((void)0)
 #endif
 
 /* The stamp's value while its election winner writes the text: a monotonic
@@ -629,9 +630,9 @@ static bool net_submit(struct net_txn_s *txn, bool is_ack) {
     net_drain_all_rings();
     net_reap_no_dispatch();
     if (arts_socket_probe_due(&t_spin_probe_ns) &&
-        arts_socket_sentinel_check()) {
-      arts_enter_shutdown_state(ARTS_EXIT_BACKPRESSURE);
-      arts_runtime_stop();
+        arts_socket_sentinel_check() &&
+        arts_exit_take(0, ARTS_EXIT_BACKPRESSURE)) {
+      arts_exit_resume();
     }
     if (atomic_load_explicit(&g_net.quiescing, memory_order_relaxed)) {
       net_txn_complete(txn);
@@ -682,7 +683,7 @@ void arts_net_send_core(int rank, char *message, unsigned int length,
   /* The send gate is closed: drop the send, but still run its
    * completion-gated free so the caller payload is not leaked. */
   if (atomic_load_explicit(&g_net.quiescing, memory_order_relaxed)) {
-    NET_CHECK_NOT_QUIESCED("a message send");
+    NET_CHECK_OWNER_POSTED("a message send");
     if (free_method != NULL) {
       free_method(payload);
     }
@@ -1367,12 +1368,12 @@ static void net_put_piece_done(void *arg) {
   net_put_group_drop((struct net_put_group_s *)arg, 1);
 }
 
-/* The one-sided PUT itself, counted by its caller and timed when `timed`;
- * false when the send gate dropped it (its local-done hook has then run, or
- * runs once the pieces it already submitted complete). */
+/* The one-sided PUT itself, counted and timed when it carries a datablock
+ * `payload`; false when the send gate dropped it (its local-done hook has then
+ * run, or runs once the pieces it already submitted complete). */
 static bool net_put(int rank, uint64_t raddr, uint64_t rkey, uint64_t txid,
                     const void *src, uint64_t len,
-                    void (*on_local_done)(void *), void *arg, bool timed) {
+                    void (*on_local_done)(void *), void *arg, bool payload) {
   if (len == 0 || txid == 0) {
     ARTS_ERROR("arts_net: put_payload requires a payload and a txid "
                "(len=%llu txid=%llx)",
@@ -1382,11 +1383,19 @@ static bool net_put(int rank, uint64_t raddr, uint64_t rkey, uint64_t txid,
    * so the source buffer's completion-gated release is not leaked (mirrors
    * arts_net_send_core's gate). */
   if (atomic_load_explicit(&g_net.quiescing, memory_order_relaxed)) {
-    NET_CHECK_NOT_QUIESCED("a one-sided write");
+    NET_CHECK_OWNER_POSTED("a one-sided write");
     if (on_local_done != NULL) {
       on_local_done(arg);
     }
     return false;
+  }
+  if (payload) {
+    /* Counted before the first piece is submitted, as a control message is,
+     * so a record taken at an end the payload's arrival causes includes it.
+     * BYTES_REMOTE_SENT counts it with the control traffic. */
+    INCREMENT_BYTES_DB_PAYLOAD_SENT_BY(len);
+    INCREMENT_NUM_DB_PAYLOAD_SENT_BY(1);
+    INCREMENT_BYTES_REMOTE_SENT_BY(len);
   }
   fi_addr_t addr = g_net.peers[rank];
   size_t ceiling = g_net.max_msg;
@@ -1398,7 +1407,7 @@ static bool net_put(int rank, uint64_t raddr, uint64_t rkey, uint64_t txid,
     txn->raddr = raddr;
     txn->rkey = rkey;
     txn->imm = txid;
-    txn->posted_ns = timed ? net_put_stamp() : 0;
+    txn->posted_ns = payload ? net_put_stamp() : 0;
     return net_submit(txn, /*is_ack=*/false);
   }
   /* Above the ceiling the payload goes as consecutive pieces of at most the
@@ -1421,7 +1430,7 @@ static bool net_put(int rank, uint64_t raddr, uint64_t rkey, uint64_t txid,
   struct net_put_group_s *group =
       (struct net_put_group_s *)arts_malloc(sizeof(struct net_put_group_s));
   atomic_store_explicit(&group->remaining, pieces, memory_order_relaxed);
-  group->posted_ns = timed ? net_put_stamp() : 0;
+  group->posted_ns = payload ? net_put_stamp() : 0;
   group->on_local_done = on_local_done;
   group->arg = arg;
   for (uint64_t k = 0; k < pieces; k++) {
@@ -1451,15 +1460,8 @@ static bool net_put(int rank, uint64_t raddr, uint64_t rkey, uint64_t txid,
 void arts_net_put_payload(int rank, uint64_t raddr, uint64_t rkey,
                           uint64_t txid, const void *src, uint64_t len,
                           void (*on_local_done)(void *), void *arg) {
-  /* Every datablock payload leaves through this one call, so it is where the
-   * payload half of the traffic can be told apart from the control half that
-   * BYTES_REMOTE_SENT counts with it. */
-  if (net_put(rank, raddr, rkey, txid, src, len, on_local_done, arg,
-              /*timed=*/true)) {
-    INCREMENT_BYTES_DB_PAYLOAD_SENT_BY(len);
-    INCREMENT_NUM_DB_PAYLOAD_SENT_BY(1);
-    INCREMENT_BYTES_REMOTE_SENT_BY(len);
-  }
+  (void)net_put(rank, raddr, rkey, txid, src, len, on_local_done, arg,
+                /*payload=*/true);
 }
 
 static inline uint64_t net_now_ns(void) {
@@ -1481,8 +1483,7 @@ static inline void net_live_cq_err_check(void) {
   if (t == 0 || t == NET_CQ_ERR_RECORDING) {
     return;
   }
-  if (atomic_load_explicit(&arts_node_info.shutdown_state,
-                           memory_order_acquire) != 0 ||
+  if (arts_shutdown_taken() ||
       atomic_load_explicit(&g_net.quiescing, memory_order_relaxed)) {
     return;
   }
@@ -1560,8 +1561,7 @@ static uint64_t net_reap_cq_err(void) {
      * endpoints down in no agreed order, and a transfer flushed by that is
      * the expected residue — and a peer can be that far ahead of this rank,
      * so the first live error only starts the clock (net_live_cq_err_check). */
-    if (atomic_load_explicit(&arts_node_info.shutdown_state,
-                             memory_order_acquire) == 0 &&
+    if (!arts_shutdown_taken() &&
         !atomic_load_explicit(&g_net.quiescing, memory_order_relaxed)) {
       uint64_t none = 0;
       if (atomic_compare_exchange_strong_explicit(
@@ -2100,7 +2100,9 @@ static bool net_reap_and_dispatch(void) {
   net_cq_unlock();
 
   if (saw_shutdown) {
-    arts_enter_shutdown_state(ARTS_EXIT_WIRE);
+    /* A taker dispatches the rest of the burst, whose sends drop at the
+     * gate, and resumes its end at its progress loop's top. */
+    (void)arts_exit_take(0, ARTS_EXIT_WIRE);
   }
   while (head != NULL) {
     struct net_pending_s *next = head->next;
@@ -2136,8 +2138,8 @@ static bool net_reap_no_dispatch(void) {
   bool saw_shutdown = false;
   bool progressed = net_reap_locked(&saw_shutdown);
   net_cq_unlock();
-  if (saw_shutdown) {
-    arts_enter_shutdown_state(ARTS_EXIT_BACKPRESSURE);
+  if (saw_shutdown && arts_exit_take(0, ARTS_EXIT_BACKPRESSURE)) {
+    arts_exit_resume();
   }
   return progressed;
 }
@@ -2226,8 +2228,8 @@ void arts_net_selfcheck(void) {
   /* A probe of the plane, not a datablock payload: no counter sees it.  No
    * discard: `done` owns nothing, and the probe pairs or the process ends. */
   arts_net_rdzv_expect(txid, 0, net_selfcheck_arrived, NULL, &done);
-  (void)net_put((int)arts_global_rank_id, raddr, rkey, txid, src,
-                SELFCHECK_LEN, NULL, NULL, /*timed=*/false);
+  (void)net_put((int)arts_global_rank_id, raddr, rkey, txid, src, SELFCHECK_LEN,
+                NULL, NULL, /*payload=*/false);
   struct timespec start;
   (void)clock_gettime(CLOCK_MONOTONIC, &start);
   while (!done) {
@@ -2713,10 +2715,6 @@ bool arts_net_quiesce(void) {
    * buffers by reclaim, both while the pool is still live, so the pool
    * cleanup that follows can close those MRs without any outstanding
    * reference — and no desc ever names a closed MR. */
-#ifndef NDEBUG
-  t_net_quiesced = true;
-#endif
-
   /* Discard queued-but-unposted retry txns.  These never reached the provider,
    * so they are not outstanding; run their completion-gated frees (caller
    * payload + bounce back to the still-live pool) and drop them.  The rings
@@ -2907,9 +2905,13 @@ unsigned int arts_net_post_shutdown(void) {
     if (fi_inject(g_net.ep, &hdr, sizeof(hdr), g_net.peers[p]) != 0) {
       continue;
     }
-    INCREMENT_NUM_REMOTE_SEND_BY(1);
-    INCREMENT_BYTES_REMOTE_SENT_BY(sizeof(hdr));
     posted++;
   }
   return posted;
+}
+
+void arts_net_owner_posted(void) {
+#ifndef NDEBUG
+  t_net_owner_posted = true;
+#endif
 }

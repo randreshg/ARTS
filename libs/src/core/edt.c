@@ -270,6 +270,9 @@ bool arts_edt_create_core(struct arts_edt_s *edt, arts_guid_kind_t guid_kind,
   ARTS_INFO("EDT create [Guid:%lu, Depc:%u, Route:%u, FuncPtr:%p]", *guid,
             edt->depc, rank, (void *)func_ptr);
 
+  /* Counted before the EDT can be seen, so a record taken at an end it causes
+   * includes the create. */
+  INCREMENT_NUM_EDT_CREATE_BY(1);
   if (rank != arts_global_rank_id) {
     /* Remote EDT: serialise and send to the target node.  A task's
      * serialized form is the one control message whose size the PROGRAM
@@ -301,8 +304,6 @@ bool arts_edt_create_core(struct arts_edt_s *edt, arts_guid_kind_t guid_kind,
       arts_ooo_dispatch_or_defer_guid(*guid, OOO_EDT_CREATE, &a, sizeof(a));
     }
   }
-
-  INCREMENT_NUM_EDT_CREATE_BY(1);
   return true;
 }
 

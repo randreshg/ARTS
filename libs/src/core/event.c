@@ -271,6 +271,8 @@ event_install(arts_guid_t *guid, const arts_event_hint_t *h_in, bool hold) {
  * handle. */
 static arts_shared_ptr_t event_create(const arts_event_hint_t *hint,
                                       arts_guid_t *guid, bool hold) {
+  /* Counted before the event can be seen, so a record taken at an end it
+   * causes includes the create. */
   INCREMENT_NUM_EVENT_CREATE_BY(1);
   arts_event_hint_t h = hint_or_defaults(hint);
   arts_guid_t g = h.guid;

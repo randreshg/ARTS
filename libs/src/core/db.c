@@ -887,7 +887,30 @@ arts_guid_t arts_db_create(void **addr, uint64_t len, arts_db_types_t db_type,
     rank = hint->rank;
   }
   bool no_acquire = (flags & ARTS_DB_PROP_NO_ACQUIRE) != 0;
-  arts_guid_t guid = NULL_GUID;
+  if (rank != arts_global_rank_id && db_type != ARTS_DB) {
+    /* The GPU kinds (ARTS_DB_GPU_PIN, ARTS_DB_GPU) live on the creator
+     * rank.  Creating one on a different rank is a programming error —
+     * return NULL_GUID.  Cross-rank distribution must use ARTS_DB. */
+    ARTS_WARN("arts_db_create: only ARTS_DB (coherent) DataBlocks support "
+              "remote create; %s cannot be homed on rank %u: a GPU kind "
+              "lives on its creating rank. Returning NULL_GUID.",
+              GET_DB_TYPE_NAME(db_type), rank);
+    *addr = NULL;
+    TIME_DB_CREATE_STOP();
+    return NULL_GUID;
+  }
+  /* Counted before the block can be seen, so a record taken at an end its
+   * install or announce causes includes the create. */
+  INCREMENT_NUM_DB_CREATE_BY(1);
+  INCREMENT_BYTES_DB_CREATE_BY(len);
+  if (no_acquire) {
+    INCREMENT_NUM_DB_CREATE_NO_ACQUIRE_BY(1);
+  } else {
+    /* The creator's hold is a write acquisition, held from the create on. */
+    INCREMENT_NUM_DB_ACQUIRE_WRITE_BY(1);
+    INCREMENT_NUM_DB_ACQUIRE_LOCAL_HIT_BY(1);
+  }
+  arts_guid_t guid;
 
   if (rank == arts_global_rank_id) {
     uint64_t db_span = db_descriptor_span(db_type, len);
@@ -922,45 +945,21 @@ arts_guid_t arts_db_create(void **addr, uint64_t len, arts_db_types_t db_type,
                ? pre_guid
                : arts_db_guid_stamp_szhint(
                      arts_guid_create_for_rank(rank, ARTS_GUID_DB), len);
-    if (db_type == ARTS_DB) {
-      if (no_acquire) {
-        /* NO_ACQUIRE: no creator-side descriptor.  The home is the sole idle
-         * owner; the first consumer's request acquires ownership.  The
-         * block's store is minted here, as for every create, and named on
-         * the announce. */
-        arts_send_db_create_coherent(rank, guid, len, ARTS_DB_PROP_NO_ACQUIRE,
-                                     (uint16_t)db_type,
-                                     arts_db_cxl_slot_mint(len), /*owed=*/0u);
-        *addr = NULL;
-      } else {
-        db_create_remote_creator(guid, len, rank, pre_guid != NULL_GUID,
-                                 addr);
-      }
-      ARTS_DEBUG("arts_db_create: DB[Guid:%lu, Type:%s, Size:%lu] "
-                 "created remotely on rank %u via DB_CREATE_COHERENT",
-                 guid, GET_DB_TYPE_NAME(db_type), len, rank);
-    } else {
-      /* The GPU kinds (ARTS_DB_GPU_PIN, ARTS_DB_GPU) live on the creator
-       * rank.  Creating one on a different rank is a programming error —
-       * return NULL_GUID.  Cross-rank distribution must use ARTS_DB. */
-      ARTS_WARN("arts_db_create: only ARTS_DB (coherent) DataBlocks support "
-                "remote create; %s cannot be homed on rank %u: a GPU kind "
-                "lives on its creating rank. Returning NULL_GUID.",
-                GET_DB_TYPE_NAME(db_type), rank);
-      *addr = NULL;
-      guid = NULL_GUID;
-    }
-  }
-  if (guid != NULL_GUID) {
-    INCREMENT_NUM_DB_CREATE_BY(1);
-    INCREMENT_BYTES_DB_CREATE_BY(len);
     if (no_acquire) {
-      INCREMENT_NUM_DB_CREATE_NO_ACQUIRE_BY(1);
+      /* NO_ACQUIRE: no creator-side descriptor.  The home is the sole idle
+       * owner; the first consumer's request acquires ownership.  The block's
+       * store is minted here, as for every create, and named on the
+       * announce. */
+      arts_send_db_create_coherent(rank, guid, len, ARTS_DB_PROP_NO_ACQUIRE,
+                                   (uint16_t)db_type,
+                                   arts_db_cxl_slot_mint(len), /*owed=*/0u);
+      *addr = NULL;
     } else {
-      /* The creator's hold is a write acquisition, held from the create on. */
-      INCREMENT_NUM_DB_ACQUIRE_WRITE_BY(1);
-      INCREMENT_NUM_DB_ACQUIRE_LOCAL_HIT_BY(1);
+      db_create_remote_creator(guid, len, rank, pre_guid != NULL_GUID, addr);
     }
+    ARTS_DEBUG("arts_db_create: DB[Guid:%lu, Type:%s, Size:%lu] "
+               "created remotely on rank %u via DB_CREATE_COHERENT",
+               guid, GET_DB_TYPE_NAME(db_type), len, rank);
   }
   TIME_DB_CREATE_STOP();
   return guid;
