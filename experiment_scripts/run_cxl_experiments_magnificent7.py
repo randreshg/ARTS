@@ -1,15 +1,20 @@
 #!/usr/bin/env python3
-"""Weak-scaling memory-footprint sweep of six fixed-iteration apps on CXL ARTS.
+"""Weak-scaling memory-footprint sweep of seven fixed-iteration apps on CXL ARTS.
 
 The apps whose work is an outer loop with a fixed count (CoMD, miniAMR,
-nekbone, Stencil2D, stream and mapreduce_wordcount; npb_cg is out, since its
-size is an NPB class, not a dial) run on 1..4 nodes at each per-node
+nekbone, Stencil2D, stream, mapreduce_wordcount and HPCG; npb_cg is out,
+since its size is an NPB class, not a dial) run on 1..4 nodes at each per-node
 footprint of FOOTPRINTS_GB.  A footprint is datablock bytes created per node
 over the run (BYTES_DB_CREATE / nodes, what a CXL arena must hold: it
 reclaims nothing within a run), and the sweep is weak-scaled: an N-node cell
 creates N x footprint in total, with the per-node decomposition held fixed
 and the domain grown along one axis.  Iteration counts are fixed per app at
 every footprint and node count, so memory is the only thing that moves.
+HPCG converges, so it runs as hpcg_intel_dist_fixed, built with the
+residual exit compiled out (HPCG_FIXED_ITERATIONS): CG always runs maxIter
+iterations, and each cell checks the "CG iterations: <n>" line against it.
+Its tile-to-node bisection splits 3 nodes {0} | {1, 2}, so node 0 holds
+~1.5x the per-node footprint at 3 nodes; that is left as it is.
 
 Each app's input is computed from its size model (SIZERS), fitted to
 DRAM measurements of datablock bytes; see the "The sweep" section of
@@ -418,6 +423,24 @@ def nekbone_task_bytes(e: int) -> float:
     arena keeps) and a halo part ~ E^(2/3)."""
     return NEKBONE_TASK_B + NEKBONE_ELEM_B * e + NEKBONE_HALO_B * e ** (2 / 3)
 
+def hpcg_tile_bytes(m: int) -> float:
+    """One tile's DB bytes at edge m: the private block (matrix, indices and
+    vectors of all four multigrid levels, ~429 B per fine point), the
+    double-buffered exchange blocks (~ the levels' surfaces) and a fixed
+    part (the tile's tables and reduction scalars)."""
+    return HPCG_TILE_B + HPCG_POINT_B * m ** 3 + HPCG_SURFACE_B * m ** 2
+
+def size_hpcg(fp: float, n: int):
+    """npx npy npz m maxIter.  Tiles of m^3 points: m = 16 below 5 GB, 32
+    below 100 GB, 64 above (m is a multiple of 16, so the tile count is the
+    dial); a near-cubic tile grid per node, stacked along x, which the
+    bisection hands back one box per node at 1, 2 and 4 nodes.  Everything
+    is created at init; an iteration adds only reduction scalars.  10
+    iterations."""
+    m = 16 if fp < 5 * GB else 32 if fp < 100 * GB else 64
+    a, b, c = near_cube(fp / hpcg_tile_bytes(m))
+    return f"{a * n} {b} {c} {m} {HPCG_ITERS}", a * b * c * hpcg_tile_bytes(m)
+
 def size_nekbone(fp: float, n: int):
     """Rx Ry Rz Ex Ey Ez pDOF CGcount.  A per-node task grid (stacked along
     x) of Ex x Ey x Ez elements per task at pDOF 8, 20 CG iterations.  One
@@ -446,6 +469,10 @@ COMD_TILE_B = {9: 6.16e6, 18: 26.94e6}
 NEKBONE_TASK_B = 0.455e6
 NEKBONE_ELEM_B = 0.3551e6
 NEKBONE_HALO_B = 0.3675e6
+HPCG_POINT_B = 424.61
+HPCG_SURFACE_B = 253.44
+HPCG_TILE_B = 11.4e3
+HPCG_ITERS = 10
 
 SIZERS = {
     "CoMD_intel_chandra_tiled_hinted": size_comd,
@@ -454,6 +481,7 @@ SIZERS = {
     "mapreduce_wordcount": size_mapreduce,
     "Stencil2D_intel_channelEVTs": size_stencil2d,
     "stream_dist": size_stream,
+    "hpcg_intel_dist_fixed": size_hpcg,
 }
 APPS = list(SIZERS)
 
@@ -469,6 +497,7 @@ SMOKE_APPS: dict[str, str] = {
     "mapreduce_wordcount": "1024 10000 3 4 100 0 2 1",
     "Stencil2D_intel_channelEVTs": "12 4 2",
     "stream_dist": "400 4 2",
+    "hpcg_intel_dist_fixed": "2 2 2 16 2",
 }
 
 # An input profile: each app's input (a sizer, or a fixed string), the
@@ -491,6 +520,13 @@ PROFILES: dict[str, dict] = {
 # =============================================================================
 
 E2E_RE = re.compile(r"^\[E2E\]\s+(\d+)\s*$", re.M)
+
+# Apps that print the iteration count they ran: (the line, the count the
+# arguments ask for).  A cell whose count differs fails its checks.
+ITERATION_CHECKS = {
+    "hpcg_intel_dist_fixed": (re.compile(r"CG iterations: (\d+)"),
+                              lambda args: int(args.split()[4])),
+}
 DONE_RE = re.compile(r"^DONE!\s+(-?\d+)", re.M)
 
 # Fixed leading columns of runs.csv; derived metrics and ctr_* follow.
@@ -718,7 +754,8 @@ def run_cell(cell, run_dir: Path, timeout_s: int):
                           started_at, wrapper_done=done is not None,
                           rank_events=rank_events,
                           cxl_devices=cxl_devices_reported(text),
-                          arena_devices=cxl_arena_devices_reported(text))
+                          arena_devices=cxl_arena_devices_reported(text),
+                          iterations=iterations_reported(cell, text))
     record["log"] = str(log_path.relative_to(run_dir))
     record["counter_dir"] = str(counter_dir.relative_to(run_dir))
     return record
@@ -877,8 +914,15 @@ def cxl_arena_devices_reported(text: str) -> list[list[int]]:
     return [[int(d) for d in m.split(",") if d]
             for m in ARENA_DEVICES_RE.findall(text)]
 
+def iterations_reported(cell, text: str) -> list[int] | None:
+    """The iteration counts an ITERATION_CHECKS app printed (None for the
+    other apps)."""
+    check = ITERATION_CHECKS.get(cell["app"])
+    return [int(k) for k in check[0].findall(text)] if check else None
+
 def sanity_checks(cell, stamps, per_rank, sums, complete,
-                  rank_events, cxl_devices, arena_devices) -> list[str]:
+                  rank_events, cxl_devices, arena_devices,
+                  iterations=None) -> list[str]:
     """The run-rejection checks of counter_exploration.md that one run can
     evaluate on its own (cross-run checks belong to post-processing)."""
     failed = []
@@ -915,6 +959,12 @@ def sanity_checks(cell, stamps, per_rank, sums, complete,
             if spread:
                 failed.append(f"arena_devices_distinct:{spread}_not_"
                               f"{CXL_DEVICES}")
+    # A converging solver that stopped early did less work than its input
+    # says; one with no line at all ran from a tree without the switch.
+    if iterations is not None:
+        want = ITERATION_CHECKS[cell["app"]][1](cell["args"])
+        if iterations != [want]:
+            failed.append(f"iterations:{iterations}_not_{want}")
     # A rank that counted some other list (or none: a tree without
     # ARTS_USE_PAPI) would publish its slots under the wrong event names.
     if cell["papi_set"]:
@@ -925,7 +975,8 @@ def sanity_checks(cell, stamps, per_rank, sums, complete,
     return failed
 
 def build_record(cell, status, rc, stamps, wall_s, per_rank, started_at, *,
-                 wrapper_done, rank_events, cxl_devices, arena_devices):
+                 wrapper_done, rank_events, cxl_devices, arena_devices,
+                 iterations=None):
     nodes = cell["nodes"]
     complete = sorted(per_rank) == list(range(nodes))
     names = sorted({n for vals in per_rank.values() for n in vals})
@@ -936,7 +987,8 @@ def build_record(cell, status, rc, stamps, wall_s, per_rank, started_at, *,
     e2e_ns = stamps[0] if stamps else None
     e2e_s = e2e_ns / 1e9 if e2e_ns is not None else None
     checks = sanity_checks(cell, stamps, per_rank, sums, complete,
-                           rank_events, cxl_devices, arena_devices)
+                           rank_events, cxl_devices, arena_devices,
+                           iterations)
     if status == "ok" and checks:
         status = "check_failed"
     return {
@@ -951,6 +1003,7 @@ def build_record(cell, status, rc, stamps, wall_s, per_rank, started_at, *,
             if "BYTES_DB_CREATE" in sums else None),
         "cxl_devices_reported": cxl_devices,
         "cxl_arena_devices_reported": arena_devices,
+        "iterations_reported": iterations,
         "hosts": NODES[:nodes],
         "worker_threads": WORKER_THREADS,
         "progress_threads": PROGRESS_THREADS,

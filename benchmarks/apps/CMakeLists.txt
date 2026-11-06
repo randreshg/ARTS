@@ -764,6 +764,21 @@ add_benchmark_app(NAME hpcg_intel_dist
     EXTRA_LINK_LIBS m
 )
 
+# --- hpcg_intel_dist_fixed ---
+# hpcg_intel_dist with the convergence exit compiled out
+# (HPCG_FIXED_ITERATIONS): CG always runs maxIter iterations, so its work is
+# a function of the grid alone, which a footprint sweep at a fixed iteration
+# count needs.  A separate name rather than a build option, so both coexist in
+# one tree.  ARTS only: the reference runtimes are not swept.
+add_benchmark_app(NAME hpcg_intel_dist_fixed
+    DIR hpcg/refactored/ocr/intel-dist
+    SOURCES hpcg.c timers.c
+    LIBS reductionTwoLevel
+    EXTRA_DEFINES HPCG_FIXED_ITERATIONS
+    EXTRA_LINK_LIBS m
+    ARTS_ONLY
+)
+
 # ==========================================================================
 # Tier 7: Stencil variants
 # ==========================================================================

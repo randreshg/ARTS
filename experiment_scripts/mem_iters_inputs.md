@@ -24,14 +24,17 @@ classified:
 - **Fixed iteration count: 7 apps.**  CoMD, miniAMR, nekbone, npb_cg,
   Stencil2D, stream and mapreduce_wordcount.
 - **Converging solver: 1 app.**  hpcg_intel_dist runs CG until
-  `rtr/rtr0 < 1e-13` or maxIter (arg 5).
+  `rtr/rtr0 < 1e-13` or maxIter (arg 5).  The campaign runs it as
+  `hpcg_intel_dist_fixed`, built with `HPCG_FIXED_ITERATIONS`, which drops
+  the residual exit so it always runs maxIter.
 - **Borderline: 2 apps.**  hpgmg_dist runs one fixed F-cycle.  graph500_dist
   iterates BFS levels until the frontier is empty.
 - **Non-iterative: 9 apps.**  cholesky, fft, fibonacci, LCS_wavefront, nqueens,
   RSBench, XSBench, smithwaterman and triangle.
 
-The campaign uses six of the seven fixed-iteration apps.  npb_cg is out
-because its size is an NPB class, not a dial (see below).
+The campaign uses six of the seven fixed-iteration apps, plus HPCG with
+its iteration count fixed.  npb_cg is out because its size is an NPB class,
+not a dial (see below).
 
 ## The sweep
 
@@ -48,6 +51,7 @@ decomposition at every node count and grows the domain along one axis.
 | miniAMR | near-cubic block grid, nx=10, 5 steps | block count B | B × (0.986 MB + 2.1 MB·B^(−1/3)) |
 | CoMD | near-cubic tile grid, 60 steps | tile count | tiles × 6.16 MB (9³ tiles, < 100 GB) or 26.94 MB (18³ tiles) |
 | nekbone | 18×16×12 tasks (9×8×6 below ~4 GB), pDOF 8, CG 20 | elements per task E | tasks × (0.455 + 0.355·E + 0.3675·E^(2/3)) MB |
+| HPCG | near-cubic tile grid of m³ tiles (m = 16 below 5 GB, 32 below 100 GB, 64 above), 10 iterations | tile count | tiles × (11.4 kB + 424.61 B·m³ + 253.44 B·m²) |
 
 ### Per-app notes
 
@@ -81,6 +85,24 @@ decomposition at every node count and grows the domain along one axis.
     E^(2/3) part is the halo.
   - One element per task already costs ~4 GB at 3456 tasks, so smaller
     footprints drop to 432 tasks.
+- **HPCG** (`hpcg_intel_dist_fixed`)
+  - Everything is created when the tiles start: one private block per tile
+    (matrix, indices and vectors of the four multigrid levels, ~425 B per
+    fine point), the double-buffered exchange blocks (the m² term) and
+    small tables.  An iteration adds only reduction scalars, ~72 B per tile,
+    so the footprint does not depend on the iteration count.
+  - m must be a multiple of 16 (four multigrid levels), so m is too coarse
+    a dial and the tile count is the one that moves.
+  - The residual exit never fired: at 10 iterations the unpatched binary
+    created exactly as many blocks as the fixed one at every size measured.
+    The switch makes the count a guarantee, and the campaign checks rank 0's
+    `CG iterations: <n>` line against the input.
+  - The tile-to-node bisection splits 3 nodes {0} | {1, 2}: node 0 holds
+    ~1.5× the per-node footprint, nodes 1 and 2 ~0.7–0.8×.  The cluster
+    total is right.  It is left unbalanced on purpose.
+  - Constants fitted from one rank at 4×4×4 to 10×9×8 tiles, m = 16, 32,
+    64; per-tile bytes vary under 0.3% with the tile count (edge tiles send
+    less halo).
 - **npb_cg** (not in the sweep)
   - Class D creates 9.8 GB and class E 86.4 GB on one rank.
   - Multi-rank runs add ≈ (R−1)·nloc·8 B per spmv.
@@ -97,6 +119,13 @@ decomposition at every node count and grows the domain along one axis.
 | miniAMR | 1.17* | 10.48* | 250.75 | 307 GB |
 | CoMD | 0.99 | 10.09 | 249.49 | 289 GB |
 | nekbone | 2.04–4.07† | — | 247.82 | 31 GB |
+| HPCG | 1.017 (1.017) | 9.986 (9.986) | — | — |
+
+HPCG's column is measured (predicted in parentheses).  It was checked at
+150 GB instead of 250: 149.60 measured against 149.55 predicted, with peak
+DRAM 156 GB.  The 150 GB run used 2 iterations; that changes its bytes by
+under 1 MB.  The campaign runs no network variants, so HPCG has no 250 GB
+DRAM number.
 
 \* Measured with the first miniAMR model.  Those runs are what the
 surface term was fitted to, and the refit reproduces them within 1%.
@@ -118,6 +147,10 @@ mapreduce also ran at 3.  Datablock GB per rank:
 | nekbone | 1.018 / 1.020 / 1.021 | 9.878 / 9.889 / 9.895 |
 | miniAMR | 0.999 / 0.962 / 0.946 | 10.038 / 9.864 / 9.792 |
 | mapreduce | 1.000 at 2, 3 and 4 ranks | 10.000 at 2, 3 and 4 ranks |
+| HPCG | 1.017 / 1.017 / 1.017 | 9.986 / 9.987 / 9.988 |
+
+HPCG at 3 ranks, per rank: 1.526 / 0.712 / 0.814 GB at 1 GB and
+14.53 / 7.27 / 8.17 GB at 10 GB (the bisection; mean 1.017 and 9.988).
 
 - **mapreduce:** with a fixed V the bytes per node rose 20% at 2 ranks.
   The tree-block count in its model fixes that.
@@ -151,7 +184,7 @@ cmake -GNinja -Bbuild_sweep -DCMAKE_BUILD_TYPE=Release \
   -DARTS_USE_CXL=OFF -DARTS_BUILD_BENCHMARKS=ON -DARTS_BUILD_TESTS=OFF \
   -DARTS_BUILD_HPX=OFF -DARTS_BUILD_OCRVX=OFF -DARTS_BUILD_XSOCR=OFF \
   -DARTS_COUNTER_CONFIG=$PWD/configs/counters_cxl_ipdps27.cfg
-ninja -C build_sweep {CoMD_intel_chandra_tiled_hinted,miniAMR_intel_dist,nekbone_dist,Stencil2D_intel_channelEVTs,stream_dist,mapreduce_wordcount}_arts_ocr_excl_purge
+ninja -C build_sweep {CoMD_intel_chandra_tiled_hinted,miniAMR_intel_dist,nekbone_dist,Stencil2D_intel_channelEVTs,stream_dist,mapreduce_wordcount,hpcg_intel_dist_fixed}_arts_ocr_excl_purge
 
 # One input, one rank; the campaign's dry run prints every cell's input
 python3 experiment_scripts/sweep_mem_iters_tmp.py --tag check \
