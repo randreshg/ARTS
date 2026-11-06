@@ -319,8 +319,9 @@ void arts_counter_timer_end(arts_counter_t *counter);
  * temporary name and renamed.  A file that cannot be written prints one WARN
  * and changes no status; with counters compiled out nothing is written. */
 void arts_counter_record(void);
-/* The record's size bound in bytes: 4,096 plus 160 per enabled counter (and
- * per thread for a THREAD-level one) plus 40 per history entry it writes. */
+/* The record's size bound in bytes: 0 when it writes no file, else 4,096
+ * plus 160 per enabled counter (and per thread for a THREAD-level one) plus
+ * 40 per history entry it writes. */
 uint64_t arts_counter_record_estimate(void);
 
 /* How this rank's clock relates to the master rank's: RTT where the counter

@@ -363,6 +363,7 @@ static void arts_spawner_restore_flags(const int given[2]) {
 }
 
 _Noreturn void arts_spawn(struct arts_config_s *config, int argc, char **argv) {
+  arts_exit_mark_spawner();
   const bool ssh = strcmp(config->launcher, "ssh") == 0;
   const unsigned int ranks = config->table_length;
   const unsigned int grace_s = arts_end_grace_s();
@@ -465,6 +466,7 @@ _Noreturn void arts_spawn(struct arts_config_s *config, int argc, char **argv) {
     if (ssh) {
       if (pipe2(lifeline, O_CLOEXEC) != 0 ||
           fcntl(lifeline[1], F_SETFL, O_NONBLOCK) != 0) {
+        arts_exit_watchdog_arm(75);
         arts_print_line("[ARTS] spawner: no pipe for rank %u: %s\n", i,
                         strerror(errno));
         arts_spawner_restore_flags(given_flags);
@@ -525,6 +527,7 @@ _Noreturn void arts_spawn(struct arts_config_s *config, int argc, char **argv) {
       _exit(127);
     }
     if (child < 0) {
+      arts_exit_watchdog_arm(75);
       arts_print_line("[ARTS] spawner: fork failed for rank %u: %s\n", i,
                       strerror(errno));
       arts_spawner_restore_flags(given_flags);
@@ -636,6 +639,7 @@ _Noreturn void arts_spawn(struct arts_config_s *config, int argc, char **argv) {
     }
   }
 
+  arts_exit_watchdog_arm(worst);
   arts_spawner_restore_flags(given_flags);
   (void)fflush(NULL);
   arts_fake_cxl_fini_replay();

@@ -49,6 +49,9 @@ void arts_configure_core_dumps(bool enabled);
 /* The rank the crash and termination handlers print; call once the rank is
  * final.  Until then they print rank 0. */
 void arts_signal_handlers_set_rank(unsigned int rank);
+/* The rank the handlers print, 0 until it was set: a relaxed load of a
+ * lock-free atomic, so a signal handler may call it. */
+unsigned int arts_signal_handlers_rank(void);
 
 /* The crash report of a fault by `sig`: one line naming the signal and the
  * rank, then the stack.  Async-signal-safe. */

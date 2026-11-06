@@ -42,7 +42,9 @@
 #include "arts/system/shutdown.h"
 
 #include <assert.h>
+#include <errno.h>
 #include <limits.h>
+#include <poll.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdint.h>
@@ -84,7 +86,8 @@ struct arts_exit_meta_s arts_exit_meta;
 static _Atomic(uint32_t) g_exit_word;
 /* The highest rc a late entry brought: a CAS-loop maximum of its own value. */
 static _Atomic(int) g_late_rc;
-/* The signal a FAULT owner ends by, stored at its take: only its own value. */
+/* The signal a FAULT end ends by, stored before its watchdog is armed and
+ * only by a FAULT end: only its own value. */
 static _Atomic(int) g_fault_sig;
 /* Tokens are drawn from 1 on, so a token never reads as a free word. */
 static _Atomic(uint32_t) g_exit_next_token = 1;
@@ -109,6 +112,43 @@ static char g_exit_folder[PATH_MAX];
 /* Raised by the rendezvous cut's hook; only its own value. */
 static _Atomic(bool) g_exit_cut;
 #endif
+
+/* The watchdog: a CLOCK_MONOTONIC timer whose signal reaches whichever thread
+ * the kernel picks.  Its handler reads only lock-free atomic objects, each a
+ * value of its own (the deadline, the timer, the phase, the fault signal, the
+ * owner's rc, the late rc, the spawner flag), and publishes nothing. */
+static_assert(ATOMIC_LONG_LOCK_FREE == 2 && ATOMIC_LLONG_LOCK_FREE == 2,
+              "a signal handler reads an atomic uint64_t");
+static_assert(ATOMIC_POINTER_LOCK_FREE == 2 &&
+                  sizeof(timer_t) == sizeof(void *),
+              "a signal handler reads an atomic timer_t");
+static_assert(ATOMIC_BOOL_LOCK_FREE == 2,
+              "a signal handler reads an atomic bool");
+#define EXIT_NS_PER_S 1000000000u
+#define EXIT_WATCHDOG_NS ((uint64_t)ARTS_EXIT_WATCHDOG_S * EXIT_NS_PER_S)
+/* The rate the record's estimated size is taken to be written at. */
+#define EXIT_RECORD_BYTES_PER_S ((uint64_t)4 << 20)
+/* The steps of an end, in their order, as the watchdog's line names them. */
+enum exit_phase {
+  EXIT_PHASE_POST,
+  EXIT_PHASE_CAPTURE,
+  EXIT_PHASE_REGPOOL,
+  EXIT_PHASE_RECORD,
+  EXIT_PHASE_ORACLE,
+  EXIT_PHASE_LEAK,
+  EXIT_PHASE_FLUSH,
+};
+/* Written once by arts_exit_process_init, before any other thread exists;
+ * until then every arming is a no-op.  A child the process forks keeps the
+ * flag but not the timer, and its end (step 0) arms nothing. */
+static _Atomic(bool) g_exit_timer_made;
+static _Atomic(timer_t) g_exit_timer;
+/* The armed deadline, CLOCK_MONOTONIC ns; 0 while none was armed. */
+static _Atomic(uint64_t) g_exit_deadline;
+/* The step of the end in progress, stored by the end's thread. */
+static _Atomic(unsigned int) g_exit_phase;
+/* Set once by the spawner, whose watchdog line names no rank. */
+static _Atomic(bool) g_exit_spawner;
 
 static uint32_t exit_token(void) {
   if (t_exit_token == 0) {
@@ -168,6 +208,66 @@ static _Noreturn void exit_end(int rc, enum arts_exit_origin origin) {
   exit_group_now(rc);
 }
 
+static void exit_watchdog_settime(uint64_t deadline) {
+  struct itimerspec at;
+  at.it_interval.tv_sec = 0;
+  at.it_interval.tv_nsec = 0;
+  at.it_value.tv_sec = (time_t)(deadline / EXIT_NS_PER_S);
+  at.it_value.tv_nsec = (long)(deadline % EXIT_NS_PER_S);
+  (void)timer_settime(atomic_load_explicit(&g_exit_timer, memory_order_relaxed),
+                      TIMER_ABSTIME, &at, NULL);
+}
+
+/* Arms the watchdog to `deadline`: the value its handler judges a fire by,
+ * then the timer.  Async-signal-safe. */
+static void exit_watchdog_set(uint64_t deadline) {
+  if (!atomic_load_explicit(&g_exit_timer_made, memory_order_relaxed)) {
+    return;
+  }
+  atomic_store_explicit(&g_exit_deadline, deadline, memory_order_relaxed);
+  exit_watchdog_settime(deadline);
+}
+
+/* The end of a process that is no rank begins, to end with rc, by signal sig
+ * when sig is nonzero: from now on it is bounded by the watchdog, in phase
+ * flush.  Async-signal-safe. */
+static void exit_watchdog_arm_now(int rc, int sig) {
+  atomic_store_explicit(&arts_exit_meta.rc, rc, memory_order_relaxed);
+  if (sig != 0) {
+    atomic_store_explicit(&g_fault_sig, sig, memory_order_relaxed);
+  }
+  atomic_store_explicit(&g_exit_phase, EXIT_PHASE_FLUSH, memory_order_relaxed);
+  exit_watchdog_set(arts_get_time_stamp() + EXIT_WATCHDOG_NS);
+}
+
+void arts_exit_mark_spawner(void) {
+  atomic_store_explicit(&g_exit_spawner, true, memory_order_relaxed);
+}
+
+void arts_exit_watchdog_arm(int rc) {
+  const int given_errno = errno;
+  exit_watchdog_arm_now(rc, 0);
+  errno = given_errno;
+}
+
+static void exit_phase(enum exit_phase phase) {
+  atomic_store_explicit(&g_exit_phase, (unsigned int)phase,
+                        memory_order_relaxed);
+}
+
+/* Step 7's one move of the deadline, when the record writes anything: the
+ * bound from the take plus the record's estimated write time. */
+static void exit_watchdog_extend(uint64_t record_bytes) {
+  if (record_bytes == 0u) {
+    return;
+  }
+  const uint64_t write_ns =
+      (record_bytes / EXIT_RECORD_BYTES_PER_S) * EXIT_NS_PER_S +
+      (record_bytes % EXIT_RECORD_BYTES_PER_S) * EXIT_NS_PER_S /
+          EXIT_RECORD_BYTES_PER_S;
+  exit_watchdog_set(arts_exit_meta.t0_mono_ns + EXIT_WATCHDOG_NS + write_ns);
+}
+
 static bool exit_rank_known(void) {
   return atomic_load_explicit(&g_rank_known, memory_order_acquire);
 }
@@ -186,6 +286,7 @@ static void exit_guard(int rc, enum arts_exit_origin origin) {
     exit_group_now(rc);
   }
   if (!exit_rank_known()) {
+    exit_watchdog_arm_now(rc, origin == ARTS_EXIT_FAULT ? rc - 128 : 0);
     if (origin == ARTS_EXIT_FAULT) {
       arts_signal_crash_report(rc - 128);
     }
@@ -195,8 +296,9 @@ static void exit_guard(int rc, enum arts_exit_origin origin) {
   }
 }
 
-/* Steps 1-2 once the word was taken: the record's stamps, the gate, the
- * owner's rc. */
+/* Steps 1-2 once the word was taken: the record's stamps, the watchdog armed
+ * to T0 + the bound before anything that may wait (the program's status, the
+ * crash report's unwinder), the gate, the owner's rc. */
 static void exit_close(int rc, enum arts_exit_origin origin) {
   uint64_t t0 = arts_get_time_stamp();
   struct timespec now;
@@ -205,6 +307,12 @@ static void exit_close(int rc, enum arts_exit_origin origin) {
   arts_exit_meta.t0_realtime_ns =
       (uint64_t)now.tv_sec * 1000000000u + (uint64_t)now.tv_nsec;
   arts_exit_meta.origin = origin;
+  if (origin == ARTS_EXIT_FAULT) {
+    atomic_store_explicit(&g_fault_sig, rc - 128, memory_order_relaxed);
+  }
+  atomic_store_explicit(&arts_exit_meta.rc, rc, memory_order_relaxed);
+  exit_phase(EXIT_PHASE_POST);
+  exit_watchdog_set(t0 + EXIT_WATCHDOG_NS);
   if (arts_global_rank_count > 1) {
     /* A send that reads the gate closed is dropped; the post bypasses it. */
     arts_net_close_gate();
@@ -213,7 +321,6 @@ static void exit_close(int rc, enum arts_exit_origin origin) {
                         exit_max(rc, arts_app_exit_status()),
                         memory_order_relaxed);
   if (origin == ARTS_EXIT_FAULT) {
-    atomic_store_explicit(&g_fault_sig, rc - 128, memory_order_relaxed);
     arts_signal_crash_report(rc - 128);
   }
 }
@@ -352,15 +459,22 @@ _Noreturn void arts_exit_resume(void) {
             arts_exit_origin_name(origin), exit_owner_rc());
   exit_marker(ready);
   exit_post(origin, ready);
+  exit_phase(EXIT_PHASE_CAPTURE);
   arts_counter_capture_stop();
+  exit_phase(EXIT_PHASE_REGPOOL);
   if (ready) {
     arts_regpool_report_at_exit();
   }
+  exit_phase(EXIT_PHASE_RECORD);
+  exit_watchdog_extend(arts_counter_record_estimate());
   arts_counter_record();
+  exit_phase(EXIT_PHASE_ORACLE);
   arts_runtime_teardown_oracle(ready);
 #ifdef ARTS_EXIT_LEAK_CHECK
+  exit_phase(EXIT_PHASE_LEAK);
   __lsan_do_leak_check();
 #endif
+  exit_phase(EXIT_PHASE_FLUSH);
   arts_fake_cxl_fini_replay();
   (void)fflush(NULL);
   if (origin == ARTS_EXIT_FAULT) {
@@ -393,8 +507,118 @@ bool arts_shutdown_taken(void) {
           EXIT_TAKEN) != 0u;
 }
 
+static const char *exit_phase_name(unsigned int phase) {
+  switch (phase) {
+  case EXIT_PHASE_POST:
+    return "post";
+  case EXIT_PHASE_CAPTURE:
+    return "capture";
+  case EXIT_PHASE_REGPOOL:
+    return "regpool";
+  case EXIT_PHASE_RECORD:
+    return "record";
+  case EXIT_PHASE_ORACLE:
+    return "oracle";
+  case EXIT_PHASE_LEAK:
+    return "leak";
+  case EXIT_PHASE_FLUSH:
+    return "flush";
+  }
+  return "?";
+}
+
+/* Appends s to the n bytes of buf, keeping one byte for the newline. */
+static size_t exit_put(char *buf, size_t cap, size_t n, const char *s) {
+  while (*s != '\0' && n < cap - 1) {
+    buf[n++] = *s++;
+  }
+  return n;
+}
+
+/* The watchdog's signal.  A fire before the deadline (the deadline moved
+ * later, or the signal came from elsewhere) re-arms the same deadline, and
+ * one with no deadline armed is ignored; either returns.  At the deadline the
+ * end has not finished: one line, written only if stderr can take it within
+ * a second, then a FAULT end raises its signal, the record's phase ends with
+ * the status as it stands, a 0 included, and any other phase with that
+ * status, or 71 when it is 0. */
+static void exit_watchdog_fire(int sig) {
+  (void)sig;
+  const int given_errno = errno;
+  const uint64_t deadline =
+      atomic_load_explicit(&g_exit_deadline, memory_order_relaxed);
+  if (deadline == 0u) {
+    errno = given_errno;
+    return;
+  }
+  if (arts_get_time_stamp() < deadline) {
+    exit_watchdog_settime(deadline);
+    errno = given_errno;
+    return;
+  }
+  const unsigned int phase =
+      atomic_load_explicit(&g_exit_phase, memory_order_relaxed);
+  char line[160];
+  size_t n = exit_put(line, sizeof(line), 0, "[ARTS] shutdown watchdog: ");
+  if (atomic_load_explicit(&g_exit_spawner, memory_order_relaxed)) {
+    n = exit_put(line, sizeof(line), n, "spawner");
+  } else {
+    char num[24];
+    num[sizeof(num) - 1] = '\0';
+    n = exit_put(line, sizeof(line), n, "rank ");
+    n = exit_put(
+        line, sizeof(line), n,
+        exit_digits(num + sizeof(num) - 1, arts_signal_handlers_rank()));
+  }
+  n = exit_put(line, sizeof(line), n, " stuck in phase ");
+  n = exit_put(line, sizeof(line), n, exit_phase_name(phase));
+  if (phase == EXIT_PHASE_RECORD) {
+    n = exit_put(line, sizeof(line), n, "; the counter record is lost");
+  }
+  line[n++] = '\n';
+  /* A stderr whose reader stopped draining would block the write, and with
+   * it the end the watchdog exists to bound; one still draining, momentarily
+   * full, takes the line within the second. */
+  struct pollfd err = {STDERR_FILENO, POLLOUT, 0};
+  if (poll(&err, 1, 1000) == 1 && (err.revents & POLLOUT) != 0) {
+    (void)write(STDERR_FILENO, line, n);
+  }
+  const int fault = atomic_load_explicit(&g_fault_sig, memory_order_relaxed);
+  if (fault != 0) {
+    exit_raise(fault);
+  }
+  const int status = exit_max(exit_owner_rc(), exit_late_rc());
+  exit_group_now(status != 0 || phase == EXIT_PHASE_RECORD ? status : 71);
+}
+
 void arts_exit_process_init(void) {
   atomic_store_explicit(&g_exit_pid, getpid(), memory_order_relaxed);
+  /* Made here, outside any end: timer_create is not async-signal-safe, and
+   * an end may begin in a signal handler. */
+  const int sig = SIGRTMIN + 1;
+  struct sigaction sa;
+  memset(&sa, 0, sizeof(sa));
+  sa.sa_handler = exit_watchdog_fire;
+  sigemptyset(&sa.sa_mask);
+  sa.sa_flags = SA_RESTART;
+  /* A mask the process was started with may block the signal; every thread
+   * it starts, and through the spawner every rank, inherits this thread's
+   * mask, so the signal would stay pending on all of them. */
+  sigset_t watchdog;
+  sigemptyset(&watchdog);
+  sigaddset(&watchdog, sig);
+  struct sigevent ev;
+  memset(&ev, 0, sizeof(ev));
+  ev.sigev_notify = SIGEV_SIGNAL;
+  ev.sigev_signo = sig;
+  timer_t timer;
+  if (sigaction(sig, &sa, NULL) != 0 ||
+      pthread_sigmask(SIG_UNBLOCK, &watchdog, NULL) != 0 ||
+      timer_create(CLOCK_MONOTONIC, &ev, &timer) != 0) {
+    ARTS_ERROR("shutdown watchdog: cannot make its timer: %s", strerror(errno));
+  }
+  atomic_store_explicit(&g_exit_timer, timer, memory_order_relaxed);
+  atomic_store_explicit(&g_exit_timer_made, true, memory_order_relaxed);
 }
 
 void arts_exit_publish_rank(const char *counter_folder) {

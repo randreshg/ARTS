@@ -920,6 +920,12 @@ void arts_counter_record(void) {
 
 uint64_t arts_counter_record_estimate(void) {
   bool ready = arts_exit_node_ready();
+  bool thread_files =
+      arts_counters_at_level(ARTS_COUNTER_LEVEL_THREAD) && ready;
+  if (arts_exit_counter_folder()[0] == '\0' ||
+      (!thread_files && !arts_counters_at_level(ARTS_COUNTER_LEVEL_NODE))) {
+    return 0;
+  }
   uint64_t tc = ready ? arts_node_info.total_thread_count : 0;
   uint64_t bytes = 4096;
   for (unsigned int i = 0; i < NUM_COUNTER_TYPES; i++) {

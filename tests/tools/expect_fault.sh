@@ -6,7 +6,10 @@
 # names a file relative to the working directory (no '|', no '/') must have
 # produced core* in the working directory, which is then removed; any other
 # pattern hands the core elsewhere and is not checked.  The working directory
-# is the caller's own, so nothing else's core is removed.
+# is the caller's own, so nothing else's core is removed.  Everything it
+# prints, the shell's report of a command a signal ended included, goes to
+# its stdout with the program's output, in the order it happens.
+exec 2>&1
 want=$1
 core=$2
 shift 2

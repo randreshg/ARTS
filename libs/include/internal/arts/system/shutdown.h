@@ -112,9 +112,10 @@ static inline const char *arts_exit_origin_name(enum arts_exit_origin o) {
  * thread reads either 0 or the run's id.  origin and the two t0 stamps are
  * written once, by the thread that takes the rank's shutdown point, and read
  * only by that thread.  rc is the rc that thread took the point with, the
- * program's own status folded in; it is a value of its own, stored and read
- * relaxed, so any thread, a signal handler included, may read it once the
- * point is taken. */
+ * program's own status folded in once the take has read it, or the rc the end
+ * of a process that is no rank ends with; it is a value of its own, stored and
+ * read relaxed, so any thread, a signal handler included, may read it once the
+ * end began. */
 struct arts_exit_meta_s {
   _Atomic(uint64_t) run_id;
   uint64_t t0_mono_ns;     /* CLOCK_MONOTONIC (arts_get_time_stamp) */
@@ -132,7 +133,12 @@ extern struct arts_exit_meta_s arts_exit_meta;
  * late entry: its rc is folded into the rank's status and its thread parks
  * for good, except on the owner's own thread, where the process ends at once.
  * Before this process became a rank (arts_exit_publish_rank) the process ends
- * with rc and nothing else. */
+ * with rc and nothing else.  In the process arts_rt started (not a child it
+ * forked), every step from the shutdown point (or, before the process became
+ * a rank, from the call) to the process's end is bounded by the watchdog:
+ * ARTS_EXIT_WATCHDOG_S seconds, longer by the counter record's estimated
+ * write time once the record begins, plus at most a second while the
+ * watchdog's line waits for stderr. */
 #ifdef __cplusplus
 [[noreturn]]
 #else
@@ -166,9 +172,23 @@ void arts_exit_poll(void);
 bool arts_shutdown_taken(void);
 
 /* arts_rt's first act: names this process as the one whose end arts_exit
- * runs.  A process that forks keeps the name, so its child ends with its rc
- * alone. */
+ * runs, and makes the watchdog that bounds that end (disarmed), its signal
+ * unblocked on the calling thread, from which every thread the process
+ * starts inherits its mask.  Called before any other thread exists.  A
+ * process that forks keeps the name, so its child ends with its rc alone.
+ * Refuses (ARTS_ERROR) a process whose watchdog cannot be made. */
 void arts_exit_process_init(void);
+
+/* This process is the spawner: every watchdog line it prints names the
+ * spawner, not a rank.  Called first thing by the spawner. */
+void arts_exit_mark_spawner(void);
+
+/* The spawner's end begins, to end with rc: an end that has not finished
+ * ARTS_EXIT_WATCHDOG_S seconds from now is ended by the watchdog (within a
+ * second more, while its line waits for stderr), with rc, or 71 when rc is
+ * 0.  A no-op in a process that never ran
+ * arts_exit_process_init.  Async-signal-safe; leaves errno as it found it. */
+void arts_exit_watchdog_arm(int rc);
 
 /* This process became a rank: its id and the rank count are final, and
  * `counter_folder` (copied) is where its counter record goes.  Called once,

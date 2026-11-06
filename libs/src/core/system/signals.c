@@ -66,6 +66,10 @@ void arts_signal_handlers_set_rank(unsigned int rank) {
   atomic_store_explicit(&handler_rank, rank, memory_order_relaxed);
 }
 
+unsigned int arts_signal_handlers_rank(void) {
+  return atomic_load_explicit(&handler_rank, memory_order_relaxed);
+}
+
 // Async-signal-safe signal name lookup (strsignal() is NOT safe).
 static const char *signal_name(int sig) {
   switch (sig) {

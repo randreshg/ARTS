@@ -12,10 +12,10 @@
  * are compiled into the test (precedent: edt_gpu.cu #include's edt.c).
  * spawner.c's other functions, compiled here but not called, reference
  * runtime symbols (arts_transport_select_local_ports, arts_startup_budget_ms,
- * arts_fake_cxl_fini_replay, ARTS_ERROR -> arts_thread_info /
- * arts_global_rank_id / arts_abort, ...), so trivial stubs/defs below satisfy
- * the link.  The command builder calls arts_malloc's family and
- * arts_config_key_names, whose stub names two keys.
+ * arts_fake_cxl_fini_replay, the watchdog's two calls, ARTS_ERROR ->
+ * arts_thread_info / arts_global_rank_id / arts_exit, ...), so trivial
+ * stubs/defs below satisfy the link.  The command builder calls arts_malloc's
+ * family and arts_config_key_names, whose stub names two keys.
  *
  * Properties verified (no runtime started, no ssh):
  *
@@ -101,6 +101,8 @@ bool arts_transport_select_local_ports(struct arts_config_s *config) {
 }
 unsigned int arts_startup_budget_ms(void) { return 20000u; }
 void arts_fake_cxl_fini_replay(void) {}
+void arts_exit_mark_spawner(void) {}
+void arts_exit_watchdog_arm(int rc) { (void)rc; }
 const char *const *arts_config_key_names(size_t *count) {
   static const char *const keys[] = {"provider", "worker_threads"};
   *count = sizeof(keys) / sizeof(keys[0]);

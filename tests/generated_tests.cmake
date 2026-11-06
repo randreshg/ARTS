@@ -1098,6 +1098,108 @@ if(_records)
         FAIL_REGULAR_EXPRESSION "FAIL")
 endif()
 
+# A step of the rank's end that never finishes is ended by the watchdog, no
+# sooner than the bound less a second after the take and no later than the
+# bound plus five: the end's last flush waits for stdout, which an EDT holds
+# (status 71, also in a process started with the watchdog's signal blocked;
+# the 9 of a late entry that parks holding it; or, for an end a fault began
+# inside its crash handler, death by the fault's signal again), or the node
+# record's open waits for a reader of a FIFO (the record is lost and the
+# status 0 kept; where records exist).
+add_arts_test(shutdown_watchdog)
+math(EXPR _wd_timeout "${ARTS_EXIT_WATCHDOG_S} + 30")
+math(EXPR _wd_alive "${ARTS_EXIT_WATCHDOG_S} - 1")
+set(_wd_line "WATCHDOG_TEST: running ${_wd_alive} s after the take.*\\[ARTS\\] shutdown watchdog: rank 0 stuck in phase")
+arts_test_cfg(_cfg 1n_20w)
+foreach(_case "shutdown_watchdog_fires;fires;71" "shutdown_late_failure;late;9"
+              "shutdown_watchdog_blocked;blocked;71")
+    list(GET _case 0 _name)
+    list(GET _case 1 _mode)
+    list(GET _case 2 _status)
+    arts_add_test(${_name} STATUS ${_status}
+                  COMMAND shutdown_watchdog ${_mode})
+    set_tests_properties(${_name} PROPERTIES
+        LABELS "single_node" TIMEOUT ${_wd_timeout}
+        RESOURCE_LOCK "arts_runtime"
+        ENVIRONMENT "ARTS_CONFIG=${_cfg}"
+        PASS_REGULAR_EXPRESSION "${_wd_line} flush\n"
+        FAIL_REGULAR_EXPRESSION "FAIL")
+endforeach()
+# The fault's ends judged as term_sigsegv's are (expect_fault.sh, no core
+# check), each in its own working directory, and the death by the signal
+# itself too: bash reports a command a signal ended ("Segmentation fault",
+# in the C locale) and not one that exited with 139, and expect_fault.sh
+# keeps that report in order with the program's output.  The end runs
+# inside the crash handler, its record's stdio included, so a
+# ThreadSanitizer tree turns off the report of an allocation inside a signal
+# handler for the run.  In fault_spin the end is stuck in the crash handler
+# on a CPU it keeps, so on a kernel that hands a process timer's signal to
+# the thread it interrupts (Linux 6.4 on) the watchdog's signal reaches the
+# thread whose SIGSEGV is blocked (elsewhere it runs as fault does);
+# ThreadSanitizer defers a signal to a thread spinning outside its
+# interceptors, so a ThreadSanitizer tree does not register it.
+foreach(_case "shutdown_watchdog_fault;fault;\\[ARTS\\] Crashed: SIGSEGV.*${_wd_line} flush"
+              "shutdown_watchdog_fault_spin;fault_spin;${_wd_line} post")
+    list(GET _case 0 _name)
+    list(GET _case 1 _mode)
+    list(GET _case 2 _head)
+    if(_mode STREQUAL "fault_spin" AND ARTS_DEBUG_SANITIZER STREQUAL "THREAD")
+        continue()
+    endif()
+    set(_dir "${CMAKE_CURRENT_BINARY_DIR}/work/${_name}")
+    file(MAKE_DIRECTORY "${_dir}")
+    arts_add_test(${_name} COMMAND bash
+        "${CMAKE_CURRENT_SOURCE_DIR}/tools/expect_fault.sh" 139 no
+        env ASAN_OPTIONS=handle_segv=0 $<TARGET_FILE:shutdown_watchdog> ${_mode})
+    set_tests_properties(${_name} PROPERTIES
+        LABELS "single_node" TIMEOUT ${_wd_timeout}
+        RESOURCE_LOCK "arts_runtime"
+        WORKING_DIRECTORY "${_dir}"
+        ENVIRONMENT "ARTS_CONFIG=${_cfg};LC_ALL=C"
+        PASS_REGULAR_EXPRESSION
+        "${_head}\n.*Segmentation fault.*expect_fault: status 139"
+        FAIL_REGULAR_EXPRESSION "FAIL")
+    if(ARTS_DEBUG_SANITIZER STREQUAL "THREAD")
+        set_tests_properties(${_name} PROPERTIES
+            ENVIRONMENT_MODIFICATION
+            "TSAN_OPTIONS=path_list_append:report_signal_unsafe=0")
+    endif()
+endforeach()
+unset(_dir)
+unset(_head)
+# A stderr nobody drains, filled before the end begins: the watchdog skips
+# its line and still ends the rank (71) inside the window; the line could not
+# reach the test's output anyway, so the status is what shows the skip (a
+# written line would leave the write blocked and the run alive past the
+# bound).  The program's stderr is its own pipe, which would hide a
+# sanitizer's report, so a sanitizer tree does not register it.
+if(ARTS_DEBUG_SANITIZER STREQUAL "OFF")
+    arts_add_test(shutdown_watchdog_stderr_full STATUS 71
+                  COMMAND shutdown_watchdog stderr)
+    set_tests_properties(shutdown_watchdog_stderr_full PROPERTIES
+        LABELS "single_node" TIMEOUT ${_wd_timeout}
+        RESOURCE_LOCK "arts_runtime"
+        ENVIRONMENT "ARTS_CONFIG=${_cfg}"
+        PASS_REGULAR_EXPRESSION
+        "WATCHDOG_TEST: running ${_wd_alive} s after the take"
+        FAIL_REGULAR_EXPRESSION "FAIL")
+endif()
+if(_records)
+    arts_add_test(shutdown_watchdog_record_phase
+        RECORD_CHECK record_lost.cmake n0.json
+        COMMAND shutdown_watchdog record)
+    set_tests_properties(shutdown_watchdog_record_phase PROPERTIES
+        LABELS "single_node" TIMEOUT ${_wd_timeout}
+        RESOURCE_LOCK "arts_runtime"
+        ENVIRONMENT "ARTS_CONFIG=${_cfg}"
+        PASS_REGULAR_EXPRESSION
+        "${_wd_line} record. the counter record is lost\n"
+        FAIL_REGULAR_EXPRESSION "FAIL")
+endif()
+unset(_wd_timeout)
+unset(_wd_alive)
+unset(_wd_line)
+
 # The rank's end runs the leak checker: a block an EDT leaked is reported, and
 # the process ends with ASan's exit status 1.  Only in the AddressSanitizer
 # tree on the system allocator, the one whose leak checker sees the
