@@ -222,12 +222,15 @@ def apply_to(result: CellResult) -> CellResult:
     if result.status is Status.OK and not completed:
         result.status = Status.FAIL
         result.note = "exited cleanly but never printed its completion marker"
-    elif result.status is Status.TIMEOUT and measured_and_complete(text, result.cell.app):
-        # The process was reaped by timeout, but its log already carries both
-        # the completion marker and the runtime's own end-to-end stamp — the
-        # application finished and the run measured itself; only the
+    elif (result.status is Status.TIMEOUT
+          and result.cell.entry.kind is not RuntimeKind.ARTS
+          and measured_and_complete(text, result.cell.app)):
+        # A reference runtime reaped by timeout whose log already carries
+        # both the completion marker and the runtime's own end-to-end stamp:
+        # the application finished and the run measured itself; only the
         # teardown afterward hung.  A reap missing either one stays a
-        # timeout: nothing says the run measured itself completely.
+        # timeout.  An ARTS cell ends within its end grace or the run is
+        # wrong, so its timeout is never excused.
         result.status = Status.OK
         result.teardown_hang = True
         result.note = "reaped after a completed, measured run (teardown hang)"

@@ -178,6 +178,8 @@ def _launch(cell: Cell, profile: Profile) -> str:
     if cell.entry.kind is not RuntimeKind.ARTS and settings.pmi:
         prefix += ["-o", f"pmi={settings.pmi}"]
     prefix += list(settings.extra_run)
+    if cell.entry.kind is RuntimeKind.ARTS:
+        prefix += ["-o", f"exit-timeout={cell.end_grace_s}s"]
     argv = with_post_verify(cxl_wrap([*prefix, *build_command(cell, profile)], cell, profile), cell)
     return render(argv)
 
@@ -230,6 +232,8 @@ def batch_argv(cell: Cell, profile: Profile, log_path: Path,
         cmd.append(f"--queue={settings.queue}")
     if settings.bank:
         cmd.append(f"--bank={settings.bank}")
+    if cell.entry.kind is RuntimeKind.ARTS:
+        cmd.append(f'--conf=exec.shell-exit-timeout="{cell.end_grace_s}s"')
     return cmd + list(settings.extra_batch) + [str(script)]
 
 

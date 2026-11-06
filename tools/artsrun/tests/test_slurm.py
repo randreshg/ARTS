@@ -82,8 +82,8 @@ def test_an_arts_slurm_script_has_exactly_one_srun_and_no_mpirun():
     # The echo line quotes the launch, so srun appears twice in the script
     # text but is executed once.
     assert "mpirun" not in script
-    assert f"srun --ntasks-per-node=1 -N 4 --cpus-per-task=16 {cell.binary}" \
-        in script
+    assert ("srun --ntasks-per-node=1 -N 4 --cpus-per-task=16 "
+            f"--kill-on-bad-exit=0 --wait=30 {cell.binary}") in script
 
 
 @pytest.mark.parametrize("nodes", [1, 4])
@@ -273,3 +273,22 @@ def test_a_capped_campaign_keeps_at_most_that_many_jobs_out(tmp_path):
 def test_a_marker_status_is_a_timeout_only_at_the_budget(rc, wall, status):
     from artsrun.run.markers import marker_status
     assert marker_status(rc, wall, 1800) == status
+
+
+def test_every_arts_srun_line_carries_its_grace_flags():
+    from dataclasses import replace
+
+    for grace in (30, 192):
+        cell = replace(_cell(RuntimeKind.ARTS, nodes=2), end_grace_s=grace)
+        script = job_script(cell, _slurm_profile(), Path("/log/cell.rc"))
+        assert "--kill-on-bad-exit=0" in script
+        assert f"--wait={grace}" in script
+        assert "--wait=0" not in script
+        assert f"export ARTS_END_GRACE_S={grace}" in script
+
+
+def test_reference_srun_lines_carry_no_grace_flags():
+    script = job_script(_cell(RuntimeKind.XSOCR, nodes=2), _slurm_profile(),
+                        Path("/log/cell.rc"))
+    assert "--wait" not in script and "--kill-on-bad-exit" not in script
+    assert "ARTS_END_GRACE_S" not in script

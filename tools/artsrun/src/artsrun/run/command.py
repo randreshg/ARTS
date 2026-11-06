@@ -234,6 +234,8 @@ def build_env(cell: Cell, profile: Profile,
     # inherits that scheduler's task variables, and judging the cell
     # against them produces spurious verdicts in both directions.
     env["ARTSRUN_LAUNCHER"] = profile.launcher.value
+    if cell.entry.kind is RuntimeKind.ARTS:
+        env["ARTS_END_GRACE_S"] = str(cell.end_grace_s)
     if cell.entry.kind is RuntimeKind.ARTS and cell.cfg:
         env["ARTS_CONFIG"] = str(cell.cfg)
     elif cell.entry.kind is RuntimeKind.OCRVX:

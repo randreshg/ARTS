@@ -15,6 +15,7 @@ from enum import Enum
 from pathlib import Path
 
 from artsrun.check import measured_and_complete
+from artsrun.model.plane import RuntimeKind
 from artsrun.model.profile import CxlLibrary, Profile
 from artsrun.paths import scratch_dir
 from artsrun.run.command import (build_command, build_env, cxl_wrap, render,
@@ -22,14 +23,14 @@ from artsrun.run.command import (build_command, build_env, cxl_wrap, render,
 from artsrun.run.markers import marker_status
 from artsrun.run.types import Cell, CellResult, Status
 
-# How long a cell may go on after it has produced its whole result.  Once the
-# completion marker and the runtime's own end-to-end stamp are both in the log
-# the campaign has everything it will read from that cell, so what follows is
-# teardown and cannot change the verdict; a teardown that will not end is
-# therefore not worth the rest of the cell's budget.  The grace has to clear
-# the slowest honest teardown -- returning a large heap to the system and
-# writing a counter set -- while staying far below any cell timeout, so an
-# early reap only ever replaces waiting.
+# How long a reference cell may go on after it has produced its whole
+# result.  Once the completion marker and the runtime's own end-to-end stamp
+# are both in the log the campaign has everything it will read from that
+# cell, so what follows is teardown and cannot change the verdict; a teardown
+# that will not end is therefore not worth the rest of the cell's budget.  The
+# grace has to clear the slowest honest teardown -- returning a large heap to
+# the system and writing a counter set -- while staying far below any cell
+# timeout, so an early reap only ever replaces waiting.
 TEARDOWN_GRACE_S = 120
 
 # The log is read while the cell runs, so each poll reads only what was
@@ -213,10 +214,12 @@ class LocalBackend:
 
         A cell with a post-verify hook is never reaped early: its hook runs
         after the program and is part of the answer, so cutting the program
-        short would decide the cell on a check that never ran.  The cap holds
-        for every cell.
+        short would decide the cell on a check that never ran.  An ARTS cell
+        is never reaped early either: it ends within its end grace by itself,
+        and one that does not is a failed run.  The cap holds for every cell.
         """
-        early = not cell.app.post_verify
+        early = (not cell.app.post_verify
+                 and cell.entry.kind is not RuntimeKind.ARTS)
         measured_at: float | None = None
         decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
         text = ""

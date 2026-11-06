@@ -77,6 +77,8 @@ artsrun watch                             # live view of the latest campaign
 artsrun watch 20260811-220547             # …or of a named one
 artsrun report                            # reprint the latest summary
 
+artsrun run -p alia -x paper-main --end-grace 60   # ARTS end grace, seconds
+
 artsrun counters --set perf --enabled     # what a counter set turns on
 artsrun counterset list | show X | render X
 artsrun run -p alia -x paper-main -c census
@@ -169,6 +171,28 @@ to two seconds for a just-killed owner to be gone first.
 
 Any key a profile or saved selection carries that no field takes is refused
 when it loads.
+
+## End grace
+
+Every ARTS cell runs under an end grace G: the time its launcher waits for
+the other ranks once the first has exited (`ARTS_END_GRACE_S` in the cell's
+environment, `srun --kill-on-bad-exit=0 --wait=G`, `flux run -o
+exit-timeout=Gs` and `flux batch --conf=exec.shell-exit-timeout="Gs"`).
+Reference cells carry none of these. `--end-grace` sets the campaign's G
+(default 30 s, range 1..86400). Each ARTS cell has a bound B = max(1 s + 10 s +
+1 s for the watchdog's line + the time to write its largest counter record at 4
+MiB/s, the startup budget `ARTS_STARTUP_TIMEOUT_S` (default 20 s) + 10 s),
+which is 30 s with counters off. When B exceeds G and `--end-grace` was not
+given, that cell runs with G = B and the raise is recorded in `manifest.json`
+(`end_grace_raised_from`). An explicit `--end-grace` below a selected cell's B
+is refused before anything is built, naming the cell and B. The manifest
+records the campaign's G (`end_grace_s`) and whether it was given; `--resume`
+keeps it and refuses another value. A reaped ARTS cell is never excused as a
+teardown hang; the leniency stays for xsocr, ocr-vx and HPX. A continuation
+also keeps the startup budget B was computed with (`startup_budget_s` in the
+manifest) and is refused when `ARTS_STARTUP_TIMEOUT_S` now gives another. The
+end bound b = 10 s is the Release value, and artsrun runs Release trees only; a
+sanitizer tree's b = 60 s is the spawner's to enforce.
 
 ## Sections
 

@@ -20,7 +20,8 @@ from artsrun.model.profile import CxlLibrary, Launcher, Profile
 from artsrun.paths import repo_root, scratch_dir
 from artsrun.run.command import (build_command, build_env, cxl_wrap, render,
                                  with_post_verify, with_timeout)
-from artsrun.run.types import Cell, NotApplicable, Skipped
+from artsrun.run.types import (DEFAULT_END_GRACE_S, Cell, NotApplicable,
+                               Skipped)
 
 VERSION = 1
 
@@ -117,6 +118,9 @@ def write_manifest(
     *,
     counters_cfg: Path | None = None,
     not_applicable: list[NotApplicable],
+    end_grace_s: int = DEFAULT_END_GRACE_S,
+    end_grace_given: bool = False,
+    startup_budget_s: int | None = None,
 ) -> Path:
     entries: dict[str, dict] = {}
     apps: dict[str, dict] = {}
@@ -141,6 +145,9 @@ def write_manifest(
             "cpu_width": cell.cpu_width,
             "cxl": cell.cxl.value if cell.cxl else None,
             "cxl_region_bytes": cell.cxl_region_bytes,
+            "end_grace_s": (cell.end_grace_s
+                            if cell.entry.kind is RuntimeKind.ARTS else None),
+            "end_grace_raised_from": cell.end_grace_raised_from,
             "log": str(log_path),
             **describe_command(cell, profile, log_path),
         })
@@ -171,6 +178,9 @@ def write_manifest(
         "stderr": "merged into stdout",
         "stdin": "/dev/null",
         "counters_cfg": str(counters_cfg) if counters_cfg else None,
+        "end_grace_s": end_grace_s,
+        "end_grace_given": end_grace_given,
+        "startup_budget_s": startup_budget_s,
         "entries": entries,
         "apps": apps,
         "cells": rows,
@@ -203,6 +213,9 @@ class Manifest:
         self.payload = payload
         self.launcher = payload.get("launcher", "")
         self.cwd = payload.get("cwd", "")
+        self.end_grace_s = payload.get("end_grace_s")
+        self.end_grace_given = bool(payload.get("end_grace_given"))
+        self.startup_budget_s = payload.get("startup_budget_s")
         raw = payload.get("counters_cfg")
         self.counters_cfg = Path(raw) if raw else None
         entries = {
@@ -229,6 +242,9 @@ class Manifest:
                 cpu_width=int(row["cpu_width"]),
                 cxl=CxlLibrary(row["cxl"]) if row.get("cxl") else None,
                 cxl_region_bytes=row.get("cxl_region_bytes"),
+                end_grace_s=int(row.get("end_grace_s")
+                                or DEFAULT_END_GRACE_S),
+                end_grace_raised_from=row.get("end_grace_raised_from"),
             )
             self.cells.append(cell)
             self.commands[cell.key] = {
@@ -247,6 +263,12 @@ class Manifest:
                           tuple(n["apps"]), n["reason"])
             for n in payload.get("not_applicable", [])
         ]
+
+    @property
+    def recorded_end_grace(self) -> tuple[int, bool] | None:
+        if self.end_grace_s is None:
+            return None
+        return int(self.end_grace_s), self.end_grace_given
 
     @classmethod
     def load(cls, run_dir: Path) -> "Manifest | None":

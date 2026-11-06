@@ -8,6 +8,7 @@ the source of truth; the console is a convenience.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import tempfile
 import threading
@@ -37,7 +38,8 @@ from artsrun.render import write_configs, write_counter_config
 from artsrun.run.manifest import write_manifest
 from artsrun.run.plan import expand, not_applicable
 from artsrun.run.scheduler import Scheduler, WallCache
-from artsrun.run.types import CellResult, NotApplicable, Skipped, Status
+from artsrun.run.types import (DEFAULT_END_GRACE_S, CellResult, NotApplicable,
+                               Skipped, Status)
 
 
 @dataclass
@@ -50,6 +52,9 @@ class Campaign:
     build_dir: Path
     run_dir: Path
     counterset: Counterset | None = None
+    # The campaign's end grace and whether the command line named it.
+    end_grace_s: int = DEFAULT_END_GRACE_S
+    end_grace_given: bool = False
     # Set from another thread to end the campaign after whatever is running.
     stop_requested: threading.Event = field(default_factory=threading.Event)
 
@@ -76,8 +81,18 @@ class Campaign:
         counterset: Counterset | None = None,
         build_dir: Path | None = None,
         run_dir: Path | None = None,
+        end_grace: int | None = None,
     ) -> "Campaign":
         selection.validate_against(plane, catalog, profile, experiment)
+        from artsrun.run.grace import reconcile
+        from artsrun.run.manifest import Manifest
+
+        earlier = Manifest.load(run_dir) if run_dir else None
+        from artsrun.run.grace import check_budget, startup_budget_s
+
+        check_budget(earlier.startup_budget_s if earlier else None, os.environ)
+        grace_s, grace_given = reconcile(
+            end_grace, earlier.recorded_end_grace if earlier else None)
         if profile.launcher is Launcher.SSH:
             _check_ssh_submitter(profile)
         bd = build_dir or (
@@ -96,7 +111,14 @@ class Campaign:
             build_dir=bd,
             run_dir=run_dir or (logs_root() / stamp),
             counterset=counterset,
+            end_grace_s=grace_s,
+            end_grace_given=grace_given,
         )
+
+    def check_end_grace(self) -> None:
+        """Refuse an explicit end grace below a selected cell's bound, before
+        anything is built or run."""
+        self.cells()
 
     def _build_prefix(self) -> list[str]:
         """Build work runs where the artifacts will run: inside a one-node
@@ -279,11 +301,17 @@ class Campaign:
                     capture_interval=counters.capture_interval,
                 )
 
-        return expand(
+        cells, skipped = expand(
             self.selection, self.plane, self.catalog, self.experiment,
             self.profile, configs, cell_cfg=cell_cfg,
             build_dir=self.build_dir,
         )
+        from artsrun.run.grace import apply_grace
+
+        return apply_grace(
+            cells, self.end_grace_s, self.end_grace_given, os.environ,
+            counterset=counters if on else None,
+            threads=self.profile.threads_per_node), skipped
 
     def not_applicable(self) -> list[NotApplicable]:
         return not_applicable(self.selection, self.plane, self.catalog,
@@ -329,10 +357,15 @@ class Campaign:
         # Written before anything runs, and over the whole campaign even on a
         # continuation: the manifest describes what was asked, and what a
         # watcher shows as pending is exactly what has no track event yet.
+        from artsrun.run.grace import startup_budget_s
+
         write_manifest(self.run_dir, cells, skipped, self.profile,
                        self.build_dir,
                        counters_cfg=getattr(self, "counters_cfg", None),
-                       not_applicable=absent)
+                       not_applicable=absent,
+                       end_grace_s=self.end_grace_s,
+                       end_grace_given=self.end_grace_given,
+                       startup_budget_s=startup_budget_s(os.environ))
         # A continuation keeps what the interrupted run measured and runs the
         # rest into the same directory, so one report describes both halves.
         carried: list[CellResult] = []

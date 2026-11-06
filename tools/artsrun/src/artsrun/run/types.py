@@ -11,6 +11,10 @@ from artsrun.model.plane import SelectionEntry
 from artsrun.model.profile import CxlLibrary
 
 
+# Seconds an ARTS run waits for its other ranks once the first has exited.
+DEFAULT_END_GRACE_S = 30
+
+
 class Status(StrEnum):
     PENDING = "pending"
     SUBMITTED = "submitted"
@@ -46,6 +50,10 @@ class Cell:
     # The region the vendored fake library maps, sized from the tree's arena
     # when the cell was expanded; None for every cell not on the fake.
     cxl_region_bytes: int | None = None
+    # The end grace an ARTS cell runs under, and the campaign's value when
+    # the cell's own bound raised it above that.
+    end_grace_s: int = DEFAULT_END_GRACE_S
+    end_grace_raised_from: int | None = None
 
     @property
     def region_setup(self) -> bool:

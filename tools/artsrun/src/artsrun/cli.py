@@ -300,6 +300,11 @@ def run_cmd(
     nodes: str = typer.Option(None, "--nodes", "-n",
                               help="comma-separated node counts (default: profile)"),
     repeats: int = typer.Option(None, "--repeats"),
+    end_grace: int = typer.Option(
+        None, "--end-grace",
+        help="seconds an ARTS run waits for its other ranks once the first "
+             "has exited (default 30, raised per cell to the cell's bound B; "
+             "a value below a selected cell's B is refused)"),
     build_dir: Path = typer.Option(None, "--build-dir"),
     from_file: Path = typer.Option(None, "--from", help="replay a saved selection"),
     resume: str = typer.Option(None, "--resume", help="run id to continue"),
@@ -317,6 +322,7 @@ def run_cmd(
 ) -> None:
     """Build everything selected, then run it cell by cell."""
     from artsrun.campaign import Campaign
+    from artsrun.run.grace import EndGraceError
 
     run_dir = None
     if resume:
@@ -374,17 +380,26 @@ def run_cmd(
         from artsrun.campaign import scratch_run_dir
 
         with scratch_run_dir() as scratch:
-            campaign = Campaign.prepare(
-                selection, plane, catalog, xp, prof, counterset=cset,
-                build_dir=build_dir, run_dir=scratch,
-            )
+            try:
+                campaign = Campaign.prepare(
+                    selection, plane, catalog, xp, prof, counterset=cset,
+                    build_dir=build_dir, run_dir=scratch,
+                    end_grace=end_grace,
+                )
+                campaign.check_end_grace()
+            except EndGraceError as exc:
+                _fail(str(exc))
             _dry_run(campaign, selection)
         return
 
-    campaign = Campaign.prepare(
-        selection, plane, catalog, xp, prof, counterset=cset,
-        build_dir=build_dir, run_dir=run_dir,
-    )
+    try:
+        campaign = Campaign.prepare(
+            selection, plane, catalog, xp, prof, counterset=cset,
+            build_dir=build_dir, run_dir=run_dir, end_grace=end_grace,
+        )
+        campaign.check_end_grace()
+    except EndGraceError as exc:
+        _fail(str(exc))
 
     if dry_run:
         # Continuing a campaign: its directory exists and is what a dry run
@@ -493,6 +508,10 @@ def _dry_run(campaign, selection: Selection) -> None:
         console.print(f"[yellow]build check:[/yellow] {exc}")
 
     cells, skipped = campaign.cells()
+    console.print(f"end grace: {campaign.end_grace_s} s"
+                  f"{'' if campaign.end_grace_given else ' (default)'}; "
+                  f"{sum(1 for c in cells if c.end_grace_raised_from)} ARTS "
+                  "cells raised to their bound", highlight=False)
 
     # One rendered command per (runtime kind, node count): the cheapest place
     # to review a launcher change before a campaign burns queue time on it.

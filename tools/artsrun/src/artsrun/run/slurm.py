@@ -106,8 +106,11 @@ def _launch(cell: Cell, profile: Profile) -> str:
     """
     width = profile.threads_per_node
     if cell.entry.kind is RuntimeKind.ARTS:
+        # The step ends G seconds after its first task exits, whatever the
+        # status; a rank still ending is not killed by its peers' exit.
         prefix = ["srun", "--ntasks-per-node=1", "-N", str(cell.nodes),
-                  f"--cpus-per-task={width}"]
+                  f"--cpus-per-task={width}", "--kill-on-bad-exit=0",
+                  f"--wait={cell.end_grace_s}"]
     else:
         prefix = ["srun", "-N", str(cell.nodes), "-n", str(cell.nodes),
                   "--ntasks-per-node=1", f"--cpus-per-task={width}",

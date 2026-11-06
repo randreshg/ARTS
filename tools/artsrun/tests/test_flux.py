@@ -93,7 +93,7 @@ def test_an_arts_flux_script_runs_one_flux_run_in_the_proven_shape():
     script = job_script(cell, profile, Path("/log/cell.rc"))
     assert "mpirun" not in script
     assert ("flux run -N 4 -n 4 -c16 -o cpu-affinity=off "
-            "-o gpu-affinity=off -o mpibind=off "
+            "-o gpu-affinity=off -o mpibind=off -o exit-timeout=30s "
             f"{cell.binary} 12 4") in script
     assert "--tasks-per-node" not in script
     assert "--label" not in script
@@ -137,7 +137,7 @@ def test_extra_run_flags_ride_every_launch_line():
     profile = _flux_profile(extra_run=["-o", "verbose=1"])
     script = job_script(_cell(RuntimeKind.ARTS, nodes=2), profile,
                         Path("/log/cell.rc"))
-    assert "-o mpibind=off -o verbose=1 /opt/bin/app" in script
+    assert "-o mpibind=off -o verbose=1 -o exit-timeout=30s /opt/bin/app" in script
 
 
 def test_post_verify_wraps_outside_flux_run():
@@ -171,7 +171,8 @@ def test_batch_argv_shape():
         "flux", "batch", "--exclusive", "--nodes=4",
         "--job-name=arts-app-arts_entry-4n", "--output=/log/cell.log",
         "-t", "180s",
-        "--queue=pbatch", "--bank=proj", "--requires=-host:bad1",
+        "--queue=pbatch", "--bank=proj",
+        '--conf=exec.shell-exit-timeout="30s"', "--requires=-host:bad1",
         "/log/cell.sh",
     ]
     # stderr follows stdout when --error is unset (documented and verified);
@@ -345,3 +346,25 @@ def test_flux_cells_carry_the_launcher_marker_env():
     env = build_env(_cell(RuntimeKind.XSOCR, nodes=2), profile)
     assert env["ARTSRUN_LAUNCHER"] == "flux"
     assert env["ARTS_E2E_MARKER"] == "1"
+
+
+def test_every_arts_flux_line_carries_its_grace():
+    from dataclasses import replace
+
+    for grace in (30, 192):
+        cell = replace(_cell(RuntimeKind.ARTS, nodes=2), end_grace_s=grace)
+        script = job_script(cell, _flux_profile(), Path("/log/cell.rc"))
+        assert f"-o exit-timeout={grace}s" in script
+        assert "exit-timeout=none" not in script
+        argv = batch_argv(cell, _flux_profile(), Path("/log/cell.log"),
+                          Path("/log/cell.sh"))
+        assert f'--conf=exec.shell-exit-timeout="{grace}s"' in argv
+
+
+def test_reference_flux_lines_carry_no_grace():
+    cell = _cell(RuntimeKind.XSOCR, nodes=2)
+    script = job_script(cell, _flux_profile(), Path("/log/cell.rc"))
+    assert "exit-timeout" not in script
+    argv = batch_argv(cell, _flux_profile(), Path("/log/cell.log"),
+                      Path("/log/cell.sh"))
+    assert not any("exit-timeout" in a for a in argv)

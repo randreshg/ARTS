@@ -20,9 +20,10 @@ def _app(**over) -> ResolvedApp:
     return ResolvedApp(**base)
 
 
-def _cell(entry_key: str, app: ResolvedApp, nodes: int = 1) -> Cell:
+def _cell(entry_key: str, app: ResolvedApp, nodes: int = 1,
+          kind: RuntimeKind = RuntimeKind.ARTS) -> Cell:
     entry = SelectionEntry(
-        key=entry_key, label=entry_key, kind=RuntimeKind.ARTS,
+        key=entry_key, label=entry_key, kind=kind,
         cell="VAL/RETAIN/WB", variant=entry_key,
     )
     return Cell(
@@ -159,8 +160,10 @@ def test_node_counts_are_voted_separately():
 
 
 # --- teardown-hang leniency -------------------------------------------------
-def _timeout_result(entry_key: str, text: str, app: ResolvedApp, tmp_path) -> CellResult:
-    r = CellResult(cell=_cell(entry_key, app), status=Status.TIMEOUT, rc=124)
+def _timeout_result(entry_key: str, text: str, app: ResolvedApp, tmp_path,
+                    kind: RuntimeKind = RuntimeKind.XSOCR) -> CellResult:
+    r = CellResult(cell=_cell(entry_key, app, kind=kind),
+                   status=Status.TIMEOUT, rc=124)
     log = tmp_path / f"{entry_key}.log"
     log.write_text(text)
     r.log_path = log
@@ -176,6 +179,15 @@ def test_a_reap_with_the_marker_and_the_e2e_stamp_is_ok_with_a_note(tmp_path):
     assert r.e2e_s == 1.5
     assert r.teardown_hang
     assert r.note
+
+
+def test_an_arts_reap_with_the_marker_and_the_stamp_stays_a_timeout(tmp_path):
+    app = _app()
+    r = _timeout_result("a", "RESULT = 42\n[E2E] 1500000000\n", app, tmp_path,
+                        kind=RuntimeKind.ARTS)
+    apply_to(r)
+    assert r.status is Status.TIMEOUT
+    assert not r.teardown_hang
 
 
 def test_a_reap_with_the_marker_but_no_e2e_stamp_stays_a_timeout(tmp_path):

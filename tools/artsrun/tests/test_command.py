@@ -448,6 +448,22 @@ def test_a_cell_without_its_timing_stamp_is_left_to_its_own_budget(tmp_path, mon
     assert proc.poll() is not None
 
 
+def test_an_arts_cell_is_never_reaped_early(tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    backend = _backend(tmp_path, monkeypatch)
+    log, proc = _sleeper(tmp_path, "DONE sum 42\n[E2E] 1000\n")
+    backend._current = proc
+    cell = _measured_cell()
+    cell = replace(cell, entry=_entry(RuntimeKind.ARTS))
+    try:
+        with pytest.raises(TimeoutError):
+            _wait_briefly(backend, proc, cell, log)
+    finally:
+        proc.kill()
+        proc.wait()
+
+
 def _wait_briefly(backend, proc, cell, log):
     """Run the wait loop with a deadline, so a loop that never reaps fails
     the test by timing out instead of hanging it."""
