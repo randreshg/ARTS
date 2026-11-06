@@ -85,6 +85,14 @@ static pthread_mutex_t capture_mutex = PTHREAD_MUTEX_INITIALIZER;
 /* On CLOCK_MONOTONIC; the start initializes it before the thread exists. */
 static pthread_cond_t capture_cond;
 
+#ifdef ARTS_DEBUG_INJECTION
+void (*arts_capture_started_hook)(void) = NULL;
+
+unsigned int arts_counter_capture_state(void) {
+  return atomic_load_explicit(&capture_state, memory_order_acquire);
+}
+#endif
+
 // Time synchronization: offset = workerTime - masterTime (positive if the
 // worker is ahead), so local_time - offset = masterTime.
 //
@@ -319,6 +327,11 @@ void arts_counter_capture_start() {
       return;
     }
 
+#ifdef ARTS_DEBUG_INJECTION
+    if (arts_capture_started_hook != NULL) {
+      arts_capture_started_hook();
+    }
+#endif
     pthread_mutex_lock(&capture_mutex);
     unsigned int state = CAPTURE_IDLE;
     bool running = atomic_compare_exchange_strong_explicit(
@@ -336,7 +349,10 @@ void arts_counter_capture_start() {
     ret = pthread_join(capture_thread, NULL);
     if (ret) {
       ARTS_WARN("Failed to join capture thread: %d", ret);
+      return;
     }
+    ARTS_INFO("Counter capture thread joined by its starter: "
+              "a stop came first");
   }
 }
 

@@ -1301,6 +1301,29 @@ if(ARTS_TEST_REFERENCE_TREE)
     endif()
 endif()
 
+# A stop that comes first against the capture start, registered in the
+# reference tree where the injection hooks and a periodic counter are on: the
+# hook, which sits between the start's handle store and its transition of the
+# capture word, sends a SIGTERM and holds until the stop it causes has marked
+# the word stopped.  The test passes on the starter's join line, a skipped
+# teardown fails it, and the run ends with the signal's status.
+if(ARTS_TEST_REFERENCE_TREE AND ARTS_DEBUG_INJECTION)
+    arts_counters_periodic(_p)
+    if(_p)
+        arts_test_cfg(_cfg 1n_20w)
+        add_arts_test(capture_start_stop_race)
+        arts_add_test(capture_start_stop_race STATUS 143
+                      COMMAND capture_start_stop_race)
+        set_tests_properties(capture_start_stop_race PROPERTIES
+            LABELS "single_node" TIMEOUT 30 RESOURCE_LOCK "arts_runtime"
+            ENVIRONMENT
+            "ARTS_CONFIG=${_cfg};counter_capture_interval=86400000"
+            PASS_REGULAR_EXPRESSION "joined by its starter"
+            FAIL_REGULAR_EXPRESSION
+            "teardown skipped:;Failed to join capture thread")
+    endif()
+endif()
+
 # How soon every rank learns of the end: rank 2 has contacted every other rank
 # when it ends the run, while each worker of rank 1 floods rank 0 with
 # satisfies, and the four ranks' shutdown stamps lie within one second.

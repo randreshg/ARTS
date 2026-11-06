@@ -299,6 +299,15 @@ extern ARTS_THREAD_LOCAL_IE arts_counter_t
 void arts_counter_capture_sync_begin(void);
 void arts_counter_capture_start();
 void arts_counter_capture_stop();
+#ifdef ARTS_DEBUG_INJECTION
+/* Called by the capture start after it created the thread and stored its
+ * handle, and before it moves the capture word.  NULL unless a test sets it,
+ * before the runtime starts, to act on the start from another thread in that
+ * window. */
+extern void (*arts_capture_started_hook)(void);
+/* The capture word: 0 not started, 1 running, 2 stopped (acquire load). */
+unsigned int arts_counter_capture_state(void);
+#endif
 void arts_counter_increment_by(arts_counter_t *counter, uint64_t num);
 void arts_counter_decrement_by(arts_counter_t *counter, uint64_t num);
 void arts_counter_timer_start(arts_counter_t *counter);
