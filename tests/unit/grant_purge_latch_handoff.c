@@ -94,10 +94,7 @@ void arts_sched_fuzz_point(void) {
   }
 }
 #endif
-bool arts_db_await_ack(sem_t *cv) {
-  (void)cv;
-  return true;
-}
+void arts_db_await_ack(sem_t *cv) { (void)cv; }
 void arts_db_buf_landing_return(struct arts_db_buffer_s *b) { (void)b; }
 /* The drained writers stay live when a scenario asks: the drain adds the
  * hold a woken home writer would take. */

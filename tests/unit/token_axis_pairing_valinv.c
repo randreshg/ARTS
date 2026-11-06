@@ -143,9 +143,6 @@ _Noreturn void arts_exit(int rc, enum arts_exit_origin origin) {
   _exit(rc ? rc : 1);
 }
 
-/* coherence.c's release waits re-check whether the rank's end began. */
-bool arts_shutdown_taken(void) { return false; }
-
 #if !defined(__SANITIZE_ADDRESS__)
 /* A frame that reads a descriptor whose deleter filled it follows the fill
  * as pointers and faults; the report names the scenario (stdout is

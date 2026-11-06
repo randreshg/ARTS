@@ -259,10 +259,10 @@ struct arts_db_cache_s {
    * push onto pub_waiters, and every reset of the word by the flight owner
    * is an exchange, so a join is either read by that reset (and its node
    * re-drained) or lands after it (and fails the owner's landing CAS).
-   * pub_waiters holds heap {sem, version} nodes for every releaser blocked
-   * until a covering publish is ACKed (heap for the same reason the publish
-   * rendezvous is — a shutdown-escaped waiter leaks its node and a late
-   * drain may still post into it). */
+   * pub_waiters holds a {sem, version} node, in its releaser's frame, for
+   * every releaser blocked until a covering publish is ACKed; a drain pops a
+   * node before it posts it and touches it no more, and the releaser leaves
+   * its wait only after that post. */
   _Atomic(unsigned int) pub_flight;
   arts_lf_stack_t pub_waiters;
   /* Waiters a completing flight drained but its version did not cover, held
@@ -355,8 +355,7 @@ struct arts_db_s {
    * read request this home accounted for (by its arrival or a declaration of
    * it, whichever came first); the gate [td:1 | rwo:1 | roo:1 | owed:29],
    * the destroy's mark and what the home was told is still coming, every
-   * write after init an acq_rel RMW, the mark also read with acquire by the
-   * credit minting (arts_db_cover_marked); the rank whose create claimed a
+   * write after init an acq_rel RMW; the rank whose create claimed a
    * first-touch cache, written before the descriptor is published. */
   struct arts_rank_bitset_s ro_parity;
   _Atomic(uint32_t) cover_gate;
@@ -385,8 +384,7 @@ struct arts_db_s {
    * read request this home accounted for (by its arrival or a declaration of
    * it, whichever came first); the gate [td:1 | rwo:1 | roo:1 | owed:29],
    * the destroy's mark and what the home was told is still coming, every
-   * write after init an acq_rel RMW, the mark also read with acquire by the
-   * credit minting (arts_db_cover_marked); the rank whose create claimed a
+   * write after init an acq_rel RMW; the rank whose create claimed a
    * first-touch cache, written before the descriptor is published. */
   struct arts_rank_bitset_s ro_parity;
   _Atomic(uint32_t) cover_gate;

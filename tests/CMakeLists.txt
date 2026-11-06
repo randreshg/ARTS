@@ -135,6 +135,7 @@ set(ARTS_REFERENCE_TREE_PROGRAMS
     regpool_grow_helpers
     regpool_decline_record
     rdzv_payload_flood
+    await_ack_never_escapes
 )
 
 # Pins an assertion of the runtime (edt.c's remote group guard), which
@@ -1440,6 +1441,12 @@ set_tests_properties(config_ports_contract PROPERTIES
 register_pure_unit_test(config_flux_setup TIMEOUT 30)
 set_tests_properties(config_flux_setup PROPERTIES
     PASS_REGULAR_EXPRESSION "PASS config_flux_setup")
+# A release's wait for its answer, with the rank's shutdown point taken:
+# still blocked seconds later, and back once the answer posts.  Every arm
+# compiles the one wait; it starts no runtime.
+register_pure_unit_test(await_ack_never_escapes TIMEOUT 30)
+set_tests_properties(await_ack_never_escapes PROPERTIES
+    PASS_REGULAR_EXPRESSION "PASS await_ack_never_escapes")
 # Occupies one port of a block, declared through its own bind and by a real
 # listener, and checks the selector moves off the block.  It wraps bind and
 # fopen (the ephemeral port range) at link time.
@@ -1663,7 +1670,7 @@ register_pure_unit_test(regpool_entry_word TIMEOUT 30)
 set_tests_properties(regpool_entry_word PROPERTIES
     PASS_REGULAR_EXPRESSION "PASS regpool_entry_word")
 # The declared-arrival gate's one step, from every boundary word: the word it
-# leaves, the teardown edge and the mark (a duplicate MARK reports no edge).
+# leaves and the teardown edge (a duplicate MARK reports no edge).
 # One header serves VAL, INV and EXCL x RETAIN alike.  Header-only.
 add_executable(cover_gate_step unit/cover_gate_step.c)
 target_include_directories(cover_gate_step PRIVATE

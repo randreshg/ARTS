@@ -359,7 +359,7 @@ struct ARTS_PACKED arts_msg_grant_response_packet_s {
  *   data_size == 0                : data-less publish (a sentinel DB, or an
  *       INV release that only asks for its invalidation round) — nothing
  *       lands; home ACKs once it has processed it.
- * cv: on an announce, the address of the releaser's heap rendezvous (sem +
+ * cv: on an announce, the address of the releaser's rendezvous (sem +
  * landing slot), valid only at the releaser rank, which home echoes verbatim
  * in PUBLISH_CTS so the releaser matches by pointer identity (no seq
  * tracking).  0 on a commit and a data-less publish: their ACK completes the
@@ -387,7 +387,7 @@ struct ARTS_PACKED arts_msg_publish_packet_s {
 /* PUBLISH_CTS — home → releaser: the home landing for an announced dirty
  * publish (VAL and INV write-through) or a landing-less EXCL PURGE release.
  * cv is echoed verbatim; the releaser-side handler writes the landing into
- * the blocked releaser's heap rendezvous and posts it. */
+ * the blocked releaser's rendezvous and posts it. */
 struct ARTS_PACKED arts_msg_publish_cts_packet_s {
   struct arts_msg_header_s header;
   arts_guid_t db_guid;
@@ -676,7 +676,7 @@ struct ARTS_PACKED arts_msg_excl_release_packet_s {
   uint32_t pad;
   uint64_t version; /* always 0, and no handler reads it: exclusion leaves
                      * no stale release to reject */
-  uint64_t cv; /* RW announce only: the releaser's heap rendezvous, echoed in
+  uint64_t cv; /* RW announce only: the releaser's rendezvous, echoed in
                 * the PUBLISH_CTS; nothing acknowledges a release */
   /* RW dirty payload travels by PUT into the grant's `pub` landing; these echo
    * that landing's {txid, cookie} and count the landed bytes.  txid==0 =
@@ -804,7 +804,7 @@ struct ARTS_PACKED arts_msg_flush_commit_packet_s {
   struct arts_msg_header_s header;
   arts_guid_t db_guid;
   uint64_t txid; /* the credit the PUT carried as its immediate */
-  uint64_t sem;  /* releaser's heap semaphore, echoed by the ACK */
+  uint64_t sem;  /* releaser's wait semaphore, echoed by the ACK */
 };
 struct ARTS_PACKED arts_msg_flush_ack_packet_s {
   struct arts_msg_header_s header;

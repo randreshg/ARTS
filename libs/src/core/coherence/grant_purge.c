@@ -53,7 +53,6 @@
 #include "arts/system/threads.h"
 #include "arts/transport/net.h"
 #include "arts/transport/protocol.h"
-#include "arts/utils/malloc.h"
 #include "arts/counter/Preamble.h"
 
 /* ===== The word's count-dropping edge ==================================== */
@@ -104,17 +103,14 @@ static void send_grant_return(struct arts_db_cache_s *cache) {
   arts_fill_packet_header(&p.header, sizeof(p), MSG_DB_GRANT_RETURN);
   p.header.rank = arts_global_rank_id;
   p.db_guid = db_guid;
-  /* On the heap: a shutdown-escaped wait leaks it, and a late acknowledgement
-   * still posts into live memory. */
-  struct arts_db_pub_rendezvous_s *wr =
-      (struct arts_db_pub_rendezvous_s *)arts_malloc(sizeof(*wr));
-  sem_init(&wr->sem, 0, 0);
-  p.cv = (uint64_t)(uintptr_t)wr;
+  /* In this frame: the acknowledgement posts it once, and the wait returns
+   * only after that post. */
+  struct arts_db_pub_rendezvous_s wr;
+  sem_init(&wr.sem, 0, 0);
+  p.cv = (uint64_t)(uintptr_t)&wr;
   arts_transport_send_async((int)home_rank, (char *)&p, sizeof(p));
-  if (arts_db_await_ack(&wr->sem)) {
-    sem_destroy(&wr->sem);
-    arts_free(wr);
-  }
+  arts_db_await_ack(&wr.sem);
+  sem_destroy(&wr.sem);
 }
 
 /* ===== THE TAIL ========================================================== */

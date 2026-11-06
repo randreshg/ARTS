@@ -121,9 +121,6 @@ _Noreturn void arts_exit(int rc, enum arts_exit_origin origin) {
   _exit(rc ? rc : 1);
 }
 
-/* coherence.c's release waits re-check whether the rank's end began. */
-bool arts_shutdown_taken(void) { return false; }
-
 void *arts_malloc(size_t n) { return malloc(n); }
 void *arts_calloc(size_t n, size_t s) { return calloc(n, s); }
 void *arts_malloc_aligned(size_t n, size_t a) {

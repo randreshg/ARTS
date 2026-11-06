@@ -28,7 +28,6 @@
 #include "arts/runtime_state.h"
 #include "arts/runtime_types.h"
 #include "arts/system/print.h"
-#include "arts/system/shutdown.h"
 #include "arts/system/threads.h"
 #include "arts/transport/net.h"
 #include "arts/transport/protocol.h"
@@ -373,10 +372,11 @@ void arts_db_release_ro(struct arts_db_cache_s *cache) { (void)cache; }
  * buffer ref: nothing counts readers. */
 void arts_db_join_read(struct arts_db_cache_s *cache) { (void)cache; }
 
-/* A releaser's wait for the home: the answer (a CTS, an ACK) writes its
- * fields and posts, and the woken releaser, which holds its pin on the
- * descriptor, carries them into the cache.  txid is the credit the round
- * writes with, and after the ACK the refill it returns. */
+/* A releaser's wait for the home, in the releaser's frame: the answer (a CTS,
+ * an ACK) writes its fields and posts, touching it no more, and the woken
+ * releaser, which holds its pin on the descriptor, carries them into the
+ * cache.  Each answer is the one post of its wait.  txid is the credit the
+ * round writes with, and after the ACK the refill it returns. */
 struct flush_wait_s {
   sem_t sem;
   uint64_t line_addr;
@@ -405,66 +405,44 @@ static void send_flush_commit(unsigned int home, arts_guid_t db_guid,
   arts_transport_send_async((int)home, (char *)&p, sizeof(p));
 }
 
-static bool shutting_down(void) { return arts_shutdown_taken(); }
-
 /* The write-back round every non-home RW release runs: the bytes at `payload`
  * into the home's line, then the wait for the home's ACK.  The credit is
  * consumed with one exchange; a release that finds none asks for one first.
  *
  * The source must stay valid for the whole call — the caller's hold on the
- * bytes is what keeps it so.  Answers false only under shutdown, the one
- * exit that leaves the round unfinished; a wait the shutdown cut short leaks
- * its state for a reply that may still arrive.  A home that no longer has the
- * block is a finished round with nothing to write into. */
-static bool flush_write_back(struct arts_db_cache_s *cache, void *payload) {
+ * bytes is what keeps it so, and the call returns only once the home has the
+ * bytes.  A home that no longer has the block is a finished round with
+ * nothing to write into. */
+static void flush_write_back(struct arts_db_cache_s *cache, void *payload) {
   unsigned int home = arts_guid_get_rank(cache->db_guid);
-  /* The wait lives on the heap: a shutdown-escaped release leaks it, and a
-   * late ACK may still post into it. */
-  struct flush_wait_s *w = (struct flush_wait_s *)arts_malloc(sizeof(*w));
-  sem_init(&w->sem, 0, 0);
-  w->txid = atomic_exchange_explicit(&cache->flush_txid, (uint64_t)0,
-                                     memory_order_acquire);
-  if (w->txid != 0) {
-    w->line_addr =
+  struct flush_wait_s w;
+  sem_init(&w.sem, 0, 0);
+  w.txid = atomic_exchange_explicit(&cache->flush_txid, (uint64_t)0,
+                                    memory_order_acquire);
+  if (w.txid != 0) {
+    w.line_addr =
         atomic_load_explicit(&cache->home_line_addr, memory_order_relaxed);
-    w->line_rkey =
+    w.line_rkey =
         atomic_load_explicit(&cache->home_line_rkey, memory_order_relaxed);
   } else {
-    send_flush_announce(home, cache->db_guid, w);
-    if (!arts_db_await_ack(&w->sem)) {
-      return false; /* the escape is recorded by the await */
-    }
-    if (shutting_down()) {
-      /* The reply came, but the write-back it credits is dropped: its own
-       * wait is the one left unawaited.  Nothing posts the wait state after
-       * its reply, so it is freed. */
-      atomic_fetch_add_explicit(&arts_shutdown_abandon.waits, 1u,
-                                memory_order_relaxed);
-      sem_destroy(&w->sem);
-      arts_free(w);
-      return false;
-    }
-    learn_line(cache, w->line_addr, w->line_rkey, 0);
-    if (w->txid == 0) {
+    send_flush_announce(home, cache->db_guid, &w);
+    arts_db_await_ack(&w.sem);
+    learn_line(cache, w.line_addr, w.line_rkey, 0);
+    if (w.txid == 0) {
       /* The home no longer has the block: nothing to write back to. */
-      sem_destroy(&w->sem);
-      arts_free(w);
-      return true;
+      sem_destroy(&w.sem);
+      return;
     }
   }
   arts_net_put_payload(
-      (int)home, w->line_addr, w->line_rkey, w->txid, payload,
+      (int)home, w.line_addr, w.line_rkey, w.txid, payload,
       atomic_load_explicit(&cache->db_size, memory_order_relaxed), NULL, NULL);
-  send_flush_commit(home, cache->db_guid, w->txid, w);
-  if (!arts_db_await_ack(&w->sem)) {
-    return false;
+  send_flush_commit(home, cache->db_guid, w.txid, &w);
+  arts_db_await_ack(&w.sem);
+  if (w.txid != 0) {
+    atomic_store_explicit(&cache->flush_txid, w.txid, memory_order_release);
   }
-  if (w->txid != 0) {
-    atomic_store_explicit(&cache->flush_txid, w->txid, memory_order_release);
-  }
-  sem_destroy(&w->sem);
-  arts_free(w);
-  return true;
+  sem_destroy(&w.sem);
 }
 
 void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload) {
@@ -475,7 +453,7 @@ void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload) {
       atomic_load_explicit(&cache->db_size, memory_order_relaxed) == 0) {
     return; /* the line was written in place, or there are no bytes */
   }
-  (void)flush_write_back(cache, payload);
+  flush_write_back(cache, payload);
 }
 
 /* The create's own hold.  Its bytes are the copy the create installed in this
@@ -488,12 +466,8 @@ void arts_db_release_created(struct arts_db_cache_s *cache) {
   arts_shared_ptr_t slot_h = arts_db_buf_acquire(cache);
   struct arts_db_buffer_s *b = (struct arts_db_buffer_s *)arts_shared_get(slot_h);
   if (b != NULL &&
-      atomic_load_explicit(&cache->db_size, memory_order_relaxed) > 0 &&
-      !flush_write_back(cache, b->data)) {
-    /* Shutdown escape: the copy stays in the slot under the hold that still
-     * names it, because the round that would have retired it never ended. */
-    arts_db_buf_release(&slot_h);
-    return;
+      atomic_load_explicit(&cache->db_size, memory_order_relaxed) > 0) {
+    flush_write_back(cache, b->data);
   }
   arts_shared_slot_store(&cache->buffer, NULL);
   atomic_store_explicit(&cache->payload_pending, (uint8_t)1,
@@ -593,10 +567,10 @@ void arts_handler_db_flush_ack(const struct arts_db_flush_ack_args_s *a) {
  * copy and releases without waiting for the create's return — so it is
  * deferred and replayed on the install's drain.  The engine pins the
  * descriptor, so the announce always finds the block.  A deferred announce for
- * a block that was destroyed first stays deferred — its releaser leaves the
- * wait only at shutdown, the same way a deferred publish on the validation
- * arms does — which the model leaves undefined (a destroy under a live write
- * acquisition). */
+ * a block that was destroyed first stays deferred — its releaser stays
+ * blocked until the process ends, the same way a deferred publish on the
+ * validation arms does — which the model leaves undefined (a destroy under a
+ * live write acquisition). */
 void arts_handler_db_flush_announce(void *item_v, void *args_v) {
   struct arts_db_s *db = (struct arts_db_s *)item_v;
   struct arts_ooo_args_db_flush_announce_s *a =

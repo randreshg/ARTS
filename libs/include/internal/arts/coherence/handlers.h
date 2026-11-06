@@ -114,7 +114,7 @@ struct arts_db_cache_destroy_args_s {
 struct arts_db_publish_ack_args_s {
   arts_guid_t db_guid;
   uint64_t token; /* the flight's, echoed (cv == 0 only) */
-  uint64_t cv; /* a standalone grant return's heap rendezvous, or 0 */
+  uint64_t cv; /* a standalone grant return's rendezvous, or 0 */
   uint64_t version;
   uint64_t credit_addr;
   uint64_t credit_rkey;
@@ -353,7 +353,7 @@ void arts_handler_db_grant_cts(struct arts_msg_grant_cts_packet_s *p);
  * echoing the request's token. */
 void arts_send_db_grant_cts(unsigned int requester_rank, arts_guid_t db_guid,
                             uint64_t db_size, uint64_t token);
-/* cv: nonzero only on an announce — the address of the releaser's heap
+/* cv: nonzero only on an announce — the address of the releaser's
  * rendezvous (arts_db_pub_rendezvous_s; sem first) as uint64_t, forwarded
  * verbatim and echoed back in the PUBLISH_CTS for pointer-identity wakeup; a
  * commit and a data-less publish carry 0, and their ACK completes the
@@ -651,7 +651,7 @@ void arts_send_db_excl_grant(struct arts_db_s *db, unsigned int requester_rank,
                              arts_shared_ptr_t src_h, uint64_t data_size,
                              uint64_t token);
 /* arts_send_db_excl_release: cv is nonzero only on an RW release's
- * landing-less announce — the address of the releaser's heap rendezvous,
+ * landing-less announce — the address of the releaser's rendezvous,
  * which the home echoes in the PUBLISH_CTS to unblock the releaser; nothing
  * acknowledges a release.  version is always 0, and no handler reads it.  A
  * remote RW release PUTs the dirty bytes into its landing (the grant's `pub`,

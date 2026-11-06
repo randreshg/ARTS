@@ -139,9 +139,6 @@ _Noreturn void arts_exit(int rc, enum arts_exit_origin origin) {
   _exit(rc ? rc : 1);
 }
 
-/* coherence.c's release waits re-check whether the rank's end began. */
-bool arts_shutdown_taken(void) { return false; }
-
 /* Runs once at the next allocation: a step another thread takes inside a
  * window of the code under test. */
 static void (*g_malloc_hook)(void);

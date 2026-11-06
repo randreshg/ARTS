@@ -89,7 +89,7 @@ foreach(_t IN ITEMS
         grant_purge_handback_regrant
         grant_one_request_per_grant
         quiescent_shutdown_no_residue
-        await_publish_ack_shutdown_contended)
+        shutdown_blocked_release_ends_contended)
     arts_tsan_residue(${_t}
         CELLS VAL/WT/RETAIN VAL/WT/PURGE INV/WT/RETAIN INV/WT/PURGE
         SHAPES R2)

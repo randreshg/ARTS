@@ -190,13 +190,6 @@ extern ARTS_THREAD_LOCAL_IE struct arts_thread_stop_s *arts_thread_stop_slot;
 struct arts_shutdown_abandon_s {
   /* Runnable EDTs dropped from a deque unrun. */
   _Atomic(unsigned int) queued_edts;
-  /* Release waits the shutdown cut short or left unawaited, one per wait,
-   * counted wherever a release stops waiting for its reply because the
-   * shutdown began -- on any arm, so an arm with nothing for the walk to
-   * judge still counts.  That can only make a shutdown read as
-   * non-quiescent more often; the states the walk reports unconditionally
-   * are never masked by it. */
-  _Atomic(unsigned int) waits;
 };
 extern struct arts_shutdown_abandon_s arts_shutdown_abandon;
 

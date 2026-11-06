@@ -10,8 +10,7 @@
  * claiming creator's pre-claim write and read requests among them, and td
  * says the destroy marked the gate.  The teardown runs at the one step that
  * leaves a marked gate with nothing owed.  After its init every write is an
- * acq_rel RMW, so the mark heads a release sequence that an acquire load of
- * the gate synchronizes with through any later step.
+ * acq_rel RMW, so the step that reaches the edge follows every earlier step.
  */
 #ifndef ARTS_COHERENCE_COVER_GATE_H
 #define ARTS_COHERENCE_COVER_GATE_H
@@ -39,13 +38,11 @@ enum arts_cover_gate_op {
 #if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV) ||                \
     (defined(ARTS_PROTOCOL_EXCL) && defined(ARTS_RELEASE_RETAIN))
 /* One RMW of the gate; its pre-image decides the edge (true: this step left a
- * marked gate with nothing owed, and the caller tears down) and *marked
- * (whether the gate was marked when the step committed).  A step outside its
- * precondition is fatal after its RMW has committed, so while the abort
+ * marked gate with nothing owed, and the caller tears down).  A step outside
+ * its precondition is fatal after its RMW has committed, so while the abort
  * prints another thread's step may read a corrupted gate. */
 static inline bool arts_cover_gate_step(struct arts_db_s *db,
-                                        enum arts_cover_gate_op op,
-                                        bool *marked) {
+                                        enum arts_cover_gate_op op) {
   uint32_t pre;
   bool edge = false;
   if (op == ARTS_COVER_GATE_OWE) {
@@ -76,7 +73,6 @@ static inline bool arts_cover_gate_step(struct arts_db_s *db,
     edge =
         (pre & ARTS_COVER_GATE_TD) != 0u && (pre & ARTS_COVER_GATE_OWED) == 1u;
   }
-  *marked = (pre & ARTS_COVER_GATE_TD) != 0u;
   return edge;
 }
 #endif

@@ -1598,7 +1598,7 @@ static void excl_grant_on(struct arts_db_s *db,
  * Send EXCL_RELEASE to the home.  An RW release's bytes travel by PUT ahead
  * of this packet, which carries their size and the landing's {txid, cookie};
  * cv is nonzero only on the landing-less announce, where it is the address of
- * the releaser's heap rendezvous and the home echoes it in the PUBLISH_CTS.
+ * the releaser's rendezvous and the home echoes it in the PUBLISH_CTS.
  * Nothing acknowledges a release, and version is always 0.  RO carries none
  * of these.  Never a self-send. */
 void arts_send_db_excl_release(unsigned int home_rank, arts_guid_t db_guid,
@@ -1692,38 +1692,31 @@ static void lock_send_release_rw(struct arts_db_cache_s *cache) {
   if (ds > 0u && pub.txid == 0) {
     /* Dirty release from a hold that never received a grant (the
      * creator-seeded RW grant): no cached landing — run the announce leg.
-     * Heap rendezvous, deliberately leaked on the shutdown escape (a late
-     * CTS writes and posts through the echoed cv). */
-    struct arts_db_pub_rendezvous_s *wr =
-        (struct arts_db_pub_rendezvous_s *)arts_malloc(sizeof(*wr));
-    sem_init(&wr->sem, 0, 0);
-    wr->landing = (struct arts_rdzv_landing_s){0, 0, 0, 0};
+     * The CTS writes the landing through the echoed cv and then posts; the
+     * wait returns only after that post, so the rendezvous lives in this
+     * frame. */
+    struct arts_db_pub_rendezvous_s wr;
+    sem_init(&wr.sem, 0, 0);
+    wr.landing = (struct arts_rdzv_landing_s){0, 0, 0, 0};
     arts_send_db_excl_release(home, cache->db_guid, DB_MODE_RW,
-                              /*version=*/0u, (uint64_t)(uintptr_t)wr, ds,
+                              /*version=*/0u, (uint64_t)(uintptr_t)&wr, ds,
                               /*rdzv_txid=*/0u, /*rdzv_cookie=*/0u);
-    if (!arts_db_await_ack(&wr->sem)) {
-      /* Shutdown escape: the round is abandoned with the runtime.  A CTS
-       * reply may still be writing the landing and posting through wr, so wr
-       * is leaked and nothing in it is read. */
-      arts_db_buf_release(&buf_h);
-      return;
-    }
+    arts_db_await_ack(&wr.sem);
     /* The post orders the reply's landing stores before these reads, and a
      * CTS reply always carries a landing. */
-    assert(wr->landing.txid != 0);
+    assert(wr.landing.txid != 0);
     /* buf_h transfers into the PUT's local completion, which pins the source
      * bytes until the fabric drains them.  The commit carries cv 0 and
      * nothing acknowledges it: the home pairs {packet, write completion} on
      * its own side and commits + grants from there, so waiting here would
      * only serve the pin the callback already holds. */
-    arts_net_put_payload((int)home, wr->landing.addr, wr->landing.key,
-                         wr->landing.txid, data, ds, arts_db_buf_ref_release_cb,
+    arts_net_put_payload((int)home, wr.landing.addr, wr.landing.key,
+                         wr.landing.txid, data, ds, arts_db_buf_ref_release_cb,
                          (void *)buf_h);
     arts_send_db_excl_release(home, cache->db_guid, DB_MODE_RW,
-                              /*version=*/0u, /*cv=*/0u, ds, wr->landing.txid,
-                              wr->landing.cookie);
-    sem_destroy(&wr->sem);
-    arts_free(wr);
+                              /*version=*/0u, /*cv=*/0u, ds, wr.landing.txid,
+                              wr.landing.cookie);
+    sem_destroy(&wr.sem);
     return;
   }
   if (ds > 0u && pub.txid != 0) {

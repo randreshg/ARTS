@@ -490,48 +490,58 @@ endforeach()
 endif()
 
 # A release that waits for its publish or write-back to be acknowledged, or
-# for the landing it asks the home for, escapes that wait when the shutdown
-# overtakes it.  A write-through release, the invalidation arm's release round
-# and FLUSH's write-back wait for an acknowledgement; a release whose bytes
-# travel with it, from a rank that holds no landing in the home's copy (a
-# creator away from the block's home, among others), asks for one first, and
-# so does EXCL x PURGE's, except in the store-backed trees, which write the
-# store instead and wait for nothing.  One rank answers itself without
-# waiting.  Ranks 0 and 1 carry every turn; the
-# two progress threads let the shutdown overtake an answer in flight.  Its
-# writes of each block are ordered, so FLUSH runs it too.  The contended form
-# (every writer of one block at once, so that a release joins its rank's
+# for the landing it asks the home for, stays blocked when the shutdown
+# overtakes the answer, until the process ends: nothing on the way out waits
+# for it, so every rank still ends with status 0.  A write-through release,
+# the invalidation arm's release round and FLUSH's write-back wait for an
+# acknowledgement; a release whose bytes travel with it, from a rank that
+# holds no landing in the home's copy (a creator away from the block's home,
+# among others), asks for one first, and so does EXCL x PURGE's, except in
+# the store-backed trees, which write the store instead and wait for nothing.
+# One rank answers itself without waiting.  Ranks 0 and 1 carry every turn;
+# the two progress threads let the shutdown overtake an answer in flight.
+# Its writes of each block are ordered, so FLUSH runs it too.  The contended
+# form (every writer of one block at once, so that a release joins its rank's
 # publish already in flight) has unordered writers and runs where a release
-# publishes: the write-through and invalidation arms.  A releaser that never
-# escapes keeps its rank from exiting, which the launcher reports before it
-# stops the rank; the report fails the test.
-set(_await_publishes OFF)
+# publishes: the write-through and invalidation arms.  The teardown oracle
+# sees a releaser still blocked as a thread that did not stop and skips with
+# the running-threads line; the other skip lines name a defect and fail the
+# test.  The shutdown leaves work undone by design, so the walk's markers do
+# not judge it.
+set(_blocked_publishes OFF)
 if(ARTS_COHERENCE_ARM MATCHES "^(VAL|INV)$" AND
    (ARTS_WRITE_POLICY STREQUAL "WT" OR ARTS_COHERENCE_ARM STREQUAL "INV"))
-    set(_await_publishes ON)
+    set(_blocked_publishes ON)
 endif()
-if(_await_publishes OR ARTS_COHERENCE_ARM STREQUAL "FLUSH" OR
+set(_blocked_fail
+    "teardown skipped: (origin|the node|[0-9]+ thread\\(s\\) stopped mid-transition)")
+if(_blocked_publishes OR ARTS_COHERENCE_ARM STREQUAL "FLUSH" OR
    (ARTS_COHERENCE_ARM STREQUAL "EXCL" AND ARTS_RELEASE_POLICY STREQUAL "PURGE"
     AND NOT ARTS_USE_CXL))
-add_arts_test(await_publish_ack_shutdown)
-register_multinode_test(await_publish_ack_shutdown TIMEOUT 120
+add_arts_test(shutdown_blocked_release_ends)
+register_multinode_test(shutdown_blocked_release_ends TIMEOUT 30
                         VARIANTS 2n_9w_1p 2n_8w_2p)
 foreach(_v 2n_9w_1p 2n_8w_2p)
-    arts_test_properties(await_publish_ack_shutdown_${_v} PROPERTIES
-        PASS_REGULAR_EXPRESSION "PASS: await_publish_ack_shutdown reached shutdown")
+    arts_test_properties(shutdown_blocked_release_ends_${_v} PROPERTIES
+        PASS_REGULAR_EXPRESSION
+        "PASS: shutdown_blocked_release_ends reached shutdown"
+        FAIL_REGULAR_EXPRESSION "${_blocked_fail}")
 endforeach()
 endif()
-if(_await_publishes)
+if(_blocked_publishes)
 foreach(_v 2n_9w_1p 2n_8w_2p)
     arts_test_cfg(_cfg ${_v})
-    arts_add_multinode_test(await_publish_ack_shutdown_contended_${_v}
-                            COMMAND await_publish_ack_shutdown contended)
-    arts_test_properties(await_publish_ack_shutdown_contended_${_v} PROPERTIES
+    arts_add_multinode_test(shutdown_blocked_release_ends_contended_${_v}
+                            COMMAND shutdown_blocked_release_ends contended)
+    arts_test_properties(shutdown_blocked_release_ends_contended_${_v}
+        PROPERTIES
         LABELS "multinode"
-        TIMEOUT 120
+        TIMEOUT 30
         RESOURCE_LOCK "arts_runtime"
         ENVIRONMENT "ARTS_CONFIG=${_cfg}"
-        PASS_REGULAR_EXPRESSION "PASS: await_publish_ack_shutdown reached shutdown")
+        PASS_REGULAR_EXPRESSION
+        "PASS: shutdown_blocked_release_ends reached shutdown"
+        FAIL_REGULAR_EXPRESSION "${_blocked_fail}")
 endforeach()
 endif()
 

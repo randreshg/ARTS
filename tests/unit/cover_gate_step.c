@@ -3,14 +3,14 @@
  * cover_gate_step — the declared-arrival gate's one step
  * (arts/coherence/cover_gate.h): every step is one RMW of the gate word, and
  * its pre-image decides whether the step is the one that leaves a marked gate
- * with nothing owed (the teardown edge) and whether the gate was marked.
+ * with nothing owed (the teardown edge).
  *
  * Every step runs from boundary words (owed 0, 1, 2, the field's maximum and
  * one below it; each of td, rwo and roo set and clear) and is checked against
- * the transition the gate defines: the word it leaves, the edge and the mark.
- * A step outside its precondition is fatal and is not driven here.  A
- * duplicate MARK leaves the word as it found it and reports no edge, so a
- * second destroy can never tear the home down twice.
+ * the transition the gate defines: the word it leaves and the edge.  A step
+ * outside its precondition is fatal and is not driven here.  A duplicate MARK
+ * leaves the word as it found it and reports no edge, so a second destroy can
+ * never tear the home down twice.
  *
  * Whitebox unit test: header-only, no runtime.
  */
@@ -37,10 +37,9 @@ static int g_fails;
 
 /* The gate's transition: false when the step's precondition fails. */
 static bool expect(uint32_t cur, enum arts_cover_gate_op op, uint32_t *next,
-                   bool *edge, bool *marked) {
+                   bool *edge) {
   uint32_t owed = cur & ARTS_COVER_GATE_OWED;
   bool td = (cur & ARTS_COVER_GATE_TD) != 0u;
-  *marked = td;
   *edge = false;
   switch (op) {
   case ARTS_COVER_GATE_OWE:
@@ -86,13 +85,12 @@ int main(void) {
     for (unsigned o = 0; o < sizeof owed / sizeof owed[0]; o++) {
       for (unsigned k = 0; k < sizeof ops / sizeof ops[0]; k++) {
         uint32_t cur = flags | owed[o], want = 0;
-        bool want_edge = false, want_marked = false;
-        if (!expect(cur, ops[k], &want, &want_edge, &want_marked)) {
+        bool want_edge = false;
+        if (!expect(cur, ops[k], &want, &want_edge)) {
           continue;
         }
         atomic_store_explicit(&db->cover_gate, cur, memory_order_relaxed);
-        bool marked = !want_marked;
-        bool edge = arts_cover_gate_step(db, ops[k], &marked);
+        bool edge = arts_cover_gate_step(db, ops[k]);
         uint32_t got =
             atomic_load_explicit(&db->cover_gate, memory_order_relaxed);
         steps++;
@@ -105,11 +103,10 @@ int main(void) {
             g_fails++;
           }
         }
-        if (got != want || edge != want_edge || marked != want_marked) {
+        if (got != want || edge != want_edge) {
           printf("FAIL cover_gate_step: op %d from 0x%x: word 0x%x (want "
-                 "0x%x) edge %d (want %d) marked %d (want %d)\n",
-                 (int)ops[k], cur, got, want, (int)edge, (int)want_edge,
-                 (int)marked, (int)want_marked);
+                 "0x%x) edge %d (want %d)\n",
+                 (int)ops[k], cur, got, want, (int)edge, (int)want_edge);
           g_fails++;
         }
       }

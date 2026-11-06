@@ -278,7 +278,6 @@ static void print_fingerprint(void) {
   MEMBER(runtime_private_t, rng_key);
   TYPE(shutdown_abandon_t);
   MEMBER(shutdown_abandon_t, queued_edts);
-  MEMBER(shutdown_abandon_t, waits);
   TYPE(thread_stop_t);
   MEMBER(thread_stop_t, state);
   MEMBER(thread_stop_t, caller_edt);

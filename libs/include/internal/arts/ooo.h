@@ -377,7 +377,7 @@ struct arts_ooo_args_db_publish_s {
   unsigned int releaser;
   arts_guid_t db_guid;
   uint64_t version;
-  uint64_t cv; /* announce only: the releaser's heap rendezvous, echoed in the
+  uint64_t cv; /* announce only: the releaser's rendezvous, echoed in the
                 * PUBLISH_CTS; 0 on every other leg */
   uint64_t data_size;
   uint64_t rdzv_txid;
@@ -456,7 +456,7 @@ struct arts_ooo_args_db_excl_request_s {
 };
 /* EXCL_RELEASE: data_size is an RW release's byte count (0 for RO releases).
  * cv: nonzero only on an RW release's landing-less announce — the address of
- * the releaser's heap rendezvous, forwarded verbatim in the PUBLISH_CTS so
+ * the releaser's rendezvous, forwarded verbatim in the PUBLISH_CTS so
  * the releaser wakes by pointer identity.  No acknowledgement answers a
  * release.
  * version: every sender passes 0 and the handler reads none — exclusion

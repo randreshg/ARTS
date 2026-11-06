@@ -37,20 +37,20 @@
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
 
-/// @file await_publish_ack_shutdown.c
+/// @file shutdown_blocked_release_ends.c
 /// @brief A release waiting for its publish or write-back to be acknowledged
-///        escapes the wait when the shutdown overtakes the acknowledgement.
+///        stays blocked when the shutdown overtakes the acknowledgement, and
+///        every rank still ends.
 ///
 /// A release that publishes, or writes back, synchronously blocks until the
 /// home answers.  A publish flight's acknowledgement completes the flight and
 /// wakes every waiter whose version it covers; the clear-to-send that names a
 /// landing in the home's copy to a releasing rank that holds none, FLUSH's
 /// acknowledgement and a PURGE grant return name their waiter by pointer.
-/// Once teardown starts the progress threads stop draining, so that answer may
-/// never arrive: the waiter must escape on its shutdown re-check (a timed wait
-/// and a shutdown-state poll), or the blocked releaser is stranded and the
-/// shutdown hangs.  The wait an escape abandons stays allocated, so an answer
-/// that still arrives posts into live memory.
+/// Once a rank's shutdown begins, that answer may never arrive (the home has
+/// ended, or its answer is dropped at the closed send gate): the releaser then
+/// stays blocked until the process ends.  Nothing on the way out waits for
+/// it, so every rank still ends, with the status the shutdown gives it.
 ///
 /// First a warmup of completed cross-rank write hand-offs of one block, every
 /// hop gated on the previous hop's completion event, in which each release off
@@ -76,8 +76,8 @@
 /// one block with no order among them are outside DB-WRF; that form runs only
 /// where the OCR model holds.
 ///
-/// Correct behavior is a clean teardown (every blocked releaser escapes); a
-/// stranded releaser keeps its rank from exiting.
+/// Correct behavior is every rank ending with status 0, a releaser still
+/// blocked when the shutdown comes included.
 
 #include "arts.h"
 
@@ -130,9 +130,9 @@ static void shutdown_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)paramv;
   (void)depc;
   (void)depv;
-  /* Trigger teardown.  Releases of the burst may still be waiting for their
-   * answers; each must escape via the shutdown re-check. */
-  arts_printf("PASS: await_publish_ack_shutdown reached shutdown\n");
+  /* Releases of the burst may still be waiting for their answers; each stays
+   * blocked until its answer posts or the process ends. */
+  arts_printf("PASS: shutdown_blocked_release_ends reached shutdown\n");
   arts_shutdown();
 }
 
@@ -267,7 +267,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   char **argv = (char **)paramv[1];
   bool contended = argc > 1 && strcmp(argv[1], "contended") == 0;
 
-  arts_printf("=== await_publish_ack_shutdown%s ===\n",
+  arts_printf("=== shutdown_blocked_release_ends%s ===\n",
               contended ? " contended" : "");
 
   uint64_t pv[P_COUNT] = {0u, (uint64_t)create_counter(), contended ? 1u : 0u};

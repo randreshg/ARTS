@@ -1634,21 +1634,19 @@ void arts_db_join_read(struct arts_db_cache_s *cache) {
 static bool lock_request_cover(struct arts_db_s *db, unsigned int requester,
                                arts_db_access_mode_t mode, uint32_t cover,
                                uint64_t token, bool reads) {
-  bool marked = false;
   if ((cover & EXCL_COVER_PRECLAIM) != 0u && requester == db->claim_rank) {
-    if (arts_cover_gate_step(db,
-                             mode == DB_MODE_RW ? ARTS_COVER_GATE_RWO_ARRIVE
-                                                : ARTS_COVER_GATE_ROO_ARRIVE,
-                             &marked)) {
+    if (arts_cover_gate_step(db, mode == DB_MODE_RW
+                                     ? ARTS_COVER_GATE_RWO_ARRIVE
+                                     : ARTS_COVER_GATE_ROO_ARRIVE)) {
       arts_excl_home_teardown(db, db->cache.db_guid);
     }
     return false;
   }
   if (mode == DB_MODE_RW && (cover & EXCL_COVER_RO_OPEN) != 0u) {
     bool par = (cover & EXCL_COVER_RO_PAR) != 0u;
-    (void)arts_cover_gate_step(db, ARTS_COVER_GATE_OWE, &marked);
+    (void)arts_cover_gate_step(db, ARTS_COVER_GATE_OWE);
     if (arts_rank_bitset_put(&db->ro_parity, requester, par) == par) {
-      if (arts_cover_gate_step(db, ARTS_COVER_GATE_ARRIVE, &marked)) {
+      if (arts_cover_gate_step(db, ARTS_COVER_GATE_ARRIVE)) {
         arts_excl_home_teardown(db, db->cache.db_guid);
         return false;
       }
@@ -1668,7 +1666,7 @@ static bool lock_request_cover(struct arts_db_s *db, unsigned int requester,
       }
       /* Declared before it came: a write turn of this rank covers it.
        * Dismissed, never processed as a read. */
-      bool edge = arts_cover_gate_step(db, ARTS_COVER_GATE_ARRIVE, &marked);
+      bool edge = arts_cover_gate_step(db, ARTS_COVER_GATE_ARRIVE);
       arts_send_db_excl_cts(
           db->cache.db_guid, requester,
           atomic_load_explicit(&db->cache.db_size, memory_order_relaxed),
@@ -1683,8 +1681,7 @@ static bool lock_request_cover(struct arts_db_s *db, unsigned int requester,
 }
 
 void arts_db_destroy_arrived(struct arts_db_s *db) {
-  bool marked = false;
-  if (arts_cover_gate_step(db, ARTS_COVER_GATE_MARK, &marked)) {
+  if (arts_cover_gate_step(db, ARTS_COVER_GATE_MARK)) {
     arts_excl_home_teardown(db, db->cache.db_guid);
   }
 }

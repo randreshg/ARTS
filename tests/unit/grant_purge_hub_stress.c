@@ -86,10 +86,7 @@ void arts_sched_fuzz_point(void) {
   }
 }
 #endif
-bool arts_db_await_ack(sem_t *cv) {
-  (void)cv;
-  return true;
-}
+void arts_db_await_ack(sem_t *cv) { (void)cv; }
 void arts_db_buf_landing_return(struct arts_db_buffer_s *b) { (void)b; }
 void arts_db_grant_note_ex_holder(struct arts_db_s *db, unsigned int r) {
   (void)db;

@@ -20,12 +20,15 @@
  *      drain, after the walk.
  *
  *   3. Release path and the PUBLISH_ACK rendezvous.  Wait/wake mechanism: a
- *      releaser registers a heap {sem, version} waiter on the cache and waits
- *      on it (arts_db_await_ack); at most one publish flight is in the air per
- *      (DB, rank), and its final PUBLISH_ACK wakes every waiter whose version
- *      that flight covers.  The announce leg's CTS is matched by pointer
- *      identity instead: the releaser's rendezvous address rides the packet
- *      and is echoed back — no per-cache seq state, no busy-wait.
+ *      releaser registers a {sem, version} waiter in its own frame on the
+ *      cache and waits on it (arts_db_await_ack); at most one publish flight
+ *      is in the air per (DB, rank), and its final PUBLISH_ACK wakes every
+ *      waiter whose version that flight covers.  The announce leg's CTS is
+ *      matched by pointer identity instead: the releaser's rendezvous address
+ *      rides the packet and is echoed back — no per-cache seq state, no
+ *      busy-wait.  A waiter returns only after its post, and no poster
+ *      touches a node after posting it, so every rendezvous outlives every
+ *      write into it.
  *
  *   4. Destroy lifecycle (the cache destructor).  Final teardown
  *      is driven by the cb (shared-ptr) deferred-free model: destroy fans out,
@@ -42,7 +45,6 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 
 #include "arts/coherence/buffer.h"
 #include "arts/coherence/census.h"
@@ -62,7 +64,6 @@
 #include "arts/runtime_types.h"
 #include "arts/system/print.h"
 #include "arts/system/schedfuzz.h"
-#include "arts/system/shutdown.h"
 #include "arts/system/threads.h"
 #include "arts/transport/net.h"       /* arts_net_put_payload */
 #include "arts/utils/lockfree_lifo.h" /* publish flight waiter stack */
@@ -666,30 +667,13 @@ void arts_db_drain_publication_waiters(struct arts_db_cache_s *cache) {
 /* ===== release-reply wait (shared coherence service) ===============
  *
  * A release that must not return before the home has answered blocks on a
- * heap semaphore that the answer posts.  Compiled for every arm; declared in
+ * semaphore that the answer posts.  Compiled for every arm; declared in
  * coherence/coherence.h so the arm TUs can invoke it. */
-bool arts_db_await_ack(sem_t *cv) {
-  /* Block until the arm's reply handler posts this semaphore.  The wait state
-   * is the caller's heap object, never a stack frame: a wait the shutdown
-   * cuts short leaks it, so a reply that still arrives posts into live
-   * memory.  No busy-wait: sem_timedwait sleeps the worker.  We re-arm on a
-   * coarse cadence only to re-check the shutdown flag — once teardown starts
-   * the progress threads stop draining and the reply never arrives, so the
-   * EDT epilogue must not block forever (returning lets the worker exit). */
-  for (;;) {
-    struct timespec ts;
-    (void)clock_gettime(CLOCK_REALTIME, &ts);
-    ts.tv_sec += 1; /* shutdown re-check cadence, not a timeout on the ACK */
-    if (sem_timedwait(cv, &ts) == 0) {
-      return true; /* the reply arrived */
+void arts_db_await_ack(sem_t *cv) {
+  while (sem_wait(cv) != 0) {
+    if (errno != EINTR) {
+      ARTS_ERROR("coherence: a release wait failed: %s", strerror(errno));
     }
-    if (errno == ETIMEDOUT && arts_shutdown_taken()) {
-      /* teardown: ACK will never come */
-      atomic_fetch_add_explicit(&arts_shutdown_abandon.waits, 1u,
-                                memory_order_relaxed);
-      return false;
-    }
-    /* ETIMEDOUT (not shutting down) or EINTR: re-arm the blocking wait. */
   }
 }
 
@@ -768,11 +752,13 @@ static bool pub_flight_carries_payload(struct arts_db_cache_s *cache) {
  * claiming releaser (worker thread — may run the credit-less announce/CTS
  * leg, which blocks) vs a completing ACK (progress thread — the ACK that
  * launched it just refilled the credit, so needing to block there means the
- * refill chain is broken: fatal outside a shutdown, the relaunch dropped at
- * one). */
-static struct arts_db_pub_waiter_s *
-pub_flight_drive(struct arts_db_cache_s *cache, bool may_block,
-                 uint64_t fallback_version) {
+ * refill chain is broken, which is fatal).  `gate` is the claiming releaser's
+ * storage for this flight's gate node (below), in a frame that outlives the
+ * gate's post; NULL exactly when may_block is false. */
+static void pub_flight_drive(struct arts_db_cache_s *cache, bool may_block,
+                             uint64_t fallback_version,
+                             struct arts_db_pub_waiter_s *gate) {
+  assert(may_block == (gate != NULL));
   INCREMENT_NUM_PUB_FLIGHT_BY(1);
   arts_shared_ptr_t buf_h = arts_db_buf_acquire(cache);
   struct arts_db_buffer_s *buf =
@@ -798,9 +784,7 @@ pub_flight_drive(struct arts_db_cache_s *cache, bool may_block,
    * stamp, so exactly this flight's ACK releases it.  A trailing relaunch
    * needs no gate: its uncovered waiters are blocked releasers, so the 0-edge
    * cannot fire until its ACK lands. */
-  struct arts_db_pub_waiter_s *gate = NULL;
-  if (may_block) {
-    gate = (struct arts_db_pub_waiter_s *)arts_malloc(sizeof(*gate));
+  if (gate != NULL) {
     gate->version = version;
     sem_init(&gate->sem, 0, 0);
     arts_lf_stack_push(&cache->pub_waiters, &gate->link);
@@ -815,16 +799,14 @@ pub_flight_drive(struct arts_db_cache_s *cache, bool may_block,
     arts_send_db_publish(arts_db_of_cache(cache), version, /*cv=*/0,
                          /*data_size=*/0, /*rdzv_txid=*/0, /*rdzv_cookie=*/0,
                          /*return_grant=*/false);
-    return gate;
+    return;
   }
-#if ARTS_PUB_CONTROL_ONLY
-  return gate; /* not reached: every flight of this arm is control-only */
-#else
+#if !ARTS_PUB_CONTROL_ONLY
   /* Payload flight: consume the credit.  The acquire exchange pairs with the
    * refill's release-store; addr/rkey are stable across refills (one DB has
    * one stable buffer), so reading them after the exchange is safe.  The
-   * strong buffer ref transfers to the PUT's local completion — the source-
-   * lifetime gate outlives even a shutdown-escaped waiter. */
+   * strong buffer ref transfers to the PUT's local completion, which pins the
+   * source bytes until the fabric has drained them. */
   uint64_t txid =
       atomic_exchange_explicit(&cache->home_pub_txid, 0u, memory_order_acquire);
   if (txid != 0) {
@@ -836,77 +818,52 @@ pub_flight_drive(struct arts_db_cache_s *cache, bool may_block,
     arts_send_db_publish(arts_db_of_cache(cache), version, /*cv=*/0, db_size,
                          txid, /*rdzv_cookie=*/0,
                          pub_leg_takes_grant_return(cache));
-    return gate;
+    return;
   }
   if (!may_block) {
-    if (arts_shutdown_taken()) {
-      /* A shutdown escape let the releases return and the destroy that followed
-       * them stripped this ACK's credit.  Every uncovered owner has already
-       * escaped (its release returned only through the escape, which read the
-       * same shutdown state); the flight is left FLYING and nothing is posted,
-       * so each cut wait stays counted and the shutdown stays non-quiescent. */
-      arts_db_buf_release(&buf_h);
-      return NULL;
-    }
-    /* Outside a shutdown the ACK this relaunch runs in refilled the credit,
-     * and only the flight's owner takes one: a home answers a payload flight
-     * without one only for a block destroyed while that release was in
-     * flight, which the destroy contract forbids. */
+    /* The ACK this relaunch runs in refilled the credit, and only the
+     * flight's owner takes one. */
     ARTS_ERROR("coherence: guid %lu: a publish relaunch found no credit",
                (unsigned long)cache->db_guid);
   }
   INCREMENT_NUM_PUB_CTS_FALLBACK_BY(1);
   /* Credit-less first flight: announce -> blocked CTS wait -> PUT -> commit.
-   * The rendezvous lives on the HEAP: the shutdown escape can abandon the
-   * wait while the CTS reply is still in flight, and that reply writes the
-   * landing fields through the echoed cv before posting.  A heap block
-   * deliberately LEAKED on the escape keeps that late write inside live
-   * memory (a bounded, teardown-only leak); a popped stack frame would be
-   * corrupted. */
-  struct arts_db_pub_rendezvous_s *wr =
-      (struct arts_db_pub_rendezvous_s *)arts_malloc(sizeof(*wr));
-  sem_init(&wr->sem, 0, 0);
-  wr->landing = (struct arts_rdzv_landing_s){0, 0, 0, 0};
+   * The CTS reply writes the landing through the echoed cv and then posts;
+   * the wait returns only after that post, so the rendezvous lives in this
+   * frame. */
+  struct arts_db_pub_rendezvous_s wr;
+  sem_init(&wr.sem, 0, 0);
+  wr.landing = (struct arts_rdzv_landing_s){0, 0, 0, 0};
   arts_send_db_publish(arts_db_of_cache(cache), version,
-                       (uint64_t)(uintptr_t)wr, db_size, /*rdzv_txid=*/0,
+                       (uint64_t)(uintptr_t)&wr, db_size, /*rdzv_txid=*/0,
                        /*rdzv_cookie=*/0, /*return_grant=*/false);
-  if (!arts_db_await_ack(&wr->sem)) {
-    /* Shutdown escape: the flight is abandoned with the runtime.  A CTS
-     * reply may still be writing the landing and posting through wr, so wr
-     * is leaked and nothing in it is read.  The buffer ref is ours to drop —
-     * nothing read the bytes. */
-    arts_db_buf_release(&buf_h);
-    return gate;
-  }
+  arts_db_await_ack(&wr.sem);
   /* The post orders the reply's landing stores before these reads, and a
    * CTS reply always carries a landing. */
-  assert(wr->landing.txid != 0);
-  arts_net_put_payload((int)home_rank, wr->landing.addr, wr->landing.key,
-                       wr->landing.txid, buf->data, db_size,
+  assert(wr.landing.txid != 0);
+  arts_net_put_payload((int)home_rank, wr.landing.addr, wr.landing.key,
+                       wr.landing.txid, buf->data, db_size,
                        arts_db_buf_ref_release_cb, (void *)buf_h);
   arts_send_db_publish(arts_db_of_cache(cache), version, /*cv=*/0, db_size,
-                       wr->landing.txid, wr->landing.cookie,
+                       wr.landing.txid, wr.landing.cookie,
                        pub_leg_takes_grant_return(cache));
   /* The commit carries cv 0 — the final ACK completes the FLIGHT, not this
-   * rendezvous.  The CTS was the only writer through wr, so it dies here. */
-  sem_destroy(&wr->sem);
-  arts_free(wr);
-  return gate;
+   * rendezvous. */
+  sem_destroy(&wr.sem);
 #endif
 }
 
 void arts_db_publish_sync(struct arts_db_cache_s *cache, uint64_t version) {
-  /* The waiter node lives on the HEAP for the same reason the CTS rendezvous
-   * does: a shutdown-escaped waiter leaks its node, and a late completion
-   * drain may still post into it — posting into leaked live memory is safe,
-   * freeing under the poster is not. */
-  struct arts_db_pub_waiter_s *w =
-      (struct arts_db_pub_waiter_s *)arts_malloc(sizeof(*w));
-  w->version = version;
-  sem_init(&w->sem, 0, 0);
-  arts_lf_stack_push(&cache->pub_waiters, &w->link);
+  /* The waiter node and the gate live in this frame: a drain pops a node
+   * before it posts it and touches it no more, and both waits below return
+   * only after their posts. */
+  struct arts_db_pub_waiter_s w;
+  struct arts_db_pub_waiter_s gate;
+  bool gated = false;
+  w.version = version;
+  sem_init(&w.sem, 0, 0);
+  arts_lf_stack_push(&cache->pub_waiters, &w.link);
   arts_sched_fuzz_point(); /* widen the push<->flight-claim window */
-  struct arts_db_pub_waiter_s *gate = NULL;
   for (;;) {
     unsigned int f =
         atomic_load_explicit(&cache->pub_flight, memory_order_relaxed);
@@ -917,7 +874,8 @@ void arts_db_publish_sync(struct arts_db_cache_s *cache, uint64_t version) {
               memory_order_acq_rel, memory_order_relaxed)) {
         /* The flight's count, released by the completion that lands it. */
         arts_db_axis_take(arts_db_of_cache(cache));
-        gate = pub_flight_drive(cache, /*may_block=*/true, version);
+        pub_flight_drive(cache, /*may_block=*/true, version, &gate);
+        gated = true;
         break;
       }
     } else if (atomic_compare_exchange_strong_explicit(
@@ -927,35 +885,11 @@ void arts_db_publish_sync(struct arts_db_cache_s *cache, uint64_t version) {
       break;
     }
   }
-  /* A posted waiter was popped before its post, so nothing posts it again: it
-   * is ours to free whether or not the shutdown has begun; only a wait the
-   * escape cut short leaves its node to a late poster. */
-  if (!arts_db_await_ack(&w->sem)) {
-    /* Shutdown escape: a late drain may still post — leak w.  A wait the
-     * escape cut short is already recorded by the await.  The gate's flight
-     * covers w, so the gate may already be posted (a drain posts it before w,
-     * or the ACK landed after the wait timed out): then it is off the stack
-     * and nothing was left unawaited; otherwise its wait is recorded here and
-     * it stays parked. */
-    if (gate != NULL) {
-      if (sem_trywait(&gate->sem) == 0) {
-        sem_destroy(&gate->sem);
-        arts_free(gate);
-      } else {
-        atomic_fetch_add_explicit(&arts_shutdown_abandon.waits, 1u,
-                                  memory_order_relaxed);
-      }
-    }
-    return;
-  }
-  sem_destroy(&w->sem);
-  arts_free(w);
-  if (gate != NULL) {
-    if (!arts_db_await_ack(&gate->sem)) {
-      return; /* shutdown escape — leak the gate (the escape is recorded) */
-    }
-    sem_destroy(&gate->sem);
-    arts_free(gate);
+  arts_db_await_ack(&w.sem);
+  sem_destroy(&w.sem);
+  if (gated) {
+    arts_db_await_ack(&gate.sem);
+    sem_destroy(&gate.sem);
   }
 }
 
@@ -976,10 +910,10 @@ void arts_handler_db_publish_ack(const struct arts_db_publish_ack_args_s *a) {
   }
   struct arts_db_s *db = arts_db_from_token(a->token, a->db_guid);
   if (arts_db_token_retired(db, a->db_guid)) {
-    /* The block was destroyed with this flight in the air: a program that
-     * destroyed it before the release returned, or a shutdown whose escape
-     * let the release return first.  Nothing is woken (a releaser still
-     * waiting leaves through the shutdown escape); the flight's count goes. */
+    /* The block was destroyed with this flight in the air, by a program that
+     * destroyed it before the release returned, which the destroy contract
+     * forbids.  Nothing is woken (a releaser still waiting stays blocked);
+     * the flight's count goes. */
     arts_db_axis_drop(db, 1u);
     return;
   }
@@ -1047,7 +981,7 @@ void arts_handler_db_publish_ack(const struct arts_db_publish_ack_args_s *a) {
       (void)atomic_exchange_explicit(&cache->pub_flight, ARTS_PUB_FLYING,
                                      memory_order_acq_rel);
       INCREMENT_NUM_PUB_FLIGHT_TRAILING_BY(1);
-      (void)pub_flight_drive(cache, /*may_block=*/false, a->version);
+      pub_flight_drive(cache, /*may_block=*/false, a->version, NULL);
       return;
     }
     unsigned int expected = ARTS_PUB_FLYING;
@@ -1126,24 +1060,22 @@ void arts_db_home_seed_owed(struct arts_db_s *db, unsigned int creator,
 
 int arts_db_cover_request(struct arts_db_s *db, unsigned int requester,
                           bool write, uint32_t cover, bool *teardown) {
-  bool marked = false;
   *teardown = false;
   if ((cover & ARTS_COVER_PRECLAIM) != 0u && requester == db->claim_rank) {
     /* The claiming creator's pre-claim request: discarded unanswered, its
      * parity not applied (the announce seeded it). */
-    *teardown = arts_cover_gate_step(
-        db, write ? ARTS_COVER_GATE_RWO_ARRIVE : ARTS_COVER_GATE_ROO_ARRIVE,
-        &marked);
+    *teardown = arts_cover_gate_step(db, write ? ARTS_COVER_GATE_RWO_ARRIVE
+                                               : ARTS_COVER_GATE_ROO_ARRIVE);
     return ARTS_COVER_DROP;
   }
   if (write && (cover & ARTS_COVER_RO_OPEN) != 0u) {
     bool par = (cover & ARTS_COVER_RO_PAR) != 0u;
-    (void)arts_cover_gate_step(db, ARTS_COVER_GATE_OWE, &marked);
+    (void)arts_cover_gate_step(db, ARTS_COVER_GATE_OWE);
     if (arts_rank_bitset_put(&db->ro_parity, requester, par) == par) {
       /* The undo is a settling step like any: if it is the one that leaves
        * a marked gate with nothing owed, it owns the teardown, and the
        * request reached a destroyed block (outside the contract): dropped. */
-      if (arts_cover_gate_step(db, ARTS_COVER_GATE_ARRIVE, &marked)) {
+      if (arts_cover_gate_step(db, ARTS_COVER_GATE_ARRIVE)) {
         *teardown = true;
         return ARTS_COVER_DROP;
       }
@@ -1153,7 +1085,7 @@ int arts_db_cover_request(struct arts_db_s *db, unsigned int requester,
     bool par = (cover & ARTS_COVER_PAR) != 0u;
     if (arts_rank_bitset_put(&db->ro_parity, requester, par) == par) {
       /* Declared first: a write turn of this rank covers the request. */
-      *teardown = arts_cover_gate_step(db, ARTS_COVER_GATE_ARRIVE, &marked);
+      *teardown = arts_cover_gate_step(db, ARTS_COVER_GATE_ARRIVE);
       return ARTS_COVER_DISMISS;
     }
   }
@@ -1161,21 +1093,9 @@ int arts_db_cover_request(struct arts_db_s *db, unsigned int requester,
 }
 
 void arts_db_cover_destroy(struct arts_db_s *db) {
-  bool marked = false;
-  if (arts_cover_gate_step(db, ARTS_COVER_GATE_MARK, &marked)) {
+  if (arts_cover_gate_step(db, ARTS_COVER_GATE_MARK)) {
     arts_db_home_destroy_now(db);
   }
-}
-
-bool arts_db_cover_marked(struct arts_db_s *db) {
-  /* Acquire: a refusal to mint tells the releasing rank the block was
-   * destroyed, and that rank's relaunch gate (pub_flight_drive) relies on the
-   * destroy -- happens-after its escapes -- being happens-before this ACK.
-   * The MARK is the head of the cover gate's release sequence (every later
-   * write is an acq_rel RMW), so an acquire load that reads the mark or any
-   * later value synchronizes with it. */
-  return (atomic_load_explicit(&db->cover_gate, memory_order_acquire) &
-          ARTS_COVER_GATE_TD) != 0u;
 }
 
 void arts_db_cover_home_init(struct arts_db_s *db, unsigned int nranks) {
@@ -1226,11 +1146,11 @@ void arts_db_cache_common_destroy_pre(struct arts_db_cache_s *cache) {
  * reports two things: states the protocols can never reach, and waiters or
  * holds left behind by a shutdown that was quiescent -- a survivor there is a
  * lost wake that the run's own success criteria may have masked (a reader
- * that never ran, a release that never completed).  Work a shutdown abandoned
- * is the one legal source of such a residue, so after a shutdown that left
- * work undone residues are not reported; the contributors say what was left
- * undone.  Violations print a QUIESCENCE-DEBUG marker; tests whose shutdown
- * is quiescent turn that marker into a failure.
+ * that never ran).  Work a shutdown abandoned is the one legal source of such
+ * a residue, so after a shutdown that left work undone residues are not
+ * reported; the contributors say what was left undone.  Violations print a
+ * QUIESCENCE-DEBUG marker; tests whose shutdown is quiescent turn that marker
+ * into a failure.
  *
  * The walk exists only to produce diagnostic messages, so it is gated on
  * the log level that compiles those messages: below DEBUG the whole check
@@ -1350,12 +1270,12 @@ void arts_db_debug_quiescence_check(const struct arts_teardown_exempt_s *ex) {
   const unsigned int nt = (unsigned int)arts_guid_table_count;
   /* Whether this shutdown was quiescent, named by contributor so a log's
    * reader knows why a residue went unreported.  Every one is pending work
-   * the shutdown left undone: runnable EDTs dropped from a deque, release
-   * waits cut short, EDTs admitted (every dependence satisfied, acquisition
-   * begun) that never finished -- these cover an EDT parked mid acquisition,
-   * which sits in no queue a discard site sees, and overlap the first -- and
-   * messages parked on a route slot's OoO list: a create waiting for a
-   * destroy, or any other message waiting for an install, that never came.
+   * the shutdown left undone: runnable EDTs dropped from a deque, EDTs
+   * admitted (every dependence satisfied, acquisition begun) that never
+   * finished -- these cover an EDT parked mid acquisition, which sits in no
+   * queue a discard site sees, and overlap the first -- and messages parked
+   * on a route slot's OoO list: a create waiting for a destroy, or any other
+   * message waiting for an install, that never came.
    * A parked message is residue whatever parked it -- a late message for a
    * destroyed GUID included -- so a program whose shutdown leaves one was not
    * quiescent.  Each is read after every other runtime thread has stopped,
@@ -1365,8 +1285,6 @@ void arts_db_debug_quiescence_check(const struct arts_teardown_exempt_s *ex) {
    * leaves that requester's EDT admitted and unfinished. */
   unsigned int ab_queued = atomic_load_explicit(
       &arts_shutdown_abandon.queued_edts, memory_order_relaxed);
-  unsigned int ab_waits = atomic_load_explicit(&arts_shutdown_abandon.waits,
-                                               memory_order_relaxed);
   unsigned int ab_ooo = 0;
   for (unsigned int t = 0; t < nt; t++) {
     ab_ooo += arts_route_table_parked_count(arts_node_info.route_table[t]);
@@ -1390,7 +1308,7 @@ void arts_db_debug_quiescence_check(const struct arts_teardown_exempt_s *ex) {
       arts_shared_release(&h);
     }
   }
-  bool walk_quiescent = (ab_queued | ab_waits | ab_ooo | ab_admitted) == 0u;
+  bool walk_quiescent = (ab_queued | ab_ooo | ab_admitted) == 0u;
   /* Blocks the exempt EDTs hold, which the walk judges as after a shutdown
    * that left work undone: their holds are never released. */
   unsigned int caller_held = 0;
@@ -1413,20 +1331,19 @@ void arts_db_debug_quiescence_check(const struct arts_teardown_exempt_s *ex) {
         (void)quiescent;
 #ifdef ARTS_PROTOCOL_FLUSH
         /* FLUSH keeps no wait structure on a descriptor — a blocked release
-         * owns a heap semaphore that the home's ACK posts — so a walk has
-         * nothing to report. */
+         * waits on a semaphore in its own frame that the home's answer posts
+         * — so a walk has nothing to report. */
 #else
         struct arts_db_cache_s *c = &db->cache;
 #if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
-        /* What each rule can see.  A waiter or a releaser that is still
-         * blocked belongs to an EDT that has not finished; that EDT makes its
-         * own rank's shutdown non-quiescent, and in a program whose shutdown
-         * waits for it a lost wake shows as the run never ending, not as a
-         * residue here.  So the rules gated on a quiescent shutdown catch
-         * what completed work left behind: a node no drain removed, a hold
-         * whose EDT finished without releasing it.  The ungated rules are
-         * states no interleaving and no message still in flight can leave,
-         * and they hold after any shutdown. */
+        /* What each rule can see.  A parked waiter belongs to an EDT that has
+         * not finished, which makes the shutdown non-quiescent; a blocked
+         * releaser keeps its thread from stopping, so the walk does not run
+         * and the skip line reports it.  So the rules gated on a quiescent
+         * shutdown catch what completed work left behind: a node no drain
+         * removed, a hold whose EDT finished without releasing it.  The
+         * ungated rules are states no interleaving and no message still in
+         * flight can leave, and they hold after any shutdown. */
 #endif
 #if (defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)) &&             \
     (!defined(ARTS_WRITE_POLICY_WB) || defined(ARTS_PROTOCOL_INV))
@@ -1914,9 +1831,8 @@ void arts_db_debug_quiescence_check(const struct arts_teardown_exempt_s *ex) {
   }
   if (viol != 0 || !walk_quiescent) {
     ARTS_DEBUG("QUIESCENCE-DEBUG: %u violation(s) (shutdown left undone: "
-               "queued_edts=%u waits=%u ooo=%u "
-               "admitted_edts=%u)",
-               viol, ab_queued, ab_waits, ab_ooo, ab_admitted);
+               "queued_edts=%u ooo=%u admitted_edts=%u)",
+               viol, ab_queued, ab_ooo, ab_admitted);
   }
 #else
   (void)ex;

@@ -523,10 +523,11 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
     ARTS_DEBUG("Coh PUBLISH_CTS Received");
     struct arts_msg_publish_cts_packet_s *pack =
         (struct arts_msg_publish_cts_packet_s *)(packet);
-    /* Cat-C SPECIAL — pointer-identity wake of the blocked releaser's heap
+    /* Cat-C SPECIAL — pointer-identity wake of the blocked releaser's
      * rendezvous (sem first member).  Cache-independent: write the landing
      * fields, THEN post (sem_post is the release/acquire edge), even if the
-     * DB is being torn down — a stranded releaser must never hang. */
+     * DB is being torn down, and touch the rendezvous no more: the releaser
+     * may leave its frame as soon as the post lands. */
     struct arts_db_pub_rendezvous_s *wr =
         (struct arts_db_pub_rendezvous_s *)(uintptr_t)pack->cv;
     if (wr != NULL) {
@@ -605,8 +606,8 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
     struct arts_msg_publish_ack_packet_s *pack =
         (struct arts_msg_publish_ack_packet_s *)(packet);
     /* No lookup either way.  A nonzero cv is a cache-independent
-     * pointer-identity sem-post (the heap rendezvous of a grant return sent
-     * on its own), which must reach the blocked returner whatever became of
+     * pointer-identity sem-post (the rendezvous of a grant return sent on
+     * its own), which must reach the blocked returner whatever became of
      * the block.  cv == 0 is a flight's completion, an answer on the
      * releaser descriptor its token names. */
     struct arts_db_publish_ack_args_s args = {.db_guid = pack->db_guid,

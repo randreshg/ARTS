@@ -398,10 +398,10 @@ void arts_db_join_read(struct arts_db_cache_s *cache);
  * announce (VAL and INV write-through, EXCL PURGE's landing-less release),
  * whose handler writes `landing` before posting (sem_post is the
  * release/acquire edge), or the PUBLISH_ACK to a grant return sent on its own
- * (VAL and INV PURGE), which posts it alone.  Always on the heap: a wait the
- * shutdown cuts short leaks it, so a late answer still lands in live memory.
- * `sem` MUST be the first member: the ACK path posts (sem_t *)cv directly, so
- * &wr == &wr.sem. */
+ * (VAL and INV PURGE), which posts it alone.  It lives in the releaser's
+ * frame: the releaser leaves its wait only after the one post, and the
+ * answer touches it no more once posted.  `sem` MUST be the first member:
+ * the ACK path posts (sem_t *)cv directly, so &wr == &wr.sem. */
 struct arts_db_pub_rendezvous_s {
   sem_t sem; /* FIRST — cv posts resolve to this address */
   struct arts_rdzv_landing_s landing;
@@ -415,18 +415,16 @@ struct arts_db_pub_rendezvous_s {
  * bytes under its current version, and releases that land mid-flight coalesce
  * into at most one trailing flight.  Returns once a publish covering `version`
  * is ACKed (the source-lifetime pin is the flight's own buffer ref, released at
- * the PUT's local completion).  Blocks the calling worker; returns early only
- * on shutdown. */
+ * the PUT's local completion).  Blocks the calling worker until then, whatever
+ * the shutdown does. */
 #if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
 void arts_db_publish_sync(struct arts_db_cache_s *cache, uint64_t version);
 #endif
 
-/* Block on the caller's heap semaphore until the matching reply posts it;
- * returns early if teardown begins.  The one blocking wait of the
- * release path, in every arm that has one.  Returns whether the reply came:
- * false is a wait the shutdown cut short, which it records -- a caller that
- * then drops the rest of its round records the waits it never began. */
-bool arts_db_await_ack(sem_t *cv);
+/* Block on the caller's semaphore until the matching reply posts it; returns
+ * only then, whatever the shutdown does.  The one blocking wait of the
+ * release path, in every arm that has one. */
+void arts_db_await_ack(sem_t *cv);
 
 /* What the walk below exempts: the EDTs that called the rank's end, which
  * never return, and the descriptors they hold.  An exempt EDT is not counted
@@ -670,8 +668,6 @@ void arts_db_grant_rearm(struct arts_db_cache_s *cache);
 int arts_db_cover_request(struct arts_db_s *db, unsigned int requester,
                           bool write, uint32_t cover, bool *teardown);
 void arts_db_cover_destroy(struct arts_db_s *db);
-/* Whether the block's destroy has marked the home's gate (an acquire load). */
-bool arts_db_cover_marked(struct arts_db_s *db);
 void arts_db_home_destroy_now(struct arts_db_s *db);
 void arts_db_cover_home_init(struct arts_db_s *db, unsigned int nranks);
 void arts_db_cover_home_teardown(struct arts_db_s *db);
