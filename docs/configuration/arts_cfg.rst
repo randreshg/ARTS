@@ -291,6 +291,29 @@ leaves the default.
    To run several ranks on one machine, use ``launcher=local`` and let it
    place them.
 
+Under ``launcher=local`` and ``launcher=ssh``, the process you start for a
+run of more than one rank is the **spawner**: it starts every rank (a local
+process, or an ``ssh`` client that runs the rank on its host), is none of them
+and ends with the highest status a rank ended with.  Under ``slurm``,
+``flux`` and ``lsf`` the scheduler starts the ranks and none is a spawner.  The
+ranks inherit the spawner's standard output and standard error; nothing is
+relayed.  Under ``launcher=local`` only rank 0 inherits its standard input
+and every other rank reads ``/dev/null``; under ``launcher=ssh`` no rank has
+standard input; the schedulers apply their own policy.  A rank that ends with
+a non-zero status makes the spawner print
+``[ARTS] spawner: rank <i> (pid <p>) ended with status <s>``.  A signal
+(SIGINT, SIGTERM, SIGHUP or SIGALRM) sent to the spawner is passed on to
+every rank, which ends as the section below says.
+
+Under ``launcher=ssh`` the spawner runs each rank through
+``sh -c`` on its host, in the spawner's working directory, and ends the rank if
+the connection closes.  The rank receives every ``ARTS_*`` variable and every
+variable named after a config key from the spawner's environment, with
+``ARTS_CONFIG`` made an absolute path, ``ARTS_RANK`` and ``LD_LIBRARY_PATH``;
+it does not receive ``FI_*``, ``MIMALLOC_*`` or sanitizer options, which must
+be set on the host.  The login shell of every host must be POSIX-family
+(``sh``, ``bash``, ``zsh`` or ``ksh``).
+
 The ``nodes`` list carries hostnames only: each comma-separated entry is a
 host name or a name followed by one bracketed number or range
 (``node[01-10]``) whose bounds are unsigned ints.  Any other entry (one
@@ -334,6 +357,62 @@ config with **no** ``launcher`` line and no scheduler environment still
 defaults to ``ssh``, Flux environment or not.  Outside a Slurm or LSF
 environment the value must otherwise be ``local``, ``ssh`` or ``flux``;
 ``slurm`` or ``lsf`` there, or any other value, is refused at load.
+
+Ending a Run
+------------
+
+A rank ends when one of its threads takes the rank's end: a call to
+``arts_shutdown`` or ``arts_abort``, a terminating signal (SIGTERM, SIGINT,
+SIGHUP or SIGALRM, which end the rank with status 128 plus the signal, 143
+for SIGTERM), a fault, a runtime error, or news that a peer has ended.  The
+moment a thread takes it is the rank's **shutdown point**.  From it the rank
+sends nothing but, when its end began on this rank (not from a peer's message
+or closed connection), one best-effort shutdown message to each peer it has
+contacted; it writes its counter files (see :doc:`counters_cfg`) and ends the
+process.  It does not wait for another rank, for its own tasks or for the
+sends in flight; a peer learns of the end from the message or from the
+closed connections.  The status of a rank is the highest of the end's own
+status and the one ``arts_app_exit_status`` returns.
+
+A call to ``arts_shutdown`` does not return to its caller, and neither does
+a call made after another thread took the end: the code after the call does
+not run, and the calling EDT does not complete (its data blocks are not
+released, its completion event is not satisfied, its group is not
+decremented).
+
+Every step after the shutdown point is bounded by a **watchdog** inside the
+rank.  When the bound passes it prints
+``[ARTS] shutdown watchdog: rank <r> stuck in phase <p>`` (the spawner's line
+reads ``spawner`` in place of ``rank <r>``), where the phase is one of
+``post``, ``capture``, ``regpool``, ``record``, ``oracle`` (only in a tree
+built with ``ARTS_DEBUG_TEARDOWN``), ``leak`` (only under AddressSanitizer) or
+``flush``, and ends the process: a rank whose end began from a fault raises
+the fault's signal; a rank stuck in phase ``record`` ends with its own status,
+0 included, the line adds ``; the counter record is lost``, and the counter
+files are lost; any other rank ends with its status, or with 71 when that is
+0.  The bound is 10 s, or 60 s in a tree built with a sanitizer or
+``ARTS_DEBUG_TEARDOWN``, plus the counter files' estimated size at 4 MiB/s,
+and the line is written only if standard error takes it within one more
+second.  The
+watchdog uses the real-time signal ``SIGRTMIN+1``, which a program must not
+use and which the runtime unblocks when ``arts_rt`` starts.  It cannot fire
+in a thread that is in uninterruptible sleep (a write to a hung file system)
+or, under ThreadSanitizer, in a thread outside a blocking call until its next
+one; the spawner's grace bounds those.  A process the program forked, and
+a call to the end from outside ``arts_rt``, have no watchdog.
+
+The spawner gives the ranks of a run a **grace**: when the first rank has
+ended, any rank still running after the grace is killed with SIGKILL, and the
+spawner prints
+``[ARTS] spawner: end-of-step grace of <G> s expired; killing rank <i>
+(pid <p>)``.  The grace is the ``ARTS_END_GRACE_S`` environment variable, a
+whole number of seconds in 1-86400.  Unset, it is 30 s, raised to the run's
+startup budget plus the watchdog's bound when that is larger.  A set value
+below that sum is refused at start, because it would kill a rank that was
+about to end on its own.  A run that writes large counter files (``PERIODIC``
+histories) sets it above the sum by the files' write time.  ``artsrun``
+sets it per campaign with ``--end-grace`` and raises it for a cell whose bound
+is larger (``tools/artsrun/README.md``, "End grace").
 
 CXL Store
 ---------

@@ -50,7 +50,7 @@ Every ARTS program consists of three parts:
 
    /* 3.  Entry point ----------------------------------------------------- */
    int main(int argc, char **argv) {
-       return arts_rt(argc, argv);   /* blocks until arts_shutdown() */
+       return arts_rt(argc, argv);   /* does not return once running */
    }
 
 Three idioms follow from the one entry.

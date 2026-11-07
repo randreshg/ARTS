@@ -225,8 +225,9 @@ All options are set with ``-D<NAME>=<VALUE>`` on the cmake line.
        compiler cannot combine the two.  Under ``ADDRESS`` the test suite
        runs with one LeakSanitizer suppression,
        ``tests/lsan_suppressions.txt`` (a leak inside the vendored
-       libfabric's tcp provider); the work a non-quiescent shutdown
-       abandons stays reachable at exit and is not reported.  Under
+       libfabric's tcp provider); the leak check at a rank's end reports only
+       what is unreachable, so an object still installed in a route table
+       stays reachable and a reference nobody drops goes unreported.  Under
        ``THREAD`` the audited tests listed in
        ``tests/tsan/residue_tests.cmake`` run, in the cells and variants
        each entry names, with one of two suppression files
@@ -253,23 +254,26 @@ All options are set with ``-D<NAME>=<VALUE>`` on the cmake line.
        been made runnable there when it was held, or n ms),
        ``ARTS_NET_RDZV_CUT=<n>`` (raise no one-sided payload's arrival on any
        rank, so no pairing completes; the rank that has taken in n arrivals
-       and registered n expectations starts the shutdown, whose teardown
-       discards them),
+       and registered n expectations ends its run, and the teardown of a tree
+       built with ``ARTS_DEBUG_TEARDOWN`` discards them),
        ``ARTS_NET_REFUSE_EP_CLOSE=<rank>`` (that rank's teardown takes its
-       endpoint's close as refused and keeps the endpoint, the registered pool,
-       the domain and the fabric).
+       endpoint's close as refused and keeps the endpoint, the registered
+       pool, the domain and the fabric; it acts only in a tree built with
+       ``ARTS_DEBUG_TEARDOWN``, and an injection tree without it refuses the
+       variable).
        The tests that need a hook register only where this is on.
    * - ``ARTS_DEBUG_DB_QUARANTINE``
      - OFF
      - Debug builds only: fill every freed coherent data-block descriptor and
        hold it back for the next 1024 frees made by the same thread,
        reporting a write through a reference that outlived it when the
-       descriptor leaves the quarantine and at teardown, and refusing a second
-       free; under ``ARTS_DEBUG_SANITIZER=ADDRESS`` the held memory is
-       poisoned as well.  It also counts the descriptors ended (their
-       destructor ran): the teardown's ``TEARDOWN-INFO`` line reports how many
-       its rendezvous discards ended, beside the discards it ran and, with
-       ``ARTS_DEBUG_LANDING_BALANCE``, the landings still out.
+       descriptor leaves the quarantine and, with ``ARTS_DEBUG_TEARDOWN``, at
+       teardown, and refusing a second free; under
+       ``ARTS_DEBUG_SANITIZER=ADDRESS`` the held memory is poisoned as well.
+       It also counts the descriptors ended (their destructor ran): with
+       ``ARTS_DEBUG_TEARDOWN`` the teardown's ``TEARDOWN-INFO`` line reports
+       how many its rendezvous discards ended, beside the discards it ran and,
+       with ``ARTS_DEBUG_LANDING_BALANCE``, the landings still out.
    * - ``ARTS_DEBUG_LANDING_BALANCE``
      - OFF
      - Debug builds only: count each rank's rendezvous landings drawn and not
@@ -277,8 +281,8 @@ All options are set with ``-D<NAME>=<VALUE>`` on the cmake line.
        A reply the shutdown cuts legally leaves its landing out, so the
        count is no shutdown verdict: the tests that destroy blocks and then
        wait for every home to be torn down also wait for every rank's count
-       to reach zero, and the teardown walk prints a non-zero count as
-       information.
+       to reach zero, and the teardown walk of a tree built with
+       ``ARTS_DEBUG_TEARDOWN`` prints a non-zero count as information.
    * - ``ARTS_DEBUG_WAKE_GUID``
      - OFF
      - Debug builds only: keep the parked EDT's GUID beside each waiting
@@ -290,6 +294,25 @@ All options are set with ``-D<NAME>=<VALUE>`` on the cmake line.
        by 8 bytes; every unit of a tree sees the option, and every rank of a
        run is one build.  The validation trees and their sanitizer twins turn
        it on.
+   * - ``ARTS_DEBUG_TEARDOWN``
+     - OFF
+     - Debug builds only: the oracle.  A rank ends the same way in every
+       build: it sends its shutdown message when its end began on this rank,
+       writes its counter files and ends the process.  With this option,
+       after the counter files the rank also stops its own runtime threads
+       (waiting at most 2 s for them), runs the quiescence walk (compiled at
+       log level DEBUG), closes the transport, frees the runtime's state in
+       the order a program that returned from ``main`` would, and drains the
+       descriptor quarantine, so the walk, the quarantine and the rendezvous
+       discards judge the run.  It prints ``teardown skipped: <reason>`` at
+       log level DEBUG and ends the process instead when the end began from a
+       fault, a runtime error or a backpressure end, when the rank's node
+       state was not ready, or when a thread did not stop in time or stopped
+       in the middle of a transition (a worker blocked in a data-block
+       release is the first).  The tests that judge the teardown register
+       only where this is on; the validation trees and their sanitizer twins
+       turn it on.  It also raises the time bound of a rank's end from 10 s to
+       60 s.
    * - ``ARTS_COUNTER_CONFIG``
      - configs/counters_off.cfg
      - Counter configuration file parsed into introspection macros. The
@@ -371,9 +394,9 @@ found by the owner's later allocation, sweep or exit.  To decode it:
 
 The pool's report counts the binds that found an arena with no room for the
 thread (``theap_refusals``; see :doc:`../configuration/counters_cfg`).  It is
-printed at every rank's teardown when ``ARTS_REGPOOL_REPORT`` is set: at the
-pool's cleanup, or, when a thread was left unjoined, by the teardown that
-leaves the pool open.
+printed once by every rank as its run ends when ``ARTS_REGPOOL_REPORT`` is
+set, before the counter files are written; a rank whose pool lock another
+thread holds then prints one ``[REGPOOL] report skipped`` line instead.
 
 GPU Build
 ~~~~~~~~~

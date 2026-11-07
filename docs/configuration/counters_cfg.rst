@@ -129,7 +129,8 @@ EDT Lifecycle — Count
    * - ``NUM_EDT_FINISH``
      - EDTs whose body returned, counted on the executing rank.  Includes
        the main EDT and the shim's trampoline, not an EDT destroyed before
-       it ran or abandoned at shutdown.
+       it ran or abandoned at shutdown.  The EDT that ends the run, and any
+       later caller of ``arts_shutdown``, never returns, so it is not counted.
    * - ``NUM_EDT_SIGNAL``
      - EDT dependence-slot satisfactions (``arts_edt_satisfy_slot()``
        calls), counted on the rank that issues them.
@@ -210,7 +211,8 @@ phase change on the rank, a create's claim of its first-touch cache, a first
 publish of its own).  On a one-rank run every acquisition is a local hit.
 ``NUM_DB_ACQUIRE_LOCAL_HIT + NUM_DB_ACQUIRE_REMOTE = NUM_DB_ACQUIRE_READ +
 NUM_DB_ACQUIRE_WRITE`` holds on every cell for a run whose shutdown is
-quiescent: an acquisition a non-quiescent shutdown leaves parked and unserved
+quiescent, as the teardown walk of an ``ARTS_DEBUG_TEARDOWN`` tree judges it:
+an acquisition a non-quiescent shutdown leaves parked and unserved
 is counted in ``NUM_DB_ACQUIRE_READ`` or ``NUM_DB_ACQUIRE_WRITE`` and in
 neither of the two.
 
@@ -618,16 +620,17 @@ hand-back and do not overlap: their sum is every hand-back, and
 
    End-to-end wall time is not a counter but the env-gated ``[E2E] <ns>``
    stderr marker: set ``ARTS_E2E_MARKER`` in the environment and rank 0 prints
-   the span from application start to shutdown recognition on exit (see
-   ``libs/src/core/system/threads.c`` / ``runtime.c``), in the same form the
-   reference runtimes (xsocr, ocr-vx) use so a harness parses all three
-   identically.
+   the span from application start to its shutdown point, the moment its end
+   begins, in the same form the reference runtimes (xsocr, ocr-vx) use so a
+   harness parses all three identically.  A run that ends with a non-zero
+   status prints ``[SHUTDOWN] rc=<rc>`` there instead.
 
    ``ARTS_REGPOOL_REPORT`` is the other env-gated marker: set it and every
-   rank prints the registered pool's shape to stderr at teardown — at the
-   pool's cleanup, or, when a thread was left unjoined, by the teardown that
-   leaves the pool open, so in a ``mimalloc`` build a missing line means a
-   rank that never reached its teardown —
+   rank in a ``mimalloc`` build prints the registered pool's shape to stderr
+   once, as its run ends and before its counter files are written.  A rank
+   whose pool lock another thread holds prints
+   ``[REGPOOL] report skipped: the pool lock is held`` instead, and a rank
+   that ended before its node state was ready prints nothing.  The report holds
    ``[REGPOOL] node <n>:`` per NUMA node (carve state, arena count, mapped
    MiB, grow count, the milliseconds its grows spent mapping and the number
    and milliseconds of waits — grow attempts that slept on the node's grow
@@ -675,13 +678,64 @@ File naming depends on the counter level:
 - **THREAD** — ``n{node}_t{thread}.json`` (one file per thread).
 - **NODE** — ``n{node}.json`` (one file per node, reduced across threads).
 
+A rank writes its files once, as its run ends and after its shutdown message,
+if it sends one, on the thread that ended the rank.  Each file is written
+under a ``.tmp`` name and renamed, so a reader never meets a partial file; a
+write that fails prints one warning and changes no status.  The files hold the
+counts at that moment.  An EDT's own ``NUM_EDT_FINISH`` is counted after its
+body returns, so an EDT still running then is not counted.  The end is bounded
+by a watchdog (see :doc:`arts_cfg`, "Ending a Run"); a rank still writing when
+it fires ends with its own status and the files are lost, and the watchdog's
+line says so.  A rank that ends before it has a node state writes its node
+file with the metadata and no counter value.
+
 The runtime does not reduce across ranks: ``artsrun`` reduces a run's
 ``n{node}.json`` files into one ``c.json`` (``tools/artsrun/README.md``).
 
-A thread the shutdown could not join writes no ``n{node}_t{thread}.json``,
-and its counts are missing from the node values.
+Each JSON file has a ``metadata`` object and a ``counters`` object whose keys
+are counter names.  ``metadata`` holds ``timestamp`` (Unix epoch),
+``version``, ``counter_folder``, ``node_id`` (and ``thread_id`` in a thread
+file) and these fields about the run and the rank's end:
 
-Each JSON file includes a ``timestamp`` (Unix epoch), a ``version``
-string, and a ``counters`` object whose keys are counter names.
-``PERIODIC`` counters include a ``captureHistory`` array of
-``[epoch, value]`` pairs.
+.. list-table::
+   :header-rows: 1
+   :widths: 25 75
+
+   * - Field
+     - Meaning
+   * - ``rc``
+     - The status the rank ends with.
+   * - ``run``
+     - The run's id, drawn by rank 0 and carried in the startup address
+       exchange; empty in a file written before the rank received it.
+   * - ``rank``
+     - The rank that wrote the file.
+   * - ``origin``
+     - What began the rank's end: ``APP`` (``arts_shutdown`` or
+       ``arts_abort``), ``SIGNAL``, ``FAULT``, ``RUNTIME_ERROR``, ``WIRE``
+       (a peer's shutdown message), ``SENTINEL`` (a peer's closed
+       connection) or ``BACKPRESSURE`` (a peer's shutdown message or closed
+       connection, seen where nothing may be dispatched).
+   * - ``t0_mono_ns``, ``t0_realtime_ns``
+     - The rank's shutdown point on the monotonic and the wall clock.
+   * - ``t0_synced_ns``
+     - ``t0_mono_ns`` shifted to rank 0's clock; present only when
+       ``clock_sync`` is ``rtt``.
+   * - ``clock_sync``
+     - ``rtt`` when the counters' time-sync round trip with rank 0 completed
+       (rank 0 itself is synced by definition), ``timeout`` when a rank's
+       request went unanswered for 500 ms, ``none`` when it did not run or
+       had not finished when the rank ended; the sync runs only with a
+       ``PERIODIC`` counter.
+
+A node file also holds ``captureInterval`` and ``total_threads``, and a thread
+file ``counter_capture_interval``.  ``PERIODIC`` counters include a
+``captureHistory`` array of ``[epoch, value]`` pairs.
+
+``artsrun`` writes ``c.json`` beside a cell's rank files after the cell runs
+(``artsrun counters reduce <run_dir>`` rebuilds it).  It reduces each counter
+by the method its rank files record, merges ``PERIODIC`` histories by epoch,
+and states the run id, the ranks that wrote no usable file (``missing``, for
+which each counter is marked ``partial``), the files written before the run id
+existed (``pre_arm``, not reduced), rank 0's ``origin`` and each
+rank's ``t0`` offset.  Files of two different runs refuse the cell.

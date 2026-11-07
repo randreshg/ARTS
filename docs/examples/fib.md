@@ -73,11 +73,11 @@ printed elapsed time.
 ### Entry point
 
 `main` hands the command line to `arts_rt`, which reads the configuration,
-starts the worker threads and returns when `arts_shutdown` has run. The start
-EDT receives `argc` and `argv` as `paramv[0]` and `paramv[1]`. `main_edt`
-creates `fib_done` with one parameter (`n`) and one dependence slot, then the
-root `fib_fork` with no dependence slot and the parameters (the GUID of
-`fib_done`, slot 0, `n`).
+starts the worker threads and does not return; `arts_shutdown` ends the run.
+The start EDT receives `argc` and `argv` as `paramv[0]` and `paramv[1]`.
+`main_edt` creates `fib_done` with one parameter (`n`) and one dependence
+slot, then the root `fib_fork` with no dependence slot and the parameters (the
+GUID of `fib_done`, slot 0, `n`).
 
 ### Fork and join
 

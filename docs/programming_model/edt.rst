@@ -122,9 +122,9 @@ Execution Guarantees
 - The runtime does **not** preempt a running EDT.
 - A CPU EDT's body **runs to completion on the worker thread that starts
   it**: the runtime never switches its stack or moves it to another thread.
-  A call the body makes may wait on that thread (a data-block release until
-  the home has answered, or until the shutdown abandons the wait); none runs
-  another body or leaves the thread. A GPU EDT's releases of its
+  A call the body makes may wait on that thread (a data-block release waits
+  until the home has answered; a shutdown ends the process around the wait);
+  none runs another body or leaves the thread. A GPU EDT's releases of its
   dependences, after its kernel, run on the CUDA callback thread.
 - No runtime call runs another EDT's body inline: a call that makes an EDT
   ready (a create, a satisfy, an added dependence, a release that serves a

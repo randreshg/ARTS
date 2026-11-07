@@ -124,9 +124,10 @@ route slot the object occupies:
 
 Every other message keeps its own rule: it runs against the object the slot
 holds, and while the slot is empty it waits for the next install.  A create
-parked behind an occupant that never ends stays parked until shutdown, where
-a debug build's teardown walk counts it among the work left undone (the
-``ooo`` contributor), so the shutdown is reported non-quiescent.
+parked behind an occupant that never ends stays parked until the run ends,
+where the teardown walk of a tree built with ``ARTS_DEBUG_TEARDOWN`` counts it
+among the work left undone (the ``ooo`` contributor), so the shutdown is
+reported non-quiescent.
 
 What a create returns does not depend on whether it waited:
 
@@ -184,8 +185,9 @@ exactly one installs, and every other one parks for a destroy the program
 may never issue.  The runtime does not arbitrate them, report them, or carry
 logic to survive them.  A parked EDT create holds open the group its
 creator joined it to; a parked event or data-block create keeps its payload
-until a destroy of the occupant admits it, or to shutdown if none comes.  A
-defined program has at most one create of a GUID pending at any time.
+until a destroy of the occupant admits it, or to the end of the run if none
+comes.  A defined program has at most one create of a GUID pending at any
+time.
 
 Data blocks: the block and a rank's cache
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

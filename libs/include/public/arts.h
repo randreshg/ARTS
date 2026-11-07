@@ -507,35 +507,46 @@ int arts_printf(const char *format, ...);
  * @brief Entry point to the ARTS runtime.
  *
  * Reads @c arts.cfg, initializes threading and networking, schedules
- * main_edt() on rank 0, and blocks until arts_shutdown() is called.  A
- * program defines main_edt() as described there; arts_rt refuses one the
- * runtime sees none of, with a non-zero return.
+ * main_edt() on rank 0, and runs the rank until its end.  A program defines
+ * main_edt() as described there; arts_rt refuses one the runtime sees none
+ * of, with a non-zero return.
+ *
+ * Past that check arts_rt never returns: a rank ends its process itself
+ * (see arts_shutdown), and a process that starts the ranks of a run ends
+ * with the highest status a rank ended with.
  *
  * @param argc Argument count from main().
  * @param argv Argument vector from main().
- * @return 1 when no main_edt reached the runtime or the rank mesh could not
- *         be established; otherwise arts_app_exit_status().  A process that
- *         starts the ranks of a run itself never returns: it ends with the
- *         highest status a rank ended with.
+ * @return 1 when no main_edt reached the runtime; it returns in no other
+ *         case.
  * @see arts_shutdown
  * @see arts_app_exit_status
  */
 int arts_rt(int argc, char **argv);
 
 /**
- * @brief The program's own exit status, read by arts_rt() once the run ended.
+ * @brief The program's own exit status, folded into the rank's.
  *
  * The runtime defines a weak default returning 0; a program defines it to
- * carry a verdict its tasks reached out of the run.  It is called on the
- * thread that called arts_rt(), after every runtime thread has joined.
+ * carry a verdict its tasks reached out of the run.  The runtime reads it
+ * when a rank's end begins and again as it ends the process, on the thread
+ * that ends the rank while other runtime threads may still run, and the
+ * rank's status is the highest of it and the end's own.
  */
 int arts_app_exit_status(void);
 
 /**
- * @brief Shut down the ARTS runtime.
+ * @brief End the run.
  *
- * Triggers global termination detection.  It is possible to race to shutdown
- * if there are multiple concurrent calls.
+ * Does not return to its caller: the calling thread ends its rank, which
+ * ends its process with status 0 or a higher status set by
+ * arts_app_exit_status(), and tells the peers it has contacted.  The caller
+ * loses every statement after the call and its EDT's completion: the body
+ * does not return, its dependences and creator holds are not released, its
+ * completion event is not satisfied, its group is not decremented and the
+ * runtime does not count it as finished.  A call made after another thread
+ * began the end does not return either.  Nothing waits for another EDT or
+ * for another rank.
  *
  * @see arts_rt
  */
@@ -547,15 +558,13 @@ _Noreturn
 void arts_shutdown();
 
 /**
- * @brief Abort the ARTS runtime with an error code.
+ * @brief End the run with an error code.
  *
- * Unlike arts_shutdown(), this function does not return.  It may be called
- * from any thread.  It first flushes every stdio stream, as exit() does, and
- * therefore waits for a stream another thread is in the middle of using; it
- * then ends the process with @p error_code.  Since other threads may still be
- * running, nothing else runs on the way out: no atexit handler, no
- * destructor, no sanitizer exit-time check.  Remote nodes will detect the
- * disconnection and shut down.
+ * Ends the run as arts_shutdown() does, with a status of at least
+ * @p error_code, and does not return.  It may be called from any thread.
+ * The end flushes every stdio stream, as exit() does, and therefore waits
+ * for a stream another thread is in the middle of using; a stream held
+ * longer than the end's time bound ends the process at that bound.
  *
  * @param error_code Process exit code (0-255).
  */
