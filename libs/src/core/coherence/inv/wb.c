@@ -175,10 +175,11 @@ void arts_handler_db_acquire(void *item, void *args) {
 
 /* ===== release_rw (WB write policy) =====================================
  * The WT arm with one argument changed: the payload does not travel to the
- * home, because the home never serves it.  The round still runs — that is what
- * makes this INV and not VAL — so the release still returns only once every
- * stale copy is dead, and the count is still dropped only after the round
- * acks, which is what orders any ownership transfer behind it.
+ * home, because the home never serves it.  On a run of several ranks the
+ * round still runs — that is what makes this INV and not VAL — so the release
+ * still returns only once every stale copy is dead, and the count is still
+ * dropped only after the round acks, which is what orders any ownership
+ * transfer behind it.  A run of one rank has no stale copy and no transfer.
  */
 void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload) {
   (void)payload;
@@ -197,13 +198,18 @@ void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload) {
     arts_db_buf_release(&buf_h);
   }
   /* Control-only publish: ask the home for this release's invalidation round
-   * and block until every ack is in.  No bytes move. */
-  TIME_INVALIDATE_ROUND_START();
-  arts_db_publish_sync(cache, new_version);
-  TIME_INVALIDATE_ROUND_STOP();
+   * and block until every ack is in.  No bytes move.  A run of one rank asks
+   * for none: its roster can name only this rank, the releaser of every
+   * round there, and a round never targets its releasers. */
+  if (arts_global_rank_count > 1) {
+    TIME_INVALIDATE_ROUND_START();
+    arts_db_publish_sync(cache, new_version);
+    TIME_INVALIDATE_ROUND_STOP();
+  }
 
-  /* The count-dropping edge, sequenced after the round: the last releaser
-   * ships the grant onward when an INVALIDATE has already named a target. */
+  /* The count-dropping edge, sequenced after the round where one runs: the
+   * last releaser ships the grant onward when an INVALIDATE has already named
+   * a target. */
   arts_db_grant_release_commit(cache);
 }
 

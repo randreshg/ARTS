@@ -375,7 +375,8 @@ returns only after an *invalidation round* covering it has closed: the home
 snapshots its sharer roster (one bit per node, set before a copy is served,
 so it safely over-approximates who might hold one), multicasts an
 invalidation, and collects an acknowledgment from every target; concurrent
-releases may be covered by one round. Write ownership is the same migrating
+releases may be covered by one round. On a run of one rank no other node can
+hold a copy, so a release runs no round. Write ownership is the same migrating
 grant VAL uses, and the sharer plane is deliberately **version-free** — a
 versioned sharer plane would already be halfway to VAL. Under ``WT`` the
 release additionally publishes the payload to the home, which then serves

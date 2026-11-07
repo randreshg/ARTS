@@ -131,7 +131,8 @@ enum arts_ooo_kind {
   /* INV's own: the reader fetch, and (WT write policy only) the release that
    * carries payload to the home. */
   OOO_DB_INV_REQUEST, /* → arts_handler_db_inv_request @ home (RO fetch) */
-  /* Every release asks the home for its invalidation round.  Under WT the
+  /* On a run of several ranks every release asks the home for its
+   * invalidation round (one rank has no copy to retire).  Under WT the
    * release's payload lands in place in the home's stable buffer, which the
    * home serves readers from; under WB the request is pure control.  That is
    * the ONLY difference between the two write policies' releases. */

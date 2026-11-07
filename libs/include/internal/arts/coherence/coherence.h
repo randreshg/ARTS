@@ -353,12 +353,13 @@ bool arts_db_acquire_is_serialized(arts_db_access_mode_t mode);
  *
  * Each arm defines its own RW release.  Under VAL and INV it bumps the
  * buffer's version, publishes where the arm does and waits for that publish's
- * ACK — VAL WT ships the payload to the home from any other rank; INV asks
- * the home for the release's invalidation round, carrying the payload under
- * WT from a rank other than the home — and then takes the release policy's
- * count-dropping edge: the last writer of a revoked grant ships it to the
- * target the round named, and a voluntarily returned grant goes back to the
- * home, riding the publish where there is one. */
+ * ACK — VAL WT ships the payload to the home from any other rank; INV, on a
+ * run of several ranks, asks the home for the release's invalidation round,
+ * carrying the payload under WT from a rank other than the home (on a run of
+ * one rank no round has a target, so none is asked for) — and then takes the
+ * release policy's count-dropping edge: the last writer of a revoked grant
+ * ships it to the target the round named, and a voluntarily returned grant
+ * goes back to the home, riding the publish where there is one. */
 
 /* Release a RW acquire taken as a DEPENDENCE.  payload is the releasing EDT's
  * pointer into its hold; arms whose release does not move the EDT's own bytes

@@ -130,7 +130,8 @@ All options are set with ``-D<NAME>=<VALUE>`` on the cmake line.
      - INV
      - Coherence protocol, which also fixes the memory model the program
        must satisfy — ``INV`` (default; invalidation: directory
-       write-invalidate with acknowledged per-release invalidation rounds),
+       write-invalidate with acknowledged per-release invalidation rounds
+       on a run of several ranks),
        ``VAL`` (validation: versioned snapshots, readers never
        blocked/invalidated), or ``EXCL`` (exclusion: per-DB distributed
        reader-writer lock), all under the OCR model (races legal, the

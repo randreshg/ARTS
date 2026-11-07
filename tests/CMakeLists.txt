@@ -2148,6 +2148,31 @@ endif()
 unset(_downgrade_excl)
 unset(_downgrade_wt)
 
+# Writers sharing their rank's write turn on one block release it, downgrade
+# and hand their bytes to readers, round after round, all on one rank.  On a
+# run of one rank no other rank can hold a copy, so an INV release runs no
+# invalidation round; where the tree captures the counters, the record holds
+# no round over the 1 + 32 x 8 write acquisitions.  No round also means no
+# publish flight: a one-rank flight's publish runs the home's round inline.
+# The writers' acquisitions overlap, which DB-WRF forbids; the round is INV's,
+# so the INV trees register it.
+if(ARTS_COHERENCE_ARM STREQUAL "INV")
+    add_arts_test(db_shared_turn_release)
+    set(_turn_rec "")
+    arts_counters_captured(_turn_c NUM_INVALIDATE_ROUND NUM_DB_ACQUIRE_WRITE)
+    if(_turn_c)
+        set(_turn_rec RECORDS 1 RECORD_CHECK record_values.cmake
+                      0:NUM_INVALIDATE_ROUND=0 0:NUM_DB_ACQUIRE_WRITE=257)
+    endif()
+    register_single_node_test(db_shared_turn_release TIMEOUT 120 ${_turn_rec})
+    set_tests_properties(db_shared_turn_release PROPERTIES
+        PASS_REGULAR_EXPRESSION
+            "PASS: db_shared_turn_release 32 rounds x 8 writers"
+        FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
+    unset(_turn_rec)
+    unset(_turn_c)
+endif()
+
 if(ARTS_TEST_REFERENCE_TREE)
 # A group over a tree of EDTs crossing ranks, in a loop.  Two ranks and four
 # separate a group's members by one and by several hops.

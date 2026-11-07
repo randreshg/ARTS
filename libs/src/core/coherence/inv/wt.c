@@ -16,6 +16,7 @@
 #include "arts/coherence/inv/types.h"
 
 #include "arts/utils/stdatomic_compat.h"
+#include <assert.h>
 #include <stdbool.h>
 #include <stddef.h>
 
@@ -201,12 +202,14 @@ void arts_handler_db_acquire(void *item, void *args) {
  *     release therefore returns only when no stale copy of this data block
  *     exists anywhere.
  *
- * Both live behind the ONE blocking call below.  Everything after it is the
- * shared grant discipline: the count is dropped AFTER the round acks, so the
- * 0-edge — and therefore any ownership transfer — is structurally ordered
- * behind this release's round.  An INVALIDATE arriving mid-round is harmless:
- * it withdraws the sentinel and names the next owner, but this releaser still
- * holds its own count, so the ship happens here, at its decrement.
+ * Both live behind the ONE blocking call below, which a run of several ranks
+ * makes (one rank has no stale copy to retire and no transfer to order).
+ * Everything after it is the shared grant discipline: the count is dropped
+ * AFTER the round acks, so the 0-edge — and therefore any ownership
+ * transfer — is structurally ordered behind this release's round.  An
+ * INVALIDATE arriving mid-round is harmless: it withdraws the sentinel and
+ * names the next owner, but this releaser still holds its own count, so the
+ * ship happens here, at its decrement.
  */
 void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload) {
   (void)payload;
@@ -226,10 +229,15 @@ void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload) {
         atomic_fetch_add_explicit(&buf->version, 1u, memory_order_acq_rel) + 1u;
   }
   /* A home owner's buffer IS the home buffer, so no bytes move — but the round
-   * still runs: it is what retires the remote copies.  Derived ONCE: the
-   * hand-back rides this decision, and deriving it twice is how the two drift
-   * apart. */
-  bool will_publish = (buf != NULL);
+   * still runs: it is what retires the remote copies.  A run of one rank has
+   * none: its roster can name only this rank, the releaser of every round
+   * there, and a round never targets its releasers; its buffers start
+   * published (version 1), so no read waits for the round's drain either.
+   * Derived ONCE: the hand-back rides this decision, and deriving it twice
+   * is how the two drift apart. */
+  bool will_publish = (buf != NULL && arts_global_rank_count > 1);
+  assert((arts_global_rank_count > 1 || new_version != 1u) &&
+         "a run of one rank never holds an unpublished buffer");
   /* Where the write right goes back unasked it can travel with this round
    * instead of behind it — and the round is also what orders it, since the
    * home may not hand the block on until every stale copy is retired.  A won
@@ -247,9 +255,9 @@ void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload) {
   /* The count-dropping edge, and what this rank owes at it, belong to the
    * release policy — a revoked grant ships onward to the target the round
    * named, a voluntarily returned one goes back to the home.  Sequenced after
-   * the round above either way, so no stale copy outlives the hand-over.  A
-   * claim taken above already dropped the count, and only has to settle which
-   * vehicle carried it. */
+   * the round above, where one runs, so no stale copy outlives the
+   * hand-over.  A claim taken above already dropped the count, and only has
+   * to settle which vehicle carried it. */
   if (hand_back != 0u) {
     arts_db_grant_release_settle(cache, hand_back);
   } else {
