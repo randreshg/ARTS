@@ -843,6 +843,11 @@ static void db_create_remote_creator(arts_guid_t guid, uint64_t len,
  */
 arts_guid_t arts_db_create(void **addr, uint64_t len, arts_db_types_t db_type,
                            uint16_t flags, const arts_db_hint_t *hint) {
+  if (len > ARTS_DB_SIZE_MAX) {
+    ARTS_ERROR("arts_db_create: a block of %llu bytes exceeds the largest "
+               "block, ARTS_DB_SIZE_MAX = %llu bytes",
+               (unsigned long long)len, (unsigned long long)ARTS_DB_SIZE_MAX);
+  }
 #ifndef ARTS_USE_GPU
   /* The GPU subtype's descriptor carries a shadow image only the GPU
    * allocation path makes room for. */

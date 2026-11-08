@@ -424,8 +424,9 @@ uint64_t arts_guid_hash_key(arts_guid_t guid) {
  * unreachable from any size (it is the "no information" sentinel), so a
  * sentinel can never alias a real bound. */
 
+/* Defined for every uint64_t: a size past the range encodes the sentinel. */
 uint64_t arts_db_szhint_encode(uint64_t size_bytes) {
-  uint64_t g = (size_bytes + 63) >> 6; /* ceil to granules */
+  uint64_t g = (size_bytes >> 6) + ((size_bytes & 63) != 0); /* ceil, no wrap */
   if (g < 32) {
     return g; /* exp 0: exact */
   }

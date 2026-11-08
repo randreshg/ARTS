@@ -155,6 +155,12 @@ With or without the flag, a new DB's payload is uninitialized: its contents
 are unspecified until a holder writes them, so a program must not rely on
 what an acquire of a never-written DB reads.
 
+A DB is at most ``ARTS_DB_SIZE_MAX`` bytes (62 * 2^36, about 4.26e12); a
+longer ``len`` ends the run with an error at the create, naming the size and
+the bound. A size at or below it that the host cannot back is populated like
+any registered allocation and ends through the kernel's out-of-memory
+handling, as a touched over-sized ``malloc`` would.
+
 Accessing Data
 --------------
 

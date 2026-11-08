@@ -1342,6 +1342,21 @@ register_single_node_test(api_current_group_null TIMEOUT 10)
 set_tests_properties(api_current_group_null PROPERTIES PASS_REGULAR_EXPRESSION "PASS api_current_group_null")
 endif()
 
+# A block longer than ARTS_DB_SIZE_MAX ends the run with status 1 and names the
+# size and the bound, before the create mints, sends or allocates anything; no
+# cell changes the check.
+if(ARTS_TEST_REFERENCE_TREE)
+    foreach(_mode over huge)
+        add_arts_test(db_size_bound_${_mode} SOURCE db_size_bound)
+        register_single_node_test(db_size_bound_${_mode} TIMEOUT 30 STATUS 1
+                                  ARGS ${_mode})
+        set_tests_properties(db_size_bound_${_mode} PROPERTIES
+            PASS_REGULAR_EXPRESSION
+            "exceeds the largest block, ARTS_DB_SIZE_MAX = 4260607557632 bytes"
+            FAIL_REGULAR_EXPRESSION "the create returned")
+    endforeach()
+endif()
+
 # --- counters ---
 # counter_smoke_value: the EDTs a program creates are counted exactly, main
 # EDT included.  No cell changes how EDTs are counted.  The one that calls

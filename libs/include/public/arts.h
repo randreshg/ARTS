@@ -914,6 +914,13 @@ void arts_add_dependence(arts_guid_t source, arts_guid_t destination,
  *  docs/programming_model/coherence_protocols.rst).
  *  @{ */
 
+/** The largest DataBlock, in bytes: 62 * 2^36 (about 4.26e12).  Beyond it a
+ *  block's size has no size-hint encoding; @c arts_db_create ends the run
+ *  with an error for a longer one.  A size at or below it that the host cannot
+ *  back is populated like any registered allocation and ends through the
+ *  kernel's out-of-memory handling. */
+#define ARTS_DB_SIZE_MAX ((uint64_t)62 << 36)
+
 /**
  * @brief Create a DataBlock of @p len bytes.
  *
@@ -924,7 +931,8 @@ void arts_add_dependence(arts_guid_t source, arts_guid_t destination,
  * @param[out] addr    Receives a pointer to the DB payload (uninitialized).
  *                     Set to @c NULL when @p flags includes
  *                     @c ARTS_DB_PROP_NO_ACQUIRE.
- * @param      len     Length in bytes.
+ * @param      len     Length in bytes, at most @c ARTS_DB_SIZE_MAX; a longer
+ *                     block ends the run with an error at the create.
  * @param      db_type Storage/coherence class (ARTS_DB, ARTS_DB_GPU_PIN,
  *                     ARTS_DB_GPU).  ARTS_DB_GPU aborts the run in a
  *                     runtime built without ARTS_USE_GPU.

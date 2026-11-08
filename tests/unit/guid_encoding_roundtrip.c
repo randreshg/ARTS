@@ -388,6 +388,27 @@ int main(void) {
         FAIL("power-1 sweep: bound < size at %lu\n", (unsigned long)(sz - 1));
       }
     }
+    /* ARTS_DB_SIZE_MAX is the largest size that encodes: its bound is exact,
+     * one byte more, and every size up to the largest uint64_t, is the
+     * sentinel (no wrap). */
+    {
+      arts_guid_t gm = arts_db_guid_stamp_szhint(
+          ARTS_GUID_MAKE(ARTS_GUID_DB, 1, 9), ARTS_DB_SIZE_MAX);
+      if (arts_db_szhint_encode(ARTS_DB_SIZE_MAX) ==
+              ARTS_GUID_DB_SZHINT_NONE ||
+          arts_db_szhint_bound(gm) != ARTS_DB_SIZE_MAX) {
+        FAIL("ARTS_DB_SIZE_MAX does not encode exactly\n");
+      }
+      uint64_t over[] = {ARTS_DB_SIZE_MAX + 1, ARTS_DB_SIZE_MAX + 64,
+                         (uint64_t)1 << 50,    UINT64_MAX - 63,
+                         UINT64_MAX - 1,       UINT64_MAX};
+      for (unsigned i = 0; i < sizeof(over) / sizeof(over[0]); i++) {
+        if (arts_db_szhint_encode(over[i]) != ARTS_GUID_DB_SZHINT_NONE) {
+          FAIL("size %lu encodes below the sentinel\n",
+               (unsigned long)over[i]);
+        }
+      }
+    }
     /* the all-ones sentinel value itself decodes to 0 */
     arts_guid_t s_g = ARTS_GUID_MAKE(
         ARTS_GUID_DB, 1, ARTS_GUID_DB_KEY(ARTS_GUID_DB_SZHINT_NONE, 7));
