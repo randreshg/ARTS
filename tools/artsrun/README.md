@@ -157,11 +157,10 @@ runtime maps one data-block arena of that size; the build's default is
 header. The
 region has one name and one address per host, so a host runs one fake
 campaign at a time. The manifest records each cell's library (`cxl`) and its
-region size. A one-rank CXL cell's launch environment sets `ARTS_FLUSH_LOG`
-to `<cell>.flush.bin` beside the cell's log, where the library writes its
-flush trace; a cell with more than one rank sets it to `/dev/null`, because
-the library takes one path for all ranks and every rank on a host would
-overwrite the same file.
+region size. Every CXL cell's launch environment sets `ARTS_FLUSH_LOG` to
+`/dev/null`: the library writes a flush trace at exit (into the working
+directory when the variable is unset), and nothing a campaign judges reads
+it.
 
 A fake cell that crashed or was reaped leaves the library's region in `/dev/shm`
 (RAM) with its owner dead. After each fake cell the local runner unlinks it,

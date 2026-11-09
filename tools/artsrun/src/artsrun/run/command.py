@@ -25,7 +25,6 @@ import functools
 import os
 import shlex
 import subprocess
-from pathlib import Path
 
 from artsrun.model.plane import RuntimeKind
 from artsrun.model.profile import CxlLibrary, Launcher, Profile
@@ -196,12 +195,7 @@ def with_post_verify(argv: list[str], cell: Cell) -> list[str]:
     return ["sh", "-c", f"{render(argv)} && {{ {hook} ; }}"]
 
 
-def flush_log_path(log_dir: Path, cell: Cell) -> Path:
-    return log_dir / f"{cell.slug}.flush.bin"
-
-
-def build_env(cell: Cell, profile: Profile,
-              log_dir: Path | None = None) -> dict[str, str]:
+def build_env(cell: Cell, profile: Profile) -> dict[str, str]:
     env = dict(cell.env)
     # The vendored fake sizes its one region when it loads, before any cfg
     # is read, so the size is handed to it here.
@@ -210,14 +204,11 @@ def build_env(cell: Cell, profile: Profile,
             raise ValueError(f"{cell.key}: a cell on the vendored fake CXL "
                              "library carries no region size")
         env["ARTS_FAKE_CXL_REGION_SIZE"] = str(cell.cxl_region_bytes)
-    # The library, fake or real, writes its flush trace where
-    # ARTS_FLUSH_LOG points, else into the working directory.  It takes one
-    # path for all ranks, so with more than one rank every rank on a host
-    # would overwrite the same file: only a one-rank cell keeps its trace,
-    # beside the cell's log.
-    if cell.cxl is not None and log_dir is not None:
-        env["ARTS_FLUSH_LOG"] = (str(flush_log_path(log_dir, cell))
-                                 if cell.nodes == 1 else "/dev/null")
+    # The library, fake or real, writes a flush trace at exit where
+    # ARTS_FLUSH_LOG points, else into the working directory.  Nothing a
+    # campaign judges reads it, so every CXL cell discards it.
+    if cell.cxl is not None:
+        env["ARTS_FLUSH_LOG"] = "/dev/null"
     # All three runtimes carry the same env-gated end-to-end stamp — rank 0
     # prints "[E2E] <ns>" spanning application start to shutdown recognition
     # (runtime init and teardown excluded on both ends) — so every cell asks

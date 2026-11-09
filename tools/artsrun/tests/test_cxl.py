@@ -13,7 +13,7 @@ from artsrun.model.catalog import Section
 from artsrun.model.plane import RuntimeKind, load_plane
 from artsrun.model.profile import CxlLibrary, Profile
 from artsrun.model.selection import Selection
-from artsrun.run.command import build_command, build_env, cxl_wrap, flush_log_path
+from artsrun.run.command import build_command, build_env, cxl_wrap
 from artsrun.run.flux import _launch as flux_launch
 from artsrun.run.flux import job_script as flux_job_script
 from artsrun.run.manifest import Manifest, describe_command, write_manifest
@@ -423,40 +423,31 @@ def test_the_manifest_records_each_cell_library(tmp_path):
 
 
 @pytest.mark.parametrize("library", [CxlLibrary.FAKE, CxlLibrary.REAL])
-def test_one_rank_flush_trace_lands_beside_the_cell_log(tmp_path, library):
-    cell = cxl_cell(1, library)
-    env = build_env(cell, profile(), tmp_path)
-    assert env["ARTS_FLUSH_LOG"] == str(flush_log_path(tmp_path, cell))
-    assert "ARTS_FLUSH_LOG" not in build_env(_cell(RuntimeKind.ARTS, 1),
-                                             profile(), tmp_path)
+@pytest.mark.parametrize("nodes", [1, 2])
+def test_every_cxl_cell_discards_the_flush_trace(tmp_path, library, nodes):
+    cell = cxl_cell(nodes, library)
+    assert build_env(cell, profile())["ARTS_FLUSH_LOG"] == "/dev/null"
+    assert "ARTS_FLUSH_LOG" not in build_env(_cell(RuntimeKind.ARTS, nodes),
+                                             profile())
     marker = tmp_path / f"{cell.slug}.rc"
-    trace = f"export ARTS_FLUSH_LOG={flush_log_path(tmp_path, cell)}"
-    assert trace in slurm_job_script(cell, profile(launcher="slurm", **REAL), marker)
+    trace = "export ARTS_FLUSH_LOG=/dev/null"
+    assert trace in slurm_job_script(
+        cell, profile(launcher="slurm", nodes=[1, 2], **REAL), marker)
     assert trace in flux_job_script(cell, profile(launcher="flux", **REAL), marker)
 
 
 def test_a_fake_cell_hands_its_region_size_to_the_library(tmp_path):
     # The library sizes its region when it loads, before any cfg is read.
     cell = cxl_cell(1, CxlLibrary.FAKE, region=777 << 20)
-    assert build_env(cell, profile(), tmp_path)["ARTS_FAKE_CXL_REGION_SIZE"] == \
+    assert build_env(cell, profile())["ARTS_FAKE_CXL_REGION_SIZE"] == \
         str(777 << 20)
     assert "ARTS_FAKE_CXL_REGION_SIZE" not in build_env(
-        cxl_cell(1, CxlLibrary.REAL), profile(**REAL), tmp_path)
+        cxl_cell(1, CxlLibrary.REAL), profile(**REAL))
     assert "ARTS_FAKE_CXL_REGION_SIZE" not in build_env(
-        _cell(RuntimeKind.ARTS, 1), profile(), tmp_path)
+        _cell(RuntimeKind.ARTS, 1), profile())
     marker = tmp_path / f"{cell.slug}.rc"
     assert f"export ARTS_FAKE_CXL_REGION_SIZE={777 << 20}" in \
         slurm_job_script(cell, profile(launcher="slurm"), marker)
-
-
-def test_multi_rank_flush_trace_is_discarded(tmp_path):
-    cell = cxl_cell(2)
-    env = build_env(cell, profile(), tmp_path)
-    assert env["ARTS_FLUSH_LOG"] == "/dev/null"
-    marker = tmp_path / f"{cell.slug}.rc"
-    assert "export ARTS_FLUSH_LOG=/dev/null" in slurm_job_script(
-        cell, profile(launcher="slurm", nodes=[1, 2], **REAL), marker)
-    assert not flush_log_path(tmp_path, cell).exists()
 
 
 # -- the command line ----------------------------------------------------------

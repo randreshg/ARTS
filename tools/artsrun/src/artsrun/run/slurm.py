@@ -131,7 +131,7 @@ def job_script(cell: Cell, profile: Profile, marker: Path) -> str:
     temporary name first, so a reader never sees half a marker.
     """
     launch = _launch(cell, profile)
-    env = build_env(cell, profile, marker.parent)
+    env = build_env(cell, profile)
     exports = "\n".join(f"export {k}={shlex.quote(str(v))}"
                         for k, v in sorted(env.items()))
     return (

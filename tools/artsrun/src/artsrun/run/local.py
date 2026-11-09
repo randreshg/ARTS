@@ -160,7 +160,7 @@ class LocalBackend:
             with_post_verify(cxl_wrap(build_command(cell, self.profile), cell, self.profile), cell),
             cell.timeout_s)
         env = os.environ.copy()
-        env.update(build_env(cell, self.profile, self.log_dir))
+        env.update(build_env(cell, self.profile))
         log_path = self.log_dir / cell.log_name
         cwd = scratch_dir()
         cwd.mkdir(parents=True, exist_ok=True)

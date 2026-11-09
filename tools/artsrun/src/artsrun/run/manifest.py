@@ -141,7 +141,7 @@ def write_manifest(
             "args": list(cell.args),
             "timeout_s": cell.timeout_s,
             "cfg": str(cell.cfg) if cell.cfg else None,
-            "env": build_env(cell, profile, log_path.parent),
+            "env": build_env(cell, profile),
             "cpu_width": cell.cpu_width,
             "cxl": cell.cxl.value if cell.cxl else None,
             "cxl_region_bytes": cell.cxl_region_bytes,
