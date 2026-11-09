@@ -68,10 +68,10 @@ artsrun profile new junction2 --from junction   # copy, then $EDITOR
 artsrun profile set junction2 workers=31 slurm.partition=pbatch
 artsrun experiment list | show X | new Y --from X | edit Y
 artsrun experiment set paper-main nqueens --args "12 4" --versions base,hinted
-artsrun experiment entries paper-main arts_val_wb,xsocr   # its default entries
+artsrun experiment entries paper-main arts_val_retain_owner,xsocr   # its default entries
 artsrun config render -p alia -n 2    # inspect a rendered configuration
 artsrun run -p alia -x paper-main --dry-run
-artsrun run -p alia -x paper-main -e arts_val_wb,arts_wrf_flush  # these entries only
+artsrun run -p alia -x paper-main -e arts_val_retain_owner,arts_cdag_flush  # these entries only
 artsrun run -p junction -x paper-main --detach
 artsrun watch                             # live view of the latest campaign
 artsrun watch 20260811-220547             # …or of a named one
@@ -86,8 +86,8 @@ artsrun run -p alia -x paper-main -c census
 
 ### CXL device library
 
-The plane's CXL entries (`arts_excl_purge_cxl_staged`,
-`arts_excl_purge_cxl_direct` — the two residencies) link a CXL library, and
+The plane's CXL entries (`arts_excl_purge_home_cxl_staged`,
+`arts_excl_purge_home_cxl_direct` — the two residencies) link a CXL library, and
 which one is a profile setting, never a campaign option or a guess. Five
 fields name the device's own library; all five or none:
 
@@ -347,26 +347,26 @@ entry).
 | `paper-main-base` | paper-main's roster at the base tier only, for submitting the campaign in halves | as paper-main |
 | `paper-main-hinted` | paper-main's roster at the hinted tier only (the rows that offer one) | as paper-main |
 | `paper-main-restructured` | the rewrites of the paper-main rows that offer one | as paper-main |
-| `paper-grain` | the paper rows at one node with the `grain` counter set | `arts_inv_wb` |
+| `paper-grain` | the paper rows at one node with the `grain` counter set | `arts_inv_retain_owner` |
 | `control-main` | the adversarial columns and the HPX applications | the eight ARTS entries, `hpx` |
 | `control-gate` | control-main at small arguments: the consensus gate | as control-main |
 | `control-fft` | the HPX FFT row alone, re-measured on its own | as control-main |
-| `trend` | every paper-main row and HPX application at small saturating arguments, for scaling-shape verdicts | every plane entry but `arts_wrf_flush` and the two CXL entries |
+| `trend` | every paper-main row and HPX application at small saturating arguments, for scaling-shape verdicts | every plane entry but `arts_cdag_flush` and the two CXL entries |
 | `smoke` | paper-gate at arguments shrunk again to finish in seconds on a two-worker laptop: a correctness smoke, never a timing number | as paper-gate |
 | `paper-rerun-a` | the base-tier rows a fabric truncation defect emptied at every multinode count (rerun of campaign 20260925-082512, `-n 2,4,8,16,32`) | the eight ARTS entries |
 | `paper-rerun-32n` | the base-tier rows short of three valid repeats at 32 nodes only (`-n 32`) | the eight ARTS entries |
 | `paper-rerun-fib` | the fibonacci base row at its lowered rung, every node count; the changed argument invalidates the references' cells too | as paper-main |
 | `examples` | every ARTS example at its catalog arguments, its pinned answers included | the eight ARTS entries |
 
-No shipped experiment lists the DB-WRF entry or a CXL entry; they are turned
+No shipped experiment lists the CDAG entry or a CXL entry; they are turned
 on for a run with `-e` or on the screen. The per-entry eligibility rules hold
 whatever selected the entry: a CXL entry runs on the library the node profile
 names (off `launcher: local`, the fake reaches only `nodes: [1]`), and an
-`unordered_writes` row is N/A under the DB-WRF entry.
+`unordered_writes` row is N/A under the CDAG entry.
 
 The **Experiments** screen is one tab: the experiment file (pick, save, save
 as new, revert), the whole plane with every entry's toggle — the
-experiment's defaults pre-checked, any entry (CXL and DB-WRF included)
+experiment's defaults pre-checked, any entry (CXL and CDAG included)
 toggleable for this run — and the application rows. Save writes the checked
 entries as the experiment's defaults and the checked rows as its roster.
 The rows are grouped by section, each heading saying what runs it and, as

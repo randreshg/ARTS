@@ -8,15 +8,15 @@ from artsrun.model import (
     Experiment,
     ExperimentApp,
     Catalog,
-    Family,
     Kind,
     Profile,
-    Release,
+    ReadSource,
+    Retention,
     RuntimeKind,
     Section,
     Selection,
+    Validity,
     Version,
-    Write,
     load_catalog,
     load_plane,
 )
@@ -34,10 +34,42 @@ def test_every_unbuildable_position_states_a_reason():
     for cell in plane.cells:
         if not cell.buildable:
             assert cell.reason
-            if cell.family is Family.EXCL:
-                assert cell.write is Write.WT
+            if cell.validity is Validity.EXCL:
+                assert (cell.retention, cell.read_source) in (
+                    (Retention.PURGE, ReadSource.OWNER),
+                    (Retention.RETAIN, ReadSource.HOME))
             else:
-                assert cell.release is Release.PURGE
+                assert (cell.retention, cell.read_source) == (
+                    Retention.PURGE, ReadSource.OWNER)
+
+
+def test_the_entries_follow_the_axes_in_order():
+    # Validity rows, then retention, then read source; a cell's extra and
+    # reference entries after its own; the CDAG section, then the external
+    # reference.
+    plane = load_plane()
+    assert plane.entry_keys == [
+        "arts_excl_purge_home", "arts_excl_purge_home_cxl_staged",
+        "arts_excl_purge_home_cxl_direct", "xsocr", "arts_excl_retain_owner",
+        "arts_inv_purge_home", "arts_inv_retain_home", "arts_inv_retain_owner",
+        "ocrvx", "arts_val_purge_home", "arts_val_retain_home",
+        "arts_val_retain_owner", "arts_cdag_flush", "hpx"]
+    assert plane.cell(Validity.EXCL, Retention.PURGE,
+                      ReadSource.HOME).variant == "ocr_excl_purge_home"
+
+
+def test_each_unbuildable_position_carries_the_rule_that_excludes_it():
+    from artsrun.data import load_data
+
+    texts = load_data("protocols.yaml")["unbuildable"]
+    plane = load_plane()
+    blank = {c.key: c.reason for c in plane.cells if not c.buildable}
+    assert blank == {
+        "EXCL/PURGE/OWNER": texts["excl_retention_sets_read_source"],
+        "EXCL/RETAIN/HOME": texts["excl_retention_sets_read_source"],
+        "INV/PURGE/OWNER": texts["owner_needs_retain"],
+        "VAL/PURGE/OWNER": texts["owner_needs_retain"],
+    }
 
 
 def test_two_configurations_offer_a_reference_and_the_rest_do_not():
@@ -45,8 +77,8 @@ def test_two_configurations_offer_a_reference_and_the_rest_do_not():
     assert len(plane.entries) == 14
     refs = [e for e in plane.entries if e.is_reference and not e.is_external]
     assert {e.key for e in refs} == {"xsocr", "ocrvx"}
-    assert plane.entry("xsocr").cell == "EXCL/PURGE/WB"
-    assert plane.entry("ocrvx").cell == "INV/RETAIN/WB"
+    assert plane.entry("xsocr").cell == "EXCL/PURGE/HOME"
+    assert plane.entry("ocrvx").cell == "INV/RETAIN/OWNER"
 
 
 def test_hpx_is_selectable_but_sits_on_no_plane_position():
@@ -58,41 +90,41 @@ def test_hpx_is_selectable_but_sits_on_no_plane_position():
     assert all(hpx not in plane.entries_of(c) for c in plane.cells)
 
 
-def test_the_db_wrf_section_offers_flush():
+def test_the_cdag_section_offers_flush():
     plane = load_plane()
-    assert [m.model for m in plane.models] == ["DB_WRF"]
-    db_wrf = plane.models[0]
-    assert [c.arm for c in db_wrf.cells] == ["FLUSH"]
-    flush, = db_wrf.cells
-    assert flush.variant == "wrf_flush"
-    entry = plane.entry("arts_wrf_flush")
-    assert entry.kind is RuntimeKind.ARTS and entry.model == "DB_WRF"
-    assert entry.cell == "DB_WRF/FLUSH"
+    assert [m.model for m in plane.models] == ["CDAG"]
+    cdag = plane.models[0]
+    assert [c.arm for c in cdag.cells] == ["FLUSH"]
+    flush, = cdag.cells
+    assert flush.variant == "cdag_flush"
+    entry = plane.entry("arts_cdag_flush")
+    assert entry.kind is RuntimeKind.ARTS and entry.model == "CDAG"
+    assert entry.cell == "CDAG/FLUSH"
     assert plane.entries_of(flush) == [entry]
-    assert entry.binary("nqueens", hinted=False) == "nqueens_arts_wrf_flush"
+    assert entry.binary("nqueens", hinted=False) == "nqueens_arts_cdag_flush"
 
 
 def test_the_plane_orders_and_checks_a_named_entry_list():
     plane = load_plane()
     # Plane order, whatever order the list was written in.
-    assert plane.ordered(["hpx", "arts_val_wb"], "x") == ["arts_val_wb", "hpx"]
+    assert plane.ordered(["hpx", "arts_val_retain_owner"], "x") == ["arts_val_retain_owner", "hpx"]
     with pytest.raises(ValueError, match="x names unknown plane entries: nope"):
-        plane.ordered(["arts_val_wb", "nope"], "x")
+        plane.ordered(["arts_val_retain_owner", "nope"], "x")
     # The standard entries: every OCR-model entry whose store is not CXL
     # memory.
     assert set(plane.entry_keys) - set(plane.standard_entries) == {
-        "arts_wrf_flush"} | {e.key for e in plane.entries if e.is_cxl}
+        "arts_cdag_flush"} | {e.key for e in plane.entries if e.is_cxl}
 
 
-ARTS8 = ["arts_excl_purge", "arts_excl_retain", "arts_inv_wt_purge",
-         "arts_inv_wt", "arts_inv_wb", "arts_val_wt_purge", "arts_val_wt",
-         "arts_val_wb"]
+ARTS8 = ["arts_excl_purge_home", "arts_excl_retain_owner", "arts_inv_purge_home",
+         "arts_inv_retain_home", "arts_inv_retain_owner", "arts_val_purge_home", "arts_val_retain_home",
+         "arts_val_retain_owner"]
 SHIPPED_ENTRIES = {
     "paper-main": ARTS8 + ["xsocr", "ocrvx"],
     "paper-main-base": ARTS8 + ["xsocr", "ocrvx"],
     "paper-main-hinted": ARTS8 + ["xsocr", "ocrvx"],
     "paper-main-restructured": ARTS8 + ["xsocr", "ocrvx"],
-    "paper-grain": ["arts_inv_wb"],
+    "paper-grain": ["arts_inv_retain_owner"],
     "paper-gate": ARTS8 + ["xsocr", "ocrvx"],
     "control-main": ARTS8 + ["hpx"],
     "control-gate": ARTS8 + ["hpx"],
@@ -117,7 +149,7 @@ def test_every_shipped_experiment_validates_and_states_its_entries():
         assert x.name == name
         assert set(x.entries) == set(want), name
         assert x.entries == plane.ordered(want, name)
-        # No shipped default reaches the DB-WRF model or a CXL store: those
+        # No shipped default reaches the CDAG model or a CXL store: those
         # are turned on per run.
         assert not any(plane.entry(k).is_cxl or plane.entry(k).model != "OCR"
                        for k in x.entries), name
@@ -153,10 +185,10 @@ def test_an_experiment_must_name_plane_entries():
         Experiment.model_validate({"name": "x", "entries": ["nope"]})
     with pytest.raises(ValidationError, match="entries"):
         Experiment.model_validate({"name": "x"})
-    # Any plane entry may be a default, CXL and DB-WRF included.
+    # Any plane entry may be a default, CXL and CDAG included.
     x = Experiment.model_validate({"name": "x", "entries": [
-        "arts_wrf_flush", "arts_excl_purge_cxl_staged"]})
-    assert x.entries == ["arts_excl_purge_cxl_staged", "arts_wrf_flush"]
+        "arts_cdag_flush", "arts_excl_purge_home_cxl_staged"]})
+    assert x.entries == ["arts_excl_purge_home_cxl_staged", "arts_cdag_flush"]
 
 
 def test_everything_starts_from_the_experiment_entries():
@@ -211,36 +243,36 @@ def test_grid_entries_belong_to_the_ocr_model():
 
 def test_binary_names_follow_the_build_convention():
     plane = load_plane()
-    arts = plane.entry("arts_val_wb")
-    assert arts.binary("nqueens", hinted=False) == "nqueens_arts_ocr_val_wb"
-    assert arts.binary("nqueens", hinted=True) == "nqueens_hinted_arts_ocr_val_wb"
+    arts = plane.entry("arts_val_retain_owner")
+    assert arts.binary("nqueens", hinted=False) == "nqueens_arts_ocr_val_retain_owner"
+    assert arts.binary("nqueens", hinted=True) == "nqueens_hinted_arts_ocr_val_retain_owner"
     assert plane.entry("xsocr").binary("nqueens", hinted=False) == "nqueens_xsocr"
     assert plane.entry("ocrvx").kind is RuntimeKind.OCRVX
 
 
-def test_the_excl_purge_wb_cell_offers_two_cxl_entries_beside_arts_and_xsocr():
+def test_the_excl_purge_home_cell_offers_two_cxl_entries_beside_arts_and_xsocr():
     plane = load_plane()
-    cell = plane.cell(Family.EXCL, Release.PURGE, Write.WB)
+    cell = plane.cell(Validity.EXCL, Retention.PURGE, ReadSource.HOME)
     assert [e.label for e in plane.entries_of(cell)] == [
-        "arts_excl_purge", "ARTS-CXL-STAGED", "ARTS-CXL-DIRECT", "XSOCR"]
-    staged = plane.entry("arts_excl_purge_cxl_staged")
+        "arts_excl_purge_home", "ARTS-CXL-STAGED", "ARTS-CXL-DIRECT", "XSOCR"]
+    staged = plane.entry("arts_excl_purge_home_cxl_staged")
     assert staged.kind is RuntimeKind.ARTS and staged.cell == cell.key
-    assert staged.variant == "ocr_excl_purge_cxl_staged"
+    assert staged.variant == "ocr_excl_purge_home_cxl_staged"
     assert not staged.is_reference and not staged.is_external
     assert staged.is_cxl
     assert staged.binary("nqueens", hinted=False) == \
-        "nqueens_arts_ocr_excl_purge_cxl_staged"
-    direct = plane.entry("arts_excl_purge_cxl_direct")
+        "nqueens_arts_ocr_excl_purge_home_cxl_staged"
+    direct = plane.entry("arts_excl_purge_home_cxl_direct")
     assert direct.is_cxl
     assert direct.binary("nqueens", hinted=True) == \
-        "nqueens_hinted_arts_ocr_excl_purge_cxl_direct"
+        "nqueens_hinted_arts_ocr_excl_purge_home_cxl_direct"
     assert not plane.entry("xsocr").is_cxl
-    assert not plane.entry("arts_excl_purge").is_cxl
+    assert not plane.entry("arts_excl_purge_home").is_cxl
 
 
 def test_every_other_buildable_cell_still_offers_at_most_two_entries():
     plane = load_plane()
-    cxl_cell = plane.cell(Family.EXCL, Release.PURGE, Write.WB).key
+    cxl_cell = plane.cell(Validity.EXCL, Retention.PURGE, ReadSource.HOME).key
     for cell in plane.cells:
         if cell.buildable and cell.key != cxl_cell:
             assert cell.entries == []
@@ -360,12 +392,12 @@ def test_the_local_cxl_smoke_profile_loads_and_fits_the_host(monkeypatch,
     assert profile.launcher is Launcher.LOCAL
     assert profile.cxl_library_kind is CxlLibrary.FAKE
     # the smoke's entries are named for the run: one cell's worth
-    entries = plane.ordered(["xsocr", "arts_excl_purge",
-                             "arts_excl_purge_cxl_staged",
-                             "arts_excl_purge_cxl_direct"], "-e")
+    entries = plane.ordered(["xsocr", "arts_excl_purge_home",
+                             "arts_excl_purge_home_cxl_staged",
+                             "arts_excl_purge_home_cxl_direct"], "-e")
     assert entries == [
-        "arts_excl_purge", "arts_excl_purge_cxl_staged",
-        "arts_excl_purge_cxl_direct", "xsocr",
+        "arts_excl_purge_home", "arts_excl_purge_home_cxl_staged",
+        "arts_excl_purge_home_cxl_direct", "xsocr",
     ]
     # The profile's geometry must satisfy the driver's own reference-geometry
     # rule (a reference entry's colocated local ranks are each pinned to one
@@ -391,7 +423,7 @@ def test_the_laptop_profile_fits_its_host_for_every_entry(monkeypatch,
     profile = store.load_profile("alia")
     assert profile.launcher is Launcher.LOCAL
     assert profile.cxl_library_kind is CxlLibrary.FAKE
-    entries = plane.ordered(["arts_val_wb", "arts_excl_purge", "xsocr",
+    entries = plane.ordered(["arts_val_retain_owner", "arts_excl_purge_home", "xsocr",
                              "ocrvx"], "-e")
     selection = Selection(
         profile=profile.name, experiment="b", default_entries=[], entries=entries,
@@ -468,14 +500,14 @@ def test_slurm_needs_no_budget_and_defaults_its_build_slot():
 # --- experiment -----------------------------------------------------------
 def test_experiment_falls_through_to_the_catalog():
     catalog = load_catalog()
-    resolved = {a.key: a for a in Experiment(entries=["arts_excl_purge"], name="empty").resolve(catalog)}
+    resolved = {a.key: a for a in Experiment(entries=["arts_excl_purge_home"], name="empty").resolve(catalog)}
     assert resolved["nqueens:base"].args == catalog.apps["nqueens"].args
     assert not resolved["nqueens:base"].args_overridden
 
 
 def test_experiment_override_marks_the_argument_source():
     catalog = load_catalog()
-    bs = Experiment(entries=["arts_excl_purge"], name="o", apps={"nqueens": ExperimentApp(args=["8", "2"])})
+    bs = Experiment(entries=["arts_excl_purge_home"], name="o", apps={"nqueens": ExperimentApp(args=["8", "2"])})
     resolved = {a.key: a for a in bs.resolve(catalog)}
     assert resolved["nqueens:base"].args == ["8", "2"]
     assert resolved["nqueens:base"].args_overridden
@@ -500,7 +532,7 @@ def test_a_roster_args_override_replaces_the_catalogs_per_node_editions():
     # for any node count -- otherwise the override is dead exactly where
     # the catalog is most specific.
     catalog, row = _catalog_with_a_node_laddered_row()
-    bs = Experiment(entries=["arts_excl_purge"], name="o", apps={row.name: ExperimentApp(args=["1", "2"])})
+    bs = Experiment(entries=["arts_excl_purge_home"], name="o", apps={row.name: ExperimentApp(args=["1", "2"])})
     got = {a.key: a for a in bs.resolve(catalog)}[f"{row.name}:base"]
     assert got.args_overridden
     assert got.args_by_nodes == {}
@@ -510,7 +542,7 @@ def test_a_roster_args_override_replaces_the_catalogs_per_node_editions():
 
 def test_a_roster_keeps_its_own_per_node_editions_beside_its_args():
     catalog, row = _catalog_with_a_node_laddered_row()
-    bs = Experiment(entries=["arts_excl_purge"], name="o", apps={row.name: ExperimentApp(
+    bs = Experiment(entries=["arts_excl_purge_home"], name="o", apps={row.name: ExperimentApp(
         args=["1", "2"], args_by_nodes={2: ["3", "4"]})})
     got = {a.key: a for a in bs.resolve(catalog)}[f"{row.name}:base"]
     assert got.args_for(2) == ["3", "4"]
@@ -528,7 +560,7 @@ def test_a_rewrites_override_replaces_its_per_node_editions_too():
             "marker": "DONE", "args": ["9"],
             "args_by_nodes": {1: ["8"], 2: ["7"]}}),
     })
-    bs = Experiment(entries=["arts_excl_purge"], name="o", apps={
+    bs = Experiment(entries=["arts_excl_purge_home"], name="o", apps={
         "r": ExperimentApp(versions=[Version.RESTRUCTURED]),
         "r_dist": ExperimentApp(args=["1"]),
     })
@@ -540,7 +572,7 @@ def test_a_rewrites_override_replaces_its_per_node_editions_too():
 def test_experiment_overrides_a_restructured_row_by_the_rewrites_name():
     catalog = load_catalog()
     row = next(a for a in catalog.rows if a.restructured_as)
-    bs = Experiment(entries=["arts_excl_purge"], name="o", apps={
+    bs = Experiment(entries=["arts_excl_purge_home"], name="o", apps={
         row.name: ExperimentApp(versions=[Version.RESTRUCTURED]),
         row.restructured_as: ExperimentApp(args=["7", "3"]),
     })
@@ -553,7 +585,7 @@ def test_experiment_overrides_a_restructured_row_by_the_rewrites_name():
 def test_a_row_override_never_follows_into_the_rewrites_cli():
     catalog = load_catalog()
     row = next(a for a in catalog.rows if a.restructured_as)
-    bs = Experiment(entries=["arts_excl_purge"], name="o", apps={
+    bs = Experiment(entries=["arts_excl_purge_home"], name="o", apps={
         row.name: ExperimentApp(versions=[Version.RESTRUCTURED],
                                 args=["9", "9"]),
     })
@@ -569,7 +601,7 @@ def test_a_rows_override_reaches_its_own_tiers_and_stops_at_the_rewrite():
     # override may cross into the other's arguments.
     catalog = load_catalog()
     row = next(a for a in catalog.rows if a.restructured_as and a.hinted)
-    bs = Experiment(entries=["arts_excl_purge"], name="o", apps={
+    bs = Experiment(entries=["arts_excl_purge_home"], name="o", apps={
         row.name: ExperimentApp(args=["4", "4"]),
         row.restructured_as: ExperimentApp(args=["7", "3"]),
     })
@@ -581,7 +613,7 @@ def test_a_rows_override_reaches_its_own_tiers_and_stops_at_the_rewrite():
 
 def test_experiment_disable_removes_every_version():
     catalog = load_catalog()
-    bs = Experiment(entries=["arts_excl_purge"], name="o", apps={"nqueens": ExperimentApp(enabled=False)})
+    bs = Experiment(entries=["arts_excl_purge_home"], name="o", apps={"nqueens": ExperimentApp(enabled=False)})
     assert not [a for a in bs.resolve(catalog) if a.name == "nqueens"]
 
 
@@ -591,7 +623,7 @@ def test_a_version_an_application_lacks_is_dropped_and_said_out_loud(capsys):
     # the campaign running as though it had measured it.
     catalog = load_catalog()
     bare = next(a for a in catalog.rows if not a.hinted)
-    bs = Experiment(entries=["arts_excl_purge"], name="o", apps={bare.name: ExperimentApp(
+    bs = Experiment(entries=["arts_excl_purge_home"], name="o", apps={bare.name: ExperimentApp(
         versions=[Version.BASE, Version.HINTED])})
     got = bs.resolve(catalog)
     assert [a.key for a in got] == [f"{bare.name}:base"]
@@ -603,7 +635,7 @@ def test_selection_rejects_a_node_count_outside_the_profile_sweep():
     plane, catalog = load_plane(), load_catalog()
     profile = Profile.model_validate(_local())
     sel = Selection(
-        profile="t", experiment="b", default_entries=[], entries=["arts_val_wb"],
+        profile="t", experiment="b", default_entries=[], entries=["arts_val_retain_owner"],
         apps={"nqueens": [Version.BASE]}, node_counts=[8],
     )
     with pytest.raises(ValueError, match="not in profile"):
@@ -620,7 +652,7 @@ def _width_catalog(cls: str, width: int | None) -> Catalog:
 
 def _width_selection() -> Selection:
     return Selection(
-        profile="t", experiment="b", default_entries=[], entries=["arts_val_wb"],
+        profile="t", experiment="b", default_entries=[], entries=["arts_val_retain_owner"],
         apps={"w": [Version.BASE]}, node_counts=[1, 2],
     )
 
@@ -662,7 +694,7 @@ def test_a_roster_override_suspends_the_width_check_and_says_so(capsys):
     # for, so the campaign is told instead.
     profile = Profile.model_validate(_local())
     catalog = _width_catalog("mw", 7)          # would be refused as declared
-    bs = Experiment(entries=["arts_excl_purge"], name="smoke", apps={"w": ExperimentApp(args=["2"])})
+    bs = Experiment(entries=["arts_excl_purge_home"], name="smoke", apps={"w": ExperimentApp(args=["2"])})
     _width_selection().validate_against(load_plane(), catalog, profile, bs)
     err = capsys.readouterr().err
     assert "width_max=7" in err and "smoke" in err
@@ -671,7 +703,7 @@ def test_a_roster_override_suspends_the_width_check_and_says_so(capsys):
 def test_a_roster_that_leaves_the_arguments_alone_is_still_checked():
     profile = Profile.model_validate(_local())
     catalog = _width_catalog("mw", 7)
-    bs = Experiment(entries=["arts_excl_purge"], name="full", apps={"w": ExperimentApp()})
+    bs = Experiment(entries=["arts_excl_purge_home"], name="full", apps={"w": ExperimentApp()})
     with pytest.raises(ValueError, match="not a whole multiple"):
         _width_selection().validate_against(
             load_plane(), catalog, profile, bs)
@@ -679,7 +711,7 @@ def test_a_roster_that_leaves_the_arguments_alone_is_still_checked():
 
 def test_cell_count_is_the_product_of_the_three_surfaces():
     sel = Selection(
-        profile="t", experiment="b", default_entries=[], entries=["arts_val_wb", "xsocr"],
+        profile="t", experiment="b", default_entries=[], entries=["arts_val_retain_owner", "xsocr"],
         apps={"nqueens": [Version.BASE, Version.HINTED]},
         node_counts=[1, 2], repeats=3,
     )
@@ -691,7 +723,7 @@ def test_cell_count_sums_each_section_over_the_entries_it_runs():
     # applications, the references nothing of the ARTS examples.
     sel = Selection(
         profile="t", experiment="b", default_entries=[],
-        entries=["arts_val_wb", "xsocr", "hpx"],
+        entries=["arts_val_retain_owner", "xsocr", "hpx"],
         apps={"nqueens": [Version.BASE, Version.HINTED],
               "fib_hpx": [Version.BASE], "fib_example": [Version.BASE]},
         node_counts=[1, 2], repeats=3,
@@ -711,7 +743,7 @@ def test_a_saved_selection_naming_what_is_gone_is_still_counted():
     # everywhere it could be.
     sel = Selection(
         profile="t", experiment="b", default_entries=[],
-        entries=["arts_val_wb", "arts_gone"],
+        entries=["arts_val_retain_owner", "arts_gone"],
         apps={"nqueens": [Version.BASE], "dropped_row": [Version.BASE]},
         node_counts=[1], repeats=1,
     )
@@ -722,14 +754,14 @@ def test_an_experiment_that_names_applications_defines_the_roster():
     # A short experiment is a short campaign, not the whole catalog with three
     # entries annotated.
     catalog = load_catalog()
-    bs = Experiment(entries=["arts_excl_purge"], name="small", apps={"nqueens": ExperimentApp()})
+    bs = Experiment(entries=["arts_excl_purge_home"], name="small", apps={"nqueens": ExperimentApp()})
     names = {a.name for a in bs.resolve(catalog)}
     assert names == {"nqueens"}
 
 
 def test_an_empty_experiment_defers_to_the_catalog_defaults():
     catalog = load_catalog()
-    names = {a.name for a in Experiment(entries=["arts_excl_purge"], name="empty").resolve(catalog)}
+    names = {a.name for a in Experiment(entries=["arts_excl_purge_home"], name="empty").resolve(catalog)}
     assert names == {a.name for a in catalog.rows if a.default_enabled}
 
 
@@ -780,27 +812,31 @@ def test_a_consistent_ssh_profile_is_accepted():
     assert profile.hosts == ["n01", "n02", "n03", "n04"]
 
 
-def test_columns_group_by_write_policy_then_split_by_release():
+def test_columns_group_by_retention_then_split_by_read_source():
     plane = load_plane()
-    labelled = [(plane.write_label(w), plane.release_label(r))
-                for r, w in plane.columns()]
+    assert plane.columns() == [
+        (Retention.PURGE, ReadSource.HOME), (Retention.PURGE, ReadSource.OWNER),
+        (Retention.RETAIN, ReadSource.HOME), (Retention.RETAIN, ReadSource.OWNER),
+    ]
+    labelled = [(plane.retention_label(r), plane.read_source_label(s))
+                for r, s in plane.columns()]
     assert labelled == [
-        ("Write Through", "Purge"), ("Write Through", "Retain"),
-        ("Write Back", "Purge"), ("Write Back", "Retain"),
+        ("Purge", "Home"), ("Purge", "Owner"),
+        ("Retain", "Home"), ("Retain", "Owner"),
     ]
 
 
-def test_the_write_policy_is_spelled_out():
+def test_the_read_source_is_spelled_out():
     plane = load_plane()
-    assert plane.write_label(Write.WT) == "Write Through"
-    assert plane.write_label(Write.WB) == "Write Back"
+    assert plane.read_source_label(ReadSource.HOME) == "Home"
+    assert plane.read_source_label(ReadSource.OWNER) == "Owner"
 
 
-def test_the_policies_read_as_words_and_the_families_as_acronyms():
+def test_retention_and_read_source_read_as_words_and_validities_as_acronyms():
     plane = load_plane()
-    assert plane.release_label(Release.PURGE) == "Purge"
-    assert plane.release_label(Release.RETAIN) == "Retain"
-    assert plane.family_labels[Family.EXCL] == "EXCL"
+    assert plane.retention_label(Retention.PURGE) == "Purge"
+    assert plane.retention_label(Retention.RETAIN) == "Retain"
+    assert plane.validity_labels[Validity.EXCL] == "EXCL"
 
 
 # --- application vs attack probe vs toy -----------------------------------
@@ -1028,7 +1064,7 @@ def test_a_dry_run_leaves_nothing_under_the_campaign_log_root(tmp_path, monkeypa
     prof = store.load_profile("fixture-local")
     bs = store.default_experiment()
     selection = Selection(
-        profile=prof.name, experiment=bs.name, default_entries=[], entries=["arts_val_wb"],
+        profile=prof.name, experiment=bs.name, default_entries=[], entries=["arts_val_retain_owner"],
         apps={"nqueens": [Version.BASE]}, node_counts=[1], repeats=1,
     )
     with mod.scratch_run_dir() as scratch:
@@ -1135,19 +1171,19 @@ def test_arts_only_probe_excludes_every_reference():
     assert _ineligible(_Entry(RuntimeKind.ARTS), _App(), 1) is None
 
 
-def test_a_row_outside_db_wrf_is_dropped_on_the_wrf_flush_entry_only():
+def test_a_row_outside_cdag_is_dropped_on_the_cdag_flush_entry_only():
     from artsrun.run.plan import _ineligible
     plane = load_plane()
     catalog = load_catalog()
-    bs = Experiment(entries=["arts_excl_purge"], name="t", apps={})
+    bs = Experiment(entries=["arts_excl_purge_home"], name="t", apps={})
     resolved = {a.key: a for a in bs.resolve(catalog)}
     app = resolved["quicksort:base"]
     assert app.unordered_writes
-    assert _ineligible(plane.entry("arts_wrf_flush"), app, 2).startswith("program is outside DB-WRF")
-    assert _ineligible(plane.entry("arts_val_wb"), app, 2) is None
+    assert _ineligible(plane.entry("arts_cdag_flush"), app, 2).startswith("program is outside CDAG")
+    assert _ineligible(plane.entry("arts_val_retain_owner"), app, 2) is None
     ok = resolved["nqueens:base"]
     assert ok.unordered_writes is None
-    assert _ineligible(plane.entry("arts_wrf_flush"), ok, 2) is None
+    assert _ineligible(plane.entry("arts_cdag_flush"), ok, 2) is None
 
 
 def test_a_restructured_row_carries_the_rewrites_own_unordered_writes():
@@ -1158,21 +1194,21 @@ def test_a_restructured_row_carries_the_rewrites_own_unordered_writes():
     from artsrun.run.plan import _ineligible
     plane = load_plane()
     catalog = load_catalog()
-    bs = Experiment(entries=["arts_excl_purge"], name="t", apps={})
+    bs = Experiment(entries=["arts_excl_purge_home"], name="t", apps={})
     resolved = {a.key: a for a in bs.resolve(catalog)}
 
     # fft's base row is annotated; its rewrite (fft_dist) is not.
     assert resolved["fft:base"].unordered_writes
     restructured = resolved["fft:restructured"]
     assert restructured.unordered_writes is None
-    assert _ineligible(plane.entry("arts_wrf_flush"), restructured, 2) is None
+    assert _ineligible(plane.entry("arts_cdag_flush"), restructured, 2) is None
 
     # npb_cg's base row is unannotated; its rewrite (npb_cg_dist) is.
     assert resolved["npb_cg:base"].unordered_writes is None
     restructured = resolved["npb_cg:restructured"]
     assert restructured.unordered_writes
-    assert _ineligible(plane.entry("arts_wrf_flush"), restructured, 2).startswith(
-        "program is outside DB-WRF")
+    assert _ineligible(plane.entry("arts_cdag_flush"), restructured, 2).startswith(
+        "program is outside CDAG")
 
 
 def test_the_two_section_loader_rejects_a_name_in_both_sections():
@@ -1220,7 +1256,7 @@ def _reference_fixture():
     from artsrun.model.profile import Launcher, Profile, SlurmSettings
 
     plane = load_plane()
-    bs = Experiment(entries=["arts_excl_purge"], name="t", apps={})
+    bs = Experiment(entries=["arts_excl_purge_home"], name="t", apps={})
     app = {a.key: a for a in bs.resolve(load_catalog())}["nqueens:base"]
     local = Profile(name="p", launcher=Launcher.LOCAL, nodes=[1, 2],
                     workers=2, progress=1)
@@ -1231,7 +1267,7 @@ def _reference_fixture():
 
 
 def _hpx_row():
-    bs = Experiment(entries=["arts_excl_purge"], name="t", apps={})
+    bs = Experiment(entries=["arts_excl_purge_home"], name="t", apps={})
     return {a.key: a for a in bs.resolve(load_catalog())}["stencil1d_hpx:base"]
 
 
@@ -1268,7 +1304,7 @@ def test_a_reference_is_skipped_where_siblings_interleave(
         # a remote rank owns a host whose numbering this host cannot see
         assert _ineligible(plane.entry(key), row, 1, remote) is None
     # the runtime under test pins itself from the topology and is untouched
-    assert _ineligible(plane.entry("arts_excl_purge"), app, 2, local) is None
+    assert _ineligible(plane.entry("arts_excl_purge_home"), app, 2, local) is None
 
 
 def test_a_reference_stays_eligible_on_a_half_split_host(
@@ -1291,14 +1327,14 @@ def test_the_build_plan_skips_the_reference_the_expansion_skips(
 
     plane, _, local, _ = _reference_fixture()
     sel = Selection(profile="p", experiment="t", default_entries=[],
-                    entries=["arts_excl_purge", "xsocr"],
+                    entries=["arts_excl_purge_home", "xsocr"],
                     apps={"nqueens": [Version.BASE]}, node_counts=[1, 2],
                     repeats=1)
-    bs = Experiment(entries=["arts_excl_purge"], name="t", apps={"nqueens": ExperimentApp()})
+    bs = Experiment(entries=["arts_excl_purge_home"], name="t", apps={"nqueens": ExperimentApp()})
 
     _use_topology(monkeypatch, tmp_path, SIBLING_ADJACENT)
     adjacent = plan_targets(sel, plane, load_catalog(), bs, tmp_path, local)
-    assert adjacent.targets == ["nqueens_arts_ocr_excl_purge"]
+    assert adjacent.targets == ["nqueens_arts_ocr_excl_purge_home"]
 
     _use_topology(monkeypatch, tmp_path, HALF_SPLIT)
     split = plan_targets(sel, plane, load_catalog(), bs, tmp_path, local)

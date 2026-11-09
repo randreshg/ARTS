@@ -237,8 +237,8 @@ class AppEntry(BaseModel):
 
     default_enabled: bool = True
     # The program leaves two write-mode acquisitions of one DataBlock
-    # unordered somewhere, so it is outside the DB-WRF memory model: an entry
-    # whose protocol requires DB-WRF cannot run it, and says why.  One value per
+    # unordered somewhere, so it is outside the CDAG memory model: an entry
+    # whose protocol requires CDAG cannot run it, and says why.  One value per
     # row — base and hinted are one program; a rewrite carries its own.
     unordered_writes: str | None = None
     multinode_skip: str | None = None

@@ -147,9 +147,9 @@ their creating rank.
 **No DB is hinted, in either tier.**  Every `ocrDbCreate` passes `NULL_HINT`,
 so a block is homed at its creating rank.  This is deliberate, not an
 omission: only the `~2·2^d` crossing edges could be affected (1e-4 of the
-spawns), and on such an edge the message count is a wash under VAL × WT (4
+spawns), and on such an edge the message count is a wash under VAL·RETAIN·HOME (4
 with the block at the child against 5 with it at the creator) and one message
-**worse** under the default WB × RETAIN (6 against 5), so hinting them would
+**worse** under the default INV·RETAIN·OWNER (6 against 5), so hinting them would
 be an unmeasurable change on one arm and a small regression on the arm the
 paper's conclusion rests on.
 
@@ -197,8 +197,8 @@ themselves.
 - Measured on the 108w+4p anchor geometry (on ferrari, single node, counters
   off, `logs/adhoc/2026-08-31-base-calib/track.txt:9,10,18,19`), with the
   previous map and the serial reference still in place: 37 → 4.75 s / 23.0 GB,
-  38 → 7.80 / 35.7, 39 → 13.81 / 84.0, 40 → 23.52 / 103.0; `ocr_inv_wb` and
-  `ocr_excl_retain` repeat 39/40 within 5%.  The observed per-rung time factor
+  38 → 7.80 / 35.7, 39 → 13.81 / 84.0, 40 → 23.52 / 103.0; `ocr_inv_retain_owner` and
+  `ocr_excl_retain_owner` repeat 39/40 within 5%.  The observed per-rung time factor
   is ~1.70 (1.642 / 1.771 / 1.703), not φ — do not project a rung with φ.
   Removing the serial reference takes ~0.4 s off every rung and the fifth
   paramv word adds ~2.5% to the resident set, so **calibration pending** for

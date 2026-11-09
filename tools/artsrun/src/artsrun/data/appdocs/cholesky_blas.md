@@ -105,7 +105,7 @@ decomposition change):
   own form for a block created for a later consumer, and it is not the same as
   acquiring and releasing again — a release by a holder that is not the block's
   home is a write-back, which under the hinted DB plane would have shipped
-  2.016 GB of uninitialized bytes from rank 0 on the write-through arms.
+  2.016 GB of uninitialized bytes from rank 0 on the {VAL,INV}·HOME arms.
 
 ## Parameters
 
@@ -223,7 +223,7 @@ deterministic remote target rather than a scattered one.
 
 The generators are in that same population, so the fill of a tile is normally
 not on the tile's home: a generator round-robins onto some rank, acquires the
-rank-0-homed block `DB_MODE_RW` and releases it there. On the write-through
+rank-0-homed block `DB_MODE_RW` and releases it there. On the {VAL,INV}·HOME
 arms that release publishes the tile back to rank 0. The bytes are the same
 2.016 GB the file read used to move, but they now move over the fabric from
 `t(t+1)/2` tasks at once instead of through one serial reader, so unlike the
@@ -253,7 +253,7 @@ Two hint planes ride the *same* key:
 - **DB.** Each tile payload is created with `OCR_HINT_DB_AFFINITY` on the same
   coordinate, so the block's home is the rank that writes it in every
   generation. Without this the tiles stay creator-homed on rank 0 in the
-  hinted binary as well, and under a write-through policy every non-home
+  hinted binary as well, and on the {VAL,INV}·HOME arms every non-home
   release publishes its payload to that one rank.
 
 The finisher is keyed on the map's origin. It names every tile, so no
@@ -288,7 +288,7 @@ turns all `t(t+1)/2` = 25,200 tile creates into *remote* creates issued
 serially from `mainEdt` on rank 0. That is the whole preamble term, on every
 arm:
 
-| term | write-through arms | write-back arms |
+| term | {VAL,INV}·HOME arms | {VAL,INV}·OWNER arms |
 |---|---|---|
 | remote `DB_CREATE_COHERENT` messages | 25,200 | 25,200 |
 | creator-side publish payload | none | none |
@@ -302,8 +302,8 @@ paths still do — a write-through release publishes the payload synchronously,
 `t(t+1)/2 · ts² · 8` = 2.016 GB of serial rank-0-sourced traffic in the hinted
 binary. The campaign's generated path does not.)
 
-So on the write-back arms the 25,200 remote creates are a pure addition with
-nothing to earn them back, and on write-through the layer's return has to come
+So on the {VAL,INV}·OWNER arms the 25,200 remote creates are a pure addition
+with nothing to earn them back, and on {VAL,INV}·HOME the layer's return has to come
 from the steady state rather than from the preamble.
 
 **Gate.** `calibration pending` — one geometry- and argument-labelled table at
@@ -314,10 +314,10 @@ reconciled. The DB-affinity plane needs a per-arm A/B that measures **both
 ends**: the steady-state saving (a non-home release no longer publishes ~80 kB
 to rank 0 on every one of the ~1.9 M kernel releases, and the 25,200 fills stop
 crossing the fabric at all) *and* the preamble cost in the table above. Expect
-it to pay on the write-through arms, where the home holds the newest bytes, and
-to be close to inert under write-back, where the home is a directory and
+it to pay on the {VAL,INV}·HOME arms, where the home holds the newest bytes,
+and to be close to inert on {VAL,INV}·OWNER, where the home is a directory and
 ownership migrates with the writer. Gate on per-rank remote-acquire and
-payload-byte counters at 8 nodes, `ocr_val_wt` vs `ocr_val_wb`, with and
+payload-byte counters at 8 nodes, `ocr_val_retain_home` vs `ocr_val_retain_owner`, with and
 without the hint.
 
 ## Sizing

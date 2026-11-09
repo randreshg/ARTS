@@ -223,7 +223,7 @@ At one node the layer is the exact identity (`nranks = 1` makes both
 re-encodings the identity and every hint rank 0), so the one-node cell is
 a valid anchor for both tiers by construction.
 
-## Family shape (measured, 15w+1p x 1/2/4/8 nodes, `32768 1024`)
+## Validity shape (measured, 15w+1p x 1/2/4/8 nodes, `32768 1024`)
 
 **Measured before the 2026-09-03 band fix and conformance change** — the
 band arithmetic, the shutdown split and the checksum all postdate these
@@ -237,9 +237,9 @@ re-measures.
 
 | arm | base 1n/2n/4n/8n | hinted 1n/2n/4n/8n |
 |---|---|---|
-| val_wb | 1.09 / 2.80 / 3.30 / 3.36 | 1.08 / 1.66 / 2.06 / 2.34 |
-| inv_wb | 1.02 / 2.99 / 3.60 / 3.81 | 1.02 / 1.69 / 2.04 / 2.40 |
-| excl_retain | 1.02 / 7.76 / 6.70 / 5.86 | 1.01 / 1.79 / 2.29 / 2.64 |
+| val_retain_owner | 1.09 / 2.80 / 3.30 / 3.36 | 1.08 / 1.66 / 2.06 / 2.34 |
+| inv_retain_owner | 1.02 / 2.99 / 3.60 / 3.81 | 1.02 / 1.69 / 2.04 / 2.40 |
+| excl_retain_owner | 1.02 / 7.76 / 6.70 / 5.86 | 1.01 / 1.79 / 2.29 / 2.64 |
 
 At the calibrated workload (`131072 1024`, `L = 128`) the same sweep read
 base 41.6 / 57.6 / 52.7 / 40.7 s and hinted 41.7 / 45.2 / 31.4 / 19.0 s

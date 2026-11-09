@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Failure and performance analysis of run_cxl_experiments.py campaigns.
 
-Compares network ARTS (arts_ocr_excl_purge) against CXL-DIRECT ARTS
-(arts_ocr_excl_purge_cxl_direct) from one or more campaign directories
+Compares network ARTS (arts_ocr_excl_purge_home) against CXL-DIRECT ARTS
+(arts_ocr_excl_purge_home_cxl_direct) from one or more campaign directories
 (each holding manifest.json, runs.jsonl and cells/<cell_id>/output.log).
 
 Part 1, failures: every run that did not finish cleanly, with its mode of
@@ -65,7 +65,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from run_cxl_experiments import (  # noqa: E402
     DERIVED_COLUMNS, EXPECTED_COUNTERS, derive, read_rank_counters)
 
-NET, CXL = "arts_ocr_excl_purge", "arts_ocr_excl_purge_cxl_direct"
+NET, CXL = "arts_ocr_excl_purge_home", "arts_ocr_excl_purge_home_cxl_direct"
 LABEL = {NET: "Network", CXL: "CXL"}
 COLOR = {NET: "#2a78d6", CXL: "#eb6834"}  # categorical slots 1 and 2
 MARKER = {NET: "o", CXL: "s"}

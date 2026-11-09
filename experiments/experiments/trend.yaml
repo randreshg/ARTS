@@ -5,7 +5,7 @@
 # measured here is a paper number: paper-main carries the timing, this
 # experiment carries the base-scales / anti-scales / hinted-earned /
 # restructured-scales verdicts and the small-size liveness of every runtime
-# entry -- so it runs every plane entry by default except the DB-WRF and the
+# entry -- so it runs every plane entry by default except the CDAG and the
 # CXL ones, which are turned on for one run with -e.  Every argument list
 # overrides the catalog's calibrated one, so the catalog pins do not apply
 # (check.py pins only when args == expect_args); the cross-runtime consensus
@@ -19,8 +19,9 @@
 name: trend
 description: local 1/2/4/8-rank scalability trend at small saturating arguments (verdicts only, never timing)
 # The coherence entries this experiment runs unless -e names others.
-entries: [arts_excl_purge, arts_excl_retain, arts_inv_wt_purge, arts_inv_wt,
-          arts_inv_wb, arts_val_wt_purge, arts_val_wt, arts_val_wb, xsocr, ocrvx, hpx]
+entries: [arts_excl_purge_home, arts_excl_retain_owner, arts_inv_purge_home,
+          arts_inv_retain_home, arts_inv_retain_owner, arts_val_purge_home,
+          arts_val_retain_home, arts_val_retain_owner, xsocr, ocrvx, hpx]
 
 # Sizes re-derived 2026-09-08: every tier judged here runs 5-15 s at one trend node
 # (15w+1p), the band where neither a latency floor nor a fixed cost can carry the

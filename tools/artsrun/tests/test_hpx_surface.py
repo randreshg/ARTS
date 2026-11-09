@@ -51,7 +51,7 @@ def _roster(*names: str) -> Experiment:
     (`test_no_probe_or_toy_is_enabled_by_default`); a roster that wants one
     says so, and that is the path these tests exercise.
     """
-    return Experiment(entries=["arts_excl_purge"], name="t", apps={n: ExperimentApp() for n in (names or (ROW,))})
+    return Experiment(entries=["arts_excl_purge_home"], name="t", apps={n: ExperimentApp() for n in (names or (ROW,))})
 
 
 def _profile() -> Profile:
@@ -119,7 +119,7 @@ def test_the_row_binds_the_hpx_program_and_the_mirror_stems():
     assert row.hpx_binary == f"{ROW}_hpx" and row.binary == ROW
     assert row.hpx_versions == [Version.BASE]
     plane = load_plane()
-    assert plane.entry("arts_val_wb").binary(row.binary, hinted=False) == f"{ROW}_arts_ocr_val_wb"
+    assert plane.entry("arts_val_retain_owner").binary(row.binary, hinted=False) == f"{ROW}_arts_ocr_val_retain_owner"
     assert plane.entry("xsocr").binary(row.binary, hinted=False) == f"{ROW}_xsocr"
 
 
@@ -128,11 +128,11 @@ def test_hpx_cells_exist_for_the_row_and_skip_nothing(tmp_path):
     catalog = load_catalog()
     configs = {n: {"arts": tmp_path / f"arts_{n}.cfg"} for n in (1, 2)}
     cells, skipped = expand(
-        _selection(["hpx", "arts_val_wb"]), plane, catalog, _roster(),
+        _selection(["hpx", "arts_val_retain_owner"]), plane, catalog, _roster(),
         _profile(), configs, build_dir=tmp_path,
     )
     assert {(c.app.key, c.entry.key, c.nodes) for c in cells} == {
-        (f"{ROW}:base", e, n) for e in ("hpx", "arts_val_wb") for n in (1, 2)}
+        (f"{ROW}:base", e, n) for e in ("hpx", "arts_val_retain_owner") for n in (1, 2)}
     assert not skipped
     for c in cells:
         if c.entry.key == "hpx":
@@ -140,7 +140,7 @@ def test_hpx_cells_exist_for_the_row_and_skip_nothing(tmp_path):
             assert c.cfg is None
         else:
             assert c.binary == (tmp_path / "benchmarks" / "apps"
-                                / f"{ROW}_arts_ocr_val_wb")
+                                / f"{ROW}_arts_ocr_val_retain_owner")
 
 
 def test_an_ocr_row_and_the_hpx_entry_are_not_a_cell(tmp_path):
@@ -162,7 +162,7 @@ def test_the_section_record_is_one_whatever_the_cells(tmp_path):
     plane = load_plane()
     catalog = load_catalog()
     sel = Selection(profile="t", experiment="paper-main", default_entries=[],
-                    entries=["arts_val_wb", "hpx"],
+                    entries=["arts_val_retain_owner", "hpx"],
                     apps={"fft": [Version.BASE], "nqueens": [Version.BASE]},
                     node_counts=[1, 2], repeats=3)
     roster = _roster("fft", "nqueens")
@@ -173,18 +173,18 @@ def test_the_section_record_is_one_whatever_the_cells(tmp_path):
     cells, skipped = expand(sel, plane, catalog, roster, _profile(),
                             configs, build_dir=tmp_path)
     assert not skipped
-    assert {c.entry.key for c in cells} == {"arts_val_wb"}
+    assert {c.entry.key for c in cells} == {"arts_val_retain_owner"}
 
 
 def test_the_build_plan_wants_the_program_and_the_mirrors(tmp_path):
     plane = load_plane()
     catalog = load_catalog()
     plan = plan_targets(
-        _selection(["hpx", "arts_val_wb", "xsocr"]), plane, catalog,
+        _selection(["hpx", "arts_val_retain_owner", "xsocr"]), plane, catalog,
         _roster(), tmp_path,
     )
     assert plan.targets.count(f"{ROW}_hpx") == 1
-    assert f"{ROW}_arts_ocr_val_wb" in plan.targets
+    assert f"{ROW}_arts_ocr_val_retain_owner" in plan.targets
     assert f"{ROW}_xsocr" in plan.targets
 
 
@@ -218,7 +218,7 @@ def test_cells_carry_the_cpu_block_they_were_granted(tmp_path):
     catalog = load_catalog()
     configs = {n: {"arts": tmp_path / f"arts_{n}.cfg", "ocr": tmp_path / f"ocr_{n}.cfg"}
                for n in (1, 2)}
-    cells, _ = expand(_selection(["hpx", "arts_val_wb"]), plane, catalog,
+    cells, _ = expand(_selection(["hpx", "arts_val_retain_owner"]), plane, catalog,
                       _roster(), _profile(),
                       configs, build_dir=tmp_path)
     assert cells and all(c.cpu_width == 16 for c in cells)
@@ -265,7 +265,7 @@ def test_an_arts_cell_never_carries_the_transport_override(tmp_path):
     plane = load_plane()
     catalog = load_catalog()
     configs = {n: {"arts": tmp_path / f"arts_{n}.cfg"} for n in (1, 2)}
-    cells, _ = expand(_selection(["arts_val_wb"]), plane,
+    cells, _ = expand(_selection(["arts_val_retain_owner"]), plane,
                       catalog, _roster(), _profile(),
                       configs, build_dir=tmp_path)
     env = build_env(cells[0], _profile())

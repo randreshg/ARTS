@@ -166,8 +166,8 @@ also the bound the base row's channel events already carry as `maxGen = 2`.
 The alternation is kept per level in the private block and chosen by the task
 that CREATES the exchange, which is the task holding the private block.
 
-The dependence modes are not what makes any of this safe. Under a
-validation-family protocol a reader is never blocked by a writer, so the RW
+The dependence modes are not what makes any of this safe. Under
+VAL a reader is never blocked by a writer, so the RW
 dependence buys a legal hold and nothing more; the ordering is the event chain
 above, which every arm of the plane honours identically.
 
@@ -202,10 +202,11 @@ the tiles below this one.
 There is no `_hinted` family, and the reason is stronger than "it was not
 tried": the base row's hinted layer exists, was debugged (a `u32` neighbour-rank
 wrap voided four campaigns before it was fixed) and was measured from four
-angles, and it lost at every multinode geometry in both write policies. Its
-counters say why — under write-back it changed nothing it targeted
+angles, and it lost at every multinode geometry under both {VAL,INV} read
+sources. Its counters say why — under {VAL,INV}·OWNER it changed nothing it
+targeted
 (`NUM_DB_ACQUIRE_REMOTE` 1,237,628 → 1,237,747) and added two messages per moved
-block; under write-through it removed 92 % of the remote acquires and still lost,
+block; under {VAL,INV}·HOME it removed 92 % of the remote acquires and still lost,
 because it added three.  These counts predate the counters' current definitions
 (hpcg_intel's appdoc says how they differ).
 
@@ -213,7 +214,7 @@ Placement in this row is the design instead. The tile→domain map is the
 author's recursive bisection, balanced 1.000 with compact 3-D sub-boxes at every
 campaign node count. Every EDT is pinned to its tile's domain. An exchange block
 is created by, and written by, exactly one tile, so the creator-home default
-puts it where its only writer is; under write-back it stays with that writer and
+puts it where its only writer is; under OWNER it stays with that writer and
 moves on demand, which is the behaviour the aggregation is built around. And the
 reduction, the one plane the base row could not hint at all (partials are minted
 inside the library), is placed by the two-level tree.
@@ -248,7 +249,7 @@ blocks add 0.9 % to that. The restructured tier's own 120 s window is set by
 re-measuring the one-node anchor after the rewrite; until that is done the row
 carries the base row's arguments so the two tiers are read at one instance.
 
-## Family shape
+## Validity shape
 
 `hpcg_intel` and `hpcg_intel_dist` are one row: the same program's answers to
 the same problem, in increasing order of how much of the *wiring* was rewritten.

@@ -153,7 +153,7 @@ rows print the same lines, which is the check that they are one application.
   node-count invariant, plus `T·16` bytes of records. There is no allocator
   backlog to add, which is exactly why this row's resident set is lower and
   steadier than the base row's at the same arguments. At one node of 108
-  workers under INV x WB: 13.2 s and 20.0 GB at `233280000` (67,500 elements a
+  workers under INV·RETAIN·OWNER: 13.2 s and 20.0 GB at `233280000` (67,500 elements a
   chain, just past the cliff, and half the per-element time of the larger
   sizes), 75.2 s and 51.2 GB at `725760000`; the campaign size `1157760000`
   extrapolates from the latter to ~120 s and ~79 GB.

@@ -7,7 +7,7 @@
 # entry by default:
 #
 #   artsrun run -p local-cxl -x paper-gate -n 1 \
-#       -e arts_excl_purge,arts_excl_purge_cxl_staged,arts_excl_purge_cxl_direct,xsocr
+#       -e arts_excl_purge_home,arts_excl_purge_home_cxl_staged,arts_excl_purge_home_cxl_direct,xsocr
 #
 # The fake library is one host's shared memory with one name, so one campaign
 # runs on this host at a time.

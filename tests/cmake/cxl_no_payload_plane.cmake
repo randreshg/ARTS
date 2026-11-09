@@ -22,7 +22,7 @@ if(NOT DEFINED BUILD_DIR)
     message(FATAL_ERROR "BUILD_DIR is required")
 endif()
 
-set(_control_dir "arts_static_ocr_excl_purge.dir")
+set(_control_dir "arts_static_ocr_excl_purge_home.dir")
 
 set(_graded_dirs "arts_memory.dir")
 foreach(_t IN LISTS GRADED_TARGETS)

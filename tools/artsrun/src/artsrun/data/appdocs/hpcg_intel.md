@@ -250,8 +250,8 @@ out by eight nodes (measured at `16 16 16 32 50`, the previous argument set):
 | 8 nodes | 130.7 s | **4.02x** | 1.44x |
 
 All four give the same deviation, holding 87-141 GB.  That argument set reached
-the ~150 s anchor at 155.2 s, 160.9 s and 159.0 s on the three coherence
-families, holding 125 GB -- an RSS/payload ratio of 2.17 against its 57.6 GB of
+the ~150 s anchor at 155.2 s, 160.9 s and 159.0 s on the three
+validities, holding 125 GB -- an RSS/payload ratio of 2.17 against its 57.6 GB of
 payload, the factor used for planning below.
 
 A trend read at a smaller grid understates this row badly -- `8 8 8 32 50` gives
@@ -341,18 +341,19 @@ For one such block the wire cost is:
   the producer, which is both home and owner -- request + payload -- and the
   destroy is one more message back to that home.  Three messages, and the
   round trip sits on the consumer's critical path.
-- **hinted, write-through**: the create installs the directory entry at the
+- **hinted, {VAL,INV}·HOME**: the create installs the directory entry at the
   consumer (one message, no payload), the producer's release writes the payload
   through to that home, the consumer's acquire is a local hit and the destroy is
   local.  Two messages, and the payload arrives before the consumer asks -- the
   round trip leaves the critical path.
-- **hinted, write-back**: the payload stays with the last writer, so the
+- **hinted, {VAL,INV}·OWNER**: the payload stays with the last writer, so the
   consumer's acquire resolves at its own home, is forwarded to the owner and
   answered from there.  The create message replaces the destroy message and the
   round trip stays where it was.
 
 The prediction is therefore sharp: the layer buys a round trip per cross-node
-halo block under WT and close to nothing under WB, and whatever it buys grows
+halo block under {VAL,INV}·HOME and close to nothing under {VAL,INV}·OWNER, and
+whatever it buys grows
 with the table above.
 
 ### Measured
@@ -364,16 +365,16 @@ moved nothing but placement):
 
 | | | 1n | 2n | 4n | 8n |
 |---|---|---|---|---|---|
-| `10 6 6`, `m = 32`, INV x WB | base | 35.569 | 25.798 | 23.161 | 19.480 |
+| `10 6 6`, `m = 32`, INV·RETAIN·OWNER | base | 35.569 | 25.798 | 23.161 | 19.480 |
 | | hinted | 35.536 | 28.973 | 29.566 | 25.282 |
 | | hinted/base | 1.00x | 1.12x | 1.28x | 1.30x |
-| `10 6 6`, `m = 32`, INV x WT | base | 35.555 | 25.869 | 23.200 | 19.547 |
+| `10 6 6`, `m = 32`, INV·RETAIN·HOME | base | 35.555 | 25.869 | 23.200 | 19.547 |
 | | hinted | 35.512 | 30.707 | 34.187 | 27.806 |
 | | hinted/base | 1.00x | 1.19x | 1.47x | 1.42x |
-| `10 6 6`, `m = 16`, INV x WB | base | 4.355 | 15.241 | 20.302 | 19.632 |
+| `10 6 6`, `m = 16`, INV·RETAIN·OWNER | base | 4.355 | 15.241 | 20.302 | 19.632 |
 | | hinted | 4.337 | 21.247 | 27.737 | 25.718 |
 | | hinted/base | 1.00x | 1.39x | 1.37x | 1.31x |
-| `10 6 6`, `m = 16`, INV x WT | base | 4.377 | 16.503 | 19.973 | 18.430 |
+| `10 6 6`, `m = 16`, INV·RETAIN·HOME | base | 4.377 | 16.503 | 19.973 | 18.430 |
 | | hinted | 4.382 | 23.344 | 32.913 | 26.787 |
 | | hinted/base | 1.00x | 1.41x | 1.65x | 1.45x |
 
@@ -389,19 +390,20 @@ flatter box (`24 5 3`, which the app's own bisection cuts into domains with
 
 | | 1n | 2n | 4n | 8n |
 |---|---|---|---|---|
-| INV x WB base | 35.634 | 20.090 | 16.060 | 13.927 |
-| INV x WB hinted | 35.465 | 20.294 | 18.669 | 18.226 |
-| INV x WT base | 35.556 | 20.018 | 15.989 | 14.445 |
-| INV x WT hinted | 35.410 | 19.858 | 21.777 | 20.278 |
+| INV·RETAIN·OWNER base | 35.634 | 20.090 | 16.060 | 13.927 |
+| INV·RETAIN·OWNER hinted | 35.465 | 20.294 | 18.669 | 18.226 |
+| INV·RETAIN·HOME base | 35.556 | 20.018 | 15.989 | 14.445 |
+| INV·RETAIN·HOME hinted | 35.410 | 19.858 | 21.777 | 20.278 |
 
 The penalty is a function of exactly the traffic the layer touches: where
 crossings are fewest (2 nodes here, 0.51 per tile) it is a wash in both arms,
 and it grows with the crossing count -- +0.2 s at 0.51 crossings per tile,
-+2.6 s at 1.52, +4.3 s at 3.54, +6.4 s at 3.73, +5.8 s at 5.76 (INV x WB).
++2.6 s at 1.52, +4.3 s at 3.54, +6.4 s at 3.73, +5.8 s at 5.76 (INV·RETAIN·OWNER).
 
-**Counters** (8 nodes, `10 6 6 32 50`, counterset `perf`, cluster totals):
+**Counters** (8 nodes, `10 6 6 32 50`, counterset `perf`, cluster totals;
+OWNER and HOME are the {VAL,INV}·RETAIN cells):
 
-| | base WB | hinted WB | base WT | hinted WT |
+| | base OWNER | hinted OWNER | base HOME | hinted HOME |
 |---|---|---|---|---|
 | `NUM_DB_CREATE` | 3,916,146 | 2,776,546 | 3,916,146 | 2,776,546 |
 | `NUM_DB_ACQUIRE_REMOTE` | 1,237,628 | 1,237,747 | 1,237,624 | **97,968** |
@@ -421,12 +423,12 @@ copies), so the difference,
 count, which is the check that the layer moves the blocks it means to and no
 others.  The rest reads as the analysis predicted, and settles the question:
 
-- under **write-back** the layer changes nothing it targets.  Remote acquires
+- under **{VAL,INV}·OWNER** the layer changes nothing it targets.  Remote acquires
   are the same to five digits and the payload byte count is identical; all it
   adds is two messages per moved block (+2,279,200) and 17 % more wire bytes,
   because the reader still has to fetch from the last writer whatever the home
   says.
-- under **write-through** it does what it was designed to do -- remote acquires
+- under **{VAL,INV}·HOME** it does what it was designed to do -- remote acquires
   fall by 92 %, from 1,237,624 to 97,968, essentially one removed per moved
   block -- and still loses, because the same payload now travels as a push
   instead of a pull (`BYTES_DB_PAYLOAD_SENT` identical) while the message count
@@ -451,7 +453,8 @@ measured here, on the losing side.
 The historical record this section used to carry -- the same layer measured
 1.09x / 1.11x / 1.21x *faster* at `m = 16` on two, four and eight nodes -- does
 not reproduce.  It predates the coherence rebuild (the VAL / EXCL / INV
-families and the WT / WB axis) and no run of it survives under `logs/`, so it
+validities and the HOME / OWNER read source) and no run of it survives under
+`logs/`, so it
 is history, not evidence; the tables above replace it.
 
 One further map was tried in the past and also lost: a reduction tree

@@ -15,7 +15,7 @@
 
 name: paper-grain
 description: time inside EDT bodies per task, one node, one run per program
-entries: [arts_inv_wb]
+entries: [arts_inv_retain_owner]
 
 apps:
   cholesky_blas:

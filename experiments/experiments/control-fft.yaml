@@ -12,8 +12,9 @@
 
 name: control-fft
 description: the FFT row of the HPX applications alone, ARTS arms and HPX in one campaign
-entries: [arts_excl_purge, arts_excl_retain, arts_inv_wt_purge, arts_inv_wt,
-          arts_inv_wb, arts_val_wt_purge, arts_val_wt, arts_val_wb, hpx]
+entries: [arts_excl_purge_home, arts_excl_retain_owner, arts_inv_purge_home,
+          arts_inv_retain_home, arts_inv_retain_owner, arts_val_purge_home,
+          arts_val_retain_home, arts_val_retain_owner, hpx]
 
 apps:
   fft_hpx:

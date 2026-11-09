@@ -180,7 +180,7 @@ the `#else` of the `OCR_APP_OPTIMIZED_PLACEMENT` guard is `NULL_HINT`, so the
 base build is the program described above.  Balance is exact at every campaign
 rank count (aggregate imbalance 1.000 at 1, 2, 4, 8, 16 and 32).
 
-**Measured** (15w+1p x 1/2/4/8 nodes, INV x WB, `[E2E]` seconds):
+**Measured** (15w+1p x 1/2/4/8 nodes, INV·RETAIN·OWNER, `[E2E]` seconds):
 
 | nodes | base `262144 1024` | hinted | gain | base `524288 2048` | hinted | gain |
 |---|---|---|---|---|---|---|
@@ -207,7 +207,7 @@ whatever the placement), but the improvement holds at every geometry the
 campaign runs, so the tier is kept, and the base tier -- the tier that exhibits
 the shape -- is untouched.
 
-## Family shape (measured, 15w+1p x 1/2/4/8 nodes, `65536 1024`)
+## Validity shape (measured, 15w+1p x 1/2/4/8 nodes, `65536 1024`)
 
 **Measured before the 2026-09-03 conformance change**: every cell includes
 the serial `O(N²)` preamble that has since been removed (~80-88 % of the
@@ -216,9 +216,9 @@ numbers are stale; only the shape survives. Re-trend before quoting.
 
 | arm | 1n | 2n | 4n | 8n |
 |---|---|---|---|---|
-| val_wb | 4.29 | 5.75 | 6.79 | 7.95 |
-| inv_wb | 4.29 | 5.76 | 6.85 | 8.14 |
-| excl_retain | 4.31 | 5.84 | 6.93 | 8.09 |
+| val_retain_owner | 4.29 | 5.75 | 6.79 | 7.95 |
+| inv_retain_owner | 4.29 | 5.76 | 6.85 | 8.14 |
+| excl_retain_owner | 4.31 | 5.84 | 6.93 | 8.09 |
 
 The curve overlaps `LCS_shared`'s on every arm: tiling the read-only
 inputs changes nothing while the single score block still migrates every
@@ -245,7 +245,7 @@ case, 20 s at one node): `409600 1600`, derived rather than searched —
 at a fixed tree depth (`N/base = 256`, the trend roster's) the time is
 quadratic in `N`, so 8.2 s at `262144 1024` puts 20 s at `N = 409600`,
 and `base` widens to 1600 to keep the depth. Measured on one node of
-108 workers (INV × WB): base 19.7 s, hinted 19.2 s, 4.2 GB resident,
+108 workers (INV·RETAIN·OWNER): base 19.7 s, hinted 19.2 s, 4.2 GB resident,
 checksum 1663678361 — the same arguments and the same digest as
 `LCS_shared`, which is the ladder's cell-by-cell check. The voted scalar
 is the `LCS checksum:` line; `LCS length:` remains analytically `N` and

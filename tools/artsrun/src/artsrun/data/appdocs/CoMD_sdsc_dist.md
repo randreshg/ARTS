@@ -180,7 +180,7 @@ step): 1 rank 2313 / 18 452, 2 ranks 2579 / 18 984, 4 ranks 2021 / 17 868,
 8 ranks 2313 / 18 452, 16 ranks 2585 / 18 996, 32 ranks 2025 / 17 876 — within
 ±3.2% of the one-rank count (±10% at `w = 4`).
 
-Counter cross-check (`arts_inv_wb`, `-x 103 -y 103 -z 103 -N 100 -n 10 -w 8`,
+Counter cross-check (`arts_inv_retain_owner`, `-x 103 -y 103 -z 103 -N 100 -n 10 -w 8`,
 `perf` set, per rank-step; the run also pays generation, the rescale, step 0
 and teardown once, which amortise to ~3% over 100 steps):
 `NUM_EDT_CREATE` 43 730 measured against 43 724 predicted at 8 ranks and
@@ -271,7 +271,7 @@ And **no datablock has a reader and a writer in the same step**: the
 generation a step reads was written by the previous step and is next written
 by the step after, and a halo run is written by the step's first phase and
 read only by its second, so every access to a block is event-ordered against
-every write of it — DB-WRF-valid at DB granularity, not merely OCR-legal.
+every write of it — CDAG-valid at DB granularity, not merely OCR-legal.
 The control chain's hand-offs are ordered too: every task that creates or
 holds a block releases it before anything it wires that block into can
 acquire it, so no pair of write acquisitions anywhere in the row is
@@ -361,7 +361,7 @@ This program has one tier and places explicitly; there is no
   900 / 1 840 / 2 896 / 4 000 / 5 312 at `g = 120`.  A run costs about eight
   messages against a cell's four, so the message count falls by roughly
   `C/(2H)`; measured at `-x 103` it is 40× at 2 ranks and 35× at 8 (table
-  under Family shape).  The halo is still the only term that grows with the
+  under Validity shape).  The halo is still the only term that grows with the
   rank count; it is now three orders of magnitude below the cell tasks it
   accompanies.
 - **the control spine** (the final and one control task per step, `top` and
@@ -431,10 +431,10 @@ finely the spawn tree is cut and does not change the work.
   memory, and only `-w` (bounded 1..1024, and checked at the create) can
   approach a dependence limit at all.
 
-## Family shape
+## Validity shape
 
 `calibration pending` for the Dane window; the local shape is settled.  Every
-trend below is `15w+1p` per rank on `arts_inv_wb`, `-N 100 -n 10 -w 8`, e2e
+trend below is `15w+1p` per rank on `arts_inv_retain_owner`, `-N 100 -n 10 -w 8`, e2e
 seconds at 1 / 2 / 4 / 8 ranks:
 
 | instance | before the halo | with the halo | `S8` |
@@ -460,7 +460,7 @@ that floor happened to coincide, which is what made the curve look flat
 rather than cliff-shaped.
 
 The halo removes the term rather than shrinking it, and the counters say so
-(`arts_inv_wb`, `-x 103`, per rank-step, before → after):
+(`arts_inv_retain_owner`, `-x 103`, per rank-step, before → after):
 
 | | 2 ranks | 8 ranks |
 |---|---|---|

@@ -26,7 +26,7 @@ def _plain(value) -> str:
 
 
 def test_the_table_holds_one_row_per_cell_with_its_axes(tmp_path):
-    cells = [_cell("arts_val_wb"), _cell("arts_excl_retain", nodes=2)]
+    cells = [_cell("arts_val_retain_owner"), _cell("arts_excl_retain_owner", nodes=2)]
     _write(tmp_path, cells)
     _track(tmp_path, [_finished(cells[0], "1.0")])
 
@@ -36,10 +36,10 @@ def test_the_table_holds_one_row_per_cell_with_its_axes(tmp_path):
 
     count, row = drive(tmp_path, check)
     assert count == 2
-    _, app_name, version, runtime, family, write, release, n, rep, \
+    _, app_name, version, runtime, validity, retention, read_source, n, rep, \
         status, wall, scalar, verdict = row
-    assert (app_name, version, runtime) == ("app", "base", "arts_val_wb")
-    assert (family, write, release) == ("VAL", "WB", "RETAIN")
+    assert (app_name, version, runtime) == ("app", "base", "arts_val_retain_owner")
+    assert (validity, retention, read_source) == ("VAL", "RETAIN", "OWNER")
     assert (n, rep) == ("1", "1")
     assert status == "ok"
     assert wall == "2.5s"
@@ -48,7 +48,7 @@ def test_the_table_holds_one_row_per_cell_with_its_axes(tmp_path):
 
 
 def test_new_events_grow_and_recolor_the_table_live(tmp_path):
-    cells = [_cell("arts_val_wb"), _cell("arts_excl_retain")]
+    cells = [_cell("arts_val_retain_owner"), _cell("arts_excl_retain_owner")]
     _write(tmp_path, cells)
 
     async def check(app, pilot):
@@ -72,7 +72,7 @@ def test_new_events_grow_and_recolor_the_table_live(tmp_path):
 
 
 def test_a_single_click_opens_the_cell_under_the_mouse(tmp_path):
-    cells = [_cell("arts_val_wb"), _cell("arts_excl_retain")]
+    cells = [_cell("arts_val_retain_owner"), _cell("arts_excl_retain_owner")]
     _write(tmp_path, cells)
 
     async def check(app, pilot):
@@ -95,7 +95,7 @@ def test_a_single_click_opens_the_cell_under_the_mouse(tmp_path):
 
 
 def test_an_open_pane_follows_the_cursor(tmp_path):
-    cells = [_cell("arts_val_wb"), _cell("arts_excl_retain")]
+    cells = [_cell("arts_val_retain_owner"), _cell("arts_excl_retain_owner")]
     _write(tmp_path, cells)
 
     async def check(app, pilot):
@@ -123,7 +123,7 @@ def test_the_buttons_open_the_configurations_behind_the_cell(tmp_path):
     cfg.write_text("workers = 2\nprogress = 1\n")
     counters = tmp_path / "cfg" / "counters_perf.cfg"
     counters.write_text("EDT_RUN = PERIODIC NODE SUM\n")
-    _write(tmp_path, [_cell("arts_val_wb", cfg=cfg)], counters_cfg=counters)
+    _write(tmp_path, [_cell("arts_val_retain_owner", cfg=cfg)], counters_cfg=counters)
 
     async def check(app, pilot):
         table = app.query_one("#watch-table", DataTable)
@@ -160,7 +160,7 @@ def test_the_scaling_button_swaps_in_place_and_back(tmp_path):
 
     from artsrun.tui.runview import ScalingView
 
-    cells = [_cell("arts_val_wb"), _cell("arts_val_wb", nodes=2)]
+    cells = [_cell("arts_val_retain_owner"), _cell("arts_val_retain_owner", nodes=2)]
     _write(tmp_path, cells)
     _track(tmp_path, [_finished(cells[0], "1.0"), _finished(cells[1], "1.0")])
 
@@ -184,7 +184,7 @@ def test_the_scaling_button_swaps_in_place_and_back(tmp_path):
 def test_g_swaps_the_table_for_the_scaling_reading(tmp_path):
     from artsrun.tui.runview import ScalingView
 
-    cells = [_cell("arts_val_wb"), _cell("arts_val_wb", nodes=2)]
+    cells = [_cell("arts_val_retain_owner"), _cell("arts_val_retain_owner", nodes=2)]
     _write(tmp_path, cells)
     _track(tmp_path, [
         {"t": 1.0, "event": "finished", "cell": cells[0].key, "status": "ok",
@@ -210,14 +210,14 @@ def test_g_swaps_the_table_for_the_scaling_reading(tmp_path):
         drive(tmp_path, check)
     assert scaling_on and table_off
     app_name, version, entry, one, two = row
-    assert (app_name, version, entry) == ("app", "base", "arts_val_wb")
+    assert (app_name, version, entry) == ("app", "base", "arts_val_retain_owner")
     assert one == "10.00s"
     assert two == "8.00s ×1.25"  # speedup vs the 1n base
     assert scaling_after is False and table_after is True
 
 
 def test_selecting_a_row_opens_the_invocation_and_its_log(tmp_path):
-    cells = [_cell("arts_val_wb")]
+    cells = [_cell("arts_val_retain_owner")]
     _write(tmp_path, cells)
     log_dir = tmp_path / "cells"
     log_dir.mkdir()

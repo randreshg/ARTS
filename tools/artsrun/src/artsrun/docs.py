@@ -50,7 +50,7 @@ def facts_markdown(entry: AppEntry) -> str:
 def document(entry: AppEntry) -> str:
     """The entry's document, falling back to its catalog facts."""
     body = load_doc(entry.name) or facts_markdown(entry)
-    wrf = ("Eligible: every pair of write acquisitions of a block is "
-           "ordered by the program." if entry.unordered_writes is None
-           else f"Outside the model: {entry.unordered_writes}")
-    return f"{body}\n\n## DB-WRF\n\n{wrf}"
+    cdag = ("Eligible: every pair of write acquisitions of a block is "
+            "ordered by the program." if entry.unordered_writes is None
+            else f"Outside the model: {entry.unordered_writes}")
+    return f"{body}\n\n## CDAG\n\n{cdag}"

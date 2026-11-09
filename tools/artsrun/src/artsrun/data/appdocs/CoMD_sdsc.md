@@ -297,9 +297,9 @@ every helper returns `NULL_HINT`, so the 1-node cell is shared by construction.
   `ke_edt`, and the EAM `eam_edt`/`rho_edt`) on the same rank, so each of the
   join's `B` inputs is looked up on the rank that reads it instead of on the
   rank that happened to produce it.  What that buys is policy-dependent and is
-  **not** a free win: under `WT` the producer's release publishes the payload to
-  the home, so the join's read is local; under the default `WB` the payload
-  stays with the last writer and the join still fetches it — only the directory
+  **not** a free win: under {VAL,INV}·HOME the producer's release publishes the
+  payload to the home, so the join's read is local; under the default
+  INV·RETAIN·OWNER (and VAL·RETAIN·OWNER) the payload stays with the last writer and the join still fetches it — only the directory
   lookup is saved.  It is also paid for: it concentrates one datablock create
   and one destroy per box per reduction — `B` per step for the force reducer
   and another `B` once per block for the kinetic one — on the same rank the
@@ -369,8 +369,8 @@ remain, all disclosed rather than fixed:
   `B` advance-velocity tasks: an inherent per-phase broadcast with no better
   static home.
 - Homing the reduction results on the spine rank (`comdHomeDbHint`, above)
-  concentrates their create/destroy churn on that one rank; under a write-back
-  policy it saves the directory lookup but not the payload fetch.  It is
+  concentrates their create/destroy churn on that one rank; under
+  {VAL,INV}·OWNER it saves the directory lookup but not the payload fetch.  It is
   disclosed here as a bound, not claimed as a gain.
 
 ## Sizing
@@ -431,15 +431,15 @@ else.
   dominates the RSS; against a 190 GB budget this row is time-bound, never
   memory-bound.
 
-## Family shape (measured, reduced trend ladder: 15w+1p × 1/2/4/8 nodes, `-x 48 -N 15 -n 5`)
+## Validity shape (measured, reduced trend ladder: 15w+1p × 1/2/4/8 nodes, `-x 48 -N 15 -n 5`)
 
 hinted, e2e seconds.  The energy pin held in every cell:
 
 | arm | 1n | 2n | 4n | 8n |
 |---|---|---|---|---|
-| val_wb | 11.5 | 139.2 | 191.7 | 250.3 |
-| inv_wb | 11.9 | 150.2 | 222.1 | 267.2 |
-| excl_retain | 13.2 | 150.3 | 235.0 | 312.2 |
+| val_retain_owner | 11.5 | 139.2 | 191.7 | 250.3 |
+| inv_retain_owner | 11.9 | 150.2 | 222.1 | 267.2 |
+| excl_retain_owner | 13.2 | 150.3 | 235.0 | 312.2 |
 
 **The whole table above predates the band→block map change** — it is the
 baseline the new map has to beat, not evidence for it — and no base row was

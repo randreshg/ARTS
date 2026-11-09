@@ -159,8 +159,8 @@ def catalog():
 
 
 @pytest.mark.parametrize("kw, refused", [
-    (dict(entries=["arts_val_wb", "arts_val_wb"]),
-     "plane entries named more than once: arts_val_wb"),
+    (dict(entries=["arts_val_retain_owner", "arts_val_retain_owner"]),
+     "plane entries named more than once: arts_val_retain_owner"),
     (dict(node_counts=[1, 1]), "node counts named more than once: 1"),
     (dict(apps={"nqueens": [Version.BASE, Version.BASE]}),
      "nqueens versions named more than once: base"),
@@ -179,7 +179,7 @@ def test_reference_selection_requires_pin(plane, catalog):
 def test_arts_only_selection_tolerates_any_geometry(plane, catalog):
     # The guards answer for what the REFERENCES can express; an arts-only
     # campaign (the lcsw sweeps: one worker, no progress thread) must pass.
-    sel = _selection(entries=["arts_val_wb"])
+    sel = _selection(entries=["arts_val_retain_owner"])
     sel.validate_against(plane, catalog,
                          _profile(pin=False, workers=1, progress=0))
 
@@ -517,21 +517,21 @@ def test_a_run_takes_the_experiment_s_entries_by_default():
                   "-a", "nqueens", "--dry-run", "--plain")
     assert result.exit_code == 0, result.output
     assert ("experiment control-gate · entries (its defaults): "
-            "arts_excl_purge, arts_excl_retain, arts_inv_wt_purge, "
-            "arts_inv_wt, arts_inv_wb, arts_val_wt_purge, arts_val_wt, "
-            "arts_val_wb, hpx") in result.output
+            "arts_excl_purge_home, arts_excl_retain_owner, arts_inv_purge_home, "
+            "arts_inv_retain_home, arts_inv_retain_owner, arts_val_purge_home, arts_val_retain_home, "
+            "arts_val_retain_owner, hpx") in result.output
 
 
 def test_e_replaces_the_experiment_s_entries_and_may_name_any_of_them():
-    # CXL and DB-WRF entries are listed by no shipped experiment; -e is the
+    # CXL and CDAG entries are listed by no shipped experiment; -e is the
     # whole set for the run, in the plane's order.
     result = _cli("run", "-p", "local-cxl", "-x", "paper-gate", "-n", "1",
                   "-a", "nqueens", "-e",
-                  "arts_wrf_flush,arts_excl_purge_cxl_staged",
+                  "arts_cdag_flush,arts_excl_purge_home_cxl_staged",
                   "--dry-run", "--plain")
     assert result.exit_code == 0, result.output
-    assert ("entries (chosen for this run): arts_excl_purge_cxl_staged, "
-            "arts_wrf_flush") in result.output
+    assert ("entries (chosen for this run): arts_excl_purge_home_cxl_staged, "
+            "arts_cdag_flush") in result.output
     assert "= OCR applications: 2 entries x 2 app-versions" in result.output
     bad = _cli("run", "-p", "local-cxl", "-x", "paper-gate", "-e", "nope",
                "--dry-run")

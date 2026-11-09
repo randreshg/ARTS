@@ -609,7 +609,7 @@ def plan_targets(
     experiment does not enable runs no cell, so it needs nothing built; an
     entry whose runtime kind has no program for a row's section builds
     nothing for it; and a row's own exclusions (ARTS-only, no ocr-vx,
-    outside DB-WRF) hold for the build exactly as they hold for the run — as
+    outside CDAG) hold for the build exactly as they hold for the run — as
     does a reference this host cannot place, reported with its reason rather
     than as a target that is missing.  A target of a `pending` section is
     one the tree has yet to configure, so it is neither built nor missing.
@@ -641,7 +641,7 @@ def plan_targets(
                     continue
                 if entry.kind.value == "ocrvx" and app.ocrvx_skip:
                     continue
-                if entry.model == "DB_WRF" and app.unordered_writes:
+                if entry.model == "CDAG" and app.unordered_writes:
                     continue
                 if entry.kind.value != "arts" and app.arts_only:
                     continue

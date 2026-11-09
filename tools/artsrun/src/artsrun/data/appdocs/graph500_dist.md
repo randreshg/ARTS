@@ -321,11 +321,11 @@ row's edge storage (the base keeps 16 B per directed entry against 8 B here)
 against a slightly larger per-vertex state.  As with the base, `SCALE` is
 bounded by time and not by memory.
 
-## Family shape
+## Validity shape
 
 `calibration pending`.  One measured point exists, and it is a one-node
 identity check, not a scaling number: at the local trend instance
-`18 16 32 32` on one ferrari node (14 workers, `arts_inv_wb`) the two tiers
+`18 16 32 32` on one ferrari node (14 workers, `arts_inv_retain_owner`) the two tiers
 print the same `BFS_DIGEST` (6239203375441639461), the same `nodes`/`edges`
 and the same frontier sequence, with
 

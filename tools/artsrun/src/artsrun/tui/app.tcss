@@ -18,7 +18,7 @@ HeaderIcon {
     height: auto;
 }
 
-.plane-family {
+.plane-validity {
     width: 13;
     padding: 0 1;
     color: $text;
@@ -29,21 +29,21 @@ HeaderIcon {
     content-align: left middle;
 }
 
-/* Header and section rows carry no family name; the spacer only keeps the
+/* Header and section rows carry no validity name; the spacer only keeps the
    columns in register. */
 .plane-gutter {
     width: 13;
 }
 
-/* The write-policy halves read as two pairs, not four equal columns. */
+/* The retention halves read as two pairs, not four equal columns. */
 .group-gap {
     margin-left: 2;
 }
 
 /* Just wide enough for the longest pair a split cell holds — two checkboxes
    and the longer runtime name — so nothing is elided and nothing pads. */
-/* Spans the two release columns underneath it. */
-.plane-write-head {
+/* Spans the two read-source columns underneath it. */
+.plane-retention-head {
     width: 48;
     text-align: center;
     color: $text;
@@ -138,11 +138,11 @@ HeaderIcon {
     padding: 0 1;
 }
 
-/* Inside the DB-WRF model: the same colour and weight as the apps table's
-   mark (WRF_ELIGIBLE_STYLE in report.py).  A row's name is an action link
+/* Inside the CDAG model: the same colour and weight as the apps table's
+   mark (CDAG_ELIGIBLE_STYLE in report.py).  A row's name is an action link
    (it opens the document), and link text takes the link-* properties, not
    the widget's colour — so both are set. */
-.bench-name.wrf-eligible {
+.bench-name.cdag-eligible {
     color: cyan;
     text-style: bold;
     link-color: cyan;

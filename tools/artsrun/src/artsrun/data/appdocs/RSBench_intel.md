@@ -34,7 +34,7 @@ associative and commutative and each lookup's own arithmetic is a fixed-order
 loop inside a single EDT, so the scalar is bit-identical across node counts,
 tiers, coherence arms and runtime entries. Each result block has exactly one
 writer and is read once, so this per-aggregator step adds no write-write
-conflict — DB-WRF-valid as well as OCR-legal.  The row is outside DB-WRF
+conflict — CDAG-valid as well as OCR-legal.  The row is outside CDAG
 overall on a different block: the run-global accumulator each batch's
 `batchReduce` EDT then updates unordered (see the catalog's
 `unordered_writes`).
@@ -250,10 +250,10 @@ homed — by whichever rank the single `rankInit`/`init_dataH` chain happens to
 land on (call it rank R, itself round-robin-placed from `mainEdt`). The
 generator tasks that fill those blocks are round-robin-placed like every other
 unhinted EDT, so each block's single write happens wherever its generator
-landed: under a write-back policy the payload then stays with that writer until
-a reader asks for it, while under write-through it returns to rank R at
-release. That is the one placement consequence of parallel generation in this
-tier, and it is a property of the write policy rather than of the program.
+landed: under {VAL,INV}·OWNER the payload then stays with that writer until a
+reader asks for it, while under {VAL,INV}·HOME it returns to rank R at release.
+That is the one placement consequence of parallel generation in this tier, and
+it is a property of the read source rather than of the program.
 Every lookup's `rankLookup` / `macroxs` / `microxsAggregator` triple is
 independently round-robin-placed too, so on an `N`-rank run only ~1/`N` of
 lookups execute where the data lives. The
@@ -285,7 +285,7 @@ object is created inside the one `init_dataH` task and would otherwise be homed
 on that single rank, which then serves the whole machine's reads.
 **Generator placement** (`mcSpreadEdtHint`): a dataset block's generator task
 is placed on that block's own home, so the one write a block ever receives
-happens where the run will read it, whatever the write policy. It is a hint
+happens where the run will read it, whatever the read source. It is a hint
 argument on the generator's `ocrEdtCreate` and nothing else — base creates the
 same `n + m` tasks with `NULL_HINT`.
 
@@ -378,7 +378,7 @@ fixed by `-s`/`-n`/`-p`/`-w` alone and never move with `-l` or `-b`.
   never matched), so the calibration has to be re-taken on `[E2E]`, not
   rescaled from the old figures.
 
-## Family shape
+## Validity shape
 
 `calibration pending`. The previous table in this section was labelled "e2e
 seconds" but no cell of this row has ever produced an `[E2E]` measurement — the

@@ -346,7 +346,7 @@ negligible), and low-index rather than strided handle homes (same per-home
 serving load, but clustered).
 
 Earlier measured effect of the *previous* map (creator-pinned chain, low-index
-handles) at 2 nodes, `-s large -g 192 -l 65536`: inv_wb compute 28.4→4.66 s
+handles) at 2 nodes, `-s large -g 192 -l 65536`: inv_retain_owner compute 28.4→4.66 s
 (6.1×) — compute-phase timer, different arguments, and superseded by the map
 above. It is not evidence for the current layer.
 
@@ -398,7 +398,7 @@ tightest published tier `-g 96` is a 11.8× reduction, not 118×. `-l
 18.4% of the DOE reference's 15,000,000); the port's own default is 15,000 and
 its Makefile runs 10,000.
 
-## Family shape (SUPERSEDED — measured at `-s large -g 96 -l 300000 -b 3456`, 15w+1p × 1/2/4/8 nodes)
+## Validity shape (SUPERSEDED — measured at `-s large -g 96 -l 300000 -b 3456`, 15w+1p × 1/2/4/8 nodes)
 
 Kept for its *shape* only. Three reasons it is not this cell's result: the
 calibrated argument is now `-l 2764800` (compute scales 9.22×, init is flat
@@ -415,20 +415,20 @@ every cell:
 
 | arm | 1n | 2n | 4n | 8n |
 |---|---|---|---|---|
-| val_wb | 3.0 (1.1) | 172.6 (26.7) | 176.8 (33.1) | 205.5 (45.0) |
-| inv_wb | 4.0 (1.3) | 87.2 (18.8) | 132.5 (26.0) | 169.3 (32.9) |
-| excl_retain | 5.8 (1.8) | 103.4 (26.9) | 136.8 (31.6) | 171.5 (39.0) |
+| val_retain_owner | 3.0 (1.1) | 172.6 (26.7) | 176.8 (33.1) | 205.5 (45.0) |
+| inv_retain_owner | 4.0 (1.3) | 87.2 (18.8) | 132.5 (26.0) | 169.3 (32.9) |
+| excl_retain_owner | 5.8 (1.8) | 103.4 (26.9) | 136.8 (31.6) | 171.5 (39.0) |
 
 The current map's verdict is `calibration pending` (base vs hinted, calibrated
-argv, ≥2 geometries, all three families, judged on [E2E], with the app's
+argv, ≥2 geometries, all three validities, judged on [E2E], with the app's
 compute timer recorded so the init/compute split is visible).
 
 Init is the majority of every multinode cell at this older `-l`: 78.1% /
-80.6% / 77.3% of the 8n val_wb / inv_wb / excl_retain cells. At the
+80.6% / 77.3% of the 8n val_retain_owner / inv_retain_owner / excl_retain_owner cells. At the
 calibrated `-l 2764800` the compute term grows 9.22× against a flat
 ~135-160 s init, so the share falls to roughly a quarter — and the row's
 arm-separation claim must be stated on both quantities: at 8n the widest
-pair, val_wb against inv_wb, is **1.37× on the lookup phase, 1.21× on the
+pair, val_retain_owner against inv_retain_owner, is **1.37× on the lookup phase, 1.21× on the
 measured [E2E]** at the older `-l`. A Dane-geometry single node (108w+4p) ran
 the older instance in 3.9 s (compute 1.9 s). Every arm is mildly anti-scaling —
 the wiring plane, not the data, sets the wall. Width-ladder evidence

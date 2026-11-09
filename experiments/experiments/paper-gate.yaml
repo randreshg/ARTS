@@ -29,8 +29,9 @@
 name: paper-gate
 description: small-argument consensus gate for every paper-main row and version
 # The coherence entries this experiment runs unless -e names others.
-entries: [arts_excl_purge, arts_excl_retain, arts_inv_wt_purge, arts_inv_wt,
-          arts_inv_wb, arts_val_wt_purge, arts_val_wt, arts_val_wb, xsocr, ocrvx]
+entries: [arts_excl_purge_home, arts_excl_retain_owner, arts_inv_purge_home,
+          arts_inv_retain_home, arts_inv_retain_owner, arts_val_purge_home,
+          arts_val_retain_home, arts_val_retain_owner, xsocr, ocrvx]
 
 apps:
   cholesky_blas:

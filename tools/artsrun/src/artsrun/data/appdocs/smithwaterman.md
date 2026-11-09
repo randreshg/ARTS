@@ -243,11 +243,11 @@ A 19x degradation across the first node boundary.  Calibrated (with the hinted
 tier kept, the window is the hinted-flat case, 20 s at one node): the `cmp`
 pair, `200,000 / 200,000`, derived rather than searched -- the wavefront's time
 is quadratic in the length, and the `cal` pair (`140,000 / 140,400`) measured
-9.4 s at one node of 108 workers (INV × WB, `/usr/bin/time -v` anchor), which
+9.4 s at one node of 108 workers (INV·RETAIN·OWNER, `/usr/bin/time -v` anchor), which
 puts 20 s at ~204k.  Measured at the cmp pair, same geometry: **23.0 s base /
 22.1 s hinted**, 10.3 GB resident.  Earlier figures in this document (14.5 /
-14.7 / 15.3 s for the three families, 11.8 s base / 11.0 s hinted, and the
-9.411 s `arts_val_wb` cal-pair anchor of `logs/exp/20260831-204917`) are
+14.7 / 15.3 s for the three validities, 11.8 s base / 11.0 s hinted, and the
+9.411 s `arts_val_retain_owner` cal-pair anchor of `logs/exp/20260831-204917`) are
 previous rungs or predate the readiness-event reclamation -- do not build a
 sizing argument on them.
 

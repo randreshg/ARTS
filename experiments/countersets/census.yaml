@@ -1,5 +1,5 @@
 name: census
-description: what asked for the wire, what it carried, and what each family paid
+description: what asked for the wire, what it carried, and what each validity paid
   for it
 capture_interval: 250
 counters:

@@ -184,7 +184,7 @@ values are the same as the base row's: `N_0 = s³` is an integer multiple of
 
 The catalog runs `['5','13824']`, sized in the restructured tier's own window
 rather than at the base row's instance: at one node of 108 workers under
-INV x WB it runs 42.5 s with 115.6 GB resident, and `expect`/`expect_args` are
+INV·RETAIN·OWNER it runs 42.5 s with 115.6 GB resident, and `expect`/`expect_args` are
 pinned there (`||error|| = 0.000000001647256`).  It is the largest grid the
 width rule admits on one node: a 1024³ grid is reachable only with a box count
 that is not an integer multiple of 3456 (`4096` at 1.19×, `32768` at 9.5×,
@@ -201,9 +201,9 @@ per-operator timers and the restored `vec_temp` store:
 
 | arm | 1 n | 2 n | 4 n | 8 n |
 |-----|-----|-----|-----|-----|
-| val_wb | 22.2 / 6.1 | 12.9 / 4.3 | 7.5 / 2.9 | **5.1 / 2.5** |
-| inv_wb | 21.9 / 6.2 | 12.7 / 4.6 | 7.7 / 3.2 | **5.1 / 2.5** |
-| excl_retain | 22.4 / 6.3 | 12.5 / 4.6 | 7.7 / 3.2 | 5.3 / 2.8 |
+| val_retain_owner | 22.2 / 6.1 | 12.9 / 4.3 | 7.5 / 2.9 | **5.1 / 2.5** |
+| inv_retain_owner | 21.9 / 6.2 | 12.7 / 4.6 | 7.7 / 3.2 | **5.1 / 2.5** |
+| excl_retain_owner | 22.4 / 6.3 | 12.5 / 4.6 | 7.7 / 3.2 | 5.3 / 2.8 |
 
 That was the application's first positive scaling: 4.3× from 1 n to 8 n on the
 VAL/INV arms, against a hinted base that *degraded* over the same geometries.

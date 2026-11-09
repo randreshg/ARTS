@@ -36,9 +36,9 @@ class CellView:
     version: str = ""
     entry_key: str = ""
     kind: str = ""
-    family: str = ""
-    release: str = ""
-    write: str = ""
+    validity: str = ""
+    retention: str = ""
+    read_source: str = ""
     nodes: int = 0
     repeat: int = 0
     command: str = ""
@@ -85,7 +85,7 @@ class CellView:
 
 def _from_manifest(manifest: Manifest, cell: Cell) -> CellView:
     parts = (cell.entry.cell or "").split("/")
-    family, release, write = (parts + ["", "", ""])[:3]
+    validity, retention, read_source = (parts + ["", "", ""])[:3]
     meta = manifest.commands.get(cell.key, {})
     log = meta.get("log", "")
     return CellView(
@@ -95,9 +95,9 @@ def _from_manifest(manifest: Manifest, cell: Cell) -> CellView:
         version=cell.app.version.value,
         entry_key=cell.entry.key,
         kind=cell.entry.kind.value,
-        family=family,
-        release=release,
-        write=write,
+        validity=validity,
+        retention=retention,
+        read_source=read_source,
         nodes=cell.nodes,
         repeat=cell.repeat,
         command=meta.get("command", ""),
@@ -187,9 +187,9 @@ class RunState:
                 seen = self.views[cell.key]
                 fresh = _from_manifest(manifest, cell)
                 for name in ("cell", "app_name", "version", "entry_key",
-                             "kind", "family", "release", "write", "nodes",
-                             "repeat", "command", "script", "env", "cfg",
-                             "log_path", "timeout_s"):
+                             "kind", "validity", "retention", "read_source",
+                             "nodes", "repeat", "command", "script", "env",
+                             "cfg", "log_path", "timeout_s"):
                     setattr(seen, name, getattr(fresh, name))
         return True
 

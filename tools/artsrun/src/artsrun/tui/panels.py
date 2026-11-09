@@ -42,9 +42,10 @@ class LauncherChanged(Message):
 class PlanePanel(Vertical):
     """The 4x4 grid, then one row per further memory model.
 
-    Every grid position is drawn, including the five that carry no
-    configuration: seeing why EXCL has no WT column, and no family has a
-    WB×PURGE cell, is the point of showing the axes as axes.
+    Every grid position is drawn, including the four that carry no
+    configuration: seeing why EXCL takes one read source per retention, and
+    no validity has a PURGE·OWNER cell, is the point of showing the axes as
+    axes.
     """
 
     def __init__(self, plane: Plane, *, entries: list[str] | None = None,
@@ -76,35 +77,38 @@ class PlanePanel(Vertical):
                      "off for this run · space toggles · a = all/none while "
                      "the plane has focus[/dim]",
                      classes="panel-head")
-        # Two header rows rather than one compound name: the write policy
-        # spans its pair of release policies, so the grid reads as two axes
-        # instead of four labels.  The write-policy halves keep a gap
-        # between them (`group-gap`) so the four columns read as two pairs.
+        # Two header rows rather than one compound name: the retention spans
+        # its pair of read sources, so the grid reads as two axes instead of
+        # four labels.  The retention halves keep a gap between them
+        # (`group-gap`) so the four columns read as two pairs.
         top = Horizontal(classes="plane-row")
         top.styles.height = 1
         with top:
             yield Label("", classes="plane-gutter")
-            for i, write in enumerate(self.plane.writes):
-                classes = "plane-write-head" + (" group-gap" if i else "")
-                yield Label(self.plane.write_label(write), classes=classes)
+            for i, retention in enumerate(self.plane.retentions):
+                classes = "plane-retention-head" + (" group-gap" if i else "")
+                yield Label(self.plane.retention_label(retention),
+                            classes=classes)
         sub = Horizontal(classes="plane-row")
         sub.styles.height = 1
         with sub:
             yield Label("", classes="plane-gutter")
-            for i, (release, _) in enumerate(self.plane.columns()):
+            for i, (_, read_source) in enumerate(self.plane.columns()):
                 classes = ("plane-col-head"
-                           + (" group-gap" if i == len(self.plane.releases)
+                           + (" group-gap" if i == len(self.plane.read_sources)
                               else ""))
-                yield Label(self.plane.release_label(release), classes=classes)
-        for family in self.plane.families:
+                yield Label(self.plane.read_source_label(read_source),
+                            classes=classes)
+        for validity in self.plane.validities:
             with Horizontal(classes="plane-row"):
                 yield Label(
-                    self.plane.family_labels.get(family, family.value),
-                    classes="plane-family",
+                    self.plane.validity_labels.get(validity, validity.value),
+                    classes="plane-validity",
                 )
-                for i, (release, write) in enumerate(self.plane.columns()):
-                    gap = " group-gap" if i == len(self.plane.releases) else ""
-                    cell = self.plane.cell(family, release, write)
+                for i, (retention, read_source) in enumerate(self.plane.columns()):
+                    gap = (" group-gap" if i == len(self.plane.read_sources)
+                           else "")
+                    cell = self.plane.cell(validity, retention, read_source)
                     if not cell.buildable:
                         blank = Static("····", classes="plane-cell blank" + gap)
                         blank.tooltip = cell.reason
@@ -125,11 +129,12 @@ class PlanePanel(Vertical):
                                     yield self._entry_toggle(cell, entry)
         for section in self.plane.models:
             yield Static(f"[b]{section.label} memory model[/b]  [dim]protocols "
-                         "correct only for programs whose write acquisitions "
-                         "are exclusive — the OCR plane above needs no such "
-                         "obligation[/dim]", classes="panel-head model-head")
+                         "correct only for programs that order every pair of "
+                         "a block's write acquisitions — the OCR plane above "
+                         "needs no such obligation[/dim]",
+                         classes="panel-head model-head")
             with Horizontal(classes="plane-row"):
-                yield Label(section.label, classes="plane-family")
+                yield Label(section.label, classes="plane-validity")
                 for cell in section.cells:
                     with Horizontal(classes="plane-cell"):
                         for entry in self.plane.entries_of(cell):
@@ -546,7 +551,7 @@ class ExperimentPanel(VerticalScroll):
         yield Static(
             "[b]Applications[/b]  [dim]a = all/none · arguments are editable; "
             "an empty box means the catalog's own calibration · a name in "
-            "green also runs under DB-WRF·FLUSH[/dim]",
+            "green also runs under CDAG·FLUSH[/dim]",
             classes="panel-head apps-head",
         )
 
@@ -647,17 +652,17 @@ class ExperimentPanel(VerticalScroll):
             with Horizontal(classes="bench-row"):
                 # The name opens the application's structural document —
                 # what the parameters mean and how they size the task graph.
-                # It also colours: a name in the DB-WRF style runs under
-                # DB-WRF·FLUSH too, so the tooltip on any other name says why
+                # It also colours: a name in the CDAG style runs under
+                # CDAG·FLUSH too, so the tooltip on any other name says why
                 # not.
                 eligible = app.unordered_writes is None
                 name_label = Label(
                     f"[@click=app.show_app_doc({app.name!r})]{app.name}[/]",
-                    classes="bench-name wrf-eligible" if eligible else "bench-name",
+                    classes="bench-name cdag-eligible" if eligible else "bench-name",
                 )
                 if not eligible:
                     name_label.tooltip = (
-                        f"program is outside DB-WRF: {app.unordered_writes}")
+                        f"program is outside CDAG: {app.unordered_writes}")
                 yield name_label
                 for version in (Version.BASE, Version.HINTED, Version.RESTRUCTURED):
                     if version not in app.own_versions:
@@ -694,12 +699,12 @@ class ExperimentPanel(VerticalScroll):
                     # programs.
                     if rewrite.unordered_writes is None:
                         yield Label(f"  └ {rewrite.name}",
-                                    classes="bench-name wrf-eligible")
+                                    classes="bench-name cdag-eligible")
                     else:
                         sub_label = Label(f"[dim]  └ {rewrite.name}[/dim]",
                                           classes="bench-name")
                         sub_label.tooltip = (
-                            f"program is outside DB-WRF: {rewrite.unordered_writes}")
+                            f"program is outside CDAG: {rewrite.unordered_writes}")
                         yield sub_label
                     for _ in range(3):
                         yield Static("", classes="bench-cell blank")

@@ -13,8 +13,8 @@ from artsrun.model.plane import load_plane
 from artsrun.model.profile import Profile
 from artsrun.model.selection import Selection
 
-ENTRIES = ["arts_excl_purge", "arts_excl_purge_cxl_staged",
-           "arts_excl_purge_cxl_direct"]
+ENTRIES = ["arts_excl_purge_home", "arts_excl_purge_home_cxl_staged",
+           "arts_excl_purge_home_cxl_direct"]
 
 
 def _cache_tree(tree: Path, processor: str | None) -> None:
@@ -57,7 +57,7 @@ def _campaign(tree: Path):
                     entries=list(ENTRIES), apps={"nqueens": ["base"]},
                     node_counts=[1])
     return Campaign(selection=sel, plane=load_plane(), catalog=load_catalog(),
-                    experiment=Experiment(entries=["arts_excl_purge"],
+                    experiment=Experiment(entries=["arts_excl_purge_home"],
                                           name="b", apps={}),
                     profile=prof, build_dir=tree, run_dir=tree / "run")
 

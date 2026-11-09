@@ -15,8 +15,8 @@ def _cell(nodes: int, name: str = "app") -> Cell:
         marker="X", scalar_re="X",
     )
     entry = SelectionEntry(
-        key="arts_val_wb", label="arts_val_wb", kind=RuntimeKind.ARTS,
-        cell="VAL/RETAIN/WB", variant="ocr_val_wb",
+        key="arts_val_retain_owner", label="arts_val_retain_owner", kind=RuntimeKind.ARTS,
+        cell="VAL/RETAIN/OWNER", variant="ocr_val_retain_owner",
     )
     return Cell(entry=entry, app=app, nodes=nodes, repeat=1,
                 binary=Path("/nonexistent"), args=[], timeout_s=1,
@@ -366,7 +366,7 @@ def _app(name: str = "app") -> ResolvedApp:
 def _cell_for(entry_key: str, app: ResolvedApp, nodes: int = 1) -> Cell:
     entry = SelectionEntry(
         key=entry_key, label=entry_key, kind=RuntimeKind.ARTS,
-        cell="VAL/RETAIN/WB", variant=entry_key,
+        cell="VAL/RETAIN/OWNER", variant=entry_key,
     )
     return Cell(
         entry=entry, app=app, nodes=nodes, repeat=1,

@@ -145,7 +145,7 @@ node's board, and forwards the total via `returnCount`. `pmovesDb` is therefore
 the single dominant fan-in/contention point — small, hot, globally shared,
 read-only — the structural reason this app leans on VAL's per-DB read
 combining. No placement hint can replicate a DB, so that cost belongs to the
-coherence family, not to the hint layer.
+validity, not to the hint layer.
 
 ## Flow
 
@@ -237,24 +237,24 @@ scattered child only, one `ocrAffinityGetAt` and one hint construction. A
 child below the scattered frontier reuses the node's hoisted hint and costs
 nothing per edge.
 
-## Family shape
+## Validity shape
 
 Measured on ferrari, 15w+1p × 1/2/4/8 nodes, at `7 1 7` — a reduced-geometry
 trend probe, NOT the calibration, and taken with the fixed scatter depth of 3.
 
 hinted, e2e seconds — the whole tree re-validates the one move-table DB
-homed at rank 0 on every acquire, the VAL family's defining read cost, which
+homed at rank 0 on every acquire, VAL's defining read cost, which
 request combining keeps to one request per rank at a time; INV/EXCL are
 structurally immune (covering read / retained copy):
 
 | arm | 1n | 2n | 4n | 8n |
 |---|---|---|---|---|
-| val_wb | 0.4 | 0.5 | 0.3 | 0.1 |
-| inv_wb | 0.5 | 0.3 | 0.2 | 0.1 |
-| excl_retain | 0.6 | 0.3 | 0.2 | 0.1 |
+| val_retain_owner | 0.4 | 0.5 | 0.3 | 0.1 |
+| inv_retain_owner | 0.5 | 0.3 | 0.2 | 0.1 |
+| excl_retain_owner | 0.6 | 0.3 | 0.2 | 0.1 |
 
 base anti-scales on EVERY arm (2n: val 30.3 / inv 73.4 / excl 39.1) — each tree
-node's board is a fresh remote datablock, a cold-read storm no coherence family
+node's board is a fresh remote datablock, a cold-read storm no validity
 can serve locally, and INV pays its directory on top. Base past 2n is
 unmeasured here; the 2n figure alone bounds the cell. At the calibrated size
 the base multinode cells are therefore reported as censored points (TIMEOUT, or
@@ -292,7 +292,7 @@ measurement on the Dane-mirror geometry (1 node, 108w+4p, Release,
 `rounds` = 1), taken before the Dane per-node width and the 900 s cell
 budget were fixed and before the scatter depth became rank-derived; they
 are the starting lattice the current choice was sized from, not the current
-anchor (see above): `8 1 8` = 10.2 / 18.9 / 13.9 s across the three families
+anchor (see above): `8 1 8` = 10.2 / 18.9 / 13.9 s across the three validities
 (count 19,979,938); `9 1 8` = 193.7 s (325,211,332); `9 1 7` = 72.0 s
 (114,947,436); `10 1 6` = 49.5 s (75,516,988). One depth step multiplies the
 tree by the branching, so the lattice is sparse — there is no rung between
@@ -307,7 +307,7 @@ no re-pin run.
 Memory: the one-node bound is **measurement-anchored, not derived**. Peak
 RSS is ~3.8 GB and flat across a 16× range of tree size — 3,980,004 /
 3,987,320 / 3,981,496 KB at depth 7 / 8 / 9, rows 8, one node, 108w+4p,
-`arts_ocr_val_wb`, recorded in
+`arts_ocr_val_retain_owner`, recorded in
 `logs/adhoc/2026-08-21-triangle-rows8-sweep/track.txt` (2026-08-21). The
 per-DB formula `live_frontier × (8·holes + 8) + 8·3·nmoves` — 288 B per live
 board, 8 B per live count block and 3,024 B for the jump table at rows 8 —

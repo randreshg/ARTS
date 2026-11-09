@@ -692,22 +692,22 @@ if(ARTS_BUILD_BENCHMARKS)
     # neither a retention nor a read source, is named cdag_flush and passes
     # the defaults.  Under EXCL the retention fixes the read source: HOME with
     # PURGE, OWNER with RETAIN.
-    arts_variant(ocr_val_wt        VAL     RETAIN HOME)
-    arts_variant(ocr_val_wb        VAL     RETAIN OWNER)
-    arts_variant(ocr_val_wt_purge  VAL     PURGE  HOME)
-    arts_variant(ocr_excl_purge    EXCL    PURGE  HOME)
-    arts_variant(ocr_excl_retain   EXCL    RETAIN OWNER)
-    arts_variant(ocr_inv_wt        INV     RETAIN HOME)
-    arts_variant(ocr_inv_wb        INV     RETAIN OWNER)
-    arts_variant(ocr_inv_wt_purge  INV     PURGE  HOME)
-    arts_variant(wrf_flush         FLUSH   RETAIN OWNER)
+    arts_variant(ocr_val_retain_home    VAL   RETAIN HOME)
+    arts_variant(ocr_val_retain_owner   VAL   RETAIN OWNER)
+    arts_variant(ocr_val_purge_home     VAL   PURGE  HOME)
+    arts_variant(ocr_excl_purge_home    EXCL  PURGE  HOME)
+    arts_variant(ocr_excl_retain_owner  EXCL  RETAIN OWNER)
+    arts_variant(ocr_inv_retain_home    INV   RETAIN HOME)
+    arts_variant(ocr_inv_retain_owner   INV   RETAIN OWNER)
+    arts_variant(ocr_inv_purge_home     INV   PURGE  HOME)
+    arts_variant(cdag_flush             FLUSH RETAIN OWNER)
 
     # The two CXL entries of the EXCL·PURGE·HOME cell: one variable changes
     # against that cell's own variant -- where a block's bytes rest -- so the
     # three axes are shared with it.  Always built: the library they link is
     # the vendored fake unless ARTS_CXL_REAL names the device's.
-    arts_variant(ocr_excl_purge_cxl_staged EXCL PURGE HOME STAGED)
-    arts_variant(ocr_excl_purge_cxl_direct EXCL PURGE HOME DIRECT)
+    arts_variant(ocr_excl_purge_home_cxl_staged EXCL PURGE HOME STAGED)
+    arts_variant(ocr_excl_purge_home_cxl_direct EXCL PURGE HOME DIRECT)
 endif()
 
 # Link mimalloc-static when selected.  The OBJECT library arts_utils needs

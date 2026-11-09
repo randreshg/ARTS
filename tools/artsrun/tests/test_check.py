@@ -24,7 +24,7 @@ def _cell(entry_key: str, app: ResolvedApp, nodes: int = 1,
           kind: RuntimeKind = RuntimeKind.ARTS) -> Cell:
     entry = SelectionEntry(
         key=entry_key, label=entry_key, kind=kind,
-        cell="VAL/RETAIN/WB", variant=entry_key,
+        cell="VAL/RETAIN/OWNER", variant=entry_key,
     )
     return Cell(
         entry=entry, app=app, nodes=nodes, repeat=1,

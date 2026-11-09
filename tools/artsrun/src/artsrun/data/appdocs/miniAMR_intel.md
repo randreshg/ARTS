@@ -427,7 +427,7 @@ Scaling numbers: see the anchor at the end of Sizing; the catalog runs a
   committing `--num_refine`.
 
 Anchor at the catalog arguments (24x12x12 = 3456 blocks, `--num_refine 1`,
-`--num_tsteps 20`), one node of 108 workers, INV x WB: base 24.0 s / hinted
+`--num_tsteps 20`), one node of 108 workers, INV·RETAIN·OWNER: base 24.0 s / hinted
 21.8 s, 12.7 GB resident. This program is unusually sensitive to
 instrumentation — a campaign counterset cost it ~31% in the record — so
 calibrate on a counter-free tree.

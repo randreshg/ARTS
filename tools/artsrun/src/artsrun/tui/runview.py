@@ -45,8 +45,8 @@ _VERDICT_STYLE = {
 
 # Width None auto-sizes to content (identity columns never shrink back).
 _COLUMNS = (
-    ("#", 4), ("app", None), ("version", 12), ("runtime", 16), ("family", 8),
-    ("write", 5), ("release", 7), ("n", 3), ("rep", 3), ("status", 8),
+    ("#", 4), ("app", None), ("version", 12), ("runtime", 16), ("validity", 8),
+    ("retention", 9), ("read source", 11), ("n", 3), ("rep", 3), ("status", 8),
     ("wall", 8), ("scalar", 18), ("verdict", 6),
 )
 
@@ -89,9 +89,9 @@ def _row_cells(index: int, view: CellView) -> list[Text]:
         Text(view.app_name, style=dim or "bold"),
         Text(view.version, style=dim),
         Text(view.entry_key, style=dim),
-        Text(view.family, style=dim),
-        Text(view.write, style=dim),
-        Text(view.release, style=dim),
+        Text(view.validity, style=dim),
+        Text(view.retention, style=dim),
+        Text(view.read_source, style=dim),
         Text(str(view.nodes or ""), style=dim),
         Text(str(view.repeat or ""), style=dim),
         Text(status, style=status_style),

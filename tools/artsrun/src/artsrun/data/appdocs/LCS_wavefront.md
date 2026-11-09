@@ -107,7 +107,7 @@ re-encoding (`band + nranks·idx`).  West strips are always band-local;
 north/corner strips cross ranks only at band boundaries; T tiles stay
 round-robin (a column's readers span every band).
 
-## Family shape (measured, 15w+1p x 1/2/4/8 nodes, `131072 512`)
+## Validity shape (measured, 15w+1p x 1/2/4/8 nodes, `131072 512`)
 
 **Measured before the 2026-09-03 restructure of the creation plane** (the
 serial spawner chain became leaf-creates-south) **and before the balanced
@@ -118,9 +118,9 @@ is indicative only — not a like-for-like locality reference for the new map
 
 | arm | 1n | 2n | 4n | 8n |
 |---|---|---|---|---|
-| val_wb | 3.27 | 2.32 | 1.51 | 1.12 |
-| inv_wb | 3.26 | 2.01 | 1.42 | 0.74 |
-| excl_retain | 3.24 | 1.92 | 1.36 | 1.10 |
+| val_retain_owner | 3.27 | 2.32 | 1.51 | 1.12 |
+| inv_retain_owner | 3.26 | 2.01 | 1.42 | 0.74 |
+| excl_retain_owner | 3.24 | 1.92 | 1.36 | 1.10 |
 
 At this small instance (`L = 256`, average width 128 ≈ the 8-node worker
 count) ramp-up/down is a visible fraction, so 2.9-4.4x at 8 nodes is a
@@ -133,7 +133,7 @@ the wiring, not the machine, was the original's limit.
 `N` sets total work (`N²` cells) and `base` dices it: `L = N/base` is the
 wavefront width, so `base` trades per-leaf grain against parallel width at
 fixed work.  Fixed-work granularity on the Dane-mirror geometry (1 node,
-108w+4p, Release, `val_wb`): `2097152/512` = 122.6 s vs `2097152/256` =
+108w+4p, Release, `val_retain_owner`): `2097152/512` = 122.6 s vs `2097152/256` =
 202.1 s — finer tiles cost runtime object churn, so pick the coarsest
 `base` whose `L` still spans the largest geometry.  Measured lattice:
 1048576/256 = 45.3 s, 1572864/256 = 104.6 s, 2097152/256 = 202.1 s,
@@ -141,7 +141,7 @@ fixed work.  Fixed-work granularity on the Dane-mirror geometry (1 node,
 **`1769472 256`**: `L = 6912`, whose average anti-diagonal width (3456)
 equals the 32-node x 108-worker campaign's total worker count, and the
 nearest feasible point to the window.  The anchor at that point, one node
-of 108 workers under INV x WB, is 100.7 s and 4.3 GB resident, inside the
+of 108 workers under INV·RETAIN·OWNER, is 100.7 s and 4.3 GB resident, inside the
 restructured tier's 120 s band; the earlier 141.0 s was measured with the
 serial creation chain, whose `L² = 47.8 M` sequential creates were a floor
 of the same order as the compute.

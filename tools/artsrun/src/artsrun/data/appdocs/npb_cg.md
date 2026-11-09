@@ -300,7 +300,7 @@ only.
   `≈ 20·na·(nonzer+1) + 12·na` bytes — 3.6 MB at class A — released at the
   join. Peak app footprint ≈ 32 MB at the calibrated args, far inside the
   190 GB one-node budget.
-- **This is an anti-scaler.** Measured on the **base** binary, val_wb, class A
+- **This is an anti-scaler.** Measured on the **base** binary, val_retain_owner, class A
   `-b 25` on 15w+1p ferrari ranks: 1.30 s at one node, 14.71 s at two,
   19.86 s at eight. At `-b 2` (the row's previous calibration, not the
   catalog's current `-b 4`) on the same geometry: 194.8 s at two nodes and

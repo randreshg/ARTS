@@ -85,10 +85,10 @@ CELL_TIMEOUT_S = 1800
 
 # Where the executables live and how their names are formed:
 #   <APP_BUILD_DIR>/<app>_<variant>
-# The paper pairs network ARTS (arts_ocr_excl_purge) with CXL-DIRECT ARTS
+# The paper pairs network ARTS (arts_ocr_excl_purge_home) with CXL-DIRECT ARTS
 # over the same matrix; both builds must use the same counterset.
 APP_BUILD_DIR = REPO_ROOT / "build" / "benchmarks" / "apps"
-VARIANTS = ["arts_ocr_excl_purge", "arts_ocr_excl_purge_cxl_direct"]
+VARIANTS = ["arts_ocr_excl_purge_home", "arts_ocr_excl_purge_home_cxl_direct"]
 
 # The site launch wrapper and the arguments it receives besides
 # --path-to-json.  "--local" runs the binary on this host and lets ARTS

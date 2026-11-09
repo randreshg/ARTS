@@ -12,8 +12,9 @@
 
 name: paper-rerun-32n
 description: base-tier rows short of three valid repeats at 32 nodes only
-entries: [arts_excl_purge, arts_excl_retain, arts_inv_wt_purge, arts_inv_wt,
-          arts_inv_wb, arts_val_wt_purge, arts_val_wt, arts_val_wb]
+entries: [arts_excl_purge_home, arts_excl_retain_owner, arts_inv_purge_home,
+          arts_inv_retain_home, arts_inv_retain_owner, arts_val_purge_home,
+          arts_val_retain_home, arts_val_retain_owner]
 
 apps:
   cholesky_blas:

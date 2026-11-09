@@ -33,7 +33,7 @@ def _result(entry_key: str, *, wall_s: float, e2e_s: float | None,
             nodes: int = 1, status: Status = Status.OK,
             note: str = "", app: ResolvedApp | None = None) -> CellResult:
     entry = SelectionEntry(key=entry_key, label=entry_key,
-                           kind=RuntimeKind.ARTS, cell="VAL/RETAIN/WB",
+                           kind=RuntimeKind.ARTS, cell="VAL/RETAIN/OWNER",
                            variant=entry_key)
     app = app or _app()
     cell = Cell(entry=entry, app=app, nodes=nodes, repeat=1,
@@ -168,19 +168,37 @@ def test_a_failed_cell_does_not_by_itself_mark_a_row():
     assert "~" not in _text(scaling_table(rs, ["a"]))
 
 
-def test_the_wrf_flush_entry_has_a_label_and_a_colour_of_its_own():
+def test_the_cdag_flush_entry_has_a_label_and_a_colour_of_its_own():
     from artsrun.report import RT_COLOR, RT_LABEL, rt_key
-    assert RT_LABEL["arts_wrf_flush"] == "DB-WRF·FLUSH"
-    assert RT_COLOR["arts_wrf_flush"] not in {v for k, v in RT_COLOR.items() if k != "arts_wrf_flush"}
-    assert rt_key("wrf_flush") == "arts_wrf_flush"
+    assert RT_LABEL["arts_cdag_flush"] == "CDAG·FLUSH"
+    assert RT_COLOR["arts_cdag_flush"] not in {v for k, v in RT_COLOR.items() if k != "arts_cdag_flush"}
+    assert rt_key("cdag_flush") == "arts_cdag_flush"
+
+
+def test_every_label_spells_validity_retention_and_read_source():
+    from artsrun.report import RT_LABEL, rt_key
+    assert RT_LABEL["arts_val_retain_home"] == "VAL·RETAIN·HOME"
+    assert RT_LABEL["arts_cdag_flush"] == "CDAG·FLUSH"
+    assert RT_LABEL["arts_excl_purge_home_cxl_direct"] == \
+        "EXCL·PURGE·HOME CXL-DIRECT"
+    assert rt_key("ocr_inv_retain_owner") == "arts_inv_retain_owner"
+    assert rt_key("cdag_flush") == "arts_cdag_flush"
+
+
+def test_every_plane_entry_has_a_label_and_a_colour():
+    from artsrun.model.plane import load_plane
+    from artsrun.report import RT_COLOR, RT_LABEL
+    for e in load_plane().entries:
+        assert e.key in RT_LABEL, e.key
+        assert e.key in RT_COLOR, e.key
 
 
 def test_the_cxl_entries_name_their_design_point_and_have_colours_of_their_own():
     from artsrun.report import RT_COLOR, RT_LABEL, rt_key
 
-    assert RT_LABEL["arts_excl_purge_cxl_staged"] == "EXCL·WB·PURGE CXL-STAGED"
-    assert RT_LABEL["arts_excl_purge_cxl_direct"] == "EXCL·WB·PURGE CXL-DIRECT"
-    for key in ("arts_excl_purge_cxl_staged", "arts_excl_purge_cxl_direct"):
+    assert RT_LABEL["arts_excl_purge_home_cxl_staged"] == "EXCL·PURGE·HOME CXL-STAGED"
+    assert RT_LABEL["arts_excl_purge_home_cxl_direct"] == "EXCL·PURGE·HOME CXL-DIRECT"
+    for key in ("arts_excl_purge_home_cxl_staged", "arts_excl_purge_home_cxl_direct"):
         assert RT_COLOR[key] not in {v for k, v in RT_COLOR.items() if k != key}
         assert rt_key(key) == key
 
@@ -206,13 +224,13 @@ def test_the_summary_explains_the_ladder_mark_only_when_one_appears(tmp_path):
 
 
 def test_the_apps_table_marks_each_tier_by_the_row_that_supplies_it():
-    # The DB-WRF mark on a terminal is its own style, not the entry's figure
+    # The CDAG mark on a terminal is its own style, not the entry's figure
     # tone; the restructured column is judged by the rewrite's row.
     from artsrun.cli import _tier_mark
     from artsrun.model.catalog import Version, load_catalog
-    from artsrun.report import RT_COLOR, WRF_ELIGIBLE_STYLE
+    from artsrun.report import RT_COLOR, CDAG_ELIGIBLE_STYLE
 
-    assert WRF_ELIGIBLE_STYLE not in RT_COLOR.values()
+    assert CDAG_ELIGIBLE_STYLE not in RT_COLOR.values()
     catalog = load_catalog()
     split = [a for a in catalog.rows
              if a.restructured_as
@@ -225,7 +243,7 @@ def test_the_apps_table_marks_each_tier_by_the_row_that_supplies_it():
     rewrite = _tier_mark(catalog, row, Version.RESTRUCTURED)
     assert base != rewrite
     inside, outside = (base, rewrite) if row.unordered_writes is None else (rewrite, base)
-    assert inside == f"[{WRF_ELIGIBLE_STYLE}]✓[/]"
+    assert inside == f"[{CDAG_ELIGIBLE_STYLE}]✓[/]"
     assert outside == "[green]✓[/green]"
     assert _tier_mark(catalog, row, Version.HINTED) in (base, "[dim]·[/dim]")
 
@@ -252,14 +270,14 @@ def _two_sections():
     from artsrun.run.types import NotApplicable
 
     results = [
-        _sectioned("arts_val_wb", RuntimeKind.ARTS, Section.OCR, "ocr_row"),
+        _sectioned("arts_val_retain_owner", RuntimeKind.ARTS, Section.OCR, "ocr_row"),
         _sectioned("xsocr", RuntimeKind.XSOCR, Section.OCR, "ocr_row"),
-        _sectioned("arts_val_wb", RuntimeKind.ARTS, Section.EXAMPLES,
+        _sectioned("arts_val_retain_owner", RuntimeKind.ARTS, Section.EXAMPLES,
                    "x_example"),
     ]
     selection = Selection(
         profile="t", experiment="b", default_entries=[],
-        entries=["arts_val_wb", "xsocr"],
+        entries=["arts_val_retain_owner", "xsocr"],
         apps={"ocr_row": [Version.BASE], "x_example": [Version.BASE]},
         node_counts=[1],
     )

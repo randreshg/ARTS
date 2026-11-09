@@ -41,7 +41,7 @@ hands the continuation to a freshly created EDT.  Four structures follow:
 The result is a per-block latency chain whose length does not fall with the
 rank count, which is what the hinted tier could not fix — placement was never
 the limit.  On the local trend instance (`8×8×4`, refine 1, published heights),
-`arts_inv_wb`, e2e seconds at 1 / 2 / 4 / 8 ranks:
+`arts_inv_retain_owner`, e2e seconds at 1 / 2 / 4 / 8 ranks:
 
 | tier | 1n | 2n | 4n | 8n |
 |---|---|---|---|---|
@@ -180,7 +180,7 @@ a uniform interior block.  No task in the program holds a dependence per block:
 that is what removes the base row's `MAX_NUM_UNREFINED_BLOCKS`.
 
 Measured against the base row on the local trend instance (`8×8×4`, refine 1,
-20 timesteps × 20 stages, `arts_inv_wb`, whole-run totals):
+20 timesteps × 20 stages, `arts_inv_retain_owner`, whole-run totals):
 
 | | base / hinted | this row |
 |---|---|---|
@@ -346,9 +346,9 @@ both put a block on the domain its position names.
   stage: they are 69% on top of the payload, and they are what a run's resident
   set shows against the base tier's.  Measured at the 1× lattice
   (`--npx 24 --npy 12 --npz 12 --num_refine 1`), one node of 108 workers,
-  INV × WB: **17.1 s and 18.4 GB**, against the base row's 21.7 s and 13.6 GB
+  INV·RETAIN·OWNER: **17.1 s and 18.4 GB**, against the base row's 21.7 s and 13.6 GB
   on the same run — the same `Weighted Mesh Checksum`, to the digit.
-- **Anchor**: `calibration pending`.  One node of 108 workers, INV × WB, the
+- **Anchor**: `calibration pending`.  One node of 108 workers, INV·RETAIN·OWNER, the
   published heights, only the block grid growing:
 
   | lattice | blocks | e2e | max RSS |

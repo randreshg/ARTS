@@ -310,7 +310,7 @@ placement-invariant, as the structural argument said.
 area its cut planes cross, the near-cube is the incumbent and is replaced only
 on a strict improvement at no worse balance.  Hint values only.
 
-**Measured** (INV × WB, 15w+1p × 1/2/4/8, two repeats, scalars identical):
+**Measured** (INV·RETAIN·OWNER, 15w+1p × 1/2/4/8, two repeats, scalars identical):
 
 | rank grid | tier | 1n | 2n | 4n | 8n |
 |---|---|---|---|---|---|
@@ -380,7 +380,7 @@ At `W = 13,824`, `T = 20` that is `23.9 + 89.9 = ` ~114 GB typical but
 size does not fit and must come down: `W = 6,912` (2× a 3,456-worker floor)
 predicts ~57 GB typical and ~100 GB worst case. Take the campaign size from the
 width floor, not from the largest mesh that appears to fit, and re-measure RSS
-per coherence family on the 1-node cell before committing.
+per validity on the 1-node cell before committing.
 
 `--stages_per_ts 20` and `--num_vars 40` are stated even though they are the
 defaults. They are the multipliers: per block per timestep the program creates

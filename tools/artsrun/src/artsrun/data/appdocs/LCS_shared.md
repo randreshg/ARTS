@@ -188,7 +188,7 @@ program described above.  Balance is exact at every campaign rank count:
 size, and 1, 2, 4, 8, 16 and 32 each divide their `G^2` -- aggregate
 imbalance 1.000.
 
-**Measured** (15w+1p x 1/2/4/8 nodes, INV x WB, `[E2E]` seconds):
+**Measured** (15w+1p x 1/2/4/8 nodes, INV·RETAIN·OWNER, `[E2E]` seconds):
 
 | nodes | base `262144 1024` | hinted | gain | base `524288 2048` | hinted | gain |
 |---|---|---|---|---|---|---|
@@ -214,7 +214,7 @@ migration cost is an improvement at every geometry the campaign runs, so the
 tier is kept.  The row's exhibit is unharmed: the base tier is what shows the
 anti-scaling shape, and it is untouched.
 
-## Family shape (measured, 15w+1p x 1/2/4/8 nodes, `65536 1024`)
+## Validity shape (measured, 15w+1p x 1/2/4/8 nodes, `65536 1024`)
 
 **Measured before the 2026-09-03 conformance change** — every cell below
 includes the serial `O(N²)` preamble that has since been removed (roughly
@@ -223,12 +223,12 @@ are stale and only the *shape* survives. Re-trend before quoting.
 
 | arm | 1n | 2n | 4n | 8n |
 |---|---|---|---|---|
-| val_wb | 4.29 | 5.76 | 6.72 | 8.02 |
-| inv_wb | 4.29 | 5.78 | 6.84 | 8.17 |
-| excl_retain | 4.29 | 5.73 | 6.72 | 7.78 |
+| val_retain_owner | 4.29 | 5.76 | 6.72 | 8.02 |
+| inv_retain_owner | 4.29 | 5.78 | 6.84 | 8.17 |
+| excl_retain_owner | 4.29 | 5.73 | 6.72 | 7.78 |
 
 Every arm degrades identically: the migrating score turn costs ~0.9 ms per
-remote hop regardless of family, because there is nothing for a coherence
+remote hop regardless of validity, because there is nothing for a coherence
 protocol to cache when every turn moves the block. At the calibrated size
 (`d = 8`, `4⁸ = 65,536` turns — 4× the previous calibration's 16,384) the
 multinode cells are ordinary measurements, not censored points — the
@@ -263,7 +263,7 @@ case, 20 s at one node): `409600 1600`, derived rather than searched —
 at a fixed tree depth (`N/base = 256`, the trend roster's) the surviving
 law `T ≈ 3^d·base² / R` is quadratic in `N`, so 8.2 s at `262144 1024`
 puts 20 s at `N = 409600`, and `base` widens to 1600 to keep the depth.
-Measured on one node of 108 workers (INV × WB): base 19.6 s, hinted
+Measured on one node of 108 workers (INV·RETAIN·OWNER): base 19.6 s, hinted
 20.0 s, 4.2 GB resident, checksum 1663678361. The voted scalar is the
 `LCS checksum:` line — a function of every cell of the computed array,
 and equal to `LCS_distributed_ST`'s at the same arguments; `LCS length:`

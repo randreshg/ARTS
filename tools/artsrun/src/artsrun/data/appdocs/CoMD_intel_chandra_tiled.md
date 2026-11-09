@@ -292,7 +292,7 @@ per step, six packed halo buffers out and six in (each sized for the rank's
 worst face, whole-DB granularity regardless of how many atoms actually
 travel), plus one 24-byte reduction payload per collective.  Locality that
 exists in the algorithm is fully expressed — this is the port to compare the
-others against, not a coherence stress, and it is why the family sweep is
+others against, not a coherence stress, and it is why the validity sweep is
 arm-indifferent to a fraction of a percent.
 
 `USE_STATIC_SCHEDULER` would replace the per-rank affinity hints with one fork
@@ -332,7 +332,7 @@ and unmovable, events take no hint).  Three freedoms were checked:
   is persistent and RW-acquired by its producer every second step, so
   producer-home costs one payload crossing per directed link where
   consumer-home costs two (the RW acquire must fetch; there is no
-  acquire-without-fetch), under both write policies.
+  acquire-without-fetch), under both read sources.
 - **Reduction payloads / rank-0 blocks — not movable or not worth moving.**
   `reduction.c` is compiled once as an OBJECT library, so the flavour define
   never reaches it, and its traffic is `1 / 2.1×10⁶` of the byte flow; one
@@ -345,7 +345,7 @@ for other callers): among the factorisations that divide every axis exactly
 it takes the minimum-crossing one, a tie keeps the library's default, and
 balance is never traded.  Hint values only — same EDTs, DBs, events, wiring.
 
-**Measured** (INV × WB, 15w+1p × 1/2/4/8, two repeats, scalars identical in
+**Measured** (INV·RETAIN·OWNER, 15w+1p × 1/2/4/8, two repeats, scalars identical in
 every cell):
 
 | rank grid | tier | 1n | 2n | 4n | 8n |
@@ -498,7 +498,7 @@ structure, and ARTS moves whole DBs), but it sets the per-step inter-node byte
 count every arm is compared on — read the arms' network sensitivity against
 that denominator, not against the atoms that moved.
 
-## Family shape (measured, 15w+1p x 1/2/4/8 nodes -- retired geometry, re-take pending)
+## Validity shape (measured, 15w+1p x 1/2/4/8 nodes -- retired geometry, re-take pending)
 
 `calibration pending` — the recorded ferrari ladder (501 / 274 / 164 / 86 s over
 1/2/4/8 nodes at 15w+1p, 5.8× at 8 nodes, all four arms within 500.2–501.1 s at

@@ -98,12 +98,12 @@ apps:
     # divides (G/n)*1024: 393216 and 327680 at 1, 2, 4, 8, 16 and 32 nodes
     # with the arguments below.  The put count votes and is pinned;
     # the get count rides as an extra.  The payload is the one thing in this
-    # section outside DB-WRF at block granularity: transfers that land on one
+    # section outside CDAG at block granularity: transfers that land on one
     # slot are not ordered, in the origin (its storage array has no lock) or
     # in the mirror, so nothing reads the bytes, here or there, and the counts
     # survive only because every completion runs on the counters' home rank --
     # an implementation accident, not program ordering; the row is outside
-    # DB-WRF.
+    # CDAG.
     expect: '393216'
     expect_args: ['--globalMB=4096', '--transferKB=64', '--iterations=5', '--semaphore=16', '--all-to-all=true', '--no-local=false', '--distribution=1']
     # Sizing: iterations and transferKB keep the origin's published values;
@@ -172,4 +172,4 @@ apps:
     # neither runtime's thread count).  Sized to the one-node window through
     # each arm's measured two-point exponent under the memory budget with margin.
     args: ['--nx=72000', '--ny=71998', '--plan=estimate', '--run=scatter']
-    unordered_writes: 'chunk-parallel loops hold one array RW from sibling tasks (fft_hpx.c:418, :432, :443); see the appdoc''s DB-WRF paragraph'
+    unordered_writes: 'chunk-parallel loops hold one array RW from sibling tasks (fft_hpx.c:418, :432, :443); see the appdoc''s CDAG paragraph'

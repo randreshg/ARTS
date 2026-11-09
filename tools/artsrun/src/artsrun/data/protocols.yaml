@@ -1,89 +1,94 @@
 # The coherence-configuration plane.
 #
-# Rows are the coherence family; columns are the two second axes (release
-# policy x write policy).  Only combinations a build accepts appear under
-# `cells`; every other grid position is unbuildable and carries the reason the
-# build itself gives, so the selection screen can explain the gap instead of
-# hiding it.
+# Three axes, in the paper's order: the validity (how a copy stays valid after
+# a write) is the row; the retention (who starts the ownership's return)
+# groups the columns; the read source (where a reader's copy comes from)
+# splits each group.  Only combinations a build accepts appear under `cells`;
+# every other grid position is unbuildable and carries the reason the build
+# itself gives, so the selection screen can explain the gap instead of hiding
+# it.  OWNER needs RETAIN: a voluntary return hands back only the ownership
+# while the bytes stay at the ex-owner, so the home could not serve a reader
+# alone.  Under EXCL the retention fixes the read source: no copy outlives a
+# write turn, so the payload rides the ownership and rests at the home under
+# PURGE and with the last writer under RETAIN.
 #
 # Two cells are also implemented by an independent runtime.  Those cells offer
 # a second entry, which is what makes a configuration comparable across
 # engines at a fixed design point.
 
-# Read combining is part of the VAL family's definition (every message class
-# suppresses duplicate concurrent requests), so it is not a family here.
-families: [EXCL, INV, VAL]
-releases: [PURGE, RETAIN]
-writes: [WT, WB]
+# Read combining is part of VAL's definition (every message class suppresses
+# duplicate concurrent requests), so it is not a validity here.
+validities: [EXCL, INV, VAL]
+retentions: [PURGE, RETAIN]
+read_sources: [HOME, OWNER]
 
-family_labels:
+validity_labels:
   EXCL: EXCL
   INV: INV
   VAL: VAL
 
-# Spelled out: the abbreviations are easy to swap for each other at a glance.
-write_labels:
-  WT: Write Through
-  WB: Write Back
-
-# The family names are acronyms and stay upper-case; the policies are
-# ordinary words and read as such.
-release_labels:
+# The validities are acronyms and stay upper-case; the retentions and read
+# sources are ordinary words and read as such.
+retention_labels:
   PURGE: Purge
   RETAIN: Retain
 
+read_source_labels:
+  HOME: Home
+  OWNER: Owner
+
 cells:
-  - family: EXCL
-    release: PURGE
-    write: WB
-    variant: ocr_excl_purge
+  - validity: EXCL
+    retention: PURGE
+    read_source: HOME
+    variant: ocr_excl_purge_home
     reference: xsocr
     entries:
       - label: ARTS-CXL-STAGED
-        variant: ocr_excl_purge_cxl_staged
+        variant: ocr_excl_purge_home_cxl_staged
       - label: ARTS-CXL-DIRECT
-        variant: ocr_excl_purge_cxl_direct
-  - family: EXCL
-    release: RETAIN
-    write: WB
-    variant: ocr_excl_retain
-  - family: INV
-    release: RETAIN
-    write: WT
-    variant: ocr_inv_wt
-  - family: INV
-    release: RETAIN
-    write: WB
-    variant: ocr_inv_wb
+        variant: ocr_excl_purge_home_cxl_direct
+  - validity: EXCL
+    retention: RETAIN
+    read_source: OWNER
+    variant: ocr_excl_retain_owner
+  - validity: INV
+    retention: RETAIN
+    read_source: HOME
+    variant: ocr_inv_retain_home
+  - validity: INV
+    retention: RETAIN
+    read_source: OWNER
+    variant: ocr_inv_retain_owner
     reference: ocrvx
-  - family: INV
-    release: PURGE
-    write: WT
-    variant: ocr_inv_wt_purge
-  - family: VAL
-    release: RETAIN
-    write: WT
-    variant: ocr_val_wt
-  - family: VAL
-    release: RETAIN
-    write: WB
-    variant: ocr_val_wb
-  - family: VAL
-    release: PURGE
-    write: WT
-    variant: ocr_val_wt_purge
+  - validity: INV
+    retention: PURGE
+    read_source: HOME
+    variant: ocr_inv_purge_home
+  - validity: VAL
+    retention: RETAIN
+    read_source: HOME
+    variant: ocr_val_retain_home
+  - validity: VAL
+    retention: RETAIN
+    read_source: OWNER
+    variant: ocr_val_retain_owner
+  - validity: VAL
+    retention: PURGE
+    read_source: HOME
+    variant: ocr_val_purge_home
 
 # Why a grid position carries no configuration.  Keyed by the rule that
 # excludes it; the model picks the rule that applies.
 unbuildable:
-  excl_needs_wb: >-
-    EXCL requires WB — the payload rides the permission, so the release
-    policy already decides both halves.
-  needs_retain: >-
-    Write-back requires RETAIN — a voluntary return hands back only the
-    permission while the bytes stay at the ex-owner, so the home still
-    cannot serve a reader alone (shipping the bytes home too is, by
-    definition, write-through).
+  excl_retention_sets_read_source: >-
+    Under EXCL the retention fixes the read source — no copy outlives a write
+    turn, so the payload rides the ownership: HOME with PURGE, OWNER with
+    RETAIN.
+  owner_needs_retain: >-
+    OWNER requires RETAIN — a voluntary return hands back only the ownership
+    while the bytes stay at the ex-owner, so the home still cannot serve a
+    reader alone (shipping the bytes home too is the HOME read source).
 
 # A runtime that implements no position on this plane: its comparison axis
 # is the programming model, not a coherence design point, so it hangs off no
@@ -103,31 +108,31 @@ references:
   xsocr:
     label: XSOCR
     kind: xsocr
-    note: home-based purging lock; the same design point as EXCL x PURGE
+    note: home-based purging lock; the same design point as EXCL·PURGE·HOME
   ocrvx:
     # OCR-vx is the project; it ships three runtime families (v1, vsm, vdm).
     # The one built here is the distributed-memory family, so the label names
     # that rather than the project.
     label: OCR-Vdm
     kind: ocrvx
-    note: owner-resident write-invalidate; the same design point as INV x WB
+    note: owner-resident write-invalidate; the same design point as INV·RETAIN·OWNER
 
 # Every protocol requires a memory model of the program.  The grid above holds
 # the OCR-model protocols: the runtime orders every conflict, so any OCR-legal
-# program is admitted.  The protocols below require the DB-WRF model instead —
-# they are correct only for programs whose write acquisitions are exclusive —
-# so they sit under their own heading and never in the grid.
+# program is admitted.  The protocols below require the CDAG model instead —
+# they are correct only for programs that order every pair of a block's write
+# acquisitions — so they sit under their own heading and never in the grid.
 models:
-  DB_WRF:
-    label: DB-WRF
+  CDAG:
+    label: CDAG
     note: >-
-      exclusive write acquisition — at most one write-mode acquisition of a
-      DataBlock is live at any time, and the program guarantees it by
-      happens-before; read acquisitions are unconstrained
+      every pair of a DataBlock's write acquisitions is ordered by
+      happens-before, released by any means (an explicit release, a downgrade
+      or the EDT's completion); read acquisitions are unconstrained
     cells:
       - arm: FLUSH
         label: FLUSH
-        variant: wrf_flush
+        variant: cdag_flush
         note: >-
           fetch the whole payload at every remote acquire, write it back at
           every remote RW release, block for the home's acknowledgement

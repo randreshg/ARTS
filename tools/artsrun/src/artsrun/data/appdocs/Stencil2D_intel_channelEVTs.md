@@ -314,25 +314,25 @@ This is the same freedom as `hpcg_intel`'s `HPCG_HALO_HOME_HINT`.  The layer
 `&myDbkAffinityHNT` to all eight creates) homes each face's buffers on its
 reader.  Re-homed buffers = 2 × crossing edges (432 / 944 / 1808 / 2832 / 4560
 at 2/4/8/16/32n, 0.4 % → 4.3 % of the round's halo bytes).  Prediction before
-measuring: write-through saves one message and the consumer's request round
-trip per cross-node edge per round; write-back and exclusion are neutral by
-construction; ceiling ≈ 0.1 % of a round at 2n rising to 1–2 % at 32n.
+measuring: {VAL,INV}·HOME saves one message and the consumer's request
+round trip per cross-node edge per round; {VAL,INV}·OWNER and the EXCL cells
+are neutral by construction; ceiling ≈ 0.1 % of a round at 2n rising to 1–2 % at 32n.
 
 **Measured** (15w+1p × 1/2/4/8, two repeats, `8400 480 100`, scalars
 identical in every cell; min/max of the two runs):
 
 | arm | tier | 1n | 2n | 4n | 8n |
 |---|---|---|---|---|---|
-| INV × WB | base | 6.74/6.75 | 3.48/3.51 | 1.80/1.82 | 0.89/0.91 |
+| INV·RETAIN·OWNER | base | 6.74/6.75 | 3.48/3.51 | 1.80/1.82 | 0.89/0.91 |
 | | hinted | 6.75/6.75 | 3.51/3.54 | 1.80/1.81 | **0.99/1.02** |
-| INV × WT | base | 6.74/6.76 | 3.53/3.53 | 1.81/1.84 | 0.89/0.93 |
+| INV·RETAIN·HOME | base | 6.74/6.76 | 3.53/3.53 | 1.81/1.84 | 0.89/0.93 |
 | | hinted | 6.75/6.76 | 3.47/3.47 | 1.78/1.79 | **0.97/0.99** |
-| VAL × WT | base | 6.73/6.74 | 3.52/3.52 | 1.79/1.82 | 0.88/0.89 |
+| VAL·RETAIN·HOME | base | 6.73/6.74 | 3.52/3.52 | 1.79/1.82 | 0.88/0.89 |
 | | hinted | 6.72/6.73 | 3.47/3.48 | 1.78/1.81 | **0.95/1.03** |
 
-Write-back is neutral at 1–4 nodes and 11 % slower at 8; write-through gains
-~2 % at 2 and 4 nodes — inside the box's drift — and loses 8–12 % at 8, in both
-families.  The sign follows the crossing count, exactly as it did for
+INV·RETAIN·OWNER is neutral at 1–4 nodes and 11 % slower at 8; the two
+RETAIN·HOME cells, INV and VAL, gain ~2 % at 2 and 4 nodes — inside the box's
+drift — and lose 8–12 % at 8.  The sign follows the crossing count, exactly as it did for
 `hpcg_intel`: the reader-home saves the request round trip but the buffer now
 travels as a push on the producer's critical path, and at 8 nodes (904 of
 54,824 halo edges cross) that costs more than the trip it saves; at 16 and 32
@@ -343,7 +343,7 @@ base tier stands in for the hinted comparison (`hinted: false`), and the layer
 stays in the source behind its guard as the record of the attempt.
 
 
-## Family shape (measured on bentley, 15w+1p x 1/2/4/8 nodes, `6144 768 200`)
+## Validity shape (measured on bentley, 15w+1p x 1/2/4/8 nodes, `6144 768 200`)
 
 base (there is no `_hinted` — the port's own affinity layer IS the
 placement), e2e seconds, counters all off. **Taken on the retired host
@@ -352,9 +352,9 @@ nothing; the shape does:
 
 | arm | 1n | 2n | 4n | 8n |
 |---|---|---|---|---|
-| val_wb | 7.29 | 3.90 | 1.98 | 1.13 |
-| inv_wb | 7.33 | 3.97 | 2.06 | 1.27 |
-| excl_retain | 7.31 | 3.97 | 2.03 | 1.24 |
+| val_retain_owner | 7.29 | 3.90 | 1.98 | 1.13 |
+| inv_retain_owner | 7.33 | 3.97 | 2.06 | 1.27 |
+| excl_retain_owner | 7.31 | 3.97 | 2.03 | 1.24 |
 
 The ferrari re-measure of the same shape at a reduced size
 (`5184 13824 400`, 15w+1p, `logs/adhoc/2026-08-31-base-calib/track.txt:143`)
@@ -451,8 +451,8 @@ but the two hosts are 1.65× apart, so the lattices must not be mixed.
 
 All of these are **one node at 108 workers + 4 progress threads** (the
 single-node run reclaims the progress threads as workers), Release, counters
-off; the ferrari triples are the three family representatives
-`val_wb / inv_wb / excl_retain`. The 15w+1p geometry belongs only to the
+off; the ferrari triples are the three validity representatives
+`val_retain_owner / inv_retain_owner / excl_retain_owner`. The 15w+1p geometry belongs only to the
 reduced trend series in the section above, never to a sizing point.
 (*) measured with an object-counter set still compiled in; a clean-tree
 re-measure of `27648 400` moved 67.2→69.1 s, so that instrumentation is

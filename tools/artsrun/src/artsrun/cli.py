@@ -143,14 +143,15 @@ def show_plane() -> None:
     """Print the configuration plane and what each position offers."""
     plane = load_plane()
     table = Table(title="Coherence configuration plane", expand=False)
-    table.add_column("family", style="bold")
-    for release, write in plane.columns():
-        table.add_column(f"{plane.write_label(write)}\n{plane.release_label(release)}",
+    table.add_column("validity", style="bold")
+    for retention, read_source in plane.columns():
+        table.add_column(f"{plane.retention_label(retention)}\n"
+                         f"{plane.read_source_label(read_source)}",
                          justify="center")
-    for family in plane.families:
-        row = [plane.family_labels.get(family, family.value)]
-        for release, write in plane.columns():
-            cell = plane.cell(family, release, write)
+    for validity in plane.validities:
+        row = [plane.validity_labels.get(validity, validity.value)]
+        for retention, read_source in plane.columns():
+            cell = plane.cell(validity, retention, read_source)
             if not cell.buildable:
                 row.append("[dim]····[/dim]")
             else:
@@ -253,7 +254,7 @@ def show_apps(
                     " ".join(entry.args) or "[dim]none[/dim]",
                 )
         console.print(table)
-    from artsrun.report import WRF_ELIGIBLE_STYLE as wrf
+    from artsrun.report import CDAG_ELIGIBLE_STYLE as cdag
     console.print(
         "[dim]base = the application as published, its own hints included "
         "· hinted = structure untouched, EDT/DB placement hints added or "
@@ -261,8 +262,8 @@ def show_apps(
         "decomposition redesigned as a separate target[/dim]"
     )
     console.print(
-        f"[dim]· [/dim][{wrf}]✓[/] [dim]= that tier keeps every block's write "
-        "acquisitions exclusive, so it also runs under the DB-WRF·FLUSH "
+        f"[dim]· [/dim][{cdag}]✓[/] [dim]= that tier orders every pair of a "
+        "block's write acquisitions, so it also runs under the CDAG·FLUSH "
         "entry; a plain [/dim][green]✓[/green][dim] runs under the OCR-model "
         "entries only.  base and hinted share one verdict, a restructured "
         "rewrite has its own (artsrun apps <name> states why)[/dim]"
@@ -471,17 +472,17 @@ def _runs_on(section, plane, experiment) -> str:
 def _tier_mark(catalog, entry, version: Version) -> str:
     """The glyph for one tier of a row in the apps table.
 
-    Whether the tier exists is the row's; whether it is inside DB-WRF is the
+    Whether the tier exists is the row's; whether it is inside CDAG is the
     verdict of the catalog row that supplies the tier's program — the row
     itself for base and hinted, the rewrite for restructured.
     """
-    from artsrun.report import WRF_ELIGIBLE_STYLE
+    from artsrun.report import CDAG_ELIGIBLE_STYLE
 
     if version not in entry.own_versions:
         return "[dim]·[/dim]"
     row, _ = catalog.resolve(entry.name, version)
     if row.unordered_writes is None:
-        return f"[{WRF_ELIGIBLE_STYLE}]✓[/]"
+        return f"[{CDAG_ELIGIBLE_STYLE}]✓[/]"
     return "[green]✓[/green]"
 
 

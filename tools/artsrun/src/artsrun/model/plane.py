@@ -10,20 +10,20 @@ from pydantic import BaseModel, Field
 from artsrun.data import load_data
 
 
-class Family(StrEnum):
+class Validity(StrEnum):
     EXCL = "EXCL"
     INV = "INV"
     VAL = "VAL"
 
 
-class Release(StrEnum):
+class Retention(StrEnum):
     PURGE = "PURGE"
     RETAIN = "RETAIN"
 
 
-class Write(StrEnum):
-    WT = "WT"
-    WB = "WB"
+class ReadSource(StrEnum):
+    HOME = "HOME"
+    OWNER = "OWNER"
 
 
 class RuntimeKind(StrEnum):
@@ -107,9 +107,9 @@ def summarize_entries(entries: list[SelectionEntry]) -> str:
 
 
 class PlaneCell(BaseModel):
-    family: Family
-    release: Release
-    write: Write
+    validity: Validity
+    retention: Retention
+    read_source: ReadSource
     variant: str | None = None
     reference: str | None = None
     reason: str | None = None
@@ -117,7 +117,7 @@ class PlaneCell(BaseModel):
 
     @property
     def key(self) -> str:
-        return f"{self.family}/{self.release}/{self.write}"
+        return f"{self.validity}/{self.retention}/{self.read_source}"
 
     @property
     def buildable(self) -> bool:
@@ -159,22 +159,24 @@ class ModelSection(BaseModel):
 
 
 class Plane(BaseModel):
-    families: list[Family]
-    releases: list[Release]
-    writes: list[Write]
-    family_labels: dict[Family, str] = Field(default_factory=dict)
-    write_labels: dict[Write, str] = Field(default_factory=dict)
-    release_labels: dict[Release, str] = Field(default_factory=dict)
+    validities: list[Validity]
+    retentions: list[Retention]
+    read_sources: list[ReadSource]
+    validity_labels: dict[Validity, str] = Field(default_factory=dict)
+    retention_labels: dict[Retention, str] = Field(default_factory=dict)
+    read_source_labels: dict[ReadSource, str] = Field(default_factory=dict)
     cells: list[PlaneCell]
     entries: list[SelectionEntry]
     models: list[ModelSection] = Field(default_factory=list)
 
     # -- lookup ----------------------------------------------------------
-    def cell(self, family: Family, release: Release, write: Write) -> PlaneCell:
+    def cell(self, validity: Validity, retention: Retention,
+             read_source: ReadSource) -> PlaneCell:
         for c in self.cells:
-            if c.family is family and c.release is release and c.write is write:
+            if (c.validity is validity and c.retention is retention
+                    and c.read_source is read_source):
                 return c
-        raise KeyError(f"{family}/{release}/{write}")
+        raise KeyError(f"{validity}/{retention}/{read_source}")
 
     def entry(self, key: str) -> SelectionEntry:
         for e in self.entries:
@@ -208,64 +210,68 @@ class Plane(BaseModel):
         return [e.key for e in self.entries
                 if e.model == "OCR" and not e.is_cxl]
 
-    def columns(self) -> list[tuple[Release, Write]]:
-        """Column order: the write policy groups, the release policy divides.
+    def columns(self) -> list[tuple[Retention, ReadSource]]:
+        """Column order: the retention groups, the read source divides.
 
-        Writing is the coarser decision — it says where the bytes live — so it
-        forms the outer pair and the release policy splits each half.
+        The axes keep their order, validity -> retention -> read source: the
+        retention forms the outer pair and the read source splits each half.
         """
-        return [(r, w) for w in self.writes for r in self.releases]
+        return [(r, s) for r in self.retentions for s in self.read_sources]
 
-    def write_label(self, write: Write) -> str:
-        return self.write_labels.get(write, write.value)
+    def retention_label(self, retention: Retention) -> str:
+        return self.retention_labels.get(retention, retention.value)
 
-    def release_label(self, release: Release) -> str:
-        return self.release_labels.get(release, release.value)
+    def read_source_label(self, read_source: ReadSource) -> str:
+        return self.read_source_labels.get(read_source, read_source.value)
 
 
-def _reason(family: Family, release: Release, write: Write, texts: dict) -> str:
+def _reason(validity: Validity, retention: Retention, read_source: ReadSource,
+            texts: dict) -> str:
     """Why this grid position carries no configuration.
 
     The rules mirror the build's own refusals, so a disabled position always
     reports the same ground the build would.
     """
-    if family is Family.EXCL and write is Write.WT:
-        return texts["excl_needs_wb"]
-    return texts["needs_retain"]
+    if validity is Validity.EXCL:
+        return texts["excl_retention_sets_read_source"]
+    return texts["owner_needs_retain"]
 
 
 @lru_cache(maxsize=1)
 def load_plane() -> Plane:
     raw = load_data("protocols.yaml")
-    families = [Family(f) for f in raw["families"]]
-    releases = [Release(r) for r in raw["releases"]]
-    writes = [Write(w) for w in raw["writes"]]
+    validities = [Validity(v) for v in raw["validities"]]
+    retentions = [Retention(r) for r in raw["retentions"]]
+    read_sources = [ReadSource(s) for s in raw["read_sources"]]
 
     defined = {
-        (Family(c["family"]), Release(c["release"]), Write(c["write"])): c
+        (Validity(c["validity"]), Retention(c["retention"]),
+         ReadSource(c["read_source"])): c
         for c in raw["cells"]
     }
     refs = raw.get("references", {})
 
     cells: list[PlaneCell] = []
     entries: list[SelectionEntry] = []
-    for family in families:
-        for release, write in [(r, w) for r in releases for w in writes]:
-            spec = defined.get((family, release, write))
+    for validity in validities:
+        for retention, read_source in [(r, s) for r in retentions
+                                       for s in read_sources]:
+            spec = defined.get((validity, retention, read_source))
             if spec is None:
                 cells.append(
                     PlaneCell(
-                        family=family,
-                        release=release,
-                        write=write,
-                        reason=_reason(family, release, write, raw["unbuildable"]),
+                        validity=validity,
+                        retention=retention,
+                        read_source=read_source,
+                        reason=_reason(validity, retention, read_source,
+                                       raw["unbuildable"]),
                     )
                 )
                 continue
             cell = PlaneCell(
-                family=family,
-                release=release,
-                write=write,
+                validity=validity,
+                retention=retention,
+                read_source=read_source,
                 variant=spec["variant"],
                 reference=spec.get("reference"),
                 entries=[PlaneCellEntry(**e) for e in spec.get("entries", [])],
@@ -328,13 +334,15 @@ def load_plane() -> Plane:
         )
 
     return Plane(
-        families=families,
-        releases=releases,
-        writes=writes,
-        family_labels={Family(k): v for k, v in raw.get("family_labels", {}).items()},
-        write_labels={Write(k): v for k, v in raw.get("write_labels", {}).items()},
-        release_labels={Release(k): v
-                        for k, v in raw.get("release_labels", {}).items()},
+        validities=validities,
+        retentions=retentions,
+        read_sources=read_sources,
+        validity_labels={Validity(k): v
+                         for k, v in raw.get("validity_labels", {}).items()},
+        retention_labels={Retention(k): v
+                          for k, v in raw.get("retention_labels", {}).items()},
+        read_source_labels={ReadSource(k): v
+                            for k, v in raw.get("read_source_labels", {}).items()},
         cells=cells,
         entries=entries,
         models=models,

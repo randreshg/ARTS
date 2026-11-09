@@ -202,7 +202,7 @@ cross-rank sequencer the origin does not have, which means messages the
 origin never sends; the program is a bandwidth test whose storage is
 deliberately unsynchronised, and repairing it would make the two columns
 different programs; and the result does not read the racing bytes. This
-row's *payload* is therefore outside DB-WRF at block granularity: the
+row's *payload* is therefore outside CDAG at block granularity: the
 counts survive only because every completion runs on the counters' home
 rank — an implementation accident, not program ordering. It is the one
 row of the section with that property.

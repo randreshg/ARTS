@@ -15,8 +15,8 @@ from artsrun.run.types import Cell, Skipped, Status
 from artsrun.watch.state import LogTail, RunState
 
 ENTRIES = {
-    "arts_val_wb": "VAL/RETAIN/WB",
-    "arts_excl_retain": "EXCL/RETAIN/WB",
+    "arts_val_retain_owner": "VAL/RETAIN/OWNER",
+    "arts_excl_retain_owner": "EXCL/RETAIN/OWNER",
 }
 
 
@@ -71,15 +71,15 @@ def _finished(cell: Cell, scalar: str, status: str = "ok") -> dict:
 
 
 def test_the_manifest_round_trips_cells_and_their_invocations(tmp_path):
-    cells = [_cell("arts_val_wb"), _cell("arts_excl_retain", nodes=2)]
+    cells = [_cell("arts_val_retain_owner"), _cell("arts_excl_retain_owner", nodes=2)]
     _write(tmp_path, cells,
-           skipped=[Skipped("arts_val_wb", "other:base", 2, "why not")])
+           skipped=[Skipped("arts_val_retain_owner", "other:base", 2, "why not")])
     manifest = Manifest.load(tmp_path)
     assert manifest is not None
     assert [c.key for c in manifest.cells] == [c.key for c in cells]
     back = manifest.cells[0]
     assert back.app.scalar_re == cells[0].app.scalar_re
-    assert back.entry.cell == "VAL/RETAIN/WB"
+    assert back.entry.cell == "VAL/RETAIN/OWNER"
     meta = manifest.commands[back.key]
     assert meta["command"].startswith("timeout -k 1 60 /opt/bin/app")
     assert meta["script"] is None
@@ -89,7 +89,7 @@ def test_the_manifest_round_trips_cells_and_their_invocations(tmp_path):
 
 def test_the_manifest_round_trips_the_core_block_a_cell_was_granted(tmp_path):
     from dataclasses import replace
-    _write(tmp_path, [replace(_cell("arts_val_wb"), cpu_width=12)])
+    _write(tmp_path, [replace(_cell("arts_val_retain_owner"), cpu_width=12)])
     manifest = Manifest.load(tmp_path)
     assert manifest is not None and manifest.cells[0].cpu_width == 12
 
@@ -97,7 +97,7 @@ def test_the_manifest_round_trips_the_core_block_a_cell_was_granted(tmp_path):
 def test_the_manifest_names_the_configurations_behind_a_cell(tmp_path):
     cfg = tmp_path / "cfg" / "arts_1n.cfg"
     counters = tmp_path / "cfg" / "counters_perf.cfg"
-    _write(tmp_path, [_cell("arts_val_wb", cfg=cfg)], counters_cfg=counters)
+    _write(tmp_path, [_cell("arts_val_retain_owner", cfg=cfg)], counters_cfg=counters)
     manifest = Manifest.load(tmp_path)
     assert manifest.cells[0].cfg == cfg
     assert manifest.counters_cfg == counters
@@ -108,7 +108,7 @@ def test_the_manifest_names_the_configurations_behind_a_cell(tmp_path):
 
 
 def test_a_slurm_manifest_carries_both_layers_of_the_command(tmp_path):
-    _write(tmp_path, [_cell("arts_val_wb", nodes=2)], launcher="slurm")
+    _write(tmp_path, [_cell("arts_val_retain_owner", nodes=2)], launcher="slurm")
     manifest = Manifest.load(tmp_path)
     meta = manifest.commands[next(iter(manifest.commands))]
     assert meta["command"].startswith("sbatch")
@@ -118,7 +118,7 @@ def test_a_slurm_manifest_carries_both_layers_of_the_command(tmp_path):
 
 
 def test_a_flux_manifest_carries_both_layers_of_the_command(tmp_path):
-    _write(tmp_path, [_cell("arts_val_wb", nodes=2)], launcher="flux")
+    _write(tmp_path, [_cell("arts_val_retain_owner", nodes=2)], launcher="flux")
     manifest = Manifest.load(tmp_path)
     meta = manifest.commands[next(iter(manifest.commands))]
     assert meta["command"].startswith("flux batch")
@@ -131,17 +131,17 @@ def test_a_flux_manifest_carries_both_layers_of_the_command(tmp_path):
 
 
 def test_every_cell_starts_pending_from_the_manifest_alone(tmp_path):
-    cells = [_cell("arts_val_wb"), _cell("arts_excl_retain")]
+    cells = [_cell("arts_val_retain_owner"), _cell("arts_excl_retain_owner")]
     _write(tmp_path, cells)
     state = RunState(tmp_path)
     assert len(state.order) == 2
     assert all(v.status is Status.PENDING for v in state.views.values())
-    assert state.views[cells[0].key].family == "VAL"
-    assert state.views[cells[1].key].family == "EXCL"
+    assert state.views[cells[0].key].validity == "VAL"
+    assert state.views[cells[1].key].validity == "EXCL"
 
 
 def test_events_walk_a_cell_through_its_life(tmp_path):
-    cell = _cell("arts_val_wb")
+    cell = _cell("arts_val_retain_owner")
     _write(tmp_path, [cell])
     state = RunState(tmp_path)
 
@@ -163,8 +163,8 @@ def test_events_walk_a_cell_through_its_life(tmp_path):
 
 
 def test_consensus_recolors_as_results_arrive(tmp_path):
-    agree = _cell("arts_val_wb")
-    dissent = _cell("arts_excl_retain")
+    agree = _cell("arts_val_retain_owner")
+    dissent = _cell("arts_excl_retain_owner")
     _write(tmp_path, [agree, dissent])
     state = RunState(tmp_path)
 
@@ -182,8 +182,8 @@ def test_consensus_recolors_as_results_arrive(tmp_path):
 
 
 def test_a_failure_is_a_failed_verdict_not_a_vote(tmp_path):
-    ok = _cell("arts_val_wb")
-    bad = _cell("arts_excl_retain")
+    ok = _cell("arts_val_retain_owner")
+    bad = _cell("arts_excl_retain_owner")
     _write(tmp_path, [ok, bad])
     state = RunState(tmp_path)
     _track(tmp_path, [_finished(ok, "1.0"),
@@ -198,8 +198,8 @@ def test_a_failure_is_a_failed_verdict_not_a_vote(tmp_path):
 
 
 def test_the_live_verdict_agrees_with_the_vote_on_a_lone_survivor(tmp_path):
-    alone = _cell("arts_val_wb")
-    dead = _cell("arts_excl_retain")
+    alone = _cell("arts_val_retain_owner")
+    dead = _cell("arts_excl_retain_owner")
     _write(tmp_path, [alone, dead])
     state = RunState(tmp_path)
     _track(tmp_path, [_finished(alone, "1.0"),
@@ -213,8 +213,8 @@ def test_the_live_verdict_agrees_with_the_vote_on_a_lone_survivor(tmp_path):
 
 
 def test_a_partial_track_line_waits_for_its_newline(tmp_path):
-    first = _cell("arts_val_wb")
-    second = _cell("arts_excl_retain")
+    first = _cell("arts_val_retain_owner")
+    second = _cell("arts_excl_retain_owner")
     _write(tmp_path, [first, second])
     state = RunState(tmp_path)
 
@@ -235,30 +235,30 @@ def test_a_partial_track_line_waits_for_its_newline(tmp_path):
 
 def test_a_run_without_a_manifest_replays_from_its_track_alone(tmp_path):
     _track(tmp_path, [{"t": 1.0, "event": "finished",
-                       "cell": "graph500:base@2n/arts_inv_wb#3",
+                       "cell": "graph500:base@2n/arts_inv_retain_owner#3",
                        "status": "ok", "rc": 0, "wall_s": 26.5, "note": ""}])
     state = RunState(tmp_path)
-    view = state.views["graph500:base@2n/arts_inv_wb#3"]
+    view = state.views["graph500:base@2n/arts_inv_retain_owner#3"]
     assert view.app_name == "graph500"
     assert view.version == "base"
-    assert view.entry_key == "arts_inv_wb"
+    assert view.entry_key == "arts_inv_retain_owner"
     assert view.nodes == 2
     assert view.repeat == 3
     assert view.status is Status.OK
     assert view.verdict is None  # no metadata to vote with
     assert view.log_path is not None
-    assert view.log_path.name == "graph500.base.arts_inv_wb.2n.r3.log"
+    assert view.log_path.name == "graph500.base.arts_inv_retain_owner.2n.r3.log"
 
 
 def test_the_manifest_may_arrive_after_the_track(tmp_path):
     # A watcher can attach during the build phase, when the track of an
     # earlier continuation exists but the manifest is yet to be written.
-    cell = _cell("arts_val_wb")
+    cell = _cell("arts_val_retain_owner")
     _track(tmp_path, [_finished(cell, "1.0")])
     state = RunState(tmp_path)
     assert state.views[cell.key].command == ""
 
-    _write(tmp_path, [cell, _cell("arts_excl_retain")])
+    _write(tmp_path, [cell, _cell("arts_excl_retain_owner")])
     assert state.refresh()
     view = state.views[cell.key]
     assert view.status is Status.OK  # progress kept
@@ -267,10 +267,10 @@ def test_the_manifest_may_arrive_after_the_track(tmp_path):
 
 
 def test_scaling_takes_the_best_wall_of_completed_cells_only(tmp_path):
-    one = _cell("arts_val_wb")
-    one_again = _cell("arts_val_wb", repeat=2)
-    two = _cell("arts_val_wb", nodes=2)
-    other = _cell("arts_excl_retain", nodes=2)
+    one = _cell("arts_val_retain_owner")
+    one_again = _cell("arts_val_retain_owner", repeat=2)
+    two = _cell("arts_val_retain_owner", nodes=2)
+    other = _cell("arts_excl_retain_owner", nodes=2)
     _write(tmp_path, [one, one_again, two, other])
     state = RunState(tmp_path)
     _track(tmp_path, [
@@ -287,14 +287,14 @@ def test_scaling_takes_the_best_wall_of_completed_cells_only(tmp_path):
     node_counts, rows = state.scaling()
     assert node_counts == [1, 2]
     assert len(rows) == 1  # the timed-out entry measured nothing
-    assert rows[0]["entry"] == "arts_val_wb"
+    assert rows[0]["entry"] == "arts_val_retain_owner"
     assert rows[0]["walls"] == {1: 8.0, 2: 5.0}  # repeats collapse to best
 
 
 def test_a_draining_cell_freezes_its_clock_where_the_run_ended(tmp_path):
     # Slurm's COMPLETING means nothing is computing any more; the elapsed
     # figure stops at the drain's start instead of counting teardown time.
-    cell = _cell("arts_val_wb")
+    cell = _cell("arts_val_retain_owner")
     _write(tmp_path, [cell])
     state = RunState(tmp_path)
     _track(tmp_path, [
@@ -315,7 +315,7 @@ def test_a_marker_finishes_a_cell_nobody_was_watching(tmp_path):
     # A fire-and-forget job ends after its submitter died: no finished event
     # was ever recorded, but the job wrote its own marker, and a reattached
     # view folds it in — scalar judged from the log, vote included.
-    cell = _cell("arts_val_wb")
+    cell = _cell("arts_val_retain_owner")
     _write(tmp_path, [cell], launcher="slurm")
     (tmp_path / "cells").mkdir()
     (tmp_path / "cells" / cell.log_name).write_text("RESULT = 4.25\n")
@@ -410,6 +410,6 @@ def test_source_revision_outside_a_checkout_answers_nothing(tmp_path,
 
 
 def test_the_manifest_records_the_source_revision(tmp_path):
-    _write(tmp_path, [_cell("arts_val_wb")])
+    _write(tmp_path, [_cell("arts_val_retain_owner")])
     source = json.loads((tmp_path / "manifest.json").read_text())["source"]
     assert set(source) == {"commit", "dirty", "dirty_paths", "submodules"}

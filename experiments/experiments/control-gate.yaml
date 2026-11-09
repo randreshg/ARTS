@@ -21,8 +21,9 @@
 name: control-gate
 description: small-size consensus gate for the adversarial columns and the HPX applications
 # The coherence entries this experiment runs unless -e names others.
-entries: [arts_excl_purge, arts_excl_retain, arts_inv_wt_purge, arts_inv_wt,
-          arts_inv_wb, arts_val_wt_purge, arts_val_wt, arts_val_wb, hpx]
+entries: [arts_excl_purge_home, arts_excl_retain_owner, arts_inv_purge_home,
+          arts_inv_retain_home, arts_inv_retain_owner, arts_val_purge_home,
+          arts_val_retain_home, arts_val_retain_owner, hpx]
 apps:
   own_reread_64k:
     enabled: true

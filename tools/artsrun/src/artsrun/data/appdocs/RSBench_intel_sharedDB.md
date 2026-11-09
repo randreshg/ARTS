@@ -199,7 +199,7 @@ fixed, node-count-independent cost inside the `[E2E]` window whose SHARE grows
 as the lookup phase shrinks with `N`; the `init_s` extra scalar is what makes
 it readable per cell. It is not split across lanes because the arrays it fills
 are single shared datablocks: concurrent lane EDTs writing disjoint slices of
-one DB is a write-write conflict at DB granularity — outside DB-WRF, though
+one DB is a write-write conflict at DB granularity — outside CDAG, though
 serialised (and therefore legal) under `OCR` — and giving each lane its own DB would
 change the DB granularity the row exists to exhibit. The lookup phase is `t` independent generation-chains
 running fully in parallel — steady-state concurrency is close to `t` (a lane's
@@ -351,7 +351,7 @@ convention as `XSBench_intel_sharedDB`):
   raised, i.e. equal to the old size except in exactly the case that used to
   overflow.
 
-## Family shape (measured, 15w+1p × 1/2/4/8 nodes, `-l 1000000 -t 108 -p 32`)
+## Validity shape (measured, 15w+1p × 1/2/4/8 nodes, `-l 1000000 -t 108 -p 32`)
 
 **Taken before this cycle's changes** — the generated dataset and the printed
 scalar have both changed since, so these are shape evidence only and no value
@@ -359,9 +359,9 @@ in them transfers. base (there was no hinted flavour then), e2e seconds:
 
 | arm | 1n | 2n | 4n | 8n |
 |---|---|---|---|---|
-| val_wb | 124.8 | 62.7 | 34.2 | 16.9 |
-| inv_wb | 116.4 | 63.0 | 33.6 | 17.1 |
-| excl_retain | 116.2 | 65.8 | 33.5 | 16.3 |
+| val_retain_owner | 124.8 | 62.7 | 34.2 | 16.9 |
+| inv_retain_owner | 116.4 | 63.0 | 33.6 | 17.1 |
+| excl_retain_owner | 116.2 | 65.8 | 33.5 | 16.3 |
 
 A Dane-geometry single node (108w+4p) ran it in 74.6 s. Unlike its
 `XSBench_intel_sharedDB` sibling (arm-indifferent to <1%), the arms separate

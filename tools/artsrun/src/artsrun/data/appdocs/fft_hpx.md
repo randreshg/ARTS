@@ -158,13 +158,13 @@ rows or a disjoint column pair of the phase's destination buffer. So the
 blocks `DB_MODE_RW` at once, and the `Kx` `fft1_edt` tasks hold `varr` RW at
 once, and the `nl·Ky` transposes hold the phase's destination buffer RW at
 once — all disjoint writes, all the origin's own concurrency, carried
-unchanged. **The row is outside DB-WRF**: the program has
+unchanged. **The row is outside CDAG**: the program has
 same-DB write-write conflicts the code does not event-order (disjoint rows
-and columns at whole-DB granularity), which is exactly what DB-WRF requires
+and columns at whole-DB granularity), which is exactly what CDAG requires
 to be ordered, since many tasks write one buffer, as the origin's
 `for_loop(par)` does. The coherence plane artsrun
-selects from (`EXCL`/`INV`/`VAL` × release × write) carries no DB-WRF
-entry, and this row has none either.
+selects from (`EXCL`/`INV`/`VAL` × retention × read source) holds only
+OCR-model entries, and the CDAG section's FLUSH entry drops this row.
 
 Where the origin has a barrier between phases (`for_loop` is blocking), the
 mirror preserves the whole local phase boundary. Each split writes into all
@@ -550,14 +550,14 @@ is `nx/2 = 36 000`, divisible like `nx` by every node count to 32 and at most
 `nx` (the constraints above), where `ny = 72 000` would give 36 001 rows that
 no even node count divides. `nx = 72 000 = 2⁶·3²·5³` is FFTW-sized. Derived
 to the 100 s window through each arm's measured exponent between 60 480 and
-77 760 — INV/WB, the slowest arm there, binds — under the one-node memory
+77 760 — INV·RETAIN·OWNER, the slowest arm there, binds — under the one-node memory
 budget with a 10 % margin (172 GB resident on ARTS, 166 GB on HPX at this
 size), and rounded from the model's 71 680 to 72 000 (65 536 would drop
-INV/WB to about two thirds of the window). **The timings and resident sets
+INV·RETAIN·OWNER to about two thirds of the window). **The timings and resident sets
 in this paragraph were taken when the mirror ran one task per row**, about
 two thousand times the task count it has now, and stand only until the next
 campaign replaces them; the checksums are independent of the chunking. The anchor measured 40.5 s on
-INV/WB (39.8–55.2), 59.1 s on VAL (36.7–74.3) and 41.5 s on EXCL (37.2–67.0)
+INV·RETAIN·OWNER (39.8–55.2), 59.1 s on VAL (36.7–74.3) and 41.5 s on EXCL (37.2–67.0)
 — one slow repeat per arm in the near-ceiling regime — and 67.2 s on HPX; the
 sizing pass, on the runtime before its data-block descriptor lost its inline
 payload, had measured 53–84 s.

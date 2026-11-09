@@ -261,10 +261,10 @@ the pinned rung.
   verification bar only around iteration 85 of its 100, so the published
   count is barely padded.  Class D is therefore the largest class that
   runs, and it is what the catalog pins.
-- **The row is outside DB-WRF.** The `nchunk` slice tasks, and
+- **The row is outside CDAG.** The `nchunk` slice tasks, and
   the `nscan` scanners during setup, take one datablock `RW` concurrently and
   write disjoint ranges of it — legal under every campaign arm (all OCR memory
-  model), but DB-WRF requires every same-DB write-write conflict to be
+  model), but CDAG requires every same-DB write-write conflict to be
   event-ordered, at whole-DB granularity, and these are not.  No
-  campaign cell runs it under DB-WRF; that arm would have to exclude this row
+  campaign cell runs it under CDAG; that arm would have to exclude this row
   or give the fan-outs per-slice datablocks.

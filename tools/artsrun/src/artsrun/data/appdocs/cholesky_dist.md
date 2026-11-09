@@ -336,19 +336,19 @@ knob is bounded well below `t^2` in practice even though the validator accepts
 anything up to it.
 
 **At the previous anchor's arguments** (one node, 108 workers + 4 progress) the
-row ran 145.5 s / 89 GB under `val_wb`, **159.7 s / 83 GB** under
-`inv_wb` and 151.8 s / 85 GB under `excl_retain`.  Those figures were taken
+row ran 145.5 s / 89 GB under `val_retain_owner`, **159.7 s / 83 GB** under
+`inv_retain_owner` and 151.8 s / 85 GB under `excl_retain_owner`.  Those figures were taken
 before the startup was divided across the places and before the input read left
 the window -- the factorisation they measure is the same one, but the preamble
 they include is not, so this table predates the current anchor and does not
-carry over.  The current one-node anchor, under `inv_wb`, is 139.1 s and 68 GB
+carry over.  The current one-node anchor, under `inv_retain_owner`, is 139.1 s and 68 GB
 resident at `--ds 85000 --ts 500 --places 32`, against the restructured
-tier's 120 s target.  The tightest family in that earlier table was `inv_wb`
+tier's 120 s target.  The tightest validity in that earlier table was `inv_retain_owner`
 at 160 s, the window a strong scaler asked for; the largest residency any
-family there held was 89 GB, a third of what a node has.  The catalog
+validity there held was 89 GB, a third of what a node has.  The catalog
 arguments are run at the anchor and nowhere else here: a node sweep at that
-size is what a campaign produces, not what calibrates one.  The families
-spread 1.10x in time, and the same binary in the same family moves about 5%
+size is what a campaign produces, not what calibrates one.  The validities
+spread 1.10x in time, and the same binary under the same validity moves about 5%
 between runs on this host, so the row is stated as a range rather than one
 figure.  Memory is not what bounds this row: the
 largest geometry measured holds **45 GB a node**, less than one node does,

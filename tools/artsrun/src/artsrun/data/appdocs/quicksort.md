@@ -88,8 +88,8 @@ array DB — every `fillTask`, the root `qsortEdt`, every recursive child
 (create-time depv, `DB_DEFAULT_MODE` = RW), and `finishEdt` — is `DB_MODE_RW`,
 and there is only one DB. ARTS's RW is **per-node exclusive with OCR RW
 semantics**: the workers of one rank share the node's grant and can partition
-disjoint ranges concurrently, but only one rank at a time holds it, and the payload moves with it: on the write-back cells only the grant moves carry
-it (25-35 per run at every size), while on the write-through cells every RW
+disjoint ranges concurrently, but only one rank at a time holds it, and the payload moves with it: on the {VAL,INV}·OWNER cells only the grant moves carry
+it (25-35 per run at every size), while on the {VAL,INV}·HOME cells every RW
 release off the home writes the whole `8·arraySize` payload back to the home,
 coalesced to one flight per rank at a time, so their traffic grows as N² (about
 0.93·N² bytes at two ranks). So a one-node cell uses all of its workers, and
@@ -117,7 +117,7 @@ by giving each of them the array. The generators fill their own ranges; the
 root partitions once all of them are done; execution then walks the recursion
 tree, and — because of the single-DB RW exclusivity above — the work tracks
 the `Q(N)` write turns rather than the number of available workers; on the
-write-through cells each turn off the home publishes the **entire** array (not
+{VAL,INV}·HOME cells each turn off the home publishes the **entire** array (not
 just the touched sub-range), in about R1/c flights (R1 ≈ Q/2 turns off the
 home, c ≈ 1.6-1.9 releases per flight). The root's
 `EDT_PROP_FINISH` scope drains only once every descendant — including the
@@ -150,7 +150,7 @@ generation parallelism is bounded by one node's workers.
 
 Combined with Wiring's single-writer serialization: since the recursion
 scatters round-robin while the DB's home stays pinned to rank 0, about half
-the RW turns run off the home, and on the write-through cells each of them
+the RW turns run off the home, and on the {VAL,INV}·HOME cells each of them
 writes the whole array back — by construction close to the worst achievable
 coherence traffic pattern for an in-place sort.
 
@@ -162,7 +162,7 @@ coherence traffic pattern for an in-place sort.
 The base program combines the two worst placements this program can have: execution
 scatters round-robin while the single array block homes on rank 0, so about
 half the RW turns run off the home, each writing the whole array back on the
-write-through cells. The layer is
+{VAL,INV}·HOME cells. The layer is
 CONTAINMENT of a single-RW-block structure, never distribution — hints cannot
 decompose the array; that is the restructured version's job.
 

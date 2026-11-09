@@ -275,7 +275,7 @@ figure was an out-of-tree edit.  None of it carries a verdict on the map
 override above.
 
 **Verdict (measured).**  The chunk map above is the one alternative the
-pipeline admits, and it was measured on the local trend roster (INV × WB,
+pipeline admits, and it was measured on the local trend roster (INV·RETAIN·OWNER,
 15w+1p × 1/2/4/8, `chunk` = the per-node worker count): base 8.41 / 9.38 /
 10.69 / 12.94 s against hinted 8.44 / 108.24 / 58.13 / 38.95 s -- 11.5x /
 5.4x / 3.0x slower at two, four and eight nodes.  So hinted was tried and no

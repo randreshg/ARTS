@@ -14,7 +14,7 @@
 # derives its population from the runtime's own rank count, so one argument
 # vector in the catalog serves every geometry.
 #
-# Requester-side RO combining is part of the VAL family's definition, not an
+# Requester-side RO combining is part of VAL's definition, not an
 # add-on -- every other message class in the plane suppresses duplicates
 # structurally (parked acquires, batched invalidation rounds, publish flights)
 # -- so VAL's numbers here are numbers for the combining implementation, not
@@ -23,8 +23,9 @@
 name: control-main
 description: the adversarial columns of the protocol suite with the grain dial, and the HPX applications
 # The coherence entries this experiment runs unless -e names others.
-entries: [arts_excl_purge, arts_excl_retain, arts_inv_wt_purge, arts_inv_wt,
-          arts_inv_wb, arts_val_wt_purge, arts_val_wt, arts_val_wb, hpx]
+entries: [arts_excl_purge_home, arts_excl_retain_owner, arts_inv_purge_home,
+          arts_inv_retain_home, arts_inv_retain_owner, arts_val_purge_home,
+          arts_val_retain_home, arts_val_retain_owner, hpx]
 
 apps:
   # C1 — the release-axis spectrometer: a holder touching its own data, where

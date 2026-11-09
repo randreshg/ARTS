@@ -26,7 +26,7 @@ from artsrun.model.selection import Selection
 from artsrun.run.plan import expand, not_applicable
 
 ROW = "fib_example"
-EVERY_KIND = ["arts_val_wb", "xsocr", "ocrvx", "hpx"]
+EVERY_KIND = ["arts_val_retain_owner", "xsocr", "ocrvx", "hpx"]
 
 
 @pytest.fixture(autouse=True)
@@ -44,7 +44,7 @@ def _first_threads_first(tmp_path, monkeypatch):
 
 
 def _roster(*names: str) -> Experiment:
-    return Experiment(entries=["arts_val_wb"], name="t",
+    return Experiment(entries=["arts_val_retain_owner"], name="t",
                       apps={n: ExperimentApp() for n in (names or (ROW,))})
 
 
@@ -115,9 +115,9 @@ def test_only_the_arts_entries_make_cells_and_nothing_is_skipped(tmp_path):
                             _profile(), configs, build_dir=tmp_path)
     assert not skipped
     assert {(c.entry.key, c.nodes) for c in cells} == {
-        ("arts_val_wb", 1), ("arts_val_wb", 2)}
+        ("arts_val_retain_owner", 1), ("arts_val_retain_owner", 2)}
     for c in cells:
-        assert c.binary == tmp_path / "examples" / f"{ROW}_arts_ocr_val_wb"
+        assert c.binary == tmp_path / "examples" / f"{ROW}_arts_ocr_val_retain_owner"
 
 
 def test_the_section_records_its_entries_without_a_program_once():
@@ -135,7 +135,7 @@ def test_the_build_wants_only_the_arts_targets(tmp_path):
     plane, catalog = load_plane(), load_catalog()
     plan = plan_targets(_selection(EVERY_KIND), plane, catalog, _roster(),
                         tmp_path, _profile())
-    assert plan.targets == [f"{ROW}_arts_ocr_val_wb"]
+    assert plan.targets == [f"{ROW}_arts_ocr_val_retain_owner"]
 
 
 def test_the_campaign_size_counts_only_the_pairs_with_a_program():
@@ -164,7 +164,7 @@ def test_a_name_the_experiment_does_not_enable_counts_and_configures_nothing(
         catalog, plane, roster) == alone.cell_count(catalog, plane)
     assert "OCR applications" not in sel.cell_formula(catalog, plane, roster)
     plan = plan_targets(sel, plane, catalog, roster, tmp_path, _profile())
-    assert plan.targets == [f"{ROW}_arts_ocr_val_wb"]
+    assert plan.targets == [f"{ROW}_arts_ocr_val_retain_owner"]
 
 
 def test_a_reference_running_no_selected_section_places_nothing():
@@ -222,7 +222,7 @@ def _campaign(tree: Path, monkeypatch, sections: list[Section]):
     return Campaign(
         selection=SimpleNamespace(cxl_entries=lambda _plane: [],
                                   sections=lambda *_a: sections,
-                                  entries=["arts_val_wb"]),
+                                  entries=["arts_val_retain_owner"]),
         plane=None, catalog=None, experiment=None,
         profile=SimpleNamespace(launcher=Launcher.LOCAL),
         build_dir=tree, run_dir=tree / "run", counterset=None,
@@ -261,15 +261,15 @@ def test_a_dry_run_shows_the_targets_of_an_off_section_as_pending(tmp_path):
     plane, catalog = load_plane(), load_catalog()
     tree = _tree(tmp_path / "b", ARTS_BUILD_EXAMPLES="OFF")
     (tree / "build.ninja").write_text("")
-    wanted = f"{ROW}_arts_ocr_val_wb"
+    wanted = f"{ROW}_arts_ocr_val_retain_owner"
     import artsrun.build as build_mod
 
     real = build_mod.available_targets
     build_mod.available_targets = lambda _d: {"other"}
     try:
-        now = plan_targets(_selection(["arts_val_wb"]), plane, catalog,
+        now = plan_targets(_selection(["arts_val_retain_owner"]), plane, catalog,
                            _roster(), tree)
-        later = plan_targets(_selection(["arts_val_wb"]), plane, catalog,
+        later = plan_targets(_selection(["arts_val_retain_owner"]), plane, catalog,
                              _roster(), tree, pending=[Section.EXAMPLES])
     finally:
         build_mod.available_targets = real

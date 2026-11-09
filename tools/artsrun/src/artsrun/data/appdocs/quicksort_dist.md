@@ -219,7 +219,7 @@ so the widest concurrent per-element phase is
 `max(nchunks, nbuckets, places²·W)`. The structure is spawn-and-join, so the
 width rule wants an integer multiple of the persistent units the largest
 geometry provides. Anchor at the campaign values
-(`4000000000 1000000 6912 6912 32`), one node of 108 workers under INV x WB:
+(`4000000000 1000000 6912 6912 32`), one node of 108 workers under INV·RETAIN·OWNER:
 14.1 s and 92.1 GB resident, under the restructured tier's 120 s target; the
 next doubling of the array would pass the 190 GB per-node budget.
 

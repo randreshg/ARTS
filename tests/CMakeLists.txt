@@ -3846,13 +3846,13 @@ if(ARTS_CXL_TREE_RESIDENCY)
     # tree's library, and whether the non-CXL build of the same source that
     # gives the check its control exists here at all.
     set(_cxl_graded "")
-    foreach(_v ocr_excl_purge_cxl_staged ocr_excl_purge_cxl_direct)
+    foreach(_v ocr_excl_purge_home_cxl_staged ocr_excl_purge_home_cxl_direct)
         if(TARGET arts_static_${_v})
             list(APPEND _cxl_graded "arts_static_${_v}")
         endif()
     endforeach()
     set(_cxl_require_control OFF)
-    if(TARGET arts_static_ocr_excl_purge)
+    if(TARGET arts_static_ocr_excl_purge_home)
         set(_cxl_require_control ON)
     endif()
     add_test(

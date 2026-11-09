@@ -27,68 +27,68 @@ RESULT_COLUMNS = [
 # figure tool inherits one naming and colour convention instead of inventing
 # its own.  Keyed by the SELECTION-ENTRY form (what every live caller passes);
 # rt_key() below folds build suffixes onto it.
-# Every label spells all three axes {family} x {write policy} x {release
-# policy} — an elided axis reads as "no such axis" to anyone outside the
-# build system (EXCL's WB and INV/VAL's RETAIN are requirements, but the
-# NAME still carries them).
+# Every label spells validity·retention·read source — an elided axis reads as
+# "no such axis" to anyone outside the build system (under EXCL the retention
+# fixes the read source, but the NAME still carries it).
 RT_LABEL = {
-    "arts_excl_purge": "EXCL·WB·PURGE",
-    "arts_excl_purge_cxl_staged": "EXCL·WB·PURGE CXL-STAGED",
-    "arts_excl_purge_cxl_direct": "EXCL·WB·PURGE CXL-DIRECT",
-    "arts_excl_retain": "EXCL·WB·RETAIN",
-    "arts_inv_wt": "INV·WT·RETAIN",
-    "arts_inv_wb": "INV·WB·RETAIN",
-    "arts_inv_wt_purge": "INV·WT·PURGE",
-    "arts_val_wt": "VAL·WT·RETAIN",
-    "arts_val_wb": "VAL·WB·RETAIN",
-    "arts_val_wt_purge": "VAL·WT·PURGE",
+    "arts_excl_purge_home": "EXCL·PURGE·HOME",
+    "arts_excl_purge_home_cxl_staged": "EXCL·PURGE·HOME CXL-STAGED",
+    "arts_excl_purge_home_cxl_direct": "EXCL·PURGE·HOME CXL-DIRECT",
+    "arts_excl_retain_owner": "EXCL·RETAIN·OWNER",
+    "arts_inv_retain_home": "INV·RETAIN·HOME",
+    "arts_inv_retain_owner": "INV·RETAIN·OWNER",
+    "arts_inv_purge_home": "INV·PURGE·HOME",
+    "arts_val_retain_home": "VAL·RETAIN·HOME",
+    "arts_val_retain_owner": "VAL·RETAIN·OWNER",
+    "arts_val_purge_home": "VAL·PURGE·HOME",
     "xsocr": "XSOCR",
     # OCR-vx ships three runtime families; the one built here is the
     # distributed-memory one, which is what the label should name.
     "ocrvx": "OCR-Vdm",
     "hpx": "HPX",
-    # the model token replaces the family×policy axes: this arm has none
-    "arts_wrf_flush": "DB-WRF·FLUSH",
+    # the model token replaces the retention and read source: this arm has
+    # neither
+    "arts_cdag_flush": "CDAG·FLUSH",
 }
 RT_COLOR = {
-    "arts_excl_purge": "#4C72B0",
-    "arts_excl_purge_cxl_staged": "#2C3E64",
-    "arts_excl_purge_cxl_direct": "#A8C4E8",
-    "arts_excl_retain": "#7BA3D8",
-    "arts_inv_wt": "#DD8452",
-    "arts_inv_wb": "#F0B08A",
-    # A third, deeper tone of the family's own hue — WT+PURGE is a third
-    # point in this family, not a fourth family, so it stays on the same
-    # hue as WT/WB rather than drawing a new one.
-    "arts_inv_wt_purge": "#B65924",
-    "arts_val_wt": "#55A868",
-    "arts_val_wb": "#8CCB9B",
-    "arts_val_wt_purge": "#3D794B",
+    "arts_excl_purge_home": "#4C72B0",
+    "arts_excl_purge_home_cxl_staged": "#2C3E64",
+    "arts_excl_purge_home_cxl_direct": "#A8C4E8",
+    "arts_excl_retain_owner": "#7BA3D8",
+    "arts_inv_retain_home": "#DD8452",
+    "arts_inv_retain_owner": "#F0B08A",
+    # A third, deeper tone of the validity's own hue — PURGE·HOME is a third
+    # point of this validity, not a fourth validity, so it stays on the same
+    # hue as RETAIN·HOME and RETAIN·OWNER rather than drawing a new one.
+    "arts_inv_purge_home": "#B65924",
+    "arts_val_retain_home": "#55A868",
+    "arts_val_retain_owner": "#8CCB9B",
+    "arts_val_purge_home": "#3D794B",
     "xsocr": "#8172B3",
     "ocrvx": "#937860",
     "hpx": "#C44E52",
-    # a neutral dark tone: the no-optimisation baseline, on no family's hue
-    "arts_wrf_flush": "#4A4A4A",
+    # a neutral dark tone: the no-optimisation baseline, on no validity's hue
+    "arts_cdag_flush": "#4A4A4A",
 }
-# How a program that is INSIDE the DB-WRF model is marked on a terminal
+# How a program that is INSIDE the CDAG model is marked on a terminal
 # surface (the apps table, the roster screen).  A style of its own, not the
-# entry's figure colour above: that tone is chosen to sit under the families
-# on a plot and reads as "off" as a foreground.  The roster stylesheet
+# entry's figure colour above: that tone is chosen to sit under the validities'
+# hues on a plot and reads as "off" as a foreground.  The roster stylesheet
 # carries the same colour and weight.
-WRF_ELIGIBLE_STYLE = "bold cyan"
+CDAG_ELIGIBLE_STYLE = "bold cyan"
 
 
 def rt_key(key: str) -> str:
     """Fold any spelling of a runtime series onto the display key.
 
     Callers hold either a selection-entry key (arts_*/xsocr/ocrvx) or a raw
-    build suffix (ocr_val_wt or wrf_flush, from a sweep that addresses arms
-    directly).
+    build suffix (ocr_val_retain_home or cdag_flush, from a sweep that
+    addresses arms directly).
     """
     if key.startswith("ocr_"):
         alt = "arts_" + key.removeprefix("ocr_")
         return alt if alt in RT_LABEL else key
-    if key.startswith("wrf_"):
+    if key.startswith("cdag_"):
         return "arts_" + key
     return key
 

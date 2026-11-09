@@ -6,7 +6,7 @@
 #
 #   artsrun run -p <profile> -x examples -n 1,2 --repeats 1
 #
-# The CXL and DB-WRF entries are turned on for one run with -e.  Every row
+# The CXL and CDAG entries are turned on for one run with -e.  Every row
 # keeps the catalog's own arguments: an override would leave its pin behind.
 # A benchmark tree that does not build the examples turns ARTS_BUILD_EXAMPLES
 # on at the campaign's first build; a new tree is configured with this
@@ -14,8 +14,9 @@
 name: examples
 description: every native ARTS example on the eight OCR-model ARTS entries
 # The coherence entries this experiment runs unless -e names others.
-entries: [arts_excl_purge, arts_excl_retain, arts_inv_wt_purge, arts_inv_wt,
-          arts_inv_wb, arts_val_wt_purge, arts_val_wt, arts_val_wb]
+entries: [arts_excl_purge_home, arts_excl_retain_owner, arts_inv_purge_home,
+          arts_inv_retain_home, arts_inv_retain_owner, arts_val_purge_home,
+          arts_val_retain_home, arts_val_retain_owner]
 apps:
   fib_example:
     enabled: true

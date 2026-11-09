@@ -130,7 +130,7 @@ apps:
     # 1.009 / 1.036 / 1.091 at 2 / 8 / 32 ranks with no idle rank.  PREAMBLE
     # COST of the DB plane is now the 14,028 remote DB_CREATE_COHERENT messages
     # and nothing else: the creating task holds no tile, so there is no
-    # non-home release and no publish on the write-through arms.  The gate must
+    # non-home release and no publish on the {VAL,INV}·HOME arms.  The gate must
     # still measure both ends -- that cost against the steady-state saving
     # (~790 k kernel releases no longer publishing ~80 kB to rank 0, plus
     # 14,028 fills that stop crossing the fabric).  Gate table: the one-node
@@ -141,8 +141,8 @@ apps:
     # Re-anchor if ds moves -- shrinking ts for a timing gain is what the
     # width rule forbids.
     args: ['--ds', '22400', '--ts', '100']
-    # Anchor at these arguments, one node of 108 workers, INV x WB: base 16.8
-    # s / hinted 17.0 s, 12 GB resident; target 20 s (hinted kept, flat).
+    # Anchor at these arguments, one node of 108 workers, INV·RETAIN·OWNER: base
+    # 16.8 s / hinted 17.0 s, 12 GB resident; target 20 s (hinted kept, flat).
     expect: '27322.013354'      # the trace at the args above; measured, not analytic
     expect_args: ['--ds', '22400', '--ts', '100']
     hinted: true    # kept: the 2-D block-cyclic owner map is 2.3-2.4x faster than the base at 2-8 ranks
@@ -216,12 +216,13 @@ apps:
     # configuration line reports the value actually used.
     #
     # ANCHOR AND TREND: the one-node anchor at these arguments is 139.1 s and
-    # 68 GB resident under inv_wb, against the restructured tier's 120 s
-    # target.  The previously recorded 145.5 s / 89 GB (val_wb), 159.7 s /
-    # 83 GB (inv_wb), 151.8 s / 85 GB (excl_retain) and the four-point ferrari
-    # trend (32.76 / 22.26 / 16.67 / 13.77 s at ds=40000, 2.38x) predate this
-    # anchor and do not carry over: they were all taken before startup was
-    # divided across the places and before the input read left the window.
+    # 68 GB resident under inv_retain_owner, against the restructured tier's 120
+    # s target.  The previously recorded 145.5 s / 89 GB (val_retain_owner),
+    # 159.7 s / 83 GB (inv_retain_owner), 151.8 s / 85 GB (excl_retain_owner)
+    # and the four-point ferrari trend (32.76 / 22.26 / 16.67 / 13.77 s at
+    # ds=40000, 2.38x) predate this anchor and do not carry over: they were all
+    # taken before startup was divided across the places and before the input
+    # read left the window.
     # The factorisation they measure is the same one; the preamble they include
     # is not.  Memory does not bound
     # this row -- payload is ds(ds+ts)/2 * 8 B (29.07 GB at 85000/500) and
@@ -315,12 +316,12 @@ apps:
     # measured points, not searched: g=24 4.0 s and g=40 (-x 65) 80.4 s at
     # one node give T ~ B^1.95, which puts 20 s at B ~ 31.5k.
     #
-    # Anchor at these arguments, one node of 108 workers, INV x WB: base
+    # Anchor at these arguments, one node of 108 workers, INV·RETAIN·OWNER: base
     # 18.7 s / hinted 19.5 s, 4.9 GB resident; target 20 s (hinted kept,
     # flat -- the window moved from the both-anti clamp of 5 s when the
     # hinted tier was kept).  Worst-geometry probe at this rung (base, local
-    # 15w+1p x 2/8 nodes, INV x WB): 153.4 s / 270.5 s, 2.24x / 2.13x the
-    # g = 24 rung's 68.5 / 126.9 s -- the multinode per-step wall grows
+    # 15w+1p x 2/8 nodes, INV·RETAIN·OWNER): 153.4 s / 270.5 s, 2.24x / 2.13x
+    # the g = 24 rung's 68.5 / 126.9 s -- the multinode per-step wall grows
     # linearly with B, unlike the one-node compute -- so the 32-node cell
     # projects to ~370-480 s for -N 10 (the g = 24 extrapolation below times
     # 2.2), inside the 1800 s cell budget with room for -N to grow toward the
@@ -391,7 +392,7 @@ apps:
     args: ['-x', '52', '-y', '52', '-z', '52', '-N', '10', '-n', '10']
     hinted: true    # kept: the block map beats the round-robin base by 9-22 % at 2-8 ranks
     restructured_as: CoMD_sdsc_dist
-    # DB-WRF-valid on the Lennard-Jones path these arguments run: every pair
+    # CDAG-valid on the Lennard-Jones path these arguments run: every pair
     # of write acquisitions is ordered.  The EAM path (-e) is not: every
     # per-box task takes the simulation block RW at once (eam.c:809, :824).
 
@@ -427,8 +428,8 @@ apps:
     # block per (owner brick, direction, 64-cell run), fetched once per
     # reading rank per step, so the wire cost of the halo is per run rather
     # than per cell; the run count is the brick surface over 64.
-    # Anchor at these arguments, one node of 108 workers, INV x WB: 133.1 s,
-    # 33 GB resident; target 120 s (restructured).
+    # Anchor at these arguments, one node of 108 workers, INV·RETAIN·OWNER:
+    # 133.1 s, 33 GB resident; target 120 s (restructured).
     args: ['-x', '193', '-y', '193', '-z', '193', '-N', '100', '-n', '10', '-w', '8']
     expect: '-1.166049786183'
     expect_args: ['-x', '193', '-y', '193', '-z', '193', '-N', '100', '-n', '10', '-w', '8']
@@ -531,12 +532,12 @@ apps:
     # aborts.  27 is therefore the largest size at which every runtime under
     # comparison can express the transfer at all.  It costs the one-node
     # anchor: 1.55 s, far under the row's target, and disclosed as such --
-    # this row's exhibit is the ratio between write policies, not its
+    # this row's exhibit is the ratio between read sources, not its
     # absolute time.  The ratio survives the reduction: at two ranks the
-    # write-through arms are 22x the write-back arms at power 24 and still
+    # {VAL,INV}·HOME arms are 22x the {VAL,INV}·OWNER arms at power 24 and still
     # divergent at 27.
-    # Anchor at these arguments, one node of 108 workers, INV x WB: base 1.7
-    # s / hinted 1.7 s, 5.7 GB resident; target 20 s (hinted kept, flat) --
+    # Anchor at these arguments, one node of 108 workers, INV·RETAIN·OWNER: base
+    # 1.7 s / hinted 1.7 s, 5.7 GB resident; target 20 s (hinted kept, flat) --
     # 1/12 of the target, the power the reference runtimes' MPI int count
     # allows (28 aborts at two nodes), so this row is the ratio exhibit, not
     # a window-sized one.
@@ -645,11 +646,12 @@ apps:
     # imbalance is bounded by 1 + nodes*F(n-d+1)/F(n+1).  The map places EDTs
     # only; every DB stays hint-less (homed at its creator) because the ~2*2^d
     # crossing edges are 1e-4 of the spawns and a DB hint there is a wash under
-    # WT and one message worse under the default WB x RETAIN.  At d=14 that is
-    # 1.002/1.010/1.019/1.038 over 2/8/16/32 nodes, against 1.161 at d=11; 14
-    # is on the app's measured plateau (9/11/14 within 3% at 4 and 8 nodes) and
-    # is the shallowest depth under 1.05 at 32 nodes.  mainEdt refuses a depth
-    # too shallow for the rank count rather than letting a rank idle.
+    # {VAL,INV}·HOME and one message worse under the default RETAIN·OWNER.  At
+    # d=14 that is 1.002/1.010/1.019/1.038 over 2/8/16/32 nodes, against 1.161
+    # at d=11; 14 is on the app's measured plateau (9/11/14 within 3% at 4 and 8
+    # nodes) and is the shallowest depth under 1.05 at 32 nodes.  mainEdt
+    # refuses a depth too shallow for the rank count rather than letting a rank
+    # idle.
     #
     # The base tier anti-scales while the hint layer scales, so the size
     # targets 60 s at one node, and both tiers run it: the hint
@@ -812,8 +814,8 @@ apps:
     # gives in stages.  R and C therefore stay real arguments here: R fixes
     # the parent rule and R*C is still the width of a level.
     #
-    # Anchor at these arguments, one node of 108 workers, INV x WB: 45.7 s,
-    # 143.8 GB resident; target 120 s (restructured).
+    # Anchor at these arguments, one node of 108 workers, INV·RETAIN·OWNER: 45.7
+    # s, 143.8 GB resident; target 120 s (restructured).
     # Off the 0.8-1.2x band: memory-capped -- the resident set doubles per
     # SCALE step (SCALE 26 on a 64x64 worker grid 120.7 GB, SCALE 27 319 GB),
     # so the rung that would reach the target exceeds the per-node cap; the
@@ -854,8 +856,8 @@ apps:
     marker: 'final deviation'
     scalar_re: 'final deviation:\s*([\-+0-9.eE]+)'
     tolerance: 0.0001
-    # Anchor at these arguments, one node of 108 workers, INV x WB: 132.3 s,
-    # 84 GB resident; target 100 s (the base tier scales).
+    # Anchor at these arguments, one node of 108 workers, INV·RETAIN·OWNER:
+    # 132.3 s, 84 GB resident; target 100 s (the base tier scales).
     # Off the 0.8-1.2x band: at the width floor (24x12x12 = 3456 tiles) with
     # the published tile edge m = 32; no smaller lattice keeps the floor.
     expect: '14248044.343658'
@@ -1000,9 +1002,9 @@ apps:
     # No hinted tier: placement is part of the design (a persistent block stays
     # with its last writer, which is its only writer), and the base row's
     # consumer-home experiment is the measurement that settles it.
-    # Anchor at these arguments, one node of 108 workers, INV x WB: 131.7 s,
-    # 92.9 GB resident; target 120 s (restructured) -- inside the band.  The
-    # one-node time equals the base's (132.3 s) by construction: the rewrite
+    # Anchor at these arguments, one node of 108 workers, INV·RETAIN·OWNER:
+    # 131.7 s, 92.9 GB resident; target 120 s (restructured) -- inside the band.
+    # The one-node time equals the base's (132.3 s) by construction: the rewrite
     # changes only what crosses a node boundary, and at one node nothing does.
     # The tile grid is the width floor and m = 32 the last grain that fits
     # memory (see the base row), so the size cannot move either way.
@@ -1025,8 +1027,8 @@ apps:
     # nothing at the campaign width).  A second pin at the campaign width is
     # ADDED once one cell has been run and its ||error|| checked against the
     # O(h^2) ladder - it does not replace this one.
-    # Anchor at these arguments, one node of 108 workers, INV x WB: base 10.3
-    # s / hinted 12.6 s, 30 GB resident; target 20 s (hinted kept, flat).
+    # Anchor at these arguments, one node of 108 workers, INV·RETAIN·OWNER: base
+    # 10.3 s / hinted 12.6 s, 30 GB resident; target 20 s (hinted kept, flat).
     # Off the 0.8-1.2x band: the published grain (log2 box dim 4) at a 4x
     # width multiple; the next grain multiplies the work by 8 and is a
     # separate decision.
@@ -1066,8 +1068,8 @@ apps:
     # Kept for the same reason as the base row's pin (see above); at ['5','512']
     # this row must now print the base row's value, since both compute the same
     # instance with the same initialization and verification bodies.
-    # Anchor at these arguments, one node of 108 workers, INV x WB: 42.5 s,
-    # 115.6 GB resident; target 120 s (restructured).
+    # Anchor at these arguments, one node of 108 workers, INV·RETAIN·OWNER: 42.5
+    # s, 115.6 GB resident; target 120 s (restructured).
     # Off the 0.8-1.2x band: memory-capped.  Both knobs step by 8x and the box
     # count is an integer multiple of 3456 only for s = 24k, so the next grid
     # is 1152^3 (s = 72 at log2_box_dim 4), ~350 GB on a line through the
@@ -1095,8 +1097,8 @@ apps:
     marker: 'LCS checksum:'
     scalar_re: 'LCS checksum:\s*(\d+)'
     scalar_kind: int
-    # Anchor at these arguments, one node of 108 workers, INV x WB: 17.5 s
-    # base / 28.5 s hinted, 116 GB resident; target 20 s.  The hinted tier
+    # Anchor at these arguments, one node of 108 workers, INV·RETAIN·OWNER: 17.5
+    # s base / 28.5 s hinted, 116 GB resident; target 20 s.  The hinted tier
     # scales, inside the span cap the quadrant recursion sets ((4/3)^d = 7.5
     # at L = 128), so its rule would ask for the 60 s window; that window
     # needs twice this N and four times this table, past the node's memory,
@@ -1176,8 +1178,8 @@ apps:
     expect_args: ['1769472', '256']   # digest is what the driver now reads
     # L = N/base = 6912: the average anti-diagonal width (L/2 = 3456) matches
     # the largest campaign geometry's total worker count.  Anchor at these
-    # arguments, one node of 108 workers, INV x WB, with each leaf creating
-    # its south neighbour (O(1) creates per leaf, the parked-leaf pool
+    # arguments, one node of 108 workers, INV·RETAIN·OWNER, with each leaf
+    # creating its south neighbour (O(1) creates per leaf, the parked-leaf pool
     # bounded at one row): 100.7 s, 4.3 GB resident; target 120 s
     # (restructured).
     args: ['1769472', '256']
@@ -1203,7 +1205,7 @@ apps:
     expect: '1663678361'
     expect_args: ['409600', '1600']
     args: ['409600', '1600']
-    # Anchor at these arguments, one node of 108 workers, INV x WB: base
+    # Anchor at these arguments, one node of 108 workers, INV·RETAIN·OWNER: base
     # 19.7 s / hinted 19.2 s, 4.2 GB resident; target 20 s (hinted kept,
     # flat).  Derived with LCS_shared (same value for both rows): at a
     # fixed tree depth (N/base = 256) the time is quadratic in N, so 8.2 s
@@ -1237,7 +1239,7 @@ apps:
     # each index's home at range-creation time -- and with a two-dimensional
     # quadrant map no tile has a single consumer rank anyway.  Measured
     # 8.38/8.32, 28.87/8.62, 48.87/11.74, 97.62/12.01 s (base/hinted,
-    # INV x WB, 15w+1p x 1/2/4/8, '262144 1024').
+    # INV·RETAIN·OWNER, 15w+1p x 1/2/4/8, '262144 1024').
     unordered_writes: 'every leaf of the concurrent x12/x21 subtrees RW-acquires the one score block (lcs_ST_distributed.c:301)'
 
   LCS_shared:
@@ -1251,7 +1253,7 @@ apps:
     expect: '1663678361'
     expect_args: ['409600', '1600']
     args: ['409600', '1600']
-    # Anchor at these arguments, one node of 108 workers, INV x WB: base
+    # Anchor at these arguments, one node of 108 workers, INV·RETAIN·OWNER: base
     # 19.6 s / hinted 20.0 s, 4.2 GB resident; target 20 s (hinted kept,
     # flat).  Derived, not searched: at a fixed tree depth (N/base = 256,
     # the trend roster's) the time is quadratic in N, so 8.2 s at 262144
@@ -1272,9 +1274,9 @@ apps:
     # region's corner.  Aggregate balance 1.000 at 1/2/4/8/16/32.  It cannot
     # turn the curve upward -- one RW block admits one node at a time whatever
     # the placement -- but it removes almost all of the migration cost:
-    # 8.29/8.25, 28.62/8.52, 49.43/11.68, 98.90/12.09 s (base/hinted, INV x WB,
-    # 15w+1p x 1/2/4/8, '262144 1024').  The base tier, which is what the row
-    # exhibits, is unchanged.
+    # 8.29/8.25, 28.62/8.52, 49.43/11.68, 98.90/12.09 s (base/hinted,
+    # INV·RETAIN·OWNER, 15w+1p x 1/2/4/8, '262144 1024').  The base tier, which
+    # is what the row exhibits, is unchanged.
     unordered_writes: 'every leaf of the concurrent x12/x21 subtrees RW-acquires the one score block (lcs.c:287, x12Edt :347, x21Edt :365 unordered)'
 
   # Reclassified 2026-08-23: its EDT set is a strict subset of
@@ -1363,8 +1365,8 @@ apps:
     # the block grid and has not been measured at 3456 blocks or past 8 nodes.
     # The SPMD re-decomposition of the same physics exists as its own row
     # (miniAMR_intel_chandra, a rank grid rather than a dataflow DAG).
-    # Anchor at these arguments, one node of 108 workers, INV x WB: the 1x
-    # lattice (24x12x12 = 3456 blocks) gives base 24.0 s / hinted 21.8 s,
+    # Anchor at these arguments, one node of 108 workers, INV·RETAIN·OWNER: the
+    # 1x lattice (24x12x12 = 3456 blocks) gives base 24.0 s / hinted 21.8 s,
     # 12.7 GB resident, both tiers on the same checksum; the 32-node
     # projection (~588 s) clears the cell budget where the 2x lattice
     # (24x24x12 = 6912 blocks, ~997 s projected) does not.
@@ -1413,12 +1415,12 @@ apps:
     # (24x12x12: this row 17.1 s / 18.4 GB, the base 21.7 s), where both rows
     # print 8414305604769322; the block grid alone then sets this row's window:
     # 4x `48x24x12` 88.8 s / 50.8 GB, 6x 134.6 s / 68.3 GB, 8x `48x24x24`
-    # 184.8 s / 96.4 GB on one node of 108 workers, INV x WB.  There is no
-    # MAX_NUM_UNREFINED_BLOCKS on this target: no task holds a dependence per
+    # 184.8 s / 96.4 GB on one node of 108 workers, INV·RETAIN·OWNER.  There is
+    # no MAX_NUM_UNREFINED_BLOCKS on this target: no task holds a dependence per
     # block and no labeled range is reserved, so the grid is bounded by memory
     # alone.
-    # Anchor at these arguments, one node of 108 workers, INV x WB: 134.6 s,
-    # 68 GB resident; target 120 s (restructured).
+    # Anchor at these arguments, one node of 108 workers, INV·RETAIN·OWNER:
+    # 134.6 s, 68 GB resident; target 120 s (restructured).
     args: ['--nx', '10', '--ny', '10', '--nz', '10', '--npx', '48', '--npy', '24', '--npz', '18', '--num_refine', '1', '--num_tsteps', '20']
     expect: '92490067348329968'
     expect_args: ['--nx', '10', '--ny', '10', '--nz', '10', '--npx', '48', '--npy', '24', '--npz', '18', '--num_refine', '1', '--num_tsteps', '20']
@@ -1514,8 +1516,8 @@ apps:
     # VERIFICATION_RUN is gone (the index-seeded initialisation is
     # unconditional); SHUTDOWN_LAG and PRINTBLOCKSTATS stay undefined
     # (SHUTDOWN_LAG's sleep() would sit inside the [E2E] window).
-    # Anchor at these arguments, one node of 108 workers, INV x WB: 26.6 s, 22
-    # GB resident; target 20 s (both tiers anti-scale, clamped).
+    # Anchor at these arguments, one node of 108 workers, INV·RETAIN·OWNER: 26.6
+    # s, 22 GB resident; target 20 s (both tiers anti-scale, clamped).
     # Off the 0.8-1.2x band: at the width floor (4x4x2 x 6x6x3 = 3456 blocks)
     # with the published block size; no smaller lattice keeps the floor.
     expect: '1727840.569690'
@@ -1606,8 +1608,8 @@ apps:
     # is what carries the size: 4x4x4 = 64 elements, against the 8 the port's
     # scripts use and the ~512 of the reference inputs (3x3x3 = 27 gave 25.5 s,
     # the 20 s window of an anti-scaling row).
-    # Anchor at these arguments, one node of 108 workers, INV x WB: 57.1 s
-    # base / 56.9 s hinted, 35 GB resident; target 60 s (hinted scales).
+    # Anchor at these arguments, one node of 108 workers, INV·RETAIN·OWNER: 57.1
+    # s base / 56.9 s hinted, 35 GB resident; target 60 s (hinted scales).
     #
     # The block is pure GRAIN and costs no width: EDT creations are identical
     # -- 6,401,025 of them -- at 144, 27 and 24 elements a rank, so the task
@@ -1714,10 +1716,10 @@ apps:
     # Construction never crosses the wire: every rank draws the stream itself,
     # divides the inverse index over its own workers and builds each row slice
     # with the task that will multiply it.
-    # Anchor at these arguments, one node of 108 workers, INV x WB: 298.2 s,
-    # 15 GB resident; target 120 s (restructured) -- the construction is now
-    # per-rank parallel, not serial, so the previous 471 s / 314.8 s do not
-    # carry over.
+    # Anchor at these arguments, one node of 108 workers, INV·RETAIN·OWNER:
+    # 298.2 s, 15 GB resident; target 120 s (restructured) -- the construction
+    # is now per-rank parallel, not serial, so the previous 471 s / 314.8 s do
+    # not carry over.
     expect: '52.5239203995295'
     expect_args: ['-t', 'D', '-c', '216']
     args: ['-t', 'D', '-c', '216']
@@ -1912,8 +1914,8 @@ apps:
     # the balanced p = w point that buys the most width -- and m = 34560 as
     # the one size knob still free once p and n are pinned; t and gf stay at
     # the published defaults (100, 1).
-    # Anchor at these arguments, one node of 108 workers, INV x WB: 81.3 s, 7
-    # GB resident; target 20 s (both tiers anti-scale, clamped).
+    # Anchor at these arguments, one node of 108 workers, INV·RETAIN·OWNER: 81.3
+    # s, 7 GB resident; target 20 s (both tiers anti-scale, clamped).
     # Off the 0.8-1.2x band: the width floor itself (p = w = 3456 at the
     # published t = 100, gf = 1) costs this much; nothing smaller keeps the
     # floor.
@@ -1955,8 +1957,9 @@ apps:
     scalar_kind: int
     # Size is the array.  This tier anti-scales: every task in the recursion
     # acquires the SAME block RW, so adding nodes adds whole-array write-backs
-    # (on the write-through cells) rather than concurrency, and the size targets 20 s (hinted kept, flat)
-    # rather than the longer window a strong scaler gets.
+    # (on the {VAL,INV}·HOME cells) rather than concurrency, and the size
+    # targets 20 s (hinted kept, flat) rather than the longer window a strong
+    # scaler gets.
     # The window is now the sort.  The input used to be generated by one task
     # on one rank with a generator that walked a thousand-entry table per
     # element -- ~90% of the window at the old size, and node-invariant, so it
@@ -1971,8 +1974,8 @@ apps:
     # The third argument is how many tasks the generation is cut into.  The one
     # datablock is the published decomposition, so the generators are placed on
     # its home and their useful ceiling is one node's workers.
-    # Anchor at these arguments, one node of 108 workers, INV x WB: base 19.2
-    # s / hinted 19.1 s, 6 GB resident; target 20 s (hinted kept, flat).
+    # Anchor at these arguments, one node of 108 workers, INV·RETAIN·OWNER: base
+    # 19.2 s / hinted 19.1 s, 6 GB resident; target 20 s (hinted kept, flat).
     expect: '9997705644359'
     expect_args: ['20000000', '1000000', '108']
     args: ['20000000', '1000000', '108']
@@ -2139,8 +2142,8 @@ apps:
     # run it at 1 node and at 2 nodes, confirm both checksums are identical
     # across node counts, and confirm the same two numbers come out of
     # RSBench_intel_dist at `-s small -p 50 -w 10 -l 20 -r 4 -b 2`.
-    # Anchor at these arguments, one node of 108 workers, INV x WB: base 19.1
-    # s / hinted 23.5 s, 5 GB resident; target 20 s (hinted kept, flat).
+    # Anchor at these arguments, one node of 108 workers, INV·RETAIN·OWNER: base
+    # 19.1 s / hinted 23.5 s, 5 GB resident; target 20 s (hinted kept, flat).
     expect: '10389491124515624329'
     expect_args: ['-s', 'large', '-l', '1250000', '-b', '6912']
     # Width is W = -b: within a batch the spawner creates -b independent
@@ -2236,8 +2239,8 @@ apps:
     # (-s/-n, -p, -w, numL), of -d and of -l ONLY -- it does not move with -r,
     # -b, the node count, the arm or the runtime.  The pole checksum is a
     # function of -s/-n, -p and numL only.
-    # Anchor at these arguments, one node of 108 workers, INV x WB: 113.5 s, 6
-    # GB resident; target 120 s (restructured).
+    # Anchor at these arguments, one node of 108 workers, INV·RETAIN·OWNER:
+    # 113.5 s, 6 GB resident; target 120 s (restructured).
     expect: '17548061920822597654'
     expect_args: ['-s', 'large', '-l', '31104000', '-r', '3456', '-b', '8']
     # expect_args is list[str] in tools/artsrun/src/artsrun/model/catalog.py:
@@ -2299,8 +2302,8 @@ apps:
     # `XS Checksum:`; `Pole Evaluations:` and `Abrarov Evaluations:` must match
     # too, and `Slow Faddeeva:` must now read ~0.5% (the published design
     # target) rather than the meaningless value the old prefix-sum bug printed.
-    # Anchor at these arguments, one node of 108 workers, INV x WB: 103.5 s, 6
-    # GB resident; target 100 s (the base tier scales).
+    # Anchor at these arguments, one node of 108 workers, INV·RETAIN·OWNER:
+    # 103.5 s, 6 GB resident; target 100 s (the base tier scales).
     expect: '7396750967536631'
     expect_args: ['-s', 'large', '-l', '2000000', '-t', '216', '-p', '32']
     # Strict sweep invariant: every logical count is node-invariant -- 32
@@ -2431,10 +2434,11 @@ apps:
     # touching its own data again.
     # TARGET: the two arms that cannot let a holder keep anything.
     # On one node of 108 workers the eight arms tie within 5% (18.9-19.5 s);
-    # at eight ranks EXCL·PURGE opens to 271.1 s against 17.8 s on the rest.
+    # at eight ranks EXCL·PURGE·HOME opens to 271.1 s against 17.8 s on the
+    # rest.
     # Anchor at these arguments, one node of 108 workers: worst arm
-    # EXCL·PURGE 19.5 s; 32-node projection ~350 s by the calibration rule on
-    # the full-size local growth of the previous pass, whose 8-rank cells
+    # EXCL·PURGE·HOME 19.5 s; 32-node projection ~350 s by the calibration rule
+    # on the full-size local growth of the previous pass, whose 8-rank cells
     # this program reproduces.
     marker: 'OWN_REREAD OK '
     scalar_kind: bool
@@ -2477,13 +2481,14 @@ apps:
     provenance: 'attack matrix C1: private-lane re-read at size'
     # The same private re-read with the payload 256x larger, which converts a
     # protocol's per-turn byte traffic into the dominant term.
-    # TARGET: purge-family arms, whose return-and-refetch now moves 16 MB.
+    # TARGET: the PURGE arms, whose return-and-refetch now moves 16 MB.
     # On one node of 108 workers the eight arms tie within 5% (about 0.8 s);
-    # at eight ranks EXCL·PURGE opens to 194.5 s against 0.7-0.9 s on the rest.
-    # Anchor at these arguments, one node of 108 workers: worst arm VAL·WT
-    # 0.8 s; 32-node projection ~347 s by the calibration rule on the
-    # full-size local growth of the previous pass, whose 8-rank cells this
-    # program reproduces.
+    # at eight ranks EXCL·PURGE·HOME opens to 194.5 s against 0.7-0.9 s on the
+    # rest.
+    # Anchor at these arguments, one node of 108 workers: worst arm
+    # VAL·RETAIN·HOME 0.8 s; 32-node projection ~347 s by the calibration rule
+    # on the full-size local growth of the previous pass, whose 8-rank cells
+    # this program reproduces.
     marker: 'OWN_REREAD OK '
     scalar_kind: bool
     extra_scalars: *chain_scalars
@@ -2501,12 +2506,12 @@ apps:
     # write turns by one holder, which a sticky grant should make free.
     # TARGET: every arm that re-arbitrates a write it already owns.
     # On one node of 108 workers the eight arms tie within 5% (12.8-13.1 s);
-    # at eight ranks EXCL·PURGE 248.1 s and INV·WB 71.3 s against VAL·WB
-    # 11.6 s and EXCL·RETAIN 11.7 s.
-    # Anchor at these arguments, one node of 108 workers: worst arm INV·WB
-    # 13.1 s; 32-node projection ~352 s by the calibration rule on the
-    # full-size local growth of the previous pass, whose 8-rank cells this
-    # program reproduces.
+    # at eight ranks EXCL·PURGE·HOME 248.1 s and INV·RETAIN·OWNER 71.3 s against
+    # VAL·RETAIN·OWNER 11.6 s and EXCL·RETAIN·OWNER 11.7 s.
+    # Anchor at these arguments, one node of 108 workers: worst arm
+    # INV·RETAIN·OWNER 13.1 s; 32-node projection ~352 s by the calibration rule
+    # on the full-size local growth of the previous pass, whose 8-rank cells
+    # this program reproduces.
     marker: 'OWN_REWRITE OK '
     scalar_kind: bool
     extra_scalars: *chain_scalars
@@ -2522,13 +2527,13 @@ apps:
     provenance: 'attack matrix C1: private-lane re-write at size'
     # The re-write turn with a 16 MB payload: the same arbitration, but every
     # write-through publish now carries the block.
-    # TARGET: write-through, whose per-release publish is size-proportional.
-    # Crown/grave on one node of 108 workers: crown EXCL·RETAIN 0.4 s, grave
-    # EXCL·PURGE 0.6 s; at eight ranks EXCL·PURGE opens to 133.7 s against
-    # 0.5-0.8 s on the rest.
+    # TARGET: {VAL,INV}·HOME, whose per-release publish is size-proportional.
+    # Crown/grave on one node of 108 workers: crown EXCL·RETAIN·OWNER 0.4 s,
+    # grave EXCL·PURGE·HOME 0.6 s; at eight ranks EXCL·PURGE·HOME opens to 133.7
+    # s against 0.5-0.8 s on the rest.
     # Anchor at these arguments, one node of 108 workers: worst arm
-    # EXCL·PURGE 0.6 s; 32-node projection ~351 s by the calibration rule on
-    # the full-size local growth of the previous pass, whose 8-rank cells
+    # EXCL·PURGE·HOME 0.6 s; 32-node projection ~351 s by the calibration rule
+    # on the full-size local growth of the previous pass, whose 8-rank cells
     # this program reproduces.
     marker: 'OWN_REWRITE OK '
     scalar_kind: bool
@@ -2546,12 +2551,12 @@ apps:
     # A fixed reader population (set by rank count alone) pulls from 16 blocks
     # all homed on one rank (HOMES=1): a read-only funnel with no writer at all.
     # TARGET: arms that must ask the home again for a copy they already hold.
-    # Crown/grave on one node of 108 workers: crown INV·WB 0.3 s, grave
-    # EXCL·RETAIN 0.6 s; at eight ranks EXCL·PURGE opens to 43.7 s against
-    # 0.2-1.0 s on the rest.
+    # Crown/grave on one node of 108 workers: crown INV·RETAIN·OWNER 0.3 s,
+    # grave EXCL·RETAIN·OWNER 0.6 s; at eight ranks EXCL·PURGE·HOME opens to
+    # 43.7 s against 0.2-1.0 s on the rest.
     # Anchor at these arguments, one node of 108 workers: worst arm
-    # EXCL·RETAIN 0.6 s; 32-node projection ~343 s by the calibration rule on
-    # the full-size local growth of the previous pass, whose 8-rank cells
+    # EXCL·RETAIN·OWNER 0.6 s; 32-node projection ~343 s by the calibration rule
+    # on the full-size local growth of the previous pass, whose 8-rank cells
     # this program reproduces.
     marker: 'READ_FUNNEL OK '
     scalar_kind: bool
@@ -2574,11 +2579,11 @@ apps:
     # the one-home column's seven.
     # TARGET: the arms whose funnel grave comes from concentrating every ask
     # on a single home rank rather than from re-asking as such.
-    # Crown/grave on one node of 108 workers: crown VAL·WB 0.3 s, grave
-    # INV·WT·PURGE 0.6 s; at eight ranks EXCL·PURGE opens to 9.6 s against
-    # 0.3-0.8 s on the rest.
+    # Crown/grave on one node of 108 workers: crown VAL·RETAIN·OWNER 0.3 s,
+    # grave INV·PURGE·HOME 0.6 s; at eight ranks EXCL·PURGE·HOME opens to 9.6 s
+    # against 0.3-0.8 s on the rest.
     # Anchor at these arguments, one node of 108 workers: worst arm
-    # INV·WT·PURGE 0.6 s; 32-node projection ~22 s by the calibration rule on
+    # INV·PURGE·HOME 0.6 s; 32-node projection ~22 s by the calibration rule on
     # the full-size local growth of the previous pass, whose 8-rank cells
     # this program reproduces.
     marker: 'READ_FUNNEL OK '
@@ -2597,15 +2602,15 @@ apps:
     # Fifteen writers on one rank hammer a single 16 MB block that no reader
     # ever touches: every byte a protocol moves here is waste, because the
     # audience it moves them for does not exist.
-    # TARGET: write-through, which publishes to the home whether or not anyone
+    # TARGET: {VAL,INV}·HOME, which publishes to the home whether or not anyone
     # will read it.
-    # Crown/grave on one node of 108 workers: crown VAL·WT·PURGE 3.5 s, grave
-    # INV·WT 3.9 s; at eight ranks EXCL·PURGE opens to 174.9 s against
-    # 2.1-3.5 s on the rest.
-    # Anchor at these arguments, one node of 108 workers: worst arm INV·WT
-    # 3.9 s; 32-node projection ~346 s by the calibration rule on the
-    # full-size local growth of the previous pass, whose 8-rank cells this
-    # program reproduces.
+    # Crown/grave on one node of 108 workers: crown VAL·PURGE·HOME 3.5 s, grave
+    # INV·RETAIN·HOME 3.9 s; at eight ranks EXCL·PURGE·HOME opens to 174.9 s
+    # against 2.1-3.5 s on the rest.
+    # Anchor at these arguments, one node of 108 workers: worst arm
+    # INV·RETAIN·HOME 3.9 s; 32-node projection ~346 s by the calibration rule
+    # on the full-size local growth of the previous pass, whose 8-rank cells
+    # this program reproduces.
     marker: 'AUDIENCELESS_PUBLISH OK '
     scalar_kind: bool
     extra_scalars: *chain_scalars
@@ -2626,12 +2631,12 @@ apps:
     # state a cache is designed for, with reuse high enough that keeping a
     # copy should pay.
     # TARGET: arms with no durable reader copy.
-    # Crown/grave on one node of 108 workers: crown INV·WT·PURGE 2.2 s, grave
-    # EXCL·PURGE 2.6 s; at eight ranks EXCL·PURGE opens to 39.6 s against
-    # 11.0-23.6 s on the rest.
+    # Crown/grave on one node of 108 workers: crown INV·PURGE·HOME 2.2 s, grave
+    # EXCL·PURGE·HOME 2.6 s; at eight ranks EXCL·PURGE·HOME opens to 39.6 s
+    # against 11.0-23.6 s on the rest.
     # Anchor at these arguments, one node of 108 workers: worst arm
-    # EXCL·PURGE 2.6 s; 32-node projection ~347 s by the calibration rule on
-    # the full-size local growth of the previous pass, whose 8-rank cells
+    # EXCL·PURGE·HOME 2.6 s; 32-node projection ~347 s by the calibration rule
+    # on the full-size local growth of the previous pass, whose 8-rank cells
     # this program reproduces.
     marker: 'FREERUN_MIX OK '
     scalar_kind: bool
@@ -2658,8 +2663,8 @@ apps:
     # at eight ranks the arms narrow to 32.6-41.6 s, most of the 64 KB row's
     # order-of-magnitude spread already gone.
     # Anchor at these arguments, one node of 108 workers: worst arm
-    # EXCL·PURGE 17.9 s; 32-node projection ~346 s by the calibration rule on
-    # the full-size local growth of the previous pass, whose 8-rank cells
+    # EXCL·PURGE·HOME 17.9 s; 32-node projection ~346 s by the calibration rule
+    # on the full-size local growth of the previous pass, whose 8-rank cells
     # this program reproduces.
     marker: 'FREERUN_MIX OK '
     scalar_kind: bool
@@ -2684,7 +2689,7 @@ apps:
     # at eight ranks they hold within 29.3-31.8 s, confirming the flat row's
     # point.
     # Anchor at these arguments, one node of 108 workers: worst arm
-    # VAL·WT·PURGE 29.4 s; 32-node projection ~35 s (op count cut 10x from
+    # VAL·PURGE·HOME 29.4 s; 32-node projection ~35 s (op count cut 10x from
     # the previous pass, linear in fixed work).
     marker: 'FREERUN_MIX OK '
     scalar_kind: bool
@@ -2708,12 +2713,12 @@ apps:
     # both the block and the rank), so the row measures the per-version
     # handoff cost and never a cross-rank read phase.
     # TARGET: arms whose handoff needs a round trip before the reader may look.
-    # Crown/grave on one node of 108 workers: crown EXCL·RETAIN 0.3 s, grave
-    # EXCL·PURGE 0.6 s; at eight ranks EXCL·PURGE opens to 20.0 s against
-    # 0.1-2.2 s on the rest.
+    # Crown/grave on one node of 108 workers: crown EXCL·RETAIN·OWNER 0.3 s,
+    # grave EXCL·PURGE·HOME 0.6 s; at eight ranks EXCL·PURGE·HOME opens to 20.0
+    # s against 0.1-2.2 s on the rest.
     # Anchor at these arguments, one node of 108 workers: worst arm
-    # EXCL·PURGE 0.6 s; 32-node projection ~352 s by the calibration rule on
-    # the full-size local growth of the previous pass, whose 8-rank cells
+    # EXCL·PURGE·HOME 0.6 s; 32-node projection ~352 s by the calibration rule
+    # on the full-size local growth of the previous pass, whose 8-rank cells
     # this program reproduces.
     marker: 'PIPELINE_CONVERGE OK '
     scalar_kind: bool
@@ -2736,12 +2741,13 @@ apps:
     # TARGET: write-invalidate, which must run a round against the full
     # sharer set per alternation -- and the arms that serialise readers
     # behind the turn.
-    # Crown/grave on one node of 108 workers: crown VAL·WT·PURGE 5.5 s, grave
-    # EXCL·PURGE 6.4 s; at eight ranks EXCL·PURGE 81.7 s and EXCL·RETAIN
-    # 59.4 s against VAL·WB 40.2 s and INV·WB 14.1 s.
+    # Crown/grave on one node of 108 workers: crown VAL·PURGE·HOME 5.5 s, grave
+    # EXCL·PURGE·HOME 6.4 s; at eight ranks EXCL·PURGE·HOME 81.7 s and
+    # EXCL·RETAIN·OWNER 59.4 s against VAL·RETAIN·OWNER 40.2 s and
+    # INV·RETAIN·OWNER 14.1 s.
     # Anchor at these arguments, one node of 108 workers: worst arm
-    # EXCL·PURGE 6.4 s; 32-node projection ~335 s by the calibration rule on
-    # the full-size local growth of the previous pass, whose 8-rank cells
+    # EXCL·PURGE·HOME 6.4 s; 32-node projection ~335 s by the calibration rule
+    # on the full-size local growth of the previous pass, whose 8-rank cells
     # this program reproduces.
     marker: 'ALTERNATING_BOMB OK '
     scalar_kind: bool
@@ -2763,12 +2769,13 @@ apps:
     # TARGET: whether an invalidation round's cost is fan-out-bound or
     # service-bound -- if the former, this column's INV numbers separate from
     # the bomb's by roughly the fan-out ratio; if the latter, they do not move.
-    # Crown/grave on one node of 108 workers: crown VAL·WB 5.5 s, grave
-    # EXCL·PURGE 6.1 s; at eight ranks EXCL·PURGE 77.4 s and EXCL·RETAIN
-    # 57.4 s against VAL·WB 39.3 s and INV·WB 14.4 s.
+    # Crown/grave on one node of 108 workers: crown VAL·RETAIN·OWNER 5.5 s,
+    # grave EXCL·PURGE·HOME 6.1 s; at eight ranks EXCL·PURGE·HOME 77.4 s and
+    # EXCL·RETAIN·OWNER 57.4 s against VAL·RETAIN·OWNER 39.3 s and
+    # INV·RETAIN·OWNER 14.4 s.
     # Anchor at these arguments, one node of 108 workers: worst arm
-    # EXCL·PURGE 6.1 s; 32-node projection ~413 s by the calibration rule on
-    # the full-size local growth of the previous pass, whose 8-rank cells
+    # EXCL·PURGE·HOME 6.1 s; 32-node projection ~413 s by the calibration rule
+    # on the full-size local growth of the previous pass, whose 8-rank cells
     # this program reproduces.
     marker: 'ALTERNATING_BOMB OK '
     scalar_kind: bool
@@ -2790,12 +2797,13 @@ apps:
     # TARGET: arms that must re-establish a reader copy after every churn.
     # Caveat worth carrying: this column is a reader-side verdict and says so;
     # the writer's own receipts run the other way.
-    # Crown/grave on one node of 108 workers: crown VAL·WB 2.6 s, grave
-    # EXCL·RETAIN 3.7 s; at eight ranks EXCL·PURGE 58.9 s and VAL·WB 35.2 s
-    # against EXCL·RETAIN 29.2 s and INV·WB 2.9 s.
+    # Crown/grave on one node of 108 workers: crown VAL·RETAIN·OWNER 2.6 s,
+    # grave EXCL·RETAIN·OWNER 3.7 s; at eight ranks EXCL·PURGE·HOME 58.9 s and
+    # VAL·RETAIN·OWNER 35.2 s against EXCL·RETAIN·OWNER 29.2 s and
+    # INV·RETAIN·OWNER 2.9 s.
     # Anchor at these arguments, one node of 108 workers: worst arm
-    # EXCL·RETAIN 3.7 s; 32-node projection ~348 s by the calibration rule on
-    # the full-size local growth of the previous pass, whose 8-rank cells
+    # EXCL·RETAIN·OWNER 3.7 s; 32-node projection ~348 s by the calibration rule
+    # on the full-size local growth of the previous pass, whose 8-rank cells
     # this program reproduces.
     marker: 'RESIDENT_MILL OK '
     scalar_kind: bool
@@ -2815,15 +2823,16 @@ apps:
     # longer shielded by co-resident chains.  A SEPARATE column, not a twin of
     # resident_mill_1m: fewer chains means less offered load, so only the arm
     # ORDERING is comparable between the two, never the e2e numbers themselves.
-    # TARGET: whether a purge-family grave widens once the zero edge its own
+    # TARGET: whether a PURGE grave widens once the zero edge its own
     # return-and-refetch depends on actually fires every op.
-    # Crown/grave on one node of 108 workers: crown VAL·WT 0.4 s, grave
-    # INV·WT 0.7 s; at eight ranks EXCL·PURGE 49.7 s and EXCL·RETAIN 35.7 s
-    # against VAL·WB 1.5 s and INV·WB 0.8 s.
-    # Anchor at these arguments, one node of 108 workers: worst arm INV·WT
-    # 0.7 s; 32-node projection ~334 s by the calibration rule on the
-    # full-size local growth of the previous pass, whose 8-rank cells this
-    # program reproduces.
+    # Crown/grave on one node of 108 workers: crown VAL·RETAIN·HOME 0.4 s, grave
+    # INV·RETAIN·HOME 0.7 s; at eight ranks EXCL·PURGE·HOME 49.7 s and
+    # EXCL·RETAIN·OWNER 35.7 s against VAL·RETAIN·OWNER 1.5 s and
+    # INV·RETAIN·OWNER 0.8 s.
+    # Anchor at these arguments, one node of 108 workers: worst arm
+    # INV·RETAIN·HOME 0.7 s; 32-node projection ~334 s by the calibration rule
+    # on the full-size local growth of the previous pass, whose 8-rank cells
+    # this program reproduces.
     marker: 'RESIDENT_MILL OK '
     scalar_kind: bool
     extra_scalars: *chain_scalars
@@ -2843,23 +2852,24 @@ apps:
     # successor is created on the next writer rank, so every write migrates
     # the grant across ranks and never more than RINGS writers are queued
     # at the home.  That is what keeps every arm in one regime: with
-    # free-running writers this cell was bistable under EXCL·RETAIN (writer
-    # chaining at the phase transitions versus a held read phase, ~2.6 s or
-    # ~21 s at eight ranks decided at the first transition), whereas a
+    # free-running writers this cell was bistable under EXCL·RETAIN·OWNER
+    # (writer chaining at the phase transitions versus a held read phase, ~2.6 s
+    # or ~21 s at eight ranks decided at the first transition), whereas a
     # write chain can never outlast a queue of two.  Measured spread of
-    # EXCL·RETAIN at eight ranks: 1.12x over five gate-size runs, 1.35x
+    # EXCL·RETAIN·OWNER at eight ranks: 1.12x over five gate-size runs, 1.35x
     # over three full-size runs.
     # TARGET: arms that make readers follow a moving owner.
-    # Crown/grave at eight ranks, full size: INV·WB 7.7 s, VAL·WB 13.7 s,
-    # EXCL·RETAIN 23.6-31.9 s, EXCL·PURGE 35.6 s.  One node of 108 workers
-    # spreads only 1.99-2.24 s across the eight arms -- nothing migrates on
-    # one rank -- so the one-node cell sizes and never ranks.
+    # Crown/grave at eight ranks, full size: INV·RETAIN·OWNER 7.7 s,
+    # VAL·RETAIN·OWNER 13.7 s, EXCL·RETAIN·OWNER 23.6-31.9 s, EXCL·PURGE·HOME
+    # 35.6 s.  One node of 108 workers spreads only 1.99-2.24 s across the eight
+    # arms -- nothing migrates on one rank -- so the one-node cell sizes and
+    # never ranks.
     # Anchor at these arguments: the ring is serial, so a cell is steps per
     # ring x step cost.  Steps per ring = (ranks - 1) x OPS_W: 14,000 at
     # eight ranks, 62,000 at 32 (4.4x); the eight-rank step cost is 0.55 ms
-    # (INV·WB) to 2.55 ms (EXCL·PURGE), so the 32-node projection is ~160 s
-    # for the worst arm, with more than 10x headroom under the cap for any
-    # growth of the read phase a write must drain.
+    # (INV·RETAIN·OWNER) to 2.55 ms (EXCL·PURGE·HOME), so the 32-node projection
+    # is ~160 s for the worst arm, with more than 10x headroom under the cap for
+    # any growth of the read phase a write must drain.
     marker: 'MIGRATION_GAUNTLET OK '
     scalar_kind: bool
     extra_scalars: *chain_scalars
@@ -2877,22 +2887,22 @@ apps:
     # The migration gauntlet's population and its two write rings
     # unchanged, the payload raised 256x to 16 MB and the op counts cut so
     # the byte-heavy job stays in budget: the write-right migration term
-    # (owner-to-owner drag under WB, publish under WT) is invisible at
-    # 64 KB against the control round trips, so this column is the
-    # size-qualified edition of that verdict.  RINGS is the fourth
+    # (owner-to-owner drag under {VAL,INV}·OWNER, publish under {VAL,INV}·HOME)
+    # is invisible at 64 KB against the control round trips, so this column is
+    # the size-qualified edition of that verdict.  RINGS is the fourth
     # argument; this row runs two.
     # TARGET: arms whose migrating grant drags a payload, not only a
     # permission.
-    # Crown/grave at eight ranks, full size: INV·WB 6.8 s and EXCL·RETAIN
-    # 7.4-7.5 s (1.02x over three runs), VAL·WB 9.0 s, VAL·WT 17.7 s,
-    # EXCL·PURGE 22.4 s.  One node of 108 workers is 65-86 ms on every arm
-    # (start-up noise; nothing migrates), so the one-node cell sizes and
-    # never ranks.
+    # Crown/grave at eight ranks, full size: INV·RETAIN·OWNER 6.8 s and
+    # EXCL·RETAIN·OWNER 7.4-7.5 s (1.02x over three runs), VAL·RETAIN·OWNER 9.0
+    # s, VAL·RETAIN·HOME 17.7 s, EXCL·PURGE·HOME 22.4 s.  One node of 108
+    # workers is 65-86 ms on every arm (start-up noise; nothing migrates), so
+    # the one-node cell sizes and never ranks.
     # Anchor at these arguments: steps per ring = (ranks - 1) x OPS_W, 672
     # at eight ranks and 2,976 at 32 (4.4x); the eight-rank step cost is
-    # 10 ms (INV·WB) to 33 ms (EXCL·PURGE, a 16 MB drag per step over tcp),
-    # so the 32-node projection is ~100 s for the worst arm before the
-    # fabric's faster drag.
+    # 10 ms (INV·RETAIN·OWNER) to 33 ms (EXCL·PURGE·HOME, a 16 MB drag per step
+    # over tcp), so the 32-node projection is ~100 s for the worst arm before
+    # the fabric's faster drag.
     marker: 'MIGRATION_GAUNTLET OK '
     scalar_kind: bool
     extra_scalars: *chain_scalars
@@ -2913,11 +2923,11 @@ apps:
     # TARGET: the control for the fast churn column -- the dial that shows
     # how much of a protocol's verdict is churn rate rather than shape.
     # On one node of 108 workers the eight arms tie within 5% (14.1-14.6 s);
-    # at eight ranks EXCL·PURGE opens to 296.3 s against 15.4-25.8 s on the
+    # at eight ranks EXCL·PURGE·HOME opens to 296.3 s against 15.4-25.8 s on the
     # rest.
     # Anchor at these arguments, one node of 108 workers: worst arm
-    # EXCL·PURGE 14.6 s; 32-node projection ~347 s by the calibration rule on
-    # the full-size local growth of the previous pass, whose 8-rank cells
+    # EXCL·PURGE·HOME 14.6 s; 32-node projection ~347 s by the calibration rule
+    # on the full-size local growth of the previous pass, whose 8-rank cells
     # this program reproduces.
     marker: 'RESIDENT_MILL OK '
     scalar_kind: bool
@@ -2942,12 +2952,12 @@ apps:
     # already fixed-work and self-scales with node count.  This is C0, the
     # suite's first convergence control: it is the arm-superadditivity check
     # the kill columns are read against.
-    # Crown/grave on one node of 108 workers: crown EXCL·PURGE 0.3 s, grave
-    # EXCL·RETAIN 0.5 s; at eight ranks the four arms hold within 1.5-1.7 s,
-    # the convergence control's point.
+    # Crown/grave on one node of 108 workers: crown EXCL·PURGE·HOME 0.3 s, grave
+    # EXCL·RETAIN·OWNER 0.5 s; at eight ranks the four arms hold within 1.5-1.7
+    # s, the convergence control's point.
     # Anchor at these arguments, one node of 108 workers: worst arm
-    # EXCL·RETAIN 0.5 s; 32-node projection ~35 s (op count cut 10x from the
-    # previous pass, linear in fixed work).
+    # EXCL·RETAIN·OWNER 0.5 s; 32-node projection ~35 s (op count cut 10x from
+    # the previous pass, linear in fixed work).
     marker: 'SERIAL_ROUNDS OK '
     scalar_kind: bool
     extra_scalars:
@@ -2972,12 +2982,12 @@ apps:
     # pattern is a figure with no windowed-throughput averaging.  The
     # printed GENS= is the aggregate over all lattices (lattices times the
     # per-lattice generation count).
-    # Crown/grave on one node of 108 workers: crown VAL·WB 3.5 s, grave
-    # EXCL·PURGE 4.5 s; at eight ranks the four arms hold within
-    # 104.8-130.1 s (INV·WB slowest), the control's point.
+    # Crown/grave on one node of 108 workers: crown VAL·RETAIN·OWNER 3.5 s,
+    # grave EXCL·PURGE·HOME 4.5 s; at eight ranks the four arms hold within
+    # 104.8-130.1 s (INV·RETAIN·OWNER slowest), the control's point.
     # Anchor at these arguments, one node of 108 workers: worst arm
-    # EXCL·PURGE 4.5 s; population is fixed at this geometry, so the 32-node
-    # cell is its 8-rank cell: ~130 s.
+    # EXCL·PURGE·HOME 4.5 s; population is fixed at this geometry, so the
+    # 32-node cell is its 8-rank cell: ~130 s.
     marker: 'HANDOFF_LATTICE OK '
     scalar_kind: bool
     extra_scalars: &lattice_scalars
@@ -3008,17 +3018,18 @@ apps:
     # the block is served the previous occupant of the region.  The printed
     # GENS= is the aggregate over all lattices (lattices times the
     # per-lattice generation count).
-    # On one node of 108 workers only EXCL·PURGE pays the consumer hold:
-    # EXCL·PURGE ~270 s against ~21-22 s on the other seven arms (scaled
+    # On one node of 108 workers only EXCL·PURGE·HOME pays the consumer hold:
+    # EXCL·PURGE·HOME ~270 s against ~21-22 s on the other seven arms (scaled
     # from a measurement at 20,000 generations) -- a writer on the readers'
     # own rank waits their zero edge only when the grant returns at every
-    # release, and EXCL·RETAIN serves both under its resident grant.  From
-    # two ranks both exclusion arms pay it: EXCL ~360 s against VAL·WB
-    # ~115 s / INV·WB ~155 s (same scaling).
+    # release, and EXCL·RETAIN·OWNER serves both under its resident grant.  From
+    # two ranks both exclusion arms pay it: EXCL ~360 s against VAL·RETAIN·OWNER
+    # ~115 s / INV·RETAIN·OWNER ~155 s (same scaling).
     # Anchor at these arguments, one node of 108 workers: GENS raised
     # 20,000 -> 130,000 so the exclusion arms land near 350 s.  Population is
     # fixed at 8 lattices, so the 32-node cell is its 8-rank cell:
-    # EXCL·RETAIN ~359 s, EXCL·PURGE ~349 s (VAL·WB ~115 s, INV·WB ~155 s).
+    # EXCL·RETAIN·OWNER ~359 s, EXCL·PURGE·HOME ~349 s (VAL·RETAIN·OWNER ~115 s,
+    # INV·RETAIN·OWNER ~155 s).
     marker: 'HANDOFF_LATTICE OK '
     scalar_kind: bool
     extra_scalars: *lattice_scalars
@@ -3033,8 +3044,8 @@ apps:
     marker: 'SAR detects:'
     scalar_re: 'SAR detects:\s*(\d+)'
     scalar_kind: int
-    # Anchor at these arguments, one node of 108 workers, INV x WB: 20.4 s, 10
-    # GB resident; target 20 s (both tiers anti-scale, clamped).
+    # Anchor at these arguments, one node of 108 workers, INV·RETAIN·OWNER: 20.4
+    # s, 10 GB resident; target 20 s (both tiers anti-scale, clamped).
     args: ['{repo}/datasets/sar-huge/Data.bin', '{repo}/datasets/sar-huge/PlatformPosition.bin', '{repo}/datasets/sar-huge/PulseTransmissionTime.bin', '{repo}/.scratch/run/sar_detects.txt', '{repo}/third_party/ocr-apps/apps/sar/ocr/problem_size_scaling/Parameter17.txt', '50', '100', '250', '0']
     # Anti-scaler, structurally: every tile family splits the image but writes
     # it back through ONE whole-image block acquired RW, and write permission
@@ -3159,7 +3170,7 @@ apps:
     #   mid    178,000 / 178,400   tile 100 -> 110024
     #   cmp    200,000 / 200,000   tile 100 -> 123196  (score-cmp.txt still holds
     #                                                   the placeholder -1)
-    # Anchor at these arguments, one node of 108 workers, INV x WB: base
+    # Anchor at these arguments, one node of 108 workers, INV·RETAIN·OWNER: base
     # 23.0 s / hinted 22.1 s, 10.3 GB resident; target 20 s (hinted kept,
     # flat).  The cmp pair (200,000 / 200,000) is the rung the window
     # selects: the cal pair (140,000 / 140,400) sits at 9.4 s and the
@@ -3451,9 +3462,9 @@ apps:
     # The L1 norm is a property of the stencil and of the height alone, so
     # the pin does not move with the edge.
     expect: '202.000000000000'
-    # Anchor at these arguments, one node of 108 workers, INV x WB: 119.2 s,
-    # 117 GB resident; target 100 s (the base tier scales). EXCL x RETAIN 121
-    # GB resident, VAL x WT 121 GB resident.
+    # Anchor at these arguments, one node of 108 workers, INV·RETAIN·OWNER:
+    # 119.2 s, 117 GB resident; target 100 s (the base tier scales). EXCL x
+    # RETAIN 121 GB resident, VAL·RETAIN·HOME 121 GB resident.
     expect_args: ['51840', '13824', '100']
     args: ['51840', '13824', '100']
     unordered_writes: 'four unordered halo receives RW DBK_xIn (stencil_2d.c:701, :717, :764, :778)'
@@ -3503,9 +3514,9 @@ apps:
     # transient and allocator retention behind 4*1000*3456 DB creates; measured
     # resident has run ~3x the live set.  Node-count invariant; the 1-node cell
     # is the peak.
-    # Anchor at these arguments, one node of 108 workers, INV x WB: base 54.8
-    # s / hinted 52.9 s, 6 GB resident; target 60 s (base anti-scales, hinted
-    # scales).
+    # Anchor at these arguments, one node of 108 workers, INV·RETAIN·OWNER: base
+    # 54.8 s / hinted 52.9 s, 6 GB resident; target 60 s (base anti-scales,
+    # hinted scales).
     expect: '233280000'
     expect_args: ['233280000', '3456', '1000']
     args: ['233280000', '3456', '1000']
@@ -3571,8 +3582,8 @@ apps:
     # time of the sizes past it (13.2 s, 20 GB at one node).
     #
     # Memory: flat for the whole run.  Sized from the anchor at 725760000,
-    # one node of 108 workers, INV x WB: 75.2 s, 51.2 GB resident, the same
-    # per-element time as 836352000 measured earlier; 1157760000 (335,000
+    # one node of 108 workers, INV·RETAIN·OWNER: 75.2 s, 51.2 GB resident, the
+    # same per-element time as 836352000 measured earlier; 1157760000 (335,000
     # per chain) extrapolates to the restructured tier's 120 s target and
     # ~79 GB.  The tier's own 1-node cell is the anchor to quote.
     expect: '1157760000'
@@ -3602,8 +3613,8 @@ apps:
     # The scalar is patch 0's received SE neighbour, i.e. 5k^2+1 -- a pure
     # function of k, invariant in duration, node count and runtime.  The pin
     # only fires when expect_args equals args, so the two move together.
-    # Anchor at these arguments, one node of 108 workers, INV x WB: base 20.1
-    # s / hinted 19.3 s, 10 GB resident; target 20 s (hinted kept, flat).
+    # Anchor at these arguments, one node of 108 workers, INV·RETAIN·OWNER: base
+    # 20.1 s / hinted 19.3 s, 10 GB resident; target 20 s (hinted kept, flat).
     expect: '233281'   # 5k^2+1 at k=216, the SE neighbour of patch 0
     expect_args: ['216', '100']
     # Both dials are arguments: k sets how many patches there are (6k^2, each
@@ -3643,8 +3654,8 @@ apps:
     # is invariant in node count, runtime and duration -- and identical to what
     # the base row prints, which is why both rows pin the same answer.
     # expect_args must match `args` element for element or the pin never fires.
-    # Anchor at these arguments, one node of 108 workers, INV x WB: 42.3 s,
-    # 127 GB resident; target 120 s (restructured).
+    # Anchor at these arguments, one node of 108 workers, INV·RETAIN·OWNER: 42.3
+    # s, 127 GB resident; target 120 s (restructured).
     # Off the 0.8-1.2x band: memory-capped: the resident set grows with k^2
     # (127 GB at k = 864); the rung that would reach the target exceeds the
     # per-node cap.
@@ -3744,9 +3755,9 @@ apps:
     # min/mean >= 0.91 and no idle rank.
     # 8 is the same list in all three fields: the pin applies only to the
     # arguments it was enumerated for.
-    # Anchor at these arguments, one node of 108 workers, INV x WB: base 18.6
-    # s / hinted 19.0 s, 4 GB resident; target 60 s (base anti-scales, hinted
-    # scales).
+    # Anchor at these arguments, one node of 108 workers, INV·RETAIN·OWNER: base
+    # 18.6 s / hinted 19.0 s, 4 GB resident; target 60 s (base anti-scales,
+    # hinted scales).
     # Off the 0.8-1.2x band: the size ladder steps by 8x; the rung above lands
     # far over the band.  The local trend roster runs depth 8 on the 7-row
     # board (4.95 s at one trend node): depth 7 is a 0.66 s latency floor that
@@ -3926,8 +3937,8 @@ apps:
     # (the grid there, the lookup results here — the parent row discards its
     # lookup results, so it has nothing else to vote on).  The value that is
     # comparable across the two is the grid checksum, which both now print.
-    # Anchor at these arguments, one node of 108 workers, INV x WB: 118.3 s,
-    # 61 GB resident; target 120 s (restructured).
+    # Anchor at these arguments, one node of 108 workers, INV·RETAIN·OWNER:
+    # 118.3 s, 61 GB resident; target 120 s (restructured).
     expect: '5139514524579690947'
     expect_args: ['-s', 'large', '-g', '96', '-l', '480000000', '-p', '384', '-b', '36']
     # -s large -g 96 track XSBench_intel: the pair runs the identical instance
@@ -3996,8 +4007,8 @@ apps:
     # counts is a coherence or placement defect; a difference between runs at
     # one geometry is a race.  `Lookups:` still echoes -l and must NOT equal
     # the checksum.
-    # Anchor at these arguments, one node of 108 workers, INV x WB: 98.5 s, 9
-    # GB resident; target 100 s (the base tier scales).
+    # Anchor at these arguments, one node of 108 workers, INV·RETAIN·OWNER: 98.5
+    # s, 9 GB resident; target 100 s (the base tier scales).
     expect: '6347150029948'
     expect_args: ['-s', 'large', '-g', '96', '-l', '176000000', '-t', '216', '-p', '32']
     # Strict sweep invariant: every logical count is literally node-invariant
@@ -4035,7 +4046,7 @@ apps:
     #    15% of a projected 32-node cell, inside the measured window.  It is
     #    independent over rows, so it is now produced by A = min(-t, U) tasks
     #    over disjoint row ranges -- each writing its OWN output block, so no
-    #    two tasks write one datablock and the phase is DB-WRF-valid too --
+    #    two tasks write one datablock and the phase is CDAG-valid too --
     #    and assembled by one join whose only
     #    serial term is a n_isotopes*U*4-byte copy (order 5 ms).  The join is
     #    what starts the kernel.  This is R9's explicit carve-out for XSBench

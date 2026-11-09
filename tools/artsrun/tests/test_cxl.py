@@ -22,7 +22,7 @@ from artsrun.run.slurm import job_script as slurm_job_script
 from artsrun.run.types import Cell
 from test_slurm import _cell
 
-CXL = ["arts_excl_purge_cxl_staged", "arts_excl_purge_cxl_direct"]
+CXL = ["arts_excl_purge_home_cxl_staged", "arts_excl_purge_home_cxl_direct"]
 WRAPPER = "/site/run.py"
 
 
@@ -46,7 +46,7 @@ REAL = dict(cxl_include_dir="/dev/inc", cxl_rapid_lib_dir="/dev/lib",
             cxl_library="/dev/libarts_cxl_lib.so", cxl_launch_wrapper=WRAPPER)
 
 
-def cxl_cell(nodes=2, cxl=CxlLibrary.REAL, key="arts_excl_purge_cxl_staged",
+def cxl_cell(nodes=2, cxl=CxlLibrary.REAL, key="arts_excl_purge_home_cxl_staged",
              region=None) -> Cell:
     if region is None and cxl is CxlLibrary.FAKE:
         region = 5_000_000_000 + (128 << 20)
@@ -89,12 +89,12 @@ def test_paths_must_be_absolute():
 def test_fake_off_the_local_launcher_runs_on_one_host_only():
     multi = profile(launcher="slurm", nodes=[1, 2], ports=[25000])   # loads: it is Dane's shape
     with pytest.raises(ValueError, match="nodes"):
-        multi.check_cxl(["arts_excl_purge_cxl_staged"])
+        multi.check_cxl(["arts_excl_purge_home_cxl_staged"])
     multi.check_cxl([])                                              # no CXL entry: fine
-    profile(launcher="slurm", nodes=[1], ports=[25000]).check_cxl(["arts_excl_purge_cxl_staged"])
-    profile(launcher="slurm", nodes=[1, 4], ports=[25000], **REAL).check_cxl(["arts_excl_purge_cxl_staged"])
+    profile(launcher="slurm", nodes=[1], ports=[25000]).check_cxl(["arts_excl_purge_home_cxl_staged"])
+    profile(launcher="slurm", nodes=[1, 4], ports=[25000], **REAL).check_cxl(["arts_excl_purge_home_cxl_staged"])
     # local ranks share one host at any count
-    profile(nodes=[1, 2]).check_cxl(["arts_excl_purge_cxl_staged"])
+    profile(nodes=[1, 2]).check_cxl(["arts_excl_purge_home_cxl_staged"])
 
 
 def test_real_under_local_is_allowed():
@@ -134,7 +134,7 @@ def test_a_campaign_entry_list_is_checked_against_the_profile():
     slurm = profile(launcher="slurm", nodes=[1, 2])
     with pytest.raises(ValueError, match="vendored fake"):
         _check(slurm)
-    _check(slurm, ["arts_excl_purge"])
+    _check(slurm, ["arts_excl_purge_home"])
     _check(profile(nodes=[1, 2]))
     _check(profile(launcher="slurm", nodes=[1, 2], **REAL))
 
@@ -244,10 +244,10 @@ def _campaign(tmp_path, prof):
     from artsrun.model.experiment import Experiment
 
     sel = Selection(profile="t", experiment="b", default_entries=[],
-                    entries=["arts_excl_purge", *CXL],
+                    entries=["arts_excl_purge_home", *CXL],
                     apps={"nqueens": ["base"]}, node_counts=[1])
     return Campaign(selection=sel, plane=load_plane(), catalog=load_catalog(),
-                    experiment=Experiment(entries=["arts_excl_purge"], name="b", apps={}),
+                    experiment=Experiment(entries=["arts_excl_purge_home"], name="b", apps={}),
                     profile=prof, build_dir=tmp_path, run_dir=tmp_path / "run")
 
 
@@ -366,9 +366,9 @@ def test_expansion_stamps_the_profile_library_on_cxl_cells_only(tmp_path):
     cache(tree, ARTS_CXL_DB_ARENA_SIZE_BYTES="268435456")
     region = 268435456 + (128 << 20)
     sel = Selection(profile="t", experiment="t", default_entries=[],
-                    entries=["arts_excl_purge", *CXL],
+                    entries=["arts_excl_purge_home", *CXL],
                     apps={"nqueens": [Version.BASE]}, node_counts=[1])
-    bs = Experiment(entries=["arts_excl_purge"], name="t", apps={"nqueens": ExperimentApp()})
+    bs = Experiment(entries=["arts_excl_purge_home"], name="t", apps={"nqueens": ExperimentApp()})
     for prof, want, size in ((profile(), CxlLibrary.FAKE, region),
                              (profile(**REAL), CxlLibrary.REAL, None)):
         cells, skipped = expand(sel, load_plane(), load_catalog(), bs, prof,
@@ -376,7 +376,7 @@ def test_expansion_stamps_the_profile_library_on_cxl_cells_only(tmp_path):
                                 build_dir=tree)
         assert not skipped
         assert {c.entry.key: (c.cxl, c.cxl_region_bytes) for c in cells} == {
-            "arts_excl_purge": (None, None), CXL[0]: (want, size),
+            "arts_excl_purge_home": (None, None), CXL[0]: (want, size),
             CXL[1]: (want, size)}
 
 
@@ -403,7 +403,7 @@ def test_only_a_real_cxl_cell_runs_inside_the_wrapper():
 
 
 def test_ssh_manifest_shows_the_wrapped_command(tmp_path):
-    cell = cxl_cell(key="arts_excl_purge_cxl_direct")
+    cell = cxl_cell(key="arts_excl_purge_home_cxl_direct")
     recorded = describe_command(cell, profile(launcher="ssh", nodes=[1, 2], **REAL),
                                 tmp_path / "cell.log")
     assert recorded == {

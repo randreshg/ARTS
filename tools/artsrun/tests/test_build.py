@@ -40,19 +40,19 @@ def _selection(entries: list[str], apps: dict) -> Selection:
 def test_an_arts_only_row_wants_only_its_arts_targets(tmp_path):
     plane, catalog = load_plane(), load_catalog()
     plan = plan_targets(
-        _selection(["arts_val_wb", "xsocr"], {PROBE: [Version.BASE]}),
-        plane, catalog, Experiment(entries=["arts_excl_purge"], name="t", apps={PROBE: ExperimentApp()}), tmp_path,
+        _selection(["arts_val_retain_owner", "xsocr"], {PROBE: [Version.BASE]}),
+        plane, catalog, Experiment(entries=["arts_excl_purge_home"], name="t", apps={PROBE: ExperimentApp()}), tmp_path,
     )
-    assert plan.targets == [f"{PROBE_BINARY}_arts_ocr_val_wb"]
+    assert plan.targets == [f"{PROBE_BINARY}_arts_ocr_val_retain_owner"]
 
 
 def test_a_cxl_entry_always_wants_its_target(tmp_path):
     # Every benchmark tree builds the CXL variants, so no launcher or tree
     # state drops them from the build.
     plane, catalog = load_plane(), load_catalog()
-    sel = _selection(["arts_excl_purge", "arts_excl_purge_cxl_staged"],
+    sel = _selection(["arts_excl_purge_home", "arts_excl_purge_home_cxl_staged"],
                      {"nqueens": [Version.BASE]})
-    bs = Experiment(entries=["arts_excl_purge"], name="t", apps={"nqueens": ExperimentApp()})
+    bs = Experiment(entries=["arts_excl_purge_home"], name="t", apps={"nqueens": ExperimentApp()})
     local = Profile(name="p", launcher=Launcher.LOCAL, nodes=[1],
                     workers=2, progress=1)
     remote = Profile(name="p", launcher=Launcher.SLURM, nodes=[1],
@@ -60,8 +60,8 @@ def test_a_cxl_entry_always_wants_its_target(tmp_path):
                      slurm=SlurmSettings())
     for prof in (local, remote, None):
         plan = plan_targets(sel, plane, catalog, bs, tmp_path, prof)
-        assert plan.targets == ["nqueens_arts_ocr_excl_purge",
-                                "nqueens_arts_ocr_excl_purge_cxl_staged"]
+        assert plan.targets == ["nqueens_arts_ocr_excl_purge_home",
+                                "nqueens_arts_ocr_excl_purge_home_cxl_staged"]
 
 
 def test_a_row_the_experiment_does_not_enable_wants_no_target(tmp_path):
@@ -70,8 +70,8 @@ def test_a_row_the_experiment_does_not_enable_wants_no_target(tmp_path):
     # reference binaries an ARTS-only program never has.
     plane, catalog = load_plane(), load_catalog()
     plan = plan_targets(
-        _selection(["arts_val_wb", "xsocr"], {PROBE: [Version.BASE]}),
-        plane, catalog, Experiment(entries=["arts_excl_purge"], name="t", apps={"fib_hpx": ExperimentApp()}),
+        _selection(["arts_val_retain_owner", "xsocr"], {PROBE: [Version.BASE]}),
+        plane, catalog, Experiment(entries=["arts_excl_purge_home"], name="t", apps={"fib_hpx": ExperimentApp()}),
         tmp_path,
     )
     assert plan.targets == []

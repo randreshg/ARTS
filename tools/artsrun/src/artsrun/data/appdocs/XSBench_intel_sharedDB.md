@@ -172,9 +172,9 @@ structure, and it is init: `A` `alignGridEdt` producers each hold RO on
 `nuclide_grids` and `uEnergy_grid` and RW on **its own** output block, and one
 `alignJoinEdt` holds RO on all `A` blocks plus RW on `xs_grid` and copies them
 into place. No two tasks ever write the same datablock, so this phase is
-DB-WRF-valid as well as OCR-legal, and the RO fan-in on
+CDAG-valid as well as OCR-legal, and the RO fan-in on
 the two grid DBs during init is the same shape as the kernel's.  (The row is
-outside DB-WRF overall on the unreleased hand-off of the rank data block that
+outside CDAG overall on the unreleased hand-off of the rank data block that
 the catalog records, not on this alignment fan-out.)
 
 `summaryEdt` additionally holds one RO dependence per chain scratch DB and per
@@ -353,7 +353,7 @@ curve **up**, and with the alignment fan-out in place there is no longer a
 serial init floor pushing it the other way: read 16n/32n with the residency
 artifact named.
 
-## Family shape (measured BEFORE this cycle's repairs — superseded, kept for shape only)
+## Validity shape (measured BEFORE this cycle's repairs — superseded, kept for shape only)
 
 The table below was taken on ferrari (15w+1p × 1/2/4/8 nodes) at
 `-s large -g 96 -l 50M -t 108 -p 32`, with the per-task pointer rebuild still
@@ -362,9 +362,9 @@ cell. Absolute seconds and efficiencies do **not** transfer; the shape does.
 
 | arm | 1n | 2n | 4n | 8n |
 |---|---|---|---|---|
-| val_wb | 119.7 | 66.5 | 35.2 | 17.5 |
-| inv_wb | 119.9 | 66.2 | 35.4 | 17.6 |
-| excl_retain | 119.4 | 66.2* | 35.2 | 17.6 |
+| val_retain_owner | 119.7 | 66.5 | 35.2 | 17.5 |
+| inv_retain_owner | 119.9 | 66.2 | 35.4 | 17.6 |
+| excl_retain_owner | 119.4 | 66.2* | 35.2 | 17.6 |
 
 Speedup 1.80 / 3.40 / 6.84 at 2/4/8 nodes, arms indistinguishable within 0.5%
 — the decomposition shares nothing across instances, so no coherence arm has
@@ -376,7 +376,7 @@ a larger share of a shorter cell — the floor the alignment fan-out removes,
 which is a further reason the old trend does not carry over (a fresh campaign
 sweep takes it) — and it is why
 any quoted trend must name its `-l`. A Dane-geometry single node (108w+4p) ran the same program in 23.0 s.
-(*) The excl_retain 2-node cell reproducibly measured ~122 s with a normal
+(*) The excl_retain_owner 2-node cell reproducibly measured ~122 s with a normal
 kernel (122.3/122.4 across two runs) — ~56 s outside the kernel, an
 arm-specific non-compute stall this configuration alone showed; queued for a
 runtime-side look, and worth re-checking on the repaired binary.

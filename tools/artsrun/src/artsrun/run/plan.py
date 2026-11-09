@@ -90,8 +90,8 @@ def _ineligible(
         return "application uses OCR extensions this reference does not implement"
     if entry.is_reference and app.arts_only:
         return "probe is built for the ARTS variants alone"
-    if entry.model == "DB_WRF" and app.unordered_writes:
-        return f"program is outside DB-WRF: {app.unordered_writes}"
+    if entry.model == "CDAG" and app.unordered_writes:
+        return f"program is outside CDAG: {app.unordered_writes}"
     if profile is not None:
         why = reference_ineligible(entry, profile)
         if why:

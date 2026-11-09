@@ -266,5 +266,5 @@ payload are fixed by `-s`/`-n`/`-p`/`-w` and never move with `-l`.
   and a global batch barrier make every added node cost time; this row keeps
   the same per-lookup coherence traffic — ~171 fine-grained CONST acquires,
   a `1 − 1/ranks` share of them remote — and removes the producer and the
-  global barrier, so what it measures is the coherence families' behaviour
+  global barrier, so what it measures is the validities' behaviour
   under that traffic rather than the funnel in front of it.

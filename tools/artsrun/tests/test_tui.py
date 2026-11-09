@@ -68,7 +68,7 @@ def test_one_control_clears_then_restores_the_whole_plane():
         return first, cleared, restored
 
     first, cleared, restored = drive(check)
-    # the experiment leaves the CXL, DB-WRF and HPX entries out; the
+    # the experiment leaves the CXL, CDAG and HPX entries out; the
     # control's second press selects the whole plane
     assert first == 10
     assert cleared == 0
@@ -136,8 +136,8 @@ def test_a_rewrite_line_carries_the_rewrite_s_own_verdict():
         name = next(l for l in labels if f"]{row.name}[/]" in str(l.content))
         sub = next(l for l in labels if f"└ {rewrite.name}" in str(l.content))
         fills = await _rendered_fills(app, pilot)
-        return ("wrf-eligible" in name.classes, name.tooltip,
-                "wrf-eligible" in sub.classes, sub.tooltip,
+        return ("cdag-eligible" in name.classes, name.tooltip,
+                "cdag-eligible" in sub.classes, sub.tooltip,
                 fills[row.name], fills[f"└ {rewrite.name}"])
 
     name_in, name_tip, sub_in, sub_tip, name_fill, sub_fill = drive(
@@ -147,7 +147,7 @@ def test_a_rewrite_line_carries_the_rewrite_s_own_verdict():
     outside = next(x for x, inside in ((row, name_in), (rewrite, sub_in))
                    if not inside)
     tip = name_tip if outside is row else sub_tip
-    assert tip == f"program is outside DB-WRF: {outside.unordered_writes}"
+    assert tip == f"program is outside CDAG: {outside.unordered_writes}"
     # What reaches the screen: the two verdicts differ, so the two lines are
     # drawn in different colours.  A name is an action link, whose text takes
     # the link colour rather than the widget's — a stylesheet that sets only
@@ -182,7 +182,7 @@ async def _rendered_fills(app, pilot) -> dict:
 
 
 def test_an_eligible_name_is_drawn_in_the_eligible_colour():
-    # The name of a row inside DB-WRF must reach the screen in the same
+    # The name of a row inside CDAG must reach the screen in the same
     # colour as an eligible rewrite line, and a row outside it in another.
     from artsrun.model.catalog import Kind, load_catalog
     catalog = load_catalog()
@@ -309,15 +309,15 @@ def test_asking_to_run_an_empty_selection_warns_once():
     assert "an application" in calls[0][0]
 
 
-def test_the_excl_purge_cell_shows_each_arts_entrys_own_label():
+def test_the_excl_purge_home_cell_shows_each_arts_entrys_own_label():
     async def check(app, pilot):
         plane = app.query_one(PlanePanel)
         return {t.ident: t.label.plain for t in plane.toggles}
 
     labels = drive(check)
-    assert labels["arts_excl_purge"] == "ARTS"
-    assert labels["arts_excl_purge_cxl_staged"] == "ARTS-CXL-STAGED"
-    assert labels["arts_excl_purge_cxl_direct"] == "ARTS-CXL-DIRECT"
+    assert labels["arts_excl_purge_home"] == "ARTS"
+    assert labels["arts_excl_purge_home_cxl_staged"] == "ARTS-CXL-STAGED"
+    assert labels["arts_excl_purge_home_cxl_direct"] == "ARTS-CXL-DIRECT"
     assert labels["xsocr"] == "XSOCR"
 
 
@@ -327,7 +327,7 @@ def test_a_cell_past_the_usual_pair_stacks_its_toggles_and_keeps_its_column():
     async def check(app, pilot):
         plane = app.query_one(PlanePanel)
         owner = next(c for c in plane.query(".plane-cell")
-                     if any(t.ident == "arts_excl_purge_cxl_staged"
+                     if any(t.ident == "arts_excl_purge_home_cxl_staged"
                             for t in c.query(Toggle)))
         rows = list(owner.query(".plane-cell-row"))
         widths = {c.size.width for c in plane.query(".plane-cell")}
@@ -951,10 +951,10 @@ def test_the_node_row_is_as_tall_as_the_rows_around_it():
     assert node_height == ordinary
 
 
-def test_the_write_header_spans_its_two_release_columns():
+def test_the_retention_header_spans_its_two_read_source_columns():
     async def check(app, pilot):
         plane = app.query_one(PlanePanel)
-        spans = [w.size.width for w in plane.query(".plane-write-head")]
+        spans = [w.size.width for w in plane.query(".plane-retention-head")]
         subs = [c.size.width for c in plane.query(".plane-col-head")]
         return spans, subs
 
@@ -1435,12 +1435,12 @@ def test_the_experiment_s_entries_start_checked_and_the_profile_holds_none():
 
 def test_any_entry_may_be_turned_on_for_one_run():
     # The experiment's list is the default check-set, not a limit: a CXL entry
-    # and the DB-WRF entry are toggled on here and reach the selection, while
+    # and the CDAG entry are toggled on here and reach the selection, while
     # the saved default is recorded beside them.
     async def check(app, pilot):
         plane = app.query_one("#plane", PlanePanel)
         for t in plane.toggles:
-            if t.ident in ("arts_excl_purge_cxl_staged", "arts_wrf_flush"):
+            if t.ident in ("arts_excl_purge_home_cxl_staged", "arts_cdag_flush"):
                 t.value = True
         await pilot.pause()
         selection = app.build_selection()
@@ -1448,8 +1448,8 @@ def test_any_entry_may_be_turned_on_for_one_run():
 
     entries, defaults, name = drive(check)
     assert name == "paper-main"
-    assert "arts_excl_purge_cxl_staged" in entries
-    assert "arts_wrf_flush" in entries
+    assert "arts_excl_purge_home_cxl_staged" in entries
+    assert "arts_cdag_flush" in entries
     assert len(entries) == 12
     from artsrun import store
     assert defaults == store.load_experiment("paper-main").entries
