@@ -374,6 +374,13 @@ sends in flight; a peer learns of the end from the message or from the
 closed connections.  The status of a rank is the highest of the end's own
 status and the one ``arts_app_exit_status`` returns.
 
+A call to ``abort`` (a failed ``assert``, a C library's own check, or an
+allocator error, see :ref:`allocator_errors`) and a stack overflow take no
+end: the process dies by the signal's default action, with status 134
+(``SIGABRT``) or 139 (``SIGSEGV``, since the fault handler has no stack of its
+own to run on), writes no counter files and sends no shutdown message; its
+peers learn of the end from the closed connections.
+
 A call to ``arts_shutdown`` does not return to its caller, and neither does
 a call made after another thread took the end: the code after the call does
 not run, and the calling EDT does not complete (its data blocks are not
