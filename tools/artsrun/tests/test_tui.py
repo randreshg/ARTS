@@ -440,7 +440,6 @@ def test_a_machine_with_no_profiles_can_bootstrap_one():
     )
     assert profile.launcher is Launcher.LOCAL
     assert profile.nodes == [1]
-    assert not hasattr(profile, "port_count")
     assert profile.ports is None  # local's spawner claims its own block
 
 

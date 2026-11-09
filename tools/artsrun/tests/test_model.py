@@ -766,10 +766,9 @@ def test_an_empty_experiment_defers_to_the_catalog_defaults():
 
 
 # --- ports and hosts ------------------------------------------------------
-def test_a_local_profile_names_no_port_and_no_connection_count():
+def test_a_local_profile_names_no_port():
     profile = Profile.model_validate(_local())
     assert profile.ports is None
-    assert not hasattr(profile, "port_count")
 
 
 def test_a_remote_profile_names_one_port():
@@ -783,13 +782,6 @@ def test_a_port_list_is_refused():
     with pytest.raises(ValidationError):
         Profile.model_validate(_local(
             launcher="slurm", ports=[25000], slurm={},
-        ))
-
-
-def test_a_connection_count_is_refused_as_an_unknown_key():
-    with pytest.raises(ValidationError, match="extra_forbidden|Extra inputs"):
-        Profile.model_validate(_local(
-            launcher="slurm", ports=25000, port_count=1, slurm={},
         ))
 
 

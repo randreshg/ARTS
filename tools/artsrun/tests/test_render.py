@@ -34,14 +34,12 @@ def test_arts_config_omits_ports_for_a_local_run():
     profile = load_profile("fixture-local")
     text = render_arts(profile, 4)
     assert "ports" not in text
-    assert "port_count" not in text
 
 
 def test_arts_config_names_ports_for_a_cluster_run():
     profile = load_profile("junction")
     text = render_arts(profile, 8)
     assert "ports=25000" in text
-    assert "port_count" not in text
     assert "node_count=8" in text
     assert "provider=verbs" in text
 

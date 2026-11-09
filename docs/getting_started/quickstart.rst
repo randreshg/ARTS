@@ -181,10 +181,10 @@ For SSH-based multi-node runs, list nodes in ``arts.cfg``:
    ports=25000
 
 Then launch normally — ARTS SSHs into each node automatically. ``ports`` is
-required here: every rank resolves its peers' ports from its own copy of the
-config, so nothing but the config can supply them. Pick a base below the
-kernel ephemeral port range (32768–60999); a base inside it can randomly
-collide with outgoing connections' source ports.
+required here and names one port: every rank listens on it and finds its
+peers' port in its own copy of the config, so nothing but the config can
+supply it. Pick a port below the kernel ephemeral port range (32768–60999); a
+port inside it can randomly collide with outgoing connections' source ports.
 
 A ``launcher=local`` run — several ranks on one machine, as the tests and the
 benchmark harness use — names no ports at all: the ranks share a machine and so
