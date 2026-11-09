@@ -18,8 +18,9 @@
  * The oracle is an exact sum: every turn adds exactly one, so a hand-back
  * that lets the next holder start from a stale copy shows as a short count,
  * and a commit that arrives after the right has moved on is caught by the
- * runtime itself.  Policy-independent by construction; not under the DB-WRF
- * memory model, whose contract leaves unordered write-write turns undefined.
+ * runtime itself.  Configuration-independent by construction; not under the
+ * CDAG memory model, whose contract leaves unordered write-write turns
+ * undefined.
  */
 #include <inttypes.h>
 #include <stdint.h>

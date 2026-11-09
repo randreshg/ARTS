@@ -2,7 +2,7 @@
  *
  * excl_purge_grant_d6_d7 — EXCL-config-specific runtime exercise of the home
  * arbiter's D6 (rw→rw chain) and D7 (new RO grants while RW waiting) decision
- * paths on either release policy: excl_compute_next (coherence/excl/arbiters.c)
+ * paths on either retention: excl_compute_next (coherence/excl/arbiters.c)
  * under PURGE, lock_owner_compute_next (coherence/excl/retain.c) under RETAIN,
  * each applied by its arm's home grant path.  The pure truth table is pinned
  * for PURGE only, by the unit test excl_compute_next; this drives the same

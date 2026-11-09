@@ -32,7 +32,7 @@
  * One block per member: no two write acquisitions of a block ever overlap, so
  * the tally is exact under every memory model.  A shared counter would make
  * the oracle depend on the runtime ordering the members' writes, which the
- * DB-WRF model leaves to the program.
+ * CDAG model leaves to the program.
  *
  * Single-node: all members local (pure INCR/DECR balance).  Multinode: members
  * on remote ranks exercise the proxy-LATCH forward path.

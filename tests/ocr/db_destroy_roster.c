@@ -11,7 +11,7 @@
  * else, then destroyed at the home.  Each writer rank then creates the label's
  * next generation itself, writes it, and the home reads it back and destroys
  * it.  A writer's cache the destroy did not reach would outlive the block.
- * Where it kept a right to the block (the write right; under EXCL x RETAIN
+ * Where it kept a right to the block (the write right; under EXCL·RETAIN
  * also its resident bytes or a retained read grant), that rank's create waits
  * behind it forever, and the ctest timeout is the verdict.  Where it kept no
  * such right, the create takes it over as the next generation's first image,

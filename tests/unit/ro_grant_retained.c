@@ -1,9 +1,9 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * A read grant OUTLIVES its readers under the retaining release policy.
+ * A read grant OUTLIVES its readers under RETAIN.
  *
- * This is the read-side twin of grant_sticky, and it is the property this
- * policy is named for: once a rank has been served a copy, it keeps both the
+ * This is the read-side twin of grant_sticky, and it is the property RETAIN
+ * is named for: once a rank has been served a copy, it keeps both the
  * bytes and the permission until another node asks for them back — never
  * merely because its own readers finished. An implementation that gave the
  * grant back at the reader-count zero edge computes exactly the same answers
@@ -30,7 +30,7 @@
 #include <stdio.h>
 
 #if !defined(ARTS_VALIDITY_EXCL) || !defined(ARTS_RETENTION_RETAIN)
-#error "only the exclusion arm's retaining policy keeps a read grant"
+#error "only EXCL·RETAIN keeps a read grant"
 #endif
 
 #include "arts/coherence/excl/types.h"
@@ -130,8 +130,8 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   /* Readers run one after another on rank 1 — a rank that is NOT the owner, so
    * each acquire is answered by a real home-counted grant.  Chaining them
    * means every acquire after the first meets a grant this rank already holds,
-   * and the gap between them is exactly the reader-count zero edge at which a
-   * purging policy would hand the grant back. */
+   * and the gap between them is exactly the reader-count zero edge at which
+   * PURGE would hand the grant back. */
   arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
   gh.auto_destroy = true;
   arts_guid_t groups[READERS];

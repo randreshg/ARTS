@@ -67,20 +67,20 @@ static void fail(const char *what) {
   arts_shutdown();
 }
 
-void wb_shutdown_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
-                     arts_edt_dep_t depv[]) {
+void shutdown_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                  arts_edt_dep_t depv[]) {
   (void)paramc;
   (void)paramv;
   (void)depc;
   (void)depv;
-  arts_printf("PASS db_no_acquire_wb_first_writer\n");
+  arts_printf("PASS db_no_acquire_remote_first_writer\n");
   arts_shutdown();
 }
 
 /* paramv = { done event }.  depv[0] = the block, RO — unordered against the
  * write, so only the POINTER is asserted. */
-void wb_unordered_reader_edt(uint32_t paramc, const uint64_t *paramv,
-                             uint32_t depc, arts_edt_dep_t depv[]) {
+void unordered_reader_edt(uint32_t paramc, const uint64_t *paramv,
+                          uint32_t depc, arts_edt_dep_t depv[]) {
   (void)paramc;
   (void)depc;
   arts_guid_t done = (arts_guid_t)paramv[0];
@@ -102,8 +102,8 @@ void wb_unordered_reader_edt(uint32_t paramc, const uint64_t *paramv,
 /* paramv = { done event }.  depv[0] = the writer's completion event,
  * depv[1] = the block, RO — ordered after the write, so the VALUE is
  * asserted. */
-void wb_ordered_reader_edt(uint32_t paramc, const uint64_t *paramv,
-                           uint32_t depc, arts_edt_dep_t depv[]) {
+void ordered_reader_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                        arts_edt_dep_t depv[]) {
   (void)paramc;
   (void)depc;
   arts_guid_t done = (arts_guid_t)paramv[0];
@@ -129,8 +129,8 @@ void wb_ordered_reader_edt(uint32_t paramc, const uint64_t *paramv,
 
 /* paramv = { db, done event, home rank }.  depv[0] = the block, RW.  This is
  * the block's first user. */
-void wb_writer_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
-                   arts_edt_dep_t depv[]) {
+void first_writer_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                      arts_edt_dep_t depv[]) {
   (void)paramc;
   (void)depc;
   arts_guid_t db = (arts_guid_t)paramv[0];
@@ -150,7 +150,7 @@ void wb_writer_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_edt_hint_t uh = ARTS_EDT_HINT_DEFAULTS;
   uh.rank = (home + 2u) % n;
   uint64_t upv[1] = {(uint64_t)done};
-  arts_guid_t u = arts_edt_create(wb_unordered_reader_edt, 1, upv, 1, &uh);
+  arts_guid_t u = arts_edt_create(unordered_reader_edt, 1, upv, 1, &uh);
   arts_add_dependence(db, u, 0, DB_MODE_RO);
 
   _Atomic(uint64_t) *p = (_Atomic(uint64_t) *)depv[0].ptr;
@@ -184,7 +184,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_guid_t done = arts_event_create(&ARTS_EVENT_HINT_LATCH(RACERS + 2u));
   arts_edt_hint_t sh = ARTS_EDT_HINT_DEFAULTS;
   sh.rank = home;
-  arts_guid_t s = arts_edt_create(wb_shutdown_edt, 0, NULL, 1, &sh);
+  arts_guid_t s = arts_edt_create(shutdown_edt, 0, NULL, 1, &sh);
   arts_add_dependence(done, s, 0, DB_MODE_NULL);
 
   arts_guid_t written = arts_event_create(&ARTS_EVENT_HINT_LATCH(1));
@@ -192,13 +192,13 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   wh.rank = (home + 1u) % n;
   wh.completion_event = written;
   uint64_t wpv[3] = {(uint64_t)db, (uint64_t)done, (uint64_t)home};
-  arts_guid_t w = arts_edt_create(wb_writer_edt, 3, wpv, 1, &wh);
+  arts_guid_t w = arts_edt_create(first_writer_edt, 3, wpv, 1, &wh);
   arts_add_dependence(db, w, 0, DB_MODE_RW);
 
   arts_edt_hint_t vh = ARTS_EDT_HINT_DEFAULTS;
   vh.rank = (home + 2u) % n;
   uint64_t vpv[1] = {(uint64_t)done};
-  arts_guid_t v = arts_edt_create(wb_ordered_reader_edt, 1, vpv, 2, &vh);
+  arts_guid_t v = arts_edt_create(ordered_reader_edt, 1, vpv, 2, &vh);
   arts_add_dependence(written, v, 0, DB_MODE_NULL);
   arts_add_dependence(db, v, 1, DB_MODE_RO);
 
@@ -213,7 +213,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     rh.rank = (n > 2u) ? ((home + 2u + (i % (n - 2u))) % n)
                        : ((home + 1u) % n);
     uint64_t rpv[1] = {(uint64_t)done};
-    arts_guid_t r = arts_edt_create(wb_unordered_reader_edt, 1, rpv, 1, &rh);
+    arts_guid_t r = arts_edt_create(unordered_reader_edt, 1, rpv, 1, &rh);
     arts_add_dependence(db, r, 0, DB_MODE_RO);
   }
 }

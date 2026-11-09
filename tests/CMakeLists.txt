@@ -45,8 +45,8 @@ add_compile_options(-UNDEBUG)
 add_compile_options(${ARTS_WERROR_IMPLICIT_SEQ_CST})
 
 # The reference tree: the protocol cell of the build defaults, with payloads in
-# rank memory.  A test whose outcome no coherence protocol, write or release
-# policy or payload store can change is built and registered there only;
+# rank memory.  A test whose outcome no validity, retention, read source or
+# payload store can change is built and registered there only;
 # every other tree runs only what its cell can change.  The cell alone decides
 # it, so a sanitizer, injection or quarantine tree of this cell is a reference
 # tree too.  CACHE INTERNAL, like the helpers' settings below: the examples
@@ -86,13 +86,13 @@ set(TEST_PROGRAMS
     edt_dep_slot_handoff
     db_null_control
     db_no_acquire_lazy
-    db_no_acquire_wb_first_writer
+    db_no_acquire_remote_first_writer
     db_create_after_dep_asked
     db_create_after_first_touch
     db_first_touch_matrix
 )
 
-# The PURGE release policy's grant word, which only a VAL/INV x PURGE build
+# The PURGE retention's grant word, which only a {VAL,INV}·PURGE build
 # has (EXCL arbitrates a word of its own).
 if(ARTS_RETENTION STREQUAL "PURGE" AND NOT ARTS_VALIDITY STREQUAL "EXCL")
     list(APPEND TEST_PROGRAMS grant_purge_word_model)
@@ -173,7 +173,7 @@ if(ARTS_LOG_LEVEL GREATER_EQUAL 3)
     list(APPEND TEST_PROGRAMS quiescent_shutdown_no_residue)
 endif()
 
-# FLUSH is correct only for DB-WRF programs, so a program with a block whose
+# FLUSH is correct only for CDAG programs, so a program with a block whose
 # write acquisitions no happens-before orders is neither built nor registered
 # in the FLUSH tree: those of TEST_PROGRAMS by this list, the rest by the
 # guard around their own add_arts_test.
@@ -1031,19 +1031,19 @@ endfunction()
 
 # --- Single-node tests ---
 
-# Its subtests record into one block with no order among them, which DB-WRF
+# Its subtests record into one block with no order among them, which CDAG
 # does not admit.
 if(NOT ARTS_VALIDITY STREQUAL "FLUSH")
 register_single_node_test(edt_create_basic)
 endif()
 
 register_single_node_test(db_no_acquire_lazy TIMEOUT 30)
-register_single_node_test(db_no_acquire_wb_first_writer TIMEOUT 30)
-set_tests_properties(db_no_acquire_wb_first_writer PROPERTIES
+register_single_node_test(db_no_acquire_remote_first_writer TIMEOUT 30)
+set_tests_properties(db_no_acquire_remote_first_writer PROPERTIES
     FAIL_REGULAR_EXPRESSION "FAIL")
 register_single_node_test(db_null_control TIMEOUT 15)
 
-# Its consumers record into one block with no order among them, which DB-WRF
+# Its consumers record into one block with no order among them, which CDAG
 # does not admit.
 if(NOT ARTS_VALIDITY STREQUAL "FLUSH")
 register_single_node_test(event_channel_fifo TIMEOUT 60)
@@ -1321,7 +1321,7 @@ unset(_dir)
 endif()
 
 # --- Pure unit tests (no ARTS runtime) ---
-# Exhaustive model check of the PURGE release policy's grant word decider
+# Exhaustive model check of the PURGE retention's grant word decider
 # (coherence/grant_purge.c).
 if(TARGET grant_purge_word_model)
 register_pure_unit_test(grant_purge_word_model TIMEOUT 30)
@@ -1331,8 +1331,8 @@ endif()
 # The grant plane's home logic driven through the real code: each test TU
 # #includes the coherence sources it exercises and stubs their other callees,
 # so it links no runtime.  Each registers in the cells whose compiled logic
-# it exercises: with the wire stubbed, a release policy's half compiles the
-# same logic in every VAL or INV tree of that policy.
+# it exercises: with the wire stubbed, a retention's half compiles the
+# same logic in every VAL or INV tree of that retention.
 function(arts_grant_home_unit name timeout)
     add_executable(${name} unit/${name}.c)
     target_include_directories(${name} PRIVATE
@@ -1357,17 +1357,17 @@ if(ARTS_VALIDITY STREQUAL "VAL" AND ARTS_READ_SOURCE STREQUAL "HOME" AND
     arts_grant_home_unit(grant_purge_hub_stress 120)
 endif()
 # The RETAIN home's baton as a claim counter against concurrent requests and
-# a stalled producer, in both write policies' CONFIRM shapes; and the
-# write-back owner's absorption of an INVALIDATE that overtakes its
-# CONFIRM_ACK.  The reference tree is a RETAIN x WB cell.
+# a stalled producer, in both read sources' CONFIRM shapes; and, under
+# OWNER, the owner's absorption of an INVALIDATE that overtakes its
+# CONFIRM_ACK.  The reference tree is a RETAIN·OWNER cell.
 if(ARTS_TEST_REFERENCE_TREE)
     arts_grant_home_unit(grant_retain_baton 120)
-    arts_grant_home_unit(grant_wb_invalidate_overtakes_ack 30)
+    arts_grant_home_unit(grant_owner_invalidate_overtakes_ack 30)
 endif()
 # A holder the home revokes in favour of itself ships the grant to itself,
 # and the grant body runs on its own descriptor with the bytes in place.  The
-# commit it runs is the write policy's and the drains in it the protocol's
-# (and VAL write-back keeps the ledger the ship credits), so it registers in
+# commit it runs is the read source's and the drains in it the protocol's
+# (and VAL·OWNER keeps the ledger the ship credits), so it registers in
 # every RETAIN tree of the migrating grant.
 if((ARTS_VALIDITY STREQUAL "VAL" OR ARTS_VALIDITY STREQUAL "INV")
    AND ARTS_RETENTION STREQUAL "RETAIN")
@@ -1378,14 +1378,14 @@ endif()
 # it: the answer (acting on the token it echoes), a size round or dismiss, a
 # create's claim, the teardown sweep.  Every VAL and INV tree compiles that
 # accounting differently: the two arms keep the read axis in different words,
-# the write policies close the write axis at different sites (the grant, or
+# the read sources close the write axis at different sites (the grant, or
 # the CONFIRM_ACK), PURGE adds the home's self-served front, and only the
 # publishing cells have a flight.
 if(ARTS_VALIDITY STREQUAL "VAL" OR ARTS_VALIDITY STREQUAL "INV")
     arts_grant_home_unit(token_axis_pairing_valinv 30)
 endif()
 # The same accounting on EXCL, whose two axes ride the cache word: the
-# release policies close them at different sites (PURGE's grant, RETAIN's
+# retentions close them at different sites (PURGE's grant, RETAIN's
 # DELIVER and the resident owner's grant to itself), the CXL store changes
 # the grant's commit (no one-sided answer; the fetch before the CAS), and only
 # RETAIN's home holds a count of its own, while a write request it took in
@@ -1403,8 +1403,8 @@ endif()
 # a retired home takes only the round's counting step.  The invalidation round
 # is INV's, in every INV tree; the baton's tenure exists where the home
 # revokes the write right, the RETAIN trees of VAL and INV: a tenure is
-# carried to its next transfer by the next INVALIDATE or, under write-back, by
-# the CONFIRM_ACK's piggyback, and both write policies end it at the put-down.
+# carried to its next transfer by the next INVALIDATE or, under OWNER, by
+# the CONFIRM_ACK's piggyback, and both read sources end it at the put-down.
 if(ARTS_VALIDITY STREQUAL "INV" OR
    (ARTS_VALIDITY STREQUAL "VAL" AND ARTS_RETENTION STREQUAL "RETAIN"))
     arts_grant_home_unit(token_home_rounds_valinv 30)
@@ -1685,7 +1685,7 @@ set_tests_properties(regpool_entry_word PROPERTIES
     PASS_REGULAR_EXPRESSION "PASS regpool_entry_word")
 # The declared-arrival gate's one step, from every boundary word: the word it
 # leaves and the teardown edge (a duplicate MARK reports no edge).
-# One header serves VAL, INV and EXCL x RETAIN alike.  Header-only.
+# One header serves VAL, INV and EXCL·RETAIN alike.  Header-only.
 add_executable(cover_gate_step unit/cover_gate_step.c)
 target_include_directories(cover_gate_step PRIVATE
     ${ARTS_PUBLIC_INCLUDE_DIR} ${ARTS_INTERNAL_INCLUDE_DIR}
@@ -2089,10 +2089,10 @@ arts_downgrade_test(db_downgrade_noop db_downgrade_noop SINGLE
 
 # Locations no concurrent writer writes keep the downgrader's view.  A writer
 # on D's rank reaches D's storage on every arm.  A remote writer's bytes land
-# in D's storage (D on the home) only under write-through and FLUSH; under
-# write-back they stay with the writer, and under exclusion the writer is
+# in D's storage (D on the home) only under {VAL,INV}·HOME and FLUSH; under
+# {VAL,INV}·OWNER they stay with the writer, and under EXCL the writer is
 # admitted only after D's read hold, so there D reads for a bounded time.  The
-# serve-demote form is exclusion with a retained right.
+# serve-demote form is EXCL·RETAIN.
 add_arts_test(db_downgrade_disjoint)
 arts_downgrade_test(db_downgrade_disjoint_local db_downgrade_disjoint
                     ARGS local wait VARIANTS 2n_9w_1p 2n_8w_2p FUZZ)
@@ -2109,7 +2109,7 @@ if(_downgrade_excl AND ARTS_RETENTION STREQUAL "RETAIN")
 endif()
 
 # Two writers of one rank share the turn and one of them downgrades: two
-# overlapping write acquisitions, outside DB-WRF.
+# overlapping write acquisitions, outside CDAG.
 if(NOT ARTS_VALIDITY STREQUAL "FLUSH")
     add_arts_test(db_downgrade_cowriter)
     if(_downgrade_excl)
@@ -2154,7 +2154,7 @@ unset(_downgrade_home)
 # invalidation round; where the tree captures the counters, the record holds
 # no round over the 1 + 32 x 8 write acquisitions.  No round also means no
 # publish flight: a one-rank flight's publish runs the home's round inline.
-# The writers' acquisitions overlap, which DB-WRF forbids; the round is INV's,
+# The writers' acquisitions overlap, which CDAG forbids; the round is INV's,
 # so the INV trees register it.
 if(ARTS_VALIDITY STREQUAL "INV")
     add_arts_test(db_shared_turn_release)
@@ -2244,10 +2244,10 @@ register_multinode_test(db_no_acquire_lazy TIMEOUT 60 VARIANTS 2n_9w_1p 4n_4w_1p
 # minted at the stamp the writer's own release uses (which makes the real
 # bytes retreat as stale).  The racing reads need a rank that is neither the
 # home nor the writer, which two ranks do not have.
-register_multinode_test(db_no_acquire_wb_first_writer TIMEOUT 60
+register_multinode_test(db_no_acquire_remote_first_writer TIMEOUT 60
                         VARIANTS 2n_9w_1p 4n_4w_1p)
 foreach(_v 2n_9w_1p 4n_4w_1p)
-    arts_test_properties(db_no_acquire_wb_first_writer_${_v} PROPERTIES
+    arts_test_properties(db_no_acquire_remote_first_writer_${_v} PROPERTIES
         FAIL_REGULAR_EXPRESSION "FAIL")
 endforeach()
 # The unordered reader's whole point is a race, so where the injection hooks
@@ -2258,9 +2258,9 @@ endforeach()
 # cannot be reached at all.
 if(ARTS_DEBUG_INJECTION)
     arts_test_cfg(_cfg 4n_4w_1p)
-    arts_add_multinode_test(db_no_acquire_wb_first_writer_4n_4w_1p_fuzz
-                            COMMAND db_no_acquire_wb_first_writer)
-    arts_test_properties(db_no_acquire_wb_first_writer_4n_4w_1p_fuzz PROPERTIES
+    arts_add_multinode_test(db_no_acquire_remote_first_writer_4n_4w_1p_fuzz
+                            COMMAND db_no_acquire_remote_first_writer)
+    arts_test_properties(db_no_acquire_remote_first_writer_4n_4w_1p_fuzz PROPERTIES
         LABELS "multinode"
         TIMEOUT 120
         RESOURCE_LOCK "arts_runtime"
@@ -2274,7 +2274,7 @@ endif()
 # snapshot), so this needs a rank that is not the home; the two progress
 # threads let the home take the create and the request in either order.  The
 # create's hold is a write acquisition the program orders against neither the
-# early RW dependence nor the ordered writer, so the program is outside DB-WRF
+# early RW dependence nor the ordered writer, so the program is outside CDAG
 # and the FLUSH tree does not register it.
 if(NOT ARTS_VALIDITY STREQUAL "FLUSH")
     register_multinode_test(db_create_after_dep_asked TIMEOUT 60
@@ -2312,12 +2312,12 @@ register_multinode_test(route_table_remote_guid VARIANTS 4n_4w_1p)
 register_multinode_test(grant_purge_no_acquire_creator TIMEOUT 60
                         VARIANTS 4n_4w_1p)
 # Write-right churn with home-local turns overlapping remote ones.  It asserts
-# an exact sum, which every release policy must compute, so it runs at every
-# release policy.  On the arms that share the grant plane (VAL, INV), whose
+# an exact sum, which every retention must compute, so it runs at every
+# retention.  On the arms that share the grant plane (VAL, INV), whose
 # decision points carry the scheduler fuzz, the shape with two progress
 # threads also runs under it where the injection hooks are compiled.
 # These assert what the runtime's exclusive-RW serialization guarantees; under
-# DB-WRF that ordering is the program's, and these programs deliberately omit
+# CDAG that ordering is the program's, and these programs deliberately omit
 # it.
 if(NOT ARTS_VALIDITY STREQUAL "FLUSH")
 register_single_node_test(grant_purge_churn TIMEOUT 60)
@@ -2339,7 +2339,7 @@ endif()
 # previous release is settling. Atomic increments cover concurrent same-rank
 # RW holders.
 # These assert what the runtime's exclusive-RW serialization guarantees; under
-# DB-WRF that ordering is the program's, and these programs deliberately omit
+# CDAG that ordering is the program's, and these programs deliberately omit
 # it.
 if(NOT ARTS_VALIDITY STREQUAL "FLUSH")
 register_single_node_test(grant_purge_handback_regrant TIMEOUT 60)
@@ -2372,17 +2372,16 @@ endforeach()
 # The silent-wrong-answer gate for retention: an owner writes AFTER lending a
 # read copy, and the lender reads again strictly after that write.  A rank that
 # keeps a stale copy answers the old value — no crash, no hang.  Portable, so
-# it guards every arm, not just the retaining one.  It uses ranks 0 and 1
+# it guards every configuration, not just EXCL·RETAIN.  It uses ranks 0 and 1
 # only; the two progress threads reorder the hand-over's messages.
 add_arts_test(coherence_owner_write_after_lend)
 register_multinode_test(coherence_owner_write_after_lend TIMEOUT 30
                         VARIANTS 2n_9w_1p 2n_8w_2p)
 
 # The read-side twin of grant_sticky: a read grant must outlive its readers
-# under the retaining policy.  No value oracle can see this — a purging
-# implementation computes identical answers and merely re-fetches — so it needs
-# an assertion of its own, and only the exclusion arm's retaining policy keeps
-# read grants.
+# under RETAIN.  No value oracle can see this — an implementation that purges
+# computes identical answers and merely re-fetches — so it needs an assertion
+# of its own, and only EXCL·RETAIN keeps read grants.
 if(ARTS_VALIDITY STREQUAL "EXCL" AND ARTS_RETENTION STREQUAL "RETAIN")
     add_arts_test(ro_grant_retained)
     register_multinode_test(ro_grant_retained TIMEOUT 30 VARIANTS 2n_9w_1p)
@@ -2396,7 +2395,7 @@ endif()
 # owner; 4n_4w_1p puts another non-home rank there.  Portable OCR shape, no
 # timing knob (the holder's 3 ms hold only has to outlast one request hop).
 # Its two writers are ordered only by the runtime's exclusive RW turn, never
-# by happens-before, so the program is outside DB-WRF and the FLUSH tree
+# by happens-before, so the program is outside CDAG and the FLUSH tree
 # does not register it.
 if(NOT ARTS_VALIDITY STREQUAL "FLUSH")
     add_arts_test(grant_release_keeps_sharer)
@@ -2410,7 +2409,7 @@ register_multinode_test(coherence_ro_acquire_stress TIMEOUT 90)
 # of its node-count label so the suite can be filtered with
 # `ctest -L coherence_stress`.
 # Read and write turns of every block contend at once; its write acquisitions
-# are unordered, which DB-WRF does not admit.
+# are unordered, which CDAG does not admit.
 if(NOT ARTS_VALIDITY STREQUAL "FLUSH")
 register_single_node_test(coherence_stress_single_node TIMEOUT 120)
 set_property(TEST coherence_stress_single_node APPEND PROPERTY
@@ -2418,7 +2417,7 @@ set_property(TEST coherence_stress_single_node APPEND PROPERTY
 set_tests_properties(coherence_stress_single_node PROPERTIES
     PASS_REGULAR_EXPRESSION "PASS: [0-9]+ EDTs completed across")
 endif()
-# Writers holding several blocks at once: DB-WRF does not admit them, so every
+# Writers holding several blocks at once: CDAG does not admit them, so every
 # other arm runs them.  With peers the turns come from every rank.
 if(NOT ARTS_VALIDITY STREQUAL "FLUSH")
     register_single_node_test(coherence_multi_writer_multi_db TIMEOUT 60)
@@ -2870,7 +2869,7 @@ endif()
 # the publication shows as a consumer's NULL/zero read (FAIL: and an abort); a
 # parked acquire that is never woken leaves the PASS line unprinted.
 # These assert what the runtime's exclusive-RW serialization guarantees; under
-# DB-WRF that ordering is the program's, and these programs deliberately omit
+# CDAG that ordering is the program's, and these programs deliberately omit
 # it.
 if(NOT ARTS_VALIDITY STREQUAL "FLUSH")
 register_multinode_test(coherence_satisfy_before_release TIMEOUT 60)
@@ -2888,7 +2887,7 @@ endif()
 # one block homed on rank 0, in deep batches and in short steps with a home-rank
 # contender; the exact end-sum is the gate, and a stranded requester times out.
 # 2n_8w_2p is the variant whose two progress threads may dispatch one peer's
-# hand-over messages out of order.  Its writers are unordered, which DB-WRF
+# hand-over messages out of order.  Its writers are unordered, which CDAG
 # does not admit.
 if(NOT ARTS_VALIDITY STREQUAL "FLUSH")
 register_multinode_test(coherence_owner_ownership_reorder TIMEOUT 120)
@@ -2903,7 +2902,7 @@ endif()
 
 # coherence_owner_confirm_gate: a read ordered after a remote writer must see
 # the writer's value, not a copy left at the previous holder.  Under
-# write-back the home names a new holder only when its MSG_DB_GRANT_CONFIRM
+# OWNER the home names a new holder only when its MSG_DB_GRANT_CONFIRM
 # arrives, and the writer runs only after the home's CONFIRM_ACK, which closes
 # that window.  Ranks 0 and 1 hold every turn; the two progress threads let the
 # transfer's messages overtake each other.  One rank never transfers anything.
@@ -2917,7 +2916,7 @@ register_multinode_test(coherence_owner_confirm_gate TIMEOUT 120
 # at the home behind the cohort and is granted by the cohort's last read
 # release; the verdict is on values only (readers see the pre-write value, the
 # increment lands exactly once).  A portable OCR program — no storage kind, no
-# write policy — registered under every arm and rank count; valid under DB-WRF
+# read source — registered under every arm and rank count; valid under CDAG
 # too, since its writers are ordered.
 register_single_node_test(coherence_grant_chain_visibility TIMEOUT 60)
 register_multinode_test(coherence_grant_chain_visibility TIMEOUT 120 VARIANTS 2n_9w_1p 4n_4w_1p)
@@ -3097,7 +3096,7 @@ endif()
 # current group, its rank's proxy of the outer group, keeps the outer group
 # open until the inner members' writes to a block are done (each member writes
 # after a delay, so an outer group that did not wait for them fires first).
-# The members record into one block with no order among them, which DB-WRF
+# The members record into one block with no order among them, which CDAG
 # does not admit.  It uses ranks 0 and 1 only, and its group's proxy is fed by
 # messages local to each rank.
 if(NOT ARTS_VALIDITY STREQUAL "FLUSH")
@@ -3111,8 +3110,8 @@ endif()
 # group_explicit_members: an explicit group fires after its members on every
 # rank and their descendants, and a reader on the last rank reads the block its
 # opener wrote and released before its DECR while the opener is still running.
-# The block has one writer, then a reader, so every cell runs it, DB-WRF
-# included; only INV x WB is known to fail without the opener's release (the
+# The block has one writer, then a reader, so every cell runs it, CDAG
+# included; only INV·OWNER is known to fail without the opener's release (the
 # run ends with its release wait cut).
 add_arts_test(group_explicit_members)
 register_multinode_test(group_explicit_members TIMEOUT 60)
@@ -3323,8 +3322,8 @@ if(NOT ARTS_VALIDITY STREQUAL "FLUSH")
                         db_create_races_acquire ARGS 3 3
                         VARIANTS 2n_9w_1p 2n_8w_2p HOOK "ARTS_SCHED_FUZZ=40"
                         PASS "PASS: db_create_races_acquire 32 blocks")
-        # A hop -- a write-back home's redirect, a holder's bounce, a
-        # retaining home's forward -- continues a request the home took in,
+        # A hop -- a home's redirect under OWNER, a holder's bounce, an
+        # EXCL·RETAIN home's forward -- continues a request the home took in,
         # so it is never an early arrival: held 200 ms it lands after the
         # teardown and is answered (or dropped) rather than parked.  Only
         # the arms whose home hops have one; four ranks give the holder a
@@ -3346,11 +3345,11 @@ endif()
 # its own body.  Every cell brings the right home its own way, with the home
 # still running on the block after it woke that writer: a revoking home
 # (RETAIN) installs the holder's ship and runs its own CONFIRM inline, and
-# under write-back the CONFIRM_ACK that wakes the writer as well; a PURGE home
+# under OWNER the CONFIRM_ACK that wakes the writer as well; a PURGE home
 # serves its own request from its queue and walks on; the exclusion arm's
 # grant comes back to its home; FLUSH fetches and writes back.  The program's
 # write acquisitions of a block are ordered by happens-before, so it is
-# DB-WRF-valid and FLUSH runs it too.  With the hook, the decision windows
+# CDAG-valid and FLUSH runs it too.  With the hook, the decision windows
 # widen.
 add_arts_test(grant_home_reclaim_destroy)
 arts_cover_test(grant_home_reclaim_destroy grant_home_reclaim_destroy
@@ -3430,7 +3429,7 @@ endif()
 # sharing a turn; with peers, every rank writes both counters, so each is
 # written off its home (a release off the home waits for it where the arm
 # publishes, requesters park, the home runs hand-overs), plus a remote write
-# first touch.  Its writers are unordered, which DB-WRF does not admit, so
+# first touch.  Its writers are unordered, which CDAG does not admit, so
 # every other arm runs it, wherever the walk can print.
 if(NOT ARTS_VALIDITY STREQUAL "FLUSH" AND ARTS_LOG_LEVEL GREATER_EQUAL 3)
 register_single_node_test(quiescent_shutdown_no_residue TIMEOUT 60)
@@ -3517,8 +3516,8 @@ endif()
 # grant_one_request_per_grant: rounds of concurrent write acquisitions of one
 # block off its home, each round starting with no write right there.  Every
 # waiter is served (the count), and where a grant is handed back at release
-# (write-through with PURGE) a Debug build asserts that no grant arrives to an
-# empty waiting set.  Its writers are unordered, which DB-WRF does not admit,
+# (PURGE·HOME) a Debug build asserts that no grant arrives to an
+# empty waiting set.  Its writers are unordered, which CDAG does not admit,
 # so every other arm runs it.  On the arms that share the grant plane (VAL,
 # INV), whose decision points carry the scheduler fuzz, the shape with two
 # progress threads also runs under it where the injection hooks are compiled,
@@ -3551,7 +3550,7 @@ endif()
 # once, half the blocks homed off rank 0 and half on every rank, and an exact
 # count per block read on rank 0.  At >=3 ranks a block homed on a non-zero
 # rank has two distinct remote writer ranks; the two progress threads reorder
-# one peer's hand-over messages.  Its writers are unordered, which DB-WRF does
+# one peer's hand-over messages.  Its writers are unordered, which CDAG does
 # not admit.
 if(NOT ARTS_VALIDITY STREQUAL "FLUSH")
 register_multinode_test(coherence_multi_writer_dist TIMEOUT 120)
@@ -3574,7 +3573,7 @@ endif()
 # writer that every acquire must observe verbatim, and a round's writers all
 # stamp the churn region with the same byte, so the only legal observations are
 # this round's and the previous round's stamps.  A round's writers are
-# unordered, which DB-WRF does not admit, so every other arm runs it.
+# unordered, which CDAG does not admit, so every other arm runs it.
 # Single-node registration covers the all-local paths; the
 # multinode variants carry the cross-rank ones.
 if(NOT ARTS_VALIDITY STREQUAL "FLUSH")
@@ -3609,7 +3608,7 @@ foreach(_t IN LISTS _writer_ro_cases)
 endforeach()
 endif()
 
-# --- DB-WRF / FLUSH arm tests ------------------------------------------------
+# --- CDAG / FLUSH arm tests ------------------------------------------------
 # What every remote acquire fetching and every remote RW release writing
 # through owe: the home sees each ordered write, on one block and on many
 # blocks homed on every rank at once, a creator away from the home fetches
@@ -3624,13 +3623,13 @@ endif()
 # progress threads reorder the credit-less write-back's announce, landing, put
 # and commit.
 if(ARTS_VALIDITY STREQUAL "FLUSH")
-    add_arts_test(wrf_flush)
-    register_single_node_test(wrf_flush TIMEOUT 60)
-    register_multinode_test(wrf_flush TIMEOUT 120)
-    foreach(_t wrf_flush wrf_flush_2n_9w_1p wrf_flush_4n_4w_1p
-            wrf_flush_2n_8w_2p)
+    add_arts_test(cdag_flush)
+    register_single_node_test(cdag_flush TIMEOUT 60)
+    register_multinode_test(cdag_flush TIMEOUT 120)
+    foreach(_t cdag_flush cdag_flush_2n_9w_1p cdag_flush_4n_4w_1p
+            cdag_flush_2n_8w_2p)
         arts_test_properties(${_t} PROPERTIES
-            PASS_REGULAR_EXPRESSION "PASS: wrf_flush"
+            PASS_REGULAR_EXPRESSION "PASS: cdag_flush"
             FAIL_REGULAR_EXPRESSION "FAIL:")
     endforeach()
 endif()

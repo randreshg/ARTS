@@ -5,8 +5,8 @@
  * Property under test
  * -------------------
  * protocol.h is the cross-rank wire contract.  Two ranks built in DIFFERENT
- * coherence configs (VAL+WT, VAL+WB, INV+WT, INV+WB, EXCL+PURGE, EXCL+RETAIN,
- * FLUSH) MUST agree byte-for-byte on:
+ * coherence configs (VAL·HOME, VAL·OWNER, INV·HOME, INV·OWNER, EXCL·PURGE,
+ * EXCL·RETAIN, FLUSH) MUST agree byte-for-byte on:
  *   (1) `enum arts_msg_type` — every ordinal contiguous 0..MSG_COUNT-1, and
  *       MSG_COUNT itself, IDENTICAL across every config (the enum members are
  *       unconditional even where their dispatcher case is #ifdef'd out, so the
@@ -35,7 +35,7 @@
  * trailing payload on an 8-byte boundary ... the payload starts at sizeof() —
  * that offset must be 8-aligned."  The payload-carrying structs are
  * GRANT_RESPONSE, PUBLISH, SNAPSHOT_RESPONSE, and — in EXCL builds —
- * EXCL_GRANT, EXCL_RELEASE, and (EXCL×RETAIN only) EXCL_DELIVER.  This TU
+ * EXCL_GRANT, EXCL_RELEASE, and (EXCL·RETAIN only) EXCL_DELIVER.  This TU
  * checks that sizeof() of each is a multiple of 8
  * at runtime (the invariant spans a pad field whose width is itself derived
  * from other fields, so it is not expressible as a single `_Static_assert`).
@@ -164,7 +164,7 @@ _Static_assert(sizeof(struct arts_msg_header_s) == 16, "header size drifted");
 
 /* ===== (3) per-packet sizeof — frozen golden table.  Each value verified
  * identical across every config, except the packets that carry an answer
- * token (VAL and INV only): those have one table per cell family. */
+ * token (VAL and INV only): those have one table per validity. */
 _Static_assert(sizeof(struct arts_msg_guid_only_packet_s) == 24,
                "guid_only sizeof drifted");
 _Static_assert(sizeof(struct arts_msg_object_blob_packet_s) == 24,

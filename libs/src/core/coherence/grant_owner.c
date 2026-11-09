@@ -1,15 +1,15 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * The WB write policy's half of the migrating sentinel grant.
+ * The OWNER read source's half of the migrating sentinel grant.
  *
  * coherence/grant.c holds what every grant-bearing arm shares (the sentinel,
  * the home FIFO, the transfer baton, the owner->owner ship).  This TU holds
- * what the WB write policy decides on top of it: a new owner installs but may
+ * what the OWNER read source decides on top of it: a new owner installs but may
  * NOT run until the home confirms the directory flip (CONFIRM -> CONFIRM_ACK).
- * The gate is load-bearing here and absent under WT for one reason — with no
+ * The gate is load-bearing here and absent under HOME for one reason — with no
  * bytes at the home, a reader registered after the install would be redirected
  * to whichever rank the directory still names, and that rank's retained copy is
- * stale the instant the new owner stores.  WT has no such window because the
+ * stale the instant the new owner stores.  HOME has no such window because the
  * home serves reads itself.
  *
  * Nothing here is protocol-specific: VAL and INV link this same TU.  What a
@@ -248,7 +248,7 @@ static void owner_response_landed_discard(void *arg) {
   arts_free(ctx);
 }
 
-/* ===== WB CONFIRM handler (home A) =============================== */
+/* ===== OWNER CONFIRM handler (home A) =============================== */
 
 /* CONFIRM at the home, the answer to its transfer: on the home descriptor the
  * home token names, under the baton tenure's count.  The packet's token is
@@ -275,7 +275,7 @@ void arts_handler_db_grant_confirm(
   atomic_store_explicit(&db->rw_holder, new_owner, memory_order_release);
   /* Protocol seam: the ex-holder keeps the bytes it wrote.  Whether that
    * retained copy needs registering is the protocol's question, not the
-   * write policy's. */
+   * read source's. */
   arts_db_grant_note_ex_holder(db, prev_holder);
 
   /* The directory now names the new owner: tell it to run its gated RW EDTs.
@@ -330,7 +330,7 @@ void arts_handler_db_grant_confirm(
   arts_db_grant_advance(cache, db, true, seen);
 }
 
-/* ===== WB CONFIRM_ACK handler (new owner C) ==================== */
+/* ===== OWNER CONFIRM_ACK handler (new owner C) ==================== */
 
 /* Whether the grant this rank installed last came from another rank. */
 static bool install_was_remote(const struct arts_db_cache_s *cache) {
@@ -425,7 +425,7 @@ void arts_handler_db_grant_confirm_ack(
  * has already acquired the home db_s and pinned a ref across this call (cache
  * is its FIRST member), so there is no lookup / NULL-check / defer here. */
 
-/* ===== WB GRANT_INVALIDATE handler (pure body, DIRECT-call) ====== */
+/* ===== OWNER GRANT_INVALIDATE handler (pure body, DIRECT-call) ====== */
 
 /* Pure (item, args) body.  INVALIDATE has no OoO kind: the invalidate target
  * is always the rw_holder, whose CACHE the requester installs before it ever
@@ -458,7 +458,7 @@ void arts_handler_db_grant_invalidate(void *item_v, void *args_v) {
    * performs the ownership transfer; while local writers are still active
    * (rest > 0) the last release_rw drives it instead.
    *
-   * WB: publish the transfer target BEFORE withdrawing the sentinel.  This
+   * OWNER: publish the transfer target BEFORE withdrawing the sentinel.  This
    * ordering is the dedup (no separate transfer_pending flag): a concurrent
    * release_rw that observes rest==0 is guaranteed to see incoming_new_owner
    * already published, so exactly one of {this handler, the last releaser}
@@ -482,9 +482,9 @@ void arts_handler_db_grant_invalidate(void *item_v, void *args_v) {
   arts_db_grant_ship_pending(cache);
 }
 
-/* ===== WB wire senders =================================================
+/* ===== OWNER wire senders =================================================
  * The GRANT_RESPONSE wire sender, the owner→owner ship and the CONFIRM
- * sender are shared (coherence/grant.c); only the WB-only CONFIRM_ACK sender
+ * sender are shared (coherence/grant.c); only the OWNER-only CONFIRM_ACK sender
  * is here.  The versioned-snapshot redirect, handler and sender, is VAL's
  * (coherence/val/owner.c). */
 

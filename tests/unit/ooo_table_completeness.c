@@ -14,7 +14,7 @@
  *
  *  (2) EXACT PER-CONFIG KIND SET.  The model-agnostic kinds are always present;
  *      each build's OOO_DB_* arm wires only that protocol's coherence kinds
- *      (per protocol, and per write or release policy where that changes
+ *      (per validity, and per retention or read source where that changes
  *      them).  The test asserts each named enum maps to its expected handler
  *      (the OOO_<NAME> == arts_handler_<name> naming invariant) and that
  *      OOO_KIND_COUNT equals the count of kinds that protocol defines —
@@ -183,24 +183,24 @@ _Static_assert(OOO_KIND_COUNT == N_EXPECT,
 int main(void) {
   const char *cfg =
 #if defined(ARTS_VALIDITY_EXCL) && defined(ARTS_RETENTION_PURGE)
-      "EXCL+PURGE"
+      "EXCL+PURGE+HOME"
 #elif defined(ARTS_VALIDITY_EXCL) && defined(ARTS_RETENTION_RETAIN)
-      "EXCL+RETAIN"
+      "EXCL+RETAIN+OWNER"
 #elif defined(ARTS_VALIDITY_INV) && defined(ARTS_READ_SOURCE_OWNER)
-      "INV+WB"
+      "INV+RETAIN+OWNER"
 #elif defined(ARTS_VALIDITY_INV) && defined(ARTS_RETENTION_PURGE)
-      "INV+WT+PURGE"
+      "INV+PURGE+HOME"
 #elif defined(ARTS_VALIDITY_INV)
-      "INV+WT"
+      "INV+RETAIN+HOME"
 #elif defined(ARTS_VALIDITY_FLUSH)
       "FLUSH"
 #elif defined(ARTS_VALIDITY_VAL) && defined(ARTS_READ_SOURCE_HOME) &&          \
     defined(ARTS_RETENTION_PURGE)
-      "VAL+WT+PURGE"
+      "VAL+PURGE+HOME"
 #elif defined(ARTS_VALIDITY_VAL) && defined(ARTS_READ_SOURCE_HOME)
-      "VAL+WT"
+      "VAL+RETAIN+HOME"
 #elif defined(ARTS_VALIDITY_VAL) && defined(ARTS_READ_SOURCE_OWNER)
-      "VAL+WB"
+      "VAL+RETAIN+OWNER"
 #else
       "?"
 #endif

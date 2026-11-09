@@ -4,7 +4,7 @@
  * decisions over the packed reader word [ro|inflight|head_ro] and the round
  * word [entries|OPEN].
  *
- * Both deciders are identical under either write policy (the write policy
+ * Both deciders are identical under either read source (the read source
  * decides where bytes come FROM, never what a word does), so this one truth
  * table covers the whole protocol.  Expected values are hand-derived, not
  * produced by an oracle that re-implements the functions.  Covered:

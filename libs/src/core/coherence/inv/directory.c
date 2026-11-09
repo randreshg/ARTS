@@ -9,9 +9,9 @@
  * this TU must stay linkable standalone (pure lifecycle) for the whitebox
  * unit tests.
  *
- * This TU carries the home-directory lifecycle shared by both write-policy
+ * This TU carries the home-directory lifecycle shared by both read-source
  * variants.  The arbiters live in arbiters.c, and the handler/sender bodies
- * live in the write-policy TU (home.c or owner.c) plus the shared engine.c.
+ * live in the read-source TU (home.c or owner.c) plus the shared engine.c.
  * The home request FIFO is grantreq_queue.c.
  *
  * Compiled only for ARTS_VALIDITY=INV.

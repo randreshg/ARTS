@@ -23,19 +23,19 @@
  *   INV (every cell): a round ended by its last ack; acks on a retired home,
  *     which decrement without a finish, the last dropping the count; a round
  *     re-armed inside the finish, which takes its own count; the sweep's row
- *     for an armed round; under write-back, the home's own copy retired
+ *     for an armed round; under OWNER, the home's own copy retired
  *     inline, its ack counted inline through the round's home token; a
  *     sharer's ack, sent at once with the round's home token or, owed to a
  *     kill-marked fetch, kept with it until the doomed reply or the dismiss
  *     that closes the fetch sends the ack.
  *   VAL and INV where the home revokes: a tenure that pops nothing; a tenure
- *     ended by its CONFIRM; a tenure carried across a second pop (write-
- *     through: the next INVALIDATE; write-back: the CONFIRM_ACK's
- *     piggyback); a CONFIRM that trails the home's teardown, which puts the
- *     baton down and ends the tenure; the sweep's row for a held baton; the
- *     home token riding the holder's GRANT_RESPONSE, given by the INVALIDATE
- *     or, under write-back, the CONFIRM_ACK's piggyback, and the new owner's
- *     CONFIRM (the one-sided pairing included).
+ *     ended by its CONFIRM; a tenure carried across a second pop (HOME:
+ *     the next INVALIDATE; OWNER: the CONFIRM_ACK's piggyback); a CONFIRM
+ *     that trails the home's teardown, which puts the baton down and ends
+ *     the tenure; the sweep's row for a held baton; the home token riding
+ *     the holder's GRANT_RESPONSE, given by the INVALIDATE or, under OWNER,
+ *     the CONFIRM_ACK's piggyback, and the new owner's CONFIRM (the
+ *     one-sided pairing included).
  *
  * PURE test: no arts_rt, no ports, no threads.
  */
@@ -602,7 +602,7 @@ static void round_swept(void) {
 }
 
 #ifdef ARTS_READ_SOURCE_OWNER
-/* Under write-back the home's own copy is retired like any other: its
+/* Under OWNER the home's own copy is retired like any other: its
  * INVALIDATE runs inline on the home's descriptor, and so does its ack, which
  * reaches the round through the home token the INVALIDATE was given. */
 static void round_home_sharer(void) {

@@ -24,19 +24,19 @@
  * lock_state word instead of a migrating grant, and FLUSH has no write right
  * to move: its programs keep a block's write acquisitions exclusive.
  *
- * Write-policy-divergent steps are delegated to seams the write policy
+ * Read-source-divergent steps are delegated to seams the read source
  * defines (coherence/grant_home.c, coherence/grant_owner.c): the
- * GRANT_INVALIDATE, GRANT_RESPONSE and CONFIRM handlers, where WT drains
- * immediately and WB gates on CONFIRM_ACK (INVALIDATE and CONFIRM exist only
+ * GRANT_INVALIDATE, GRANT_RESPONSE and CONFIRM handlers, where HOME drains
+ * immediately and OWNER gates on CONFIRM_ACK (INVALIDATE and CONFIRM exist only
  * under RETAIN).
- * Four write-policy guards remain here.  Under WB the ship credits the
- * ex-owner in the dedup ledger (which only VAL WB keeps) and moves no bytes
- * to a new owner that already holds this version; under WT the home
+ * Four read-source guards remain here.  Under OWNER the ship credits the
+ * ex-owner in the dedup ledger (which only VAL·OWNER keeps) and moves no bytes
+ * to a new owner that already holds this version; under HOME the home
  * materializes its buffer when a request reaches it, and asks for the
  * permission alone when it requests the grant itself.  The INVALIDATE
- * self-send is a direct call under both write policies.
+ * self-send is a direct call under both read sources.
  *
- * Release-policy-divergent steps — who initiates the grant's return, and
+ * Retention-divergent steps — who initiates the grant's return, and
  * therefore what a queued request, a round close and a count-dropping edge
  * mean — are delegated to a second seam set (coherence/grant_retain.c,
  * coherence/grant_purge.c) declared in coherence.h.
@@ -191,12 +191,12 @@ arts_db_acquire_remote_rw(struct arts_db_cache_s *cache, struct arts_edt_s *edt,
   return ARTS_DB_ACQUIRE_PARK;
 }
 
-/* The arts_handler_db_acquire 8-case body lives per-write-policy in
+/* The arts_handler_db_acquire 8-case body lives per-read-source in
  * coherence/val/home.c and coherence/val/owner.c — the two builds differ only
- * on the RO-has-local-data predicate (WT: is_home||is_owner; WB: is_owner),
- * which the C-preprocessor seam forbids in a shared TU.  Both call the shared
- * arts_db_acquire_rw_local_fast / arts_db_acquire_remote_rw above and
- * arts_db_acquire_remote_ro (coherence/coherence.c).
+ * on the RO-has-local-data predicate (HOME: is_home||is_owner; OWNER:
+ * is_owner), which the C-preprocessor seam forbids in a shared TU.  Both call
+ * the shared arts_db_acquire_rw_local_fast / arts_db_acquire_remote_rw above
+ * and arts_db_acquire_remote_ro (coherence/coherence.c).
  */
 
 /* ===== GRANT drain (called where a write grant commits on this rank) ===== */
@@ -277,15 +277,15 @@ void arts_db_drain_pending_rw_after_grant(struct arts_db_cache_s *cache) {
   }
 }
 
-/* ===== Shared owner→owner transfer ship (WT + WB) =============
+/* ===== Shared owner→owner transfer ship (HOME + OWNER) =============
  * Ship the current buffer to new_owner: a GRANT_RESPONSE to another rank; to
- * this rank, the grant body run on this descriptor (no packet).  VAL WB
- * serializes its owner-side dedup map; WT and INV keep none (cached_version
+ * this rank, the grant body run on this descriptor (no packet).  VAL·OWNER
+ * serializes its owner-side dedup map; HOME and INV keep none (cached_version
  * == NULL) and emit an empty map (count=0): the receiver requires exactly
  * 8 + 16 * count bytes after the header and refuses anything else.
  *
  * The target is an argument, not a field read: where it comes from is the
- * release policy's, not the ship's.  A revocation round publishes it on the
+ * retention's, not the ship's.  A revocation round publishes it on the
  * holder's cache ahead of the withdrawal (arts_db_grant_ship_pending below);
  * a home serving its own queue names the requester it just popped. */
 void arts_db_send_grant_response(struct arts_db_cache_s *cache,
@@ -318,7 +318,7 @@ void arts_db_send_grant_response(struct arts_db_cache_s *cache,
 #ifdef ARTS_RETENTION_PURGE
   /* Every grant here is issued BY the home, and a home serving itself takes
    * the shortcut that ships nothing at all, so the self-transfer arm below is
-   * unreachable under this release policy. */
+   * unreachable under this retention. */
   assert(new_owner != arts_global_rank_id &&
          "a home that serves itself hands out no bytes");
 #endif
@@ -450,8 +450,8 @@ void arts_db_send_grant_response(struct arts_db_cache_s *cache,
  * the field to the sentinel BEFORE the send: a self-transfer dispatches the
  * new owner's install inline, which can recursively republish the field for
  * the next round, and clearing it up front leaves that fresh publish intact.
- * The field is the channel only where the home revokes a holder; a policy
- * whose grants move through the home never writes it. */
+ * The field is the channel only where the home revokes a holder (RETAIN);
+ * PURGE, whose grants move through the home, never writes it. */
 #ifndef ARTS_RETENTION_PURGE
 void arts_db_grant_ship_pending(struct arts_db_cache_s *cache) {
   unsigned int new_owner = cache->incoming_new_owner;
@@ -467,11 +467,11 @@ void arts_db_grant_ship_pending(struct arts_db_cache_s *cache) {
   bool data_less = false;
 #ifdef ARTS_READ_SOURCE_OWNER
   /* The new owner's copy is current when it carries this buffer's version:
-   * under write-back the owner's buffer version is the one axis every copy
+   * under OWNER the owner's buffer version is the one axis every copy
    * is stamped on, each release advances it before any copy is retired or
    * re-served, and nothing advances it on the 0-edge this ship runs on.  A
    * requester that reported no version holds nothing worth keeping.  Under
-   * write-through the copies are stamped on the home's own axis, which this
+   * HOME the copies are stamped on the home's own axis, which this
    * buffer does not carry, so the comparison is not made there. */
   if (have != ARTS_GRANT_VERSION_NONE) {
     arts_shared_ptr_t h = arts_db_buf_acquire(cache);
@@ -491,7 +491,7 @@ void arts_db_grant_ship_pending(struct arts_db_cache_s *cache) {
 /* ===== Home-side ownership handlers (VAL, INV) =======================
  * GRANT_REQUEST exists only in the arms that link this TU.  The
  * home-directory machinery these handlers touch (pending_rw and grant_baton,
- * and under RETAIN rw_holder) is shared by both write policies; where they
+ * and under RETAIN rw_holder) is shared by both read sources; where they
  * diverge is delegated to the seams in coherence/grant_home.c /
  * grant_owner.c and coherence/grant_retain.c / grant_purge.c. */
 
@@ -534,7 +534,7 @@ void arts_handler_db_grant_request(void *item_v, void *args_v) {
   uint64_t db_size =
       atomic_load_explicit(&cache->db_size, memory_order_relaxed);
 #ifdef ARTS_READ_SOURCE_HOME
-  /* The write-through home holds this block's canonical bytes for its whole
+  /* Under HOME the home holds this block's canonical bytes for its whole
    * lifetime, and from here on it owes them to someone: the grant it is
    * about to hand out carries them, and the holder's release publishes back
    * into them.  A block whose create took no hold has not been given storage
@@ -557,9 +557,9 @@ void arts_handler_db_grant_request(void *item_v, void *args_v) {
                                 a->have_version, a->token);
   arts_sched_fuzz_point(); /* widen the push<->claim window */
 
-  /* The requester is queued; what the home does about it is the release
-   * policy's answer (coherence/grant_retain.c / grant_purge.c).  Its claim
-   * of the baton, if it makes one, follows the push. */
+  /* The requester is queued; what the home does about it is the retention's
+   * answer (coherence/grant_retain.c / grant_purge.c).  Its claim of the
+   * baton, if it makes one, follows the push. */
   arts_db_grant_request_arrived(cache, db, requester);
 }
 
@@ -584,7 +584,7 @@ void arts_send_db_grant_request(struct arts_db_cache_s *cache,
    * transfer is a same-rank inline dispatch, and the registered pool
    * carries no MRs to advertise. */
   struct arts_rdzv_landing_s rdzv = {0, 0, 0, 0};
-  /* Under write-back the landing is advertised unconditionally, even though a
+  /* Under OWNER the landing is advertised unconditionally, even though a
    * transfer of a DB nobody has published yet carries no bytes: whether the
    * current owner HAS bytes is remote state, so the only way to know before
    * asking is to ask — a round trip added to every acquire to save one pooled
@@ -594,7 +594,7 @@ void arts_send_db_grant_request(struct arts_db_cache_s *cache,
    * anyone has written the block) or returns it to the pool when it already
    * holds a buffer. */
 #ifdef ARTS_READ_SOURCE_HOME
-  /* The write-through home already holds the newest bytes (every release
+  /* Under HOME the home already holds the newest bytes (every release
    * published them), so its own request needs the PERMISSION only: no
    * landing, and the ex-owner's transfer takes the data-less arm.  The
    * stable home buffer is never re-installed through the grant plane. */
@@ -724,7 +724,7 @@ void arts_send_db_grant_invalidate(
   p.new_owner_token = new_owner_token;
   p.home_token = arts_db_token(db);
   if (owner_rank == arts_global_rank_id) {
-    /* Self-send: under both write policies the INVALIDATE handler runs
+    /* Self-send: under both read sources the INVALIDATE handler runs
      * directly.
      *
      * The home publishes the invalidate target (rw_holder) only AFTER that
@@ -771,9 +771,9 @@ void arts_send_db_grant_invalidate(
   arts_transport_send_async((int)owner_rank, (char *)&p, sizeof(p));
 }
 
-/* CONFIRM (new owner C → home A), both write policies.  The home flips
- * rw_holder and advances the next round; under WB its handler also replies
- * CONFIRM_ACK, echoing C's token, under WT it does not.  The handler reads
+/* CONFIRM (new owner C → home A), both read sources.  The home flips
+ * rw_holder and advances the next round; under OWNER its handler also replies
+ * CONFIRM_ACK, echoing C's token, under HOME it does not.  The handler reads
  * the new owner from pending_install_owner. */
 void arts_send_db_grant_confirm(struct arts_db_s *db, uint64_t home_token) {
   arts_guid_t db_guid = db->cache.db_guid;
@@ -786,7 +786,7 @@ void arts_send_db_grant_confirm(struct arts_db_s *db, uint64_t home_token) {
   p.home_token = home_token;
   if (home_rank == arts_global_rank_id) {
     /* The answer, as on the wire, on the home descriptor the token names,
-     * under the tenure's count (coherence.h, "Self-sends").  Under write-back
+     * under the tenure's count (coherence.h, "Self-sends").  Under OWNER
      * the CONFIRM_ACK it sends inline drops the write request's count the
      * caller runs under, so the caller touches nothing after this send. */
     arts_handler_db_grant_confirm(&p);

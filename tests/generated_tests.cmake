@@ -274,7 +274,7 @@ endif()
 
 # --- event channel / satisfy / destroy / create-collision ---
 # These three record into one block from EDTs with no order among them, which
-# DB-WRF does not admit.
+# CDAG does not admit.
 if(NOT ARTS_VALIDITY STREQUAL "FLUSH")
 add_arts_test(event_channel_transient_null)
 add_arts_test(event_satisfy_adddep_window)
@@ -326,8 +326,8 @@ endif()
 
 # grant_sticky: asserts the grant outlives its writers (single-rank only —
 # a second rank could revoke it, which is what the test must exclude).  Not
-# FLUSH, which holds no write right, and not EXCL x PURGE, whose permission
-# goes back at the zero edge.  Under the write-through arms' PURGE a grant goes
+# FLUSH, which holds no write right, and not EXCL·PURGE, whose permission
+# goes back at the zero edge.  Under {VAL,INV}·PURGE·HOME a grant goes
 # back to its home at the zero edge, and on one rank it is already there, so
 # there the test checks only the holds counted under it.
 if(NOT ARTS_VALIDITY STREQUAL "FLUSH" AND
@@ -360,7 +360,7 @@ endif()
 
 # A GRANT_RESPONSE shorter than its header, or declaring a version map other
 # than the bytes that follow the header, is fatal on the receiving rank.  The
-# migrating grant exists on VAL and INV, with one handler per write policy.
+# migrating grant exists on VAL and INV, with one handler per read source.
 if(ARTS_VALIDITY STREQUAL "VAL" OR ARTS_VALIDITY STREQUAL "INV")
 add_arts_test(grant_response_bounds)
 arts_test_cfg(_cfg 1n_20w)
@@ -432,7 +432,7 @@ endif()
 # Write churn against one home with read turns flipping its phase, so the
 # home's grant queue is popped from every handler that grants: every writer
 # must run exactly once.  A valid write-churn check on every arm whose
-# runtime orders writers; under DB-WRF that ordering is the program's, and
+# runtime orders writers; under CDAG that ordering is the program's, and
 # this program omits it.
 if(NOT ARTS_VALIDITY STREQUAL "FLUSH")
 add_arts_test(excl_multiconsumer_queue)
@@ -447,7 +447,7 @@ endif()
 # excl_req_before_create: protocol-agnostic, needs 3+ ranks; registered at
 # 4n_4w_1p.
 # These assert what the runtime's exclusive-RW serialization guarantees; under
-# DB-WRF that ordering is the program's, and these programs deliberately omit
+# CDAG that ordering is the program's, and these programs deliberately omit
 # it.
 if(NOT ARTS_VALIDITY STREQUAL "FLUSH")
 add_arts_test(excl_req_before_create)
@@ -477,7 +477,7 @@ register_multinode_test(db_create_claims_first_touch_stub TIMEOUT 120
 
 # Every coherence handler that pins a block's descriptor releases it on every
 # path, so a create-touch-destroy churn on every rank leaves no descriptor
-# pinned.  Its write turns on each block are unordered, which DB-WRF does not
+# pinned.  Its write turns on each block are unordered, which CDAG does not
 # admit.
 if(NOT ARTS_VALIDITY STREQUAL "FLUSH")
 add_arts_test(cat_c_ref_balance)
@@ -492,18 +492,18 @@ endif()
 # A release that waits for its publish or write-back to be acknowledged, or
 # for the landing it asks the home for, stays blocked when the shutdown
 # overtakes the answer, until the process ends: nothing on the way out waits
-# for it, so every rank still ends with status 0.  A write-through release,
+# for it, so every rank still ends with status 0.  A release under HOME,
 # the invalidation arm's release round and FLUSH's write-back wait for an
 # acknowledgement; a release whose bytes travel with it, from a rank that
 # holds no landing in the home's copy (a creator away from the block's home,
-# among others), asks for one first, and so does EXCL x PURGE's, except in
+# among others), asks for one first, and so does EXCL·PURGE's, except in
 # the store-backed trees, which write the store instead and wait for nothing.
 # One rank answers itself without waiting.  Ranks 0 and 1 carry every turn;
 # the two progress threads let the shutdown overtake an answer in flight.
 # Its writes of each block are ordered, so FLUSH runs it too.  The contended
 # form (every writer of one block at once, so that a release joins its rank's
 # publish already in flight) has unordered writers and runs where a release
-# publishes: the write-through and invalidation arms.  The teardown oracle
+# publishes: {VAL,INV}·HOME and INV.  The teardown oracle
 # sees a releaser still blocked as a thread that did not stop and skips with
 # the running-threads line; the other skip lines name a defect and fail the
 # test.  The shutdown leaves work undone by design, so the walk's markers do
@@ -627,7 +627,7 @@ endforeach()
 # The acquire bias keeps an EDT with many dependences from running before its
 # last slot resolves, and an RW hand-off chain's resumes push onto the resuming
 # thread's own deque; every EDT runs exactly once.  One rank.
-# It records into one block from EDTs with no order among them, which DB-WRF
+# It records into one block from EDTs with no order among them, which CDAG
 # does not admit.
 if(NOT ARTS_VALIDITY STREQUAL "FLUSH")
 add_arts_test(scheduler_acquire_bias)
@@ -1608,8 +1608,8 @@ if(_c)
 
     # The home program, per cell: rank 1 writes, then rank 0, the home, reads
     # and writes.  Rank 0's read is local where the home holds the bytes, and
-    # its write where the write right belongs to the home (the voluntary-return
-    # policy); each is remote where rank 1 has to send it back.
+    # its write where the write right belongs to the home (under PURGE); each
+    # is remote where rank 1 has to send it back.
     set(_home 0:NUM_DB_ACQUIRE_READ=1 0:NUM_DB_ACQUIRE_WRITE=2
               1:NUM_DB_ACQUIRE_READ=0 1:NUM_DB_ACQUIRE_WRITE=1
               1:NUM_DB_ACQUIRE_LOCAL_HIT=0 1:NUM_DB_ACQUIRE_REMOTE=1)
@@ -1669,7 +1669,7 @@ if(_c)
     # creates the block, so it waits for rank 1's create and first
     # publication, whichever drain then wakes it.  It is remote wherever the
     # copy comes from rank 1, and local where the home holds the write right
-    # (the voluntary-return policy) or every home acquisition is local.
+    # (under PURGE) or every home acquisition is local.
     set(_pub 0:NUM_DB_ACQUIRE_READ=1 0:NUM_DB_ACQUIRE_WRITE=0
              1:NUM_DB_ACQUIRE_READ=0 1:NUM_DB_ACQUIRE_WRITE=1
              1:NUM_DB_ACQUIRE_LOCAL_HIT=1 1:NUM_DB_ACQUIRE_REMOTE=0)
@@ -1821,7 +1821,7 @@ endforeach()
 # Many EDTs race into arts_shutdown: one wins the shutdown gate and the run
 # ends with status 0; where the tree writes counter files, the rank's file
 # names the program as the origin and status 0.  Its initiators acquire one
-# block RW with no order among them, which DB-WRF does not admit.
+# block RW with no order among them, which CDAG does not admit.
 if(NOT ARTS_VALIDITY STREQUAL "FLUSH")
 add_arts_test(runtime_concurrent_shutdown)
 arts_counters_captured(_c NUM_EDT_CREATE)
@@ -1844,7 +1844,7 @@ if(BUILD_CUDA_LIBRARY)
         PASS_REGULAR_EXPRESSION "GPU_SCHED_PROMOTION_DONE")
 endif()
 
-# Its fires record into one block with no order among them, which DB-WRF does
+# Its fires record into one block with no order among them, which CDAG does
 # not admit.
 if(NOT ARTS_VALIDITY STREQUAL "FLUSH")
 add_arts_test(api_latch_incr_slot)
@@ -1862,7 +1862,7 @@ if(BUILD_CUDA_LIBRARY)
 endif()
 
 # --- EDT semantics ---
-# Its writers are unordered, which DB-WRF does not admit.
+# Its writers are unordered, which CDAG does not admit.
 if(NOT ARTS_VALIDITY STREQUAL "FLUSH")
 add_arts_test(edt_create_single_fire)
 register_single_node_test(edt_create_single_fire TIMEOUT 30)
@@ -1871,7 +1871,7 @@ endif()
 
 # edt_completion_event: the consumer sits on rank 1 when there is one, and the
 # release that precedes the completion event sends nothing a second peer would
-# see.  Its writers are unordered, which DB-WRF does not admit.
+# see.  Its writers are unordered, which CDAG does not admit.
 if(NOT ARTS_VALIDITY STREQUAL "FLUSH")
 add_arts_test(edt_completion_event)
 register_single_node_test(edt_completion_event TIMEOUT 30)
@@ -1949,21 +1949,21 @@ if(ARTS_TEST_REFERENCE_TREE)
 add_pure_unit_src(pending_rw_treiber DEFINES ARTS_UNIT_STANDALONE_SHIMS PASS_REGEX "PASS pending_rw_treiber:" TIMEOUT 60)
 endif()
 
-# excl_compute_next: EXCL only, each release policy's arbiters.
+# excl_compute_next: EXCL only, each retention's arbiters.
 if(ARTS_VALIDITY STREQUAL "EXCL")
 add_pure_unit_src(excl_compute_next DEFINES ARTS_UNIT_STANDALONE_SHIMS PASS_REGEX "PASS excl_compute_next:" TIMEOUT 60)
 endif()
 
-# val_request_word: VAL only (the request word's arbiter, both write policies
-# and release policies alike).
+# val_request_word: VAL only (the request word's arbiter, both read sources
+# and retentions alike).
 if(ARTS_VALIDITY STREQUAL "VAL")
 add_pure_unit_src(val_request_word DEFINES ARTS_UNIT_STANDALONE_SHIMS PASS_REGEX "PASS val_request_word:" TIMEOUT 60)
 endif()
 
 # val_release_buffer_check: a VAL write release bumps its write turn's own
 # buffer, and a Debug build ends a release that names another one in the
-# named fatal error.  Each write policy has its own release and its own check
-# (the PURGE release shares the WT one).
+# named fatal error.  Each read source has its own release and its own check
+# (the PURGE release shares the HOME one).
 if(CMAKE_BUILD_TYPE STREQUAL "Debug" AND ARTS_VALIDITY STREQUAL "VAL" AND
    ARTS_RETENTION STREQUAL "RETAIN")
 add_arts_test(val_release_buffer_check)
@@ -1972,8 +1972,8 @@ set_tests_properties(val_release_buffer_check PROPERTIES
     PASS_REGULAR_EXPRESSION "write turn's buffer is not the installed one")
 endif()
 
-# inv_compute_next: INV only.  One truth table covers both write policies —
-# the arbiters do not depend on the write policy.
+# inv_compute_next: INV only.  One truth table covers both read sources —
+# the arbiters do not depend on the read source.
 if(ARTS_VALIDITY STREQUAL "INV")
 add_pure_unit_src(inv_compute_next DEFINES ARTS_UNIT_STANDALONE_SHIMS PASS_REGEX "PASS inv_compute_next:" TIMEOUT 60)
 endif()
@@ -2091,12 +2091,12 @@ arts_route_budget_test(create 64 3 0 REFERENCE_ONLY)
 # and runs on the descriptor that hold names (none), whose teardown tells no
 # other rank and retires through the control block's home (none).  What the
 # release does in between is the cell's, and resolves nothing on any cell:
-# VAL's home publishes nothing (its buffer is the canonical copy under WT, the
-# bytes stay with the owner under WB, and under PURGE the home keeps the right
-# it holds); INV's release sends its PUBLISH to this rank, which runs on the
-# releaser's own descriptor, and the round, with no copy to retire, acks it on
-# the same descriptor; EXCL x PURGE commits the home's release in place (the
-# CXL residencies after the purge into the block's store); EXCL x RETAIN's
+# VAL's home publishes nothing (its buffer is the canonical copy under HOME, the
+# bytes stay with the owner under OWNER, and under PURGE the home keeps the
+# right it holds); INV's release sends its PUBLISH to this rank, which runs on
+# the releaser's own descriptor, and the round, with no copy to retire, acks it
+# on the same descriptor; EXCL·PURGE commits the home's release in place (the
+# CXL residencies after the purge into the block's store); EXCL·RETAIN's
 # creator stays the sticky owner and sends nothing; FLUSH's home writes nothing
 # back.  1 probe, 0 pins, every cell.
 arts_route_budget_test(rw 64 1 0)
@@ -2107,23 +2107,23 @@ arts_route_budget_test(rw 64 1 0)
 # probe).  Everything else rank 1 receives is an answer to its own request,
 # which acts on the descriptor its token names, and nothing rank 1 sends
 # resolves anything on rank 1:
-#   VAL, read: SNAPSHOT_RESPONSE (from the home, or under WB from the owner a
+#   VAL, read: SNAPSHOT_RESPONSE (from the home, or under OWNER from the owner a
 #     redirect names, which is the home here), its payload paired
 #     one-sided.
 #   VAL, write: GRANT_RESPONSE (the holder's ship under RETAIN, the home's
-#     serve under PURGE) and, under WB, CONFIRM_ACK; the release's publish
-#     under WT: PUBLISH_CTS (paired by its rendezvous pointer) and
+#     serve under PURGE) and, under OWNER, CONFIRM_ACK; the release's publish
+#     under HOME: PUBLISH_CTS (paired by its rendezvous pointer) and
 #     PUBLISH_ACK, which under PURGE also acknowledges the hand-back riding
-#     the commit.  VAL x WB's release sends nothing.
-#   INV, read: INV_DELIVER; write: GRANT_RESPONSE, CONFIRM_ACK under WB, and
+#     the commit.  VAL·OWNER's release sends nothing.
+#   INV, read: INV_DELIVER; write: GRANT_RESPONSE, CONFIRM_ACK under OWNER, and
 #     the release's round, acknowledged by PUBLISH_ACK (after PUBLISH_CTS
-#     under WT).  No round targets rank 1: it is the round's releaser, and no
+#     under HOME).  No round targets rank 1: it is the round's releaser, and no
 #     other rank writes the block.
-#   EXCL x PURGE, both modes: EXCL_GRANT from the home (one-sided bytes in
+#   EXCL·PURGE, both modes: EXCL_GRANT from the home (one-sided bytes in
 #     rank memory; on the CXL stores a grant naming the block's slot, which
 #     the grantee reads itself).  The release is an EXCL_RELEASE to the home,
 #     which nothing answers.
-#   EXCL x RETAIN, read: EXCL_DELIVER from the owner the home forwarded the
+#   EXCL·RETAIN, read: EXCL_DELIVER from the owner the home forwarded the
 #     request to (the creator, rank 0), whose read grant rank 1 retains; its
 #     release sends nothing.  Write: the migration's EXCL_DELIVER, after which
 #     rank 1 CONFIRMs to the home and keeps the write grant; its release sends

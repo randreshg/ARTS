@@ -14,9 +14,9 @@
  *     create's hold, on the home and off it; (b) an alias pair adds one
  *     reader; (c) with a second writer of the rank, the turn stays on rc
  *     after that writer's release.
- *   EXCL x PURGE: (d) a writer on another rank waits at the home, counted in
+ *   EXCL·PURGE: (d) a writer on another rank waits at the home, counted in
  *     w, while the read hold lives, and then reads D's bytes.
- *   EXCL x RETAIN: (e) a writer on another rank sets the migration target
+ *   EXCL·RETAIN: (e) a writer on another rank sets the migration target
  *     and the bytes stay resident while the read hold lives; (f) a reader on
  *     another rank is served by a demote of the write permission, and a
  *     writer on D's rank then takes the turn back by self-migration while D

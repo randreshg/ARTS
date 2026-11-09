@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * INV protocol, WB write policy.
+ * INV protocol, OWNER read source.
  *
- * WB means the canonical payload stays with whoever wrote it last and moves
+ * OWNER means the canonical payload stays with whoever wrote it last and moves
  * only on demand, so the home holds no bytes at all.  That single fact is this
  * file: an RO acquire never reads a local home buffer, a release publishes
  * control only (the round still runs — the invalidation IS what makes this
@@ -173,8 +173,8 @@ void arts_handler_db_acquire(void *item, void *args) {
   }
 }
 
-/* ===== release_rw (WB write policy) =====================================
- * The WT arm with one argument changed: the payload does not travel to the
+/* ===== release_rw (OWNER read source) =====================================
+ * The HOME arm with one argument changed: the payload does not travel to the
  * home, because the home never serves it.  On a run of several ranks the
  * round still runs — that is what makes this INV and not VAL — so the release
  * still returns only once every stale copy is dead, and the count is still
@@ -309,7 +309,7 @@ void arts_handler_db_inv_redirect(void *item_v, void *args_v) {
 }
 
 
-/* ===== WB-only senders ================================================== */
+/* ===== OWNER-only senders =============================================== */
 
 /* home → the current grant holder: serve this reader.  The subject rides in
  * the packet because the holder answers it directly, so the wire sender and

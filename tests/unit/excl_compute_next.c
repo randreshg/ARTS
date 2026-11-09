@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
  * The EXCL arbiters (coherence/excl/arbiters.c), the PURE state-transition
- * functions of the release policy this tree compiles.
+ * functions of the retention this tree compiles.
  *
  * PURGE: excl_compute_next(cur, op, &grant), the lock-state transition over
  * [td | state_bit | rwo | roo | owed | w | r].  Given the current packed

@@ -132,8 +132,8 @@
  * Each model's enum (and this table) carries only that model's OOO_DB_* kinds,
  * so a build references only the bodies it actually defines:
  *   - GRANT_REQUEST: VAL and INV only (grant.c).
- *   - PUBLISH: the arms that publish at a release (VAL WT, INV under both
- *     write policies); VAL WB's enum omits it (VAL WB fatals on the wire).
+ *   - PUBLISH: the arms that publish at a release (VAL·HOME, INV under both
+ *     read sources); VAL·OWNER's enum omits it (VAL·OWNER fatals on the wire).
  *   - GRANT_RETURN: VAL and INV where grants are handed back unasked.
  *   - GRANT_INVALIDATE: no arm defers it.  A revoking home names a rank as
  *     the invalidate target (rw_holder) only after that rank's cache install,

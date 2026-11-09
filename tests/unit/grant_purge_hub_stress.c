@@ -201,7 +201,7 @@ static void *progress(void *arg) {
       continue;
     }
     if (m.type == MSG_REQUEST) {
-      /* arts_handler_db_grant_request: queued, then the release policy. */
+      /* arts_handler_db_grant_request: queued, then the retention's answer. */
       arts_home_grantreq_queue_push(&g_db->pending_rw, m.rank, NULL,
                                     ARTS_GRANT_VERSION_NONE, 0u);
       arts_sched_fuzz_point();

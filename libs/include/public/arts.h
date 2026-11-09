@@ -311,7 +311,7 @@ typedef struct {
    *  overrides @c rank above.  A create of a GUID whose block is live waits,
    *  parked (at the home, or on a creating rank that still holds an earlier
    *  create's descriptor of the GUID or a cache that kept a right to it: the
-   *  write right, and under EXCL x RETAIN also its resident bytes or a
+   *  write right, and under EXCL·RETAIN also its resident bytes or a
    *  retained read grant) until that block is destroyed, and then installs as
    *  the GUID's next block (see @c arts_db_create for the pointer it
    *  returns); a dependence's cache of the GUID on the creating rank that

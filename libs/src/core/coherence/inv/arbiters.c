@@ -13,13 +13,13 @@
  * before the exchange that writes it and its targets from the value that
  * exchange returned.
  *
- * All are identical under either write policy.  None knows about ownership:
+ * All are identical under either read source.  None knows about ownership:
  * write ownership is the migrating sentinel grant (coherence/grant.c), which
  * lives in its own counter rather than in either word, so no decider carries
  * rw state or a writer count.
  *
  * engine.c #includes this file: the round's deciders are its own, and the
- * reader-plane decider is the one the write-policy units call too.  The
+ * reader-plane decider is the one the read-source units call too.  The
  * whitebox unit tests also #include it directly.  NOT listed in
  * CMakeLists.txt as a standalone TU.
  */
@@ -262,7 +262,7 @@ static uintptr_t inv_round_submit_next(uintptr_t h, uintptr_t e, bool *claim) {
  *
  * One word of the round's roster snapshot (rank `base` at bit 0), decided
  * purely.  Every rank the snapshot found is a target of the round except two
- * kinds: `exempt` (the write-through home, whose buffer is the canonical
+ * kinds: `exempt` (the home under HOME, whose buffer is the canonical
  * copy) and the batch's releasers, whose bytes are what the round publishes.
  * A releaser is a sharer from its release on — its copy is durable and
  * nothing but a later round's INVALIDATE retires it — so the keep, which the

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * FLUSH: the one protocol of the DB_WRF memory model.  The home holds a
+ * FLUSH: the one protocol of the CDAG memory model.  The home holds a
  * block's single payload line.  A non-home acquire, in either mode, lands a
  * private copy of the line for the acquiring EDT alone; a non-home RW release
  * writes that copy back into the line and returns once the home has seen it

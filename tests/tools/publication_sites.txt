@@ -127,11 +127,11 @@ INV.*.*  arts_handler_db_acquire  load  cache_state                 1/2  acquire
 INV.*.*  arts_handler_db_acquire  load  writer_count                1/1  acquire
 INV.*.*  arts_handler_db_acquire  load  cache_state                 2/2  acquire
 INV.*.*  arts_handler_db_acquire  rmw   cache_state                 1/1  release
-# A write grant's landing (WT: its install; WB: its confirmation) serves the
-# readers parked on the write request: the request word's step that takes
+# A write grant's landing (HOME: its install; OWNER: its confirmation) serves
+# the readers parked on the write request: the request word's step that takes
 # their chain acquires the nodes the parking exchange released.
 INV.*.*  inv_req_step_tok         rmw   cache_state                 1/1  acquire
-# Write-through: a release's bytes land in place in the home's buffer; the
+# HOME: a release's bytes land in place in the home's buffer; the
 # round stamps the buffer, then the home's publication axis.
 # The landed entry reaches the thread that runs the round: the landing's own
 # thread claims an idle round, or pushes the entry with a release that the
@@ -160,7 +160,7 @@ VAL.*.*  snapshot_landed_cb              call  arts_db_buf_install_landed      -
 VAL.*.*  snapshot_landed_cb              call  arts_db_ro_combine_on_terminal  -/1  -
 VAL.*.*  arts_db_ro_combine_on_terminal  call  val_req_step                    -/1  -
 VAL.*.*  val_req_step                    rmw   req_state                       1/1  acq_rel
-# Write-through: a release's bytes land in place in the home's buffer and
+# HOME: a release's bytes land in place in the home's buffer and
 # the stamp publishes them; the home and an owner serve reads from it.
 VAL.*.HOME  pub_landed_cb            call  arts_db_buf_bump_inplace  -/1  -
 VAL.*.HOME  arts_handler_db_acquire  load  writer_count              1/1  acquire
@@ -355,7 +355,7 @@ INV.*.*,VAL.*.*                arts_send_db_grant_request           load  versio
 # The grant's count after the install's possession edge.  Every write of the
 # count is a read-modify-write, so each continues the install's release
 # sequence; a writer that uses the buffer is admitted by the exchange the
-# register keeps.  Under write-back the install's edge is
+# register keeps.  Under OWNER the install's edge is
 # owner_response_commit's, and arts_db_grant_install is compiled and not
 # called.
 INV.*.*,VAL.*.*                  arts_db_drain_pending_rw_after_grant rmw   writer_count  -/1  -

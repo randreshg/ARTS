@@ -58,7 +58,7 @@
 ///
 /// The model makes a write turn exclusive between ranks, not between the
 /// writers on one rank, so the increment is atomic.  The writers are not
-/// ordered among themselves, which the DB-WRF model does not admit.
+/// ordered among themselves, which the CDAG model does not admit.
 
 #include "arts.h"
 

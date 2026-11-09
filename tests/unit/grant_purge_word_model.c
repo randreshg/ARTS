@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * grant_purge_word_model — exhaustive model check of the PURGE release
- * policy's grant word and its one pure decider, arts_grant_purge_release_next
+ * grant_purge_word_model — exhaustive model check of the PURGE retention's
+ * grant word and its one pure decider, arts_grant_purge_release_next
  * (coherence/grant_purge.c, declared non-static for exactly this purpose).
  *
  * The word packs two facts that are surrendered independently: an explicit
@@ -29,7 +29,7 @@
  *
  * PURE test: no arts_rt, no ports, no threads — runs standalone at any time.
  * The word this decider operates on exists only where a write grant migrates
- * under the PURGE release policy (VAL/INV, never EXCL, which arbitrates a
+ * under the PURGE retention (VAL/INV, never EXCL, which arbitrates a
  * different single word of its own), so only those trees build the test.
  */
 #include <stdio.h>

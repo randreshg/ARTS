@@ -28,7 +28,7 @@
 /// count fails the test within seconds.  The test is judged on exit status 1
 /// and the guard's message.
 ///
-/// Single-node; no coherence protocol, write or release policy or payload
+/// Single-node; no validity, retention, read source or payload
 /// store changes the guard (it sits above the coherence layer).  Asserts the
 /// guard works (clean abort, exit 1).
 

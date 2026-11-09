@@ -181,7 +181,7 @@ void arts_run_edt(struct arts_edt_s *edt) {
    * release and the completion signal is relied on: each arm's release
    * returns only once a later acquirer is bound to see the writes — an arm
    * that publishes or invalidates at release waits for the home's
-   * acknowledgement; where the bytes stay at this rank (write-back, a
+   * acknowledgement; where the bytes stay at this rank (OWNER, a
    * retained right) the home sends that acquirer here; under exclusion the
    * home grants nobody else until it has paired the release with its payload;
    * and where the payload rests in CXL memory the release is sent only after

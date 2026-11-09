@@ -19,7 +19,7 @@
  * wrong value or a wrong GUID, a lost one as a never-firing group.
  *
  * The receiving EDTs record into one block with no order among them, which the
- * DB-WRF model does not admit.
+ * CDAG model does not admit.
  *
  * verify_edt deps: slot 0 = the group (DB_MODE_NULL), slot 1 = ref_db (RO),
  *                  slot 2 = results_db (RO).

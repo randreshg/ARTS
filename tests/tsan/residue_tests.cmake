@@ -6,8 +6,8 @@
 # unspecified, not the runtime's.  A test reaches that residue through the
 # shape of its acquisitions on an arm:
 #   R1  a read is served from a buffer that a writer on the serving rank, not
-#       ordered with the reader, is writing (the owner under write-back, the
-#       home holding the write grant under write-through);
+#       ordered with the reader, is writing (the owner under OWNER, the
+#       home holding the write grant under HOME);
 #   R2  a release publishes its write-through payload while another writer of
 #       the same rank, not ordered with it, writes the block (a write turn
 #       belongs to a rank, not to one EDT);
@@ -60,15 +60,15 @@ arts_tsan_residue(cat_c_ref_balance
     SHAPES R1)
 
 # The first writer, off the home, against unordered readers: served by the
-# writer's rank under write-back on every variant; on the home itself only
+# writer's rank under OWNER on every variant; on the home itself only
 # with two ranks, where the write-through publish and the FLUSH write-back
 # land in the buffer they read.
-arts_tsan_residue(db_no_acquire_wb_first_writer
+arts_tsan_residue(db_no_acquire_remote_first_writer
     CELLS VAL/RETAIN/OWNER INV/RETAIN/OWNER SHAPES R1)
-arts_tsan_residue(db_no_acquire_wb_first_writer
+arts_tsan_residue(db_no_acquire_remote_first_writer
     CELLS VAL/RETAIN/HOME VAL/PURGE/HOME INV/RETAIN/HOME INV/PURGE/HOME
     SHAPES R3 VARIANTS 2n_9w_1p)
-arts_tsan_residue(db_no_acquire_wb_first_writer
+arts_tsan_residue(db_no_acquire_remote_first_writer
     CELLS FLUSH SHAPES R5 VARIANTS 2n_9w_1p)
 
 # Writers (atomic increments, several per rank) and readers that read
@@ -123,7 +123,7 @@ arts_tsan_residue(lulesh_example
 
 # A create on a rank other than the home claims the first-touch cache its own
 # dependences made: the create's hold and those dependences' write turns share
-# the rank's turn, unordered, so under write-through a release publishes while
+# the rank's turn, unordered, so under HOME a release publishes while
 # another writer of that rank writes.  Their readers run on the same rank,
 # and the reader on the block's home runs after every writer, so no read is
 # served from a written buffer.

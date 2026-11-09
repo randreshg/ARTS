@@ -1,13 +1,13 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * The WT write policy's half of the migrating grant.
+ * The HOME read source's half of the migrating grant.
  *
  * coherence/grant.c holds what every grant-bearing arm shares (the local fast
  * path, the home FIFO, the transfer baton, the grant's ship).  This TU holds
- * what the WT write policy decides on top of it: a new owner installs, drains,
+ * what the HOME read source decides on top of it: a new owner installs, drains,
  * and RUNS immediately — there is no confirm gate, because the home serves
  * reads, so no reader can be sent to a stale copy while the directory catches
- * up.  (The WB write policy gates on CONFIRM_ACK for exactly that reason; see
+ * up.  (The OWNER read source gates on CONFIRM_ACK for exactly that reason; see
  * its own TU.)  Where the home revokes (RETAIN), the new owner then CONFIRMs
  * its install so the home can name it as the holder a later revocation
  * targets; where the holder hands the right back unasked (PURGE), the home
@@ -23,9 +23,9 @@
  * it — nothing this TU could add at the transfer or the CONFIRM would be
  * earlier than that, and a registration made here was erased by the
  * ex-holder's own in-flight release round.  The arts_db_grant_note_ex_holder
- * seam belongs to the policies that do have a point of their own between
- * the ex-holder's last round and the new owner's first: WB (its gated
- * CONFIRM) and PURGE (the hand-back).
+ * seam belongs to the read source and the retention that do have a point of
+ * their own between the ex-holder's last round and the new owner's first:
+ * OWNER (its gated CONFIRM) and PURGE (the hand-back).
  */
 #include <stdbool.h>
 #include <stdint.h>
@@ -44,10 +44,10 @@
 #include "arts/transport/protocol.h"
 #include "arts/utils/malloc.h"
 
-/* ===== WT GRANT_RESPONSE handler (new owner C) ================ */
+/* ===== HOME GRANT_RESPONSE handler (new owner C) ================ */
 
-/* WT converged onto the WB owner→owner transfer, with the CRITICAL
- * divergence: WT drains pending_rw + runs its RW EDTs IMMEDIATELY here (no
+/* HOME converged onto the OWNER owner→owner transfer, with the CRITICAL
+ * divergence: HOME drains pending_rw + runs its RW EDTs IMMEDIATELY here (no
  * CONFIRM_ACK gate — home serves RO, so there is no stale-RO window to close),
  * then, where the home revokes, sends CONFIRM to home (flips rw_holder +
  * advances the next round). */
@@ -82,7 +82,7 @@ static void home_response_commit(struct arts_db_s *db, uint64_t home_token) {
   arts_db_ro_combine_grant_drain(cache);
 #endif
 
-  /* WT drains + runs NOW (no confirm-ack gate): home serves RO so there is
+  /* HOME drains + runs NOW (no confirm-ack gate): home serves RO so there is
    * no stale-RO window. */
   unsigned int drained = arts_db_grant_commit_drain(cache);
 
@@ -97,7 +97,7 @@ static void home_response_commit(struct arts_db_s *db, uint64_t home_token) {
 
   /* Close the commit.  Whether that means dropping a hold the commit kept for
    * itself, or nothing at all because the hold already became the waiters',
-   * is the release policy's — as is what reaching the edge with no local
+   * is the retention's — as is what reaching the edge with no local
    * writer left implies: shipping onward to a target a round already named, or
    * handing the right straight back. */
   arts_db_grant_commit_finish(cache, drained);
@@ -160,7 +160,7 @@ void arts_handler_db_grant_response(void *payload, size_t size) {
   arts_guid_t db_guid = hdr->db_guid;
 
   /* Wire layout: header | map (count pairs, inline), and nothing after it: a
-   * payload from another rank travels one-sided.  WT keeps no owner-side
+   * payload from another rank travels one-sided.  HOME keeps no owner-side
    * ledger (it dedups RO via home->cached_version), so the map is only
    * bounded here. */
   size_t map_size =
@@ -242,13 +242,13 @@ void arts_db_grant_response_on(struct arts_db_s *db,
   arts_db_census_served(census);
 }
 
-/* ===== WT CONFIRM handler (home A) =============================== */
+/* ===== HOME CONFIRM handler (home A) =============================== */
 
 #ifndef ARTS_RETENTION_PURGE
 /* CONFIRM at the home, the answer to its transfer: on the home descriptor the
  * home token names, under the baton tenure's count.  The new owner's token
  * is unused here — the new owner is read from db->pending_install_owner
- * (stored by the baton holder).  WT does NOT send CONFIRM_ACK (the new owner
+ * (stored by the baton holder).  HOME does NOT send CONFIRM_ACK (the new owner
  * already drained its writers at GRANT_RESPONSE); it only flips rw_holder +
  * advances the next round.  Nothing gates on this message, so it can trail
  * the block's teardown, legally: the new owner's writers, drained before it
@@ -276,7 +276,7 @@ void arts_handler_db_grant_confirm(
       atomic_load_explicit(&db->grant_baton, memory_order_acquire));
 }
 
-/* ===== WT GRANT_INVALIDATE handler (pure body) =================== */
+/* ===== HOME GRANT_INVALIDATE handler (pure body) =================== */
 
 /* Pure (cache, args) body.  item_v is the holder's db_s (cache is its FIRST
  * member, offset 0), held by the wire dispatcher's lookup or, on a self-send,
@@ -284,7 +284,7 @@ void arts_handler_db_grant_confirm(
  * finds otherwise; the target is rw_holder, published
  * only at the post-install CONFIRM owner-swap, so the cache is provably
  * installed when INVALIDATE arrives.  No OoO defer is needed: rw_holder
- * flips post-install in both write policies, so no INVALIDATE can reach a
+ * flips post-install in both read sources, so no INVALIDATE can reach a
  * rank ahead of the GRANT it revokes.  GRANT(+sentinel) strictly precedes
  * INVALIDATE(-1); the install guard (+2) keeps writer_count non-negative even
  * if the next round's INVALIDATE lands mid-install on another progress
@@ -296,9 +296,10 @@ void arts_handler_db_grant_invalidate(void *item_v, void *args_v) {
   /* Publish the transfer target BEFORE withdrawing the sentinel: whichever
    * actor drives writer_count to 0 (this handler, or a concurrent last
    * release_rw) then reads the same new_owner and ships the grant to it.  Same
-   * store-before-decrement discipline the WB arm uses for incoming_new_owner;
-   * the WT INVALIDATE carries new_owner (home embeds the FIFO front),
-   * making the WT and WB transfer paths structurally identical. */
+   * store-before-decrement discipline the OWNER arm uses for
+   * incoming_new_owner;
+   * the HOME INVALIDATE carries new_owner (home embeds the FIFO front),
+   * making the HOME and OWNER transfer paths structurally identical. */
   cache->incoming_new_owner_rdzv = a->new_owner_rdzv;
   cache->incoming_new_owner_have = a->new_owner_have;
   cache->incoming_new_owner_token = a->new_owner_token;

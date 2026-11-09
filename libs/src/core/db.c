@@ -470,7 +470,7 @@ static void db_create_in_place(arts_guid_t guid, void *addr, uint64_t len,
 static void db_create_no_acquire_local(struct arts_db_s *db) {
 #if defined(ARTS_VALIDITY_EXCL)
 #if defined(ARTS_RETENTION_RETAIN)
-  /* RETAIN release policy: data lives with the owner, not the home — with no
+  /* RETAIN: data lives with the owner, not the home — with no
    * creator hold there is no owner unless we make one.  This rank (the GUID
    * home, where a local create runs) becomes the IDLE data owner with
    * owner-bit set but rw_st=IDLE, wc=0.  Its buffer does not exist yet: with
@@ -486,7 +486,7 @@ static void db_create_no_acquire_local(struct arts_db_s *db) {
                         LOCK_MAKE(EXCL_PHASE_IDLE, arts_global_rank_id, 0u, 0u),
                         memory_order_relaxed);
 #else  /* ARTS_RETENTION_PURGE */
-  /* PURGE release policy: the home holds the canonical buffer; undo the
+  /* PURGE retention: the home holds the canonical buffer; undo the
    * create-time creator RW seed → free lock, so the first acquirer is granted
    * rather than blocked behind a hold no EDT will ever release. */
   atomic_store_explicit(&db->cache.cache_state, 0ULL, memory_order_relaxed);
@@ -703,7 +703,7 @@ static bool db_create_claim_first_touch(struct arts_db_s *found,
   /* Within one lifetime the home answers no request for the block before this
    * create's announce, so the cache carries no hold and the hold commits; a
    * cache of an earlier lifetime that kept a right to the block (the write
-   * right; under EXCL x RETAIN also its resident bytes or a retained read
+   * right; under EXCL·RETAIN also its resident bytes or a retained read
    * grant) refuses it.  What the hold serves, it serves from this rank. */
   uint8_t census = arts_db_census_serving(false);
   bool held = arts_db_create_take_hold(cache, owed);
@@ -1148,7 +1148,7 @@ static void acquire_one_dep(struct arts_edt_s *edt, arts_edt_dep_t *depv,
   }
   struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(h);
 
-  /* Coherent ARTS_DB path (any protocol, either write policy): the arm's
+  /* Coherent ARTS_DB path (any protocol, either read source): the arm's
    * arts_handler_db_acquire.  The handler resolves the slot in its own frame,
    * or publishes it to its one resolver and touches neither the slot nor the
    * EDT again.  So the subtype and the descriptor pin go in first: the handle

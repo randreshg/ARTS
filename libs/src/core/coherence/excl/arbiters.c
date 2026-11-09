@@ -1,15 +1,15 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * EXCL protocol pure state-transition arbiters, one pair per release policy:
+ * EXCL protocol pure state-transition arbiters, one pair per retention:
  * PURGE's excl_compute_next (home lock_state) and cache_compute_next (cache
  * word), RETAIN's lock_owner_compute_next and cache_owner_compute_next.  The
- * two policies' words have different layouts, so each pair is compiled only
- * under its own policy.
+ * two retentions' words have different layouts, so each pair is compiled
+ * only under its own retention.
  *
  * purge.c and retain.c #include this file to get their private copy of their
- * policy's arbiters.  The whitebox unit test (tests/unit/excl_compute_next.c)
- * also #includes this file directly for standalone testing of the pure
- * functions.
+ * retention's arbiters.  The whitebox unit test
+ * (tests/unit/excl_compute_next.c) also #includes this file directly for
+ * standalone testing of the pure functions.
  *
  * NOT listed in CMakeLists.txt as a standalone TU.
  */
@@ -372,7 +372,7 @@ static inline uint32_t cache_owner_parked_ro(uint64_t s) {
  *                during the home's read phase the bytes are still here while
  *                the permission has been given up.
  *
- * That is also the whole difference between the two release policies.  The
+ * That is also the whole difference between the two retentions.  The
  * state machine is the same as PURGE's; PURGE relinquishes VOLUNTARILY at the
  * count zero edge, RETAIN holds until another node asks — a recall, or a grant
  * the home issued pre-marked (ro_st==GRANT_PURGE) because a writer was already
@@ -518,7 +518,7 @@ static uint64_t cache_owner_compute_next(uint64_t cur, int op,
         rws = CACHE_ST_IDLE; /* the permission leaves with the bytes */
         /* 0-edge with a pending migration: clear owner-bit + migrate_target in
          * the SAME next-state (single CAS) and signal the ship.  This is the
-         * EXCL RETAIN analogue of VAL's 0-edge transfer, but a single CAS — no
+         * EXCL·RETAIN analogue of VAL's 0-edge transfer, but a single CAS — no
          * split-decrement, no separate in-flight flag. */
         own = 0u;
         mt = ARTS_EXCL_NO_TARGET;

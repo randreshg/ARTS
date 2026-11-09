@@ -21,7 +21,7 @@
 /// the property under test is liveness (no deadlock) and one clean end.
 ///
 /// The initiators acquire one block RW with no order among them, so the
-/// program lies outside DB-WRF.
+/// program lies outside CDAG.
 
 #include "arts.h"
 

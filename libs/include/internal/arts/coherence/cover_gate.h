@@ -2,7 +2,7 @@
  *
  * The declared-arrival gate of a data block's home, on the arms whose home
  * counts covered requests apart from its release accounting (VAL, INV and
- * EXCL × RETAIN):
+ * EXCL·RETAIN):
  *
  *   cover_gate = [ td:1 (31) | rwo:1 (30) | roo:1 (29) | owed:29 ]
  *

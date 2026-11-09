@@ -21,7 +21,7 @@
  * threads.  It overrides ARTS_CONFIG (and clears the harness `ports`
  * override) so it is self-contained regardless of the registered config.
  *
- * Orthogonal to the coherence protocol axis (config.c is protocol-agnostic).
+ * Orthogonal to the coherence configuration (config.c is protocol-agnostic).
  */
 
 #include "arts.h"

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * The RETAIN release policy's half of the migrating grant.
+ * RETAIN's half of the migrating grant.
  *
  * An unasked holder keeps the grant forever.  Every hand-over is therefore
  * demand-driven and home-initiated: a queued request opens a revocation round,
@@ -10,8 +10,8 @@
  * its own idle edge is visible to the home — its release only decrements, and
  * ships only where a round has already named a target.
  *
- * Both write policies link this TU.  A round starts, advances and ends in one
- * function: under write-back the CONFIRM first tries to name the next target
+ * Both read sources link this TU.  A round starts, advances and ends in one
+ * function: under OWNER the CONFIRM first tries to name the next target
  * on its CONFIRM_ACK, and comes here only when it found none.
  */
 #include <stdbool.h>
@@ -84,7 +84,7 @@ void arts_db_grant_advance(struct arts_db_cache_s *cache, struct arts_db_s *db,
 }
 
 /* The CONFIRM of a transfer whose home was torn down meanwhile: where the
- * write policy gates nothing on it, the new owner's writers, drained before
+ * read source gates nothing on it, the new owner's writers, drained before
  * it leaves, may run, release, and be followed by the destroy before it
  * lands.  The tenure ends here with nothing popped, since a teardown serves
  * nothing (outside the destroy contract a request can still be queued; it

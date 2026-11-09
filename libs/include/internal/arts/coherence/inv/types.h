@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * INV protocol (write-invalidate) type layouts.  Both write policies share
+ * INV protocol (write-invalidate) type layouts.  Both read sources share
  * them; the build selects exactly one.
  *
  * A rank's cache carries two planes that share no word.  The reader plane is
@@ -16,12 +16,12 @@
  * release returns only after the round that covers it has an ack from every
  * copy it retired.
  *
- * The write policy decides only where the canonical bytes live.  Under WT a
+ * The read source decides only where the canonical bytes live.  Under HOME a
  * release's publish carries its payload into the home's stable buffer and
  * the home serves reads from it, stamped with the home's publication axis;
- * under WB the bytes stay with the grant's holder, the publish carries
+ * under OWNER the bytes stay with the grant's holder, the publish carries
  * control only, and the home redirects reads to the holder.  The round is
- * the same under both, but for WT's stamp.
+ * the same under both, but for HOME's stamp.
  *
  * Invariants of the reader word (the arbiters keep them):
  *   - a fetch is open (inflight) exactly while ro is REQ or REQ_KILL, so at
@@ -51,7 +51,7 @@ extern "C" {
 #endif
 
 /* ── cache word: the READER plane, and only the reader plane ─────────────
- * Identical under both write policies — what differs between WT and WB is
+ * Identical under both read sources — what differs between HOME and OWNER is
  * where a fetch is SERVED FROM, never what the requester's word does.
  *
  *   [ ro:2 (63..62) | inflight:1 (61) | rw:2 (60..59) | par:1 (58) |
@@ -147,7 +147,7 @@ extern "C" {
    (((uint64_t)(hro) & INV_CACHE_HEAD_MASK) << INV_CACHE_HEAD_RO_SHIFT))
 
 /* ── round word: the invalidation round's hold and its queue ─────────────
- * Identical under both write policies.
+ * Identical under both read sources.
  *
  *   round_queue = [ entries awaiting the next round | OPEN (bit 0) ]
  *
@@ -216,7 +216,7 @@ struct arts_db_inv_pub_s {
  * the fields shared with every other grant-bearing arm: writer_count carries
  * local writers plus a +1 sentinel while this rank holds the grant, so
  * writer_count > 0 IS "this rank may write".  Nothing withdraws the sentinel
- * except an INVALIDATE, which is what makes the grant sticky.  Under WB the
+ * except an INVALIDATE, which is what makes the grant sticky.  Under OWNER the
  * same word also carries ARTS_GRANT_UNCONFIRMED, so "may write" additionally
  * means the home has published the directory flip; the negative value it
  * produces is why the signed test is the predicate and not a convenience.
@@ -313,9 +313,9 @@ struct arts_db_cache_s {
 
   /* Publish write-combining — the write-side twin of VAL's RO combining
    * window.  The flight word, its waiter stack, the parked uncovered
-   * waiters and, under WT, the publish credit follow the VAL write-through
-   * layout's protocol exactly (see coherence/val/types.h).  A write-back
-   * release carries no payload, so its home mints no credit. */
+   * waiters and, under HOME, the publish credit follow VAL·HOME's layout
+   * protocol exactly (see coherence/val/types.h).  A release under OWNER
+   * carries no payload, so its home mints no credit. */
   _Atomic(unsigned int) pub_flight;
   arts_lf_stack_t pub_waiters;
   _Atomic(arts_lf_link_t *) pub_parked;
@@ -325,8 +325,8 @@ struct arts_db_cache_s {
   _Atomic(uint64_t) home_pub_txid;
 #endif
 #ifdef ARTS_RETENTION_PURGE
-  /* The hand-back obligation and the install count it names, as in the VAL
-   * write-through layout (see coherence/val/types.h). */
+  /* The hand-back obligation and the install count it names, as in
+   * VAL·HOME's layout (see coherence/val/types.h). */
   _Atomic(uint64_t) pending_grant_return;
   _Atomic(uint64_t) grant_generation;
 #endif
@@ -347,7 +347,7 @@ struct arts_db_cache_s {
  *      and driven by coherence/grant.c;
  *    - the invalidation round (round_queue / round_acks / roster), which is
  *      what makes this arm INV.
- *  Both write policies carry these fields; WT adds the publication axis its
+ *  Both read sources carry these fields; HOME adds the publication axis its
  *  serves stamp (hver). */
 struct arts_db_s {
   struct arts_db_cache_s cache; /**< FIRST — coherence state. */
@@ -368,7 +368,7 @@ struct arts_db_s {
 #ifndef ARTS_RETENTION_PURGE
   /* The holder a revocation targets; a home whose grants come back unasked
    * revokes no one, and its own possession is its whole directory.  Stored
-   * release and loaded acquire under the baton; under write-back the read
+   * release and loaded acquire under the baton; under OWNER the read
    * serve's load is outside it (directory.h). */
   _Atomic(unsigned int) rw_holder;
 #endif
@@ -473,7 +473,7 @@ struct arts_db_s {
 } ARTS_ALIGNED_MAX;
 
 /* ── pure arbiters (see arbiters.c) ─────────────────────────────────────── */
-/* Pure functions, identical under both write policies: the reader word's
+/* Pure functions, identical under both read sources: the reader word's
  * decider (fetch / park / publish / invalidate, a CAS-retry loop body), and
  * the round's own deciders, which only engine.c runs (it includes
  * arbiters.c): a release's decision on round_queue (a CAS-retry loop body)

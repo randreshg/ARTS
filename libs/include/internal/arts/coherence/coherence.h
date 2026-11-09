@@ -79,7 +79,7 @@ extern "C" {
  * dropped by the ack that ends the round, after the round's finish), and,
  * where the home revokes the write right, the transfer baton's tenure (taken
  * by the claim that lifts the baton off zero, carried across every pop of
- * the tenure, dropped by the put-down that ends it); on EXCL x RETAIN, the
+ * the tenure, dropped by the put-down that ends it); on EXCL·RETAIN, the
  * home's unconfirmed write requests, queued or migrating, while w is above zero
  * (taken by every write request before the CAS that may lift w off zero and
  * given back by one whose CAS found w above zero, dropped by the EXCL_CONFIRM
@@ -92,7 +92,7 @@ extern "C" {
  * drops its count.  As for a request axis, the teardown sweep drops the count
  * of a round a cut shutdown left open only on a home still installed at
  * teardown; a retired home keeps it to the process exit, as when the shutdown
- * cuts a write-through CONFIRM that legally trails the home's teardown.
+ * cuts a CONFIRM under HOME that legally trails the home's teardown.
  *
  * Self-sends.  A request whose home is this rank runs inline the body that,
  * from the wire, runs under the pin the dispatcher's lookup takes; here the
@@ -109,14 +109,14 @@ extern "C" {
  * request's count, which the body's grant or dismiss can close).  The home's
  * INVALIDATE to its own rank is such a request (its holder body can ship a
  * whole transfer to this rank inline, whose CONFIRM may end the tenure the
- * caller runs under), and so is the EXCL x RETAIN home's FORWARD to itself as
+ * caller runs under), and so is the EXCL·RETAIN home's FORWARD to itself as
  * owner, a hop whose wire entry pins the block by its lookup (a migrate to this
  * rank can grant the write turn and CONFIRM it inline, dropping the write
  * request's count and, when w returns to zero, the home's); each calls its
  * handler directly and looks the block up when it is not live.  The new owner's
  * CONFIRM to its own rank, an answer to the home's own tenure, takes none: its
  * body is reached through the home token and runs under the tenure's count.
- * Under write-back the CONFIRM_ACK it sends inline drops the count of the write
+ * Under OWNER the CONFIRM_ACK it sends inline drops the count of the write
  * request its committing caller runs under, so that caller sends the CONFIRM as
  * its last access.  An EXCL_CONFIRM to its own home takes none: its body never
  * drops the write request's count its callers run under (it drops the home's
@@ -129,7 +129,7 @@ extern "C" {
  * round killed) under its own axis count.  Nor do the self branches whose
  * bodies drop no count their caller runs under: a DESTROY (on the caller's own
  * reference), a snapshot redirect, an INV invalidate and its ack (whose body
- * runs under the round's count and drops it last), EXCL x RETAIN's RECALL and
+ * runs under the round's count and drops it last), EXCL·RETAIN's RECALL and
  * RO_RETURN (whose callers, a request body, a recall body and a read release,
  * run under a pin or a count no body drops).
  *
@@ -147,7 +147,7 @@ extern "C" {
  * behind an uncovered one, whose waiters cannot complete before its answer, so
  * no legal destroy precedes the take.  A decrement that precedes the take (a
  * claim's, which holds a count of its own) therefore never reaches zero.  The
- * EXCL x RETAIN home's count is the exception: another frame can start the
+ * EXCL·RETAIN home's count is the exception: another frame can start the
  * migration a write request's CAS counted, and its EXCL_CONFIRM can legally
  * reach the home retired meanwhile and drop the count, so the take precedes the
  * CAS that lifts w; every write of that word is an acq_rel read-modify-write,
@@ -254,10 +254,10 @@ void arts_db_cache_destructor(struct arts_db_cache_s *cache);
 
 /*--- Acquire path --------------------------------------------------------
  *
- * Implements the 8-case dispatcher (WT × WB × {RO, RW}), the remote
- * acquire helpers (GRANT_REQUEST for RW, SNAPSHOT_REQUEST for RO), the
- * GRANT/SNAPSHOT_RESPONSE-side drain routines, and the WB first-touch cache_s
- * allocation for foreign ranks.
+ * Implements the 8-case dispatcher (is_home × is_owner × {RO, RW}, one body
+ * per read source), the remote acquire helpers (GRANT_REQUEST for RW,
+ * SNAPSHOT_REQUEST for RO), the GRANT/SNAPSHOT_RESPONSE-side drain routines,
+ * and the OWNER first-touch cache_s allocation for foreign ranks.
  *
  * Result enum, returned by the remote acquire helpers
  * (arts_db_acquire_remote_ro / arts_db_acquire_remote_rw): OK means data was
@@ -302,8 +302,8 @@ arts_db_cache_stub_install_into(struct arts_route_item_s *slot,
  * run, so the record's pin stays); an off-walk OoO replay through the OoO
  * dispatcher's pin on the installed object, held across every dispatch -- not
  * through the record's pin, which the EDT's release drops.  So the rest of an
- * off-walk replay's handler (a read's request send, a write-through home's
- * re-check and drain of its publication waiters) may run after the slot's EDT
+ * off-walk replay's handler (a read's request send, the re-check and drain
+ * of a home's publication waiters under HOME) may run after the slot's EDT
  * ran, released and the program legally destroyed the block: the caller's pin
  * covers the free; the destroy's synchronous half touches no state that rest
  * touches; and a request sent after its slot was served is a covered request
@@ -346,18 +346,18 @@ void arts_db_fill_aliases(struct arts_edt_s *edt, unsigned int owner_slot);
  * engine must therefore fire in one global GUID order so an EDT's own
  * acquisitions cannot deadlock against another EDT's.  An arm whose acquire
  * waits on nobody serializes nothing.  DB_MODE_NULL acquires nothing and is
- * never serialized.  Defined in each arm's own write-policy TU. */
+ * never serialized.  Defined in each arm's own read-source TU. */
 bool arts_db_acquire_is_serialized(arts_db_access_mode_t mode);
 
 /*--- Release path --------------------------------------------------------
  *
  * Each arm defines its own RW release.  Under VAL and INV it bumps the
  * buffer's version, publishes where the arm does and waits for that publish's
- * ACK — VAL WT ships the payload to the home from any other rank; INV, on a
+ * ACK — VAL·HOME ships the payload to the home from any other rank; INV, on a
  * run of several ranks, asks the home for the release's invalidation round,
- * carrying the payload under WT from a rank other than the home (on a run of
+ * carrying the payload under HOME from a rank other than the home (on a run of
  * one rank no round has a target, so none is asked for) — and then takes the
- * release policy's count-dropping edge: the last writer of a revoked grant
+ * retention's count-dropping edge: the last writer of a revoked grant
  * ships it to the target the round named, and a voluntarily returned grant
  * goes back to the home, riding the publish where there is one. */
 
@@ -389,17 +389,17 @@ void arts_db_release_ro(struct arts_db_cache_s *cache);
 void arts_db_join_read(struct arts_db_cache_s *cache);
 
 /* ===== Shared coherence services (defined in coherence.c) ============
- * Model TUs (and the release-family TU) call back into these model-agnostic
+ * Model TUs (and the retention TU) call back into these model-agnostic
  * helpers.  These are the genuinely shared coherence internals the per-model
  * handler bodies reuse; they carry no model #ifdef. */
 
 /* Releaser-side reply rendezvous: the wait state a blocked releaser parks on
  * until the home answers one message.  Its ADDRESS travels as the wire `cv`
  * and the answer posts it by pointer identity: the PUBLISH_CTS to a publish
- * announce (VAL and INV write-through, EXCL PURGE's landing-less release),
+ * announce ({VAL,INV}·HOME, EXCL·PURGE·HOME's landing-less release),
  * whose handler writes `landing` before posting (sem_post is the
  * release/acquire edge), or the PUBLISH_ACK to a grant return sent on its own
- * (VAL and INV PURGE), which posts it alone.  It lives in the releaser's
+ * ({VAL,INV}·PURGE), which posts it alone.  It lives in the releaser's
  * frame: the releaser leaves its wait only after the one post, and the
  * answer touches it no more once posted.  `sem` MUST be the first member:
  * the ACK path posts (sem_t *)cv directly, so &wr == &wr.sem. */
@@ -408,8 +408,8 @@ struct arts_db_pub_rendezvous_s {
   struct arts_rdzv_landing_s landing;
 };
 
-/* Synchronous publish to the DB's home: the write-through releases of VAL and
- * INV, which ship the payload, and INV WB's release, whose publish is
+/* Synchronous publish to the DB's home: the releases of {VAL,INV}·HOME,
+ * which ship the payload, and INV·OWNER's release, whose publish is
  * control-only (the invalidation-round request).  Registers the caller as a
  * version-covered waiter on the cache's publish flight: at most one publish is
  * in flight per (DB, rank), a payload flight ships the cache buffer's CURRENT
@@ -503,7 +503,7 @@ void arts_db_resolve_slot_cached(struct arts_edt_s *edt, unsigned int slot);
 
 #if (defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)) &&              \
     defined(ARTS_READ_SOURCE_HOME)
-/* Wake every read parked on a write-through home before the block's first
+/* Wake every read parked on a home under HOME before the block's first
  * publication (see the definition).  Called at the publication edges and at a
  * grant's install. */
 void arts_db_drain_publication_waiters(struct arts_db_cache_s *cache);
@@ -597,7 +597,7 @@ static inline uint64_t arts_db_cxl_slot_mint(uint64_t db_size) {
 #endif /* ARTS_USE_CXL */
 
 /* Case-D (arts_handler_db_create) per-protocol leaf function.
- * install_home_buffer: WT/WB defer the install to the creator's first
+ * install_home_buffer: HOME/OWNER defer the install to the creator's first
  * PUBLISH (no-op here).  Defined once per protocol TU. */
 void arts_db_create_install_home_buffer(struct arts_db_cache_s *cache,
                                         uint64_t db_size);
@@ -723,9 +723,9 @@ void arts_db_create_retract_creator_copy(struct arts_db_s *db);
 
 #if defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)
 /* Single-owner ownership machinery shared by every grant-bearing arm (VAL,
- * INV) (defined in coherence/grant.c).  Called by the WT/WB
+ * INV) (defined in coherence/grant.c).  Called by the HOME/OWNER
  * arts_handler_db_acquire bodies; the RO-path predicate is the only divergence
- * between WT and WB, so it stays inline in each protocol's handler.
+ * between HOME and OWNER, so it stays inline in each protocol's handler.
  *
  * arts_db_acquire_remote_rw: the remote-RW acquire path.  Pushes a
  * pending_rw waiter and kicks a GRANT_REQUEST if none is in flight —
@@ -734,8 +734,8 @@ arts_db_acquire_result_t
 arts_db_acquire_remote_rw(struct arts_db_cache_s *cache, struct arts_edt_s *edt,
                           unsigned int slot);
 
-/* ===== Release-policy seams (coherence/grant_purge.c / grant_retain.c) =====
- * WHO initiates the grant's return is the release policy's whole question, and
+/* ===== Retention seams (coherence/grant_purge.c / grant_retain.c) =====
+ * WHO initiates the grant's return is the retention's whole question, and
  * these points are where the two answers differ.  Under RETAIN the home
  * drives every hand-over (it revokes the current holder and the holder ships
  * onward), so the request arrival starts a round, the new owner's CONFIRM
@@ -777,15 +777,15 @@ void arts_db_grant_end_tenure(struct arts_db_s *db);
 #endif
 bool arts_db_grant_release_skip(struct arts_db_cache_s *cache);
 void arts_db_grant_release_commit(struct arts_db_cache_s *cache);
-/* The install's drain, and what closes it.  Under a demand-revoked policy the
- * commit keeps a hold of its own across the walk and drops it at the end;
- * under a voluntary-return policy the commit's hold BECOMES the waiters' holds
- * in one step before any of them is woken, so the last of them to release sees
- * a word carrying exactly its own hold and can hand the right back on its own
- * publish.  commit_drain returns how many waiters it woke and commit_finish is
- * given that count: where the hold became the waiters', at least one waiter
- * must have taken it.  commit_drain closes the write axis; the commit drops
- * its count once commit_finish has returned. */
+/* The install's drain, and what closes it.  Under RETAIN the commit keeps a
+ * hold of its own across the walk and drops it at the end; under PURGE the
+ * commit's hold BECOMES the waiters' holds in one step before any of them is
+ * woken, so the last of them to release sees a word carrying exactly its own
+ * hold and can hand the right back on its own publish.  commit_drain returns
+ * how many waiters it woke and commit_finish is given that count: where the
+ * hold became the waiters', at least one waiter must have taken it.
+ * commit_drain closes the write axis; the commit drops its count once
+ * commit_finish has returned. */
 unsigned int arts_db_grant_commit_drain(struct arts_db_cache_s *cache);
 void arts_db_grant_commit_finish(struct arts_db_cache_s *cache,
                                  unsigned int drained);
@@ -806,7 +806,7 @@ void arts_pending_rw_chain_wake(arts_lf_link_t *chain,
                                            void *ctx),
                                 void *ctx);
 /* ===== The hand-back as a rider on the release's own publish =============
- * A write-through release already sends the home its payload, and the home is
+ * A release under HOME already sends the home its payload, and the home is
  * exactly who the write right goes back to — so the two travel together and
  * the hand-back costs no message of its own.  What that buys has to be paid
  * for in discipline: the hand-back becomes an OBLIGATION on the cache, and an
@@ -874,7 +874,7 @@ bool arts_db_acquire_rw_local_fast(struct arts_db_cache_s *cache,
 #if defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)
 /* GRANT drain: install the granted waiters — takes every pending_rw waiter
  * and adds their holds to writer_count in one step before waking any of them.
- * Called where a write grant commits on this rank: the WB CONFIRM_ACK
+ * Called where a write grant commits on this rank: the OWNER CONFIRM_ACK
  * handler, RETAIN's commit drain, and a PURGE home that serves its own request
  * from the head of its grant queue.  It closes the write axis
  * (arts_db_grant_take_waiters): the calling frame drops its count at its

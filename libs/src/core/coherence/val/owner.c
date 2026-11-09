@@ -1,11 +1,11 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * WB write-policy translation unit: defines the WB-specific
+ * OWNER read-source translation unit: defines the OWNER-specific
  * arts_handler_db_* / arts_db_* bodies directly (CMake links exactly this TU
- * for a VAL+WB build) plus the WB-only wire handlers/senders.
+ * for a VAL·OWNER build) plus the OWNER-only wire handlers/senders.
  * Compiled only for ARTS_VALIDITY=VAL with
  * ARTS_READ_SOURCE=OWNER (selected in libs/src/core/CMakeLists.txt).
- * Contains NO protocol/write-policy preprocessor logic.
+ * Contains NO protocol/read-source preprocessor logic.
  */
 #include <stdbool.h>
 #include <stdint.h>
@@ -28,9 +28,9 @@
 #include "arts/transport/protocol.h"
 #include "arts/utils/malloc.h"  /* arts_malloc / arts_free (transfer sender) */
 
-/* ===== 8-case acquire dispatch (WB arm) ==========================
- * Whole arts_handler_db_acquire body for the WB build.  Diverges from WT
- * only on the RO-has-local-data predicate (WB: is_owner — the home rank does
+/* ===== 8-case acquire dispatch (OWNER arm) ==========================
+ * Whole arts_handler_db_acquire body for the OWNER build.  Diverges from HOME
+ * only on the RO-has-local-data predicate (OWNER: is_owner — the home rank does
  * NOT hold the canonical copy; only the current owner has an installed buffer,
  * so a home-but-not-owner rank goes through acquire_remote_ro and home forwards
  * to the owner via SNAPSHOT_REDIRECT). */
@@ -53,7 +53,7 @@ void arts_handler_db_acquire(void *item, void *args) {
       (atomic_load_explicit(&cache->writer_count, memory_order_acquire) != 0u);
 
   if (mode == DB_MODE_RO) {
-    if (has_canonical_copy) { /* WB RO predicate (only a grant holder has the
+    if (has_canonical_copy) { /* OWNER RO predicate (only a grant holder has the
                                  canonical copy; home holds no bytes) */
       /* First use of a block whose create took no hold: its storage was left
        * for whoever uses it first, and holding the block's ownership is what
@@ -89,7 +89,7 @@ bool arts_db_acquire_is_serialized(arts_db_access_mode_t mode) {
   return mode == DB_MODE_RW;
 }
 
-/* ===== release_rw (WB arm) =======================================
+/* ===== release_rw (OWNER arm) =======================================
  * The bytes stay here: the release bumps the version of the buffer this
  * rank's writers wrote, under the releaser's own hold, and the count's edge
  * (arts_db_grant_release_commit) ships the grant on when a revocation named
@@ -142,8 +142,8 @@ void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload) {
   arts_db_grant_release_commit(cache);
 }
 
-/* ===== cache_s lifecycle (WB) ======================================
- * Construct: the WB write policy's own fields (the pending_rw Treiber stack,
+/* ===== cache_s lifecycle (OWNER) ======================================
+ * Construct: the OWNER read source's own fields (the pending_rw Treiber stack,
  * the owner-side dedup ledger, the transfer target), then
  * arts_db_cache_common_init.  Destruct order: buffer-NULL (pre) → pending_rw
  * destroy → ledger free → snapshot drain + home teardown (post). */
@@ -151,7 +151,7 @@ void arts_db_cache_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
                         uint64_t db_size, arts_db_init_kind_t kind,
                         unsigned int creator_rank) {
   arts_pending_rw_queue_init(&c->pending_rw);
-  /* WB owner-side fields.  The dedup ledger is allocated HERE, once, rather
+  /* OWNER owner-side fields.  The dedup ledger is allocated HERE, once, rather
    * than on first use: its readers hold no reference to it, so a ledger that
    * could be created (or replaced) later would have to carry a lifetime
    * protocol to be read safely.  Allocated with the cache and freed with it,
@@ -232,12 +232,12 @@ void arts_handler_db_snapshot_request(void *item_v, void *args_v) {
     }
   }
 
-  /* WB home-side RO routing.
+  /* OWNER home-side RO routing.
    *
-   * Under the WB write policy home does not hold the canonical data copy — the
-   * current owner does.  Home's job is to redirect the requester to the owner
-   * (via SNAPSHOT_REDIRECT) so the owner can send SNAPSHOT_RESPONSE directly,
-   * applying the owner-side cached_version dedup.
+   * Under the OWNER read source home does not hold the canonical data copy —
+   * the current owner does.  Home's job is to redirect the requester to the
+   * owner (via SNAPSHOT_REDIRECT) so the owner can send SNAPSHOT_RESPONSE
+   * directly, applying the owner-side cached_version dedup.
    *
    * Record the requester in the cached-ranks set, then redirect to the current
    * owner.  A request reaching a home its destroy marked but did not yet tear
@@ -462,7 +462,7 @@ void arts_send_db_snapshot_redirect(struct arts_db_s *db,
   }
 }
 
-/* Case-D leaf: the WB write policy defers the home-buffer install to the
+/* Case-D leaf: the OWNER read source defers the home-buffer install to the
  * creator's first release_rw (PUBLISH / GRANT path); nothing to do at
  * create. */
 void arts_db_create_install_home_buffer(struct arts_db_cache_s *cache,

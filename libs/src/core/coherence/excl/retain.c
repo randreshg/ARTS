@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * EXCL protocol, RETAIN release policy.
+ * EXCL protocol, retention RETAIN.
  *
  * The home holds no bytes — only a directory (current owner, phase, waiter
  * queues).  The payload stays with the last read--write holder and moves
@@ -17,8 +17,8 @@
  * being served from a second copy — which is what phase exclusion means.
  *
  * Compiled only for ARTS_VALIDITY=EXCL + ARTS_RETENTION=RETAIN;
- * the release-policy variant is a link-time file choice, so this TU contains no
- * release-policy preprocessor guards.
+ * the retention variant is a link-time file choice, so this TU contains no
+ * retention preprocessor guards.
  */
 
 /* excl/types.h must precede all other coherence headers: it defines
@@ -98,7 +98,7 @@ bool arts_db_acquire_is_serialized(arts_db_access_mode_t mode) {
 }
 
 /* ===== arts_db_cache_init ==============================================
- * Initialize the per-rank cache for the EXCL RETAIN protocol.
+ * Initialize the per-rank cache for EXCL·RETAIN.
  *
  * Creator hold: arts_db_create defaults to an RW acquire (OCR contract; only
  * ARTS_DB_PROP_NO_ACQUIRE skips it).  The creator is the first data owner, so

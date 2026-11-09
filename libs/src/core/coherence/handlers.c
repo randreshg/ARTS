@@ -22,7 +22,7 @@
  * Either way an (item, args) body operates on the already-acquired,
  * ref-pinned cache (the FIRST member of the db_s the caller hands it) and
  * does not look it up to operate on it.  A message handed over as the whole
- * packet (the EXCL RETAIN FORWARD, RO_RETURN and RECALL) has a wire entry
+ * packet (the EXCL·RETAIN FORWARD, RO_RETURN and RECALL) has a wire entry
  * that looks its block up once and a body on the object.
  *   - Answers to this rank's own requests (VAL, INV; EXCL: EXCL_CTS,
  *     EXCL_GRANT, EXCL_DELIVER): the entry takes the requester's descriptor
@@ -87,16 +87,16 @@
 /* arts_handler_db_grant_request lives in coherence/grant.c (VAL, INV). */
 
 /* arts_handler_db_snapshot_request (SNAPSHOT_REQUEST) is protocol-specific —
- * WT serves from home's canonical buffer (dedup), WB records the
+ * HOME serves from home's canonical buffer (dedup), OWNER records the
  * sharer + REDIRECTs to the owner — so its whole body lives in
- * each arm's own write-policy TU. */
+ * each arm's own read-source TU. */
 
-/* arts_handler_db_publish is protocol-specific — VAL WT stamps the version
+/* arts_handler_db_publish is protocol-specific — VAL·HOME stamps the version
  * of the bytes PUT in place into the stable buffer and ACKs (ownership moves on
  * the grant plane: under RETAIN the owner-to-owner ship, under PURGE a commit
  * may carry the hand-back, accepted once the stamp is in place), INV runs the
- * release's invalidation round under either write policy — so its whole body
- * lives in the arm's own TU.  VAL WB publishes nothing to the home at a
+ * release's invalidation round under either read source — so its whole body
+ * lives in the arm's own TU.  VAL·OWNER publishes nothing to the home at a
  * release, and EXCL and FLUSH have release messages of their own
  * (EXCL_RELEASE, RETAIN's owner-to-owner EXCL_DELIVER, FLUSH_COMMIT); none
  * of them sends MSG_DB_PUBLISH, so none defines this body. */
@@ -298,8 +298,8 @@ void arts_handler_db_create(void *item_v, void *args_v) {
    * on these arms keys on.  A create confers the block's write right on some
    * rank (its own, or the home under NO_ACQUIRE), so a publish is coming
    * wherever the creator acquires, and the target must exist before it can
-   * arrive.  Which arms need one at all is the leaf's own decision: a
-   * write-back home holds no payload and its leaf is a no-op. */
+   * arrive.  Which arms need one at all is the leaf's own decision: under
+   * OWNER the home holds no payload and its leaf is a no-op. */
   if (!no_acquire) {
     arts_db_create_install_home_buffer(&stub->cache, db_size);
   }
@@ -341,8 +341,8 @@ void arts_handler_db_create(void *item_v, void *args_v) {
 
 /* ===== Sharer-side response handlers =============================== */
 
-/* The WT GRANT_RESPONSE handler arts_handler_db_grant_response lives in
- * coherence/grant_home.c; WB's overload lives in
+/* The HOME GRANT_RESPONSE handler arts_handler_db_grant_response lives in
+ * coherence/grant_home.c; OWNER's overload lives in
  * coherence/grant_owner.c. */
 
 /* Consume an in-flight rendezvous whose receiver-side object is gone: the
@@ -435,7 +435,7 @@ static void snapshot_landed_discard(void *arg) {
  * that travel one-sided are installed first (version-conditional); a reply
  * that moves none names a version this cache already holds, and resumes
  * against the live buffer.  The frame that closes the window drops its count
- * last.  Shared verbatim by WT/WB. */
+ * last.  Shared verbatim by HOME/OWNER. */
 void arts_handler_db_snapshot_response(
     struct arts_db_snapshot_response_args_s *a) {
   struct arts_db_s *db = arts_db_from_token(a->token, a->db_guid);
@@ -526,13 +526,13 @@ void arts_handler_db_snapshot_response(
 }
 #endif /* the versioned-snapshot read path */
 
-/* arts_handler_db_grant_invalidate (GRANT_INVALIDATE) lives per write policy:
+/* arts_handler_db_grant_invalidate (GRANT_INVALIDATE) lives per read source:
  * coherence/grant_home.c (commutative signed counter) and
  * coherence/grant_owner.c (publish-target-then-withdraw). */
 
 /* arts_handler_db_publish_ack is the shared flight-completion body, defined
  * ONCE in coherence/coherence.c for every publishing arm (gated
- * !EXCL && (!WB || INV)); the exclusion arm has no synchronous publish and
+ * !EXCL && (!OWNER || INV)); the exclusion arm has no synchronous publish and
  * its dispatcher fatals on the message. */
 
 /* Cat-C pure body (CACHE_DESTROY).  The wire dispatcher has already looked
@@ -558,5 +558,5 @@ void arts_handler_db_cache_destroy(void *item_v, void *args_v) {
   (void)arts_ooo_retire(a->db_guid, db->self_cb);
 }
 
-/* The WB SNAPSHOT_REDIRECT handler arts_handler_db_snapshot_redirect lives in
- * coherence/val/owner.c (owner-side, REDIRECT only exists under WB). */
+/* The OWNER SNAPSHOT_REDIRECT handler arts_handler_db_snapshot_redirect lives
+ * in coherence/val/owner.c (owner-side, REDIRECT only exists under OWNER). */

@@ -24,7 +24,7 @@
  * double-schedule trips the double-run check.
  *
  * The EDTs record into the state block with no order among them, which the
- * DB-WRF model does not admit.
+ * CDAG model does not admit.
  */
 
 #include <stdatomic.h>

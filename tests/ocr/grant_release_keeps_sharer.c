@@ -12,7 +12,7 @@
  * already asking; Z writes; Y reads, event-ordered after both.  Under the
  * OCR model's exclusive RW turn the only legal value is two increments;
  * the two writers are ordered by that turn alone, never by happens-before,
- * so the program is outside DB-WRF and is not built for the FLUSH arm.
+ * so the program is outside CDAG and is not built for the FLUSH arm.
  * Failure is reported by exit status.  Two ranks are enough for the shape
  * (Z is then the home); with three or more Z is another non-home rank, the
  * case where Z's CONFIRM travels the wire.

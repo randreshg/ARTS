@@ -30,7 +30,7 @@
  * Its checks are a membership set and exact counts, never one sender's issue
  * order, which the transport does not keep across several progress threads.
  *
- * The counting EDTs increment one block with no order among them, which DB-WRF
+ * The counting EDTs increment one block with no order among them, which CDAG
  * does not admit.
  */
 

@@ -154,10 +154,10 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
    * handler.  Only GRANT_RESPONSE has a trailer, its dedup map.
    *
    * GRANT_REQUEST: shared by the arms with a migrating grant (VAL, INV)
-   * under both write policies, but EXCL has no such concept.  Fatal in
+   * under both read sources, but EXCL has no such concept.  Fatal in
    * EXCL builds to catch binary mode mismatch.
    * GRANT_INVALIDATE is handled in its own block below: a direct call under
-   * both write policies of a RETAIN build, never deferred, and refused by
+   * both read sources of a RETAIN build, never deferred, and refused by
    * every other build.
    */
 #if defined(ARTS_VALIDITY_FLUSH)
@@ -191,7 +191,7 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
   }
 #endif /* model dispatch for MSG_DB_GRANT_REQUEST */
   /* GRANT_RETURN — the voluntary hand-back of a migrating grant, which
-   * exists only where VAL or INV run the PURGE release policy.  Under RETAIN
+   * exists only where VAL or INV run the PURGE retention.  Under RETAIN
    * the home revokes the grant, and EXCL has no migrating grant, so receiving
    * one is a mode mismatch. */
 #if defined(ARTS_VALIDITY_FLUSH)
@@ -221,10 +221,10 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
   }
 #endif /* grant-arm PURGE */
   /* GRANT_INVALIDATE — protocol-split.
-   *   VAL, INV under RETAIN (WT and WB): NOT deferred.  Home publishes the
+   *   VAL, INV under RETAIN (HOME and OWNER): NOT deferred.  Home publishes the
    *           invalidate target (rw_holder) only after that rank's cache
-   *           install — the CONFIRM owner-swap (post-install in both write
-   *           policies) or the DB_CREATE on the creator — so the target's
+   *           install — the CONFIRM owner-swap (post-install in both read
+   *           sources) or the DB_CREATE on the creator — so the target's
    *           cache is provably already installed when INVALIDATE arrives.
    *           Call the pure handler body directly with the looked-up cache.
    *   EXCL: no migrating grant; PURGE: the holder returns the grant itself.
@@ -240,8 +240,8 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
   }
 #elif defined(ARTS_RETENTION_PURGE)
   case MSG_DB_GRANT_INVALIDATE: {
-    ARTS_ERROR("voluntary-return build received INVALIDATE from rank %u — "
-               "under this release policy the grant comes back at the "
+    ARTS_ERROR("PURGE build received INVALIDATE from rank %u — "
+               "under this retention the grant comes back at the "
                "holder's own idle edge and the home never asks for it; "
                "binary mode mismatch?",
                packet->rank);
@@ -469,7 +469,7 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
   }
 #endif /* ARTS_VALIDITY_FLUSH */
   /* GRANT_RESPONSE: the single ownership-transfer wire message.  One layout
-   * carries the dedup map, which only VAL WB fills (every other arm sends
+   * carries the dedup map, which only VAL·OWNER fills (every other arm sends
    * map_entry_count=0); the payload travels one-sided.  EXCL has no
    * ownership transfer and fatals to catch a binary mode mismatch. */
 #if defined(ARTS_VALIDITY_FLUSH)
@@ -502,8 +502,8 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
     break;
   }
 #endif /* model dispatch for MSG_DB_GRANT_RESPONSE */
-/* The CTS leg exists only when a publish carries payload — i.e. under WT
- * (and EXCL's purge policy).  INV's WB publish is control-only, so it never
+/* The CTS leg exists only when a publish carries payload — i.e. under HOME
+ * (and EXCL·PURGE·HOME).  INV's OWNER publish is control-only, so it never
  * announces. */
 #if defined(ARTS_VALIDITY_FLUSH)
 /* Refused in one place below: this arm has none of these rounds. */
@@ -516,8 +516,8 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
     break;
   }
 #else
-  /* PUBLISH_CTS: the announce leg of a WT payload publish (VAL, INV), and
-   * EXCL PURGE's landing-less RW release (a creator-seeded hold that never
+  /* PUBLISH_CTS: the announce leg of a HOME payload publish (VAL, INV), and
+   * EXCL·PURGE's landing-less RW release (a creator-seeded hold that never
    * received a grant). */
   case MSG_DB_PUBLISH_CTS: {
     ARTS_DEBUG("Coh PUBLISH_CTS Received");
@@ -540,9 +540,9 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
     break;
   }
 #endif /* arm dispatch for MSG_DB_PUBLISH_CTS */
-/* Every arm that publishes at a release: WT write policies (payload write-through)
- * and INV under either write policy (its release always asks the home for an
- * invalidation round, carrying payload only under WT). */
+/* Every arm that publishes at a release: the HOME read source's (payload
+ * write-through) and INV under either read source (its release always asks the
+ * home for an invalidation round, carrying payload only under HOME). */
 #if defined(ARTS_VALIDITY_FLUSH)
   /* PUBLISH / PUBLISH_ACK are refused in one place below; the create's line
    * credential is this arm's too, and lands in its own cache fields. */
@@ -643,7 +643,7 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
     arts_shared_release(&h);
     break;
   }
-#else  /* INV WB: its creates mint no credit */
+#else  /* INV·OWNER: its creates mint no credit */
   case MSG_DB_CREATE_RETURN: {
     ARTS_ERROR("this build received a create credit from rank %u — its "
                "creates mint none; binary mode mismatch?",
@@ -677,9 +677,10 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
                                     sizeof(args));
     break;
   }
-  /* The versioned-snapshot redirect: VAL's read path under WB, where the home
- * holds no bytes and forwards the read to the owner.  INV has its own reader
- * plane (INV_REDIRECT) and EXCL its own FORWARD, so both are excluded. */
+  /* The versioned-snapshot redirect: VAL·OWNER's read path, where the home
+   * holds no bytes and forwards the read to the owner.  INV has its own
+   * reader plane (INV_REDIRECT) and EXCL its own FORWARD, so both are
+   * excluded. */
 #if defined(ARTS_VALIDITY_FLUSH)
 /* Refused in one place below: this arm has none of these rounds. */
 #elif defined(ARTS_READ_SOURCE_OWNER) && !defined(ARTS_VALIDITY_EXCL) &&       \
@@ -722,11 +723,12 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
                packet->rank);
     break;
   }
-#endif /* VAL + WB snapshot redirect */
+#endif /* VAL·OWNER snapshot redirect */
 
-/* CONFIRM_ACK is the WB write policy's confirm gate: a new owner may not run
+/* CONFIRM_ACK is the OWNER read source's confirm gate: a new owner may not run
  * until the home has published the directory flip.  Every grant-bearing arm
- * needs it under WB — the gate belongs to the write policy, not the protocol. */
+ * needs it under OWNER — the gate belongs to the read source, not the
+ * validity. */
 #if defined(ARTS_VALIDITY_FLUSH)
 /* Refused in one place below: this arm has none of these rounds. */
 #elif defined(ARTS_READ_SOURCE_OWNER) && !defined(ARTS_VALIDITY_EXCL)
@@ -741,14 +743,14 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
 #else
   case MSG_DB_GRANT_CONFIRM_ACK: {
     ARTS_ERROR("this build received GRANT_CONFIRM_ACK from rank %u — it "
-               "has no WB-write-policy confirm gate; binary mode mismatch?",
+               "has no OWNER confirm gate; binary mode mismatch?",
                packet->rank);
     break;
   }
-#endif /* WB-write-policy confirm gate */
-  /* GRANT_CONFIRM: both write policies of the revoking release policy (new
-   * owner C → home A flips rw_holder + advances the round).  WB additionally
-   * replies with CONFIRM_ACK; WT's home handler does not (the new owner
+#endif /* OWNER confirm gate */
+  /* GRANT_CONFIRM: both read sources of the revoking retention (new
+   * owner C → home A flips rw_holder + advances the round).  OWNER additionally
+   * replies with CONFIRM_ACK; HOME's home handler does not (the new owner
    * already drained at GRANT_RESPONSE).  EXCL has no ownership transfer and a
    * voluntarily returned grant names no holder, so both fatal. */
 #if defined(ARTS_VALIDITY_FLUSH)
@@ -762,13 +764,13 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
   }
 #elif defined(ARTS_RETENTION_PURGE)
   case MSG_DB_GRANT_CONFIRM: {
-    ARTS_ERROR("voluntary-return build received GRANT_CONFIRM from rank %u — "
-               "under this release policy the hand-back is the only message "
+    ARTS_ERROR("PURGE build received GRANT_CONFIRM from rank %u — "
+               "under this retention the hand-back is the only message "
                "a holder sends the home; binary mode mismatch?",
                packet->rank);
     break;
   }
-#else /* VAL, INV under the revoking release policy */
+#else /* VAL, INV under the revoking retention */
   case MSG_DB_GRANT_CONFIRM: {
     ARTS_DEBUG("Coh GRANT_CONFIRM Received");
     struct arts_msg_grant_confirm_packet_s *pack =
@@ -780,9 +782,9 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
     break;
   }
 #endif /* GRANT_CONFIRM model dispatch */
-  /* EXCL has its own REQUEST wire (both release policies) and policy-specific grant/
-   * release messages.  In an EXCL build each shared grant, snapshot and publish
-   * case above is a refusal (guarded there). */
+  /* EXCL has its own REQUEST wire (both retentions) and retention-specific
+   * grant/release messages.  In an EXCL build each shared grant, snapshot
+   * and publish case above is a refusal (guarded there). */
 #ifdef ARTS_VALIDITY_EXCL
   /* MSG_DB_EXCL_REQUEST is shared: both PURGE and RETAIN home-dispatch via OoO
    * (a REQUEST can arrive before the home db_s is installed on a remote-create
@@ -1031,8 +1033,8 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
   }
 #else
   case MSG_DB_INV_REDIRECT: {
-    ARTS_ERROR("write-through build received a redirect from rank %u — the "
-               "home serves reads itself under this policy; binary mode "
+    ARTS_ERROR("HOME build received a redirect from rank %u — the "
+               "home serves reads itself under this read source; binary mode "
                "mismatch",
                ((struct arts_msg_header_s *)packet)->rank);
     break;

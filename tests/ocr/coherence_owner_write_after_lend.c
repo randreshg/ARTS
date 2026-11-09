@@ -18,7 +18,7 @@
  * no crash, no hang, just a bad value. That is why this is a value oracle and
  * needs no counters.
  *
- * Portable: no protocol #if, no internal headers. Under a purging policy the
+ * Portable: no protocol #if, no internal headers. Under PURGE the
  * copy dies at its own zero edge and the second read re-fetches, so this
  * passes there too — it is a regression gate for every arm, not a probe of one.
  */

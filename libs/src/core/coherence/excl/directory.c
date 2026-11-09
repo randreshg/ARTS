@@ -6,10 +6,10 @@
  *          arts_excl_home_teardown.
  *
  * This TU contains only the shared pieces that both the PURGE and RETAIN
- * release-policy variants need: the home-directory lifecycle and the
+ * retention variants need: the home-directory lifecycle and the
  * DB-destroy fan-out.  Timing-specific arbiters (excl_compute_next,
  * cache_compute_next) and all acquire/release handler/sender bodies live in
- * the per-release-policy TU (purge.c or retain.c).  The home request FIFO is
+ * the per-retention TU (purge.c or retain.c).  The home request FIFO is
  * grantreq_queue.c.
  *
  * Compiled only for ARTS_VALIDITY=EXCL.

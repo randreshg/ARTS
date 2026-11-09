@@ -45,7 +45,7 @@
 
 /* arts_send_db_grant_request / _cts / _invalidate / _confirm and the
  * GRANT_RESPONSE sender (arts_db_send_grant_response) all live in
- * coherence/grant.c, shared by WT and WB. */
+ * coherence/grant.c, shared by HOME and OWNER. */
 
 #if defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)
 void arts_send_db_publish(struct arts_db_s *db, uint64_t version, uint64_t cv,
@@ -64,7 +64,7 @@ void arts_send_db_publish(struct arts_db_s *db, uint64_t version, uint64_t cv,
   p.rdzv_cookie = rdzv_cookie;
   p.flags = return_grant ? ARTS_PUBLISH_FLAG_GRANT_RETURN : 0ULL;
   p.token = arts_db_token(db);
-/* The OoO kind exists only in arms that publish at a release; VAL under WB
+/* The OoO kind exists only in arms that publish at a release; VAL under OWNER
  * publishes nothing, so its local-hit branch is compiled out with it. */
 #if !defined(ARTS_READ_SOURCE_OWNER) || defined(ARTS_VALIDITY_INV)
   /* Local hit: the home is this rank, whose one descriptor of the block is
@@ -104,8 +104,8 @@ void arts_send_db_publish(struct arts_db_s *db, uint64_t version, uint64_t cv,
 #endif /* arms that publish at a release */
 
 /* PUBLISH_CTS — home → releaser: the home's stable buffer, advertised in
- * place, as the landing for an announced dirty publish (a WT payload publish
- * under VAL or INV) or for EXCL PURGE's landing-less release.
+ * place, as the landing for an announced dirty publish (a HOME payload publish
+ * under VAL or INV) or for EXCL·PURGE's landing-less release.
  * Never a self-send (a same-rank publish is an ordering round alone).
  * Compiled for exactly the cells whose dispatcher accepts the message. */
 #if ((defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)) &&             \
@@ -127,11 +127,11 @@ void arts_send_db_publish_cts(unsigned int releaser_rank, arts_guid_t db_guid,
 }
 #endif /* cells that accept PUBLISH_CTS */
 
-/* PUBLISH_ACK answers a publish flight — the WT write policy's payload
- * publish, and INV WB's control-only request for its invalidation round —
- * and, under PURGE, a grant return sent on its own.  VAL WB publishes nothing
- * at a release (ownership moves owner→owner), so it never sends or receives
- * PUBLISH_ACK and its dispatcher refuses the wire message. */
+/* PUBLISH_ACK answers a publish flight — the HOME read source's payload
+ * publish, and INV·OWNER's control-only request for its invalidation round —
+ * and, under PURGE, a grant return sent on its own.  VAL·OWNER publishes
+ * nothing at a release (ownership moves owner→owner), so it never sends or
+ * receives PUBLISH_ACK and its dispatcher refuses the wire message. */
 #if (defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)) &&             \
     (!defined(ARTS_READ_SOURCE_OWNER) || defined(ARTS_VALIDITY_INV))
 void arts_send_db_publish_ack(unsigned int releaser_rank, struct arts_db_s *db,
@@ -308,7 +308,7 @@ void arts_send_db_snapshot_response(unsigned int requester_rank, uint64_t token,
   p.rdzv_cookie = (landing != NULL) ? landing->cookie : 0;
   p.token = token;
   if (requester_rank == arts_global_rank_id) {
-    /* Self-serve (a write-back REDIRECT round-trip can land back on the
+    /* Self-serve (under OWNER a REDIRECT round-trip can land back on the
      * requester rank): the version served is this rank's own copy's, so no
      * bytes move; the answer returns our own unused landing (cookie), or
      * adopts it as storage when the reply says nothing is held, on the
@@ -429,6 +429,7 @@ void arts_send_db_cache_destroy(unsigned int sharer_rank, arts_guid_t db_guid) {
   arts_transport_send_async((int)sharer_rank, (char *)&p, sizeof(p));
 }
 
-/* The WB-only senders (CONFIRM_ACK, SNAPSHOT_REDIRECT) live in
+/* The OWNER-only senders (CONFIRM_ACK, SNAPSHOT_REDIRECT) live in
  * coherence/grant_owner.c and coherence/val/owner.c alongside their handlers;
- * the VAL GRANT_RESPONSE senders live in coherence/grant.c (shared by WT and WB). */
+ * the VAL GRANT_RESPONSE senders live in coherence/grant.c (shared by HOME and
+ * OWNER). */

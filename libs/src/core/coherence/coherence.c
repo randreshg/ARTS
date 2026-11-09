@@ -88,7 +88,7 @@ bool arts_db_create_claims_stub(struct arts_db_cache_s *cache) {
 
 /* Protocol-agnostic cache_s field init.  Each arm's arts_db_cache_init sets
  * its own fields first — the grant-bearing arms' pending_rw stack and
- * transfer target, VAL WB's dedup ledger, INV's reader word, EXCL's cache
+ * transfer target, VAL·OWNER's dedup ledger, INV's reader word, EXCL's cache
  * word and waiter stacks — and then calls this.
  *
  * The arms that share this shape are the ones whose cache carries a home
@@ -603,18 +603,17 @@ uint8_t arts_db_val_claim_cover(struct arts_db_cache_s *cache) {
 }
 #endif /* the versioned-snapshot read path */
 
-/* The 8-case acquire dispatcher arts_handler_db_acquire is protocol-specific:
- * WT and WB define it in coherence/grant.c-backed
- * each arm's own write-policy TU (single-owner GRANT_REQUEST / GRANT path,
- * differing only on the RO-has-local-data predicate).  The shared remote-RO
- * path (arts_db_acquire_remote_ro) and the local-buffer fast read
- * (arts_db_acquire_local) above are reused by both.
- */
+/* The 8-case acquire dispatcher arts_handler_db_acquire is defined per read
+ * source, in each arm's own read-source TU: both run the single-owner
+ * GRANT_REQUEST / GRANT path of coherence/grant.c and differ only on the
+ * RO-has-local-data predicate.  The shared remote-RO path
+ * (arts_db_acquire_remote_ro) and the local-buffer fast read
+ * (arts_db_acquire_local) above are reused by both. */
 
 /* Wake every publication waiter, taken in one exchange.  A waiter is a read
- * that found its write-through home's copy unpublished — the
+ * that found its home's copy unpublished under HOME — the
  * create-time image at version 0 — and parked: a local read hold, or a remote
- * read whose serve was deferred.  A write-through release stamps its version
+ * read whose serve was deferred.  A release under HOME stamps its version
  * on the home's copy before it completes, so a read that saw version 0 is
  * ordered after no release, and any published copy (version >= 1) is a value
  * it may be given.  Every drain runs once the slot holds one, and the slot's
@@ -658,7 +657,7 @@ void arts_db_drain_publication_waiters(struct arts_db_cache_s *cache) {
   arts_db_census_served(census);
 #endif
 }
-#endif /* write-through homes that hold reads until the first publication */
+#endif /* homes under HOME that hold reads until the first publication */
 
 /* ================================================================== */
 /* ===== Release path =============================================== */
@@ -680,14 +679,14 @@ void arts_db_await_ack(sem_t *cv) {
 /* arts_db_release_rw is protocol-specific (the version bump is shared, but the
  * pre-decrement buffer-ref drop and the post-decrement transfer/publish
  * decision differ per protocol), so its whole body lives in each arm's own
- * TU.  VAL+WT and INV under either write policy call
+ * TU.  VAL·HOME and INV under either read source call
  * arts_db_publish_sync below for the synchronous-PUBLISH rendezvous (INV's
  * publish doubles as its invalidation-round request). */
 
 /* ===== publish flight machine (write-combining publish) ============
  *
- * Compiled by every arm that publishes at a release.  Under WT that is the
- * payload write-through; under WB only INV publishes at all, and its
+ * Compiled by every arm that publishes at a release.  Under HOME that is the
+ * payload write-through; under OWNER only INV publishes at all, and its
  * publish is control-only — the round request.
  *
  * At most ONE publish is in flight per (DB, rank).  Every releaser registers
@@ -712,7 +711,7 @@ struct arts_db_pub_waiter_s {
   sem_t sem;
 };
 
-/* The write-back invalidation arm publishes control only: none of its
+/* INV·OWNER publishes control only: none of its
  * flights carries payload, so none consumes a credit or leaves a payload leg
  * that could carry a hand-back. */
 #if defined(ARTS_VALIDITY_INV) && defined(ARTS_READ_SOURCE_OWNER)
@@ -734,10 +733,9 @@ static inline bool pub_leg_takes_grant_return(struct arts_db_cache_s *cache) {
 }
 #endif
 
-/* Does this rank's publish carry payload?  Write-through owners ship bytes; a
+/* Does this rank's publish carry payload?  Owners under HOME ship bytes; a
  * home-resident releaser's buffer IS the canonical copy (its publish is the
- * ordering round alone), and the write-back invalidation arm publishes
- * control only. */
+ * ordering round alone), and INV·OWNER publishes control only. */
 static bool pub_flight_carries_payload(struct arts_db_cache_s *cache) {
 #if defined(ARTS_VALIDITY_INV) && defined(ARTS_READ_SOURCE_OWNER)
   (void)cache;
@@ -1179,7 +1177,7 @@ static unsigned int excl_axis_row(const struct arts_db_cache_s *c, uint64_t cw,
  * lost; non-idle with readers is unfinished (quiescent only).  PURGE: a grant
  * with nothing counted under it is a lost zero edge (the edge returns the
  * grant in the same CAS).  RETAIN: a resting grant with nothing counted is the
- * policy's normal state, and a resident owner also covers its readers. */
+ * retention's normal state, and a resident owner also covers its readers. */
 static unsigned int excl_cache_word_rows(const struct arts_db_cache_s *c,
                                          uint64_t cw, bool quiescent) {
   uint32_t rws = CACHE_RW_ST(cw), ros = CACHE_RO_ST(cw);
@@ -1658,7 +1656,7 @@ void arts_db_debug_quiescence_check(const struct arts_teardown_exempt_s *ex,
 #ifndef ARTS_READ_SOURCE_OWNER
           /* Without the unconfirmed-install marker nothing sets the word's
            * sign bit, so a negative word is a count that underflowed: a
-           * release with no matching acquire.  (Under write-back the marker
+           * release with no matching acquire.  (Under OWNER the marker
            * makes a negative word an install awaiting its confirmation.) */
           if ((int)w < 0) {
             ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu rests with an "

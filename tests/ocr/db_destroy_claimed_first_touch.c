@@ -35,7 +35,7 @@
  * installed or marked and waits behind nothing.
  *
  * Needs two ranks.  Its read-write consumers share one rank's turn with the
- * creator unordered, which DB-WRF does not admit.
+ * creator unordered, which CDAG does not admit.
  */
 
 #include <stdatomic.h>

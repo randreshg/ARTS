@@ -78,7 +78,7 @@ extern "C" {
    * once on its rank by where what it needs is: LOCAL_HIT when this rank      \
    * holds the write right (a write) or a valid copy or right covering the     \
    * read (a read), REMOTE when it had to come from another rank.  Under the   \
-   * voluntary-return policy the write right is the home's, so whatever the    \
+   * PURGE retention the write right is the home's, so whatever the            \
    * home rank acquires is LOCAL_HIT.  The state at the decision classifies:   \
    * one that parks holding what it needs (a gated install) is LOCAL_HIT,      \
    * any other by where what it waits for comes from, whichever serve          \
@@ -136,7 +136,7 @@ extern "C" {
    * landing for a request that could not size one.  A window is a read       \
    * request that is not a re-send; a reader that sends none of its own waits  \
    * for the next window or rides the rank's write request.  Inert unless the  \
-   * build compiles the VAL family in. */                                      \
+   * build compiles VAL in. */                                                 \
   X(NUM_SNAPSHOT_REQUEST)                                                      \
   X(NUM_SNAPSHOT_HEADER_ONLY)                                                  \
   X(NUM_SNAPSHOT_SIZE_CTS)                                                     \
@@ -171,8 +171,8 @@ extern "C" {
    * and had to be remembered rather than acted on.  Their ratio is the      \
    * erosion metric: a recall that retires a live grant is the protocol      \
    * working, while one that demotes a later, unrelated grant is a re-fetch  \
-   * this policy exists to avoid.  A campaign where RECALL_SENT stays zero   \
-   * exercised no retention at all.                                          \
+   * RETAIN exists to avoid.  A campaign where RECALL_SENT stays zero        \
+   * recalled no retained read grant at all.                                 \
    */                                                                        \
   X(NUM_EXCL_RECALL_SENT)                                                      \
   X(NUM_EXCL_RECALL_EARLY)                                                     \
@@ -191,12 +191,12 @@ extern "C" {
   /* Num: grant plane rare paths.  BATON_RECLAIM = a baton holder's            \
    * put-down met a claim made since it last looked and kept the baton to      \
    * look again, or a holder that gave up for live home writers re-claimed     \
-   * the baton at their idle edge; HOME_DATALESS = a write request the         \
-   * write-through home sends its own directory, asking for the permission     \
+   * the baton at their idle edge; HOME_DATALESS = a write request the home    \
+   * sends its own directory under HOME, asking for the permission             \
    * alone (it already holds the newest bytes). */                             \
   X(NUM_GRANT_BATON_RECLAIM)                                                   \
   X(NUM_GRANT_HOME_DATALESS)                                                   \
-  /* Num: the voluntary-return release policy.  RETURN = write rights handed \
+  /* Num: the PURGE retention.  RETURN = write rights handed                   \
    * back at a holder's own idle edge in a message of their own; FLAG =       \
    * hand-backs that rode a release's own publish instead.  RETURN and FLAG   \
    * are the two vehicles and do not overlap: their sum is every hand-back,   \
@@ -214,11 +214,11 @@ extern "C" {
   X(NUM_GRANT_PURGE_LATCHED)                                                   \
   X(NUM_GRANT_PURGE_STALE_SETTLE)                                              \
   X(NUM_GRANT_REGRANT_DEDUP)                                                   \
-  /* Num: the same policy on every arm -- hand-backs of a permission, with     \
-   * its bytes if any, that a rank sends the block's home, counted on the      \
-   * returning rank (the home's own idle edge sends nothing).  On the grant    \
-   * plane it is RETURN plus FLAG above; under exclusion it is every read and  \
-   * write turn a rank other than the home gives back. */                      \
+  /* Num: the PURGE retention on every arm -- hand-backs of a permission,      \
+   * with its bytes if any, that a rank sends the block's home, counted on     \
+   * the returning rank (the home's own idle edge sends nothing).  On the      \
+   * grant plane it is RETURN plus FLAG above; under exclusion it is every     \
+   * read and write turn a rank other than the home gives back. */             \
   X(NUM_PURGE_RETURN)
 /* End-to-end wall time is not a counter: it is the env-gated "[E2E] <ns>"
  * stderr marker (rank 0; see runtime.c / shutdown.c), identical

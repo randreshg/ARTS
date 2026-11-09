@@ -75,16 +75,16 @@ enum arts_msg_type {
    * MSG_EVENT_DESTROY / MSG_DB_DESTROY; OoO-deferred on before-create
    * reorder).  Sequential append, no gaps. */
   MSG_EDT_DESTROY,
-  /* VAL WB only: the home points a snapshot request at the current owner.
+  /* VAL·OWNER only: the home points a snapshot request at the current owner.
    * Sequential append, no gaps. */
   MSG_DB_SNAPSHOT_REDIRECT,
-  /* VAL and INV, both write policies, where the home revokes: new owner C →
+  /* VAL and INV, both read sources, where the home revokes: new owner C →
    * home A, "I have installed the transferred DB."  Home reacts by flipping
-   * rw_holder to C and, under WB, replying with CONFIRM_ACK.  A home whose
+   * rw_holder to C and, under OWNER, replying with CONFIRM_ACK.  A home whose
    * grants come back unasked names no holder and receives none.  Sequential
    * append, no gaps. */
   MSG_DB_GRANT_CONFIRM,
-  /* WB-write-policy-only: home A → new owner C, "the directory now names you; you
+  /* OWNER-only: home A → new owner C, "the directory now names you; you
    * may run your RW EDT." Acknowledges that home has flipped rw_holder to C (in
    * reaction to C's CONFIRM). Gates C's RW execution so its write becomes
    * observable only after the directory reflects C (no stale-RO window).
@@ -97,7 +97,7 @@ enum arts_msg_type {
   MSG_DB_EXCL_REQUEST,
   MSG_DB_EXCL_GRANT,
   MSG_DB_EXCL_RELEASE,
-  /* EXCL RETAIN-only messages (FORWARD / DELIVER / CONFIRM / RORET).
+  /* EXCL·RETAIN-only messages (FORWARD / DELIVER / CONFIRM / RORET).
    * Used only in ARTS_VALIDITY=EXCL + ARTS_RETENTION=RETAIN
    * builds.  Sequential append, no gaps. */
   MSG_DB_EXCL_FORWARD, /* home → current owner: serve RO reader or migrate RW */
@@ -115,7 +115,7 @@ enum arts_msg_type {
   MSG_DB_PUBLISH_CTS, /* home → releaser: the home's stable buffer, in place,
                            as the landing for the dirty publish the releaser
                            announced (PUBLISH with data_size>0, txid==0) or for
-                           a landing-less EXCL PURGE release; the releaser PUTs
+                           a landing-less EXCL·PURGE release; the releaser PUTs
                            then sends the final PUBLISH (EXCL_RELEASE)
                            carrying the txid. */
   MSG_DB_EXCL_CTS,    /* EXCL home (or, under RETAIN, an owner a read
@@ -137,7 +137,7 @@ enum arts_msg_type {
                          versionless: only an INVALIDATE retires a copy. */
   MSG_DB_INV_INVALIDATE,     /* home → sharer: retire the copy ({guid} only) */
   MSG_DB_INV_INVALIDATE_ACK, /* sharer → home: round ack ({guid} only) */
-  MSG_DB_INV_REDIRECT, /* home → current grant holder (WB write policy only):
+  MSG_DB_INV_REDIRECT, /* home → current grant holder (OWNER read source only):
                           serve this reader from your bytes, or bounce the
                           request back if you no longer have them */
 
@@ -145,7 +145,7 @@ enum arts_msg_type {
                          * install: the DB's stable home buffer as a durable
                          * publish credit.  Pure hint (Cat-C lookup-or-drop
                          * at the creator). */
-  /* EXCL RETAIN-only: home -> retainer, "give the RO grant back".  Data-less;
+  /* EXCL·RETAIN-only: home -> retainer, "give the RO grant back".  Data-less;
    * shares arts_msg_excl_notice_packet_s with RORET.  Appended at the
    * end so no existing ordinal moves.  There is no ack: the completion signal
    * is the ordinary RO_RETURN this provokes, and the home's r==0 edge is the
@@ -155,7 +155,7 @@ enum arts_msg_type {
   /* Grant-arm PURGE-only: holder -> home, "the write right is yours again".
    * Sent unasked at the holder's own idle edge, which is why the reverse
    * direction (the home's GRANT_INVALIDATE) carries no traffic under that
-   * release policy.  Data-less: the write-through publish that preceded the
+   * retention.  Data-less: the write-through publish that preceded the
    * release already put the bytes at the home.  Appended at the end so no
    * existing ordinal moves. */
   MSG_DB_GRANT_RETURN,
@@ -308,13 +308,13 @@ struct ARTS_PACKED arts_msg_grant_cts_packet_s {
 };
 
 /* GRANT_RESPONSE — the single ownership-transfer wire message, ONE layout
- * for both write policies: a serialized cached_version map (map_entry_count pairs)
- * rides INLINE after the header; the buffer payload does NOT ride the wire —
- * it travels one-sided (the old owner PUTs it into the landing the requester
- * advertised in its GRANT_REQUEST) and this packet pairs with that write
- * completion by rdzv_txid.  VAL WB serializes its owner-side map; WT (which
- * dedups RO via the home's cached_version) and INV (which keeps no ledger)
- * send map_entry_count=0.
+ * for both read sources: a serialized cached_version map (map_entry_count
+ * pairs) rides INLINE after the header; the buffer payload does NOT ride the
+ * wire — it travels one-sided (the old owner PUTs it into the landing the
+ * requester advertised in its GRANT_REQUEST) and this packet pairs with that
+ * write completion by rdzv_txid.  VAL·OWNER serializes its owner-side map; HOME
+ * (which dedups RO via the home's cached_version) and INV (which keeps no
+ * ledger) send map_entry_count=0.
  *
  *   rdzv_txid != 0 : `data_size` payload bytes were PUT into the requester's
  *                    landing (named by rdzv_cookie, the requester's own
@@ -385,7 +385,7 @@ struct ARTS_PACKED arts_msg_publish_packet_s {
 #define ARTS_PUBLISH_FLAG_GRANT_RETURN 0x1ULL
 
 /* PUBLISH_CTS — home → releaser: the home landing for an announced dirty
- * publish (VAL and INV write-through) or a landing-less EXCL PURGE release.
+ * publish ({VAL,INV}·HOME) or a landing-less EXCL·PURGE release.
  * cv is echoed verbatim; the releaser-side handler writes the landing into
  * the blocked releaser's rendezvous and posts it. */
 struct ARTS_PACKED arts_msg_publish_cts_packet_s {
@@ -403,10 +403,10 @@ struct ARTS_PACKED arts_msg_publish_ack_packet_s {
                      * commit included), whose ACK is named by `token` */
   uint64_t version; /* highest version this ACK covers (a publish flight) */
   /* Next publish credit: the DB's stable home buffer + a receiver-minted
-   * txid.  The ACK of a WT payload flight refills it while the home's block
+   * txid.  The ACK of a HOME payload flight refills it while the home's block
    * lives; a rank's first credit comes from the block's CREATE_RETURN or
    * from the ACK that closes its first, credit-less publish.  Zero on a
-   * standalone grant return's ACK and under WB. */
+   * standalone grant return's ACK and under OWNER. */
   uint64_t credit_addr;
   uint64_t credit_rkey;
   uint64_t credit_txid;
@@ -415,7 +415,7 @@ struct ARTS_PACKED arts_msg_publish_ack_packet_s {
 #endif
 };
 
-/* GRANT_INVALIDATE: both write policies name the new owner, its landing, the
+/* GRANT_INVALIDATE: both read sources name the new owner, its landing, the
  * version it holds and its answer token, so the current holder ships the
  * owner→owner GRANT_RESPONSE without a round trip to the home; and the home's
  * token, which the GRANT_RESPONSE carries on to the new owner's CONFIRM. */
@@ -451,7 +451,7 @@ struct ARTS_PACKED arts_msg_grant_return_packet_s {
 };
 
 /* GRANT_CONFIRM_ACK: home → new owner C. No version: C already holds its
- * installed version. WB-only by use (WT never sends it); the struct is
+ * installed version. OWNER-only by use (HOME never sends it); the struct is
  * unconditional. */
 struct ARTS_PACKED arts_msg_grant_confirm_ack_packet_s {
   struct arts_msg_header_s header;
@@ -459,7 +459,7 @@ struct ARTS_PACKED arts_msg_grant_confirm_ack_packet_s {
 #if defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)
   uint64_t token; /* C's request's, from its CONFIRM: the ack answers it */
 #endif
-  /* WB: the CONFIRM_ACK that advances the round piggybacks the next
+  /* OWNER: the CONFIRM_ACK that advances the round piggybacks the next
    * transfer target so the new owner's handler applies the INVALIDATE effect
    * (publish incoming_new_owner + withdraw the sentinel) in the same message,
    * eliminating the separate INVALIDATE and its CONFIRM_ACK↔INVALIDATE reorder
@@ -554,8 +554,8 @@ struct ARTS_PACKED arts_msg_cache_destroy_packet_s {
  * Each one's comment names the arms that send it; a rank whose arm neither
  * sends nor handles one fatals on receipt (see dispatcher.c). */
 
-/* SNAPSHOT_REDIRECT — VAL WB: home forwards a SNAPSHOT_REQUEST to the current
- * owner.  The owner will send data directly to requester_rank using
+/* SNAPSHOT_REDIRECT — VAL·OWNER: home forwards a SNAPSHOT_REQUEST to the
+ * current owner.  The owner will send data directly to requester_rank using
  * SNAPSHOT_RESPONSE, PUTting the payload into the forwarded requester
  * landing. */
 struct ARTS_PACKED arts_msg_snapshot_redirect_packet_s {
@@ -571,8 +571,8 @@ struct ARTS_PACKED arts_msg_snapshot_redirect_packet_s {
 };
 
 /* One entry of GRANT_RESPONSE's dedup-map trailer: map_entry_count of them
- * follow the GRANT_RESPONSE header.  Only VAL WB sends any; every other
- * grant-bearing arm, INV WB included, sends map_entry_count = 0.  Nothing
+ * follow the GRANT_RESPONSE header.  Only VAL·OWNER sends any; every other
+ * grant-bearing arm, INV·OWNER included, sends map_entry_count = 0.  Nothing
  * trails the map: the payload travels one-sided. */
 struct ARTS_PACKED arts_msg_rank_version_pair_s {
   uint32_t rank;
@@ -580,11 +580,11 @@ struct ARTS_PACKED arts_msg_rank_version_pair_s {
   uint64_t version;
 };
 
-/* GRANT_CONFIRM — VAL and INV, both write policies, where the home revokes:
+/* GRANT_CONFIRM — VAL and INV, both read sources, where the home revokes:
  * new owner C confirms installation of the transferred DB to home A.  It
  * answers the home's transfer, on the home descriptor `home_token` names.  The
  * home takes the new owner from pending_install_owner; C's answer token rides
- * for the write-back home's CONFIRM_ACK, which answers C's request. */
+ * for the home's CONFIRM_ACK under OWNER, which answers C's request. */
 struct ARTS_PACKED arts_msg_grant_confirm_packet_s {
   struct arts_msg_header_s header;
   arts_guid_t db_guid;
@@ -594,7 +594,7 @@ struct ARTS_PACKED arts_msg_grant_confirm_packet_s {
 #endif
 };
 
-/* CREATE_RETURN — see the enum comment; sent by VAL and INV under WT and by
+/* CREATE_RETURN — see the enum comment; sent by VAL and INV under HOME and by
  * FLUSH; every other build refuses it.  The credit triple mirrors the
  * publish-ACK refill fields. */
 struct ARTS_PACKED arts_msg_db_create_return_packet_s {
@@ -687,8 +687,8 @@ struct ARTS_PACKED arts_msg_excl_release_packet_s {
 };
 
 
-/* ===== EXCL RETAIN-only wire packets ========================================
- * Sent only between ranks compiled with EXCL+RETAIN.  Members unconditional;
+/* ===== EXCL·RETAIN-only wire packets ========================================
+ * Sent only between ranks compiled with EXCL·RETAIN.  Members unconditional;
  * structs inside the ARTS_VALIDITY_EXCL guard so they share the EXCL types. */
 #ifdef ARTS_RETENTION_RETAIN
 /* EXCL_FORWARD: home → current owner.  mode=DB_MODE_RW → migrate ownership to
@@ -832,7 +832,7 @@ struct ARTS_PACKED arts_msg_flush_cts_packet_s {
  * Members unconditional; structs guarded so they can share host-side types. */
 #ifdef ARTS_VALIDITY_INV
 /* A read request names its subject explicitly rather than relying on the
- * header's sender: under the WB write policy a holder that cannot serve
+ * header's sender: under the OWNER read source a holder that cannot serve
  * re-sends the request on the reader's behalf, so the two differ. */
 #define ARTS_INV_REQ_BOUNCE 0x1u
 struct ARTS_PACKED arts_msg_inv_request_packet_s {
@@ -891,7 +891,7 @@ struct ARTS_PACKED arts_msg_inv_invalidate_ack_packet_s {
   uint64_t home_token; /* the round's, echoed */
 };
 
-/* WB write policy only: the home forwards a read it cannot answer. */
+/* OWNER read source only: the home forwards a read it cannot answer. */
 struct ARTS_PACKED arts_msg_inv_redirect_packet_s {
   struct arts_msg_header_s header;
   arts_guid_t db_guid;

@@ -14,7 +14,7 @@
  * _Atomic views.  A last reader, ordered after both writers, checks A and B2
  * with no writer live; it runs on another rank when there is one.
  *
- * Two write acquisitions of one block overlap here, which DB-WRF forbids.
+ * Two write acquisitions of one block overlap here, which CDAG forbids.
  */
 #include "arts.h"
 

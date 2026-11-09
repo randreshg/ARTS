@@ -62,7 +62,7 @@
 /// the increment is atomic, as for any shared-memory counter.
 ///
 /// Needs 2+ ranks (SKIP on one).  Its writers are unordered, so it is outside
-/// the DB-WRF model.
+/// the CDAG model.
 
 #include "arts.h"
 

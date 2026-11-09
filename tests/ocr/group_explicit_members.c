@@ -19,9 +19,9 @@
  *
  * The opener stays in its body after its DECR, so the run ends while it is
  * still running: without the release before the DECR it still holds the
- * block then.  The reader runs either way; in INV x WB that hold leaves a cut
+ * block then.  The reader runs either way; in INV·OWNER that hold leaves a cut
  * release wait, which fails the test through the quiescence marker.  Other
- * cells are not claimed: VAL x WT passes without the release.
+ * cells are not claimed: VAL·HOME passes without the release.
  */
 
 #include <stdatomic.h>

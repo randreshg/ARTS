@@ -78,7 +78,7 @@
 /// creation, writes, releases, and only then wires the consumer -- pure
 /// program order within one function.  Every block therefore has exactly one
 /// write acquisition, ordered before its reads, so the program is valid under
-/// the DB-WRF model too.
+/// the CDAG model too.
 
 #include "arts.h"
 #include <stdbool.h>

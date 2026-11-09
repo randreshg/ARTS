@@ -1,23 +1,23 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * The INV engine — everything both write policies run identically.
+ * The INV engine — everything both read sources run identically.
  *
  * The reader plane (fetch install and the transitions that take its chain)
  * and the invalidation round (the hold and its queue, roster snapshot,
  * multicast, ack accounting, finish) live here, along with the cache
- * lifecycle and the wire senders.  What is left to the write-policy TUs is
+ * lifecycle and the wire senders.  What is left to the read-source TUs is
  * exactly three decisions, because those are the only three that "where do
  * the canonical bytes live" actually changes:
  *
- *   - an RO acquire: served locally (WT, at the home rank) or redirected to
- *     the current grant holder (WB);
- *   - a release: publishes the payload to the home (WT) or publishes control
- *     only (WB) — the round itself is identical either way;
- *   - a read request at the home: answered from the home's buffer (WT) or
- *     forwarded to the holder (WB).
+ *   - an RO acquire: served locally (HOME, at the home rank) or redirected to
+ *     the current grant holder (OWNER);
+ *   - a release: publishes the payload to the home (HOME) or publishes control
+ *     only (OWNER) — the round itself is identical either way;
+ *   - a read request at the home: answered from the home's buffer (HOME) or
+ *     forwarded to the holder (OWNER).
  *
  * Write ownership is not here at all: it is the migrating sentinel grant
- * (coherence/grant.c plus its write-policy half), shared with VAL.
+ * (coherence/grant.c plus its read-source half), shared with VAL.
  *
  * Compiled only for ARTS_VALIDITY=INV.
  */
@@ -134,7 +134,7 @@ void arts_db_rw_req_giveback(struct arts_db_cache_s *cache, uint32_t tok) {
   }
 }
 
-/* The grant lands (WT: its install; WB: its confirmation): every reader
+/* The grant lands (HOME: its install; OWNER: its confirmation): every reader
  * parked on this rank is served under it, a fetch still out included -- that
  * fetch stays open until its own reply. */
 void arts_db_rw_req_clear(struct arts_db_cache_s *cache) {
@@ -303,7 +303,7 @@ void arts_db_create_claim_creator_copy(struct arts_db_s *db) {
 void arts_db_create_install_home_buffer(struct arts_db_cache_s *cache,
                                         uint64_t db_size) {
 #ifdef ARTS_READ_SOURCE_HOME
-  /* The write-through home owns ONE stable buffer for the DB's whole
+  /* Under HOME the home owns ONE stable buffer for the DB's whole
    * lifetime, installed here at version 0 — "allocated, never published".
    * Publishes land in it one-sided and in place; the round's version bump
    * from zero is the publication edge that drains pre-publication holds.
@@ -315,7 +315,7 @@ void arts_db_create_install_home_buffer(struct arts_db_cache_s *cache,
                         db_size);
   }
 #else
-  /* The write-back home holds routing and permission, never payload: a read
+  /* Under OWNER the home holds routing and permission, never payload: a read
    * is redirected to the grant's holder (served here when the home holds the
    * grant), which serves it from its own copy; a create that acquires nothing
    * leaves its storage to its first use. */
@@ -362,7 +362,7 @@ void arts_db_home_destroy_now(struct arts_db_s *db) {
  * declaration states the protocol): a release that finds the word idle claims
  * it and runs its own entry, one that finds it held pushes its entry and
  * leaves it to the holder.  A round stamps the version of the payload that
- * landed in place (WT), snapshots the roster and, only when the snapshot
+ * landed in place (HOME), snapshots the roster and, only when the snapshot
  * names a copy to retire, arms the ack count and multicasts INVALIDATE.  It is
  * finished by the thread that ran it when it retired nothing (the release
  * that claimed the round, or a finisher that took the batch), or by the ack
@@ -426,9 +426,9 @@ inv_round_run(struct arts_db_s *db, struct arts_db_inv_pub_s *batch) {
     }
   }
   /* The home rank is exempt outright ONLY where the home's own buffer is the
-   * canonical copy: under WT it is, and this round just stamped it; under WB
-   * the home holds no canonical bytes, so a reader copy that happens to live
-   * on the home rank is as stale as any other and is retired like one. */
+   * canonical copy: under HOME it is, and this round just stamped it; under
+   * OWNER the home holds no canonical bytes, so a reader copy that happens to
+   * live on the home rank is as stale as any other and is retired like one. */
   const unsigned int exempt = arts_global_rank_id;
 #else
   const unsigned int exempt = (unsigned int)-1; /* no rank is exempt */
@@ -439,7 +439,7 @@ inv_round_run(struct arts_db_s *db, struct arts_db_inv_pub_s *batch) {
    * definition", and that is true of a releaser.  Where the home
    * revokes, `rw_holder` may still name the previous generation, because
    * the home flips it only at the CONFIRM, well after the new owner has
-   * installed and (under WT, which has no confirm gate) already run and
+   * installed and (under HOME, which has no confirm gate) already run and
    * released, so excluding by `rw_holder` would skip exactly the
    * ex-holder that this round exists to retire; where grants come back
    * unasked, the home names no holder at all. */
@@ -498,7 +498,8 @@ inv_round_run(struct arts_db_s *db, struct arts_db_inv_pub_s *batch) {
   /* ARM, before the first INVALIDATE leaves.  From here on nothing of the
    * round's state is read, only locals and the descriptor's fixed GUID and
    * self_cb: the last ack can finish this round, and start the next, before
-   * this loop returns (under WB the home's own ack runs inline inside it). */
+   * this loop returns (under OWNER the home's own ack runs inline inside
+   * it). */
   atomic_store_explicit(&db->round_acks, ntargets, memory_order_release);
   for (unsigned int wi = 0; wi < nwords; wi++) {
     for (uint64_t m = tmask[wi]; m != 0u; m &= m - 1u) {
@@ -527,12 +528,12 @@ static void inv_round_finish(struct arts_db_s *db,
         continue;
       }
 #ifdef ARTS_READ_SOURCE_HOME
-      /* Write-through commits land in the stable buffer, so the ACK refills
+      /* Under HOME a commit lands in the stable buffer, so the ACK refills
        * the releaser's in-place credit. */
       arts_send_db_publish_ack(e->releaser_rank, db, 0u, e->vnew,
                                /*credit=*/true, e->token);
 #else
-      /* Write-back releases carry no payload — nothing to credit. */
+      /* Under OWNER a release carries no payload — nothing to credit. */
       arts_send_db_publish_ack(e->releaser_rank, db, 0u, e->vnew,
                                /*credit=*/false, e->token);
 #endif
@@ -694,7 +695,7 @@ void arts_handler_db_publish(void *item_v, void *args_v) {
 #else
   if (a->data_size != 0 || a->rdzv_txid != 0) {
     ARTS_ERROR("inv: DB[Guid:%lu] got a payload publish from rank %u — a "
-               "write-back release publishes control only",
+               "release under OWNER publishes control only",
                (unsigned long)a->db_guid, a->releaser);
   }
 #endif
@@ -1016,7 +1017,7 @@ void arts_send_db_inv_invalidate(struct arts_db_s *db,
   if (sharer_rank == arts_global_rank_id) {
     /* Local hit: run the retirement inline, on the home's descriptor, which
      * is this sharer's cache, while it is live, and on what a lookup finds
-     * otherwise.  Reachable under WB, where the home holds no canonical copy
+     * otherwise.  Reachable under OWNER, where the home holds no canonical copy
      * and is therefore an ordinary sharer — its own copy has to be retired
      * like everyone else's.  A MISS still owes the round its ack, which the
      * handler body sends.  No count of its own: the body drops no count its
@@ -1073,7 +1074,7 @@ void arts_send_db_inv_request(struct arts_db_cache_s *cache,
    * sentinel fallback (the home answers INV_CTS and the fetch re-issues).
    *
    * Being the home rank does NOT excuse a requester from advertising one.
-   * Only a write-back home asks (a write-through home serves its own readers
+   * Only a home under OWNER asks (under HOME the home serves its own readers
    * from its canonical buffer), and it holds no bytes at all, so its own reads
    * are served by the holder, which is another rank except in an
    * ownership-transfer window, and need somewhere to land.  Skipping the
@@ -1223,9 +1224,9 @@ void arts_send_db_inv_deliver(unsigned int requester_rank,
 /* The ex-holder keeps the bytes it wrote, so from the flip onward it is a
  * sharer: the new owner's first release must invalidate it like any other.
  *
- * Under WT the home rank is exempt — its buffer IS the canonical copy, kept
+ * Under HOME the home rank is exempt — its buffer IS the canonical copy, kept
  * current by every release's publish, so it is never stale and never a target.
- * Under WB nothing is exempt: the home holds no canonical bytes, so a copy
+ * Under OWNER nothing is exempt: the home holds no canonical bytes, so a copy
  * that happens to sit on the home rank goes stale exactly like any other and
  * must be registered. */
 void arts_db_grant_note_ex_holder(struct arts_db_s *db, unsigned int rank) {
@@ -1239,8 +1240,9 @@ void arts_db_grant_note_ex_holder(struct arts_db_s *db, unsigned int rank) {
 
 /* A create's hold is this arm's ordinary write hold, taken when the block was
  * made; the bytes under it are the cache's own, so the release needs no
- * pointer to them.  Policy-independent, so it sits here rather than in the
- * write-policy TU that defines arts_db_release_rw itself. */
+ * pointer to them.  It is the same under both read sources, so it sits
+ * here rather than in the read-source TU that defines arts_db_release_rw
+ * itself. */
 void arts_db_release_created(struct arts_db_cache_s *cache) {
   arts_db_release_rw(cache, NULL);
 }

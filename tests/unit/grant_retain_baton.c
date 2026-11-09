@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
  * The RETAIN home's serving baton as a claim counter: the request arrival and
- * the baton holder's step (coherence/grant_retain.c), the write-back CONFIRM
+ * the baton holder's step (coherence/grant_retain.c), the OWNER CONFIRM
  * handler (coherence/grant_owner.c) and the request FIFO
  * (coherence/grantreq_queue.c), compiled in with the wire stubbed.
  *
@@ -12,11 +12,11 @@
  * yet and must not wait for it.  A request whose claim were lost would leave
  * its producer waiting for ever.  A CONFIRM thread receives each
  * round's INVALIDATE and inherits the hold, as the home's CONFIRM handler
- * does.  In the write-back shape it runs that handler itself
+ * does.  In the OWNER shape it runs that handler itself
  * (arts_handler_db_grant_confirm: the count read before the look, a
  * piggybacked next target on the CONFIRM_ACK, else the holder's step after
- * that look).  The write-through handler cannot be compiled in this cell, so
- * the write-through shape mirrors it (the count read, then the holder's step);
+ * that look).  The HOME handler cannot be compiled in this cell, so the HOME
+ * shape mirrors it (the count read, then the holder's step);
  * the runtime's multinode loops run the real one.  The producers push and
  * claim themselves, so the order of the two in the GRANT_REQUEST handler
  * (coherence/grant.c) is likewise left to those loops.
@@ -214,7 +214,7 @@ void arts_send_db_grant_invalidate(struct arts_db_s *db, unsigned int current,
   post_round(new_owner);
 }
 
-/* The CONFIRM_ACK the write-back handler sends the owner it confirmed; a
+/* The CONFIRM_ACK the OWNER handler sends the owner it confirmed; a
  * piggybacked target continues the round, which this thread holds. */
 void arts_transport_send_async(int r, char *m, unsigned int n) {
   struct arts_msg_grant_confirm_ack_packet_s *p =
@@ -232,7 +232,7 @@ void arts_transport_send_async(int r, char *m, unsigned int n) {
   }
 }
 
-static int g_wb_shape;
+static int g_owner_shape;
 static _Atomic(int) g_stop_confirm;
 
 static void *confirm(void *arg) {
@@ -248,7 +248,7 @@ static void *confirm(void *arg) {
     }
     unsigned int target = g_round_target;
     atomic_store_explicit(&g_round_out, 0, memory_order_release);
-    if (g_wb_shape) {
+    if (g_owner_shape) {
       struct arts_msg_grant_confirm_packet_s cp;
       memset(&cp, 0, sizeof(cp));
       cp.header.rank = target;
@@ -257,7 +257,7 @@ static void *confirm(void *arg) {
       arts_handler_db_grant_confirm(&cp);
       continue;
     }
-    /* arts_handler_db_grant_confirm of the write-through policy. */
+    /* arts_handler_db_grant_confirm of the HOME read source. */
     unsigned int new_owner = atomic_load_explicit(&g_db->pending_install_owner,
                                                   memory_order_relaxed);
     if (new_owner != target) {
@@ -338,7 +338,7 @@ static void *watchdog(void *arg) {
   return NULL;
 }
 
-static int run(int wb_shape) {
+static int run(int owner_shape) {
   g_db = calloc(1, sizeof(*g_db));
   g_db->cache.db_guid = DB_GUID;
   g_db->self_cb = g_cb;
@@ -355,7 +355,7 @@ static int run(int wb_shape) {
   atomic_store_explicit(&g_round_posted, 0, memory_order_relaxed);
   atomic_store_explicit(&g_stop_confirm, 0, memory_order_relaxed);
   atomic_store_explicit(&g_start, 0, memory_order_relaxed);
-  g_wb_shape = wb_shape;
+  g_owner_shape = owner_shape;
 
   pthread_t ct, pt[NPROD];
   pthread_create(&ct, NULL, confirm, NULL);
@@ -399,7 +399,7 @@ int main(void) {
   pthread_t wd;
   pthread_create(&wd, NULL, watchdog, NULL);
   int rc = run(0);
-  uint64_t wt_reclaims =
+  uint64_t home_reclaims =
       atomic_load_explicit(&g_reclaims, memory_order_relaxed);
   if (!rc) {
     rc = run(1);
@@ -408,7 +408,7 @@ int main(void) {
   atomic_store_explicit(&g_done, 1, memory_order_release);
   pthread_join(wd, NULL);
 #ifdef ARTS_DEBUG_INJECTION
-  if (!rc && (wt_reclaims == 0u || reclaims == wt_reclaims)) {
+  if (!rc && (home_reclaims == 0u || reclaims == home_reclaims)) {
     fail("no put-down met a newer claim: the look<->put-down window went "
          "unexercised");
     rc = 1;
@@ -417,9 +417,9 @@ int main(void) {
   if (rc) {
     return 1;
   }
-  printf("PASS grant_retain_baton: %d producers x %u requests, write-through "
-         "and write-back CONFIRM shapes; %llu + %llu re-looks\n",
-         NPROD, PER_PROD, (unsigned long long)wt_reclaims,
-         (unsigned long long)(reclaims - wt_reclaims));
+  printf("PASS grant_retain_baton: %d producers x %u requests, HOME and "
+         "OWNER CONFIRM shapes; %llu + %llu re-looks\n",
+         NPROD, PER_PROD, (unsigned long long)home_reclaims,
+         (unsigned long long)(reclaims - home_reclaims));
   return 0;
 }

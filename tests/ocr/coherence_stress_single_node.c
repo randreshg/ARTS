@@ -47,7 +47,7 @@
 /// Every iteration is issued at once, under one group, so every
 /// iteration's blocks see read and write turns contend at the same time; the
 /// group fires the shutdown only once every worker has run.  The write
-/// acquisitions of a block are unordered, which DB-WRF does not admit.
+/// acquisitions of a block are unordered, which CDAG does not admit.
 ///
 /// Correctness: each worker calls arts_abort(1) on NULL ptr; the group
 /// firing and releasing shutdown_edt is proof all workers completed without

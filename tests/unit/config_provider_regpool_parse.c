@@ -20,7 +20,7 @@
  * bound).  Self-contained: it sets its own ARTS_CONFIG and clears the
  * inherited `ports`/`port_count`/`provider`/`regpool_slab_mb`/`net_interface`
  * env overrides, since an environment variable named after a key overrides the
- * cfg.  Orthogonal to the coherence protocol axis (config.c is
+ * cfg.  Orthogonal to the coherence configuration (config.c is
  * protocol-agnostic).
  */
 

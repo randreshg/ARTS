@@ -65,7 +65,7 @@
 ///
 /// Config-agnostic: every protocol has its own Cat-C set; the loop drives
 /// whichever ones the build compiles.  The write turns of one generation are
-/// unordered, which the DB-WRF model does not admit.
+/// unordered, which the CDAG model does not admit.
 
 #include "arts.h"
 

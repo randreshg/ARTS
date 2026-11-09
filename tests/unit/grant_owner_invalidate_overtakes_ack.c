@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * Under write-back a standalone INVALIDATE can reach the new owner before its
+ * Under OWNER a standalone INVALIDATE can reach the new owner before its
  * CONFIRM_ACK: the home sends one as soon as a requester claims the baton
  * after the CONFIRM looked at the FIFO, and nothing orders it after the ack.
  * The new owner's word then still carries ARTS_GRANT_UNCONFIRMED, so the
@@ -54,7 +54,8 @@ ARTS_THREAD_LOCAL uint8_t arts_db_census_serve;
 /* The handlers of grant_owner.c and grant_retain.c this test does not drive. */
 #define UNREACHED(sig)                                                         \
   sig {                                                                        \
-    printf("FAIL grant_wb_invalidate_overtakes_ack: %s reached\n", __func__);  \
+    printf("FAIL grant_owner_invalidate_overtakes_ack: %s reached\n",          \
+           __func__);                                                          \
     exit(1);                                                                   \
   }
 UNREACHED(arts_shared_ptr_t arts_route_table_lookup_db(arts_guid_t g))
@@ -82,7 +83,7 @@ uint64_t arts_shared_tag(arts_shared_ptr_t p) {
 }
 void arts_shared_release(arts_shared_ptr_t *p) {
   if (*p != g_cb) {
-    printf("FAIL grant_wb_invalidate_overtakes_ack: a release of another "
+    printf("FAIL grant_owner_invalidate_overtakes_ack: a release of another "
            "control block\n");
     exit(1);
   }
@@ -162,7 +163,7 @@ static int scenario(int invalidate_first, unsigned int drained) {
   int ok = !early && g_ships == 1 && g_ship_to == TARGET && g_ship_word == 0u &&
            w == 0u && g_releases == 1;
   if (!ok) {
-    printf("FAIL grant_wb_invalidate_overtakes_ack: %s, %u drained writers: "
+    printf("FAIL grant_owner_invalidate_overtakes_ack: %s, %u drained writers: "
            "ships=%d to=%u at word=0x%x, word=0x%x, early=%d, request "
            "counts dropped=%d\n",
            invalidate_first ? "INVALIDATE before the ack"
@@ -180,7 +181,7 @@ int main(void) {
     rc |= scenario(0, k);
   }
   if (rc == 0) {
-    printf("PASS grant_wb_invalidate_overtakes_ack: an INVALIDATE before or "
+    printf("PASS grant_owner_invalidate_overtakes_ack: an INVALIDATE before or "
            "after the CONFIRM_ACK ships once, at the zero edge\n");
   }
   return rc;

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * The PURGE release policy's half of the migrating grant — the home hub.
+ * The PURGE retention's half of the migrating grant — the home hub.
  *
  * A holder gives the write right back the moment its last local writer
  * finishes, unasked.  The home therefore sends a holder nothing, ever: it
@@ -432,7 +432,7 @@ void arts_handler_db_grant_return(void *item_v, void *args_v) {
   arts_db_grant_return_arrived((struct arts_db_s *)item_v, a->returner, &reply);
 }
 
-/* ===== Release-policy seams ============================================== */
+/* ===== Retention seams ============================================== */
 
 void arts_db_grant_request_arrived(struct arts_db_cache_s *cache,
                                    struct arts_db_s *db,
@@ -620,7 +620,7 @@ unsigned int arts_db_grant_commit_drain(struct arts_db_cache_s *cache) {
    * waiter's hold would then land on a word that possesses nothing — a count
    * under no owner, and a write turn on a block this rank no longer holds.
    *
-   * Nothing else can touch the count in between: this policy has no external
+   * Nothing else can touch the count in between: PURGE has no external
    * decrementer, and none of these waiters is runnable yet.  The point of
    * doing it this way is what the LAST of them then sees — a word carrying
    * exactly its own hold, which is the one state whose release can claim the

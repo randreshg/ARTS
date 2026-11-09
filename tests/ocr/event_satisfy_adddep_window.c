@@ -28,7 +28,7 @@
  *
  * The events linger after the fire, so the late binders' delivery is defined
  * however the race goes.  The consumers record into one block with no order
- * among them, which the DB-WRF model does not admit.
+ * among them, which the CDAG model does not admit.
  */
 
 #include <stdatomic.h>

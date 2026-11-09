@@ -26,7 +26,7 @@
  *     — see each body).
  *   Either way an (item, args) body is handed its block already acquired
  *   and ref-pinned and does not look it up to operate on it.  A message
- *   handed over as the whole packet (the EXCL RETAIN FORWARD, RO_RETURN and
+ *   handed over as the whole packet (the EXCL·RETAIN FORWARD, RO_RETURN and
  *   RECALL) has a wire entry that looks its block up once and a body on the
  *   object.  A self-send acts on the descriptor its caller holds (a
  *   Cat-B kind through arts_ooo_dispatch_on, a Cat-C body through
@@ -65,7 +65,7 @@ extern "C" {
 
 #include "arts/transport/protocol.h"
 
-/* Forward declaration for WB handler parameters. */
+/* Forward declaration for OWNER handler parameters. */
 struct arts_db_cache_s;
 
 /* ===== Cat-C and answer handler args ==================================
@@ -192,8 +192,8 @@ struct arts_db_snapshot_redirect_args_s {
  * home db_s the engine acquired (cache is its first member); args_v is an
  * arts_ooo_args_db_grant_request_s.  The wire dispatcher decodes
  * GRANT_REQUEST into those args and routes through
- * arts_ooo_dispatch_or_defer_guid.  Defined for the release-consistency family
- * (coherence/grant.c) where GRANT_REQUEST exists. */
+ * arts_ooo_dispatch_or_defer_guid.  Defined for the arms that link
+ * coherence/grant.c (VAL, INV), where GRANT_REQUEST exists. */
 void arts_handler_db_grant_request(void *item_v, void *args_v);
 #ifdef ARTS_RETENTION_PURGE
 /* Cat-B pure body (OoO g_ooo_table[OOO_DB_GRANT_RETURN]): item_v is the home
@@ -243,9 +243,9 @@ void arts_db_create_announce_enter(
 
 /* GRANT_RESPONSE at new owner C (an answer): payload = the wire packet
  * (header + the owner-side version map, nothing after it); size is its total
- * bytes.  One signature for both write policies — WT drains + runs
- * immediately, WB defers the RW drain to CONFIRM_ACK.  The wire entry takes
- * the descriptor from the token, loads the map (WB) and runs
+ * bytes.  One signature for both read sources — HOME drains + runs
+ * immediately, OWNER defers the RW drain to CONFIRM_ACK.  The wire entry takes
+ * the descriptor from the token, loads the map (OWNER) and runs
  * arts_db_grant_response_on, or, on a retired descriptor, ends the landing
  * and drops the write request's count. */
 void arts_handler_db_grant_response(void *payload, size_t size);
@@ -262,8 +262,8 @@ struct arts_db_grant_response_args_s {
 };
 /* The GRANT_RESPONSE body on this rank's descriptor of the block, under the
  * count of the write request it answers (a one-sided payload's pairing
- * borrows it).  Under WT the commit closes the write axis and drops that
- * count; under WB the CONFIRM_ACK does, on the home rank inside the commit
+ * borrows it).  Under HOME the commit closes the write axis and drops that
+ * count; under OWNER the CONFIRM_ACK does, on the home rank inside the commit
  * (in this call, or in a one-sided payload's pairing callback), so no caller
  * runs on that count after the commit. */
 void arts_db_grant_response_on(struct arts_db_s *db,
@@ -285,9 +285,9 @@ void arts_db_rdzv_discard_landing(uint64_t txid, uint64_t len,
  * args_v is an arts_ooo_args_db_grant_invalidate_s.  The wire dispatcher (a
  * lookup) and the self-send (the home's descriptor, or a lookup when it is
  * not live) call this body DIRECTLY — no OoO defer.  In
- * both write policies the revoking home publishes the invalidate target
+ * both read sources the revoking home publishes the invalidate target
  * (rw_holder) only at the post-install CONFIRM owner-swap, so the cache is
- * provably installed when INVALIDATE arrives.  WT/WB define the real body
+ * provably installed when INVALIDATE arrives.  HOME/OWNER define the real body
  * (sentinel withdrawal / transfer trigger); a home whose grants come back
  * unasked sends no INVALIDATE at all. */
 void arts_handler_db_grant_invalidate(void *item_v, void *args_v);
@@ -303,7 +303,7 @@ void arts_handler_db_publish_ack(const struct arts_db_publish_ack_args_s *a);
  * on a MISS (already torn down on this rank), SILENTLY DROPS (idempotent). */
 void arts_handler_db_cache_destroy(void *item_v, void *args_v);
 
-/* ===== WB-only handlers ============================================== */
+/* ===== OWNER-only handlers ============================================== */
 
 #if defined(ARTS_VALIDITY_VAL) && defined(ARTS_READ_SOURCE_OWNER)
 /* Cat-C pure body (SNAPSHOT_REDIRECT, owner side): item_v is the db_s the
@@ -313,28 +313,28 @@ void arts_handler_db_cache_destroy(void *item_v, void *args_v);
  * answers a MISS (a block torn down since) with a dismiss that gives the
  * reader its landing back, never a park. */
 void arts_handler_db_snapshot_redirect(void *item_v, void *args_v);
-#endif /* VAL x WB */
+#endif /* VAL·OWNER */
 
 #if (defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)) &&              \
     !defined(ARTS_RETENTION_PURGE)
-/* CONFIRM at the home (both write policies of the revoking release policy —
+/* CONFIRM at the home (both read sources of the revoking retention —
  * a voluntarily returned grant names no holder, so it has no CONFIRM): the
  * answer to the home's transfer, on the home descriptor the packet's
  * home_token names, under the baton tenure's count.  Records the new
  * rw_holder (read from db->pending_install_owner), then starts the next
- * transfer round or puts the baton down.  WB additionally replies with
- * CONFIRM_ACK, echoing the new owner's token; WT does not (the new owner
+ * transfer round or puts the baton down.  OWNER additionally replies with
+ * CONFIRM_ACK, echoing the new owner's token; HOME does not (the new owner
  * already drained at GRANT_RESPONSE).  On a retired home it only ends the
  * tenure (arts_db_grant_end_tenure). */
 void arts_handler_db_grant_confirm(
     const struct arts_msg_grant_confirm_packet_s *p);
 
 /* Send CONFIRM from new owner C back to home A once the ownership transfer is
- * complete (both write policies; home flips rw_holder + advances the round).
+ * complete (both read sources; home flips rw_holder + advances the round).
  * db is the new owner's descriptor, which the caller holds; home_token the
  * transfer's, from its GRANT_RESPONSE. */
 void arts_send_db_grant_confirm(struct arts_db_s *db, uint64_t home_token);
-#endif /* shared grant plane, revoking release policy */
+#endif /* shared grant plane, revoking retention */
 
 /* ===== Sender helpers ================================================ */
 
@@ -370,8 +370,8 @@ void arts_send_db_publish(struct arts_db_s *db, uint64_t version, uint64_t cv,
                           uint64_t data_size, uint64_t rdzv_txid,
                           uint64_t rdzv_cookie, bool return_grant);
 /* PUBLISH_CTS: home → releaser, advertising the home's stable buffer, in
- * place, as the landing for an announced dirty publish or a landing-less EXCL
- * PURGE release (cv echoed verbatim). */
+ * place, as the landing for an announced dirty publish or a landing-less
+ * EXCL·PURGE release (cv echoed verbatim). */
 void arts_send_db_publish_cts(unsigned int releaser_rank, arts_guid_t db_guid,
                                 const struct arts_rdzv_landing_s *landing,
                                 uint64_t cv);
@@ -472,13 +472,13 @@ void arts_send_db_grant_confirm_ack(
  * cache and never resumed. */
 void arts_handler_db_grant_confirm_ack(
     struct arts_msg_grant_confirm_ack_packet_s *p);
-#endif /* (VAL or INV) x WB */
+#endif /* (VAL or INV)·OWNER */
 
 #if defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)
 /* Shared owner→owner transfer ship (defined in coherence/grant.c): ship the
- * current buffer (+ serialized owner-side map for WB, empty map for WT) to
+ * current buffer (+ serialized owner-side map for OWNER, empty map for HOME) to
  * new_owner via the GRANT_RESPONSE wire.  The target is an argument because
- * where it comes from is the release policy's: a revocation round publishes
+ * where it comes from is the retention's: a revocation round publishes
  * it on the holder's cache ahead of the sentinel withdrawal, a home serving
  * its own queue names the requester it just popped. */
 void arts_db_send_grant_response(struct arts_db_cache_s *cache,
@@ -489,14 +489,14 @@ void arts_db_send_grant_response(struct arts_db_cache_s *cache,
 #ifndef ARTS_RETENTION_PURGE
 /* Ship to the target published on this cache by a revocation round, re-arming
  * the field to the sentinel before the send.  Called on the 0-edge of
- * release_rw / the INVALIDATE handler (both write policies) and the WB
- * CONFIRM_ACK / WT GRANT_RESPONSE drain-guard removal. */
+ * release_rw / the INVALIDATE handler (both read sources) and the OWNER
+ * CONFIRM_ACK / HOME GRANT_RESPONSE drain-guard removal. */
 void arts_db_grant_ship_pending(struct arts_db_cache_s *cache);
 #endif
 
 #if defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)
 /* The version a serve from the home may claim for the bytes it sends — the
- * arm's own canonical publication axis.  Under a write-through home that is
+ * arm's own canonical publication axis.  Under HOME that is
  * NOT the served buffer's own version: a home-resident writer mutates that
  * buffer in place, so its lane stands still while the data moves on, and a
  * serve stamped from it would hand two different write windows the same
@@ -511,7 +511,7 @@ uint64_t arts_db_grant_serve_version(struct arts_db_s *db);
 struct arts_msg_inv_cts_packet_s;
 struct arts_msg_inv_invalidate_ack_packet_s;
 
-/* Cat-B bodies @home.  Both write policies run the same set; what differs is
+/* Cat-B bodies @home.  Both read sources run the same set; what differs is
  * what a read request is answered WITH (the home's own bytes, or a redirect to
  * the current grant holder) and whether a publish carries payload. */
 void arts_handler_db_inv_request(void *item_v, void *args_v);
@@ -664,7 +664,7 @@ void arts_send_db_excl_release(unsigned int home_rank, arts_guid_t db_guid,
                                uint64_t rdzv_txid, uint64_t rdzv_cookie);
 
 #ifdef ARTS_RETENTION_RETAIN
-/* ===== EXCL RETAIN handlers (Cat-C direct dispatch) = */
+/* ===== EXCL·RETAIN handlers (Cat-C direct dispatch) = */
 
 /* arts_handler_db_excl_forward: Cat-C @owner.  item_v is the full wire packet
  * (arts_msg_excl_forward_packet_s *); the wire entry resolves the db_s by
@@ -698,7 +698,7 @@ void arts_handler_db_excl_confirm(void *item_v);
  * packet->rank = the returning reader. */
 void arts_handler_db_excl_roret(void *item_v);
 
-/* ===== EXCL RETAIN senders ========================= */
+/* ===== EXCL·RETAIN senders ========================= */
 
 /* recall, forward and roret take the descriptor of the block the caller
  * holds (the home's, or the sender's own cache), and a self-send runs the
@@ -750,11 +750,11 @@ void arts_send_db_excl_roret(struct arts_db_s *db);
 
 #endif /* ARTS_COHERENCE_HANDLERS_H */
 
-/* Protocol seam invoked where a release policy has a point of its own between
- * an ex-holder's last release round and the next owner's first — WB's gated
+/* Protocol seam invoked where a retention has a point of its own between
+ * an ex-holder's last release round and the next owner's first — OWNER's gated
  * CONFIRM, PURGE's hand-back: the PREVIOUS holder still has the bytes it
  * wrote.  A protocol whose readers re-validate at every acquire has nothing to
- * do; a write-invalidate protocol registers that rank as a sharer.  The WT
- * policy has no such point and never calls it: INV's round keeps every
+ * do; a write-invalidate protocol registers that rank as a sharer.
+ * RETAIN·HOME has no such point and never calls it: INV's round keeps every
  * releaser registered as it releases (inv/engine.c). */
 void arts_db_grant_note_ex_holder(struct arts_db_s *db, unsigned int rank);

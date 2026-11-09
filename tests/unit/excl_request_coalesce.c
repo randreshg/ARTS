@@ -2,7 +2,7 @@
  *
  * excl_request_coalesce — EXCL-config-specific test for the cache-side request
  * coalescing of arts_handler_db_acquire on its not-held path.  The decision is
- * the cache arbiter's on either release policy, with the same rules below:
+ * the cache arbiter's on either retention, with the same rules below:
  * cache_compute_next (coherence/excl/arbiters.c) under PURGE,
  * cache_owner_compute_next (coherence/excl/retain.c) under RETAIN.
  *

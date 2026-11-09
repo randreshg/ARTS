@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * EXCL protocol, PURGE release policy.
+ * EXCL protocol, retention PURGE.
  *
  * The home holds the canonical payload, so it both arbitrates and serves: a
  * write grant leaves the home carrying the bytes, and a reader phase is fanned
@@ -11,12 +11,12 @@
  * to travel anyway.  A rank's next write therefore re-requests from the home and
  * receives the payload again.
  *
- * That is the whole difference from the RETAIN release policy, where the payload stays
+ * That is the whole difference from RETAIN, where the payload stays
  * with the last writer and a release with nothing pending sends nothing at all.
  *
  * Compiled only for ARTS_VALIDITY=EXCL + ARTS_RETENTION=PURGE;
- * the release-policy variant is a link-time file choice, so this TU contains no
- * release-policy preprocessor guards.
+ * the retention variant is a link-time file choice, so this TU contains no
+ * retention preprocessor guards.
  */
 
 /* excl/types.h must precede all other coherence headers: it defines
@@ -196,7 +196,7 @@ static void lock_home_grant(struct arts_db_s *db, struct arts_db_cache_s *cache,
   }
 #else
   /* A first use of a block whose create took no hold: the grant about to
-   * leave carries the block's bytes, and under this release policy the home
+   * leave carries the block's bytes, and under this retention the home
    * is the one rank entitled to say what they are — so materialize them here
    * when the block has no storage yet.  A no-op for every other block. */
   (void)arts_db_buf_ensure(
@@ -1262,7 +1262,7 @@ void arts_handler_db_acquire(void *item, void *args) {
 #ifndef ARTS_USE_CXL
   if (arts_guid_get_rank(cache->db_guid) == arts_global_rank_id) {
     /* First use of a block whose create took no hold: its storage was left
-     * for whoever uses it first, and under this release policy only the home
+     * for whoever uses it first, and under this retention only the home
      * may hold the canonical copy — so if the block has none, this acquiring
      * thread allocates it, on its own node.  A no-op for every other block:
      * the home's buffer exists from create and a requester materializes its

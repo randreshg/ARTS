@@ -17,7 +17,7 @@
  * has none outstanding; a rank still holding one after 20 s fails the run.  A
  * descriptor a destroy did not reach stays installed whatever it holds, so no
  * label is reused to see it.  Each reader also checks that it sees every
- * write.  Every write turn is ordered, so the program is DB-WRF-valid.
+ * write.  Every write turn is ordered, so the program is CDAG-valid.
  *
  * Arguments: [rounds [blocks]] (8, 24).  Needs two ranks.
  */

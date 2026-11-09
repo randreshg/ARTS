@@ -77,9 +77,9 @@ extern "C" {
  *
  * The model-specific DB-coherence kinds are preprocessor-selected: VAL builds
  * define ARTS_VALIDITY_VAL plus exactly one of ARTS_READ_SOURCE_{HOME,OWNER}.
- * FLUSH builds define ARTS_VALIDITY_FLUSH alone — the write and release policy
- * axes are dead there — and carry OOO_DB_ACQUIRE, OOO_DB_FETCH_REQUEST and
- * OOO_DB_FLUSH_ANNOUNCE.
+ * FLUSH builds define ARTS_VALIDITY_FLUSH alone — FLUSH has neither a
+ * retention nor a read source — and carry OOO_DB_ACQUIRE, OOO_DB_FETCH_REQUEST
+ * and OOO_DB_FLUSH_ANNOUNCE.
  * Each build's enum (and the mirroring g_ooo_table) carries only that model's OOO_DB_* kinds.
  * OOO_KIND_COUNT is therefore per-model — sound because every TU in one build
  * sees the same model define. */
@@ -117,7 +117,7 @@ enum arts_ooo_kind {
                      local dep; pushed by the acquire's resolution on the slot
                      its one reservation found) */
   OOO_DB_EXCL_REQUEST, /* → arts_handler_db_excl_request @ home */
-/* NO OOO_DB_EXCL_RELEASE: the RETAIN release policy has no synchronous publish
+/* NO OOO_DB_EXCL_RELEASE: RETAIN has no synchronous publish
  * release.  DELIVER and CONFIRM are answers that act on the descriptor their
  * token names; FORWARD, RO_RETURN and RECALL are whole-packet entries that look
  * the block up once, never deferred (an RO_RETURN that trails the teardown
@@ -128,14 +128,14 @@ enum arts_ooo_kind {
                      its one reservation found) */
   /* The migrating grant, shared with every other grant-bearing arm. */
   OOO_DB_GRANT_REQUEST, /* → arts_handler_db_grant_request @ home */
-  /* INV's own: the reader fetch, and (WT write policy only) the release that
+  /* INV's own: the reader fetch, and (HOME read source only) the release that
    * carries payload to the home. */
   OOO_DB_INV_REQUEST, /* → arts_handler_db_inv_request @ home (RO fetch) */
   /* On a run of several ranks every release asks the home for its
-   * invalidation round (one rank has no copy to retire).  Under WT the
+   * invalidation round (one rank has no copy to retire).  Under HOME the
    * release's payload lands in place in the home's stable buffer, which the
-   * home serves readers from; under WB the request is pure control.  That is
-   * the ONLY difference between the two write policies' releases. */
+   * home serves readers from; under OWNER the request is pure control.  That is
+   * the ONLY difference between the two read sources' releases. */
   OOO_DB_PUBLISH, /* → arts_handler_db_publish @ home */
 #ifdef ARTS_RETENTION_PURGE
   /* The voluntary return.  It can overtake the block's home CREATE, and the
@@ -158,7 +158,7 @@ enum arts_ooo_kind {
   OOO_DB_SNAPSHOT_REQUEST,  /* → arts_handler_db_snapshot_request @ home */
   OOO_DB_GRANT_REQUEST, /* → arts_handler_db_grant_request @ home */
   /* NO OOO_DB_GRANT_INVALIDATE — where the home revokes, rw_holder is
-   * flipped only at the post-install CONFIRM (same as WB), so the target is
+   * flipped only at the post-install CONFIRM (same as OWNER), so the target is
    * provably installed when INVALIDATE arrives and the dispatcher/self-send
    * call the body directly; where grants come back unasked, the home sends
    * none. */
@@ -175,11 +175,11 @@ enum arts_ooo_kind {
                      its one reservation found) */
   OOO_DB_SNAPSHOT_REQUEST,  /* → arts_handler_db_snapshot_request @ home */
   OOO_DB_GRANT_REQUEST, /* → arts_handler_db_grant_request @ home */
-/* NO OOO_DB_GRANT_INVALIDATE — the WB write policy never defers INVALIDATE
+/* NO OOO_DB_GRANT_INVALIDATE — the OWNER read source never defers INVALIDATE
  * (home publishes the target rw_holder only after that rank's cache install,
  * so the target is provably installed; the dispatcher/self-send call the body
  * directly).
- * NO OOO_DB_PUBLISH — VAL WB publishes nothing at a release (the
+ * NO OOO_DB_PUBLISH — VAL·OWNER publishes nothing at a release (the
  * dispatcher fatals on the PUBLISH wire message). */
 #elif defined(ARTS_VALIDITY_FLUSH)
   OOO_DB_ACQUIRE,       /* → arts_db_acquire_replay_dep */
@@ -392,7 +392,7 @@ struct arts_ooo_args_db_publish_s {
 };
 
 /* DB ownership invalidate: the fields the wire
- * arts_msg_grant_invalidate_packet_s delivers.  Under both write policies the
+ * arts_msg_grant_invalidate_packet_s delivers.  Under both read sources the
  * holder ships its GRANT_RESPONSE to new_owner_rank, into its landing, echoing
  * its token and the home's. */
 struct arts_ooo_args_db_grant_invalidate_s {

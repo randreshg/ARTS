@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * INV protocol, WT write policy.
+ * INV protocol, HOME read source.
  *
- * WT means the canonical payload comes back to the data block's home rank at
+ * HOME means the canonical payload comes back to the data block's home rank at
  * every release, so the home can serve readers from it.  That single fact is
  * this file: an RO acquire on the home rank reads the home buffer directly, a
  * release publishes its payload along with the round request, and a read
@@ -37,7 +37,7 @@
  * The two planes are answered independently, because they are independent:
  * a read never waits on a writer and a write never waits on a reader.
  *
- *   RO — served from the home (WT write policy puts current bytes there).  A
+ *   RO — served from the home (HOME read source puts current bytes there).  A
  *        rank holding a VALID copy short-circuits to a pure load; otherwise it
  *        joins or opens the single in-flight fetch.
  *   RW — the migrating sentinel grant, verbatim from the shared plane: bump
@@ -190,12 +190,12 @@ void arts_handler_db_acquire(void *item, void *args) {
   }
 }
 
-/* ===== release_rw (WT write policy) ======================================
+/* ===== release_rw (HOME read source) ======================================
  * Identical in shape to every other grant-bearing arm: bump the version,
  * publish, drop the count, and on the 0-edge ship the grant onward.  Two
  * things distinguish this arm, and only these two:
  *
- *   - WT write policy means the publish carries the payload, so the home holds
+ *   - HOME read source means the publish carries the payload, so the home holds
  *     current bytes and can serve readers from them;
  *   - INV means the home does not acknowledge that publish until it has run an
  *     invalidation round over the sharer roster and collected every ack.  The
@@ -215,8 +215,8 @@ void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload) {
   (void)payload;
   /* Defensive: no local hold to drop means our acquire never bumped the grant;
    * decrementing would underflow.  Which word states carry no hold is the
-   * release policy's — possession alone is one of them under a
-   * voluntary-return policy and not under a revoked one. */
+   * retention's — possession alone is one of them under PURGE and not
+   * under RETAIN. */
   if (arts_db_grant_release_skip(cache)) {
     return;
   }
@@ -253,7 +253,7 @@ void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload) {
   }
 
   /* The count-dropping edge, and what this rank owes at it, belong to the
-   * release policy — a revoked grant ships onward to the target the round
+   * retention — a revoked grant ships onward to the target the round
    * named, a voluntarily returned one goes back to the home.  Sequenced after
    * the round above, where one runs, so no stale copy outlives the
    * hand-over.  A claim taken above already dropped the count, and only has

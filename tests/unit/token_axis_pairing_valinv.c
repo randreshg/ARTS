@@ -28,10 +28,10 @@
  *               is then the sweep's); opened by a writer's give-back, for
  *               riders and for a window a size round closed while the write
  *               axis was open;
- *   write axis  closed by its answer (write-through: the grant; write-back:
- *               the CONFIRM_ACK its CONFIRM asks for), a size round leaving
+ *   write axis  closed by its answer (HOME: the grant; OWNER: the
+ *               CONFIRM_ACK its CONFIRM asks for), a size round leaving
  *               it open; by a create's claim; a size round, a grant and
- *               (write-back) a CONFIRM_ACK on a retired descriptor; a
+ *               (OWNER) a CONFIRM_ACK on a retired descriptor; a
  *               one-sided grant's pairing, live and retired; re-opened by
  *               the rearm inside a grant (where the fuzz points exist); the
  *               home's own request, its grant run on the home (under PURGE
@@ -45,7 +45,7 @@
  *               and landed inside the relaunched publish (INV: by its own
  *               round's ACK, which arrives while the round is still
  *               sending);
- *   the home's own read request (WB) dismissed inside its self-send with
+ *   the home's own read request (OWNER) dismissed inside its self-send with
  *               the teardown due, and (INV) served by the home on a
  *               descriptor retired since the request was processed;
  *   the teardown sweep: one count per open axis.
@@ -761,7 +761,7 @@ static void write_answer(int nth, bool payload) {
   arts_handler_db_grant_response(&m, sizeof(m));
 }
 
-/* Under write-back the request closes at the CONFIRM_ACK, which answers the
+/* Under OWNER the request closes at the CONFIRM_ACK, which answers the
  * CONFIRM the grant's commit sent. */
 static void confirm_ack(void) {
 #ifdef ARTS_READ_SOURCE_OWNER
@@ -1123,7 +1123,7 @@ static void holder_ships_to_home(int nth) {
 #endif
 
 /* The home's own write request: the grant is installed on the home, and
- * where the home revokes, its CONFIRM -- and under write-back the CONFIRM_ACK
+ * where the home revokes, its CONFIRM -- and under OWNER the CONFIRM_ACK
  * answering it -- runs there inline (under PURGE the home serves it from the
  * front of its queue).  The writer the grant wakes destroys the block in its
  * own body and completes, leaving the frames only their own counts. */

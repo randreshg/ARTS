@@ -38,10 +38,10 @@
 ******************************************************************************/
 
 /// @file coherence_owner_confirm_gate.c
-/// @brief Exploit + regression for the WB ownership-confirm gate.
+/// @brief Exploit + regression for the OWNER ownership-confirm gate.
 ///
 /// Guards the stale-RO window: when ownership transfers home(0)->W under
-/// write-back, the home names W in rw_holder only when W's
+/// OWNER, the home names W in rw_holder only when W's
 /// MSG_DB_GRANT_CONFIRM arrives.  Were W to run its RW EDT before that, an RO
 /// acquire causally ordered AFTER W's write but racing W's CONFIRM would be
 /// redirected by the home to the OLD owner and read a stale value; W runs only

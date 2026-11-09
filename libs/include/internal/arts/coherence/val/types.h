@@ -31,7 +31,8 @@ extern "C" {
  * @brief VAL (Multi-Reader, Node-Exclusive-Writer) cache/db layout.
  *
  * Selected by arts/coherence/types.h when ARTS_VALIDITY_VAL is defined.
- * The WT vs WB write-policy variant is chosen here by ARTS_READ_SOURCE_OWNER.
+ * The HOME vs OWNER read-source variant is chosen here by
+ * ARTS_READ_SOURCE_OWNER.
  * The protocol-agnostic pieces (buffer, snapshot waiter, defines,
  * container_of) come from types_common.h; the of_cache/total_size/stub_size
  * helpers live in the dispatcher (types.h), after this header defines cache +
@@ -131,14 +132,14 @@ uint64_t arts_val_req_compute_next(uint64_t cur, int op, uint32_t idx,
  *
  *   writer_count   ownership counter AND confirmation state in one word.
  *                  > 0 ⇒ this rank holds RW ownership; 0 ⇒ it holds none;
- *                  < 0 (ARTS_GRANT_UNCONFIRMED set, write-back only) ⇒ held
+ *                  < 0 (ARTS_GRANT_UNCONFIRMED set, OWNER only) ⇒ held
  *                  but the directory flip is not yet published, so the data is
  *                  here and readable while no RW EDT may run.  Reading the
  *                  sign is what makes the turn-taking CAS a complete test.
  *   buffer         currently-installed buffer, an atomic shared_ptr slot;
  *                  readers acquire via acquire_buf's acquire-and-validate load.
  *   publication_waiters
- *                  (WT) Treiber stack of reads the home parked before the
+ *                  (HOME) Treiber stack of reads the home parked before the
  *                  block's first publication; drained whole once published.
  *
  * The home-directory fields (pending_rw, grant_baton, rw_holder,
@@ -192,11 +193,11 @@ struct arts_db_cache_s {
    * sentinel-withdraw ordering makes a separate transfer_pending flag
    * redundant: whichever actor drives writer_count to 0 (the INVALIDATE, or the
    * last release_rw) reads this field — a non-sentinel value names the target,
-   * so that actor ships the grant to it (GRANT_RESPONSE under both write
-   * policies; a transfer to this rank runs the grant body on this descriptor
+   * so that actor ships the grant to it (GRANT_RESPONSE under both read
+   * sources; a transfer to this rank runs the grant body on this descriptor
    * instead).  Single writer per round
    * (home baton gate), and the decrement that reaches 0 reads the withdrawal's
-   * release sequence, so the field is plain.  Shared by both write policies:
+   * release sequence, so the field is plain.  Shared by both read sources:
    * the INVALIDATE carries new_owner under each. */
   unsigned int incoming_new_owner;
   /* The pending new owner's transfer landing, published together with (and
@@ -226,8 +227,8 @@ struct arts_db_cache_s {
   _Atomic(uint64_t) req_state;
   struct arts_db_reader_pool_s reader_pool; /* nodes of the word's chains */
 #ifdef ARTS_READ_SOURCE_OWNER
-  /* WB: owner-side dedup map.  Allocated with the cache and freed with it; its
-   * content migrates with ownership (GRANT_RESPONSE serializes it). */
+  /* OWNER: owner-side dedup map.  Allocated with the cache and freed with it;
+   * its content migrates with ownership (GRANT_RESPONSE serializes it). */
   struct arts_rank_to_u64_map_s *cached_version;
   /* Treiber stack of RW waiters parked on this rank (order-free drain-all). */
   arts_lf_stack_t pending_rw;
@@ -238,11 +239,11 @@ struct arts_db_cache_s {
   bool census_install_remote;
 #endif
 #else
-  /* Owner-side dedup map.  WT never creates it (always NULL): home serves RO
-   * via SNAPSHOT_REQUEST with the home->cached_version watermark, so the WT
+  /* Owner-side dedup map.  HOME never creates it (always NULL): home serves RO
+   * via SNAPSHOT_REQUEST with the home->cached_version watermark, so the HOME
    * owner→owner transfer ships an EMPTY map.  The field exists so the shared
    * arts_db_send_grant_response (coherence/grant.c) compiles for
-   * both write policies (it gates the map build on this being non-NULL). */
+   * both read sources (it gates the map build on this being non-NULL). */
   struct arts_rank_to_u64_map_s *cached_version;
   /* Treiber stack of RW waiters parked on this rank (order-free drain-all). */
   arts_lf_stack_t pending_rw;
@@ -253,7 +254,7 @@ struct arts_db_cache_s {
   bool census_publisher_remote;
 #endif
 
-  /* WT publish write-combining — the write-side twin of the RO combining
+  /* HOME publish write-combining — the write-side twin of the RO combining
    * window below.  pub_flight is the one-word flight state ({FLYING,DIRTY}):
    * a claim (CAS 0->FLYING) or a join (CAS ->|DIRTY) follows the releaser's
    * push onto pub_waiters, and every reset of the word by the flight owner
@@ -330,7 +331,7 @@ struct arts_db_s {
    * through it (arts_ooo_retire). */
   arts_shared_ptr_t self_cb;
   /* Home-directory metadata — present only on the rank that is the GUID home
-   * for this DB.  Non-home / WB / creator-remote ranks allocate a cache-only
+   * for this DB.  Non-home / OWNER / creator-remote ranks allocate a cache-only
    * footprint of arts_db_cache_stub_size() bytes: it ends at the first home-arm
    * field below (rw_holder, or pending_rw where there is none), so it
    * INCLUDES home_initialized but omits every
@@ -363,7 +364,7 @@ struct arts_db_s {
   /* The requester the round in flight transfers the grant to: relaxed,
    * ordered by the baton (directory.h). */
   _Atomic(unsigned int) pending_install_owner;
-#else /* WT */
+#else /* HOME */
 #ifndef ARTS_RETENTION_PURGE
   /* The holder a revocation targets.  A home whose grants come back unasked
    * revokes no one, and its own possession is its whole directory.  Stored

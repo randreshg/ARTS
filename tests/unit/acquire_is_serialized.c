@@ -18,7 +18,7 @@
  *     reply, never on another EDT's release, so there is no acquire cycle to
  *     order away.
  *
- * The defining TU per protocol (val/{wt,wb}.c, inv/{wt,wb}.c,
+ * The defining TU per protocol (val/{home,owner}.c, inv/{home,owner}.c,
  * excl/{purge,retain}.c, flush/flush.c) drags in the broader runtime, so
  * this test links the real symbol out of the per-config static libarts
  * rather than #including a heavyweight TU — it never starts the runtime, it

@@ -25,9 +25,9 @@
  * each other so the run cannot finish early with turns still outstanding,
  * while the turns WITHIN a round are unordered and race freely.
  *
- * Policy-independent by construction: it asserts what every release policy
+ * Retention-independent by construction: it asserts what every retention
  * must compute, not how the right travelled — which is why it runs at every
- * release policy, and under the scheduler fuzz where the grant plane carries
+ * retention, and under the scheduler fuzz where the grant plane carries
  * fuzz points.
  */
 

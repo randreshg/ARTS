@@ -75,7 +75,7 @@ bool arts_rank_u64_map_advance(struct arts_rank_to_u64_map_s *m,
 }
 
 /* ===== serialize / deserialize (ownership-transfer wire payload) =====
- * Shared by both VAL write policies (the owner→owner GRANT_RESPONSE carries the
+ * Shared by both VAL read sources (the owner→owner GRANT_RESPONSE carries the
  * owner-side map).  Layout: count(u32) + pad(u32) + count pairs. */
 size_t arts_rank_u64_map_serialize(const struct arts_rank_to_u64_map_s *m,
                                    void *out) {

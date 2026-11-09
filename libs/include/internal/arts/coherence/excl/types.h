@@ -5,7 +5,7 @@
  * Selected by arts/coherence/types.h when ARTS_VALIDITY_EXCL is defined.
  * The EXCL protocol uses a single lock_state word on the home rank to
  * serialize all access-mode transitions: the home grants or queues each
- * requester.  What a turn's end sends is the release policy's: PURGE hands
+ * requester.  What a turn's end sends is the retention's: PURGE hands
  * copy and permission back to the home, and RETAIN keeps both until another
  * node asks for the block.
  *
@@ -30,7 +30,7 @@ extern "C" {
 #include <stdint.h>
 
 /* ── PURGE cache_state ────────────────────────────────────────────────────
- * Per-rank single 64-bit coherence word (PURGE release policy only).
+ * Per-rank single 64-bit coherence word (PURGE retention only).
  * Layout: [ rw_state:2 (63..62) | ro_state:2 (61..60) | ro_parity:1 (59) |
  *           stub:1 (58) | rw_count:28 (57..30) | ro_count:30 (29..0) ]
  *
@@ -73,7 +73,7 @@ extern "C" {
 #endif /* ARTS_RETENTION_PURGE */
 
 /* ── RETAIN cache_state ─────────────────────────────────────────────────────
- * Per-rank (owner) single 64-bit coherence word (RETAIN release policy only).
+ * Per-rank (owner) single 64-bit coherence word (RETAIN only).
  * Layout (MSB→LSB):
  *   [ ro_granted:1 (63) | owner:1 (62) | rw_st:2 (61..60) | ro_st:2 (59..58) |
  *     migrate_target:14 (57..44) | ro_parity:1 (43) | stub:1 (42) |
@@ -98,14 +98,14 @@ extern "C" {
  * no split-decrement or separate flag.
  *
  * Note: under RETAIN the home does NOT hold canonical data — the current owner
- * (owner-bit set) does.  home.cache.buffer is unused by the EXCL RETAIN
+ * (owner-bit set) does.  home.cache.buffer is unused by the EXCL·RETAIN
  * path. */
 #ifdef ARTS_RETENTION_RETAIN
 #define CACHE_ST_IDLE 0u
 #define CACHE_ST_REQ 1u
 #define CACHE_ST_GRANT 2u
 /* GRANT_PURGE — a grant that relinquishes VOLUNTARILY at the count zero edge,
- * i.e. a PURGE-flavoured grant.  The release policy is really a per-grant
+ * i.e. a PURGE-flavoured grant.  The retention is really a per-grant
  * property: under PURGE every grant carries it, under RETAIN none does until
  * the home asks (a recall) or the home issues the grant pre-marked because a
  * writer was already queued.  Only ro_st uses the value today. */
@@ -322,7 +322,7 @@ extern "C" {
 /* ── home lock_state transition ops + grant codes (PURGE) ────────────────
  * excl_compute_next(cur, op, &grant) is the home arbiter, a pure function of
  * the single lock_state word run inside a CAS-retry loop (arbiters.c, which
- * the release policy's unit includes).  The acquire and release handlers run
+ * the retention's unit includes).  The acquire and release handlers run
  * the SAME arbiter locally when home == self: a local hit runs the handler
  * logic directly, with no wire round.
  */
@@ -435,7 +435,7 @@ extern "C" {
 #define CACHE_OP_CTS_RO 7
 
 /* Values are aligned with the PURGE block above so that a name shared by both
- * policies also shares its number, and the acquire actions carry PURGE's
+ * retentions also shares its number, and the acquire actions carry PURGE's
  * contract: a SELF_SERVE acquire never parks, and a SEND_* or PARK acquire
  * pushes its waiter after the CAS that counted it. */
 #define CACHE_ACT_NONE 0
@@ -656,7 +656,7 @@ struct arts_db_s {
 }
 #endif
 
-/* Shared by both release policies: perform the home teardown (notify every
+/* Shared by both retentions: perform the home teardown (notify every
  * rank that ever cached the DB, then return the route slot).  PURGE reaches it
  * from whichever of the destroy and the last release hits the zero edge under
  * the teardown mark; RETAIN calls it directly on destroy. */

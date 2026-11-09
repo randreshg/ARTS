@@ -10,14 +10,14 @@
  * rank 1 acquires g, stamps it and completes.  A writer on rank 0, made
  * runnable by that completion, then acquires g, and the write right comes
  * back to the home the way the cell moves it: a home that revokes its holder
- * installs rank 1's ship and runs its own CONFIRM inline -- under write-back
+ * installs rank 1's ship and runs its own CONFIRM inline -- under OWNER
  * the CONFIRM_ACK that wakes the writer too -- and a home the right is
  * handed back to serves its own request from its queue.  The writer checks
  * rank 1's stamp, writes its own and destroys g, which is legal once its hold
  * is released and nothing else holds or awaits g.  A round's blocks are
  * destroyed before the next round starts.  The two write acquisitions of g
  * are ordered by the first one's completion, so every write is ordered by
- * happens-before (the program is valid under DB-WRF too).
+ * happens-before (the program is valid under CDAG too).
  *
  * What the home does after it woke the writer runs on a descriptor the
  * writer's destroy and completion may already have given up; a frame that

@@ -50,7 +50,7 @@
 
 static void fail_value(const char *what, uint64_t got, uint64_t want) {
   arts_test_fail();
-  arts_printf("FAIL: wrf_flush %s got=%llu expected=%llu\n", what,
+  arts_printf("FAIL: cdag_flush %s got=%llu expected=%llu\n", what,
               (unsigned long long)got, (unsigned long long)want);
 }
 
@@ -112,7 +112,7 @@ static void link_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   _Atomic(uint64_t) *v = (_Atomic(uint64_t) *)depv[0].ptr;
   if (v == NULL) {
     arts_test_fail();
-    arts_printf("FAIL: wrf_flush chain link got NULL\n");
+    arts_printf("FAIL: cdag_flush chain link got NULL\n");
     return;
   }
   /* The links are ordered, so one link at a time writes the word. */
@@ -225,7 +225,7 @@ static void step_writer_edt(uint32_t paramc, const uint64_t *paramv,
   _Atomic(uint64_t) *v = (_Atomic(uint64_t) *)depv[0].ptr;
   if (v == NULL) {
     arts_test_fail();
-    arts_printf("FAIL: wrf_flush step writer got NULL\n");
+    arts_printf("FAIL: cdag_flush step writer got NULL\n");
     return;
   }
   uint64_t got = atomic_load_explicit(v, memory_order_relaxed);
@@ -297,7 +297,7 @@ static void overlap_writer_edt(uint32_t paramc, const uint64_t *paramv,
   _Atomic(uint64_t) *v = (_Atomic(uint64_t) *)depv[0].ptr;
   if (v == NULL) {
     arts_test_fail();
-    arts_printf("FAIL: wrf_flush private copy writer got NULL\n");
+    arts_printf("FAIL: cdag_flush private copy writer got NULL\n");
     arts_event_satisfy(go, NULL_GUID);
     return;
   }
@@ -349,7 +349,7 @@ static void zero_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depc;
   if (depv[0].ptr != NULL) {
     arts_test_fail();
-    arts_printf("FAIL: wrf_flush zero-size acquire returned storage\n");
+    arts_printf("FAIL: cdag_flush zero-size acquire returned storage\n");
   }
 }
 
@@ -382,13 +382,13 @@ static bool holds(const uint8_t *buf, uint8_t (*want)(unsigned int),
                   const char *who) {
   if (buf == NULL) {
     arts_test_fail();
-    arts_printf("FAIL: wrf_flush size discovery %s got NULL storage\n", who);
+    arts_printf("FAIL: cdag_flush size discovery %s got NULL storage\n", who);
     return false;
   }
   for (unsigned int i = 0; i < DISCOVERY_BYTES; i++) {
     if (buf[i] != want(i)) {
       arts_test_fail();
-      arts_printf("FAIL: wrf_flush size discovery %s byte %u got=%u "
+      arts_printf("FAIL: cdag_flush size discovery %s byte %u got=%u "
                   "expected=%u\n",
                   who, i, (unsigned)buf[i], (unsigned)want(i));
       return false;
@@ -434,7 +434,7 @@ static void case_size_discovery(arts_guid_t group) {
   arts_db_create(&addr, DISCOVERY_BYTES, ARTS_DB, ARTS_DB_PROP_NONE, &hint);
   if (addr == NULL) {
     arts_test_fail();
-    arts_printf("FAIL: wrf_flush labeled create handed no storage\n");
+    arts_printf("FAIL: cdag_flush labeled create handed no storage\n");
     return;
   }
   for (unsigned int i = 0; i < DISCOVERY_BYTES; i++) {
@@ -482,7 +482,7 @@ static void credit_writer_edt(uint32_t paramc, const uint64_t *paramv,
   _Atomic(uint64_t) *v = (_Atomic(uint64_t) *)depv[0].ptr;
   if (v == NULL) {
     arts_test_fail();
-    arts_printf("FAIL: wrf_flush spent-credit writer got NULL\n");
+    arts_printf("FAIL: cdag_flush spent-credit writer got NULL\n");
     return;
   }
   atomic_store_explicit(v, CREDIT_WRITTEN, memory_order_relaxed);
@@ -491,7 +491,7 @@ static void credit_writer_edt(uint32_t paramc, const uint64_t *paramv,
   struct arts_db_s *d = (struct arts_db_s *)arts_shared_get(h);
   if (d == NULL) {
     arts_test_fail();
-    arts_printf("FAIL: wrf_flush spent-credit writer found no descriptor\n");
+    arts_printf("FAIL: cdag_flush spent-credit writer found no descriptor\n");
   } else {
     atomic_store_explicit(&d->cache.flush_txid, (uint64_t)0,
                           memory_order_release);
@@ -518,7 +518,7 @@ static void done_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depc;
   (void)depv;
   if (arts_test_status() == 0) {
-    arts_printf("PASS: wrf_flush\n");
+    arts_printf("PASS: cdag_flush\n");
   }
   arts_shutdown();
 }

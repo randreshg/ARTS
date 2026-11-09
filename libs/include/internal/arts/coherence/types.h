@@ -61,7 +61,7 @@ extern "C" {
 #include "arts/coherence/types_common.h"
 
 /* Protocol-specific cache/db layout.  VAL carries the ownership-cache shape,
- * with the WT/WB write-policy split made inside the header. */
+ * with the HOME/OWNER read-source split made inside the header. */
 #if defined(ARTS_VALIDITY_EXCL)
 #include "arts/coherence/excl/types.h"
 #elif defined(ARTS_VALIDITY_INV)
@@ -72,7 +72,7 @@ extern "C" {
 #include "arts/coherence/val/types.h"
 #else
 #error                                                                         \
-    "no coherence protocol: define one of ARTS_VALIDITY_VAL, ARTS_VALIDITY_INV, ARTS_VALIDITY_EXCL, ARTS_VALIDITY_FLUSH"
+    "no validity: define one of ARTS_VALIDITY_VAL, ARTS_VALIDITY_INV, ARTS_VALIDITY_EXCL, ARTS_VALIDITY_FLUSH"
 #endif
 
 /* ========================================================================= */
@@ -114,7 +114,7 @@ static inline void arts_db_cache_learn_size(struct arts_db_cache_s *c,
   }
 }
 
-/* Footprint of a non-home / WB / creator-remote DB stub: the cache prefix +
+/* Footprint of a non-home / OWNER / creator-remote DB stub: the cache prefix +
  * db_type + home_initialized + self_cb, stopping before the home-directory
  * queues/maps (which only the GUID home rank ever touches).  home_initialized
  * MUST be in bounds: the cache destructor reads it on EVERY free to decide

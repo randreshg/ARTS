@@ -57,23 +57,23 @@
 /// the home that waits for the home's answer gets it.  Then, waited for by
 /// nothing, while an EDT on the home starts the shutdown:
 ///   - a burst of blocks homed on rank 0, each written once on another rank
-///     that has already written it once.  Under write-through publishing (VAL
-///     x WT and INV x WT, either release policy) its release flies on the
+///     that has already written it once.  Under the HOME read source's
+///     publishing ({VAL,INV}·HOME, either retention) its release flies on the
 ///     landing the earlier write's acknowledgement left; under FLUSH the burst
-///     write's own fetch brings one; under EXCL x PURGE the grant carries it
-///     and nothing acknowledges the release; under INV x WB the release
+///     write's own fetch brings one; under EXCL·PURGE·HOME the grant carries it
+///     and nothing acknowledges the release; under INV·OWNER the release
 ///     publishes control only, with no landing;
 ///   - creators on the other ranks, each creating a block homed on rank 0,
 ///     writing it and releasing it: unless the create's answer has brought
 ///     one, the create's hold has no landing in the home's copy, so a release
 ///     that carries its payload to the home asks for one and waits for it.
 /// Every write is ordered before the next write of its block, so the program
-/// is valid under DB-WRF as well.
+/// is valid under CDAG as well.
 ///
 /// With the argument "contended" the burst is instead every writer of the
 /// warmup's block at once, several on each rank, so a release finds its
 /// rank's publish of the block already in flight and joins it.  Writers of
-/// one block with no order among them are outside DB-WRF; that form runs only
+/// one block with no order among them are outside CDAG; that form runs only
 /// where the OCR model holds.
 ///
 /// Correct behavior is every rank ending with status 0, a releaser still

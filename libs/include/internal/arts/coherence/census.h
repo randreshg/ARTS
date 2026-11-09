@@ -19,7 +19,7 @@
  * waiters it serves, a path that serves them from what this rank already
  * holds (a phase it flips on its own rank included) a local one, and the
  * waiters of a block's first publication count from its publisher's rank
- * whichever drain wakes them.  Under the voluntary-return release policy the
+ * whichever drain wakes them.  Under the PURGE retention the
  * write right belongs to the block's home, so every acquisition on the home
  * rank is a local hit.
  */

@@ -27,7 +27,7 @@
  * writers finished. So the EXCL arm asserts rw_st == GRANT with wc == 0 after
  * every writer has released. An implementation that relinquished at the zero
  * edge (or that demoted unconditionally when driving the engine) lands on IDLE
- * here and every later local write pays a home round trip — the policy
+ * here and every later local write pays a home round trip — RETAIN
  * silently degrades to PURGE while computing identical answers, which is
  * exactly the class of regression a value oracle cannot see. PURGE lands on
  * IDLE legitimately and is excluded.
@@ -68,8 +68,8 @@ static void excl_perm(arts_guid_t db, unsigned int *rw_st, unsigned int *wc) {
 }
 #else
 /* Read the grant word on this rank without disturbing it, as the two facts it
- * encodes.  How they share the word is the release policy's, so the raw value
- * is not comparable across policies and the accessors are. */
+ * encodes.  How they share the word is the retention's, so the raw value
+ * is not comparable across retentions and the accessors are. */
 static void grant_state(arts_guid_t db, bool *own, unsigned int *count) {
   arts_shared_ptr_t h = arts_route_table_lookup_db(db);
   struct arts_db_s *d = (struct arts_db_s *)arts_shared_get(h);
@@ -144,8 +144,8 @@ static void check_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 #else
   /* Every writer has released and nobody else exists to ask for it:
    * possession, and no hold under it, must remain.  On one rank every block
-   * is home-resident, so a voluntary-return policy has nowhere to return to
-   * and rests in exactly the same state. */
+   * is home-resident, so PURGE has nowhere to return to and rests in
+   * exactly the same state. */
   bool own;
   unsigned int wc;
   grant_state(g_db, &own, &wc);

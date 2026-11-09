@@ -5,12 +5,12 @@
  * and as the next owner) ships the grant to itself at the zero edge.  The ex-
  * owner and the new owner are one descriptor: the transfer runs the grant
  * body on it with the bytes where they are, and the parked writer is handed
- * the buffer the last write turn left, in the write policy's commit order
- * (write-through: the drain, then the CONFIRM; write-back: the CONFIRM, and
- * the drain at the CONFIRM_ACK).
+ * the buffer the last write turn left, in the read source's commit order
+ * (HOME: the drain, then the CONFIRM; OWNER: the CONFIRM, and the drain at
+ * the CONFIRM_ACK).
  *
  * This drives the holder's INVALIDATE handler through the ship
- * (coherence/grant.c), the grant body and commit of the tree's write policy
+ * (coherence/grant.c), the grant body and commit of the tree's read source
  * (coherence/grant_home.c or grant_owner.c), the RETAIN count edges
  * (coherence/grant_retain.c) and the waiter stack (coherence/grant_queue.c) on
  * one thread, with the wire stubbed.  Checks: no packet, lookup, send or
@@ -20,10 +20,10 @@
  * into a packet, or to install a snapshot of them) faults; the writer wakes
  * once, its hold counted, on the same buffer at the same version holding the
  * bytes the last turn wrote; the advertised landing goes back once; the CONFIRM
- * leaves once, in the write policy's order, naming the home's descriptor by the
+ * leaves once, in the read source's order, naming the home's descriptor by the
  * home token the INVALIDATE carried; the descriptor's pins balance, the write
  * request's count going once with the grant that closes it; the grant stays
- * here once the writer releases; under VAL write-back the self-credit is made
+ * here once the writer releases; under VAL·OWNER the self-credit is made
  * and a concurrent advance of another rank's ledger entry survives.
  *
  * PURE test: no arts_rt, no ports, no threads.
@@ -423,11 +423,11 @@ int main(void) {
   g_ack_step = ++g_step;
   arts_handler_db_grant_confirm_ack(&ack);
   if (!(g_confirm_step < g_ack_step && g_ack_step < g_wake_step)) {
-    fail("write-back order is not CONFIRM, CONFIRM_ACK, wake");
+    fail("OWNER order is not CONFIRM, CONFIRM_ACK, wake");
   }
 #else
   if (!(g_wake_step < g_confirm_step)) {
-    fail("write-through order is not wake, CONFIRM");
+    fail("HOME order is not wake, CONFIRM");
   }
 #endif
   if (g_wakes != 1u || g_confirms != 1u || g_landing_returned != 1u) {

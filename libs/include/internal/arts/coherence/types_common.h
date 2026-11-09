@@ -41,8 +41,8 @@ extern "C" {
 
 /* A translation unit that sees a coherence layout is compiled for exactly one
  * cell, the cell of the runtime it links: one protocol; under VAL, INV and
- * EXCL one write policy and one release policy (FLUSH has neither axis); and
- * one payload store, which is CXL memory only on the EXCL x PURGE cell, with
+ * EXCL one read source and one retention (FLUSH has neither axis); and
+ * one payload store, which is CXL memory only on the EXCL·PURGE·HOME cell, with
  * exactly one residency. */
 #if defined(ARTS_VALIDITY_VAL) + defined(ARTS_VALIDITY_INV) +                  \
         defined(ARTS_VALIDITY_EXCL) + defined(ARTS_VALIDITY_FLUSH) !=          \
@@ -65,7 +65,7 @@ extern "C" {
 #endif
 #if defined(ARTS_USE_CXL)
 #if !defined(ARTS_VALIDITY_EXCL) || !defined(ARTS_RETENTION_PURGE)
-#error "ARTS_USE_CXL belongs to the EXCL x PURGE cell"
+#error "ARTS_USE_CXL belongs to the EXCL·PURGE·HOME cell"
 #endif
 #if defined(ARTS_CXL_STAGED) + defined(ARTS_CXL_DIRECT) != 1
 #error "ARTS_USE_CXL needs exactly one of ARTS_CXL_STAGED and ARTS_CXL_DIRECT"
@@ -126,7 +126,7 @@ extern "C" {
 #ifndef ARTS_VALIDITY_EXCL
 /*--- The grant word ------------------------------------------------------
  * writer_count answers two questions — does this rank possess the write
- * right, and how many local writers are inside it — and the release policy
+ * right, and how many local writers are inside it — and the retention
  * decides how the two share the word.
  *
  * RETAIN keeps the sentinel encoding: possession IS a +1 that outlives every
@@ -143,7 +143,7 @@ extern "C" {
  *
  * The load-bearing encoding invariant is `own == 0 ⟹ count == 0`: possession
  * is only ever cleared by a transition whose resulting count is zero.  It is
- * what makes `(int)word > 0` mean exactly `own == 1` under both policies, so
+ * what makes `(int)word > 0` mean exactly `own == 1` under both retentions, so
  * the fast path and the drain (one hold per woken waiter) are one shared body.
  *
  * An arm with no migrating write right carries the same word as a pure
@@ -163,7 +163,7 @@ extern "C" {
 #define ARTS_GRANT_SEED_IDLE (ARTS_GRANT_OWN)
 #else
 /* The accessors are diagnostics (tests, oracles); the release-entry guard
- * has its own per-policy predicate and must not be expressed through them —
+ * has its own per-retention predicate and must not be expressed through them —
  * this mapping would fire it on the sentinel-only word, which is exactly the
  * state whose release still owes a transfer. */
 #define ARTS_GRANT_OWN_OF(w) ((int)(w) >= 1)
@@ -303,7 +303,7 @@ struct arts_edt_s;
   static_assert(sizeof(((T *)0)->edt) == sizeof(void *), "an EDT pointer")
 #endif
 
-/* A parked read on a write-through home's publication waiters
+/* A parked read on the publication waiters of a home under HOME
  * (cache.publication_waiters): a home-local RO acquire, or a remote read whose
  * serve was deferred — `serve` is non-NULL — because the home's copy was not
  * yet published; drained whole once it is (arts_db_drain_publication_waiters).

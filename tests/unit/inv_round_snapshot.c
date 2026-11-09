@@ -5,7 +5,7 @@
  *
  * A round exchanges each roster word for its keep and must decide, for every
  * rank it found, one of three things: retire it (it is a target), leave it
- * out (the write-through home, whose buffer is the canonical copy), or keep
+ * out (the home under HOME, whose buffer is the canonical copy), or keep
  * it while not retiring it (a batch releaser: its bytes are what the round
  * publishes, and its copy is a sharer's copy from then on) — and a releaser
  * is put in even when the snapshot did not find it, because a creator's
@@ -13,7 +13,7 @@
  * registers it.  The releaser case is the one that has cost silent
  * staleness: a snapshot that dropped the releaser left the ex-holder's
  * durable copy uninvalidated whenever the next owner's first round beat that
- * owner's CONFIRM, which the WT policy never gates.  The keep is what the
+ * owner's CONFIRM, which HOME never gates.  The keep is what the
  * exchange writes, so it must not depend on the word it replaces.
  *
  * Expected values are hand-derived.  Built standalone by #including

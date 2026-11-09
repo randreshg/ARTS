@@ -1,11 +1,11 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * WT write-policy translation unit: defines the WT-specific
+ * HOME read-source translation unit: defines the HOME-specific
  * arts_handler_db_* / arts_db_* bodies directly (CMake links exactly this TU
- * for a VAL+WT build) plus the WT-only wire handlers/senders.
+ * for a VAL·HOME build) plus the HOME-only wire handlers/senders.
  * Compiled only for ARTS_VALIDITY=VAL with
  * ARTS_READ_SOURCE=HOME (selected in libs/src/core/CMakeLists.txt).
- * Contains NO protocol/write-policy preprocessor logic.
+ * Contains NO protocol/read-source preprocessor logic.
  */
 #include <assert.h>
 #include <semaphore.h>
@@ -30,10 +30,10 @@
 #include "arts/transport/protocol.h" /* arts_fill_packet_header, MSG_* */
 #include "arts/utils/malloc.h" /* pairing ctx */
 
-/* ===== 8-case acquire dispatch (WT) ================================
- * Whole arts_handler_db_acquire body for the WT build.  Diverges from WB only
- * on the RO-has-local-data predicate (WT: is_home||is_owner — home always
- * holds current data via synchronous PUBLISH).  The remote-RO,
+/* ===== 8-case acquire dispatch (HOME) ================================
+ * Whole arts_handler_db_acquire body for the HOME build.  Diverges from OWNER
+ * only on the RO-has-local-data predicate (HOME: is_home||is_owner — home
+ * always holds current data via synchronous PUBLISH).  The remote-RO,
  * RW-local-fast, and remote-RW paths are the shared helpers
  * (coherence/coherence.c / coherence/grant.c). */
 void arts_handler_db_acquire(void *item, void *args) {
@@ -66,7 +66,7 @@ void arts_handler_db_acquire(void *item, void *args) {
 
   if (mode == DB_MODE_RO) {
     if (is_home ||
-        is_owner) { /* WT RO predicate (home holds current data) */
+        is_owner) { /* HOME RO predicate (home holds current data) */
       /* One slot load decides and, when the buffer is published (or the
        * block has no bytes), is kept as the EDT's hold; an unpublished one
        * (no buffer yet, or the v0 installed at create) parks WITHOUT a hold —
@@ -135,12 +135,12 @@ bool arts_db_acquire_is_serialized(arts_db_access_mode_t mode) {
   return mode == DB_MODE_RW;
 }
 
-/* ===== release_rw (WT arm) ========================================
- * The WT write policy keeps home's RO copy fresh with a pure synchronous
+/* ===== release_rw (HOME arm) ========================================
+ * The HOME read source keeps home's RO copy fresh with a pure synchronous
  * PUBLISH on every non-home release (home owners already hold the canonical
  * buffer).  Ownership moves on the grant plane: under RETAIN a separate
  * owner→owner ship (arts_db_send_grant_response), fired on the 0-edge when a
- * transfer target is pending, as in the WB arm; under PURGE the right goes
+ * transfer target is pending, as in the OWNER arm; under PURGE the right goes
  * back to the home, on the publish's commit leg when it can.  The drain-now /
  * confirm-ack divergence lives only in the GRANT_RESPONSE / CONFIRM
  * handlers, not here. */
@@ -154,8 +154,8 @@ void arts_db_release_created(struct arts_db_cache_s *cache) {
 void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload) {
   /* Defensive: no local hold to drop means our acquire never bumped ownership;
    * decrementing would underflow.  Which word states carry no hold is the
-   * release policy's — possession alone is one of them under a
-   * voluntary-return policy and not under a revoked one. */
+   * retention's — possession alone is one of them under PURGE and not
+   * under RETAIN. */
   if (arts_db_grant_release_skip(cache)) {
     return;
   }
@@ -188,7 +188,7 @@ void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload) {
         atomic_fetch_add_explicit(&buf->version, 1u, memory_order_acq_rel) + 1u;
   }
   bool is_home = (arts_guid_get_rank(cache->db_guid) == arts_global_rank_id);
-  /* WT keeps home's RO copy fresh: pure synchronous publish every release
+  /* HOME keeps home's RO copy fresh: pure synchronous publish every release
    * (a non-home owner; home owners already hold the canonical buffer).  Under
    * RETAIN the publish moves no ownership (that is the separate owner→owner
    * ship); under PURGE its commit leg may carry the hand-back.  Derived ONCE:
@@ -204,11 +204,11 @@ void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload) {
      * version bump above. */
     arts_db_publish_sync(cache, new_version);
   }
-  /* WT: release a slot load after the publish (which reads buf->data). */
+  /* HOME: release a slot load after the publish (which reads buf->data). */
   arts_db_buf_release(&buf_h);
 
   /* The count-dropping edge, and what this rank owes at it, belong to the
-   * release policy — a revoked grant ships onward to the target the round
+   * retention — a revoked grant ships onward to the target the round
    * named, a voluntarily returned one goes back to the home.  Sequenced after
    * the publish above either way: the bytes must be at the home before the
    * write right can move.  A claim taken above already dropped the count, and
@@ -220,8 +220,8 @@ void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload) {
   }
 }
 
-/* ===== cache_s lifecycle (WT) ======================================
- * Construct: the WT write policy's own fields (the pending_rw Treiber stack,
+/* ===== cache_s lifecycle (HOME) ======================================
+ * Construct: the HOME read source's own fields (the pending_rw Treiber stack,
  * the transfer target, no dedup ledger), then arts_db_cache_common_init.
  * Destruct order: buffer-NULL (pre) → pending_rw destroy → snapshot drain +
  * home teardown (post). */
@@ -239,7 +239,7 @@ void arts_db_cache_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
   c->incoming_new_owner_token = 0u;
   c->incoming_new_owner_home_token = 0u;
 #endif
-  /* WT has no owner-side dedup map (home serves RO via SNAPSHOT_REQUEST): the
+  /* HOME has no owner-side dedup map (home serves RO via SNAPSHOT_REQUEST): the
    * owner→owner transfer always ships an empty map.  NULL so the shared ship
    * helper's map-build gate takes its empty-map branch. */
   c->cached_version = NULL;
@@ -370,7 +370,7 @@ static void home_serve_deferred_read(struct arts_db_cache_s *cache,
 /* Cat-B pure body (OoO g_ooo_table[OOO_DB_SNAPSHOT_REQUEST]): the OoO engine
  * has already acquired the home db_s for db_guid and pinned a ref across this
  * call (cache is its FIRST member), so there is no lookup / NULL-check / defer
- * here.  WT serves from home's canonical buffer with cached_version dedup. */
+ * here.  HOME serves from home's canonical buffer with cached_version dedup. */
 void arts_handler_db_snapshot_request(void *item_v, void *args_v) {
   struct arts_db_cache_s *cache = &((struct arts_db_s *)item_v)->cache;
   struct arts_ooo_args_db_snapshot_request_s *a =
@@ -681,7 +681,7 @@ void arts_db_create_install_home_buffer(struct arts_db_cache_s *cache,
   }
 }
 
-/* The home's installed buffer IS the canonical copy under this write policy,
+/* The home's installed buffer IS the canonical copy under this read source,
  * and every publish stamps it in place, so its version is the axis a serve is
  * judged against. */
 uint64_t arts_db_grant_serve_version(struct arts_db_s *db) {

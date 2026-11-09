@@ -93,7 +93,7 @@
 /// snapshot is produced, while still being a true oracle rather than a smoke
 /// test.
 ///
-/// A round's writers of one block are unordered, which DB-WRF does not admit,
+/// A round's writers of one block are unordered, which CDAG does not admit,
 /// so it runs on every arm of the OCR model and not under FLUSH.
 ///
 /// A violation prints FAIL: and aborts; a stranded acquire surfaces as a ctest

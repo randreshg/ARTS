@@ -218,7 +218,7 @@ static void hand_back_cv(unsigned int holder, uint64_t cv) {
 
 static void hand_back(unsigned int holder) { hand_back_cv(holder, 7u); }
 
-/* A GRANT_REQUEST reaching the home: queued, then the release policy's
+/* A GRANT_REQUEST reaching the home: queued, then the retention's
  * answer (arts_handler_db_grant_request). */
 static void request(unsigned int rank) {
   q_ring[q_tail++ % QCAP] = rank;
