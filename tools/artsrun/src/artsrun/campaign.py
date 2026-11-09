@@ -7,6 +7,7 @@ the source of truth; the console is a convenience.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import shutil
@@ -37,6 +38,9 @@ from artsrun.paths import default_build_dir, logs_root, wall_cache_path
 from artsrun.render import write_configs, write_counter_config
 from artsrun.run.manifest import write_manifest
 from artsrun.run.plan import expand, not_applicable
+from artsrun.run.grace import CampaignRefusal
+from artsrun.run.retry import (MAX_RETRIES, MeshRetry, kept_attempts, restore,
+                               resolve_mesh_retries, supersede)
 from artsrun.run.scheduler import Scheduler, WallCache
 from artsrun.run.types import (DEFAULT_END_GRACE_S, CellResult, NotApplicable,
                                Skipped, Status)
@@ -55,6 +59,8 @@ class Campaign:
     # The campaign's end grace and whether the command line named it.
     end_grace_s: int = DEFAULT_END_GRACE_S
     end_grace_given: bool = False
+    # Relaunches a mesh failure gets per submitter session.
+    mesh_retries: int = MAX_RETRIES
     # Set from another thread to end the campaign after whatever is running.
     stop_requested: threading.Event = field(default_factory=threading.Event)
 
@@ -82,6 +88,7 @@ class Campaign:
         build_dir: Path | None = None,
         run_dir: Path | None = None,
         end_grace: int | None = None,
+        mesh_retries: int | None = None,
     ) -> "Campaign":
         selection.validate_against(plane, catalog, profile, experiment)
         from artsrun.run.grace import reconcile
@@ -93,6 +100,8 @@ class Campaign:
         check_budget(earlier.startup_budget_s if earlier else None, os.environ)
         grace_s, grace_given = reconcile(
             end_grace, earlier.recorded_end_grace if earlier else None)
+        retries = resolve_mesh_retries(
+            mesh_retries, earlier.mesh_retries if earlier else None)
         if profile.launcher is Launcher.SSH:
             _check_ssh_submitter(profile)
         bd = build_dir or (
@@ -113,6 +122,7 @@ class Campaign:
             counterset=counterset,
             end_grace_s=grace_s,
             end_grace_given=grace_given,
+            mesh_retries=retries,
         )
 
     def check_end_grace(self) -> None:
@@ -365,7 +375,8 @@ class Campaign:
                        not_applicable=absent,
                        end_grace_s=self.end_grace_s,
                        end_grace_given=self.end_grace_given,
-                       startup_budget_s=startup_budget_s(os.environ))
+                       startup_budget_s=startup_budget_s(os.environ),
+                       mesh_retries=self.mesh_retries)
         # A continuation keeps what the interrupted run measured and runs the
         # rest into the same directory, so one report describes both halves.
         carried: list[CellResult] = []
@@ -396,6 +407,16 @@ class Campaign:
             say(f"continuing: {len(keep)} cells already measured"
                 + (f", {again} being retried" if again else ""))
 
+        log_dir = self.run_dir / "cells"
+        schedules = self.profile.launcher in (Launcher.SLURM, Launcher.FLUX)
+        counters_root = self.run_dir / "counters"
+        if resume:
+            # Attempts an earlier session left are kept, and each cell's
+            # number and exclusions continue from them.
+            cells = [restore(log_dir, supersede(log_dir, counters_root, c),
+                             excluding=schedules)
+                     for c in cells]
+
         say(f"{len(cells)} cells to run, {len(skipped)} structurally ineligible")
         for record in absent:
             say(f"  not cells: {record.line}")
@@ -403,7 +424,7 @@ class Campaign:
         track = (self.run_dir / "track.jsonl").open("a", encoding="utf-8")
 
         def on_event(kind: str, result: CellResult) -> None:
-            if kind == "finished":
+            if kind in ("finished", "retry"):
                 # Judged now rather than at the end, so the status the track
                 # records is the final one: a run that exited cleanly but
                 # never printed its completion marker is already a failure
@@ -424,10 +445,19 @@ class Campaign:
                 row["scalar"] = result.scalar
             if result.extra:
                 row["extra"] = dict(result.extra)
+            if kind == "retry":
+                extra = dict(result.extra)
+                extra["attempt"] = int(extra["attempt"])
+                for name in ("suspects", "exclude"):
+                    extra[name] = [h for h in extra[name].split(",") if h]
+                row["extra"] = extra
             track.write(json.dumps(row) + "\n")
             track.flush()
             if kind == "finished":
                 self._reduce_counters(result.cell, say)
+            if kind == "retry" and announce_cells:
+                say(f"[retry] {result.cell.key}: {result.note}; attempt "
+                    f"{result.extra['attempt']}")
             if kind == "finished" and announce_cells:
                 timing = (f"{result.e2e_s:.1f}s e2e, "
                           f"{result.wall_s:.1f}s wall"
@@ -443,6 +473,9 @@ class Campaign:
             backend, cells, WallCache(wall_cache_path()),
             on_event=on_event, poll_interval_s=poll,
             stop=self.stop_requested,
+            retry=MeshRetry(log_dir, counters_root,
+                            max_retries=self.mesh_retries,
+                            excluding=schedules),
         )
         try:
             results = scheduler.run()
@@ -497,7 +530,7 @@ def _check_ssh_submitter(profile: Profile) -> None:
             short(os.uname().nodename)}
     head = profile.hosts[0] if profile.hosts else ""
     if short(head) not in mine:
-        raise ValueError(
+        raise CampaignRefusal(
             f"an ssh campaign must be launched from hosts[0] ({head!r}): a "
             f"one-node cell runs on the submitting host (ARTS's one rank "
             f"starts no spawner; a single ocr-vx or HPX rank is an MPI "
@@ -518,6 +551,12 @@ def scratch_run_dir():
         yield scratch
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
+
+
+def _attempted(run_dir: Path, cell):
+    """The cell as its last recorded attempt ran: one past the attempts kept."""
+    kept = kept_attempts(run_dir / "cells", cell.slug)
+    return dataclasses.replace(cell, attempt=kept + 1) if kept else cell
 
 
 def recorded_results(run_dir: Path, cells: list) -> list[CellResult]:
@@ -551,7 +590,8 @@ def recorded_results(run_dir: Path, cells: list) -> list[CellResult]:
         except ValueError:
             continue
         out.append(CellResult(
-            cell=cell, status=status, rc=int(row.get("rc", 0)),
+            cell=_attempted(run_dir, cell), status=status,
+            rc=int(row.get("rc", 0)),
             wall_s=float(row.get("wall_s", 0.0)),
             log_path=log if log.is_file() else None,
             note=row.get("note", ""),
@@ -572,7 +612,7 @@ def recorded_results(run_dir: Path, cells: list) -> list[CellResult]:
         status = marker_status(rc, wall, cell.timeout_s)
         log = run_dir / "cells" / cell.log_name
         out.append(CellResult(
-            cell=cell, status=status, rc=rc, wall_s=wall,
+            cell=_attempted(run_dir, cell), status=status, rc=rc, wall_s=wall,
             log_path=log if log.is_file() else None,
         ))
     return out

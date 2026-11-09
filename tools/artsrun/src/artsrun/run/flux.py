@@ -234,6 +234,8 @@ def batch_argv(cell: Cell, profile: Profile, log_path: Path,
         cmd.append(f"--bank={settings.bank}")
     if cell.entry.kind is RuntimeKind.ARTS:
         cmd.append(f'--conf=exec.shell-exit-timeout="{cell.end_grace_s}s"')
+    if cell.exclude:
+        cmd.append("--requires=" + " ".join(f"-host:{h}" for h in cell.exclude))
     return cmd + list(settings.extra_batch) + [str(script)]
 
 

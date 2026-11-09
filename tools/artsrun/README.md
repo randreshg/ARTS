@@ -193,6 +193,48 @@ manifest) and is refused when `ARTS_STARTUP_TIMEOUT_S` now gives another. The
 end bound b = 10 s is the Release value, and artsrun runs Release trees only; a
 sanitizer tree's b = 60 s is the spawner's to enforce.
 
+The startup budget is read from `ARTS_STARTUP_TIMEOUT_S`: ASCII decimal digits
+in 10..86400, and any other set value (the empty one included) is refused
+before anything is built.
+
+## Mesh failures
+
+An ARTS attempt is a mesh failure when its log holds at least one
+`ARTS_MESH_FAILED rank=` line whose phase is not `hangup`; the line is found
+anywhere in a log line and read to its end, and the status and `[E2E]` do not
+enter the rule. The judged result is `fail` with the note `mesh failure
+(<phases>): suspect hosts <h,...>` (`none` when nobody is singled out).
+Reference cells are never judged this way.
+
+The suspects are a vote. `hangup` lines never vote. A line with listed missing
+ranks votes for their hosts, unless it lacks more than one peer and more than
+half of them, when its reporter is the isolated one and votes for its own host;
+any other line votes for its reporter. Host names compare by first DNS label
+without case (an IPv4 literal whole). The hosts with the most votes are the
+suspects, except that when two or more hosts reported and the top vote covers
+all of them nobody is singled out. A suspect is then mapped to a routing-table
+name the log carries (a `missing_hosts` entry, or the `host=` of a line with a
+known rank) and dropped when none matches, so a name the scheduler never heard
+of is never handed to it.
+
+`--mesh-retries N` (default 2, 0 disables) is how often a mesh failure is
+relaunched per submitter session; it is recorded in `manifest.json`, and
+`--resume` keeps the recorded count and refuses another. A resume gives every
+cell a fresh budget while its attempt number and exclusions continue. Slurm
+excludes the union of the earlier attempts' mapped suspects
+(`sbatch --exclude=`), Flux requires their absence (`flux batch
+--requires="-host:<h> -host:<h>"`); the local and ssh launchers relaunch in
+place, as does a scheduler when the vote names nobody. A relaunched cell goes
+back to the head of the queue.
+
+Every superseded attempt is kept: the cell's log, `.rc`, `.sh` and counter
+folder move to `<slug>.attempt<k>…`, and a resume rebuilds the attempt number
+and the exclusions from those files. Each relaunch is a `retry` event in
+`track.jsonl` (`attempt`, `suspects`, `exclude`, `log`), `results.csv` ends
+with an `attempts` column, and an attempt is not a run: "3 runs per case" is
+unchanged. A resumed rerun of a failed cell counts as an attempt too, since
+its earlier files are kept the same way.
+
 ## Sections
 
 The catalog is three sections, one file each, and a section says which

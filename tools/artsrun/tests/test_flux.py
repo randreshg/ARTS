@@ -368,3 +368,16 @@ def test_reference_flux_lines_carry_no_grace():
     argv = batch_argv(cell, _flux_profile(), Path("/log/cell.log"),
                       Path("/log/cell.sh"))
     assert not any("exit-timeout" in a for a in argv)
+
+
+def test_a_cell_with_suspects_requires_their_absence_at_submission():
+    import dataclasses
+
+    cell = dataclasses.replace(_cell(RuntimeKind.ARTS, nodes=4),
+                               exclude=("n3", "n5"))
+    argv = batch_argv(cell, _flux_profile(), Path("/log/c.log"),
+                      Path("/log/c.sh"))
+    assert "--requires=-host:n3 -host:n5" in argv
+    plain = batch_argv(_cell(RuntimeKind.ARTS, nodes=4), _flux_profile(),
+                       Path("/log/c.log"), Path("/log/c.sh"))
+    assert not any(a.startswith("--requires") for a in plain)

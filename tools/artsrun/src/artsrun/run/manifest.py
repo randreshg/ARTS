@@ -20,6 +20,7 @@ from artsrun.model.profile import CxlLibrary, Launcher, Profile
 from artsrun.paths import repo_root, scratch_dir
 from artsrun.run.command import (build_command, build_env, cxl_wrap, render,
                                  with_post_verify, with_timeout)
+from artsrun.run.retry import MAX_RETRIES
 from artsrun.run.types import (DEFAULT_END_GRACE_S, Cell, NotApplicable,
                                Skipped)
 
@@ -121,6 +122,7 @@ def write_manifest(
     end_grace_s: int = DEFAULT_END_GRACE_S,
     end_grace_given: bool = False,
     startup_budget_s: int | None = None,
+    mesh_retries: int = MAX_RETRIES,
 ) -> Path:
     entries: dict[str, dict] = {}
     apps: dict[str, dict] = {}
@@ -181,6 +183,7 @@ def write_manifest(
         "end_grace_s": end_grace_s,
         "end_grace_given": end_grace_given,
         "startup_budget_s": startup_budget_s,
+        "mesh_retries": mesh_retries,
         "entries": entries,
         "apps": apps,
         "cells": rows,
@@ -216,6 +219,7 @@ class Manifest:
         self.end_grace_s = payload.get("end_grace_s")
         self.end_grace_given = bool(payload.get("end_grace_given"))
         self.startup_budget_s = payload.get("startup_budget_s")
+        self.mesh_retries = payload.get("mesh_retries")
         raw = payload.get("counters_cfg")
         self.counters_cfg = Path(raw) if raw else None
         entries = {

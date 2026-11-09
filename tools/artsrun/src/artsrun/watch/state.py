@@ -255,6 +255,9 @@ class RunState:
             view.scalar = row.get("scalar")
             view.finished_at = when
             view.note = _with_wall_only_note(view.note, view.status, view.e2e_s)
+        elif event == "retry":
+            view.status = Status.PENDING
+            view.started_at = view.finished_at = view.ending_at = None
         elif event == "skipped":
             view.status = Status.SKIPPED
             view.verdict = Verdict.NA

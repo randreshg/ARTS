@@ -163,3 +163,203 @@ def test_a_line_with_an_unknown_phase_is_not_a_cause():
     text = L(0, "n0", "warp", "1", "n1")
     assert mesh_lines(text) == []
     assert not is_mesh_failure(text)
+
+
+# --- attempts kept on disk, and the relaunch decision ---------------------
+import dataclasses  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+import pytest  # noqa: E402
+
+from artsrun.model.catalog import AppClass, Version  # noqa: E402
+from artsrun.model.experiment import ResolvedApp  # noqa: E402
+from artsrun.model.plane import RuntimeKind, SelectionEntry  # noqa: E402
+from artsrun.run.retry import (MeshRetry, attempt_path, keep,  # noqa: E402
+                               kept_attempts, resolve_mesh_retries, restore,
+                               supersede)
+from artsrun.run.types import Cell, CellResult, Status  # noqa: E402
+
+
+def _cell(nodes: int = 4, kind: RuntimeKind = RuntimeKind.ARTS) -> Cell:
+    app = ResolvedApp(name="app", version=Version.BASE, binary="app",
+                      cls=AppClass.TASK, marker="X", scalar_re="X")
+    entry = SelectionEntry(key="e", label="e", kind=kind, cell="VAL/RETAIN/OWNER",
+                           variant="e")
+    return Cell(entry=entry, app=app, nodes=nodes, repeat=1,
+                binary=Path("/nonexistent"), args=[], timeout_s=5, cpu_width=4)
+
+
+def _attempt(tmp_path, cell, text, rc=75, counters=True):
+    """Leave the files one finished attempt of `cell` leaves."""
+    logs = tmp_path / "cells"
+    logs.mkdir(exist_ok=True)
+    (logs / f"{cell.slug}.log").write_text(text)
+    (logs / f"{cell.slug}.rc").write_text(f"{rc} 1.0 2.0\n")
+    (logs / f"{cell.slug}.sh").write_text("#!/bin/bash\n")
+    if counters:
+        folder = tmp_path / "counters" / cell.slug
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "n0.json").write_text("{}")
+    return logs, tmp_path / "counters"
+
+
+def _result(cell, tmp_path, status=Status.FAIL) -> CellResult:
+    return CellResult(cell=cell, status=status, rc=75,
+                      log_path=tmp_path / "cells" / f"{cell.slug}.log")
+
+
+def test_the_kept_name_follows_the_slug():
+    assert attempt_path(Path("/l"), "s.1n.r1", 2, ".log") == Path(
+        "/l/s.1n.r1.attempt2.log")
+
+
+def test_keep_moves_every_file_and_the_counter_folder(tmp_path):
+    cell = _cell()
+    logs, counters = _attempt(tmp_path, cell, L(1, "n1", "connect", "3", "n3"))
+    kept = keep(logs, counters, cell.slug, 1)
+    assert kept == logs / f"{cell.slug}.attempt1.log"
+    for suffix in (".log", ".rc", ".sh"):
+        assert (logs / f"{cell.slug}.attempt1{suffix}").is_file()
+        assert not (logs / f"{cell.slug}{suffix}").exists()
+    assert (counters / f"{cell.slug}.attempt1" / "n0.json").is_file()
+    assert not (counters / cell.slug).exists()
+    assert kept_attempts(logs, cell.slug) == 1
+
+
+def test_keep_without_a_counter_folder_or_root_is_fine(tmp_path):
+    cell = _cell()
+    logs, _ = _attempt(tmp_path, cell, "x", counters=False)
+    assert keep(logs, None, cell.slug, 1).is_file()
+
+
+def _hook(tmp_path, cell, text, **kw):
+    logs, counters = _attempt(tmp_path, cell, text)
+    return MeshRetry(logs, counters, **kw), logs, counters
+
+
+def test_mesh_retry_relaunches_twice_then_gives_up(tmp_path):
+    cell = _cell()
+    hook, logs, counters = _hook(tmp_path, cell,
+                                 L(1, "n1", "connect", "3", "n3"))
+    first = hook(_result(cell, tmp_path))
+    assert (first.attempt, first.exclude) == (2, ("n3",))
+    assert first.key == cell.key and first.slug == cell.slug
+    _attempt(tmp_path, cell, L(1, "n1", "connect", "3", "n3"))
+    second = hook(_result(first, tmp_path))
+    assert (second.attempt, second.exclude) == (3, ("n3",))
+    _attempt(tmp_path, cell, L(1, "n1", "connect", "3", "n3"))
+    assert hook(_result(second, tmp_path)) is None
+
+
+def test_a_relaunch_points_the_result_at_the_kept_log(tmp_path):
+    cell = _cell()
+    hook, logs, _ = _hook(tmp_path, cell, L(1, "n1", "connect", "3", "n3"))
+    result = _result(cell, tmp_path)
+    hook(result)
+    assert result.log_path == logs / f"{cell.slug}.attempt1.log"
+    assert result.extra["attempt"] == "2"
+    assert result.extra["suspects"] == "n3"
+    assert result.extra["exclude"] == "n3"
+
+
+def test_mesh_retry_with_zero_relaunches_nothing(tmp_path):
+    cell = _cell()
+    hook, logs, _ = _hook(tmp_path, cell, L(1, "n1", "connect", "3", "n3"),
+                          max_retries=0)
+    assert hook(_result(cell, tmp_path)) is None
+    assert (logs / f"{cell.slug}.log").is_file()
+
+
+def test_a_program_failure_is_never_relaunched(tmp_path):
+    cell = _cell()
+    hook, logs, _ = _hook(tmp_path, cell, "[ERROR] boom\n")
+    assert hook(_result(cell, tmp_path)) is None
+    assert (logs / f"{cell.slug}.log").is_file()
+
+
+def test_a_reference_cell_is_never_relaunched(tmp_path):
+    cell = _cell(kind=RuntimeKind.XSOCR)
+    hook, _, _ = _hook(tmp_path, cell, L(1, "n1", "connect", "3", "n3"))
+    assert hook(_result(cell, tmp_path)) is None
+
+
+def test_a_tie_relaunches_in_place(tmp_path):
+    cell = _cell()
+    text = "\n".join(L(r, f"n{r}", "listen") for r in range(4))
+    hook, _, _ = _hook(tmp_path, cell, text)
+    again = hook(_result(cell, tmp_path))
+    assert (again.attempt, again.exclude) == (2, ())
+
+
+def test_a_suspect_the_log_never_named_is_not_excluded(tmp_path):
+    cell = _cell()
+    text = L("-", "laptop", "config") + "\n" + L(0, "n0", "connect", "2", "n2")
+    hook, _, _ = _hook(tmp_path, cell, text)
+    assert hook(_result(cell, tmp_path)).exclude == ("n2",)
+
+
+def test_restore_rebuilds_numbering_and_exclusions_from_disk(tmp_path):
+    cell = _cell()
+    logs, counters = _attempt(tmp_path, cell, L(1, "n1", "connect", "3", "n3"))
+    keep(logs, counters, cell.slug, 1)
+    _attempt(tmp_path, cell, L(1, "n1", "connect", "5", "n5"))
+    keep(logs, counters, cell.slug, 2)
+    again = restore(logs, cell)
+    assert (again.attempt, again.exclude) == (3, ("n3", "n5"))
+
+
+def test_restore_ignores_a_kept_program_failure(tmp_path):
+    cell = _cell()
+    logs, counters = _attempt(tmp_path, cell, "[ERROR] boom\n")
+    keep(logs, counters, cell.slug, 1)
+    again = restore(logs, cell)
+    assert (again.attempt, again.exclude) == (2, ())
+
+
+def test_supersede_keeps_what_an_earlier_session_left(tmp_path):
+    cell = _cell()
+    logs, counters = _attempt(tmp_path, cell, "[ERROR] boom\n")
+    assert supersede(logs, counters, cell) == cell
+    assert kept_attempts(logs, cell.slug) == 1
+    assert not (logs / f"{cell.slug}.log").exists()
+    assert restore(logs, cell).attempt == 2
+
+
+def test_a_resumed_cell_gets_a_fresh_budget(tmp_path):
+    cell = dataclasses.replace(_cell(), attempt=3)
+    hook, _, _ = _hook(tmp_path, cell, L(1, "n1", "connect", "3", "n3"))
+    four = hook(_result(cell, tmp_path))
+    assert four.attempt == 4
+    _attempt(tmp_path, cell, L(1, "n1", "connect", "3", "n3"))
+    five = hook(_result(four, tmp_path))
+    assert five.attempt == 5
+    _attempt(tmp_path, cell, L(1, "n1", "connect", "3", "n3"))
+    assert hook(_result(five, tmp_path)) is None
+
+
+def test_resolve_mesh_retries():
+    assert resolve_mesh_retries(None, None) == MAX_RETRIES
+    assert resolve_mesh_retries(0, None) == 0
+    assert resolve_mesh_retries(None, 1) == 1
+    assert resolve_mesh_retries(1, 1) == 1
+    with pytest.raises(ValueError):
+        resolve_mesh_retries(3, 1)
+    with pytest.raises(ValueError):
+        resolve_mesh_retries(-1, None)
+
+
+def test_restore_for_a_launcher_that_cannot_exclude_keeps_no_exclusions(
+        tmp_path):
+    cell = _cell()
+    logs, counters = _attempt(tmp_path, cell, L(1, "n1", "connect", "3", "n3"))
+    keep(logs, counters, cell.slug, 1)
+    again = restore(logs, cell, excluding=False)
+    assert (again.attempt, again.exclude) == (2, ())
+
+
+def test_a_slug_with_glob_characters_finds_only_its_own_attempts(tmp_path):
+    cell = _cell()
+    slug = cell.slug + "[1]"
+    (tmp_path / f"{slug}.attempt2.log").write_text("x")
+    (tmp_path / f"{cell.slug}1.attempt7.log").write_text("x")
+    assert kept_attempts(tmp_path, slug) == 2

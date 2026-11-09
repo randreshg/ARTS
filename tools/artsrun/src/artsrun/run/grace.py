@@ -38,6 +38,10 @@ class EndGraceError(ValueError):
     pass
 
 
+class CampaignRefusal(ValueError):
+    """A campaign refused before it started, for a reason the user can fix."""
+
+
 def check_value(value: int, what: str = "--end-grace") -> int:
     if not END_GRACE_MIN_S <= value <= END_GRACE_MAX_S:
         raise EndGraceError(

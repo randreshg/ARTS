@@ -413,3 +413,21 @@ def test_the_manifest_records_the_source_revision(tmp_path):
     _write(tmp_path, [_cell("arts_val_retain_owner")])
     source = json.loads((tmp_path / "manifest.json").read_text())["source"]
     assert set(source) == {"commit", "dirty", "dirty_paths", "submodules"}
+
+
+def test_a_retry_puts_the_cell_back_to_pending_with_its_attempt(tmp_path):
+    cell = _cell("arts_val_retain_owner")
+    _write(tmp_path, [cell])
+    state = RunState(tmp_path)
+    _track(tmp_path, [{"t": 5.0, "event": "started", "cell": cell.key,
+                       "status": "running", "rc": 0, "wall_s": 0, "note": ""},
+                      {"t": 9.0, "event": "retry", "cell": cell.key,
+                       "status": "fail", "rc": 75, "wall_s": 3.0,
+                       "note": "mesh failure (connect): suspect hosts n3",
+                       "extra": {"attempt": 2, "suspects": ["n3"],
+                                 "exclude": ["n3"], "log": "x.attempt1.log"}}])
+    assert state.refresh()
+    view = state.views[cell.key]
+    assert view.status is Status.PENDING
+    assert view.extra["attempt"] == 2
+    assert not state.finished

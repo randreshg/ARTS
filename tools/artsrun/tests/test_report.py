@@ -329,3 +329,15 @@ def test_a_pair_recorded_before_sections_existed_derives_its_section():
         {**old, "hpx_binary": "a_hpx"}).section is Section.HPX
     assert ResolvedApp.model_validate(
         {**old, "section": "examples"}).section is Section.EXAMPLES
+
+
+def test_results_csv_ends_with_the_attempts_a_cell_took(tmp_path):
+    import dataclasses
+
+    r = _result("a", wall_s=1.0, e2e_s=1.0)
+    r.cell = dataclasses.replace(r.cell, attempt=3)
+    path = tmp_path / "results.csv"
+    write_results_csv([r], path)
+    reader = csv.DictReader(path.open())
+    assert reader.fieldnames[-1] == "attempts"
+    assert next(reader)["attempts"] == "3"

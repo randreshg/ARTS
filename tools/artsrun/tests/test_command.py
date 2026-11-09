@@ -698,3 +698,33 @@ def test_an_overflowed_cell_stays_failed_with_its_note_when_its_log_is_read(tmp_
     out = check.apply_to(result)
     assert out.status is Status.FAIL
     assert out.note.startswith("log passed 64 MiB; the cell was ended; world-size")
+
+
+def test_a_negative_mesh_retry_count_is_refused():
+    result = _cli("run", "-p", "alia", "-x", "examples", "--mesh-retries",
+                  "-1", "--dry-run")
+    assert result.exit_code != 0
+    assert "--mesh-retries must be 0 or more" in result.output
+
+
+def test_a_dry_run_states_the_mesh_retry_count():
+    for args, want in (((), "mesh retries: 2"),
+                       (("--mesh-retries", "0"), "mesh retries: 0")):
+        result = _cli("run", "-p", "alia", "-x", "examples", *args,
+                      "--dry-run", "--plain")
+        assert result.exit_code == 0, result.output
+        assert want in result.output
+
+
+def test_a_value_error_that_is_a_bug_keeps_its_traceback(monkeypatch):
+    from artsrun.campaign import Campaign
+    from artsrun.run.grace import CampaignRefusal
+
+    def broken(*args, **kwargs):
+        raise ValueError("a bug")
+
+    monkeypatch.setattr(Campaign, "prepare", broken)
+    result = _cli("run", "-p", "alia", "-x", "examples", "--dry-run")
+    assert isinstance(result.exception, ValueError)
+    assert not isinstance(result.exception, CampaignRefusal)
+    assert "a bug" not in result.output

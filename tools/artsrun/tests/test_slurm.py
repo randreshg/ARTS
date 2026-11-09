@@ -292,3 +292,17 @@ def test_reference_srun_lines_carry_no_grace_flags():
                         Path("/log/cell.rc"))
     assert "--wait" not in script and "--kill-on-bad-exit" not in script
     assert "ARTS_END_GRACE_S" not in script
+
+
+def test_a_cell_with_suspects_excludes_them_at_submission():
+    import dataclasses
+
+    from artsrun.run.slurm import sbatch_argv
+
+    cell = dataclasses.replace(_cell(RuntimeKind.ARTS, nodes=4),
+                               exclude=("n3", "n5"))
+    argv = sbatch_argv(cell, _slurm_profile(), Path("/log/c.log"))
+    assert "--exclude=n3,n5" in argv
+    plain = sbatch_argv(_cell(RuntimeKind.ARTS, nodes=4), _slurm_profile(),
+                        Path("/log/c.log"))
+    assert not any(a.startswith("--exclude") for a in plain)

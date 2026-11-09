@@ -24,7 +24,7 @@ from pathlib import Path
 
 from artsrun.model.catalog import ScalarKind, Section
 from artsrun.model.plane import RuntimeKind
-from artsrun.run.retry import is_mesh_failure, mesh_lines, mesh_note
+from artsrun.run.retry import file_mesh_lines, mesh_note
 from artsrun.run.types import CellResult, Status
 
 
@@ -177,9 +177,11 @@ def apply_to(result: CellResult) -> CellResult:
     # Both demotions run BEFORE the timeout-leniency promotion below: a cell
     # whose rank 0 printed marker and stamp before another rank's envelope
     # died must not be promoted to OK by that branch.
-    if result.cell.entry.kind is RuntimeKind.ARTS and is_mesh_failure(text):
+    mesh = (file_mesh_lines(result.log_path)
+            if result.cell.entry.kind is RuntimeKind.ARTS else [])
+    if any(m.phase != "hangup" for m in mesh):
         result.status = Status.FAIL
-        note = mesh_note(mesh_lines(text), result.cell.nodes)
+        note = mesh_note(mesh, result.cell.nodes)
         result.note = f"{note}; {result.note}" if result.note else note
         return result
     envelope = _ENVELOPE_RE.search(text)

@@ -108,8 +108,10 @@ class Scheduler:
         poll_interval_s: float = 5.0,
         stop: "threading.Event | None" = None,
         keep_order: bool = False,
+        retry: Callable[[CellResult], Cell | None] | None = None,
     ):
         self.backend = backend
+        self.retry = retry
         # Asked to stop from another thread: nothing is torn down here, the
         # loop simply stops admitting and lets what is running end.
         self.stop = stop or threading.Event()
@@ -169,6 +171,12 @@ class Scheduler:
         return moved
 
     def _finish(self, result: CellResult) -> None:
+        if self.retry is not None and result.ran:
+            again = self.retry(result)
+            if again is not None:
+                self.on_event("retry", result)
+                self.pending.insert(0, again)
+                return
         if result.wall_s:
             self.cache.put(result.cell, result.wall_s)
         self.done.append(result)

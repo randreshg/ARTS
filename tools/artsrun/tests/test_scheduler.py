@@ -387,3 +387,26 @@ def test_a_serial_backend_interleaves_repeats_across_entries(tmp_path):
     assert [(c.app.name, c.entry.key, c.repeat) for c in ordered] == [
         ("x", "a", 1), ("x", "b", 1), ("x", "a", 2), ("x", "b", 2),
         ("y", "a", 1), ("y", "b", 1), ("y", "a", 2), ("y", "b", 2)]
+
+
+def test_a_relaunched_cell_goes_back_to_the_head_of_the_queue(tmp_path):
+    import dataclasses
+
+    backend = FakeBackend(capacity=8)
+    events = []
+    asked = []
+
+    def retry(result):
+        asked.append(result.cell.attempt)
+        if result.cell.attempt == 1:
+            return dataclasses.replace(result.cell, attempt=2)
+        return None
+
+    sched = Scheduler(backend, [_cell(2)], _cache(tmp_path),
+                      on_event=lambda k, r: events.append(k),
+                      poll_interval_s=0, retry=retry)
+    results = sched.run()
+    assert len(backend.order) == 2
+    assert asked == [1, 2]
+    assert [r.cell.attempt for r in results] == [2]
+    assert events == ["submitted", "retry", "submitted", "finished"]

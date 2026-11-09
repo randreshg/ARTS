@@ -176,6 +176,8 @@ def sbatch_argv(cell: Cell, profile: Profile, log_path: Path) -> list[str]:
         cmd.append(f"--account={settings.account}")
     if settings.qos:
         cmd.append(f"--qos={settings.qos}")
+    if cell.exclude:
+        cmd.append(f"--exclude={','.join(cell.exclude)}")
     return cmd + list(settings.extra_sbatch)
 
 

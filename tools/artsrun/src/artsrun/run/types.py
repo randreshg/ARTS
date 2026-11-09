@@ -54,6 +54,10 @@ class Cell:
     # the cell's own bound raised it above that.
     end_grace_s: int = DEFAULT_END_GRACE_S
     end_grace_raised_from: int | None = None
+    # Which launch of this cell this is, and the hosts a scheduler is told to
+    # avoid for it; neither is part of the cell's identity.
+    attempt: int = 1
+    exclude: tuple[str, ...] = ()
 
     @property
     def region_setup(self) -> bool:

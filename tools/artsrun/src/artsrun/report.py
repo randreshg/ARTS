@@ -20,7 +20,7 @@ from artsrun.run.types import CellResult, NotApplicable, Skipped, Status
 RESULT_COLUMNS = [
     "app", "version", "nodes", "entry", "kind", "repeat",
     "status", "rc", "wall_s", "e2e_s", "scalar", "note", "log",
-    "teardown_hang", "maxrss_kb", "minflt",
+    "teardown_hang", "maxrss_kb", "minflt", "attempts",
 ]
 
 # Display metadata for runtime series, carried into the report so a later
@@ -157,6 +157,7 @@ def _row(r: CellResult) -> dict:
         "teardown_hang": "true" if r.teardown_hang else "",
         "maxrss_kb": r.extra.get("maxrss_kb", ""),
         "minflt": r.extra.get("minflt", ""),
+        "attempts": r.cell.attempt,
     }
 
 
