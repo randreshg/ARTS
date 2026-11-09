@@ -13,6 +13,11 @@
  *                    failure: the exchange returns with both blobs.
  *   PEER_GONE_EARLY  a peer that ends with its frame incomplete ends rank 0
  *                    at once with a hangup line naming it.
+ *   PEER_ENDED_FIRST a peer that wrote its whole frame and ended before rank
+ *                    0's exchange began never held rank 0's frame: rank 0
+ *                    ends with a hangup line naming it, though its own frame
+ *                    still goes into the closed connection and the peer's
+ *                    frame arrives whole.
  *   STUCK            a peer whose frame never comes ends rank 0 at the
  *                    deadline with an exchange line naming it.
  *   WRONG_RANK       a frame naming another rank than its connection's peer
@@ -329,6 +334,39 @@ static void case_peer_gone_early(void) {
   close_all(near, far);
 }
 
+static void case_peer_ended_first(void) {
+  int near[3], far[3];
+  if (!pairs(near, far)) {
+    FAIL("PEER_ENDED_FIRST: loopback pairs");
+    return;
+  }
+  uint8_t out[512];
+  size_t n = frame_of(1, 1, out);
+  if (write(far[1], out, n) != (ssize_t)n) {
+    FAIL("PEER_ENDED_FIRST: peer 1's frame");
+  }
+  close(far[1]);
+  far[1] = -1;
+  n = frame_of(2, 2, out);
+  if (write(far[2], out, n) != (ssize_t)n) {
+    FAIL("PEER_ENDED_FIRST: peer 2's frame");
+  }
+  struct pollfd end = {.fd = near[1], .events = POLLRDHUP};
+  if (poll(&end, 1, 1000) != 1 || (end.revents & POLLRDHUP) == 0) {
+    FAIL("PEER_ENDED_FIRST: peer 1's end never reached rank 0's socket");
+  }
+  int err;
+  pid_t pid = run_rank0(near, far, &err);
+  struct end_s e;
+  wait_rank0(pid, err, &e, 3000000000ull);
+  if (e.status != 145 ||
+      strstr(e.text, "ARTS_MESH_FAILED rank=0 host=h0 phase=hangup "
+                     "missing=1 missing_hosts=h1 more=0\n") == NULL) {
+    FAIL("PEER_ENDED_FIRST: rank 0 ended %d\n%s", e.status, e.text);
+  }
+  close_all(near, far);
+}
+
 static void case_stuck(void) {
   int near[3], far[3];
   if (!pairs(near, far)) {
@@ -379,6 +417,7 @@ int main(void) {
   signal(SIGPIPE, SIG_IGN);
   case_peer_done();
   case_peer_gone_early();
+  case_peer_ended_first();
   case_stuck();
   case_wrong_rank();
   if (g_failed) {

@@ -332,11 +332,14 @@ void arts_net_selfcheck(void);
  * fabric traffic can arrive — i.e. before worker and progress threads spawn. */
 void arts_net_rx_arm(void);
 
-/* Swap every rank's fi_getname address over the already-established TCP data
- * mesh and fi_av_insert the full table in rank order (fi_addr_t == rank).
- * Each frame carries its sender's `run_id`; the result is the one rank 0
- * sent, or `run_id` itself on rank 0.  Must run after arts_net_init and after
- * the socket mesh is up; the data sockets stay open afterward. */
+/* Swap every rank's fi_getname address over the formed bootstrap mesh, under
+ * the startup deadline, and fi_av_insert the full table in rank order
+ * (fi_addr_t == rank).  Each frame carries its sender's `run_id`; the result
+ * is the one rank 0 sent, or `run_id` itself on rank 0.  A peer whose frame
+ * has not arrived whole at the deadline ends this rank with an exchange line,
+ * and a peer's end that proves it never armed with a hangup line, both with
+ * status 75 (arts_mesh_fail).  Must run after arts_net_init and after the
+ * mesh is formed; its connections stay open afterward. */
 uint64_t arts_net_exchange_addresses(uint64_t run_id);
 
 /* Reap the completion queue (rx dispatch + tx completion frees), repost

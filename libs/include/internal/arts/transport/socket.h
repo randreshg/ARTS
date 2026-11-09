@@ -151,13 +151,12 @@ size_t arts_mesh_format_line(char *buf, size_t cap, int rank, const char *host,
  * before it.  Async-signal-safe. */
 size_t arts_startup_expired_line(char *buf, size_t cap);
 /* A startup this rank cannot complete: ends the startup bound, closes every
- * mesh socket, so its peers see their connections end, and, when the end is
- * its own, ends the process with status 75.  Once this process is a rank
- * (arts_exit_rank_known) it takes the rank's end, and only a taker writes the
- * line; before, it writes the line unless this process's end began
- * (arts_exit_began), and ends the process, or, when the end began, joins it
- * as a late entry.  missing as for arts_mesh_format_line, over the routing
- * table. */
+ * mesh socket, so its peers see their connections end, then takes this
+ * process's end (arts_exit_take), before or after the process became a rank.
+ * When the take is its own it writes the line and ends the process with
+ * status 75; when another end took it first it writes nothing and joins that
+ * end as a late entry.  missing as for arts_mesh_format_line, over the
+ * routing table. */
 #ifdef __cplusplus
 [[noreturn]]
 #else

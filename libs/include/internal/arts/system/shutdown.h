@@ -148,14 +148,17 @@ _Noreturn
 void arts_exit(int rc, enum arts_exit_origin origin);
 
 /* Takes the shutdown point for an entry that may not end the process on its
- * own stack yet: true when this call took it (it armed the end and closed the
- * send gate), false when the point was already taken, and the caller returns
- * to its loop.  A WIRE taker finishes the burst it reaped and resumes at its
- * progress loop's top (arts_exit_poll); every other taker calls
- * arts_exit_resume at once.  Called only on a rank. */
+ * own stack yet: true when this call took it (it armed the end and, on a
+ * rank, closed the send gate), false when the point was already taken, and
+ * the caller returns to its loop.  A WIRE taker finishes the burst it reaped
+ * and resumes at its progress loop's top (arts_exit_poll); every other taker
+ * calls arts_exit_resume at once.  Called on a rank, or, before the process
+ * is one, on the thread that would publish the rank; such a take's end is an
+ * unranked end (arts_exit). */
 bool arts_exit_take(int rc, enum arts_exit_origin origin);
 
-/* The rest of the end, on the thread that took the shutdown point. */
+/* The rest of the end, on the thread that took the shutdown point: a rank's
+ * end, or the unranked end a take made before the rank was known. */
 #ifdef __cplusplus
 [[noreturn]]
 #else
@@ -182,11 +185,13 @@ bool arts_exit_began(void);
 bool arts_exit_rank_known(void);
 
 /* arts_rt's first act: names this process as the one whose end arts_exit
- * runs, and makes the watchdog that bounds that end (disarmed), its signal
- * unblocked on the calling thread, from which every thread the process
- * starts inherits its mask.  Called before any other thread exists.  A
- * process that forks keeps the name, so its child ends with its rc alone.
- * Refuses (ARTS_ERROR) a process whose watchdog cannot be made. */
+ * runs, and makes two disarmed timers on one signal, SIGRTMIN+1, with the
+ * one SA_SIGINFO handler they share: the watchdog that bounds that end and
+ * the startup timer (arts_exit_startup_arm).  The signal is unblocked on the
+ * calling thread, from which every thread the process starts inherits its
+ * mask.  Called before any other thread exists.  A process that forks keeps
+ * the name, so its child ends with its rc alone.  Refuses (ARTS_ERROR) a
+ * process whose timers cannot be made. */
 void arts_exit_process_init(void);
 
 /* This process is the spawner: every watchdog line it prints names the
@@ -203,11 +208,12 @@ void arts_exit_watchdog_arm(int rc);
 /* The startup timer, beside the watchdog on its signal: armed once, on the
  * main thread before any runtime thread exists, to fire at `at_ns`
  * (CLOCK_MONOTONIC); the arming publishes to the timer's handler what the
- * caller wrote before it.  A fire before the disarm, while this process's
- * end has not begun (arts_exit_began), writes arts_startup_expired_line's
- * line if stderr takes it within a second and ends the process with status
- * 75; any other fire does nothing.  Both are no-ops in a process that never
- * ran arts_exit_process_init; the disarm is idempotent. */
+ * caller wrote before it.  A fire before the disarm takes the shutdown point
+ * when it is free and the watchdog holds no deadline, writes
+ * arts_startup_expired_line's line if stderr takes it within a second and
+ * ends the process with status 75; any other fire does nothing.  Both are
+ * no-ops in a process that never ran arts_exit_process_init; the disarm is
+ * idempotent. */
 void arts_exit_startup_arm(uint64_t at_ns);
 void arts_exit_startup_disarm(void);
 

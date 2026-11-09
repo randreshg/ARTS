@@ -1042,8 +1042,9 @@ void arts_startup_config_done(const struct arts_config_s *config) {
 
 void arts_startup_end(void) { arts_exit_startup_disarm(); }
 
-/* Closes every mesh socket this rank holds, the listeners included, so each
- * peer sees its connection end. */
+/* Closes every mesh socket this rank holds, its listener and the
+ * connections it accepted but has not yet named included, so each peer sees
+ * its connection end. */
 static void mesh_close_all(void) {
   if (g_mesh_listener >= 0) {
     close(g_mesh_listener);
@@ -1074,31 +1075,31 @@ static void mesh_write_line(const char *line, size_t n) {
 }
 
 _Noreturn void arts_mesh_fail(enum arts_mesh_phase phase, const bool *missing) {
-  /* The give-up owns this rank's line from here on. */
+  /* A startup fire already delivered races the take below for the end. */
   arts_exit_startup_disarm();
   mesh_close_all();
   const struct arts_config_s *config = arts_global_message_table;
   const unsigned int n = config != NULL ? config->table_length : 0u;
   const struct arts_config_table_s *table =
       config != NULL ? config->table : NULL;
+  /* The line is written under the end this call took, so a rank whose end
+   * another thread took first writes none. */
+  if (!arts_exit_take(ARTS_MESH_EXIT_STATUS, ARTS_EXIT_RUNTIME_ERROR)) {
+    arts_exit(ARTS_MESH_EXIT_STATUS, ARTS_EXIT_RUNTIME_ERROR);
+  }
   char line[ARTS_MESH_LINE_MAX + 1];
   if (arts_exit_rank_known()) {
-    if (!arts_exit_take(ARTS_MESH_EXIT_STATUS, ARTS_EXIT_RUNTIME_ERROR)) {
-      arts_exit(ARTS_MESH_EXIT_STATUS, ARTS_EXIT_RUNTIME_ERROR);
-    }
     const char *host =
         config != NULL ? table[config->my_rank].ip_address : g_startup_node;
     mesh_write_line(line, arts_mesh_format_line(line, sizeof(line),
                                                 (int)arts_global_rank_id, host,
                                                 phase, missing, n, table));
-    arts_exit_resume();
-  }
-  if (!arts_exit_began()) {
+  } else {
     mesh_write_line(line, arts_mesh_format_line(line, sizeof(line), -1,
                                                 g_startup_node, phase, missing,
                                                 n, table));
   }
-  arts_exit(ARTS_MESH_EXIT_STATUS, ARTS_EXIT_RUNTIME_ERROR);
+  arts_exit_resume();
 }
 
 /* The descriptors the formation and, past the arm, the fabric hold.  A
@@ -1236,7 +1237,10 @@ static void mesh_listen(const struct arts_config_s *config, uint64_t deadline) {
     (void)poll(NULL, 0,
                mesh_ms_until(now, retry < deadline ? retry : deadline));
   }
-  if (listen(g_mesh_listener, SOMAXCONN) != 0) {
+  /* The kernel caps a backlog at net.core.somaxconn (listen(2)), so INT_MAX
+   * asks for the host's own cap; SOMAXCONN is only the C library's
+   * compile-time constant, 128 in older headers. */
+  if (listen(g_mesh_listener, INT_MAX) != 0) {
     ARTS_ERROR("Could not listen on port %u: %s", port, strerror(errno));
   }
 }

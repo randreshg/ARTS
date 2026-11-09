@@ -79,9 +79,9 @@ struct arts_exit_meta_s arts_exit_meta;
 
 /* The process's state word: bit 31 taken, bits 28-30 the owner's origin,
  * bits 0-27 the owner thread's token.  Taken once, by a compare-exchange from
- * 0, by the process's first end, a rank's or one that began before the
- * process became a rank; every later reader is a compare-exchange or an
- * acquire load of it. */
+ * 0, by the process's first end, a rank's, one that began before the process
+ * became a rank, or the startup timer's fire; every later reader is a
+ * compare-exchange or an acquire load of it. */
 #define EXIT_TAKEN 0x80000000u
 #define EXIT_ORIGIN_SHIFT 28
 #define EXIT_TOKEN_MASK 0x0fffffffu
@@ -93,10 +93,16 @@ static _Atomic(int) g_late_rc;
 static _Atomic(int) g_fault_sig;
 /* Tokens are drawn from 1 on, so a token never reads as a free word. */
 static _Atomic(uint32_t) g_exit_next_token = 1;
-static ARTS_THREAD_LOCAL_IE uint32_t t_exit_token;
+/* This thread's token, drawn at its first use.  Only its own thread, a
+ * signal handler on it included, reads and writes it, so every access is a
+ * lock-free relaxed one. */
+static ARTS_THREAD_LOCAL_IE _Atomic(uint32_t) t_exit_token;
 /* Set by a WIRE take on its progress thread, which resumes at its loop's
  * top. */
 static ARTS_THREAD_LOCAL_IE bool t_exit_resume;
+/* Set by a take made before the process became a rank, on the taking thread,
+ * whose resume then finishes that end. */
+static ARTS_THREAD_LOCAL_IE bool t_exit_unranked;
 
 /* The process whose end arts_exit runs, written before any other thread
  * exists: only its own value. */
@@ -169,12 +175,14 @@ static timer_t g_startup_timer;
 static _Atomic(bool) g_startup_open;
 
 static uint32_t exit_token(void) {
-  if (t_exit_token == 0) {
-    t_exit_token = atomic_fetch_add_explicit(&g_exit_next_token, 1u,
-                                             memory_order_relaxed) &
-                   EXIT_TOKEN_MASK;
+  uint32_t token = atomic_load_explicit(&t_exit_token, memory_order_relaxed);
+  if (token == 0) {
+    token = atomic_fetch_add_explicit(&g_exit_next_token, 1u,
+                                      memory_order_relaxed) &
+            EXIT_TOKEN_MASK;
+    atomic_store_explicit(&t_exit_token, token, memory_order_relaxed);
   }
-  return t_exit_token;
+  return token;
 }
 
 static int exit_max(int a, int b) { return a > b ? a : b; }
@@ -305,20 +313,25 @@ static void exit_guard(int rc, enum arts_exit_origin origin) {
 }
 
 /* Step 0's end of a recorded process that is not yet a rank, once it took
- * the word: the watchdog, the flush, and its rc folded with every late
- * entry's, as a rank end's status is; nothing else.  A FAULT raises its
- * signal instead. */
-static _Noreturn void exit_unranked(int rc, enum arts_exit_origin origin) {
+ * the word: from here on it is bounded by the watchdog. */
+static void exit_unranked_close(int rc, enum arts_exit_origin origin) {
+  arts_exit_meta.origin = origin;
   exit_watchdog_arm_now(rc, origin == ARTS_EXIT_FAULT ? rc - 128 : 0);
   if (origin == ARTS_EXIT_FAULT) {
     arts_signal_crash_report(rc - 128);
   }
+}
+
+/* The rest of that end, on the thread that took the word: the flush, and its
+ * rc folded with every late entry's, as a rank end's status is; nothing
+ * else.  A FAULT raises its signal instead. */
+static _Noreturn void exit_unranked_finish(void) {
   (void)fflush(NULL);
   arts_fake_cxl_fini_replay();
-  if (origin == ARTS_EXIT_FAULT) {
-    exit_raise(rc - 128);
+  if (arts_exit_meta.origin == ARTS_EXIT_FAULT) {
+    exit_raise(atomic_load_explicit(&g_fault_sig, memory_order_relaxed));
   }
-  exit_group_now(exit_max(rc, exit_late_rc()));
+  exit_group_now(exit_max(exit_owner_rc(), exit_late_rc()));
 }
 
 /* Steps 1-2 once the word was taken: the record's stamps, the watchdog armed
@@ -358,6 +371,11 @@ bool arts_exit_take(int rc, enum arts_exit_origin origin) {
                                                memory_order_acq_rel,
                                                memory_order_acquire)) {
     return false;
+  }
+  if (!arts_exit_rank_known()) {
+    t_exit_unranked = true;
+    exit_unranked_close(rc, origin);
+    return true;
   }
   exit_close(rc, origin);
   if (origin == ARTS_EXIT_WIRE) {
@@ -407,7 +425,8 @@ _Noreturn void arts_exit(int rc, enum arts_exit_origin origin) {
     exit_late(rc, origin, expected);
   }
   if (!arts_exit_rank_known()) {
-    exit_unranked(rc, origin);
+    exit_unranked_close(rc, origin);
+    exit_unranked_finish();
   }
   exit_close(rc, origin);
   arts_exit_resume();
@@ -480,6 +499,9 @@ static void exit_post(enum arts_exit_origin origin, bool ready) {
 }
 
 _Noreturn void arts_exit_resume(void) {
+  if (t_exit_unranked) {
+    exit_unranked_finish();
+  }
   t_exit_resume = false;
   enum arts_exit_origin origin = arts_exit_meta.origin;
   bool ready = arts_exit_node_ready();
@@ -628,14 +650,27 @@ static void exit_watchdog_fire(int sig) {
   exit_group_now(status != 0 || phase == EXIT_PHASE_RECORD ? status : 71);
 }
 
-/* The startup timer's fire.  Async-signal-safe. */
+/* The startup timer's fire.  It takes the word, so of a fire and a give-up
+ * (or any other end) that race, one writes and the other is a late entry or
+ * stands down; a won take arms the watchdog, which bounds the line's write
+ * from another thread, since this one blocks the signal while it runs here.
+ * Async-signal-safe: the token is a lock-free RMW and a lock-free atomic
+ * thread-local. */
 static void exit_startup_fire(void) {
   const int given_errno = errno;
+  uint32_t expected = 0;
   if (!atomic_load_explicit(&g_startup_open, memory_order_acquire) ||
-      arts_exit_began()) {
+      atomic_load_explicit(&g_exit_deadline, memory_order_relaxed) != 0u ||
+      !atomic_compare_exchange_strong_explicit(
+          &g_exit_word, &expected,
+          EXIT_TAKEN |
+              ((uint32_t)ARTS_EXIT_RUNTIME_ERROR << EXIT_ORIGIN_SHIFT) |
+              exit_token(),
+          memory_order_acq_rel, memory_order_acquire)) {
     errno = given_errno;
     return;
   }
+  exit_watchdog_arm_now(ARTS_MESH_EXIT_STATUS, 0);
   /* A startup line lists no rank, so it is far shorter than this. */
   char line[512];
   const size_t n = arts_startup_expired_line(line, sizeof(line));

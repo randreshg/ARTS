@@ -631,7 +631,7 @@ void arts_config_create_routing_table(struct arts_config_s **config,
           current_node++;
         }
       } else {
-        // Plain hostname; ports come from the shared base, never per node
+        // Plain hostname; its row's port is set once the table is complete
         table[current_node].rank = current_node;
         table[current_node].ip_address = arts_config_make_new_var(node_begin);
         current_node++;

@@ -25,10 +25,12 @@
  *   5. From the first step at or past listen the backstop's line names this
  *      rank and its routing-table name, whichever such step comes first
  *      (fabric here), and keeps them at the steps after it.
- *   6. A give-up before the process is a rank writes its line (no rank, the
- *      node name) and ends through arts_exit with status 75; when the
- *      process's end already began it writes nothing and still enters
- *      arts_exit, whose late entry leaves that end to its thread.
+ *   6. A give-up before the process is a rank takes the process's end
+ *      before it writes: when the take is its own it writes its line (no
+ *      rank, the node name) and resumes that end, with status 75; when the
+ *      end is already taken it writes nothing, even where no end had begun
+ *      when it started, and enters arts_exit, whose late entry leaves that
+ *      end to its thread.
  *
  * The real socket.c is compiled into this TU; externs are stubbed locally.
  */
@@ -65,23 +67,28 @@ ARTS_THREAD_LOCAL_IE struct arts_runtime_private_s arts_thread_info;
 unsigned int arts_global_rank_id;
 unsigned int arts_global_rank_count;
 
+/* arts_exit ends the process with 70 + rc and a resumed take with 100 + rc,
+ * so a status names the route an end took. */
 static int g_exit_rc;
+static bool g_take_lost;
 _Noreturn void arts_exit(int rc, enum arts_exit_origin origin) {
   (void)origin;
   _exit(70 + rc);
 }
 bool arts_exit_take(int rc, enum arts_exit_origin origin) {
   (void)origin;
+  if (g_take_lost) {
+    return false;
+  }
   g_exit_rc = rc;
   return true;
 }
-_Noreturn void arts_exit_resume(void) { _exit(70 + g_exit_rc); }
+_Noreturn void arts_exit_resume(void) { _exit(100 + g_exit_rc); }
 void arts_exit_startup_arm(uint64_t at_ns) { (void)at_ns; }
 void arts_exit_startup_disarm(void) {}
 unsigned int arts_signal_handlers_rank(void) { return 0; }
-static bool g_exit_began;
 static bool g_rank_known = true;
-bool arts_exit_began(void) { return g_exit_began; }
+bool arts_exit_began(void) { return false; }
 bool arts_exit_rank_known(void) { return g_rank_known; }
 bool arts_shutdown_taken(void) { return false; }
 void *arts_malloc(size_t s) { return malloc(s); }
@@ -181,7 +188,7 @@ static void table_of(unsigned int n, unsigned int width) {
       snprintf(g_names[i], sizeof(g_names[i]), "n%02u", i);
     } else {
       memset(g_names[i], 'a' + (int)(i % 26), width);
-      snprintf(g_names[i], 8, "r%03u-", i);
+      snprintf(g_names[i], sizeof(g_names[i]), "r%03u-", i);
       g_names[i][5] = 'x';
       g_names[i][width] = '\0';
     }
@@ -319,11 +326,12 @@ int main(int argc, char **argv) {
                     "missing=- missing_hosts=- more=0\n") == 0,
         "PAST_LISTEN: exchange");
 
-  /* PRE_RANK_GIVE_UP and PRE_RANK_END_BEGAN: arts_mesh_fail in a child
-   * that is no rank yet, its stderr a pipe; the stubbed arts_exit ends it
-   * with 70 + rc, so either child shows that the give-up entered it. */
+  /* PRE_RANK_TAKE_WON and PRE_RANK_TAKE_LOST: arts_mesh_fail in a child
+   * that is no rank yet, its stderr a pipe.  In the second the end is taken
+   * by the time the give-up takes it, though none had begun when the
+   * give-up started. */
   g_rank_known = false;
-  for (int began = 0; began < 2; began++) {
+  for (int lost = 0; lost < 2; lost++) {
     int err[2];
     CHECK(pipe(err) == 0, "pipe");
     fflush(NULL);
@@ -331,7 +339,7 @@ int main(int argc, char **argv) {
     CHECK(child >= 0, "fork");
     if (child == 0) {
       dup2(err[1], STDERR_FILENO);
-      g_exit_began = began != 0;
+      g_take_lost = lost != 0;
       arts_mesh_fail(ARTS_MESH_PHASE_RESOLVE, NULL);
     }
     close(err[1]);
@@ -341,20 +349,20 @@ int main(int argc, char **argv) {
     ssize_t len = read(err[0], got, sizeof(got) - 1);
     got[len > 0 ? len : 0] = '\0';
     close(err[0]);
-    if (!began) {
+    if (!lost) {
       snprintf(expect, sizeof expect,
                "ARTS_MESH_FAILED rank=- host=%s phase=resolve missing=- "
                "missing_hosts=- more=0\n",
                u.nodename);
       CHECK(ended == child && WIFEXITED(status) &&
-                WEXITSTATUS(status) == 70 + ARTS_MESH_EXIT_STATUS,
-            "PRE_RANK_GIVE_UP: the process's end");
-      CHECK(strcmp(got, expect) == 0, "PRE_RANK_GIVE_UP: the line");
+                WEXITSTATUS(status) == 100 + ARTS_MESH_EXIT_STATUS,
+            "PRE_RANK_TAKE_WON: the give-up did not resume an end it took");
+      CHECK(strcmp(got, expect) == 0, "PRE_RANK_TAKE_WON: the line");
     } else {
       CHECK(ended == child && WIFEXITED(status) &&
                 WEXITSTATUS(status) == 70 + ARTS_MESH_EXIT_STATUS,
-            "PRE_RANK_END_BEGAN: the give-up did not enter arts_exit");
-      CHECK(got[0] == '\0', "PRE_RANK_END_BEGAN: a line was written");
+            "PRE_RANK_TAKE_LOST: the give-up did not enter arts_exit");
+      CHECK(got[0] == '\0', "PRE_RANK_TAKE_LOST: a line was written");
     }
   }
 

@@ -201,8 +201,14 @@ uint64_t arts_net_exchange_addresses(uint64_t run_id) {
       }
       const unsigned int p = who[i];
       struct exchange_peer_s *e = &peer[p];
-      bool ended = (re & (POLLRDHUP | POLLHUP | POLLERR | POLLNVAL)) != 0;
-      if (e->sent < frame_bytes) {
+      const bool end_seen =
+          (re & (POLLRDHUP | POLLHUP | POLLERR | POLLNVAL)) != 0;
+      /* Judged before this round's write: a connection the peer closed still
+       * takes the write, so the peer cannot hold a frame this rank finishes
+       * only after its end showed. */
+      const bool own_unsent = e->sent < frame_bytes;
+      bool ended = end_seen;
+      if (own_unsent) {
         ended |= exchange_write(e, p, &out, frame_bytes);
       }
       if (e->got < frame_bytes) {
@@ -215,14 +221,16 @@ uint64_t arts_net_exchange_addresses(uint64_t run_id) {
         }
       }
       /* A peer cannot arm before it holds this rank's whole frame, and its
-       * own frame precedes its end, so an end proves it never armed only
-       * while either frame is unfinished; after both, it is left to the
-       * sentinels. */
-      if (e->got == frame_bytes && e->sent == frame_bytes) {
-        e->active = false;
-      } else if (ended) {
+       * own frame precedes its end, so an end proves it never armed when it
+       * showed while this rank's frame to the peer was unwritten, or while
+       * the peer's frame is incomplete after draining; any other end is left
+       * to the sentinels. */
+      const bool whole = e->got == frame_bytes && e->sent == frame_bytes;
+      if ((end_seen && own_unsent) || (ended && !whole)) {
         flagged[p] = true;
         ended_any = true;
+      } else if (whole) {
+        e->active = false;
       }
     }
     if (ended_any) {

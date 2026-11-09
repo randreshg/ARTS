@@ -16,6 +16,13 @@
  * arts_exit(143, SIGNAL): a late entry, whose rc the end's status takes as
  * a rank end's would, so the process ends 143 whatever the timing.
  *
+ * With argument "take", the main thread takes the end before any rank is
+ * published (arts_exit_take(75, RUNTIME_ERROR)), as a give-up that writes
+ * its line under the end it took does, and thread A's arts_exit(143, SIGNAL)
+ * is a late entry.  200 ms later the main thread prints the end's rc and
+ * whether the end began, then resumes it: the process ends 143, the higher
+ * status, and runs no rank end.
+ *
  * Links the runtime library and starts no runtime.  Nothing here touches
  * stdio once A's flush holds the stream list.
  */
@@ -56,6 +63,31 @@ static void *first_end(void *arg) {
   arts_exit(143, ARTS_EXIT_SIGNAL);
 }
 
+static void *late_end(void *arg) {
+  (void)arg;
+  arts_exit(143, ARTS_EXIT_SIGNAL);
+}
+
+static int take_then_resume(void) {
+  arts_exit_process_init();
+  if (!arts_exit_take(75, ARTS_EXIT_RUNTIME_ERROR)) {
+    say("FAIL shutdown_unranked_end_once: the take was refused\n");
+    return 1;
+  }
+  pthread_t a;
+  if (pthread_create(&a, NULL, late_end, NULL) != 0) {
+    say("FAIL shutdown_unranked_end_once: pthread_create\n");
+    return 1;
+  }
+  sleep_ms(200);
+  const int rc = atomic_load_explicit(&arts_exit_meta.rc, memory_order_relaxed);
+  char line[64];
+  int n = snprintf(line, sizeof(line), "UNRANKED_TAKE rc=%d began=%d\n", rc,
+                   arts_exit_began() ? 1 : 0);
+  (void)write(STDERR_FILENO, line, (size_t)n);
+  arts_exit_resume();
+}
+
 static void *observer(void *arg) {
   (void)arg;
   while (!atomic_load_explicit(&g_second_end, memory_order_acquire)) {
@@ -76,6 +108,9 @@ static void *observer(void *arg) {
 }
 
 int main(int argc, char **argv) {
+  if (argc > 1 && strcmp(argv[1], "take") == 0) {
+    return take_then_resume();
+  }
   g_late = argc > 1 && strcmp(argv[1], "late") == 0;
   arts_exit_process_init();
   /* A stream with buffered bytes whose pipe is full: the end's flush of it

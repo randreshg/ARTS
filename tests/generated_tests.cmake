@@ -1323,6 +1323,15 @@ arts_add_test(shutdown_unranked_end_late_status STATUS 143
 set_tests_properties(shutdown_unranked_end_late_status PROPERTIES
     LABELS "single_node" TIMEOUT 30 RESOURCE_LOCK "arts_runtime"
     PASS_REGULAR_EXPRESSION "UNRANKED_END rc=1\n")
+# A give-up before the rank is known takes the end before it writes its line
+# and then resumes it: the take arms the end, a later arts_exit is a late
+# entry whose rc the status takes, and the resume runs no rank end.
+arts_add_test(shutdown_unranked_end_take STATUS 143
+              COMMAND shutdown_unranked_end_once take)
+set_tests_properties(shutdown_unranked_end_take PROPERTIES
+    LABELS "single_node" TIMEOUT 30 RESOURCE_LOCK "arts_runtime"
+    PASS_REGULAR_EXPRESSION "UNRANKED_TAKE rc=75 began=1\n"
+    FAIL_REGULAR_EXPRESSION "arts_exit: rank=")
 
 # A step of the rank's end that never finishes is ended by the watchdog, no
 # sooner than the bound less a second after the take and no later than the

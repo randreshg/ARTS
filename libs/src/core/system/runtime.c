@@ -176,7 +176,8 @@ void arts_runtime_node_init(struct arts_config_s *config) {
      * ride the TCP mesh.  All live traffic now flows over the fabric; the mesh
      * connections stay open as payload-free liveness sentinels (a peer's
      * close surfaces as HUP, probed by the progress loop and the ring-full
-     * spin) and only the listeners close. */
+     * spin).  Nothing closes here: the listener closed when the formation
+     * completed. */
     arts_socket_sentinel_arm();
     arts_startup_end();
   } else {
