@@ -900,7 +900,7 @@ apps:
     # m = 32 is the point that satisfies width, memory and grain at once, and it
     # is the map experiments/profiles/dane.yaml prescribes for this app.  Work
     # is 0.844x of the 16 16 16 anchor (155.2 / 160.9 / 159.0 s across the three
-    # families), so expect the new anchor in a ~131-140 s band -- a 3x6x6 box
+    # validities), so expect the new anchor in a ~131-140 s band -- a 3x6x6 box
     # carries ~3.7% more cross-node links per tile than 4x4x8.
     #
     # SCALAR.  final deviation is sum over all points of (1-x_i)^2, computed
@@ -3426,7 +3426,7 @@ apps:
 
   Stencil2D_intel_channelEVTs:
     binary: Stencil2D_intel_channelEVTs
-    hinted: false   # tried, and no hinted map beats the base: the tile map is already the minimum-cut factorisation at every node count, and the one movable object -- the halo send buffer, re-homed on its reader -- is neutral to 2 % better at 2-4 ranks and 8-12 % slower at 8 in every family (the push lands on the producer's critical path, and the crossing share only grows with the node count), so the base's own map is the best hinted map and the base stands in for the tier; the layer stays in source behind its guard
+    hinted: false   # tried, and no hinted map beats the base: the tile map is already the minimum-cut factorisation at every node count, and the one movable object -- the halo send buffer, re-homed on its reader -- is neutral to 2 % better at 2-4 ranks and 8-12 % slower at 8 under every validity (the push lands on the producer's critical path, and the crossing share only grows with the node count), so the base's own map is the best hinted map and the base stands in for the tier; the layer stays in source behind its guard
     class: spmd
     provenance: '2-D stencil over channel events (Intel OCR app)'
     marker: 'Computed L1 norm'
@@ -3455,7 +3455,7 @@ apps:
     # reduced-geometry ranks (3.51x) at `5184 13824 400`, ferrari 15w+1p,
     # logs/adhoc/2026-08-31-base-calib/track.txt:143.  Sizing is anchored on
     # the one-node 108w+4p geometry instead: `31104 13824 400` ran
-    # 134.0 / 127.6 / 154.0 s across the three families at 48.5 GiB RSS, and
+    # 134.0 / 127.6 / 154.0 s across the three validities at 48.5 GiB RSS, and
     # the next rung 34,560 overshot at 162.8 / 171.0 / 155.7 s.  Payload is
     # ~16*NP^2 bytes (15.07 GiB at 31104) and that one RSS measurement is
     # 3.22x it, most of the residual being NP-independent object overhead.
@@ -3463,8 +3463,8 @@ apps:
     # the pin does not move with the edge.
     expect: '202.000000000000'
     # Anchor at these arguments, one node of 108 workers, INV·RETAIN·OWNER:
-    # 119.2 s, 117 GB resident; target 100 s (the base tier scales). EXCL x
-    # RETAIN 121 GB resident, VAL·RETAIN·HOME 121 GB resident.
+    # 119.2 s, 117 GB resident; target 100 s (the base tier scales).
+    # EXCL·RETAIN·OWNER 121 GB resident, VAL·RETAIN·HOME 121 GB resident.
     expect_args: ['51840', '13824', '100']
     args: ['51840', '13824', '100']
     unordered_writes: 'four unordered halo receives RW DBK_xIn (stencil_2d.c:701, :717, :764, :778)'
@@ -3734,7 +3734,7 @@ apps:
     # the two still share this anchor.  Depth is the size knob left once
     # the board is fixed, and it moves the anchor by more than an order of
     # magnitude a step (ferrari-era: depth 8 was 10.2 / 18.9 / 13.9 s across
-    # the three families and depth 9 was 193.7 s), so the lattice is sparse
+    # the three validities and depth 9 was 193.7 s), so the lattice is sparse
     # and there is no rung between them.
     #
     # Disclosed adaptations to the published program (all conformance or
@@ -3882,7 +3882,7 @@ apps:
     # <repin> the hinted verdict: the previous (creator-pinned) map won only
     # 1.06-1.08x on [E2E] while showing 1.15-1.24x on the app's compute
     # timer.  The current map must be judged base-vs-hinted at these args,
-    # >=2 geometries in ONE campaign, all three families, on [E2E], with the
+    # >=2 geometries in ONE campaign, all three validities, on [E2E], with the
     # compute timer recorded so the init/compute split is visible.
     # Restructured tier: XSBench_intel_dist, the same per-lookup chain over
     # a lookup range cut into places, each with its own producer and its own

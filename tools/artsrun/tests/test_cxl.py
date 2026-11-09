@@ -344,7 +344,8 @@ def test_a_new_tree_is_configured_on_the_profile_library(tmp_path, monkeypatch):
     cmd = commands[0]
     for opt in cxl_options(profile(**REAL)):
         assert opt in cmd
-    assert not any("COHERENCE_PROTOCOL" in a for a in cmd)
+    for opt in ("ARTS_VALIDITY", "ARTS_RETENTION", "ARTS_READ_SOURCE"):
+        assert not any(opt in a for a in cmd)
     assert not any("RESIDENCY" in a or "USE_CXL" in a for a in cmd)
 
 

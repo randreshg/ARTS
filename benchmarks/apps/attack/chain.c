@@ -202,8 +202,8 @@ static void name_unpack(char *out, const u64 *src) {
 /* touch a bounded slice: the counter's own line, the first 4 KB, and one word
  * per 64 KB beyond -- app-side memory traffic stays near-constant while the
  * protocol still moves whole-block payloads.  The counter word is atomic
- * (same-PD RW writers are concurrent by contract; a write-through home
- * publishes into the served buffer in place, so a reader load can otherwise
+ * (same-PD RW writers are concurrent by contract; under HOME a publish lands
+ * in the home's served buffer in place, so a reader load can otherwise
  * tear). */
 static u64 touch(void *ptr, u64 bytes, int is_writer, u64 *stamp_out) {
   volatile u64 *p = (volatile u64 *)ptr;
