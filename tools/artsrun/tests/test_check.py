@@ -380,3 +380,51 @@ def test_apply_to_folds_rusage_into_extra(tmp_path):
     assert r.status is Status.OK
     assert r.extra["maxrss_kb"] == "555"
     assert r.extra["minflt"] == "9"
+
+
+# --- mesh failures --------------------------------------------------------
+def _mesh_result(tmp_path, kind, text, status=Status.FAIL):
+    log = tmp_path / "c.log"
+    log.write_text(text)
+    entry_kind = kind
+    r = CellResult(cell=_cell("e", _app(), nodes=4, kind=entry_kind),
+                   status=status)
+    r.log_path = log
+    return r
+
+
+_CONNECT = ("ARTS_MESH_FAILED rank=1 host=n1 phase=connect missing=2 "
+            "missing_hosts=n2 more=0\n")
+_HANGUP = ("ARTS_MESH_FAILED rank=1 host=n1 phase=hangup missing=2 "
+           "missing_hosts=n2 more=0\n")
+
+
+def test_an_arts_cell_with_a_mesh_line_judges_fail_with_the_note(tmp_path):
+    r = apply_to(_mesh_result(tmp_path, RuntimeKind.ARTS, _CONNECT))
+    assert r.status is Status.FAIL
+    assert r.note.startswith("mesh failure (connect): suspect hosts n2")
+
+
+def test_a_mesh_line_overrides_an_ok_status(tmp_path):
+    r = apply_to(_mesh_result(tmp_path, RuntimeKind.ARTS,
+                              "RESULT = 1\n" + _CONNECT, Status.OK))
+    assert r.status is Status.FAIL
+    assert r.note.startswith("mesh failure")
+
+
+def test_a_hangup_line_alone_keeps_the_plain_failure_note(tmp_path):
+    r = apply_to(_mesh_result(tmp_path, RuntimeKind.ARTS, _HANGUP))
+    assert "mesh failure" not in (r.note or "")
+
+
+def test_a_reference_cell_with_the_same_line_is_untouched(tmp_path):
+    r = apply_to(_mesh_result(tmp_path, RuntimeKind.XSOCR, _CONNECT))
+    assert "mesh failure" not in (r.note or "")
+
+
+def test_the_mesh_note_leads_an_existing_note(tmp_path):
+    r = _mesh_result(tmp_path, RuntimeKind.ARTS, _CONNECT)
+    r.note = "rc 75"
+    r = apply_to(r)
+    assert r.note.startswith("mesh failure (connect)")
+    assert r.note.endswith("; rc 75")
