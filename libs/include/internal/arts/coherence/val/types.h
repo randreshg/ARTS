@@ -30,8 +30,8 @@ extern "C" {
  * @file val/types.h
  * @brief VAL (Multi-Reader, Node-Exclusive-Writer) cache/db layout.
  *
- * Selected by arts/coherence/types.h when ARTS_PROTOCOL_VAL is defined.
- * The WT vs WB write-policy variant is chosen here by ARTS_WRITE_POLICY_WB.
+ * Selected by arts/coherence/types.h when ARTS_VALIDITY_VAL is defined.
+ * The WT vs WB write-policy variant is chosen here by ARTS_READ_SOURCE_OWNER.
  * The protocol-agnostic pieces (buffer, snapshot waiter, defines,
  * container_of) come from types_common.h; the of_cache/total_size/stub_size
  * helpers live in the dispatcher (types.h), after this header defines cache +
@@ -41,7 +41,7 @@ extern "C" {
  */
 
 #include "arts/coherence/types_common.h"
-#ifndef ARTS_PROTOCOL_VAL
+#ifndef ARTS_VALIDITY_VAL
 #error "val/types.h is the VAL layout; this translation unit's cell is another"
 #endif
 #include "arts/coherence/census.h" /* ARTS_DB_CENSUS */
@@ -185,7 +185,7 @@ struct arts_db_cache_s {
    * (arts_db_create_claims_stub); nothing else writes it after init.  Only
    * its own value: the claim is one CAS, so one create claims a cache. */
   _Atomic(uint8_t) init_kind;
-#ifndef ARTS_RELEASE_PURGE
+#ifndef ARTS_RETENTION_PURGE
   /* New owner rank for the next ownership transfer, published by this round's
    * GRANT_INVALIDATE handler BEFORE it withdraws the sentinel.  Sentinel
    * ARTS_NO_PENDING_OWNER == no transfer pending.  The publish-before-
@@ -225,7 +225,7 @@ struct arts_db_cache_s {
    * it took itself, and every other reader reaches them through the slot. */
   _Atomic(uint64_t) req_state;
   struct arts_db_reader_pool_s reader_pool; /* nodes of the word's chains */
-#ifdef ARTS_WRITE_POLICY_WB
+#ifdef ARTS_READ_SOURCE_OWNER
   /* WB: owner-side dedup map.  Allocated with the cache and freed with it; its
    * content migrates with ownership (GRANT_RESPONSE serializes it). */
   struct arts_rank_to_u64_map_s *cached_version;
@@ -285,7 +285,7 @@ struct arts_db_cache_s {
   _Atomic(uint64_t) home_pub_rkey;
   _Atomic(uint64_t) home_pub_txid;
 #endif
-#ifdef ARTS_RELEASE_PURGE
+#ifdef ARTS_RETENTION_PURGE
   /* The hand-back obligation: (grant_generation << 1) | armed, or zero.
    * Armed by a release that gave the write right up while its payload was
    * still in flight; discharged by whichever of the publish sender and the
@@ -340,7 +340,7 @@ struct arts_db_s {
    * are touched only on the home rank, never through a stub. */
   bool home_initialized; /**< one-shot init sentinel (set by arts_db_home_init).
                           */
-#ifdef ARTS_WRITE_POLICY_WB
+#ifdef ARTS_READ_SOURCE_OWNER
   /* The write holder a revocation targets and a read is redirected to:
    * stored release and loaded acquire under the baton; loads outside it (the
    * redirect, the destroy, the walk) carry only its value (directory.h). */
@@ -364,7 +364,7 @@ struct arts_db_s {
    * ordered by the baton (directory.h). */
   _Atomic(unsigned int) pending_install_owner;
 #else /* WT */
-#ifndef ARTS_RELEASE_PURGE
+#ifndef ARTS_RETENTION_PURGE
   /* The holder a revocation targets.  A home whose grants come back unasked
    * revokes no one, and its own possession is its whole directory.  Stored
    * release and loaded acquire under the baton (directory.h). */
@@ -389,13 +389,13 @@ struct arts_db_s {
   struct arts_rank_bitset_s ro_parity;
   _Atomic(uint32_t) cover_gate;
   unsigned int claim_rank;
-#ifndef ARTS_RELEASE_PURGE
+#ifndef ARTS_RETENTION_PURGE
   /* The requester the round in flight transfers the grant to: relaxed,
    * ordered by the baton (directory.h). */
   _Atomic(unsigned int) pending_install_owner;
 #endif
 #endif
-#ifdef ARTS_RELEASE_PURGE
+#ifdef ARTS_RETENTION_PURGE
   /* Single-slot return latch.  A voluntary return is never rejected: it is
    * either accepted at once or parked here for the thread already inside the
    * home's serving tail.  Both sides publish then check and consume by CAS, so

@@ -12,7 +12,7 @@
  * the per-release-policy TU (purge.c or retain.c).  The home request FIFO is
  * grantreq_queue.c.
  *
- * Compiled only for ARTS_COHERENCE_PROTOCOL=EXCL.
+ * Compiled only for ARTS_VALIDITY=EXCL.
  */
 
 #include "arts/coherence/excl/types.h"
@@ -40,12 +40,12 @@ void arts_db_home_init(struct arts_db_s *db, unsigned int rw_holder,
    * contract), so the home arbiter starts with one writer (the creator rank)
    * holding the lock — its matching release drives the count back to 0.
    * NO_ACQUIRE resets this to the idle state in arts_db_create. */
-#ifdef ARTS_RELEASE_PURGE
+#ifdef ARTS_RETENTION_PURGE
   /* PURGE tracks mode via the lock_state phase bit, not a separate rw_holder
    * field. */
   atomic_store_explicit(&db->lock_state, LOCK_MAKE_STATE(0u, 1u, 0u),
                         memory_order_relaxed);
-#else /* ARTS_RELEASE_RETAIN */
+#else /* ARTS_RETENTION_RETAIN */
   /* RETAIN: the home is a pure directory.  The creator is the first DATA owner
    * (cache-side: owner-bit + RW grant), but its RW hold/release are entirely
    * local (sticky — no REQUEST/RELEASE to home), so the home directory must NOT
@@ -63,7 +63,7 @@ void arts_db_home_init(struct arts_db_s *db, unsigned int rw_holder,
   arts_rank_bitset_init(&db->ro_parity, nranks);
   arts_rank_bitset_init(&db->ro_queued, nranks);
   db->claim_rank = (unsigned int)-1;
-#ifdef ARTS_RELEASE_RETAIN
+#ifdef ARTS_RETENTION_RETAIN
   atomic_store_explicit(&db->cover_gate, 0u, memory_order_relaxed);
 #endif
   /* A creator on another rank holds a cache of the block from the moment it
@@ -73,7 +73,7 @@ void arts_db_home_init(struct arts_db_s *db, unsigned int rw_holder,
   if (rw_holder != arts_global_rank_id && rw_holder < nranks) {
     arts_rank_bitset_set(&db->cached_ranks, rw_holder);
   }
-#ifdef ARTS_RELEASE_RETAIN
+#ifdef ARTS_RETENTION_RETAIN
   arts_rank_bitset_init(&db->ro_retainers, nranks);
 #endif
 }
@@ -95,7 +95,7 @@ void arts_db_home_teardown(struct arts_db_s *db) {
   arts_rank_bitset_destroy(&db->cached_ranks);
   arts_rank_bitset_destroy(&db->ro_parity);
   arts_rank_bitset_destroy(&db->ro_queued);
-#ifdef ARTS_RELEASE_RETAIN
+#ifdef ARTS_RETENTION_RETAIN
   /* Retainers are legal at destroy — a retained grant has no live acquire — so
    * a non-empty roster here is a normal path, not an edge case. */
   arts_rank_bitset_destroy(&db->ro_retainers);
@@ -118,7 +118,7 @@ void arts_db_home_seed_owed(struct arts_db_s *db, unsigned int creator,
                                (owed & ARTS_CREATE_OWED_RO_PAR) != 0u);
   }
   n = rwo + roo;
-#ifdef ARTS_RELEASE_PURGE
+#ifdef ARTS_RETENTION_PURGE
   uint64_t s = atomic_load_explicit(&db->lock_state, memory_order_relaxed);
   atomic_store_explicit(
       &db->lock_state,

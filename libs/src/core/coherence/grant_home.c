@@ -74,7 +74,7 @@ static void home_response_commit(struct arts_db_s *db, uint64_t home_token) {
    * unasked the last of them can give it away while this thread is still
    * running — so the reader drains come first. */
   arts_db_drain_publication_waiters(cache);
-#ifdef ARTS_PROTOCOL_VAL
+#ifdef ARTS_VALIDITY_VAL
   /* Read waiters batched while this rank had no local copy resume here
    * against the buffer it now holds instead of re-fetching remotely — the
    * bytes that arrived with the grant, or the ones already here that a
@@ -86,7 +86,7 @@ static void home_response_commit(struct arts_db_s *db, uint64_t home_token) {
    * no stale-RO window. */
   unsigned int drained = arts_db_grant_commit_drain(cache);
 
-#ifndef ARTS_RELEASE_PURGE
+#ifndef ARTS_RETENTION_PURGE
   /* Tell the home we installed: it names this rank as the holder only now,
    * so a revocation never reaches a rank that has not installed, and the
    * round it advances may revoke this rank at once. */
@@ -244,7 +244,7 @@ void arts_db_grant_response_on(struct arts_db_s *db,
 
 /* ===== WT CONFIRM handler (home A) =============================== */
 
-#ifndef ARTS_RELEASE_PURGE
+#ifndef ARTS_RETENTION_PURGE
 /* CONFIRM at the home, the answer to its transfer: on the home descriptor the
  * home token names, under the baton tenure's count.  The new owner's token
  * is unused here — the new owner is read from db->pending_install_owner
@@ -328,4 +328,4 @@ void arts_handler_db_grant_invalidate(void *item_v, void *args_v) {
     arts_db_grant_ship_pending(cache);
   }
 }
-#endif /* !ARTS_RELEASE_PURGE */
+#endif /* !ARTS_RETENTION_PURGE */

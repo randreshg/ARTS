@@ -2,7 +2,7 @@
  *
  * EXCL protocol cache/db layout.
  *
- * Selected by arts/coherence/types.h when ARTS_PROTOCOL_EXCL is defined.
+ * Selected by arts/coherence/types.h when ARTS_VALIDITY_EXCL is defined.
  * The EXCL protocol uses a single lock_state word on the home rank to
  * serialize all access-mode transitions: the home grants or queues each
  * requester.  What a turn's end sends is the release policy's: PURGE hands
@@ -19,7 +19,7 @@ extern "C" {
 #endif
 
 #include "arts/coherence/types_common.h"
-#ifndef ARTS_PROTOCOL_EXCL
+#ifndef ARTS_VALIDITY_EXCL
 #error                                                                         \
     "excl/types.h is the EXCL layout; this translation unit's cell is another"
 #endif
@@ -47,7 +47,7 @@ extern "C" {
  * cache_compute_next CAS (see arbiters.c for why that atomicity is
  * load-bearing).  (GRANT,GRANT) is unreachable: home never grants both to the
  * same rank in PURGE. */
-#ifdef ARTS_RELEASE_PURGE
+#ifdef ARTS_RETENTION_PURGE
 #define CACHE_ST_IDLE 0u
 #define CACHE_ST_REQ 1u
 #define CACHE_ST_GRANT 2u
@@ -70,7 +70,7 @@ extern "C" {
    (((uint64_t)(wc) & CACHE_RW_CNT_MASK) << CACHE_CNT_BITS) |                  \
    ((uint64_t)(rc) & CACHE_CNT_MASK))
 #define CACHE_MAKE(rws, ros, wc, rc) CACHE_MAKE_X(rws, ros, 0u, 0u, wc, rc)
-#endif /* ARTS_RELEASE_PURGE */
+#endif /* ARTS_RETENTION_PURGE */
 
 /* ── RETAIN cache_state ─────────────────────────────────────────────────────
  * Per-rank (owner) single 64-bit coherence word (RETAIN release policy only).
@@ -100,7 +100,7 @@ extern "C" {
  * Note: under RETAIN the home does NOT hold canonical data — the current owner
  * (owner-bit set) does.  home.cache.buffer is unused by the EXCL RETAIN
  * path. */
-#ifdef ARTS_RELEASE_RETAIN
+#ifdef ARTS_RETENTION_RETAIN
 #define CACHE_ST_IDLE 0u
 #define CACHE_ST_REQ 1u
 #define CACHE_ST_GRANT 2u
@@ -193,7 +193,7 @@ extern "C" {
 /* Sentinel for "no pending migration target". */
 #define ARTS_EXCL_NO_TARGET                                                    \
   ((uint32_t)((1u << CACHE_OWNER_MT_BITS) - 1)) /* 0x3FFF */
-#endif                                         /* ARTS_RELEASE_RETAIN */
+#endif                                         /* ARTS_RETENTION_RETAIN */
 
 /* ── PURGE home lock_state ───────────────────────────────────────────────
  * (layout below)
@@ -213,7 +213,7 @@ extern "C" {
  *   EXCL_PHASE_BIT_RO (1) = RO phase held / RW waiters queued
  * When w==0 || r==0 the state_bit is normalized to 0.
  * w = #RW participant ranks; r = #RO participant ranks. */
-#ifdef ARTS_RELEASE_PURGE
+#ifdef ARTS_RETENTION_PURGE
 /* Layout: [ teardown:1 (63) | state_bit:1 (62) | rwo:1 (61) | roo:1 (60) |
  *           owed:16 (59..44) | w:22 (43..22) | r:22 (21..0) ]
  * owed counts the requests the home has been told are still coming (a create
@@ -255,7 +255,7 @@ extern "C" {
 #define LOCK_MAKE_STATE(bit, w, r) LOCK_MAKE_STATE_TD(0u, bit, w, r)
 #define EXCL_PHASE_BIT_RW 0u
 #define EXCL_PHASE_BIT_RO 1u
-#endif /* ARTS_RELEASE_PURGE */
+#endif /* ARTS_RETENTION_PURGE */
 
 /* ── RETAIN home lock_state ────────────────────────────────────────────────
  * Layout (MSB→LSB): [ phase:2 (63..62) | owner:14 (61..48) |
@@ -281,7 +281,7 @@ extern "C" {
  *            the RO→RW flip fires at r==0. r may transiently exceed the number
  *            of distinct reader ranks under network reorder (commutative ±1
  *            accounting tolerates this). */
-#ifdef ARTS_RELEASE_RETAIN
+#ifdef ARTS_RETENTION_RETAIN
 #define EXCL_STATE_R_BITS 24
 #define EXCL_STATE_W_BITS 24
 #define EXCL_STATE_OWNER_BITS 14 /* = ARTS_GUID_RANK_BITS */
@@ -317,7 +317,7 @@ extern "C" {
    ((uint64_t)((owner) & EXCL_STATE_OWNER_MASK) << EXCL_STATE_OWNER_SHIFT) |     \
    ((uint64_t)((w) & EXCL_STATE_W_MASK) << EXCL_STATE_W_SHIFT) |                 \
    ((uint64_t)((r) & EXCL_STATE_R_MASK) << EXCL_STATE_R_SHIFT))
-#endif /* ARTS_RELEASE_RETAIN */
+#endif /* ARTS_RETENTION_RETAIN */
 
 /* ── home lock_state transition ops + grant codes (PURGE) ────────────────
  * excl_compute_next(cur, op, &grant) is the home arbiter, a pure function of
@@ -326,7 +326,7 @@ extern "C" {
  * the SAME arbiter locally when home == self: a local hit runs the handler
  * logic directly, with no wire round.
  */
-#ifdef ARTS_RELEASE_PURGE
+#ifdef ARTS_RETENTION_PURGE
 #define EXCL_OP_RW_ACQ 0
 #define EXCL_OP_RO_ACQ 1
 #define EXCL_OP_RW_REL 2
@@ -350,7 +350,7 @@ extern "C" {
 /* Not a grant: the transition would overflow a count field; the word is left
  * unchanged and the caller raises it. */
 #define LOCK_GRANT_FULL 4
-#endif /* ARTS_RELEASE_PURGE */
+#endif /* ARTS_RETENTION_PURGE */
 
 /* ── home lock_state transition ops + action codes (RETAIN) ────────────────
  * lock_owner_compute_next(cur, op, new_owner, &action) is the RETAIN home
@@ -359,7 +359,7 @@ extern "C" {
  * FORWARD recipient is LOCK_OWNER() of the returned word; the migrate target
  * and the served reader(s) are resolved by the caller from rw_waiters /
  * ro_waiters (a pure arbiter cannot peek the queues). */
-#ifdef ARTS_RELEASE_RETAIN
+#ifdef ARTS_RETENTION_RETAIN
 #define EXCL_OP_RW_ACQ 0
 #define EXCL_OP_RO_ACQ 1
 #define EXCL_OP_CONFIRM 2 /* new owner confirms migration complete */
@@ -374,7 +374,7 @@ extern "C" {
 #define EXCL_ACTION_FORWARD_SERVE_ALL                                          \
   3 /* home→owner: FORWARD(serve→held RO)                                  \
      */
-#endif /* ARTS_RELEASE_RETAIN */
+#endif /* ARTS_RETENTION_RETAIN */
 
 /* ── cache_state transition ops + actions (PURGE) ────────────────────────
  * cache_compute_next(cur, op, &action) (arbiters.c) is the cache-side analogue
@@ -384,7 +384,7 @@ extern "C" {
  * inside the CAS (the decrement and the 0-edge state change must be atomic
  * together).  See arbiters.c for the invariants this single-atom shape
  * upholds. */
-#ifdef ARTS_RELEASE_PURGE
+#ifdef ARTS_RETENTION_PURGE
 #define CACHE_OP_ACQ_RW 0
 #define CACHE_OP_ACQ_RO 1
 #define CACHE_OP_GRANT_RW 2
@@ -415,12 +415,12 @@ extern "C" {
  * site raises it.  The arbiter leaves the word unchanged. */
 #define CACHE_ACT_LATE 10
 #define CACHE_ACT_RESEND_RO 11
-#endif /* ARTS_RELEASE_PURGE */
+#endif /* ARTS_RETENTION_PURGE */
 
 /* ── cache_state transition ops + actions (RETAIN) ─────────────────────────
  * cache_owner_compute_next(cur, op, &action) is the RETAIN owner-cache
  * arbiter (arbiters.c). */
-#ifdef ARTS_RELEASE_RETAIN
+#ifdef ARTS_RETENTION_RETAIN
 #define CACHE_OP_ACQ_RW 0
 #define CACHE_OP_ACQ_RO 1
 /* No FORWARD ops: FORWARD-migrate / FORWARD-serve do not transit
@@ -455,7 +455,7 @@ extern "C" {
  * CAS is the exactly-once token and a concurrent recall must not be able to
  * make two sites send for one grant.  Under RETAIN the edge may relinquish
  * (GRANT_PURGE) or retain (GRANT); the engine must be driven either way. */
-#endif /* ARTS_RELEASE_RETAIN */
+#endif /* ARTS_RETENTION_RETAIN */
 
 /* The request packet's cover word: a read request carries its parity; a write
  * request declares the read request its rank has out (open + parity) and
@@ -515,7 +515,7 @@ struct arts_db_cache_s {
   _Atomic(arts_shared_slot_t) buffer;
   arts_lf_stack_t ro_pending; /* parked RO EDT waiters on this rank */
   arts_lf_stack_t rw_pending; /* parked RW EDT waiters on this rank */
-#ifdef ARTS_RELEASE_RETAIN
+#ifdef ARTS_RETENTION_RETAIN
   /* Reader ranks the owner must serve during the RO phase.  Home pushes via
    * FORWARD; the owner drains (DELIVER copy to each reader) when wc reaches 0.
    * This list cannot be packed into the single cache_state word. */
@@ -622,13 +622,13 @@ struct arts_db_s {
   /* The rank whose create claimed a first-touch cache, written before the
    * descriptor is published (ordered by the route slot's install). */
   unsigned int claim_rank;
-#ifdef ARTS_RELEASE_RETAIN
+#ifdef ARTS_RETENTION_RETAIN
   /* [td:1 (31) | rwo:1 (30) | roo:1 (29) | owed:29]: the destroy's mark and
    * what the home was told is still coming, one word so that marking and
    * settling read each other.  Every write after init is an acq_rel RMW. */
   _Atomic(uint32_t) cover_gate;
 #endif
-#ifdef ARTS_RELEASE_RETAIN
+#ifdef ARTS_RETENTION_RETAIN
   /* Recall roster: ranks that have issued a RO request since the last drain.
    * Its OWN bitset — cached_ranks is the monotone destroy set and is written by
    * RW requesters too.  Set with fetch_or BEFORE the requester's lock_state CAS

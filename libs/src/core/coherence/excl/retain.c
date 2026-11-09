@@ -16,7 +16,7 @@
  * price is that a remote read waits out the write phase at the home instead of
  * being served from a second copy — which is what phase exclusion means.
  *
- * Compiled only for ARTS_COHERENCE_PROTOCOL=EXCL + ARTS_RELEASE_POLICY=RETAIN;
+ * Compiled only for ARTS_VALIDITY=EXCL + ARTS_RETENTION=RETAIN;
  * the release-policy variant is a link-time file choice, so this TU contains no
  * release-policy preprocessor guards.
  */

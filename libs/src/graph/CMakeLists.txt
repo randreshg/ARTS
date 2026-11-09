@@ -44,4 +44,4 @@ file(GLOB GRAPH_SOURCES CONFIGURE_DEPENDS "*.c")
 
 add_library(arts_graph OBJECT ${GRAPH_SOURCES})
 target_link_libraries(arts_graph PRIVATE arts_interface)
-arts_apply_protocol(arts_graph ${ARTS_COHERENCE_ARM} ${ARTS_WRITE_POLICY} ${ARTS_RELEASE_POLICY})
+arts_apply_protocol(arts_graph ${ARTS_VALIDITY} ${ARTS_RETENTION} ${ARTS_READ_SOURCE})

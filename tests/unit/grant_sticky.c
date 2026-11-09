@@ -53,7 +53,7 @@
 static arts_guid_t g_db;
 static int g_fail;
 
-#ifdef ARTS_PROTOCOL_EXCL
+#ifdef ARTS_VALIDITY_EXCL
 #include "arts/coherence/excl/types.h"
 
 /* EXCL: the permission is rw_st, and wc counts only the live local writers. */
@@ -94,7 +94,7 @@ static void writer_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     return;
   }
   data[0] = data[0] + 1;
-#ifdef ARTS_PROTOCOL_EXCL
+#ifdef ARTS_VALIDITY_EXCL
   /* A writer runs only under a held permission; wc counts its own hold. */
   unsigned int rw_st, wc;
   excl_perm(g_db, &rw_st, &wc);
@@ -128,7 +128,7 @@ static void check_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)paramv;
   (void)depc;
   (void)depv;
-#ifdef ARTS_PROTOCOL_EXCL
+#ifdef ARTS_VALIDITY_EXCL
   /* Every writer has released and nobody else exists to ask for it back, so
    * the permission must still be held with no live writer under it. */
   unsigned int rw_st, wc;

@@ -25,7 +25,7 @@ extern "C" {
  */
 
 #include "arts/coherence/types_common.h"
-#ifndef ARTS_PROTOCOL_FLUSH
+#ifndef ARTS_VALIDITY_FLUSH
 #error                                                                         \
     "flush/types.h is the FLUSH layout; this translation unit's cell is another"
 #endif

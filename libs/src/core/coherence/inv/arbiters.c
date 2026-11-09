@@ -23,7 +23,7 @@
  * whitebox unit tests also #include it directly.  NOT listed in
  * CMakeLists.txt as a standalone TU.
  */
-#ifdef ARTS_PROTOCOL_INV
+#ifdef ARTS_VALIDITY_INV
 
 #include "arts/coherence/inv/types.h"
 
@@ -296,4 +296,4 @@ static uint64_t inv_round_targets_word(uint64_t snap, uint64_t keep,
   }
   return targets;
 }
-#endif /* ARTS_PROTOCOL_INV */
+#endif /* ARTS_VALIDITY_INV */

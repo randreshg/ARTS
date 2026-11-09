@@ -58,23 +58,23 @@ MK_HANDLER(arts_handler_db_destroy)
 MK_HANDLER(arts_db_acquire_replay_dep)
 MK_HANDLER(arts_handler_db_snapshot_request)
 MK_HANDLER(arts_handler_db_publish)
-#if defined(ARTS_PROTOCOL_EXCL)
+#if defined(ARTS_VALIDITY_EXCL)
 MK_HANDLER(arts_handler_db_excl_request)
-#ifdef ARTS_RELEASE_PURGE
+#ifdef ARTS_RETENTION_PURGE
 MK_HANDLER(arts_handler_db_excl_release)
 #endif
-#elif defined(ARTS_PROTOCOL_INV)
+#elif defined(ARTS_VALIDITY_INV)
 MK_HANDLER(arts_handler_db_grant_request)
 MK_HANDLER(arts_handler_db_inv_request)
-#ifdef ARTS_RELEASE_PURGE
+#ifdef ARTS_RETENTION_PURGE
 MK_HANDLER(arts_handler_db_grant_return)
 #endif
-#elif defined(ARTS_PROTOCOL_FLUSH)
+#elif defined(ARTS_VALIDITY_FLUSH)
 MK_HANDLER(arts_handler_db_fetch_request)
 MK_HANDLER(arts_handler_db_flush_announce)
-#elif defined(ARTS_PROTOCOL_VAL)
+#elif defined(ARTS_VALIDITY_VAL)
 MK_HANDLER(arts_handler_db_grant_request)
-#ifdef ARTS_RELEASE_PURGE
+#ifdef ARTS_RETENTION_PURGE
 MK_HANDLER(arts_handler_db_grant_return)
 #endif
 #endif
@@ -136,34 +136,34 @@ static const struct expect_s g_expect[] = {
     E(OOO_EDT_DESTROY, arts_handler_edt_destroy),
     E(OOO_EVENT_DESTROY, arts_handler_event_destroy),
     E(OOO_DB_DESTROY, arts_handler_db_destroy),
-#if defined(ARTS_PROTOCOL_EXCL) && defined(ARTS_RELEASE_PURGE)
+#if defined(ARTS_VALIDITY_EXCL) && defined(ARTS_RETENTION_PURGE)
     E(OOO_DB_ACQUIRE, arts_db_acquire_replay_dep),
     E(OOO_DB_EXCL_REQUEST, arts_handler_db_excl_request),
     E(OOO_DB_EXCL_RELEASE, arts_handler_db_excl_release),
-#elif defined(ARTS_PROTOCOL_EXCL) && defined(ARTS_RELEASE_RETAIN)
+#elif defined(ARTS_VALIDITY_EXCL) && defined(ARTS_RETENTION_RETAIN)
     E(OOO_DB_ACQUIRE, arts_db_acquire_replay_dep),
     E(OOO_DB_EXCL_REQUEST, arts_handler_db_excl_request),
-#elif defined(ARTS_PROTOCOL_INV)
+#elif defined(ARTS_VALIDITY_INV)
     E(OOO_DB_ACQUIRE, arts_db_acquire_replay_dep),
     E(OOO_DB_GRANT_REQUEST, arts_handler_db_grant_request),
     E(OOO_DB_INV_REQUEST, arts_handler_db_inv_request),
     E(OOO_DB_PUBLISH, arts_handler_db_publish),
-#ifdef ARTS_RELEASE_PURGE
+#ifdef ARTS_RETENTION_PURGE
     E(OOO_DB_GRANT_RETURN, arts_handler_db_grant_return),
 #endif
-#elif defined(ARTS_PROTOCOL_FLUSH)
+#elif defined(ARTS_VALIDITY_FLUSH)
     E(OOO_DB_ACQUIRE, arts_db_acquire_replay_dep),
     E(OOO_DB_FETCH_REQUEST, arts_handler_db_fetch_request),
     E(OOO_DB_FLUSH_ANNOUNCE, arts_handler_db_flush_announce),
-#elif defined(ARTS_PROTOCOL_VAL) && defined(ARTS_WRITE_POLICY_WT)
+#elif defined(ARTS_VALIDITY_VAL) && defined(ARTS_READ_SOURCE_HOME)
     E(OOO_DB_ACQUIRE, arts_db_acquire_replay_dep),
     E(OOO_DB_SNAPSHOT_REQUEST, arts_handler_db_snapshot_request),
     E(OOO_DB_GRANT_REQUEST, arts_handler_db_grant_request),
     E(OOO_DB_PUBLISH, arts_handler_db_publish),
-#ifdef ARTS_RELEASE_PURGE
+#ifdef ARTS_RETENTION_PURGE
     E(OOO_DB_GRANT_RETURN, arts_handler_db_grant_return),
 #endif
-#elif defined(ARTS_PROTOCOL_VAL) && defined(ARTS_WRITE_POLICY_WB)
+#elif defined(ARTS_VALIDITY_VAL) && defined(ARTS_READ_SOURCE_OWNER)
     E(OOO_DB_ACQUIRE, arts_db_acquire_replay_dep),
     E(OOO_DB_SNAPSHOT_REQUEST, arts_handler_db_snapshot_request),
     E(OOO_DB_GRANT_REQUEST, arts_handler_db_grant_request),
@@ -182,24 +182,24 @@ _Static_assert(OOO_KIND_COUNT == N_EXPECT,
 
 int main(void) {
   const char *cfg =
-#if defined(ARTS_PROTOCOL_EXCL) && defined(ARTS_RELEASE_PURGE)
+#if defined(ARTS_VALIDITY_EXCL) && defined(ARTS_RETENTION_PURGE)
       "EXCL+PURGE"
-#elif defined(ARTS_PROTOCOL_EXCL) && defined(ARTS_RELEASE_RETAIN)
+#elif defined(ARTS_VALIDITY_EXCL) && defined(ARTS_RETENTION_RETAIN)
       "EXCL+RETAIN"
-#elif defined(ARTS_PROTOCOL_INV) && defined(ARTS_WRITE_POLICY_WB)
+#elif defined(ARTS_VALIDITY_INV) && defined(ARTS_READ_SOURCE_OWNER)
       "INV+WB"
-#elif defined(ARTS_PROTOCOL_INV) && defined(ARTS_RELEASE_PURGE)
+#elif defined(ARTS_VALIDITY_INV) && defined(ARTS_RETENTION_PURGE)
       "INV+WT+PURGE"
-#elif defined(ARTS_PROTOCOL_INV)
+#elif defined(ARTS_VALIDITY_INV)
       "INV+WT"
-#elif defined(ARTS_PROTOCOL_FLUSH)
+#elif defined(ARTS_VALIDITY_FLUSH)
       "FLUSH"
-#elif defined(ARTS_PROTOCOL_VAL) && defined(ARTS_WRITE_POLICY_WT) &&           \
-    defined(ARTS_RELEASE_PURGE)
+#elif defined(ARTS_VALIDITY_VAL) && defined(ARTS_READ_SOURCE_HOME) &&          \
+    defined(ARTS_RETENTION_PURGE)
       "VAL+WT+PURGE"
-#elif defined(ARTS_PROTOCOL_VAL) && defined(ARTS_WRITE_POLICY_WT)
+#elif defined(ARTS_VALIDITY_VAL) && defined(ARTS_READ_SOURCE_HOME)
       "VAL+WT"
-#elif defined(ARTS_PROTOCOL_VAL) && defined(ARTS_WRITE_POLICY_WB)
+#elif defined(ARTS_VALIDITY_VAL) && defined(ARTS_READ_SOURCE_OWNER)
       "VAL+WB"
 #else
       "?"

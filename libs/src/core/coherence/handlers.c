@@ -140,11 +140,11 @@ static inline void db_create_no_acquire_idle(struct arts_db_s *db,
    * claimed about this rank holding a reader copy is false and must go with
    * the write hold. */
   arts_db_create_retract_creator_copy(db);
-#if defined(ARTS_PROTOCOL_FLUSH)
+#if defined(ARTS_VALIDITY_FLUSH)
   /* An arm that keeps no permission state has no seed to collapse: the
    * retraction above is the whole normalization. */
-#elif defined(ARTS_PROTOCOL_EXCL)
-#if defined(ARTS_RELEASE_RETAIN)
+#elif defined(ARTS_VALIDITY_EXCL)
+#if defined(ARTS_RETENTION_RETAIN)
   /* RETAIN: data lives with the owner, not the home.  With no creator hold there
    * is no owner unless we make one — so the home rank (this rank; the create
    * handler runs only on the GUID home, see the assert in
@@ -161,13 +161,13 @@ static inline void db_create_no_acquire_idle(struct arts_db_s *db,
   atomic_store_explicit(&db->lock_state,
                         LOCK_MAKE(EXCL_PHASE_IDLE, arts_global_rank_id, 0u, 0u),
                         memory_order_relaxed);
-#else  /* ARTS_RELEASE_PURGE */
+#else  /* ARTS_RETENTION_PURGE */
   /* PURGE: the home holds the canonical buffer and grants from it; the creator
    * is a non-owner.  Idle both words (the first EXCL_REQUEST is granted, not
    * blocked behind the unreleased creator hold). */
   atomic_store_explicit(&db->cache.cache_state, 0ULL, memory_order_relaxed);
   atomic_store_explicit(&db->lock_state, 0ULL, memory_order_relaxed);
-#endif /* ARTS_RELEASE_* */
+#endif /* ARTS_RETENTION_* */
 #else
   /* Grant-bearing arms: with no creator hold this rank is the idle owner —
    * possession, and no hold under it.  The directory already names it: the
@@ -324,8 +324,8 @@ void arts_handler_db_create(void *item_v, void *args_v) {
     arts_ooo_dispatch_or_defer_guid(db_guid, OOO_DB_CREATE, p, sizeof(*p));
     return;
   }
-#if (!defined(ARTS_PROTOCOL_EXCL) && defined(ARTS_WRITE_POLICY_WT)) ||       \
-    defined(ARTS_PROTOCOL_FLUSH)
+#if (!defined(ARTS_VALIDITY_EXCL) && defined(ARTS_READ_SOURCE_HOME)) ||       \
+    defined(ARTS_VALIDITY_FLUSH)
   /* Off the critical path: the credit flies while the creator EDT is still
    * writing, so a create -> write -> release sequence publishes with no
    * announce round.  A creator that took no right never publishes — no
@@ -342,8 +342,8 @@ void arts_handler_db_create(void *item_v, void *args_v) {
 /* ===== Sharer-side response handlers =============================== */
 
 /* The WT GRANT_RESPONSE handler arts_handler_db_grant_response lives in
- * coherence/grant_wt.c; WB's overload lives in
- * coherence/grant_wb.c. */
+ * coherence/grant_home.c; WB's overload lives in
+ * coherence/grant_owner.c. */
 
 /* Consume an in-flight rendezvous whose receiver-side object is gone: the
  * metadata packet arrived for a destroyed target, so nobody will ever expect
@@ -377,7 +377,7 @@ void arts_db_rdzv_discard_landing(uint64_t txid, uint64_t len,
   arts_net_rdzv_expect(txid, len, rdzv_discard_cb, rdzv_discard_cb, ctx);
 }
 
-#if defined(ARTS_PROTOCOL_VAL)
+#if defined(ARTS_VALIDITY_VAL)
 /* Rendezvous continuation for a data-bearing SNAPSHOT_RESPONSE: the snapshot
  * payload has fully landed in our advertised landing ("imm seen => landing
  * valid").  Install it without a copy (version-conditional; a stale landing
@@ -527,8 +527,8 @@ void arts_handler_db_snapshot_response(
 #endif /* the versioned-snapshot read path */
 
 /* arts_handler_db_grant_invalidate (GRANT_INVALIDATE) lives per write policy:
- * coherence/grant_wt.c (commutative signed counter) and coherence/grant_wb.c
- * (publish-target-then-withdraw). */
+ * coherence/grant_home.c (commutative signed counter) and
+ * coherence/grant_owner.c (publish-target-then-withdraw). */
 
 /* arts_handler_db_publish_ack is the shared flight-completion body, defined
  * ONCE in coherence/coherence.c for every publishing arm (gated
@@ -559,4 +559,4 @@ void arts_handler_db_cache_destroy(void *item_v, void *args_v) {
 }
 
 /* The WB SNAPSHOT_REDIRECT handler arts_handler_db_snapshot_redirect lives in
- * coherence/val/wb.c (owner-side, REDIRECT only exists under WB). */
+ * coherence/val/owner.c (owner-side, REDIRECT only exists under WB). */

@@ -468,8 +468,8 @@ static void db_create_in_place(arts_guid_t guid, void *addr, uint64_t len,
  * the descriptor is still private.  Left in place, the unreleased hold blocks
  * every future writer. */
 static void db_create_no_acquire_local(struct arts_db_s *db) {
-#if defined(ARTS_PROTOCOL_EXCL)
-#if defined(ARTS_RELEASE_RETAIN)
+#if defined(ARTS_VALIDITY_EXCL)
+#if defined(ARTS_RETENTION_RETAIN)
   /* RETAIN release policy: data lives with the owner, not the home — with no
    * creator hold there is no owner unless we make one.  This rank (the GUID
    * home, where a local create runs) becomes the IDLE data owner with
@@ -485,14 +485,14 @@ static void db_create_no_acquire_local(struct arts_db_s *db) {
   atomic_store_explicit(&db->lock_state,
                         LOCK_MAKE(EXCL_PHASE_IDLE, arts_global_rank_id, 0u, 0u),
                         memory_order_relaxed);
-#else  /* ARTS_RELEASE_PURGE */
+#else  /* ARTS_RETENTION_PURGE */
   /* PURGE release policy: the home holds the canonical buffer; undo the
    * create-time creator RW seed → free lock, so the first acquirer is granted
    * rather than blocked behind a hold no EDT will ever release. */
   atomic_store_explicit(&db->cache.cache_state, 0ULL, memory_order_relaxed);
   atomic_store_explicit(&db->lock_state, 0ULL, memory_order_relaxed);
-#endif /* ARTS_RELEASE_* */
-#elif defined(ARTS_PROTOCOL_FLUSH)
+#endif /* ARTS_RETENTION_* */
+#elif defined(ARTS_VALIDITY_FLUSH)
   /* An arm that keeps no permission state has no seed to undo. */
 #else
   /* Grant-bearing arms: this rank becomes the idle owner — possession, and no

@@ -14,7 +14,7 @@
  * That is the whole difference from the RETAIN release policy, where the payload stays
  * with the last writer and a release with nothing pending sends nothing at all.
  *
- * Compiled only for ARTS_COHERENCE_PROTOCOL=EXCL + ARTS_RELEASE_POLICY=PURGE;
+ * Compiled only for ARTS_VALIDITY=EXCL + ARTS_RETENTION=PURGE;
  * the release-policy variant is a link-time file choice, so this TU contains no
  * release-policy preprocessor guards.
  */

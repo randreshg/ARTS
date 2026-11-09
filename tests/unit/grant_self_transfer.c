@@ -11,7 +11,7 @@
  *
  * This drives the holder's INVALIDATE handler through the ship
  * (coherence/grant.c), the grant body and commit of the tree's write policy
- * (coherence/grant_wt.c or grant_wb.c), the RETAIN count edges
+ * (coherence/grant_home.c or grant_owner.c), the RETAIN count edges
  * (coherence/grant_retain.c) and the waiter stack (coherence/grant_queue.c) on
  * one thread, with the wire stubbed.  Checks: no packet, lookup, send or
  * install of a copy happens for the transfer (each of those is a stub that
@@ -29,10 +29,10 @@
  * PURE test: no arts_rt, no ports, no threads.
  */
 #include "coherence/grant.c"
-#ifdef ARTS_WRITE_POLICY_WB
-#include "coherence/grant_wb.c"
+#ifdef ARTS_READ_SOURCE_OWNER
+#include "coherence/grant_owner.c"
 #else
-#include "coherence/grant_wt.c"
+#include "coherence/grant_home.c"
 #endif
 #include "coherence/grant_queue.c"
 #include "coherence/grant_retain.c"
@@ -252,14 +252,14 @@ void arts_db_buf_landing_return(struct arts_db_buffer_s *b) {
 
 /* ---- the commit's collaborators ---- */
 
-#ifdef ARTS_WRITE_POLICY_WT
+#ifdef ARTS_READ_SOURCE_HOME
 void arts_db_drain_publication_waiters(struct arts_db_cache_s *cache) {
   if (cache != &g_db->cache) {
     fail("the publication waiters drained on another cache");
   }
 }
 #endif
-#ifdef ARTS_PROTOCOL_VAL
+#ifdef ARTS_VALIDITY_VAL
 void arts_db_ro_combine_grant_drain(struct arts_db_cache_s *cache) {
   if (cache != &g_db->cache) {
     fail("the read combine drained on another cache");
@@ -357,7 +357,7 @@ static void setup(void) {
   atomic_init(&cache->writer_count, 1u);
   cache->incoming_new_owner = ARTS_NO_PENDING_OWNER;
   arts_pending_rw_queue_init(&cache->pending_rw);
-#if defined(ARTS_PROTOCOL_VAL) && defined(ARTS_WRITE_POLICY_WB)
+#if defined(ARTS_VALIDITY_VAL) && defined(ARTS_READ_SOURCE_OWNER)
   cache->cached_version = arts_rank_u64_map_create(arts_global_rank_count);
   arts_rank_u64_map_set(cache->cached_version, HOME, HOME_SEEN);
 #else
@@ -405,7 +405,7 @@ int main(void) {
   payload_protect(PROT_NONE);
   arts_handler_db_grant_invalidate(g_db, &inv);
 
-#ifdef ARTS_WRITE_POLICY_WB
+#ifdef ARTS_READ_SOURCE_OWNER
   if (g_wakes != 0u) {
     fail("the writer woke before the CONFIRM_ACK");
   }

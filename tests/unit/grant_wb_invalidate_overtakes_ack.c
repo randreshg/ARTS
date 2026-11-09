@@ -8,19 +8,19 @@
  * the last drained writer's release) owns the zero edge and ships to the
  * target the INVALIDATE published.
  *
- * This drives the owner side's handlers (coherence/grant_wb.c, with the RETAIN
- * count-dropping edges of coherence/grant_retain.c) on one thread with the
- * wire stubbed: the install's word (sentinel + drain guard + marker), then the
- * INVALIDATE, then a CONFIRM_ACK with no piggyback, with no drained writer and
- * with several, each released after the ack; and the control order, the ack
- * before the INVALIDATE.  Each must ship exactly once, to the INVALIDATE's
+ * This drives the owner side's handlers (coherence/grant_owner.c, with the
+ * RETAIN count-dropping edges of coherence/grant_retain.c) on one thread with
+ * the wire stubbed: the install's word (sentinel + drain guard + marker), then
+ * the INVALIDATE, then a CONFIRM_ACK with no piggyback, with no drained writer
+ * and with several, each released after the ack; and the control order, the
+ * ack before the INVALIDATE.  Each must ship exactly once, to the INVALIDATE's
  * target, at the zero edge, and leave the word at zero; the ack drops the
  * count of the write request it answers once.
  *
  * PURE test: no arts_rt, no ports, no threads.
  */
+#include "coherence/grant_owner.c"
 #include "coherence/grant_retain.c"
-#include "coherence/grant_wb.c"
 #include "coherence/grantreq_queue.c"
 
 #include "arts/system/shutdown.h"
@@ -51,7 +51,7 @@ void arts_sched_fuzz_point(void) {}
 ARTS_THREAD_LOCAL uint8_t arts_db_census_serve;
 #endif
 
-/* The handlers of grant_wb.c and grant_retain.c this test does not drive.  */
+/* The handlers of grant_owner.c and grant_retain.c this test does not drive. */
 #define UNREACHED(sig)                                                         \
   sig {                                                                        \
     printf("FAIL grant_wb_invalidate_overtakes_ack: %s reached\n", __func__);  \

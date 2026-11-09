@@ -29,7 +29,7 @@
 #include <stdint.h>
 #include <stdio.h>
 
-#if !defined(ARTS_PROTOCOL_EXCL) || !defined(ARTS_RELEASE_RETAIN)
+#if !defined(ARTS_VALIDITY_EXCL) || !defined(ARTS_RETENTION_RETAIN)
 #error "only the exclusion arm's retaining policy keeps a read grant"
 #endif
 

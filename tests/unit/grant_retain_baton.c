@@ -2,7 +2,7 @@
  *
  * The RETAIN home's serving baton as a claim counter: the request arrival and
  * the baton holder's step (coherence/grant_retain.c), the write-back CONFIRM
- * handler (coherence/grant_wb.c) and the request FIFO
+ * handler (coherence/grant_owner.c) and the request FIFO
  * (coherence/grantreq_queue.c), compiled in with the wire stubbed.
  *
  * Producer threads stand in for the GRANT_REQUEST handlers of ranks with one
@@ -42,8 +42,8 @@ static _Atomic(uint64_t) g_reclaims;
 #define INCREMENT_NUM_GRANT_BATON_RECLAIM_BY(v)                                \
   atomic_fetch_add_explicit(&g_reclaims, (v), memory_order_relaxed)
 
+#include "coherence/grant_owner.c"
 #include "coherence/grant_retain.c"
-#include "coherence/grant_wb.c"
 #include "coherence/grantreq_queue.c"
 
 #include "arts/system/shutdown.h"
@@ -96,7 +96,7 @@ void arts_db_grant_note_ex_holder(struct arts_db_s *db, unsigned int r) {
   (void)r;
 }
 
-/* The holder-side edges and the grant_wb.c handlers this test does not
+/* The holder-side edges and the grant_owner.c handlers this test does not
  * reach. */
 #define UNREACHED(sig)                                                         \
   sig {                                                                        \

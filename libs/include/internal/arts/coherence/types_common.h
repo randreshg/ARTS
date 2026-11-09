@@ -29,7 +29,7 @@ extern "C" {
 /**
  * @file types_common.h
  * @brief Protocol-agnostic DB-coherence layout types shared by every
- *        ARTS_COHERENCE_PROTOCOL build.
+ *        ARTS_VALIDITY build.
  *
  * The protocol-specific cache/db ownership layout lives in the per-protocol
  * coherence/<proto>/types.h, selected by arts/coherence/types.h.  Anything
@@ -44,27 +44,27 @@ extern "C" {
  * EXCL one write policy and one release policy (FLUSH has neither axis); and
  * one payload store, which is CXL memory only on the EXCL x PURGE cell, with
  * exactly one residency. */
-#if defined(ARTS_PROTOCOL_VAL) + defined(ARTS_PROTOCOL_INV) +                  \
-        defined(ARTS_PROTOCOL_EXCL) + defined(ARTS_PROTOCOL_FLUSH) !=          \
+#if defined(ARTS_VALIDITY_VAL) + defined(ARTS_VALIDITY_INV) +                  \
+        defined(ARTS_VALIDITY_EXCL) + defined(ARTS_VALIDITY_FLUSH) !=          \
     1
 #error                                                                         \
-    "exactly one of ARTS_PROTOCOL_VAL, ARTS_PROTOCOL_INV, ARTS_PROTOCOL_EXCL and ARTS_PROTOCOL_FLUSH must be defined"
+    "exactly one of ARTS_VALIDITY_VAL, ARTS_VALIDITY_INV, ARTS_VALIDITY_EXCL and ARTS_VALIDITY_FLUSH must be defined"
 #endif
-#if defined(ARTS_PROTOCOL_FLUSH)
-#if defined(ARTS_WRITE_POLICY_WT) || defined(ARTS_WRITE_POLICY_WB) ||          \
-    defined(ARTS_RELEASE_PURGE) || defined(ARTS_RELEASE_RETAIN)
+#if defined(ARTS_VALIDITY_FLUSH)
+#if defined(ARTS_READ_SOURCE_HOME) || defined(ARTS_READ_SOURCE_OWNER) ||       \
+    defined(ARTS_RETENTION_PURGE) || defined(ARTS_RETENTION_RETAIN)
 #error                                                                         \
-    "ARTS_PROTOCOL_FLUSH takes no ARTS_WRITE_POLICY_* or ARTS_RELEASE_* macro"
+    "ARTS_VALIDITY_FLUSH takes no ARTS_READ_SOURCE_* or ARTS_RETENTION_* macro"
 #endif
-#elif defined(ARTS_WRITE_POLICY_WT) + defined(ARTS_WRITE_POLICY_WB) != 1
+#elif defined(ARTS_READ_SOURCE_HOME) + defined(ARTS_READ_SOURCE_OWNER) != 1
 #error                                                                         \
-    "exactly one of ARTS_WRITE_POLICY_WT and ARTS_WRITE_POLICY_WB must be defined"
-#elif defined(ARTS_RELEASE_PURGE) + defined(ARTS_RELEASE_RETAIN) != 1
+    "exactly one of ARTS_READ_SOURCE_HOME and ARTS_READ_SOURCE_OWNER must be defined"
+#elif defined(ARTS_RETENTION_PURGE) + defined(ARTS_RETENTION_RETAIN) != 1
 #error                                                                         \
-    "exactly one of ARTS_RELEASE_PURGE and ARTS_RELEASE_RETAIN must be defined"
+    "exactly one of ARTS_RETENTION_PURGE and ARTS_RETENTION_RETAIN must be defined"
 #endif
 #if defined(ARTS_USE_CXL)
-#if !defined(ARTS_PROTOCOL_EXCL) || !defined(ARTS_RELEASE_PURGE)
+#if !defined(ARTS_VALIDITY_EXCL) || !defined(ARTS_RETENTION_PURGE)
 #error "ARTS_USE_CXL belongs to the EXCL x PURGE cell"
 #endif
 #if defined(ARTS_CXL_STAGED) + defined(ARTS_CXL_DIRECT) != 1
@@ -123,7 +123,7 @@ extern "C" {
  * Arms with no migrating grant (EXCL) never set it. */
 #define ARTS_GRANT_UNCONFIRMED 0x80000000u
 
-#ifndef ARTS_PROTOCOL_EXCL
+#ifndef ARTS_VALIDITY_EXCL
 /*--- The grant word ------------------------------------------------------
  * writer_count answers two questions — does this rank possess the write
  * right, and how many local writers are inside it — and the release policy
@@ -149,7 +149,7 @@ extern "C" {
  * An arm with no migrating write right carries the same word as a pure
  * reference count and reaches only the seeds below, whose values are the
  * counts it always used. */
-#ifdef ARTS_RELEASE_PURGE
+#ifdef ARTS_RETENTION_PURGE
 #define ARTS_GRANT_OWN 0x40000000u
 #define ARTS_GRANT_COUNT_MASK 0x3fffffffu
 #define ARTS_GRANT_OWN_OF(w) (((w) & ARTS_GRANT_OWN) != 0u)
@@ -170,9 +170,9 @@ extern "C" {
 #define ARTS_GRANT_COUNT_OF(w) ((int)(w) >= 1 ? ((w) - 1u) : 0u)
 #define ARTS_GRANT_SEED_HOLDING 2u
 #define ARTS_GRANT_SEED_IDLE 1u
-#endif /* ARTS_RELEASE_PURGE */
+#endif /* ARTS_RETENTION_PURGE */
 
-#ifdef ARTS_RELEASE_PURGE
+#ifdef ARTS_RETENTION_PURGE
 /* The count-dropping edge, as a pure function of the word committed by one
  * CAS.  `purgeable` is the caller's own position — a rank that can hand the
  * right back at all (not the home, in a run with peers).  Rows:
@@ -192,7 +192,7 @@ extern "C" {
 #define ARTS_GRANT_ACT_ILLEGAL 3
 unsigned int arts_grant_purge_release_next(unsigned int cur, bool purgeable,
                                            unsigned int *out_act);
-#endif /* ARTS_RELEASE_PURGE */
+#endif /* ARTS_RETENTION_PURGE */
 
 /* Home-side single-slot return latch: no returner parked. */
 #define ARTS_GRANT_NO_RETURNER ((unsigned int)-1)
@@ -329,7 +329,7 @@ struct arts_db_read_waiter_s {
 static_assert(offsetof(struct arts_db_read_waiter_s, link) == 0,
               "a stack's link is its node's first member");
 ARTS_DEP_WAITER_LAYOUT(struct arts_db_read_waiter_s);
-#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
+#if defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)
 /*--- Parked readers ------------------------------------------------------
  * The readers a rank parks on its cache are nodes of a per-cache pool,
  * addressed by index (0 = none) so a chain head fits beside the arm's request

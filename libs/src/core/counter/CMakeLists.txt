@@ -43,4 +43,4 @@ file(GLOB COUNTER_SOURCES CONFIGURE_DEPENDS "*.c")
 # Create object library for the counter module
 add_library(arts_counter OBJECT ${COUNTER_SOURCES})
 target_link_libraries(arts_counter PRIVATE arts_interface)
-arts_apply_protocol(arts_counter ${ARTS_COHERENCE_ARM} ${ARTS_WRITE_POLICY} ${ARTS_RELEASE_POLICY})
+arts_apply_protocol(arts_counter ${ARTS_VALIDITY} ${ARTS_RETENTION} ${ARTS_READ_SOURCE})

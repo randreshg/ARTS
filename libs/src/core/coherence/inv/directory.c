@@ -11,10 +11,10 @@
  *
  * This TU carries the home-directory lifecycle shared by both write-policy
  * variants.  The arbiters live in arbiters.c, and the handler/sender bodies
- * live in the write-policy TU (wt.c or wb.c) plus the shared engine.c.  The
- * home request FIFO is grantreq_queue.c.
+ * live in the write-policy TU (home.c or owner.c) plus the shared engine.c.
+ * The home request FIFO is grantreq_queue.c.
  *
- * Compiled only for ARTS_COHERENCE_PROTOCOL=INV.
+ * Compiled only for ARTS_VALIDITY=INV.
  */
 
 #include "arts/coherence/inv/types.h"
@@ -37,15 +37,15 @@ void arts_db_home_init(struct arts_db_s *db, unsigned int rw_holder,
    * RW acquire under the OCR contract).  No count here: ownership lives on
    * the holder's writer_count, and a revoking home also names the holder
    * now; a home whose grants come back unasked names none. */
-#ifndef ARTS_RELEASE_PURGE
+#ifndef ARTS_RETENTION_PURGE
   atomic_store_explicit(&db->rw_holder, rw_holder, memory_order_relaxed);
 #endif
   arts_home_grantreq_queue_init(&db->pending_rw);
   atomic_store_explicit(&db->grant_baton, 0u, memory_order_relaxed);
-#ifndef ARTS_RELEASE_PURGE
+#ifndef ARTS_RETENTION_PURGE
   atomic_store_explicit(&db->pending_install_owner, 0u, memory_order_relaxed);
 #endif
-#ifdef ARTS_RELEASE_PURGE
+#ifdef ARTS_RETENTION_PURGE
   atomic_store_explicit(&db->pending_return_from, ARTS_GRANT_NO_RETURNER,
                         memory_order_relaxed);
 #endif
@@ -53,7 +53,7 @@ void arts_db_home_init(struct arts_db_s *db, unsigned int rw_holder,
   /* Round plane: no round held, no ack outstanding. */
   atomic_store_explicit(&db->round_queue, (uintptr_t)0, memory_order_relaxed);
   atomic_store_explicit(&db->round_acks, 0u, memory_order_relaxed);
-#ifdef ARTS_WRITE_POLICY_WT
+#ifdef ARTS_READ_SOURCE_HOME
   atomic_store_explicit(&db->hver, 1u, memory_order_relaxed);
 #endif
   db->round_entries = NULL;

@@ -43,8 +43,8 @@ extern "C" {
 
 #include <assert.h>
 
-#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV) ||                \
-    defined(ARTS_PROTOCOL_EXCL)
+#if defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV) ||                \
+    defined(ARTS_VALIDITY_EXCL)
 /*--- Request axes and their answer tokens ----------------------------------
  * A rank has at most one request out per axis of a block -- the read request,
  * the write request and, on VAL and INV, the publish flight -- and each open
@@ -201,7 +201,7 @@ static inline unsigned int arts_db_claim_closed_axes(uint8_t owed) {
  * The per-cache RW waiter chain belongs to the shared grant plane, so it
  * exists in every arm whose write right migrates: it parks same-node RW EDTs
  * that piggyback on an in-flight ownership round. */
-#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
+#if defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)
 void arts_pending_rw_queue_init(arts_lf_stack_t *q);
 /* Push a waiter (multi-producer).  Caller fills edt/slot before
  * calling.  Waiter must be heap-allocated; the stack takes ownership, and the
@@ -418,7 +418,7 @@ struct arts_db_pub_rendezvous_s {
  * is ACKed (the source-lifetime pin is the flight's own buffer ref, released at
  * the PUT's local completion).  Blocks the calling worker until then, whatever
  * the shutdown does. */
-#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
+#if defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)
 void arts_db_publish_sync(struct arts_db_cache_s *cache, uint64_t version);
 #endif
 
@@ -467,7 +467,7 @@ void *arts_db_acquire_local(struct arts_db_cache_s *cache);
 /* PARK the (edt, slot) read on the cache's combining window, which sends at
  * most one SNAPSHOT_REQUEST per cache at a time.  Used by the VAL acquire
  * bodies. */
-#if defined(ARTS_PROTOCOL_VAL)
+#if defined(ARTS_VALIDITY_VAL)
 arts_db_acquire_result_t
 arts_db_acquire_remote_ro(struct arts_db_cache_s *cache, struct arts_edt_s *edt,
                           unsigned int slot);
@@ -487,13 +487,13 @@ arts_db_acquire_remote_ro(struct arts_db_cache_s *cache, struct arts_edt_s *edt,
  * arts_db_resolve_slot resolves to buf_h, which it CONSUMES (it becomes the
  * slot's hold; NULL resolves a block with no bytes): an arm that gives every
  * EDT a private copy passes that copy. */
-#ifdef ARTS_PROTOCOL_FLUSH
+#ifdef ARTS_VALIDITY_FLUSH
 void arts_db_resolve_slot(struct arts_edt_s *edt, unsigned int slot,
                           arts_shared_ptr_t buf_h);
 #endif
 
-#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV) ||               \
-    defined(ARTS_PROTOCOL_EXCL)
+#if defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV) ||               \
+    defined(ARTS_VALIDITY_EXCL)
 /* The cache-slot form of the resolution: the buffer is whatever this rank's
  * cache holds for the block, read through the descriptor the slot pins.  Used
  * by the in-frame serves, the drain paths and the response handlers of every
@@ -501,15 +501,15 @@ void arts_db_resolve_slot(struct arts_edt_s *edt, unsigned int slot,
 void arts_db_resolve_slot_cached(struct arts_edt_s *edt, unsigned int slot);
 #endif
 
-#if (defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)) &&              \
-    defined(ARTS_WRITE_POLICY_WT)
+#if (defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)) &&              \
+    defined(ARTS_READ_SOURCE_HOME)
 /* Wake every read parked on a write-through home before the block's first
  * publication (see the definition).  Called at the publication edges and at a
  * grant's install. */
 void arts_db_drain_publication_waiters(struct arts_db_cache_s *cache);
 #endif
 
-#ifdef ARTS_PROTOCOL_VAL
+#ifdef ARTS_VALIDITY_VAL
 /* Response-terminal hook of the remote-read combining window: resume the
  * in-flight batch against the now-current buffer, then re-arm the window with
  * whatever accumulated meanwhile or release it.  Call at every point the
@@ -535,8 +535,8 @@ void arts_db_ro_combine_grant_drain(struct arts_db_cache_s *cache);
  * (snapshot drain → home teardown).  Splitting the destruct into pre/post lets
  * the protocol field-destroy land between the buffer-NULL and the snapshot/home
  * teardown. */
-#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV) ||                \
-    defined(ARTS_PROTOCOL_EXCL)
+#if defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV) ||                \
+    defined(ARTS_VALIDITY_EXCL)
 void arts_db_cache_common_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
                                uint64_t db_size, arts_db_init_kind_t kind,
                                unsigned int creator_rank);
@@ -629,7 +629,7 @@ bool arts_db_create_claims_stub(struct arts_db_cache_s *cache);
  * per protocol TU. */
 bool arts_db_create_take_hold(struct arts_db_cache_s *cache, uint8_t *owed);
 
-#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
+#if defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)
 /* The write-request axis of the arm's request word, for the shared grant
  * plane.  claim: IDLE -> OPEN (true = won), handing back the stub bit it read
  * as the OPEN's token.  commit: OPEN -> SENT only while the stub bit still
@@ -694,7 +694,7 @@ void arts_db_reader_serve_chain(struct arts_db_reader_pool_s *p,
                                 uint32_t head);
 void arts_db_reader_pool_destroy(struct arts_db_reader_pool_s *p);
 #endif
-#ifdef ARTS_PROTOCOL_VAL
+#ifdef ARTS_VALIDITY_VAL
 /* A size round or a dismiss answered the read window: re-send it, or close
  * the axis (returned: the caller drops its count at its end). */
 bool arts_db_ro_combine_on_cts(struct arts_db_cache_s *cache, uint32_t cover);
@@ -721,7 +721,7 @@ void arts_db_create_claim_creator_copy(struct arts_db_s *db);
 void arts_db_create_retract_creator_copy(struct arts_db_s *db);
 
 
-#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
+#if defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)
 /* Single-owner ownership machinery shared by every grant-bearing arm (VAL,
  * INV) (defined in coherence/grant.c).  Called by the WT/WB
  * arts_handler_db_acquire bodies; the RO-path predicate is the only divergence
@@ -770,7 +770,7 @@ arts_db_acquire_remote_rw(struct arts_db_cache_s *cache, struct arts_edt_s *edt,
 void arts_db_grant_request_arrived(struct arts_db_cache_s *cache,
                                    struct arts_db_s *db,
                                    unsigned int requester);
-#ifndef ARTS_RELEASE_PURGE
+#ifndef ARTS_RETENTION_PURGE
 void arts_db_grant_advance(struct arts_db_cache_s *cache, struct arts_db_s *db,
                            bool looked, uint64_t seen);
 void arts_db_grant_end_tenure(struct arts_db_s *db);
@@ -855,7 +855,7 @@ void arts_db_grant_return_arrived(
 void arts_db_grant_install(struct arts_db_cache_s *cache);
 #endif /* shared grant plane */
 
-#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
+#if defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)
 /* arts_db_acquire_rw_local_fast: the case-2/6 RW local fast path.
  * CAS-increments writer_count "if positive"; on success resolves slot `slot`
  * of `edt` (acquire_local) and returns true.  The CAS is the whole admission
@@ -871,7 +871,7 @@ bool arts_db_acquire_rw_local_fast(struct arts_db_cache_s *cache,
 
 #endif /* shared grant plane */
 
-#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
+#if defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)
 /* GRANT drain: install the granted waiters — takes every pending_rw waiter
  * and adds their holds to writer_count in one step before waking any of them.
  * Called where a write grant commits on this rank: the WB CONFIRM_ACK

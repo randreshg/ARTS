@@ -20,12 +20,12 @@
  *
  * The golden values below were frozen from the current tree and verified
  * IDENTICAL across every config (only the protocol-gated structs differ in
- * presence, never in the shared ordinals/offsets/sizes: the ARTS_PROTOCOL_EXCL
- * block, the ARTS_RELEASE_RETAIN subset nested inside it, the
- * ARTS_PROTOCOL_INV block and the ARTS_PROTOCOL_FLUSH block, each frozen
+ * presence, never in the shared ordinals/offsets/sizes: the ARTS_VALIDITY_EXCL
+ * block, the ARTS_RETENTION_RETAIN subset nested inside it, the
+ * ARTS_VALIDITY_INV block and the ARTS_VALIDITY_FLUSH block, each frozen
  * inside its own guard).  The FLUSH block's two fetch packets also follow
  * ARTS_DEBUG_WAKE_GUID, which every rank of one run shares as it shares the
- * cell.  This TU is meant to be COMPILED ONCE PER -DARTS_PROTOCOL_* config;
+ * cell.  This TU is meant to be COMPILED ONCE PER -DARTS_VALIDITY_* config;
  * the `_Static_assert`s catch any config that drifts from the golden table at
  * compile time.
  *
@@ -179,7 +179,7 @@ _Static_assert(sizeof(struct arts_msg_time_sync_req_packet_s) == 24,
                "time_sync_req sizeof drifted");
 _Static_assert(sizeof(struct arts_msg_time_sync_resp_packet_s) == 32,
                "time_sync_resp sizeof drifted");
-#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
+#if defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)
 /* The answer token follows the fields every cell has, and a home round's
  * home token follows it; GRANT_RESPONSE's map trails both. */
 _Static_assert(sizeof(struct arts_msg_grant_request_packet_s) == 72,
@@ -249,7 +249,7 @@ _Static_assert(sizeof(struct arts_msg_grant_cts_packet_s) == 32,
 _Static_assert(sizeof(struct arts_msg_grant_confirm_packet_s) == 24,
                "ownership_confirm sizeof drifted");
 #endif
-#ifdef ARTS_PROTOCOL_VAL
+#ifdef ARTS_VALIDITY_VAL
 _Static_assert(sizeof(struct arts_msg_snapshot_request_packet_s) == 72,
                "snapshot_request sizeof drifted");
 _Static_assert(offsetof(struct arts_msg_snapshot_request_packet_s, token) == 64,
@@ -272,7 +272,7 @@ _Static_assert(sizeof(struct arts_msg_snapshot_response_packet_s) == 64,
 _Static_assert(sizeof(struct arts_msg_snapshot_redirect_packet_s) == 64,
                "snapshot_redirect sizeof drifted");
 #endif
-#ifdef ARTS_PROTOCOL_INV
+#ifdef ARTS_VALIDITY_INV
 _Static_assert(sizeof(struct arts_msg_inv_request_packet_s) == 72,
                "inv_request sizeof drifted");
 _Static_assert(offsetof(struct arts_msg_inv_request_packet_s, token) == 64,
@@ -324,7 +324,7 @@ _Static_assert(sizeof(struct arts_msg_grant_return_packet_s) == 32,
                "grant_return sizeof drifted");
 _Static_assert(sizeof(struct arts_msg_publish_cts_packet_s) == 64,
                "publish_cts sizeof drifted");
-#ifdef ARTS_PROTOCOL_EXCL
+#ifdef ARTS_VALIDITY_EXCL
 /* The answer token follows the fields every EXCL cell has. */
 _Static_assert(sizeof(struct arts_msg_excl_request_packet_s) == 72,
                "lock_request sizeof drifted");
@@ -340,7 +340,7 @@ _Static_assert(sizeof(struct arts_msg_excl_cts_packet_s) == 48,
                "lock_cts sizeof drifted");
 _Static_assert(offsetof(struct arts_msg_excl_cts_packet_s, token) == 40,
                "lock_cts token drifted");
-#ifdef ARTS_RELEASE_RETAIN
+#ifdef ARTS_RETENTION_RETAIN
 _Static_assert(sizeof(struct arts_msg_excl_forward_packet_s) == 88,
                "lock_forward sizeof drifted");
 _Static_assert(offsetof(struct arts_msg_excl_forward_packet_s, cover) == 36,
@@ -364,9 +364,9 @@ _Static_assert(offsetof(struct arts_msg_excl_confirm_packet_s, home_token) ==
                "lock_confirm home_token drifted");
 _Static_assert(sizeof(struct arts_msg_excl_notice_packet_s) == 24,
                "lock_notice sizeof drifted");
-#endif /* ARTS_RELEASE_RETAIN */
+#endif /* ARTS_RETENTION_RETAIN */
 #endif
-#ifdef ARTS_PROTOCOL_FLUSH
+#ifdef ARTS_VALIDITY_FLUSH
 /* The fetch round carries the waiter GUID under ARTS_DEBUG_WAKE_GUID. */
 #ifdef ARTS_DEBUG_WAKE_GUID
 _Static_assert(sizeof(struct arts_msg_fetch_request_packet_s) == 80,
@@ -405,10 +405,10 @@ int main(void) {
       {"PUBLISH", sizeof(struct arts_msg_publish_packet_s), 1},
       {"SNAPSHOT_RESPONSE", sizeof(struct arts_msg_snapshot_response_packet_s),
        1},
-#ifdef ARTS_PROTOCOL_EXCL
+#ifdef ARTS_VALIDITY_EXCL
       {"EXCL_GRANT", sizeof(struct arts_msg_excl_grant_packet_s), 1},
       {"EXCL_RELEASE", sizeof(struct arts_msg_excl_release_packet_s), 1},
-#ifdef ARTS_RELEASE_RETAIN
+#ifdef ARTS_RETENTION_RETAIN
       {"EXCL_DELIVER", sizeof(struct arts_msg_excl_deliver_packet_s), 1},
 #endif
 #endif

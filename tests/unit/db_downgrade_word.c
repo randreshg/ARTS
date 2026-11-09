@@ -49,7 +49,7 @@
 #include "arts/utils/shared.h"
 #include "arts/utils/vector.h"
 
-#ifdef ARTS_PROTOCOL_EXCL
+#ifdef ARTS_VALIDITY_EXCL
 #include "arts/coherence/excl/types.h"
 #endif
 
@@ -171,7 +171,7 @@ static void cref_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     return;
   }
   struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(e->db);
-#ifdef ARTS_PROTOCOL_FLUSH
+#ifdef ARTS_VALIDITY_FLUSH
   if (home != arts_get_current_rank()) {
     if (!arts_shared_slot_empty(&db->cache.buffer)) {
       fail(shape, "the write-back left the creator's slot full");
@@ -196,8 +196,8 @@ static void cref_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
 /* ---- EXCL: the cache word ------------------------------------------------ */
 
-#ifdef ARTS_PROTOCOL_EXCL
-#ifdef ARTS_RELEASE_PURGE
+#ifdef ARTS_VALIDITY_EXCL
+#ifdef ARTS_RETENTION_PURGE
 #define REST_RWS CACHE_ST_IDLE
 #else
 #define REST_RWS CACHE_ST_GRANT
@@ -212,7 +212,7 @@ static void expect_word(struct arts_db_s *db, unsigned int rws, unsigned int wc,
   uint64_t w = cache_word_of(db);
   bool ok =
       CACHE_RW_ST(w) == rws && CACHE_RW_CNT(w) == wc && CACHE_RO_CNT(w) == rc;
-#ifdef ARTS_RELEASE_RETAIN
+#ifdef ARTS_RETENTION_RETAIN
   ok = ok && CACHE_OWNER(w) == 1u;
 #endif
   if (!ok) {
@@ -336,7 +336,7 @@ static void excl_remote_edt(uint32_t paramc, const uint64_t *paramv,
                             uint32_t depc, arts_edt_dep_t depv[]) {
   (void)paramc;
   (void)depc;
-#ifdef ARTS_RELEASE_PURGE
+#ifdef ARTS_RETENTION_PURGE
   const char *shape = "(d) remote writer";
 #else
   const char *shape = "(e) migration held";
@@ -353,7 +353,7 @@ static void excl_remote_edt(uint32_t paramc, const uint64_t *paramv,
                       &(arts_edt_hint_t){.rank = (unsigned int)paramv[0]});
   arts_add_dependence(g, w, 0, DB_MODE_RW);
   long start = now_ms();
-#ifdef ARTS_RELEASE_PURGE
+#ifdef ARTS_RETENTION_PURGE
   while (EXCL_STATE_W(atomic_load_explicit(&db->lock_state,
                                            memory_order_acquire)) != 2u) {
     if (now_ms() - start > WAIT_MS) {
@@ -377,7 +377,7 @@ static void excl_remote_edt(uint32_t paramc, const uint64_t *paramv,
   arts_shared_release(&h);
 }
 
-#ifdef ARTS_RELEASE_RETAIN
+#ifdef ARTS_RETENTION_RETAIN
 /* (f)'s reader on the other rank.  depv[0]: the block, RO. */
 static void demote_reader_edt(uint32_t paramc, const uint64_t *paramv,
                               uint32_t depc, arts_edt_dep_t depv[]) {
@@ -446,12 +446,12 @@ static void excl_demote_edt(uint32_t paramc, const uint64_t *paramv,
   }
   arts_shared_release(&h);
 }
-#endif /* ARTS_RELEASE_RETAIN */
-#endif /* ARTS_PROTOCOL_EXCL */
+#endif /* ARTS_RETENTION_RETAIN */
+#endif /* ARTS_VALIDITY_EXCL */
 
 /* ---- VAL / INV: the grant word ------------------------------------------- */
 
-#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
+#if defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)
 static void grant_of(struct arts_db_s *db, bool *own, unsigned int *count) {
   unsigned int w =
       atomic_load_explicit(&db->cache.writer_count, memory_order_acquire);
@@ -506,7 +506,7 @@ static void valinv_word_edt(uint32_t paramc, const uint64_t *paramv,
   }
   arts_db_downgrade(g);
   bool want_own = true;
-#ifdef ARTS_RELEASE_PURGE
+#ifdef ARTS_RETENTION_PURGE
   /* Off the home the right went back; the home keeps it, nobody waiting. */
   want_own = home == arts_get_current_rank();
 #endif
@@ -642,13 +642,13 @@ static const char *const shape_name[S_COUNT] = {
 
 static bool shape_applies(unsigned int s, unsigned int n) {
   bool excl = false, purge = false, valinv = false;
-#ifdef ARTS_PROTOCOL_EXCL
+#ifdef ARTS_VALIDITY_EXCL
   excl = true;
 #endif
-#ifdef ARTS_RELEASE_PURGE
+#ifdef ARTS_RETENTION_PURGE
   purge = true;
 #endif
-#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
+#if defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)
   valinv = true;
 #endif
   (void)purge;
@@ -688,7 +688,7 @@ static void launch(unsigned int s, unsigned int n, arts_guid_t group) {
     arts_edt_create(cref_edt, 1, &home, 0, &hint);
     return;
   }
-#ifdef ARTS_PROTOCOL_EXCL
+#ifdef ARTS_VALIDITY_EXCL
   case S_EXCL_DEP_HOME:
   case S_EXCL_DEP_OFF: {
     uint64_t pv[2] = {0u, 0u};
@@ -726,7 +726,7 @@ static void launch(unsigned int s, unsigned int n, arts_guid_t group) {
     arts_add_dependence(fresh_block(0u), d, 0, DB_MODE_RW);
     return;
   }
-#ifdef ARTS_RELEASE_RETAIN
+#ifdef ARTS_RETENTION_RETAIN
   case S_EXCL_DEMOTE: {
     uint64_t pv = other;
     hint.rank = 0u;
@@ -736,7 +736,7 @@ static void launch(unsigned int s, unsigned int n, arts_guid_t group) {
   }
 #endif
 #endif
-#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
+#if defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)
   case S_VALINV_DEP: {
     uint64_t pv[2] = {0u, 0u};
     hint.rank = n - 1u;

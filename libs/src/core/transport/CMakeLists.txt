@@ -16,4 +16,4 @@ endif()
 # arts::libfabric.
 target_link_libraries(arts_transport PRIVATE arts::libfabric)
 
-arts_apply_protocol(arts_transport ${ARTS_COHERENCE_ARM} ${ARTS_WRITE_POLICY} ${ARTS_RELEASE_POLICY})
+arts_apply_protocol(arts_transport ${ARTS_VALIDITY} ${ARTS_RETENTION} ${ARTS_READ_SOURCE})

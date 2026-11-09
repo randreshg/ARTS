@@ -86,17 +86,19 @@ Consistency
 For regular ``ARTS_DB`` DataBlocks, which values a read may return is
 governed by the build-time protocol selection:
 
-* ``ARTS_COHERENCE_PROTOCOL`` selects the protocol, which determines the
-  memory model the program must satisfy: ``INV`` (default), ``VAL``, or
-  ``EXCL`` under the OCR model (implements the OCR v1.2.0 §1.6 contract), or
-  ``FLUSH`` under the DB-WRF model (exclusive write acquisition; evaluation
-  only).
-* ``ARTS_WRITE_POLICY`` selects where the canonical payload rests between
-  write turns — ``WB`` (write-back, default) or ``WT`` (write-through at
-  release); live under INV/VAL (FLUSH has no write-policy axis).
-* ``ARTS_RELEASE_POLICY`` selects when a node's write grant goes back —
-  ``RETAIN`` (default) or ``PURGE``; live under EXCL and under WT × {VAL,
-  INV} (``WB`` requires ``RETAIN``; FLUSH has no release-policy axis).
+* ``ARTS_VALIDITY`` selects how a copy stays valid after a write, which
+  determines the memory model the program must satisfy: ``INV`` (default),
+  ``VAL``, or ``EXCL`` under the OCR model (implements the OCR v1.2.0 §1.6
+  contract), or ``FLUSH`` under the CDAG model (the program orders every pair
+  of a DataBlock's write acquisitions by happens-before; evaluation only).
+* ``ARTS_RETENTION`` selects who starts a write grant's return — ``RETAIN``
+  (default; the home, on demand) or ``PURGE`` (the holder, when its last local
+  user finishes); FLUSH has no retention.
+* ``ARTS_READ_SOURCE`` selects where the canonical payload rests between write
+  turns, and so where a reader's copy comes from — ``OWNER`` (default; the
+  last writer) or ``HOME`` (every release ships it home); ``OWNER`` requires
+  ``RETAIN``, under EXCL the retention fixes it (``HOME`` with ``PURGE``,
+  ``OWNER`` with ``RETAIN``), and FLUSH has no read source.
 
 See :ref:`coherence_protocols` for the normative definition of all axes.  The
 GPU subtypes (``ARTS_DB_GPU``, ``ARTS_DB_GPU_PIN``) carry no DB-level runtime

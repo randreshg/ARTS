@@ -70,7 +70,7 @@
 #include "coherence/excl/directory.c"
 #include "coherence/grantreq_queue.c"
 #include "coherence/rank_bitset.c"
-#ifdef ARTS_RELEASE_RETAIN
+#ifdef ARTS_RETENTION_RETAIN
 #include "coherence/excl/retain.c"
 #else
 #include "coherence/excl/purge.c"
@@ -87,7 +87,7 @@
 #include <sanitizer/asan_interface.h>
 #endif
 
-#if defined(ARTS_RELEASE_RETAIN) || !defined(ARTS_USE_CXL)
+#if defined(ARTS_RETENTION_RETAIN) || !defined(ARTS_USE_CXL)
 #define PAIRS 1 /* answers can carry one-sided bytes */
 #else
 #define PAIRS 0
@@ -224,7 +224,7 @@ UNREACHED(void arts_cxl_store_flush(const void *p, size_t bytes, bool producer))
 UNREACHED(void *arts_cxl_store_alloc(size_t bytes))
 UNREACHED(bool arts_cxl_store_contains(const void *p))
 UNREACHED(bool arts_db_buf_withdraw(struct arts_db_cache_s *c, const void *p))
-#elif defined(ARTS_RELEASE_PURGE)
+#elif defined(ARTS_RETENTION_PURGE)
 UNREACHED(void arts_send_db_publish_cts(unsigned int r, arts_guid_t g,
                                         const struct arts_rdzv_landing_s *l,
                                         uint64_t cv))
@@ -651,7 +651,7 @@ static void cts(arts_db_access_mode_t mode) {
   arts_handler_db_excl_cts(&p);
 }
 
-#ifdef ARTS_RELEASE_RETAIN
+#ifdef ARTS_RETENTION_RETAIN
 #define HOME_TOKEN ((uint64_t)0x40e00u)
 /* The answer, from the owner the home forwarded the request to: no payload,
  * or a one-sided one. */
@@ -848,7 +848,7 @@ static void sweep_rows(void) {
   end(0);
 }
 
-#ifdef ARTS_RELEASE_RETAIN
+#ifdef ARTS_RETENTION_RETAIN
 /* ---- home scenarios ---- */
 
 static struct arts_ooo_args_db_excl_request_s
@@ -1312,7 +1312,7 @@ int main(void) {
   retired_in_flight(false);
 #endif
   sweep_rows();
-#ifdef ARTS_RELEASE_RETAIN
+#ifdef ARTS_RETENTION_RETAIN
   read_retained();
   write_confirmed(false);
   write_confirmed(true);

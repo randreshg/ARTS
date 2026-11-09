@@ -28,7 +28,7 @@ is live at any time, system-wide — required by ``FLUSH``; see
 :ref:`db_wrf_contract`). Beside the protocol, two second axes say what a
 release moves and when a grant goes back:
 
-* ``ARTS_COHERENCE_PROTOCOL`` selects the coherence **protocol**. Under the
+* ``ARTS_VALIDITY`` selects how a copy stays valid after a write. Under the
   ``OCR`` model, who keeps reader copies valid: ``INV`` (default;
   *invalidation* — reader copies stay valid until a writer's release
   retires every standing copy in an acknowledged invalidation round),
@@ -39,19 +39,18 @@ release moves and when a grant goes back:
   ever exists). Under the ``DB-WRF`` model, the one protocol
   is ``FLUSH`` (fetch the whole payload at every remote acquire, write it
   back at every remote RW release; see :ref:`flush_protocol`).
-* ``ARTS_WRITE_POLICY`` selects the **write policy** of a node's DB cache at
-  release granularity — live under INV/VAL: ``WT`` (write-through at
-  release; the payload is flushed to the DB's home, which then serves reads)
-  or ``WB`` (default; write-back — the payload stays with the last writer
-  and moves only on demand, through directory forwarding). FLUSH has no
-  write-policy axis: it fetches and writes back the whole payload every
-  time, unconditionally.
-* ``ARTS_RELEASE_POLICY`` selects the **release policy** — what a node does
-  with its grant when the last local user finishes — live under EXCL and
-  under ``WT`` in VAL/INV: ``PURGE`` (hand copy and permission back to the
+* ``ARTS_READ_SOURCE`` selects where a reader's copy comes from — live under
+  INV/VAL: ``HOME`` (every release ships the payload to the DB's home, which
+  then serves reads) or ``OWNER`` (default; the payload stays with the last
+  writer and moves only on demand, through directory forwarding). FLUSH has
+  no read source: it fetches and writes back the whole payload every time,
+  unconditionally.
+* ``ARTS_RETENTION`` selects who starts the ownership's return — what a node
+  does with its grant when the last local user finishes — live under EXCL and
+  under ``HOME`` in VAL/INV: ``PURGE`` (hand copy and permission back to the
   home) or ``RETAIN`` (default; keep both until another node asks, and let
-  the home recall them). FLUSH has no release-policy axis either — there is
-  no grant to retain, only a per-release round trip.
+  the home recall them). FLUSH has no retention either — there is no grant to
+  retain, only a per-release round trip.
 
 The OCR-model axes are nominally independent: the family × write-policy ×
 release-policy space has 12 combinations, of which **eight** are built (the
@@ -308,9 +307,9 @@ VAL — versioned snapshots, externally ordered updates
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 *Status:* implemented (``libs/src/core/coherence/val/`` — ``arbiters.c`` +
-``wt.c`` + ``wb.c``, plus the shared grant plane ``coherence/grant.c``);
-selected by ``-DARTS_COHERENCE_PROTOCOL=VAL``, write policy by
-``ARTS_WRITE_POLICY={WT,WB}`` (default ``WB``).
+``home.c`` + ``owner.c``, plus the shared grant plane ``coherence/grant.c``);
+selected by ``-DARTS_VALIDITY=VAL``, read source by
+``ARTS_READ_SOURCE={HOME,OWNER}`` (default ``OWNER``).
 
 The name is used in McKenney's sense: **readers are never blocked and never
 invalidated**. A reader acquires a versioned snapshot and proceeds on it;
@@ -361,10 +360,10 @@ INV — write-invalidate, durable reader copies (default)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 *Status:* implemented (``libs/src/core/coherence/inv/`` — ``arbiters.c`` +
-``directory.c`` + ``engine.c`` + ``wt.c`` + ``wb.c``, plus the shared grant
-plane ``coherence/grant.c``); selected by
-``-DARTS_COHERENCE_PROTOCOL=INV`` (the default), write policy by
-``ARTS_WRITE_POLICY={WT,WB}`` (default ``WB``).
+``directory.c`` + ``engine.c`` + ``home.c`` + ``owner.c``, plus the shared
+grant plane ``coherence/grant.c``); selected by ``-DARTS_VALIDITY=INV`` (the
+default), read source by ``ARTS_READ_SOURCE={HOME,OWNER}`` (default
+``OWNER``).
 
 The mirror of VAL on the validity-agent axis: the *writer* keeps reader
 copies valid. A reader's copy is durable — holding the copy is the
@@ -388,8 +387,8 @@ EXCL — queue-fair distributed reader–writer lock
 
 *Status:* implemented (``libs/src/core/coherence/excl/`` — ``arbiters.c`` +
 ``directory.c`` + ``purge.c`` + ``retain.c``); selected by
-``-DARTS_COHERENCE_PROTOCOL=EXCL``, release policy by
-``ARTS_RELEASE_POLICY={PURGE,RETAIN}`` (default ``RETAIN``).
+``-DARTS_VALIDITY=EXCL``, retention by
+``ARTS_RETENTION={PURGE,RETAIN}`` (default ``RETAIN``).
 
 Each DB carries a distributed reader–writer lock whose authoritative state is
 a single 64-bit ``lock_state`` word on the home rank: shared read grants
@@ -440,7 +439,7 @@ FLUSH — fetch at acquire, flush at release (requires DB-WRF)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 *Status:* implemented (``libs/src/core/coherence/flush/flush.c``); selected
-by ``-DARTS_COHERENCE_PROTOCOL=FLUSH``, whose programs must satisfy the
+by ``-DARTS_VALIDITY=FLUSH``, whose programs must satisfy the
 DB-WRF model (see :ref:`db_wrf_contract`). No write-policy or
 release-policy axis: every remote acquire fetches and every remote RW
 release writes back, unconditionally.
@@ -515,7 +514,7 @@ Write policy (payload placement)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Where does the canonical payload rest between write turns? Live under
-INV/VAL (``ARTS_WRITE_POLICY``):
+INV/VAL (``ARTS_READ_SOURCE``):
 
 * **WT** (write-through at release) — the payload returns to the DB's home
   at every RW release, synchronously acknowledged; the home always holds a
@@ -534,7 +533,7 @@ Release policy (permission return)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 When does the write grant go back? Live under EXCL
-(``ARTS_RELEASE_POLICY``), and — since it governs the same migrating grant —
+(``ARTS_RETENTION``), and — since it governs the same migrating grant —
 under ``WT`` in VAL/INV as well:
 
 * **PURGE** — the holder returns copy and permission unasked, at its own

@@ -32,7 +32,7 @@
  * them the same way, by #including coherence/excl/arbiters.c.  Built and
  * registered in every EXCL tree.
  *
- * Build: -DARTS_PROTOCOL_EXCL=1 -DARTS_RELEASE_{PURGE,RETAIN}=1
+ * Build: -DARTS_VALIDITY_EXCL=1 -DARTS_RETENTION_{PURGE,RETAIN}=1
  * -DARTS_UNIT_STANDALONE_SHIMS.
  */
 
@@ -45,7 +45,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#ifdef ARTS_RELEASE_PURGE
+#ifdef ARTS_RETENTION_PURGE
 /* op + grant codes mirror the arbiter (kept in sync via the same header
  * defines for the packed-state macros). */
 #define T_RW_ACQ 0
@@ -468,9 +468,9 @@ int main(void) {
          g_checks);
   return 0;
 }
-#endif /* ARTS_RELEASE_PURGE */
+#endif /* ARTS_RETENTION_PURGE */
 
-#ifdef ARTS_RELEASE_RETAIN
+#ifdef ARTS_RETENTION_RETAIN
 /* RETAIN's cache arbiter cache_owner_compute_next, its parked-population
  * reading, and the home arbiter lock_owner_compute_next. */
 static uint64_t cache_owner_compute_next(uint64_t cur, int op,
@@ -691,7 +691,7 @@ int main(void) {
          g_checks);
   return 0;
 }
-#endif /* ARTS_RELEASE_RETAIN */
+#endif /* ARTS_RETENTION_RETAIN */
 
 #ifdef ARTS_UNIT_STANDALONE_SHIMS
 void *arts_calloc(size_t nmemb, size_t size) { return calloc(nmemb, size); }

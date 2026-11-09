@@ -48,10 +48,10 @@ extern "C" {
  *
  * Includes the protocol-agnostic layout (types_common.h), then the
  * protocol-specific cache/db (coherence/<proto>/types.h, chosen by
- * the ARTS_PROTOCOL_* macro), then the of_cache / total_size / stub_size helpers that
- * need the complete cache + db_s types.  struct arts_db_s embeds the per-rank
- * cache (struct arts_db_cache_s) by value as its FIRST member, so each protocol
- * header defines the whole cache + db_s chain together.
+ * the ARTS_VALIDITY_* macro), then the of_cache / total_size / stub_size
+ * helpers that need the complete cache + db_s types.  struct arts_db_s embeds
+ * the per-rank cache (struct arts_db_cache_s) by value as its FIRST member, so
+ * each protocol header defines the whole cache + db_s chain together.
  * arts/coherence/coherence.h keeps the protocol function declarations and
  * includes this header for the layouts.
  *
@@ -62,17 +62,17 @@ extern "C" {
 
 /* Protocol-specific cache/db layout.  VAL carries the ownership-cache shape,
  * with the WT/WB write-policy split made inside the header. */
-#if defined(ARTS_PROTOCOL_EXCL)
+#if defined(ARTS_VALIDITY_EXCL)
 #include "arts/coherence/excl/types.h"
-#elif defined(ARTS_PROTOCOL_INV)
+#elif defined(ARTS_VALIDITY_INV)
 #include "arts/coherence/inv/types.h"
-#elif defined(ARTS_PROTOCOL_FLUSH)
+#elif defined(ARTS_VALIDITY_FLUSH)
 #include "arts/coherence/flush/types.h"
-#elif defined(ARTS_PROTOCOL_VAL)
+#elif defined(ARTS_VALIDITY_VAL)
 #include "arts/coherence/val/types.h"
 #else
 #error                                                                         \
-    "no coherence protocol: define one of ARTS_PROTOCOL_VAL, ARTS_PROTOCOL_INV, ARTS_PROTOCOL_EXCL, ARTS_PROTOCOL_FLUSH"
+    "no coherence protocol: define one of ARTS_VALIDITY_VAL, ARTS_VALIDITY_INV, ARTS_VALIDITY_EXCL, ARTS_VALIDITY_FLUSH"
 #endif
 
 /* ========================================================================= */
@@ -127,15 +127,15 @@ static inline void arts_db_cache_learn_size(struct arts_db_cache_s *c,
  * (protocol-dependent: for VAL, rw_holder where the home revokes and
  * pending_rw where it names no holder). */
 static inline uint64_t arts_db_cache_stub_size(void) {
-#if defined(ARTS_PROTOCOL_EXCL)
+#if defined(ARTS_VALIDITY_EXCL)
   return offsetof(struct arts_db_s, lock_state);
-#elif defined(ARTS_PROTOCOL_INV)
+#elif defined(ARTS_VALIDITY_INV)
   return offsetof(struct arts_db_s, round_queue);
-#elif defined(ARTS_PROTOCOL_FLUSH)
+#elif defined(ARTS_VALIDITY_FLUSH)
   return offsetof(struct arts_db_s, sharers);
-#elif defined(ARTS_PROTOCOL_VAL) && defined(ARTS_RELEASE_PURGE)
+#elif defined(ARTS_VALIDITY_VAL) && defined(ARTS_RETENTION_PURGE)
   return offsetof(struct arts_db_s, pending_rw);
-#elif defined(ARTS_PROTOCOL_VAL)
+#elif defined(ARTS_VALIDITY_VAL)
   return offsetof(struct arts_db_s, rw_holder);
 #endif
 }

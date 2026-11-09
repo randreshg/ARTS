@@ -121,7 +121,7 @@ struct arts_db_publish_ack_args_s {
   uint64_t credit_txid;
 };
 
-#ifdef ARTS_PROTOCOL_FLUSH
+#ifdef ARTS_VALIDITY_FLUSH
 struct arts_db_fetch_response_args_s {
   uint64_t edt_cookie; /* the parked EDT's address on this rank */
 #ifdef ARTS_DEBUG_WAKE_GUID
@@ -173,9 +173,9 @@ void arts_handler_db_fetch_response(
     const struct arts_db_fetch_response_args_s *a);
 void arts_handler_db_flush_ack(const struct arts_db_flush_ack_args_s *a);
 void arts_handler_db_flush_cts(const struct arts_db_flush_cts_args_s *a);
-#endif /* ARTS_PROTOCOL_FLUSH */
+#endif /* ARTS_VALIDITY_FLUSH */
 
-#if defined(ARTS_PROTOCOL_VAL) && defined(ARTS_WRITE_POLICY_WB)
+#if defined(ARTS_VALIDITY_VAL) && defined(ARTS_READ_SOURCE_OWNER)
 /* arts_handler_db_snapshot_redirect body args (owner side). */
 struct arts_db_snapshot_redirect_args_s {
   arts_guid_t db_guid;
@@ -195,7 +195,7 @@ struct arts_db_snapshot_redirect_args_s {
  * arts_ooo_dispatch_or_defer_guid.  Defined for the release-consistency family
  * (coherence/grant.c) where GRANT_REQUEST exists. */
 void arts_handler_db_grant_request(void *item_v, void *args_v);
-#ifdef ARTS_RELEASE_PURGE
+#ifdef ARTS_RETENTION_PURGE
 /* Cat-B pure body (OoO g_ooo_table[OOO_DB_GRANT_RETURN]): item_v is the home
  * db_s the engine acquired; args_v is an arts_ooo_args_db_grant_return_s.
  * Accepts the returned write right, or parks it in the home's single-slot
@@ -305,7 +305,7 @@ void arts_handler_db_cache_destroy(void *item_v, void *args_v);
 
 /* ===== WB-only handlers ============================================== */
 
-#if defined(ARTS_PROTOCOL_VAL) && defined(ARTS_WRITE_POLICY_WB)
+#if defined(ARTS_VALIDITY_VAL) && defined(ARTS_READ_SOURCE_OWNER)
 /* Cat-C pure body (SNAPSHOT_REDIRECT, owner side): item_v is the db_s the
  * dispatcher acquired (cache is its first member); args_v is an
  * arts_db_snapshot_redirect_args_s.  NOT OoO-deferrable — a redirect continues
@@ -315,8 +315,8 @@ void arts_handler_db_cache_destroy(void *item_v, void *args_v);
 void arts_handler_db_snapshot_redirect(void *item_v, void *args_v);
 #endif /* VAL x WB */
 
-#if (defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)) &&              \
-    !defined(ARTS_RELEASE_PURGE)
+#if (defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)) &&              \
+    !defined(ARTS_RETENTION_PURGE)
 /* CONFIRM at the home (both write policies of the revoking release policy —
  * a voluntarily returned grant names no holder, so it has no CONFIRM): the
  * answer to the home's transfer, on the home descriptor the packet's
@@ -434,7 +434,7 @@ void arts_send_db_destroy(arts_guid_t db_guid, arts_shared_ptr_t held);
 /* A home's notice to a caching rank other than its own. */
 void arts_send_db_cache_destroy(unsigned int sharer_rank, arts_guid_t db_guid);
 
-#if defined(ARTS_PROTOCOL_VAL) && defined(ARTS_WRITE_POLICY_WB)
+#if defined(ARTS_VALIDITY_VAL) && defined(ARTS_READ_SOURCE_OWNER)
 /* Send SNAPSHOT_REDIRECT from home to the current owner, asking the owner to
  * serve SNAPSHOT_RESPONSE or a no-data response directly to requester_rank.
  * db is the home's descriptor, which the caller holds; token is the
@@ -446,8 +446,8 @@ void arts_send_db_snapshot_redirect(struct arts_db_s *db,
                                     uint64_t token);
 #endif
 
-#if (defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)) &&              \
-    defined(ARTS_WRITE_POLICY_WB)
+#if (defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)) &&              \
+    defined(ARTS_READ_SOURCE_OWNER)
 
 /* Send CONFIRM_ACK from home to the new owner C after home has flipped
  * rw_holder to C; db is the home's descriptor, which the caller holds, and
@@ -474,7 +474,7 @@ void arts_handler_db_grant_confirm_ack(
     struct arts_msg_grant_confirm_ack_packet_s *p);
 #endif /* (VAL or INV) x WB */
 
-#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
+#if defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)
 /* Shared owner→owner transfer ship (defined in coherence/grant.c): ship the
  * current buffer (+ serialized owner-side map for WB, empty map for WT) to
  * new_owner via the GRANT_RESPONSE wire.  The target is an argument because
@@ -486,7 +486,7 @@ void arts_db_send_grant_response(struct arts_db_cache_s *cache,
                                  const struct arts_rdzv_landing_s *new_rdzv,
                                  bool data_less, uint64_t token,
                                  uint64_t home_token);
-#ifndef ARTS_RELEASE_PURGE
+#ifndef ARTS_RETENTION_PURGE
 /* Ship to the target published on this cache by a revocation round, re-arming
  * the field to the sentinel before the send.  Called on the 0-edge of
  * release_rw / the INVALIDATE handler (both write policies) and the WB
@@ -494,7 +494,7 @@ void arts_db_send_grant_response(struct arts_db_cache_s *cache,
 void arts_db_grant_ship_pending(struct arts_db_cache_s *cache);
 #endif
 
-#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
+#if defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)
 /* The version a serve from the home may claim for the bytes it sends — the
  * arm's own canonical publication axis.  Under a write-through home that is
  * NOT the served buffer's own version: a home-resident writer mutates that
@@ -505,7 +505,7 @@ uint64_t arts_db_grant_serve_version(struct arts_db_s *db);
 #endif
 #endif /* shared grant plane */
 
-#ifdef ARTS_PROTOCOL_INV
+#ifdef ARTS_VALIDITY_INV
 /* ===== INV protocol handlers / senders ================================= */
 
 struct arts_msg_inv_cts_packet_s;
@@ -530,7 +530,7 @@ void arts_handler_db_inv_invalidate(struct arts_db_s *db, uint64_t home_token);
  * count. */
 void arts_handler_db_inv_invalidate_ack(
     const struct arts_msg_inv_invalidate_ack_packet_s *p);
-#ifdef ARTS_WRITE_POLICY_WB
+#ifdef ARTS_READ_SOURCE_OWNER
 /* The home holds no bytes, so a read request is forwarded to the holder; a
  * holder that no longer has the bytes bounces it back rather than queueing. */
 void arts_handler_db_inv_redirect(void *item_v, void *args_v);
@@ -574,9 +574,9 @@ void arts_send_db_inv_invalidate(struct arts_db_s *db,
  * accounts the ack inline on the descriptor it names. */
 void arts_send_db_inv_invalidate_ack(unsigned int home_rank,
                                      arts_guid_t db_guid, uint64_t home_token);
-#endif /* ARTS_PROTOCOL_INV */
+#endif /* ARTS_VALIDITY_INV */
 
-#ifdef ARTS_PROTOCOL_EXCL
+#ifdef ARTS_VALIDITY_EXCL
 /* ===== EXCL protocol handlers ======================================== */
 
 /* Cat-B pure body (OoO g_ooo_table[OOO_DB_EXCL_REQUEST]) @home: item_v is the
@@ -663,7 +663,7 @@ void arts_send_db_excl_release(unsigned int home_rank, arts_guid_t db_guid,
                                uint64_t cv, uint64_t data_size,
                                uint64_t rdzv_txid, uint64_t rdzv_cookie);
 
-#ifdef ARTS_RELEASE_RETAIN
+#ifdef ARTS_RETENTION_RETAIN
 /* ===== EXCL RETAIN handlers (Cat-C direct dispatch) = */
 
 /* arts_handler_db_excl_forward: Cat-C @owner.  item_v is the full wire packet
@@ -740,9 +740,9 @@ void arts_send_db_excl_confirm(struct arts_db_s *db, uint64_t home_token);
 /* arts_send_db_excl_roret: reader → home: RO release (data-less). */
 void arts_send_db_excl_roret(struct arts_db_s *db);
 
-#endif /* ARTS_RELEASE_RETAIN */
+#endif /* ARTS_RETENTION_RETAIN */
 
-#endif /* ARTS_PROTOCOL_EXCL */
+#endif /* ARTS_VALIDITY_EXCL */
 
 #ifdef __cplusplus
 }

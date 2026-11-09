@@ -92,13 +92,13 @@ enum arts_msg_type {
   MSG_DB_GRANT_CONFIRM_ACK,
 
   /* EXCL-protocol coherence messages (REQUEST / GRANT / RELEASE).
-   * Only sent/received in ARTS_COHERENCE_PROTOCOL=EXCL builds; the
+   * Only sent/received in ARTS_VALIDITY=EXCL builds; the
    * dispatcher's EXCL cases are #ifdef-guarded.  Sequential append, no gaps. */
   MSG_DB_EXCL_REQUEST,
   MSG_DB_EXCL_GRANT,
   MSG_DB_EXCL_RELEASE,
   /* EXCL RETAIN-only messages (FORWARD / DELIVER / CONFIRM / RORET).
-   * Used only in ARTS_COHERENCE_PROTOCOL=EXCL + ARTS_RELEASE_POLICY=RETAIN
+   * Used only in ARTS_VALIDITY=EXCL + ARTS_RETENTION=RETAIN
    * builds.  Sequential append, no gaps. */
   MSG_DB_EXCL_FORWARD, /* home → current owner: serve RO reader or migrate RW */
   MSG_DB_EXCL_DELIVER, /* owner → target: data + mode (no version field) */
@@ -125,7 +125,7 @@ enum arts_msg_type {
                          dismiss. */
 
   /* INV-protocol coherence messages.  Only sent/received in
-   * ARTS_COHERENCE_PROTOCOL=INV builds; the dispatcher's INV cases are
+   * ARTS_VALIDITY=INV builds; the dispatcher's INV cases are
    * #ifdef-guarded.  Sequential append, no gaps. */
   MSG_DB_INV_REQUEST, /* requester → home: RO fetch (write acquires use the
                          shared GRANT_REQUEST) */
@@ -282,7 +282,7 @@ struct ARTS_PACKED arts_msg_grant_request_packet_s {
    * bits carry the request's ARTS_COVER_* word (the read request its rank has
    * out, and PRECLAIM): a version counts releases and never reaches 2^60. */
   uint64_t have_version;
-#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
+#if defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)
   uint64_t token; /* the requester's answer token */
 #endif
 };
@@ -302,7 +302,7 @@ struct ARTS_PACKED arts_msg_grant_cts_packet_s {
   struct arts_msg_header_s header;
   arts_guid_t db_guid;
   uint64_t db_size;
-#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
+#if defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)
   uint64_t token; /* the request's, echoed */
 #endif
 };
@@ -338,7 +338,7 @@ struct ARTS_PACKED arts_msg_grant_response_packet_s {
                            payload presence = rdzv_txid */
   uint64_t rdzv_txid;   /* write-completion pairing id (0 = no PUT) */
   uint64_t rdzv_cookie; /* requester's landing handle, echoed verbatim */
-#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
+#if defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)
   uint64_t token;      /* the new owner's request's, echoed */
   uint64_t home_token; /* the transfer's, for the CONFIRM; 0 where the home
                           serves the grant itself and asks for none */
@@ -373,7 +373,7 @@ struct ARTS_PACKED arts_msg_publish_packet_s {
   uint64_t rdzv_txid;
   uint64_t rdzv_cookie;
   uint64_t flags; /* ARTS_PUBLISH_FLAG_* */
-#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
+#if defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)
   uint64_t token; /* the releaser's answer token */
 #endif
 };
@@ -410,7 +410,7 @@ struct ARTS_PACKED arts_msg_publish_ack_packet_s {
   uint64_t credit_addr;
   uint64_t credit_rkey;
   uint64_t credit_txid;
-#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
+#if defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)
   uint64_t token; /* the flight's, echoed (unused when cv != 0) */
 #endif
 };
@@ -432,7 +432,7 @@ struct ARTS_PACKED arts_msg_grant_invalidate_packet_s {
    * (ARTS_GRANT_VERSION_NONE when it holds none): the holder ships the
    * permission alone when its canonical bytes are at that version. */
   uint64_t new_owner_have;
-#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
+#if defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)
   uint64_t new_owner_token; /* the new owner's request's */
   uint64_t home_token;      /* the transfer's */
 #endif
@@ -456,7 +456,7 @@ struct ARTS_PACKED arts_msg_grant_return_packet_s {
 struct ARTS_PACKED arts_msg_grant_confirm_ack_packet_s {
   struct arts_msg_header_s header;
   arts_guid_t db_guid;
-#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
+#if defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)
   uint64_t token; /* C's request's, from its CONFIRM: the ack answers it */
 #endif
   /* WB: the CONFIRM_ACK that advances the round piggybacks the next
@@ -471,7 +471,7 @@ struct ARTS_PACKED arts_msg_grant_confirm_ack_packet_s {
   struct arts_msg_rdzv_landing_s new_owner_rdzv;
   /* Piggybacked next owner's reported version (mirrors GRANT_INVALIDATE). */
   uint64_t new_owner_have;
-#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
+#if defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)
   uint64_t new_owner_token; /* piggybacked next owner's request's */
   uint64_t home_token;      /* the piggybacked transfer's; 0 on a plain ack */
 #endif
@@ -489,7 +489,7 @@ struct ARTS_PACKED arts_msg_snapshot_request_packet_s {
    * not yet know db_size (first touch): the server answers a size-only CTS
    * response (data_present == 2) and the requester re-issues with a landing. */
   struct arts_msg_rdzv_landing_s rdzv;
-#ifdef ARTS_PROTOCOL_VAL
+#ifdef ARTS_VALIDITY_VAL
   uint64_t token; /* the requester's answer token */
 #endif
 };
@@ -516,7 +516,7 @@ struct ARTS_PACKED arts_msg_snapshot_response_packet_s {
   uint64_t db_size;     /* payload/allocation byte count (see data_present) */
   uint64_t rdzv_txid;   /* write-completion pairing id (0 = no PUT) */
   uint64_t rdzv_cookie; /* requester's landing handle, echoed verbatim */
-#ifdef ARTS_PROTOCOL_VAL
+#ifdef ARTS_VALIDITY_VAL
   uint64_t token; /* the request's, echoed */
 #endif
 };
@@ -565,7 +565,7 @@ struct ARTS_PACKED arts_msg_snapshot_redirect_packet_s {
   uint32_t cover; /* the request's cover word, forwarded for the answer */
   /* Requester's landing, forwarded verbatim from its SNAPSHOT_REQUEST. */
   struct arts_msg_rdzv_landing_s rdzv;
-#ifdef ARTS_PROTOCOL_VAL
+#ifdef ARTS_VALIDITY_VAL
   uint64_t token; /* the requester's, forwarded for the answer */
 #endif
 };
@@ -588,7 +588,7 @@ struct ARTS_PACKED arts_msg_rank_version_pair_s {
 struct ARTS_PACKED arts_msg_grant_confirm_packet_s {
   struct arts_msg_header_s header;
   arts_guid_t db_guid;
-#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
+#if defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)
   uint64_t token;
   uint64_t home_token; /* the transfer's, echoed from its GRANT_RESPONSE */
 #endif
@@ -605,7 +605,7 @@ struct ARTS_PACKED arts_msg_db_create_return_packet_s {
   uint64_t credit_txid;
 };
 
-#ifdef ARTS_PROTOCOL_EXCL
+#ifdef ARTS_VALIDITY_EXCL
 /* Answer tokens (EXCL), as on VAL and INV: a request names the requester's
  * descriptor in `token`, which the home stores with the request (and under
  * RETAIN a FORWARD carries to the owner that serves it) and every answer
@@ -689,8 +689,8 @@ struct ARTS_PACKED arts_msg_excl_release_packet_s {
 
 /* ===== EXCL RETAIN-only wire packets ========================================
  * Sent only between ranks compiled with EXCL+RETAIN.  Members unconditional;
- * structs inside the ARTS_PROTOCOL_EXCL guard so they share the EXCL types. */
-#ifdef ARTS_RELEASE_RETAIN
+ * structs inside the ARTS_VALIDITY_EXCL guard so they share the EXCL types. */
+#ifdef ARTS_RETENTION_RETAIN
 /* EXCL_FORWARD: home → current owner.  mode=DB_MODE_RW → migrate ownership to
  * target; mode=DB_MODE_RO → serve one RO reader at target.  Forwards the
  * target's landing (from its EXCL_REQUEST) so the owner can PUT directly. */
@@ -746,13 +746,13 @@ struct ARTS_PACKED arts_msg_excl_notice_packet_s {
   struct arts_msg_header_s header;
   arts_guid_t db_guid;
 };
-#endif /* ARTS_RELEASE_RETAIN */
-#endif /* ARTS_PROTOCOL_EXCL */
+#endif /* ARTS_RETENTION_RETAIN */
+#endif /* ARTS_VALIDITY_EXCL */
 
 /* ===== FLUSH wire packets ===================================================
- * Sent only between ranks compiled with ARTS_COHERENCE_PROTOCOL=FLUSH.
+ * Sent only between ranks compiled with ARTS_VALIDITY=FLUSH.
  * Members unconditional; structs guarded so they share the FLUSH types. */
-#ifdef ARTS_PROTOCOL_FLUSH
+#ifdef ARTS_VALIDITY_FLUSH
 /* edt_cookie is the parked EDT's address on the requester rank, which the
  * home echoes uninterpreted, as it echoes the landing; under
  * ARTS_DEBUG_WAKE_GUID edt_guid, the EDT's GUID, rides beside it for the
@@ -825,12 +825,12 @@ struct ARTS_PACKED arts_msg_flush_cts_packet_s {
   uint64_t line_rkey;
   uint64_t txid; /* 0 = the home no longer has the block; skip the PUT */
 };
-#endif /* ARTS_PROTOCOL_FLUSH */
+#endif /* ARTS_VALIDITY_FLUSH */
 
 /* ===== INV wire packets ======================================================
- * Sent only between ranks compiled with ARTS_COHERENCE_PROTOCOL=INV.
+ * Sent only between ranks compiled with ARTS_VALIDITY=INV.
  * Members unconditional; structs guarded so they can share host-side types. */
-#ifdef ARTS_PROTOCOL_INV
+#ifdef ARTS_VALIDITY_INV
 /* A read request names its subject explicitly rather than relying on the
  * header's sender: under the WB write policy a holder that cannot serve
  * re-sends the request on the reader's behalf, so the two differ. */
@@ -900,7 +900,7 @@ struct ARTS_PACKED arts_msg_inv_redirect_packet_s {
   struct arts_msg_rdzv_landing_s rdzv;
   uint64_t token; /* the requester's, forwarded for the answer */
 };
-#endif /* ARTS_PROTOCOL_INV */
+#endif /* ARTS_VALIDITY_INV */
 
 
 #include "arts/system/threads.h"

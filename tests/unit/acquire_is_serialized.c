@@ -43,24 +43,24 @@ int main(void) {
 
   bool exp_rw, exp_ro;
   const char *proto;
-#if defined(ARTS_PROTOCOL_EXCL)
+#if defined(ARTS_VALIDITY_EXCL)
   proto = "EXCL";
   exp_rw = true;
   exp_ro = true; /* blocking locks: both serialized */
-#elif defined(ARTS_PROTOCOL_VAL)
+#elif defined(ARTS_VALIDITY_VAL)
   proto = "VAL";
   exp_rw = true;
   exp_ro = false; /* RW serialized, RO snapshot */
-#elif defined(ARTS_PROTOCOL_INV)
+#elif defined(ARTS_VALIDITY_INV)
   proto = "INV";
   exp_rw = true;  /* a write grant waits on other holders' releases */
   exp_ro = false; /* readers are never blocked by writers */
-#elif defined(ARTS_PROTOCOL_FLUSH)
+#elif defined(ARTS_VALIDITY_FLUSH)
   proto = "FLUSH";
   exp_rw = false; /* no ownership round and no lock: an acquire waits only on */
   exp_ro = false; /* its own home's reply, so no order needs imposing */
 #else
-#error "no ARTS_PROTOCOL_* defined"
+#error "no ARTS_VALIDITY_* defined"
 #endif
 
   int rc = 0;

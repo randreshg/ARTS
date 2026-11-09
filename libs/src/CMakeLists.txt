@@ -47,65 +47,87 @@ target_include_directories(arts_interface INTERFACE
 )
 
 # --- Coherence-protocol helpers (shared by main lib + benchmark variants) -----
-# The grant plane's release-policy half: WHO initiates a grant's return.  Only
-# a write-through arm can hand the permission back without the payload, so a
-# write-back grant is always demand-revoked.
-function(arts_grant_release_tu out write_policy release_policy)
-    if(write_policy STREQUAL "WT" AND release_policy STREQUAL "PURGE")
+# Every helper takes the axes in the order validity, retention, read source and
+# refuses a value outside an axis's set, so a call that swaps two of them
+# cannot configure.
+function(arts_require_axis_value fn arg value axis)
+    set(_values ${ARGN})
+    if(NOT "${value}" IN_LIST _values)
+        message(FATAL_ERROR "${fn}: ${arg} '${value}' is not a ${axis}")
+    endif()
+endfunction()
+
+function(arts_require_cell fn validity retention read_source)
+    arts_require_axis_value(${fn} validity "${validity}" validity
+                            INV VAL EXCL FLUSH)
+    arts_require_axis_value(${fn} retention "${retention}" retention
+                            PURGE RETAIN)
+    arts_require_axis_value(${fn} read_source "${read_source}" "read source"
+                            HOME OWNER)
+endfunction()
+
+# The grant plane's retention half: WHO starts a grant's return.  PURGE is
+# built only with the HOME read source, whose holder can hand the ownership
+# back without the payload; under RETAIN the home revokes it on demand.
+function(arts_grant_retention_tu out retention)
+    arts_require_axis_value(arts_grant_retention_tu retention "${retention}"
+                            retention PURGE RETAIN)
+    if(retention STREQUAL "PURGE")
         set(${out} coherence/grant_purge.c PARENT_SCOPE)
     else()
         set(${out} coherence/grant_retain.c PARENT_SCOPE)
     endif()
 endfunction()
 
-# Sets ${out} (caller scope) to the coherence model TU paths for one (arm,
-# write policy, release policy), RELATIVE to libs/src/core/; the main library
-# (libs/src/core/CMakeLists.txt) and every benchmark variant select through it.
-# The home request FIFO is linked by every arm that keeps one (all but FLUSH).
-# The dense per-rank version map is the ownership plane's ledger, so it is
-# linked by the arms that HAVE one; an arm with no versions carries no ledger
-# and must not compile the TU that keeps it.  The rank bit-set is linked by
-# every arm whose rank sets are arts_rank_bitset_s (all but FLUSH, which keeps
-# its own sharers words).
-function(arts_coherence_model_tus out arm write_policy release_policy)
-    if(arm STREQUAL "FLUSH")
+# Sets ${out} (caller scope) to the coherence model TU paths for one
+# (validity, retention, read source), RELATIVE to libs/src/core/; the main
+# library (libs/src/core/CMakeLists.txt) and every benchmark variant select
+# through it.  The home request FIFO is linked by every arm that keeps one (all
+# but FLUSH).  The dense per-rank version map is the ownership plane's ledger,
+# so it is linked by the arms that HAVE one; an arm with no versions carries no
+# ledger and must not compile the TU that keeps it.  The rank bit-set is linked
+# by every arm whose rank sets are arts_rank_bitset_s (all but FLUSH, which
+# keeps its own sharers words).
+function(arts_coherence_model_tus out validity retention read_source)
+    arts_require_cell(arts_coherence_model_tus "${validity}" "${retention}"
+                      "${read_source}")
+    if(validity STREQUAL "FLUSH")
         set(tus coherence/flush/flush.c)
-    elseif(arm STREQUAL "INV")
-        if(write_policy STREQUAL "WB")
-            set(tus coherence/inv/directory.c coherence/grantreq_queue.c coherence/inv/engine.c coherence/inv/wb.c coherence/grant.c coherence/grant_queue.c coherence/reader_pool.c coherence/grant_wb.c coherence/rank_u64_map.c coherence/rank_bitset.c)
+    elseif(validity STREQUAL "INV")
+        if(read_source STREQUAL "OWNER")
+            set(tus coherence/inv/directory.c coherence/grantreq_queue.c coherence/inv/engine.c coherence/inv/owner.c coherence/grant.c coherence/grant_queue.c coherence/reader_pool.c coherence/grant_owner.c coherence/rank_u64_map.c coherence/rank_bitset.c)
         else()
-            set(tus coherence/inv/directory.c coherence/grantreq_queue.c coherence/inv/engine.c coherence/inv/wt.c coherence/grant.c coherence/grant_queue.c coherence/reader_pool.c coherence/grant_wt.c coherence/rank_u64_map.c coherence/rank_bitset.c)
+            set(tus coherence/inv/directory.c coherence/grantreq_queue.c coherence/inv/engine.c coherence/inv/home.c coherence/grant.c coherence/grant_queue.c coherence/reader_pool.c coherence/grant_home.c coherence/rank_u64_map.c coherence/rank_bitset.c)
         endif()
-        arts_grant_release_tu(rel "${write_policy}" "${release_policy}")
+        arts_grant_retention_tu(rel "${retention}")
         list(APPEND tus ${rel})
-    elseif(arm STREQUAL "EXCL")
-        if(release_policy STREQUAL "RETAIN")
+    elseif(validity STREQUAL "EXCL")
+        if(retention STREQUAL "RETAIN")
             set(tus coherence/excl/directory.c coherence/grantreq_queue.c coherence/excl/retain.c coherence/rank_bitset.c)
         else()
             set(tus coherence/excl/directory.c coherence/grantreq_queue.c coherence/excl/purge.c coherence/rank_bitset.c)
         endif()
-    elseif(arm STREQUAL "VAL")
-        if(write_policy STREQUAL "WT")
-            set(tus coherence/val/wt.c coherence/grant.c coherence/grant_queue.c coherence/reader_pool.c coherence/grant_wt.c coherence/grantreq_queue.c coherence/rank_u64_map.c coherence/rank_bitset.c)
+    elseif(validity STREQUAL "VAL")
+        if(read_source STREQUAL "HOME")
+            set(tus coherence/val/home.c coherence/grant.c coherence/grant_queue.c coherence/reader_pool.c coherence/grant_home.c coherence/grantreq_queue.c coherence/rank_u64_map.c coherence/rank_bitset.c)
         else()
-            set(tus coherence/val/wb.c coherence/grant.c coherence/grant_queue.c coherence/reader_pool.c coherence/grant_wb.c coherence/grantreq_queue.c coherence/rank_u64_map.c coherence/rank_bitset.c)
+            set(tus coherence/val/owner.c coherence/grant.c coherence/grant_queue.c coherence/reader_pool.c coherence/grant_owner.c coherence/grantreq_queue.c coherence/rank_u64_map.c coherence/rank_bitset.c)
         endif()
-        arts_grant_release_tu(rel "${write_policy}" "${release_policy}")
+        arts_grant_retention_tu(rel "${retention}")
         list(APPEND tus ${rel})
-    else()
-        message(FATAL_ERROR "no coherence arm named '${arm}'")
     endif()
     set(${out} ${tus} PARENT_SCOPE)
 endfunction()
 
-# Applies the family + second-axis compile definitions to <target> (PRIVATE),
-# and the CXL store definitions that travel with them.
-# ARTS_PROTOCOL_<arm> is always emitted; VAL/INV/EXCL additionally get one of
-# ARTS_WRITE_POLICY_WT/WB and one of ARTS_RELEASE_PURGE/RETAIN (each arm's
-# sources test only its live axis: EXCL: ARTS_RELEASE_*; INV/VAL and the
-# grant plane: ARTS_WRITE_POLICY_*).  FLUSH has neither axis, so it gets
-# ARTS_PROTOCOL_FLUSH alone.
-function(arts_apply_protocol target arm write_policy release_policy)
+# Applies the configuration's compile definitions to <target> (PRIVATE), and
+# the CXL store definitions that travel with them.  ARTS_VALIDITY_<validity>
+# is always emitted; VAL, INV and EXCL also get ARTS_RETENTION_<retention> and
+# ARTS_READ_SOURCE_<read source> (each arm's sources test only the axes that
+# change them: EXCL its retention, INV, VAL and the grant plane both).  FLUSH
+# has neither axis, so it gets ARTS_VALIDITY_FLUSH alone.
+function(arts_apply_protocol target validity retention read_source)
+    arts_require_cell(arts_apply_protocol "${validity}" "${retention}"
+                      "${read_source}")
     # A call with no declaration in scope is an error, not a warning.  Each arm
     # compiles a different subset of the sources, so a declaration guarded to
     # the wrong set of arms is invisible in the arm that was tested and leaves
@@ -113,7 +135,7 @@ function(arts_apply_protocol target arm write_policy release_policy)
     # pointer or a bool return.  Compilers that still default this to a warning
     # let it accumulate unseen; the ones that do not simply refuse to build.
     target_compile_options(${target} PRIVATE $<$<COMPILE_LANGUAGE:C>:-Werror=implicit-function-declaration>)
-    target_compile_definitions(${target} PRIVATE ARTS_PROTOCOL_${arm}=1)
+    target_compile_definitions(${target} PRIVATE ARTS_VALIDITY_${validity}=1)
     # The CXL definitions travel with the protocol ones, by the same route:
     # the runtime is assembled from object libraries that each receive their
     # own definitions, and two TUs of one binary that disagree about
@@ -151,22 +173,15 @@ function(arts_apply_protocol target arm write_policy release_policy)
     if(BUILD_CUDA_LIBRARY)
         target_compile_definitions(${target} PRIVATE ARTS_GPU_LAYOUT=1)
     endif()
-    if(arm STREQUAL "FLUSH")
-        # FLUSH has neither second axis: every remote acquire fetches and every
-        # remote RW release writes through, so no selection chain branches on
-        # a write or release policy here.
+    if(validity STREQUAL "FLUSH")
+        # FLUSH has neither a retention nor a read source: every remote
+        # acquire fetches and every remote RW release writes back, so no
+        # selection chain branches on either here.
         return()
     endif()
-    if(write_policy STREQUAL "WT")
-        target_compile_definitions(${target} PRIVATE ARTS_WRITE_POLICY_WT=1)
-    else()
-        target_compile_definitions(${target} PRIVATE ARTS_WRITE_POLICY_WB=1)
-    endif()
-    if(release_policy STREQUAL "PURGE")
-        target_compile_definitions(${target} PRIVATE ARTS_RELEASE_PURGE=1)
-    else()
-        target_compile_definitions(${target} PRIVATE ARTS_RELEASE_RETAIN=1)
-    endif()
+    target_compile_definitions(${target} PRIVATE
+        ARTS_READ_SOURCE_${read_source}=1
+        ARTS_RETENTION_${retention}=1)
 endfunction()
 
 # --- Vendored dependencies inside the installed libraries --------------------
@@ -334,7 +349,7 @@ endif()
 
 target_link_libraries(arts_static PRIVATE $<BUILD_INTERFACE:arts::libfabric>)
 
-arts_apply_protocol(arts_static ${ARTS_COHERENCE_ARM} ${ARTS_WRITE_POLICY} ${ARTS_RELEASE_POLICY})
+arts_apply_protocol(arts_static ${ARTS_VALIDITY} ${ARTS_RETENTION} ${ARTS_READ_SOURCE})
 
 arts_bundle_vendored_archives(arts_static)
 
@@ -399,7 +414,7 @@ if(ARTS_BUILD_SHARED)
         target_link_libraries(arts_shared PRIVATE "-framework CoreFoundation" "-framework IOKit" "-framework OpenCL")
     endif()
 
-    arts_apply_protocol(arts_shared ${ARTS_COHERENCE_ARM} ${ARTS_WRITE_POLICY} ${ARTS_RELEASE_POLICY})
+    arts_apply_protocol(arts_shared ${ARTS_VALIDITY} ${ARTS_RETENTION} ${ARTS_READ_SOURCE})
 
     # Set library properties
     set_target_properties(arts_shared PROPERTIES
@@ -474,7 +489,7 @@ if(BUILD_CUDA_LIBRARY)
 
     arts_bundle_vendored_archives(arts_cuda_static)
 
-    arts_apply_protocol(arts_cuda_static ${ARTS_COHERENCE_ARM} ${ARTS_WRITE_POLICY} ${ARTS_RELEASE_POLICY})
+    arts_apply_protocol(arts_cuda_static ${ARTS_VALIDITY} ${ARTS_RETENTION} ${ARTS_READ_SOURCE})
 
     # Set library properties
     set_target_properties(arts_cuda_static PROPERTIES
@@ -544,7 +559,7 @@ if(BUILD_CUDA_LIBRARY)
             target_link_libraries(arts_cuda_shared PRIVATE "-framework CoreFoundation" "-framework IOKit" "-framework OpenCL")
         endif()
 
-        arts_apply_protocol(arts_cuda_shared ${ARTS_COHERENCE_ARM} ${ARTS_WRITE_POLICY} ${ARTS_RELEASE_POLICY})
+        arts_apply_protocol(arts_cuda_shared ${ARTS_VALIDITY} ${ARTS_RETENTION} ${ARTS_READ_SOURCE})
 
         # Set library properties
         set_target_properties(arts_cuda_shared PROPERTIES
@@ -558,7 +573,7 @@ if(BUILD_CUDA_LIBRARY)
 endif()
 
 # --- Per-protocol variant libraries (benchmark tree only) ---------------------
-# Build a full arts static lib for one (arm, write policy, release policy).  The
+# Build a full arts static lib for one (validity, retention, read source).  The
 # protocol-independent sources are gathered from the CPU object-lib targets
 # (their compiled objects cannot be reused — each variant needs its own protocol
 # defines), the coherence MODEL TUs are swapped for this variant's, and the
@@ -574,9 +589,9 @@ if(ARTS_BUILD_BENCHMARKS)
     # variant drops all of them from the object libraries' sources and adds
     # back exactly its own cell's.
     set(_ARTS_MODEL_TUS_ALL "")
-    foreach(_cell "FLUSH;WB;RETAIN" "INV;WB;RETAIN" "INV;WT;RETAIN"
-                  "INV;WT;PURGE" "EXCL;WB;RETAIN" "EXCL;WB;PURGE"
-                  "VAL;WT;RETAIN" "VAL;WT;PURGE" "VAL;WB;RETAIN")
+    foreach(_cell "FLUSH;RETAIN;OWNER" "INV;RETAIN;OWNER" "INV;RETAIN;HOME"
+                  "INV;PURGE;HOME" "EXCL;RETAIN;OWNER" "EXCL;PURGE;HOME"
+                  "VAL;RETAIN;HOME" "VAL;PURGE;HOME" "VAL;RETAIN;OWNER")
         arts_coherence_model_tus(_tus ${_cell})
         list(APPEND _ARTS_MODEL_TUS_ALL ${_tus})
     endforeach()
@@ -593,11 +608,13 @@ if(ARTS_BUILD_BENCHMARKS)
         arts_apply_protocol(${target} ${cell})
     endfunction()
 
-    function(arts_variant suffix arm write_policy release_policy)
+    function(arts_variant suffix validity retention read_source)
+        arts_require_cell(arts_variant "${validity}" "${retention}"
+                          "${read_source}")
         # Optional 5th argument: the residency this variant's store uses.  A
         # variant that names one compiles the cxl module; every other variant
-        # passes OFF and never sees it -- including in a CXL tree,
-        # where the tree's own residency must not leak into wrf_flush or any
+        # passes OFF and never sees it -- including in a CXL tree, where the
+        # tree's own residency must not leak into the FLUSH variant or any
         # other arm.  (ARGC counts the declared parameters too.)
         set(cxl_residency "OFF")
         if(ARGC GREATER 4)
@@ -627,7 +644,8 @@ if(ARTS_BUILD_BENCHMARKS)
             endforeach()
         endforeach()
         # add this variant's coherence model TUs
-        arts_coherence_model_tus(model "${arm}" "${write_policy}" "${release_policy}")
+        arts_coherence_model_tus(model "${validity}" "${retention}"
+                                 "${read_source}")
         foreach(tu ${model})
             list(APPEND srcs "${CMAKE_CURRENT_SOURCE_DIR}/core/${tu}")
         endforeach()
@@ -661,7 +679,7 @@ if(ARTS_BUILD_BENCHMARKS)
         target_link_libraries(arts_static_${suffix} PRIVATE arts::libfabric)
         set_property(GLOBAL APPEND PROPERTY ARTS_VARIANTS ${suffix})
         set_property(GLOBAL PROPERTY ARTS_VARIANT_CELL_${suffix}
-                     "${arm}" "${write_policy}" "${release_policy}"
+                     "${validity}" "${retention}" "${read_source}"
                      "${cxl_residency}")
         arts_apply_variant_protocol(arts_static_${suffix} ${suffix})
         if(NOT cxl_residency STREQUAL "OFF")
@@ -669,27 +687,27 @@ if(ARTS_BUILD_BENCHMARKS)
         endif()
     endfunction()
 
-    # Suffix = <memory model>_<family>_<live second axis>; the second argument
-    # is the protocol ARM (the TU family): VAL/INV/EXCL live under the OCR
-    # model.  The dead axis sits at its required value (WB for EXCL, RETAIN
-    # for INV/VAL).  FLUSH is the DB-WRF model's one protocol and carries no
-    # axis token.
-    arts_variant(ocr_val_wt        VAL     WT RETAIN)
-    arts_variant(ocr_val_wb        VAL     WB RETAIN)
-    arts_variant(ocr_val_wt_purge  VAL     WT PURGE)
-    arts_variant(ocr_excl_purge    EXCL    WB PURGE)
-    arts_variant(ocr_excl_retain   EXCL    WB RETAIN)
-    arts_variant(ocr_inv_wt        INV     WT RETAIN)
-    arts_variant(ocr_inv_wb        INV     WB RETAIN)
-    arts_variant(ocr_inv_wt_purge  INV     WT PURGE)
-    arts_variant(wrf_flush         FLUSH   WB RETAIN)
+    # A variant is named <memory model>_<validity>_<retention>_<read source>,
+    # with _cxl_<residency> for a CXL store; the FLUSH variant, which has
+    # neither a retention nor a read source, is named cdag_flush and passes
+    # the defaults.  Under EXCL the retention fixes the read source: HOME with
+    # PURGE, OWNER with RETAIN.
+    arts_variant(ocr_val_wt        VAL     RETAIN HOME)
+    arts_variant(ocr_val_wb        VAL     RETAIN OWNER)
+    arts_variant(ocr_val_wt_purge  VAL     PURGE  HOME)
+    arts_variant(ocr_excl_purge    EXCL    PURGE  HOME)
+    arts_variant(ocr_excl_retain   EXCL    RETAIN OWNER)
+    arts_variant(ocr_inv_wt        INV     RETAIN HOME)
+    arts_variant(ocr_inv_wb        INV     RETAIN OWNER)
+    arts_variant(ocr_inv_wt_purge  INV     PURGE  HOME)
+    arts_variant(wrf_flush         FLUSH   RETAIN OWNER)
 
-    # The two CXL entries of the EXCL x PURGE x WB cell: one variable changes
-    # against ocr_excl_purge -- where a block's bytes rest -- so arm, write
-    # policy and release policy are shared with it.  Always built: the library
-    # they link is the vendored fake unless ARTS_CXL_REAL names the device's.
-    arts_variant(ocr_excl_purge_cxl_staged EXCL WB PURGE STAGED)
-    arts_variant(ocr_excl_purge_cxl_direct EXCL WB PURGE DIRECT)
+    # The two CXL entries of the EXCL·PURGE·HOME cell: one variable changes
+    # against that cell's own variant -- where a block's bytes rest -- so the
+    # three axes are shared with it.  Always built: the library they link is
+    # the vendored fake unless ARTS_CXL_REAL names the device's.
+    arts_variant(ocr_excl_purge_cxl_staged EXCL PURGE HOME STAGED)
+    arts_variant(ocr_excl_purge_cxl_direct EXCL PURGE HOME DIRECT)
 endif()
 
 # Link mimalloc-static when selected.  The OBJECT library arts_utils needs

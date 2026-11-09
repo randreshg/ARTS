@@ -76,8 +76,8 @@ extern "C" {
  * arts_handler_event_add_dependence → OOO_EVENT_ADD_DEPENDENCE.
  *
  * The model-specific DB-coherence kinds are preprocessor-selected: VAL builds
- * define ARTS_PROTOCOL_VAL plus exactly one of ARTS_WRITE_POLICY_{WT,WB}.
- * FLUSH builds define ARTS_PROTOCOL_FLUSH alone — the write and release policy
+ * define ARTS_VALIDITY_VAL plus exactly one of ARTS_READ_SOURCE_{HOME,OWNER}.
+ * FLUSH builds define ARTS_VALIDITY_FLUSH alone — the write and release policy
  * axes are dead there — and carry OOO_DB_ACQUIRE, OOO_DB_FETCH_REQUEST and
  * OOO_DB_FLUSH_ANNOUNCE.
  * Each build's enum (and the mirroring g_ooo_table) carries only that model's OOO_DB_* kinds.
@@ -106,13 +106,13 @@ enum arts_ooo_kind {
  * remote-created DB's stub_install cache can fire a request/publish before
  * that DB's home CREATE arrives, so the message reaches home with db_s not yet
  * installed ⇒ OoO push, replayed on the CREATE handler's drain. */
-#if defined(ARTS_PROTOCOL_EXCL) && defined(ARTS_RELEASE_PURGE)
+#if defined(ARTS_VALIDITY_EXCL) && defined(ARTS_RETENTION_PURGE)
   OOO_DB_ACQUIRE, /* → arts_db_acquire_replay_dep (re-attempts the one deferred
                      local dep; pushed by the acquire's resolution on the slot
                      its one reservation found) */
   OOO_DB_EXCL_REQUEST, /* → arts_handler_db_excl_request @ home */
   OOO_DB_EXCL_RELEASE, /* → arts_handler_db_excl_release @ home */
-#elif defined(ARTS_PROTOCOL_EXCL) && defined(ARTS_RELEASE_RETAIN)
+#elif defined(ARTS_VALIDITY_EXCL) && defined(ARTS_RETENTION_RETAIN)
   OOO_DB_ACQUIRE, /* → arts_db_acquire_replay_dep (re-attempts the one deferred
                      local dep; pushed by the acquire's resolution on the slot
                      its one reservation found) */
@@ -122,7 +122,7 @@ enum arts_ooo_kind {
  * token names; FORWARD, RO_RETURN and RECALL are whole-packet entries that look
  * the block up once, never deferred (an RO_RETURN that trails the teardown
  * misses and is dropped). */
-#elif defined(ARTS_PROTOCOL_INV)
+#elif defined(ARTS_VALIDITY_INV)
   OOO_DB_ACQUIRE, /* → arts_db_acquire_replay_dep (re-attempts the one deferred
                      local dep; pushed by the acquire's resolution on the slot
                      its one reservation found) */
@@ -137,7 +137,7 @@ enum arts_ooo_kind {
    * home serves readers from; under WB the request is pure control.  That is
    * the ONLY difference between the two write policies' releases. */
   OOO_DB_PUBLISH, /* → arts_handler_db_publish @ home */
-#ifdef ARTS_RELEASE_PURGE
+#ifdef ARTS_RETENTION_PURGE
   /* The voluntary return.  It can overtake the block's home CREATE, and the
    * home fields it touches do not exist on a cache-only stub, so it defers
    * and replays on the install's drain like any other home-side body. */
@@ -151,7 +151,7 @@ enum arts_ooo_kind {
  * CONFIRM and INV_ACK answer the home's round through the home token; none is
  * looked up or deferred.  A home whose grants come back unasked sends no
  * GRANT_INVALIDATE and receives no CONFIRM. */
-#elif defined(ARTS_PROTOCOL_VAL) && defined(ARTS_WRITE_POLICY_WT)
+#elif defined(ARTS_VALIDITY_VAL) && defined(ARTS_READ_SOURCE_HOME)
   OOO_DB_ACQUIRE, /* → arts_db_acquire_replay_dep (re-attempts the one deferred
                      local dep; pushed by the acquire's resolution on the slot
                      its one reservation found) */
@@ -163,13 +163,13 @@ enum arts_ooo_kind {
    * call the body directly; where grants come back unasked, the home sends
    * none. */
   OOO_DB_PUBLISH, /* → arts_handler_db_publish @ home */
-#ifdef ARTS_RELEASE_PURGE
+#ifdef ARTS_RETENTION_PURGE
   /* The voluntary return.  It can overtake the block's home CREATE, and the
    * home fields it touches do not exist on a cache-only stub, so it defers
    * and replays on the install's drain like any other home-side body. */
   OOO_DB_GRANT_RETURN, /* → arts_handler_db_grant_return @ home */
 #endif
-#elif defined(ARTS_PROTOCOL_VAL) && defined(ARTS_WRITE_POLICY_WB)
+#elif defined(ARTS_VALIDITY_VAL) && defined(ARTS_READ_SOURCE_OWNER)
   OOO_DB_ACQUIRE, /* → arts_db_acquire_replay_dep (re-attempts the one deferred
                      local dep; pushed by the acquire's resolution on the slot
                      its one reservation found) */
@@ -181,7 +181,7 @@ enum arts_ooo_kind {
  * directly).
  * NO OOO_DB_PUBLISH — VAL WB publishes nothing at a release (the
  * dispatcher fatals on the PUBLISH wire message). */
-#elif defined(ARTS_PROTOCOL_FLUSH)
+#elif defined(ARTS_VALIDITY_FLUSH)
   OOO_DB_ACQUIRE,       /* → arts_db_acquire_replay_dep */
   OOO_DB_FETCH_REQUEST, /* → arts_handler_db_fetch_request @ home; a first
                            touch can overtake the home's CREATE, so it defers */
@@ -191,7 +191,7 @@ enum arts_ooo_kind {
                             install's drain */
 #else
 #error                                                                         \
-    "exactly one of ARTS_PROTOCOL_EXCL+ARTS_RELEASE_{PURGE,RETAIN}, ARTS_PROTOCOL_INV+ARTS_WRITE_POLICY_{WT,WB}, ARTS_PROTOCOL_VAL+ARTS_WRITE_POLICY_{WT,WB}, or ARTS_PROTOCOL_FLUSH must be defined"
+    "exactly one of ARTS_VALIDITY_EXCL+ARTS_RETENTION_{PURGE,RETAIN}, ARTS_VALIDITY_INV+ARTS_READ_SOURCE_{HOME,OWNER}, ARTS_VALIDITY_VAL+ARTS_READ_SOURCE_{HOME,OWNER}, or ARTS_VALIDITY_FLUSH must be defined"
 #endif
 
   OOO_KIND_COUNT /* sentinel — g_ooo_table size (per-model) */
@@ -319,7 +319,7 @@ struct arts_ooo_args_db_grant_request_s {
   struct arts_rdzv_landing_s rdzv; /* requester's transfer landing */
   uint64_t have_version;           /* version the requester already holds */
   uint32_t cover;                  /* ARTS_COVER_* */
-#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
+#if defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)
   uint64_t token; /* the requester's answer token */
 #endif
 };
@@ -336,7 +336,7 @@ struct arts_ooo_args_db_snapshot_request_s {
   arts_guid_t db_guid;
   uint32_t cover;                  /* ARTS_COVER_PAR | ARTS_COVER_PRECLAIM */
   struct arts_rdzv_landing_s rdzv; /* requester's snapshot landing */
-#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
+#if defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)
   uint64_t token; /* the requester's answer token */
 #endif
 };
@@ -386,7 +386,7 @@ struct arts_ooo_args_db_publish_s {
   /* The releaser gave the write right back with this publish; the home
    * owes it the same acceptance a standalone hand-back would ask for. */
   uint32_t returns_grant;
-#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
+#if defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)
   uint64_t token; /* the releaser's flight's answer token */
 #endif
 };
@@ -400,7 +400,7 @@ struct arts_ooo_args_db_grant_invalidate_s {
   unsigned int new_owner_rank;
   struct arts_rdzv_landing_s new_owner_rdzv; /* transfer landing at new owner */
   uint64_t new_owner_have; /* version the new owner reported holding */
-#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
+#if defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)
   uint64_t new_owner_token; /* the new owner's request's answer token */
   uint64_t home_token;      /* the transfer's, for the new owner's CONFIRM */
 #endif
@@ -418,12 +418,12 @@ struct arts_ooo_args_db_inv_request_s {
   bool bounce;                     /* re-sent by a holder that had no bytes */
   struct arts_rdzv_landing_s rdzv; /* deliver/grant landing; txid==0 = first
                                       touch (home replies INV_CTS) */
-#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
+#if defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)
   uint64_t token; /* the subject's answer token */
 #endif
 };
 
-#if defined(ARTS_PROTOCOL_INV) && defined(ARTS_WRITE_POLICY_WB)
+#if defined(ARTS_VALIDITY_INV) && defined(ARTS_READ_SOURCE_OWNER)
 /* The home forwarding a read it cannot answer to the current grant holder.
  * The requester is the subject, never the sender: the holder replies to it
  * directly, or bounces the request back to the home if the bytes have already
@@ -435,7 +435,7 @@ struct arts_ooo_args_db_inv_redirect_s {
   struct arts_rdzv_landing_s rdzv;
   uint64_t token; /* the requester's answer token */
 };
-#endif /* ARTS_PROTOCOL_INV && ARTS_WRITE_POLICY_WB */
+#endif /* ARTS_VALIDITY_INV && ARTS_READ_SOURCE_OWNER */
 
 /* Event / EDT destroy replay (before-create reorder): the guid is enough to
  * re-issue the destroy once the object installs. */

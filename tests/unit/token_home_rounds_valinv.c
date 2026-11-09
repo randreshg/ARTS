@@ -48,29 +48,29 @@
 #include "coherence/rank_u64_map.c"
 #include "coherence/reader_pool.c"
 #include "coherence/senders.c"
-#ifdef ARTS_WRITE_POLICY_WB
-#include "coherence/grant_wb.c"
+#ifdef ARTS_READ_SOURCE_OWNER
+#include "coherence/grant_owner.c"
 #else
-#include "coherence/grant_wt.c"
+#include "coherence/grant_home.c"
 #endif
-#ifdef ARTS_RELEASE_PURGE
+#ifdef ARTS_RETENTION_PURGE
 #include "coherence/grant_purge.c"
 #else
 #include "coherence/grant_retain.c"
 #endif
-#ifdef ARTS_PROTOCOL_INV
+#ifdef ARTS_VALIDITY_INV
 #include "coherence/inv/directory.c"
 #include "coherence/inv/engine.c"
-#ifdef ARTS_WRITE_POLICY_WB
-#include "coherence/inv/wb.c"
+#ifdef ARTS_READ_SOURCE_OWNER
+#include "coherence/inv/owner.c"
 #else
-#include "coherence/inv/wt.c"
+#include "coherence/inv/home.c"
 #endif
 #else
-#ifdef ARTS_WRITE_POLICY_WB
-#include "coherence/val/wb.c"
+#ifdef ARTS_READ_SOURCE_OWNER
+#include "coherence/val/owner.c"
 #else
-#include "coherence/val/wt.c"
+#include "coherence/val/home.c"
 #endif
 #endif
 #include "utils/shared.c"
@@ -80,7 +80,7 @@
 #include <string.h>
 #include <unistd.h>
 
-#ifdef ARTS_RELEASE_PURGE
+#ifdef ARTS_RETENTION_PURGE
 /* The home serves the grant itself: no tenure crosses ranks. */
 #define REVOKES 0
 #else
@@ -168,7 +168,7 @@ UNREACHED(void arts_ooo_dispatch_on(arts_shared_ptr_t h, ooo_kind_t kind,
                                     arts_guid_t guid, const void *args,
                                     uint32_t size))
 UNREACHED(bool arts_ooo_retire(arts_guid_t key, arts_shared_ptr_t cb))
-#if !defined(ARTS_PROTOCOL_INV) || !defined(ARTS_WRITE_POLICY_WB)
+#if !defined(ARTS_VALIDITY_INV) || !defined(ARTS_READ_SOURCE_OWNER)
 UNREACHED(void *arts_route_table_borrow_or_lookup(arts_shared_ptr_t h,
                                                   arts_guid_t g,
                                                   arts_shared_ptr_t *l))
@@ -471,10 +471,10 @@ static void acquire(arts_db_access_mode_t mode) {
   arts_handler_db_acquire(g_db, &a);
 }
 
-#ifdef ARTS_PROTOCOL_INV
+#ifdef ARTS_VALIDITY_INV
 /* ===== the invalidation round ========================================== */
 
-#ifdef ARTS_WRITE_POLICY_WB
+#ifdef ARTS_READ_SOURCE_OWNER
 /* The home's own INVALIDATE borrows its descriptor, which stands for an
  * installed one while its tag names the block; a retired one's lookup
  * misses. */
@@ -601,7 +601,7 @@ static void round_swept(void) {
   end(0);
 }
 
-#ifdef ARTS_WRITE_POLICY_WB
+#ifdef ARTS_READ_SOURCE_OWNER
 /* Under write-back the home's own copy is retired like any other: its
  * INVALIDATE runs inline on the home's descriptor, and so does its ack, which
  * reaches the round through the home token the INVALIDATE was given. */
@@ -732,7 +732,7 @@ static void sharer_owed_dismiss(void) {
   m.hdr.rdzv_cookie = w->rdzv.cookie;
   m.hdr.token = w->token;
   arts_handler_db_grant_response(&m, sizeof(m));
-#ifdef ARTS_WRITE_POLICY_WB
+#ifdef ARTS_READ_SOURCE_OWNER
   const struct arts_msg_grant_confirm_packet_s *cf =
       (const struct arts_msg_grant_confirm_packet_s *)sent(MSG_DB_GRANT_CONFIRM,
                                                            0);
@@ -746,7 +746,7 @@ static void sharer_owed_dismiss(void) {
 #endif
   end(2);
 }
-#endif /* ARTS_PROTOCOL_INV */
+#endif /* ARTS_VALIDITY_INV */
 
 #if REVOKES
 /* ===== the baton's tenure ============================================== */
@@ -819,7 +819,7 @@ static void tenure_confirmed(void) {
   if (baton() != 0u || holder() != 2u) {
     fail("the CONFIRM did not end the tenure");
   }
-#ifdef ARTS_WRITE_POLICY_WB
+#ifdef ARTS_READ_SOURCE_OWNER
   const struct arts_msg_grant_confirm_ack_packet_s *ca =
       (const struct arts_msg_grant_confirm_ack_packet_s *)sent(
           MSG_DB_GRANT_CONFIRM_ACK, 0);
@@ -842,7 +842,7 @@ static void tenure_carried(void) {
   if (baton() == 0u) {
     fail("the tenure ended with a request still queued");
   }
-#ifdef ARTS_WRITE_POLICY_WB
+#ifdef ARTS_READ_SOURCE_OWNER
   /* The next transfer rides the CONFIRM_ACK, with the home's token. */
   const struct arts_msg_grant_confirm_ack_packet_s *ca =
       (const struct arts_msg_grant_confirm_ack_packet_s *)sent(
@@ -946,7 +946,7 @@ static void new_owner_confirms(bool payload) {
   if (c->home_token != FOREIGN_HOME_TOKEN || c->token != w->token) {
     fail("the CONFIRM does not echo the transfer's home token");
   }
-#ifdef ARTS_WRITE_POLICY_WB
+#ifdef ARTS_READ_SOURCE_OWNER
   struct arts_msg_grant_confirm_ack_packet_s ca;
   memset(&ca, 0, sizeof(ca));
   ca.db_guid = c->db_guid;
@@ -958,7 +958,7 @@ static void new_owner_confirms(bool payload) {
   end(1);
 }
 
-#ifdef ARTS_WRITE_POLICY_WB
+#ifdef ARTS_READ_SOURCE_OWNER
 /* The CONFIRM_ACK that carries the next transfer hands its home token to the
  * new owner, whose ship at the zero edge carries it on. */
 static void piggyback_ships_home_token(void) {
@@ -1013,12 +1013,12 @@ static void piggyback_ships_home_token(void) {
 #endif /* REVOKES */
 
 int main(void) {
-#ifdef ARTS_PROTOCOL_INV
+#ifdef ARTS_VALIDITY_INV
   round_last_ack();
   round_retired();
   round_rearmed();
   round_swept();
-#ifdef ARTS_WRITE_POLICY_WB
+#ifdef ARTS_READ_SOURCE_OWNER
   round_home_sharer();
 #endif
   sharer_acks_at_once();
@@ -1034,7 +1034,7 @@ int main(void) {
   holder_ships_home_token();
   new_owner_confirms(false);
   new_owner_confirms(true);
-#ifdef ARTS_WRITE_POLICY_WB
+#ifdef ARTS_READ_SOURCE_OWNER
   piggyback_ships_home_token();
 #endif
 #endif

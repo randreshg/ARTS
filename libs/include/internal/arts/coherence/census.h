@@ -143,7 +143,7 @@ static inline void arts_db_census_count_serve(arts_guid_t db_guid) {
 #if ARTS_DB_CENSUS
   assert(arts_db_census_serve != ARTS_DB_SERVE_NONE &&
          "a serve path claimed a parked acquisition without its kind");
-#ifdef ARTS_RELEASE_PURGE
+#ifdef ARTS_RETENTION_PURGE
   if (arts_guid_get_rank(db_guid) == arts_global_rank_id) {
     INCREMENT_NUM_DB_ACQUIRE_LOCAL_HIT_BY(1);
     return;

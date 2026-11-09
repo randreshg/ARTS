@@ -52,9 +52,9 @@ add_compile_options(${ARTS_WERROR_IMPLICIT_SEQ_CST})
 # tree too.  CACHE INTERNAL, like the helpers' settings below: the examples
 # register their smoke tests by the same rule from their own directory.
 set(_reference_tree OFF)
-if(ARTS_COHERENCE_ARM STREQUAL _ARTS_DEFAULT_COHERENCE_PROTOCOL AND
-   ARTS_WRITE_POLICY STREQUAL _ARTS_DEFAULT_WRITE_POLICY AND
-   ARTS_RELEASE_POLICY STREQUAL _ARTS_DEFAULT_RELEASE_POLICY AND
+if(ARTS_VALIDITY STREQUAL _ARTS_DEFAULT_VALIDITY AND
+   ARTS_RETENTION STREQUAL _ARTS_DEFAULT_RETENTION AND
+   ARTS_READ_SOURCE STREQUAL _ARTS_DEFAULT_READ_SOURCE AND
    NOT ARTS_USE_CXL)
     set(_reference_tree ON)
 endif()
@@ -94,7 +94,7 @@ set(TEST_PROGRAMS
 
 # The PURGE release policy's grant word, which only a VAL/INV x PURGE build
 # has (EXCL arbitrates a word of its own).
-if(ARTS_RELEASE_POLICY STREQUAL "PURGE" AND NOT ARTS_COHERENCE_ARM STREQUAL "EXCL")
+if(ARTS_RETENTION STREQUAL "PURGE" AND NOT ARTS_VALIDITY STREQUAL "EXCL")
     list(APPEND TEST_PROGRAMS grant_purge_word_model)
 endif()
 
@@ -190,7 +190,7 @@ set(ARTS_FLUSH_EXCLUDED
     grant_purge_churn
     grant_purge_handback_regrant
     quiescent_shutdown_no_residue)
-if(ARTS_COHERENCE_ARM STREQUAL "FLUSH")
+if(ARTS_VALIDITY STREQUAL "FLUSH")
     list(REMOVE_ITEM TEST_PROGRAMS ${ARTS_FLUSH_EXCLUDED})
 endif()
 
@@ -286,7 +286,7 @@ function(add_arts_test test_name)
     # globally) so it cannot collide with the per-variant benchmark libraries;
     # apply this build's option-selected protocol to the test the same way the
     # ARTS library targets receive it.
-    arts_apply_protocol(${test_name} ${ARTS_COHERENCE_ARM} ${ARTS_WRITE_POLICY} ${ARTS_RELEASE_POLICY})
+    arts_apply_protocol(${test_name} ${ARTS_VALIDITY} ${ARTS_RETENTION} ${ARTS_READ_SOURCE})
 
     # Non-PIE, like every program that runs on ARTS
     # (ARTS_NON_PIE_COMPILE_OPTIONS).
@@ -338,7 +338,7 @@ if(BUILD_CUDA_LIBRARY)
 
         # Protocol-sensitive internal headers need the compile-time coherence
         # selection applied per-target (see add_arts_test).
-        arts_apply_protocol(${test_name} ${ARTS_COHERENCE_ARM} ${ARTS_WRITE_POLICY} ${ARTS_RELEASE_POLICY})
+        arts_apply_protocol(${test_name} ${ARTS_VALIDITY} ${ARTS_RETENTION} ${ARTS_READ_SOURCE})
 
         set_property(TARGET ${test_name} PROPERTY POSITION_INDEPENDENT_CODE OFF)
         target_compile_options(${test_name} PRIVATE ${ARTS_NON_PIE_COMPILE_OPTIONS})
@@ -734,31 +734,31 @@ function(arts_lsan_test_env)
 endfunction()
 
 # A ThreadSanitizer tree runs the multinode variants of each audited test of
-# tests/tsan/residue_tests.cmake, in the cells whose arm reaches that test's
-# residue shapes, with the suppressions of those shapes: residue_send.supp when
-# every shape is a send-side copy of the provider (R1, R2, R4), and
-# residue_send_land.supp, which adds its receive-side copies, when a shape is a
-# landing (R3, R5).  An exclusion arm has no residue.  Every other test keeps
-# the provider's frames visible.  The suppressions are appended to the
-# caller's TSAN_OPTIONS, and the launcher's ranks inherit the test's
+# tests/tsan/residue_tests.cmake, in the cells whose residue kind reaches that
+# test's residue shapes, with the suppressions of those shapes:
+# residue_send.supp when every shape is a send-side copy of the provider (R1,
+# R2, R4), and residue_send_land.supp, which adds its receive-side copies, when
+# a shape is a landing (R3, R5).  An exclusion arm has no residue.  Every other
+# test keeps the provider's frames visible.  The suppressions are appended to
+# the caller's TSAN_OPTIONS, and the launcher's ranks inherit the test's
 # environment.
 #
-# The arm of a cell, and the shapes it can reach: write-back serves a read
-# from the owner (R1); write-through also publishes from a writer's rank (R2)
-# and lands in the home's buffer (R3); FLUSH fetches the home's line (R4) and
-# writes it back in place (R5).
-function(arts_tsan_residue_arm out_arm out_shapes cell)
-    if(cell MATCHES "^(VAL|INV)/WB/RETAIN$")
-        set(${out_arm} WB PARENT_SCOPE)
+# The residue kind of a cell, and the shapes it can reach: the OWNER read
+# source serves a read from the owner (R1); the HOME read source also
+# publishes from a writer's rank (R2) and lands in the home's buffer (R3);
+# FLUSH fetches the home's line (R4) and writes it back in place (R5).
+function(arts_tsan_residue_kind out_kind out_shapes cell)
+    if(cell MATCHES "^(VAL|INV)/RETAIN/OWNER$")
+        set(${out_kind} OWNER PARENT_SCOPE)
         set(${out_shapes} R1 PARENT_SCOPE)
-    elseif(cell MATCHES "^(VAL|INV)/WT/(RETAIN|PURGE)$")
-        set(${out_arm} WT PARENT_SCOPE)
+    elseif(cell MATCHES "^(VAL|INV)/(RETAIN|PURGE)/HOME$")
+        set(${out_kind} HOME PARENT_SCOPE)
         set(${out_shapes} R1 R2 R3 PARENT_SCOPE)
     elseif(cell STREQUAL "FLUSH")
-        set(${out_arm} FLUSH PARENT_SCOPE)
+        set(${out_kind} FLUSH PARENT_SCOPE)
         set(${out_shapes} R4 R5 PARENT_SCOPE)
     else()
-        set(${out_arm} "" PARENT_SCOPE)
+        set(${out_kind} "" PARENT_SCOPE)
         set(${out_shapes} "" PARENT_SCOPE)
     endif()
 endfunction()
@@ -773,15 +773,15 @@ function(arts_tsan_residue test_name)
         message(FATAL_ERROR "arts_tsan_residue(${test_name}): give its CELLS and SHAPES")
     endif()
     foreach(_c IN LISTS ARG_CELLS)
-        arts_tsan_residue_arm(_arm _reachable "${_c}")
-        if(NOT _arm)
+        arts_tsan_residue_kind(_kind _reachable "${_c}")
+        if(NOT _kind)
             message(FATAL_ERROR "arts_tsan_residue(${test_name}): '${_c}' is not a cell "
-                    "whose arm has a residue")
+                    "that has a residue kind")
         endif()
         foreach(_s IN LISTS ARG_SHAPES)
             if(NOT _s IN_LIST _reachable)
                 message(FATAL_ERROR "arts_tsan_residue(${test_name}): shape '${_s}' cannot "
-                        "occur in ${_c} (its arm reaches ${_reachable})")
+                        "occur in ${_c} (its residue kind reaches ${_reachable})")
             endif()
         endforeach()
     endforeach()
@@ -806,10 +806,10 @@ function(arts_tsan_residue_test_env)
     if(NOT ARTS_DEBUG_SANITIZER STREQUAL "THREAD")
         return()
     endif()
-    if(ARTS_COHERENCE_ARM STREQUAL "FLUSH")
+    if(ARTS_VALIDITY STREQUAL "FLUSH")
         set(_cell FLUSH)
     else()
-        set(_cell "${ARTS_COHERENCE_ARM}/${ARTS_WRITE_POLICY}/${ARTS_RELEASE_POLICY}")
+        set(_cell "${ARTS_VALIDITY}/${ARTS_RETENTION}/${ARTS_READ_SOURCE}")
     endif()
     get_property(_tests DIRECTORY PROPERTY TESTS)
     get_property(_entries GLOBAL PROPERTY ARTS_TSAN_RESIDUE_ENTRIES)
@@ -851,7 +851,7 @@ endfunction()
 # WILL_FAIL is refused: CTest would invert the verdict, a late failure's
 # included; an expected exit status is the test's STATUS.  A CXL tree's tests
 # get the store's environment too, an ADDRESS sanitizer tree's the leak
-# suppression, and a THREAD tree's audited tests their arm's residue
+# suppression, and a THREAD tree's audited tests their residue kind's
 # suppressions.
 function(arts_test_finalize)
     arts_cxl_test_env()
@@ -1033,7 +1033,7 @@ endfunction()
 
 # Its subtests record into one block with no order among them, which DB-WRF
 # does not admit.
-if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
+if(NOT ARTS_VALIDITY STREQUAL "FLUSH")
 register_single_node_test(edt_create_basic)
 endif()
 
@@ -1045,7 +1045,7 @@ register_single_node_test(db_null_control TIMEOUT 15)
 
 # Its consumers record into one block with no order among them, which DB-WRF
 # does not admit.
-if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
+if(NOT ARTS_VALIDITY STREQUAL "FLUSH")
 register_single_node_test(event_channel_fifo TIMEOUT 60)
 endif()
 
@@ -1339,8 +1339,8 @@ function(arts_grant_home_unit name timeout)
         ${ARTS_PUBLIC_INCLUDE_DIR} ${ARTS_INTERNAL_INCLUDE_DIR}
         ${ARTS_BUILD_INTERNAL_INCLUDE_DIR}
         ${CMAKE_SOURCE_DIR}/libs/src/core)
-    arts_apply_protocol(${name} ${ARTS_COHERENCE_ARM}
-                        ${ARTS_WRITE_POLICY} ${ARTS_RELEASE_POLICY})
+    arts_apply_protocol(${name} ${ARTS_VALIDITY}
+                        ${ARTS_RETENTION} ${ARTS_READ_SOURCE})
     target_link_libraries(${name} PRIVATE Threads::Threads)
     register_pure_unit_test(${name} TIMEOUT ${timeout})
     set_tests_properties(${name} PROPERTIES
@@ -1351,8 +1351,8 @@ endfunction()
 # front, an idle edge with nothing queued, a hand-back whose own consume
 # fails or takes a later hand-back of its rank), and the hub under
 # concurrent requests, hand-backs and home writers.
-if(ARTS_COHERENCE_ARM STREQUAL "VAL" AND ARTS_WRITE_POLICY STREQUAL "WT" AND
-   ARTS_RELEASE_POLICY STREQUAL "PURGE")
+if(ARTS_VALIDITY STREQUAL "VAL" AND ARTS_READ_SOURCE STREQUAL "HOME" AND
+   ARTS_RETENTION STREQUAL "PURGE")
     arts_grant_home_unit(grant_purge_latch_handoff 30)
     arts_grant_home_unit(grant_purge_hub_stress 120)
 endif()
@@ -1369,8 +1369,8 @@ endif()
 # commit it runs is the write policy's and the drains in it the protocol's
 # (and VAL write-back keeps the ledger the ship credits), so it registers in
 # every RETAIN tree of the migrating grant.
-if((ARTS_COHERENCE_ARM STREQUAL "VAL" OR ARTS_COHERENCE_ARM STREQUAL "INV")
-   AND ARTS_RELEASE_POLICY STREQUAL "RETAIN")
+if((ARTS_VALIDITY STREQUAL "VAL" OR ARTS_VALIDITY STREQUAL "INV")
+   AND ARTS_RETENTION STREQUAL "RETAIN")
     arts_grant_home_unit(grant_self_transfer 30)
 endif()
 # Each open request axis of a cache owns one count on the requester's
@@ -1381,7 +1381,7 @@ endif()
 # the write policies close the write axis at different sites (the grant, or
 # the CONFIRM_ACK), PURGE adds the home's self-served front, and only the
 # publishing cells have a flight.
-if(ARTS_COHERENCE_ARM STREQUAL "VAL" OR ARTS_COHERENCE_ARM STREQUAL "INV")
+if(ARTS_VALIDITY STREQUAL "VAL" OR ARTS_VALIDITY STREQUAL "INV")
     arts_grant_home_unit(token_axis_pairing_valinv 30)
 endif()
 # The same accounting on EXCL, whose two axes ride the cache word: the
@@ -1392,7 +1392,7 @@ endif()
 # awaits its CONFIRM (w above zero).  The two residencies differ only in the
 # fetch and purge bodies, which the test's size-less blocks never enter, so
 # one CXL tree carries it: the EXCL trees but the DIRECT one.
-if(ARTS_COHERENCE_ARM STREQUAL "EXCL" AND
+if(ARTS_VALIDITY STREQUAL "EXCL" AND
    NOT ARTS_CXL_TREE_RESIDENCY STREQUAL "DIRECT")
     arts_grant_home_unit(token_pairing_excl 30)
 endif()
@@ -1405,8 +1405,8 @@ endif()
 # revokes the write right, the RETAIN trees of VAL and INV: a tenure is
 # carried to its next transfer by the next INVALIDATE or, under write-back, by
 # the CONFIRM_ACK's piggyback, and both write policies end it at the put-down.
-if(ARTS_COHERENCE_ARM STREQUAL "INV" OR
-   (ARTS_COHERENCE_ARM STREQUAL "VAL" AND ARTS_RELEASE_POLICY STREQUAL "RETAIN"))
+if(ARTS_VALIDITY STREQUAL "INV" OR
+   (ARTS_VALIDITY STREQUAL "VAL" AND ARTS_RETENTION STREQUAL "RETAIN"))
     arts_grant_home_unit(token_home_rounds_valinv 30)
 endif()
 
@@ -1432,7 +1432,7 @@ foreach(t ${OOO_UNIT_TESTS})
     # ooo.c (included directly by each test TU) pulls arts/ooo.h which requires
     # exactly one compile-time protocol selection — same reason add_arts_test
     # calls arts_apply_protocol.
-    arts_apply_protocol(${t} ${ARTS_COHERENCE_ARM} ${ARTS_WRITE_POLICY} ${ARTS_RELEASE_POLICY})
+    arts_apply_protocol(${t} ${ARTS_VALIDITY} ${ARTS_RETENTION} ${ARTS_READ_SOURCE})
     target_link_libraries(${t} PRIVATE Threads::Threads)
 endforeach()
 register_pure_unit_test(ooo_table_completeness)
@@ -1586,7 +1586,7 @@ if(ARTS_MALLOC STREQUAL "mimalloc")
     target_include_directories(allocator_error_abort PRIVATE
         ${ARTS_PUBLIC_INCLUDE_DIR} ${ARTS_INTERNAL_INCLUDE_DIR}
         ${ARTS_BUILD_INTERNAL_INCLUDE_DIR})
-    arts_apply_protocol(allocator_error_abort ${ARTS_COHERENCE_ARM} ${ARTS_WRITE_POLICY} ${ARTS_RELEASE_POLICY})
+    arts_apply_protocol(allocator_error_abort ${ARTS_VALIDITY} ${ARTS_RETENTION} ${ARTS_READ_SOURCE})
     target_link_libraries(allocator_error_abort PRIVATE
         Threads::Threads mimalloc-static arts::libfabric ${RT_LIBRARY})
     target_link_options(allocator_error_abort PRIVATE ${_regpool_sim_wrap})
@@ -1612,7 +1612,7 @@ if(ARTS_MALLOC STREQUAL "mimalloc")
     target_include_directories(regpool_fast_path PRIVATE
         ${ARTS_PUBLIC_INCLUDE_DIR} ${ARTS_INTERNAL_INCLUDE_DIR}
         ${ARTS_BUILD_INTERNAL_INCLUDE_DIR})
-    arts_apply_protocol(regpool_fast_path ${ARTS_COHERENCE_ARM} ${ARTS_WRITE_POLICY} ${ARTS_RELEASE_POLICY})
+    arts_apply_protocol(regpool_fast_path ${ARTS_VALIDITY} ${ARTS_RETENTION} ${ARTS_READ_SOURCE})
     target_link_libraries(regpool_fast_path PRIVATE
         Threads::Threads mimalloc-static arts::libfabric ${RT_LIBRARY})
     target_link_options(regpool_fast_path PRIVATE ${_regpool_sim_wrap})
@@ -1653,7 +1653,7 @@ if(ARTS_MALLOC STREQUAL "mimalloc")
         target_include_directories(regpool_spill_and_latch PRIVATE
             ${ARTS_PUBLIC_INCLUDE_DIR} ${ARTS_INTERNAL_INCLUDE_DIR}
             ${ARTS_BUILD_INTERNAL_INCLUDE_DIR})
-        arts_apply_protocol(regpool_spill_and_latch ${ARTS_COHERENCE_ARM} ${ARTS_WRITE_POLICY} ${ARTS_RELEASE_POLICY})
+        arts_apply_protocol(regpool_spill_and_latch ${ARTS_VALIDITY} ${ARTS_RETENTION} ${ARTS_READ_SOURCE})
         target_link_libraries(regpool_spill_and_latch PRIVATE
             Threads::Threads mimalloc-static arts::libfabric ${RT_LIBRARY})
         target_link_options(regpool_spill_and_latch PRIVATE ${_regpool_sim_wrap})
@@ -1678,7 +1678,7 @@ add_executable(regpool_entry_word unit/regpool_entry_word.c)
 target_include_directories(regpool_entry_word PRIVATE
     ${ARTS_PUBLIC_INCLUDE_DIR} ${ARTS_INTERNAL_INCLUDE_DIR}
     ${ARTS_BUILD_INTERNAL_INCLUDE_DIR})
-arts_apply_protocol(regpool_entry_word ${ARTS_COHERENCE_ARM} ${ARTS_WRITE_POLICY} ${ARTS_RELEASE_POLICY})
+arts_apply_protocol(regpool_entry_word ${ARTS_VALIDITY} ${ARTS_RETENTION} ${ARTS_READ_SOURCE})
 target_link_libraries(regpool_entry_word PRIVATE Threads::Threads)
 register_pure_unit_test(regpool_entry_word TIMEOUT 30)
 set_tests_properties(regpool_entry_word PROPERTIES
@@ -1690,7 +1690,7 @@ add_executable(cover_gate_step unit/cover_gate_step.c)
 target_include_directories(cover_gate_step PRIVATE
     ${ARTS_PUBLIC_INCLUDE_DIR} ${ARTS_INTERNAL_INCLUDE_DIR}
     ${ARTS_BUILD_INTERNAL_INCLUDE_DIR})
-arts_apply_protocol(cover_gate_step ${ARTS_COHERENCE_ARM} ${ARTS_WRITE_POLICY} ${ARTS_RELEASE_POLICY})
+arts_apply_protocol(cover_gate_step ${ARTS_VALIDITY} ${ARTS_RETENTION} ${ARTS_READ_SOURCE})
 target_link_libraries(cover_gate_step PRIVATE Threads::Threads)
 register_pure_unit_test(cover_gate_step TIMEOUT 30)
 set_tests_properties(cover_gate_step PROPERTIES
@@ -1708,7 +1708,7 @@ if(ARTS_MALLOC STREQUAL "mimalloc")
     target_include_directories(net_selfsend PRIVATE
         ${ARTS_PUBLIC_INCLUDE_DIR} ${ARTS_INTERNAL_INCLUDE_DIR}
         ${ARTS_BUILD_INTERNAL_INCLUDE_DIR})
-    arts_apply_protocol(net_selfsend ${ARTS_COHERENCE_ARM} ${ARTS_WRITE_POLICY} ${ARTS_RELEASE_POLICY})
+    arts_apply_protocol(net_selfsend ${ARTS_VALIDITY} ${ARTS_RETENTION} ${ARTS_READ_SOURCE})
     set_test_log_level(net_selfsend 2)
     target_link_libraries(net_selfsend PRIVATE
         Threads::Threads mimalloc-static arts::libfabric ${RT_LIBRARY})
@@ -1722,7 +1722,7 @@ if(ARTS_MALLOC STREQUAL "mimalloc")
     target_include_directories(net_rendezvous PRIVATE
         ${ARTS_PUBLIC_INCLUDE_DIR} ${ARTS_INTERNAL_INCLUDE_DIR}
         ${ARTS_BUILD_INTERNAL_INCLUDE_DIR})
-    arts_apply_protocol(net_rendezvous ${ARTS_COHERENCE_ARM} ${ARTS_WRITE_POLICY} ${ARTS_RELEASE_POLICY})
+    arts_apply_protocol(net_rendezvous ${ARTS_VALIDITY} ${ARTS_RETENTION} ${ARTS_READ_SOURCE})
     set_test_log_level(net_rendezvous 2)
     target_link_libraries(net_rendezvous PRIVATE
         Threads::Threads mimalloc-static arts::libfabric ${RT_LIBRARY})
@@ -1737,7 +1737,7 @@ if(ARTS_MALLOC STREQUAL "mimalloc")
     target_include_directories(net_rdzv_slots PRIVATE
         ${ARTS_PUBLIC_INCLUDE_DIR} ${ARTS_INTERNAL_INCLUDE_DIR}
         ${ARTS_BUILD_INTERNAL_INCLUDE_DIR})
-    arts_apply_protocol(net_rdzv_slots ${ARTS_COHERENCE_ARM} ${ARTS_WRITE_POLICY} ${ARTS_RELEASE_POLICY})
+    arts_apply_protocol(net_rdzv_slots ${ARTS_VALIDITY} ${ARTS_RETENTION} ${ARTS_READ_SOURCE})
     set_test_log_level(net_rdzv_slots 2)
     target_link_libraries(net_rdzv_slots PRIVATE
         Threads::Threads mimalloc-static arts::libfabric ${RT_LIBRARY})
@@ -1756,7 +1756,7 @@ if(ARTS_MALLOC STREQUAL "mimalloc")
     target_include_directories(net_rdzv_discard PRIVATE
         ${ARTS_PUBLIC_INCLUDE_DIR} ${ARTS_INTERNAL_INCLUDE_DIR}
         ${ARTS_BUILD_INTERNAL_INCLUDE_DIR})
-    arts_apply_protocol(net_rdzv_discard ${ARTS_COHERENCE_ARM} ${ARTS_WRITE_POLICY} ${ARTS_RELEASE_POLICY})
+    arts_apply_protocol(net_rdzv_discard ${ARTS_VALIDITY} ${ARTS_RETENTION} ${ARTS_READ_SOURCE})
     set_test_log_level(net_rdzv_discard 2)
     target_link_libraries(net_rdzv_discard PRIVATE
         Threads::Threads mimalloc-static arts::libfabric ${RT_LIBRARY})
@@ -1775,7 +1775,7 @@ if(ARTS_MALLOC STREQUAL "mimalloc")
     target_include_directories(regpool_mr_close_kept PRIVATE
         ${ARTS_PUBLIC_INCLUDE_DIR} ${ARTS_INTERNAL_INCLUDE_DIR}
         ${ARTS_BUILD_INTERNAL_INCLUDE_DIR})
-    arts_apply_protocol(regpool_mr_close_kept ${ARTS_COHERENCE_ARM} ${ARTS_WRITE_POLICY} ${ARTS_RELEASE_POLICY})
+    arts_apply_protocol(regpool_mr_close_kept ${ARTS_VALIDITY} ${ARTS_RETENTION} ${ARTS_READ_SOURCE})
     set_test_log_level(regpool_mr_close_kept 2)
     target_link_libraries(regpool_mr_close_kept PRIVATE
         Threads::Threads mimalloc-static arts::libfabric ${RT_LIBRARY})
@@ -1793,7 +1793,7 @@ if(ARTS_MALLOC STREQUAL "mimalloc")
     target_include_directories(net_tx_accounting PRIVATE
         ${ARTS_PUBLIC_INCLUDE_DIR} ${ARTS_INTERNAL_INCLUDE_DIR}
         ${ARTS_BUILD_INTERNAL_INCLUDE_DIR})
-    arts_apply_protocol(net_tx_accounting ${ARTS_COHERENCE_ARM} ${ARTS_WRITE_POLICY} ${ARTS_RELEASE_POLICY})
+    arts_apply_protocol(net_tx_accounting ${ARTS_VALIDITY} ${ARTS_RETENTION} ${ARTS_READ_SOURCE})
     set_test_log_level(net_tx_accounting 2)
     target_link_libraries(net_tx_accounting PRIVATE
         Threads::Threads mimalloc-static arts::libfabric ${RT_LIBRARY})
@@ -1810,7 +1810,7 @@ if(ARTS_MALLOC STREQUAL "mimalloc")
     target_include_directories(net_src_bind PRIVATE
         ${ARTS_PUBLIC_INCLUDE_DIR} ${ARTS_INTERNAL_INCLUDE_DIR}
         ${ARTS_BUILD_INTERNAL_INCLUDE_DIR})
-    arts_apply_protocol(net_src_bind ${ARTS_COHERENCE_ARM} ${ARTS_WRITE_POLICY} ${ARTS_RELEASE_POLICY})
+    arts_apply_protocol(net_src_bind ${ARTS_VALIDITY} ${ARTS_RETENTION} ${ARTS_READ_SOURCE})
     set_test_log_level(net_src_bind 2)
     target_link_libraries(net_src_bind PRIVATE
         Threads::Threads mimalloc-static arts::libfabric ${RT_LIBRARY})
@@ -1825,7 +1825,7 @@ if(ARTS_MALLOC STREQUAL "mimalloc")
     target_include_directories(net_gate_drop_fabric PRIVATE
         ${ARTS_PUBLIC_INCLUDE_DIR} ${ARTS_INTERNAL_INCLUDE_DIR}
         ${ARTS_BUILD_INTERNAL_INCLUDE_DIR})
-    arts_apply_protocol(net_gate_drop_fabric ${ARTS_COHERENCE_ARM} ${ARTS_WRITE_POLICY} ${ARTS_RELEASE_POLICY})
+    arts_apply_protocol(net_gate_drop_fabric ${ARTS_VALIDITY} ${ARTS_RETENTION} ${ARTS_READ_SOURCE})
     set_test_log_level(net_gate_drop_fabric 2)
     target_link_libraries(net_gate_drop_fabric PRIVATE
         Threads::Threads mimalloc-static arts::libfabric ${RT_LIBRARY})
@@ -1845,7 +1845,7 @@ add_executable(net_gate_drop unit/net_gate_drop.c $<TARGET_OBJECTS:arts_regpool>
 target_include_directories(net_gate_drop PRIVATE
     ${ARTS_PUBLIC_INCLUDE_DIR} ${ARTS_INTERNAL_INCLUDE_DIR}
     ${ARTS_BUILD_INTERNAL_INCLUDE_DIR})
-arts_apply_protocol(net_gate_drop ${ARTS_COHERENCE_ARM} ${ARTS_WRITE_POLICY} ${ARTS_RELEASE_POLICY})
+arts_apply_protocol(net_gate_drop ${ARTS_VALIDITY} ${ARTS_RETENTION} ${ARTS_READ_SOURCE})
 set_test_log_level(net_gate_drop 2)
 target_link_libraries(net_gate_drop PRIVATE
     Threads::Threads arts::libfabric ${RT_LIBRARY})
@@ -1863,7 +1863,7 @@ add_executable(net_addr_frame_bound unit/net_addr_frame_bound.c)
 target_include_directories(net_addr_frame_bound PRIVATE
     ${ARTS_PUBLIC_INCLUDE_DIR} ${ARTS_INTERNAL_INCLUDE_DIR}
     ${ARTS_BUILD_INTERNAL_INCLUDE_DIR})
-arts_apply_protocol(net_addr_frame_bound ${ARTS_COHERENCE_ARM} ${ARTS_WRITE_POLICY} ${ARTS_RELEASE_POLICY})
+arts_apply_protocol(net_addr_frame_bound ${ARTS_VALIDITY} ${ARTS_RETENTION} ${ARTS_READ_SOURCE})
 target_link_libraries(net_addr_frame_bound PRIVATE Threads::Threads)
 register_pure_unit_test(net_addr_frame_bound)
 
@@ -1891,7 +1891,7 @@ add_executable(event_compute_next unit/event_compute_next.c)
 target_include_directories(event_compute_next PRIVATE
     ${ARTS_PUBLIC_INCLUDE_DIR} ${ARTS_INTERNAL_INCLUDE_DIR}
     ${ARTS_BUILD_INTERNAL_INCLUDE_DIR})
-arts_apply_protocol(event_compute_next ${ARTS_COHERENCE_ARM} ${ARTS_WRITE_POLICY} ${ARTS_RELEASE_POLICY})
+arts_apply_protocol(event_compute_next ${ARTS_VALIDITY} ${ARTS_RETENTION} ${ARTS_READ_SOURCE})
 register_pure_unit_test(event_compute_next)
 
 # --- Route-table slot reclamation (route_table.c) ---
@@ -1910,7 +1910,7 @@ add_executable(route_table_reclaim_dupdestroy
 target_include_directories(route_table_reclaim_dupdestroy PRIVATE
     ${ARTS_PUBLIC_INCLUDE_DIR} ${ARTS_INTERNAL_INCLUDE_DIR}
     ${ARTS_BUILD_INTERNAL_INCLUDE_DIR})
-arts_apply_protocol(route_table_reclaim_dupdestroy ${ARTS_COHERENCE_ARM} ${ARTS_WRITE_POLICY} ${ARTS_RELEASE_POLICY})
+arts_apply_protocol(route_table_reclaim_dupdestroy ${ARTS_VALIDITY} ${ARTS_RETENTION} ${ARTS_READ_SOURCE})
 target_link_libraries(route_table_reclaim_dupdestroy PRIVATE Threads::Threads)
 register_pure_unit_test(route_table_reclaim_dupdestroy TIMEOUT 120)
 
@@ -1923,7 +1923,7 @@ add_executable(route_table_dup_reserve unit/route_table_dup_reserve.c)
 target_include_directories(route_table_dup_reserve PRIVATE
     ${ARTS_PUBLIC_INCLUDE_DIR} ${ARTS_INTERNAL_INCLUDE_DIR}
     ${ARTS_BUILD_INTERNAL_INCLUDE_DIR})
-arts_apply_protocol(route_table_dup_reserve ${ARTS_COHERENCE_ARM} ${ARTS_WRITE_POLICY} ${ARTS_RELEASE_POLICY})
+arts_apply_protocol(route_table_dup_reserve ${ARTS_VALIDITY} ${ARTS_RETENTION} ${ARTS_READ_SOURCE})
 target_link_libraries(route_table_dup_reserve PRIVATE Threads::Threads)
 register_pure_unit_test(route_table_dup_reserve TIMEOUT 30)
 set_tests_properties(route_table_dup_reserve PROPERTIES
@@ -2057,13 +2057,13 @@ function(arts_downgrade_test test program)
 endfunction()
 
 set(_downgrade_excl OFF)
-if(ARTS_COHERENCE_ARM STREQUAL "EXCL")
+if(ARTS_VALIDITY STREQUAL "EXCL")
     set(_downgrade_excl ON)
 endif()
-set(_downgrade_wt OFF)
-if((ARTS_COHERENCE_ARM STREQUAL "VAL" OR ARTS_COHERENCE_ARM STREQUAL "INV")
-   AND ARTS_WRITE_POLICY STREQUAL "WT")
-    set(_downgrade_wt ON)
+set(_downgrade_home OFF)
+if((ARTS_VALIDITY STREQUAL "VAL" OR ARTS_VALIDITY STREQUAL "INV")
+   AND ARTS_READ_SOURCE STREQUAL "HOME")
+    set(_downgrade_home ON)
 endif()
 
 # Both kinds of write hold handed on, homes chosen by rank count; the alias
@@ -2096,21 +2096,21 @@ arts_downgrade_test(db_downgrade_noop db_downgrade_noop SINGLE
 add_arts_test(db_downgrade_disjoint)
 arts_downgrade_test(db_downgrade_disjoint_local db_downgrade_disjoint
                     ARGS local wait VARIANTS 2n_9w_1p 2n_8w_2p FUZZ)
-if(_downgrade_wt OR ARTS_COHERENCE_ARM STREQUAL "FLUSH")
+if(_downgrade_home OR ARTS_VALIDITY STREQUAL "FLUSH")
     arts_downgrade_test(db_downgrade_disjoint_remote db_downgrade_disjoint
                         ARGS remote wait VARIANTS 2n_9w_1p 2n_8w_2p FUZZ)
 else()
     arts_downgrade_test(db_downgrade_disjoint_remote db_downgrade_disjoint
                         ARGS remote nowait VARIANTS 2n_9w_1p 2n_8w_2p FUZZ)
 endif()
-if(_downgrade_excl AND ARTS_RELEASE_POLICY STREQUAL "RETAIN")
+if(_downgrade_excl AND ARTS_RETENTION STREQUAL "RETAIN")
     arts_downgrade_test(db_downgrade_disjoint_demote db_downgrade_disjoint
                         ARGS demote wait VARIANTS 2n_9w_1p 2n_8w_2p FUZZ)
 endif()
 
 # Two writers of one rank share the turn and one of them downgrades: two
 # overlapping write acquisitions, outside DB-WRF.
-if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
+if(NOT ARTS_VALIDITY STREQUAL "FLUSH")
     add_arts_test(db_downgrade_cowriter)
     if(_downgrade_excl)
         arts_downgrade_test(db_downgrade_cowriter db_downgrade_cowriter SINGLE
@@ -2146,7 +2146,7 @@ else()
                         VARIANTS 2n_9w_1p 2n_8w_2p)
 endif()
 unset(_downgrade_excl)
-unset(_downgrade_wt)
+unset(_downgrade_home)
 
 # Writers sharing their rank's write turn on one block release it, downgrade
 # and hand their bytes to readers, round after round, all on one rank.  On a
@@ -2156,7 +2156,7 @@ unset(_downgrade_wt)
 # publish flight: a one-rank flight's publish runs the home's round inline.
 # The writers' acquisitions overlap, which DB-WRF forbids; the round is INV's,
 # so the INV trees register it.
-if(ARTS_COHERENCE_ARM STREQUAL "INV")
+if(ARTS_VALIDITY STREQUAL "INV")
     add_arts_test(db_shared_turn_release)
     set(_turn_rec "")
     arts_counters_captured(_turn_c NUM_INVALIDATE_ROUND NUM_DB_ACQUIRE_WRITE)
@@ -2276,7 +2276,7 @@ endif()
 # create's hold is a write acquisition the program orders against neither the
 # early RW dependence nor the ordered writer, so the program is outside DB-WRF
 # and the FLUSH tree does not register it.
-if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
+if(NOT ARTS_VALIDITY STREQUAL "FLUSH")
     register_multinode_test(db_create_after_dep_asked TIMEOUT 60
                             VARIANTS 2n_9w_1p 2n_8w_2p)
     foreach(_v 2n_9w_1p 2n_8w_2p)
@@ -2319,11 +2319,11 @@ register_multinode_test(grant_purge_no_acquire_creator TIMEOUT 60
 # These assert what the runtime's exclusive-RW serialization guarantees; under
 # DB-WRF that ordering is the program's, and these programs deliberately omit
 # it.
-if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
+if(NOT ARTS_VALIDITY STREQUAL "FLUSH")
 register_single_node_test(grant_purge_churn TIMEOUT 60)
 register_multinode_test(grant_purge_churn TIMEOUT 90)
 if(ARTS_DEBUG_INJECTION AND
-   ARTS_COHERENCE_ARM MATCHES "^(VAL|INV)$")
+   ARTS_VALIDITY MATCHES "^(VAL|INV)$")
     arts_test_cfg(_cfg 2n_8w_2p)
     arts_add_multinode_test(grant_purge_churn_2n_8w_2p_fuzz
                             COMMAND grant_purge_churn)
@@ -2341,7 +2341,7 @@ endif()
 # These assert what the runtime's exclusive-RW serialization guarantees; under
 # DB-WRF that ordering is the program's, and these programs deliberately omit
 # it.
-if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
+if(NOT ARTS_VALIDITY STREQUAL "FLUSH")
 register_single_node_test(grant_purge_handback_regrant TIMEOUT 60)
 register_multinode_test(grant_purge_handback_regrant TIMEOUT 120)
 endif()
@@ -2351,8 +2351,8 @@ endif()
 # it.  The schedule fuzz can delay a serve between its grant and its put-down,
 # so the two-progress-thread shape meets that window in most runs.
 if(ARTS_DEBUG_INJECTION AND
-   ARTS_COHERENCE_ARM MATCHES "^(VAL|INV)$" AND
-   ARTS_RELEASE_POLICY STREQUAL "PURGE")
+   ARTS_VALIDITY MATCHES "^(VAL|INV)$" AND
+   ARTS_RETENTION STREQUAL "PURGE")
     arts_test_cfg(_cfg 2n_8w_2p)
     arts_add_multinode_test(grant_purge_handback_regrant_2n_8w_2p_fuzz
                             COMMAND grant_purge_handback_regrant)
@@ -2383,7 +2383,7 @@ register_multinode_test(coherence_owner_write_after_lend TIMEOUT 30
 # implementation computes identical answers and merely re-fetches — so it needs
 # an assertion of its own, and only the exclusion arm's retaining policy keeps
 # read grants.
-if(ARTS_COHERENCE_ARM STREQUAL "EXCL" AND ARTS_RELEASE_POLICY STREQUAL "RETAIN")
+if(ARTS_VALIDITY STREQUAL "EXCL" AND ARTS_RETENTION STREQUAL "RETAIN")
     add_arts_test(ro_grant_retained)
     register_multinode_test(ro_grant_retained TIMEOUT 30 VARIANTS 2n_9w_1p)
 endif()
@@ -2398,7 +2398,7 @@ endif()
 # Its two writers are ordered only by the runtime's exclusive RW turn, never
 # by happens-before, so the program is outside DB-WRF and the FLUSH tree
 # does not register it.
-if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
+if(NOT ARTS_VALIDITY STREQUAL "FLUSH")
     add_arts_test(grant_release_keeps_sharer)
     register_multinode_test(grant_release_keeps_sharer TIMEOUT 60
                             VARIANTS 2n_9w_1p 4n_4w_1p)
@@ -2411,7 +2411,7 @@ register_multinode_test(coherence_ro_acquire_stress TIMEOUT 90)
 # `ctest -L coherence_stress`.
 # Read and write turns of every block contend at once; its write acquisitions
 # are unordered, which DB-WRF does not admit.
-if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
+if(NOT ARTS_VALIDITY STREQUAL "FLUSH")
 register_single_node_test(coherence_stress_single_node TIMEOUT 120)
 set_property(TEST coherence_stress_single_node APPEND PROPERTY
     LABELS "coherence_stress")
@@ -2420,7 +2420,7 @@ set_tests_properties(coherence_stress_single_node PROPERTIES
 endif()
 # Writers holding several blocks at once: DB-WRF does not admit them, so every
 # other arm runs them.  With peers the turns come from every rank.
-if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
+if(NOT ARTS_VALIDITY STREQUAL "FLUSH")
     register_single_node_test(coherence_multi_writer_multi_db TIMEOUT 60)
     register_multinode_test(coherence_multi_writer_multi_db TIMEOUT 120)
     foreach(_v "" _2n_9w_1p _4n_4w_1p _2n_8w_2p)
@@ -2597,7 +2597,7 @@ find_program(ARTS_AARCH64_CLANG clang)
 find_package(Python3 COMPONENTS Interpreter QUIET)
 set(_script ${CMAKE_CURRENT_SOURCE_DIR}/tools/publication_order.py)
 if(ARTS_TEST_REFERENCE_TREE OR
-   (NOT ARTS_USE_CXL AND ARTS_COHERENCE_ARM MATCHES "^(INV|VAL|EXCL)$"))
+   (NOT ARTS_USE_CXL AND ARTS_VALIDITY MATCHES "^(INV|VAL|EXCL)$"))
     set(_gcc_ok 1)
     if(ARTS_AARCH64_GCC AND Python3_Interpreter_FOUND)
         execute_process(COMMAND ${Python3_EXECUTABLE} -I ${_script} --probe
@@ -2624,7 +2624,7 @@ if(ARTS_TEST_REFERENCE_TREE OR
                          --build-dir ${CMAKE_BINARY_DIR}
                          --work-dir ${CMAKE_CURRENT_BINARY_DIR}/publication_order_codegen
                          --register ${CMAKE_CURRENT_SOURCE_DIR}/tools/publication_sites.txt
-                         --cell ${ARTS_COHERENCE_ARM}.${ARTS_WRITE_POLICY}.${ARTS_RELEASE_POLICY}
+                         --cell ${ARTS_VALIDITY}.${ARTS_RETENTION}.${ARTS_READ_SOURCE}
                          ${_ref} --gcc ${ARTS_AARCH64_GCC} ${_clang} --jobs 4)
         set_tests_properties(publication_order_codegen PROPERTIES
             LABELS "single_node"
@@ -2782,11 +2782,11 @@ if(ARTS_DEBUG_TEARDOWN AND ARTS_DEBUG_INJECTION AND
             PASS_REGULAR_EXPRESSION
             "\\[1:[0-9]+\\] ${_info} 2 unpaired rendezvous expectation\\(s\\) \\(descriptors ended 0, landings out 0\\)"
             FAIL_REGULAR_EXPRESSION "${_cut_fail};\\[0:[0-9]+\\] ${_info}")
-        if((ARTS_COHERENCE_ARM MATCHES "^(VAL|INV)$" AND
-            ARTS_WRITE_POLICY STREQUAL "WT") OR
-           (ARTS_COHERENCE_ARM STREQUAL "EXCL" AND
-            ARTS_RELEASE_POLICY STREQUAL "PURGE") OR
-           ARTS_COHERENCE_ARM STREQUAL "FLUSH")
+        if((ARTS_VALIDITY MATCHES "^(VAL|INV)$" AND
+            ARTS_READ_SOURCE STREQUAL "HOME") OR
+           (ARTS_VALIDITY STREQUAL "EXCL" AND
+            ARTS_RETENTION STREQUAL "PURGE") OR
+           ARTS_VALIDITY STREQUAL "FLUSH")
             arts_add_multinode_test(rdzv_cut_home_${_v}
                                     COMMAND rdzv_cut_teardown home)
             arts_test_properties(rdzv_cut_home_${_v} PROPERTIES
@@ -2872,7 +2872,7 @@ endif()
 # These assert what the runtime's exclusive-RW serialization guarantees; under
 # DB-WRF that ordering is the program's, and these programs deliberately omit
 # it.
-if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
+if(NOT ARTS_VALIDITY STREQUAL "FLUSH")
 register_multinode_test(coherence_satisfy_before_release TIMEOUT 60)
 foreach(_v 2n_9w_1p 4n_4w_1p 2n_8w_2p)
     arts_test_properties(coherence_satisfy_before_release_${_v}
@@ -2890,7 +2890,7 @@ endif()
 # 2n_8w_2p is the variant whose two progress threads may dispatch one peer's
 # hand-over messages out of order.  Its writers are unordered, which DB-WRF
 # does not admit.
-if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
+if(NOT ARTS_VALIDITY STREQUAL "FLUSH")
 register_multinode_test(coherence_owner_ownership_reorder TIMEOUT 120)
 foreach(_v 2n_9w_1p 4n_4w_1p 2n_8w_2p)
     arts_test_properties(coherence_owner_ownership_reorder_${_v}
@@ -3100,7 +3100,7 @@ endif()
 # The members record into one block with no order among them, which DB-WRF
 # does not admit.  It uses ranks 0 and 1 only, and its group's proxy is fed by
 # messages local to each rank.
-if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
+if(NOT ARTS_VALIDITY STREQUAL "FLUSH")
 add_arts_test(group_nested_chain_writes)
 register_multinode_test(group_nested_chain_writes TIMEOUT 60 VARIANTS 2n_9w_1p)
 arts_test_properties(group_nested_chain_writes_2n_9w_1p PROPERTIES
@@ -3239,7 +3239,7 @@ function(arts_cover_test name program)
     endforeach()
 endfunction()
 
-if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
+if(NOT ARTS_VALIDITY STREQUAL "FLUSH")
     # db_destroy_covered_read: rounds of blocks whose read request a write
     # turn of its own rank served, each block destroyed once its holds are
     # released; with the hook, requests overtake each other.
@@ -3329,10 +3329,10 @@ if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
         # teardown and is answered (or dropped) rather than parked.  Only
         # the arms whose home hops have one; four ranks give the holder a
         # rank of its own.
-        if((ARTS_COHERENCE_ARM MATCHES "^(VAL|INV)$" AND
-            ARTS_WRITE_POLICY STREQUAL "WB") OR
-           (ARTS_COHERENCE_ARM STREQUAL "EXCL" AND
-            ARTS_RELEASE_POLICY STREQUAL "RETAIN"))
+        if((ARTS_VALIDITY MATCHES "^(VAL|INV)$" AND
+            ARTS_READ_SOURCE STREQUAL "OWNER") OR
+           (ARTS_VALIDITY STREQUAL "EXCL" AND
+            ARTS_RETENTION STREQUAL "RETAIN"))
             arts_cover_test(db_destroy_cover_settles_hop
                             db_destroy_cover_settles ARGS t2 hop
                             VARIANTS 4n_4w_1p HOOK "ARTS_REQUEST_DELAY_MS=200:hop"
@@ -3372,11 +3372,11 @@ endif()
 # `writes` and a read under `reads`, so for `reserved` the counter of that
 # plane holds one per block (8) and every other holds 0.
 add_arts_test(db_size_round_once)
-if(ARTS_COHERENCE_ARM STREQUAL "EXCL")
+if(ARTS_VALIDITY STREQUAL "EXCL")
     set(_size_counters NUM_EXCL_SIZE_CTS)
-elseif(ARTS_COHERENCE_ARM STREQUAL "VAL")
+elseif(ARTS_VALIDITY STREQUAL "VAL")
     set(_size_counters NUM_GRANT_SIZE_CTS NUM_SNAPSHOT_SIZE_CTS)
-elseif(ARTS_COHERENCE_ARM STREQUAL "FLUSH")
+elseif(ARTS_VALIDITY STREQUAL "FLUSH")
     set(_size_counters NUM_FLUSH_SIZE_CTS)
 else()
     set(_size_counters NUM_GRANT_SIZE_CTS NUM_INV_SIZE_CTS)
@@ -3432,7 +3432,7 @@ endif()
 # publishes, requesters park, the home runs hand-overs), plus a remote write
 # first touch.  Its writers are unordered, which DB-WRF does not admit, so
 # every other arm runs it, wherever the walk can print.
-if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH" AND ARTS_LOG_LEVEL GREATER_EQUAL 3)
+if(NOT ARTS_VALIDITY STREQUAL "FLUSH" AND ARTS_LOG_LEVEL GREATER_EQUAL 3)
 register_single_node_test(quiescent_shutdown_no_residue TIMEOUT 60)
 register_multinode_test(quiescent_shutdown_no_residue TIMEOUT 120)
 foreach(_t quiescent_shutdown_no_residue quiescent_shutdown_no_residue_2n_9w_1p
@@ -3525,7 +3525,7 @@ endif()
 # which widens the window between a waiter's park and the grant that takes the
 # waiting set.
 # The write right leaves rank 0 for rank 1 only, so a third rank adds nothing.
-if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
+if(NOT ARTS_VALIDITY STREQUAL "FLUSH")
 add_arts_test(grant_one_request_per_grant)
 register_multinode_test(grant_one_request_per_grant TIMEOUT 120
                         VARIANTS 2n_9w_1p 2n_8w_2p)
@@ -3534,7 +3534,7 @@ foreach(_v 2n_9w_1p 2n_8w_2p)
         FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
 endforeach()
 if(ARTS_DEBUG_INJECTION AND
-   ARTS_COHERENCE_ARM MATCHES "^(VAL|INV)$")
+   ARTS_VALIDITY MATCHES "^(VAL|INV)$")
     arts_test_cfg(_cfg 2n_8w_2p)
     arts_add_multinode_test(grant_one_request_per_grant_2n_8w_2p_fuzz
                             COMMAND grant_one_request_per_grant)
@@ -3553,7 +3553,7 @@ endif()
 # rank has two distinct remote writer ranks; the two progress threads reorder
 # one peer's hand-over messages.  Its writers are unordered, which DB-WRF does
 # not admit.
-if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
+if(NOT ARTS_VALIDITY STREQUAL "FLUSH")
 register_multinode_test(coherence_multi_writer_dist TIMEOUT 120)
 foreach(_v 2n_9w_1p 4n_4w_1p 2n_8w_2p)
     arts_test_properties(coherence_multi_writer_dist_${_v} APPEND PROPERTIES
@@ -3577,7 +3577,7 @@ endif()
 # unordered, which DB-WRF does not admit, so every other arm runs it.
 # Single-node registration covers the all-local paths; the
 # multinode variants carry the cross-rank ones.
-if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
+if(NOT ARTS_VALIDITY STREQUAL "FLUSH")
 register_single_node_test(coherence_writer_ro_overlap TIMEOUT 120)
 register_multinode_test(coherence_writer_ro_overlap TIMEOUT 180)
 # Under ThreadSanitizer a multinode run's time goes to the reports its racing
@@ -3623,7 +3623,7 @@ endif()
 # the racing readers on a rank that is neither the home nor the writer; two
 # progress threads reorder the credit-less write-back's announce, landing, put
 # and commit.
-if(ARTS_COHERENCE_ARM STREQUAL "FLUSH")
+if(ARTS_VALIDITY STREQUAL "FLUSH")
     add_arts_test(wrf_flush)
     register_single_node_test(wrf_flush TIMEOUT 60)
     register_multinode_test(wrf_flush TIMEOUT 120)
@@ -3769,7 +3769,7 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/generated_tests.cmake)
 
 # inv_round_snapshot: the pure per-word decision of an invalidation round's
 # roster snapshot (who is retired, who stays).  INV only.
-if(ARTS_COHERENCE_ARM STREQUAL "INV")
+if(ARTS_VALIDITY STREQUAL "INV")
 add_pure_unit_src(inv_round_snapshot DEFINES ARTS_UNIT_STANDALONE_SHIMS PASS_REGEX "PASS inv_round_snapshot:" TIMEOUT 60)
 endif()
 
@@ -3799,7 +3799,7 @@ function(arts_layout_probe_cpp probe tag)
         ${ARTS_INTERNAL_INCLUDE_DIR}
         ${ARTS_BUILD_INTERNAL_INCLUDE_DIR})
     arts_apply_protocol(${probe}_cpp
-        ${ARTS_COHERENCE_ARM} ${ARTS_WRITE_POLICY} ${ARTS_RELEASE_POLICY})
+        ${ARTS_VALIDITY} ${ARTS_RETENTION} ${ARTS_READ_SOURCE})
     set_property(TARGET ${probe}_cpp PROPERTY POSITION_INDEPENDENT_CODE OFF)
     target_compile_options(${probe}_cpp PRIVATE ${ARTS_NON_PIE_COMPILE_OPTIONS})
     target_link_options(${probe}_cpp PRIVATE ${ARTS_NON_PIE_LINK_OPTIONS})
@@ -3953,7 +3953,7 @@ foreach(_t IN LISTS _arts_test_targets)
         continue()
     endif()
     get_target_property(_defs ${_t} COMPILE_DEFINITIONS)
-    if(NOT _defs MATCHES "ARTS_PROTOCOL_")
+    if(NOT _defs MATCHES "ARTS_VALIDITY_")
         message(FATAL_ERROR
                 "test target ${_t} was registered without "
                 "arts_apply_protocol(): it would compile against a "

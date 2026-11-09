@@ -35,7 +35,7 @@
 #define ARTS_COHERENCE_INV_TYPES_H
 
 #include "arts/coherence/types_common.h"
-#ifndef ARTS_PROTOCOL_INV
+#ifndef ARTS_VALIDITY_INV
 #error "inv/types.h is the INV layout; this translation unit's cell is another"
 #endif
 #include "arts/coherence/census.h" /* ARTS_DB_CENSUS */
@@ -202,7 +202,7 @@ struct arts_db_inv_pub_s {
    * finish accepts it, after the batch's acks: not before, because the home
    * may not hand the block on while a stale copy of it still stands. */
   unsigned int returns_grant;
-#ifdef ARTS_WRITE_POLICY_WT
+#ifdef ARTS_READ_SOURCE_HOME
   /* The payload has landed in place in the stable buffer (the commit leg
    * submits the entry only once its PUT has completed); the round bumps the
    * buffer's version.  A same-rank release moves no bytes. */
@@ -244,7 +244,7 @@ struct arts_db_cache_s {
    * slot, so what orders an install before that decision is DELIVER's CAS on
    * cache_state, not the slot. */
   _Atomic(arts_shared_slot_t) buffer;
-#ifdef ARTS_WRITE_POLICY_WT
+#ifdef ARTS_READ_SOURCE_HOME
   arts_lf_stack_t publication_waiters; /* pre-publication read holds */
 #if ARTS_DB_CENSUS
   /* Whether the block's first publication, which publication_waiters await,
@@ -265,7 +265,7 @@ struct arts_db_cache_s {
   uint64_t owed_ack_token;
   /* The write request's axis lives in cache_state (rw), beside the read
    * plane, so a reader and a writer decide against each other in one CAS. */
-#ifndef ARTS_RELEASE_PURGE
+#ifndef ARTS_RETENTION_PURGE
   /* Next transfer target, published by the INVALIDATE handler BEFORE it
    * withdraws the sentinel.  ARTS_NO_PENDING_OWNER = none pending.  Publishing
    * before the withdrawal is what makes a separate flag redundant: whichever
@@ -285,7 +285,7 @@ struct arts_db_cache_s {
    * GRANT_RESPONSE carries it to the new owner's CONFIRM. */
   uint64_t incoming_new_owner_home_token;
 #endif
-#if defined(ARTS_WRITE_POLICY_WB) && ARTS_DB_CENSUS
+#if defined(ARTS_READ_SOURCE_OWNER) && ARTS_DB_CENSUS
   /* Whether the grant this rank installed last was shipped by another rank:
    * written by the install before its CONFIRM leaves, read by the drain that
    * CONFIRM's acknowledgement runs, which the delivery orders after it. */
@@ -319,12 +319,12 @@ struct arts_db_cache_s {
   _Atomic(unsigned int) pub_flight;
   arts_lf_stack_t pub_waiters;
   _Atomic(arts_lf_link_t *) pub_parked;
-#ifdef ARTS_WRITE_POLICY_WT
+#ifdef ARTS_READ_SOURCE_HOME
   _Atomic(uint64_t) home_pub_addr;
   _Atomic(uint64_t) home_pub_rkey;
   _Atomic(uint64_t) home_pub_txid;
 #endif
-#ifdef ARTS_RELEASE_PURGE
+#ifdef ARTS_RETENTION_PURGE
   /* The hand-back obligation and the install count it names, as in the VAL
    * write-through layout (see coherence/val/types.h). */
   _Atomic(uint64_t) pending_grant_return;
@@ -365,7 +365,7 @@ struct arts_db_s {
   bool home_initialized;
 
   /* ---- migrating write grant (home side; see coherence/grant.c) ---- */
-#ifndef ARTS_RELEASE_PURGE
+#ifndef ARTS_RETENTION_PURGE
   /* The holder a revocation targets; a home whose grants come back unasked
    * revokes no one, and its own possession is its whole directory.  Stored
    * release and loaded acquire under the baton; under write-back the read
@@ -375,12 +375,12 @@ struct arts_db_s {
   struct arts_home_grantreq_queue_s pending_rw; /* Vyukov MPSC, pop-one */
   /* The serving baton, a claim counter (directory.h). */
   _Atomic(uint64_t) grant_baton;
-#ifndef ARTS_RELEASE_PURGE
+#ifndef ARTS_RETENTION_PURGE
   /* The requester the round in flight transfers the grant to: relaxed,
    * ordered by the baton (directory.h). */
   _Atomic(unsigned int) pending_install_owner;
 #endif
-#ifdef ARTS_RELEASE_PURGE
+#ifdef ARTS_RETENTION_PURGE
   /* Single-slot return latch.  A voluntary return is never rejected: it is
    * either accepted at once or parked here for the thread already inside the
    * home's serving tail.  Both sides publish then check and consume by CAS, so
@@ -418,7 +418,7 @@ struct arts_db_s {
    * round, acquiring the ARM's writes (round_entries) and every earlier ack.
    * A round that retires no copy is never armed. */
   _Atomic(uint32_t) round_acks;
-#ifdef ARTS_WRITE_POLICY_WT
+#ifdef ARTS_READ_SOURCE_HOME
   /* The home's canonical publication axis, advanced to each round's highest
    * published version.  It is NOT the installed buffer's version, and must not
    * be: a home-resident owner writes THROUGH the home buffer in place, so its

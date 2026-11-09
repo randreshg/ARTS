@@ -25,7 +25,7 @@
  * to move: its programs keep a block's write acquisitions exclusive.
  *
  * Write-policy-divergent steps are delegated to seams the write policy
- * defines (coherence/grant_wt.c, coherence/grant_wb.c): the
+ * defines (coherence/grant_home.c, coherence/grant_owner.c): the
  * GRANT_INVALIDATE, GRANT_RESPONSE and CONFIRM handlers, where WT drains
  * immediately and WB gates on CONFIRM_ACK (INVALIDATE and CONFIRM exist only
  * under RETAIN).
@@ -192,9 +192,9 @@ arts_db_acquire_remote_rw(struct arts_db_cache_s *cache, struct arts_edt_s *edt,
 }
 
 /* The arts_handler_db_acquire 8-case body lives per-write-policy in
- * coherence/val/wt.c and coherence/val/wb.c — the two builds differ only on the
- * RO-has-local-data predicate (WT: is_home||is_owner; WB: is_owner), which
- * the C-preprocessor seam forbids in a shared TU.  Both call the shared
+ * coherence/val/home.c and coherence/val/owner.c — the two builds differ only
+ * on the RO-has-local-data predicate (WT: is_home||is_owner; WB: is_owner),
+ * which the C-preprocessor seam forbids in a shared TU.  Both call the shared
  * arts_db_acquire_rw_local_fast / arts_db_acquire_remote_rw above and
  * arts_db_acquire_remote_ro (coherence/coherence.c).
  */
@@ -303,7 +303,7 @@ void arts_db_send_grant_response(struct arts_db_cache_s *cache,
   uint64_t db_size =
       atomic_load_explicit(&cache->db_size, memory_order_relaxed);
 
-#ifdef ARTS_WRITE_POLICY_WB
+#ifdef ARTS_READ_SOURCE_OWNER
   /* Self-credit before the map migrates: this (ex-)owner keeps its buffer
    * after the ship, and its self-produced version was never "sent" by anyone —
    * without this entry the inherited ledger would re-ship a payload the
@@ -315,7 +315,7 @@ void arts_db_send_grant_response(struct arts_db_cache_s *cache,
   }
 #endif
 
-#ifdef ARTS_RELEASE_PURGE
+#ifdef ARTS_RETENTION_PURGE
   /* Every grant here is issued BY the home, and a home serving itself takes
    * the shortcut that ships nothing at all, so the self-transfer arm below is
    * unreachable under this release policy. */
@@ -452,7 +452,7 @@ void arts_db_send_grant_response(struct arts_db_cache_s *cache,
  * the next round, and clearing it up front leaves that fresh publish intact.
  * The field is the channel only where the home revokes a holder; a policy
  * whose grants move through the home never writes it. */
-#ifndef ARTS_RELEASE_PURGE
+#ifndef ARTS_RETENTION_PURGE
 void arts_db_grant_ship_pending(struct arts_db_cache_s *cache) {
   unsigned int new_owner = cache->incoming_new_owner;
   struct arts_rdzv_landing_s rdzv = cache->incoming_new_owner_rdzv;
@@ -465,7 +465,7 @@ void arts_db_grant_ship_pending(struct arts_db_cache_s *cache) {
   cache->incoming_new_owner_token = 0u;
   cache->incoming_new_owner_home_token = 0u;
   bool data_less = false;
-#ifdef ARTS_WRITE_POLICY_WB
+#ifdef ARTS_READ_SOURCE_OWNER
   /* The new owner's copy is current when it carries this buffer's version:
    * under write-back the owner's buffer version is the one axis every copy
    * is stamped on, each release advances it before any copy is retired or
@@ -486,14 +486,14 @@ void arts_db_grant_ship_pending(struct arts_db_cache_s *cache) {
   arts_db_send_grant_response(cache, new_owner, &rdzv, data_less, token,
                               home_token);
 }
-#endif /* !ARTS_RELEASE_PURGE */
+#endif /* !ARTS_RETENTION_PURGE */
 
 /* ===== Home-side ownership handlers (VAL, INV) =======================
  * GRANT_REQUEST exists only in the arms that link this TU.  The
  * home-directory machinery these handlers touch (pending_rw and grant_baton,
  * and under RETAIN rw_holder) is shared by both write policies; where they
- * diverge is delegated to the seams in coherence/grant_wt.c / grant_wb.c and
- * coherence/grant_retain.c / grant_purge.c. */
+ * diverge is delegated to the seams in coherence/grant_home.c /
+ * grant_owner.c and coherence/grant_retain.c / grant_purge.c. */
 
 /* Cat-B pure body (OoO g_ooo_table[OOO_DB_GRANT_REQUEST]): the OoO engine
  * has already acquired the home db_s for db_guid and pinned a ref across this
@@ -533,7 +533,7 @@ void arts_handler_db_grant_request(void *item_v, void *args_v) {
   }
   uint64_t db_size =
       atomic_load_explicit(&cache->db_size, memory_order_relaxed);
-#ifdef ARTS_WRITE_POLICY_WT
+#ifdef ARTS_READ_SOURCE_HOME
   /* The write-through home holds this block's canonical bytes for its whole
    * lifetime, and from here on it owes them to someone: the grant it is
    * about to hand out carries them, and the holder's release publishes back
@@ -593,7 +593,7 @@ void arts_send_db_grant_request(struct arts_db_cache_s *cache,
    * storage (it is entitled to a pointer of the declared size whether or not
    * anyone has written the block) or returns it to the pool when it already
    * holds a buffer. */
-#ifdef ARTS_WRITE_POLICY_WT
+#ifdef ARTS_READ_SOURCE_HOME
   /* The write-through home already holds the newest bytes (every release
    * published them), so its own request needs the PERMISSION only: no
    * landing, and the ex-owner's transfer takes the data-less arm.  The
@@ -701,7 +701,7 @@ void arts_handler_db_grant_cts(struct arts_msg_grant_cts_packet_s *p) {
   arts_send_db_grant_request(cache, arts_db_rw_req_declaim(cache));
 }
 
-#ifndef ARTS_RELEASE_PURGE
+#ifndef ARTS_RETENTION_PURGE
 void arts_send_db_grant_invalidate(
     struct arts_db_s *db, unsigned int owner_rank, unsigned int new_owner_rank,
     const struct arts_rdzv_landing_s *new_owner_rdzv, uint64_t new_owner_have,
@@ -794,4 +794,4 @@ void arts_send_db_grant_confirm(struct arts_db_s *db, uint64_t home_token) {
   }
   arts_transport_send_async((int)home_rank, (char *)&p, sizeof(p));
 }
-#endif /* !ARTS_RELEASE_PURGE */
+#endif /* !ARTS_RETENTION_PURGE */

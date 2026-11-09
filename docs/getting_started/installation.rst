@@ -126,36 +126,40 @@ All options are set with ``-D<NAME>=<VALUE>`` on the cmake line.
      - ON
      - Auto-detect the local GPU's CUDA architecture via ``nvidia-smi`` (only
        when ``ARTS_USE_GPU=ON``; otherwise set ``CMAKE_CUDA_ARCHITECTURES``).
-   * - ``ARTS_COHERENCE_PROTOCOL``
+   * - ``ARTS_VALIDITY``
      - INV
-     - Coherence protocol, which also fixes the memory model the program
-       must satisfy — ``INV`` (default; invalidation: directory
-       write-invalidate with acknowledged per-release invalidation rounds
-       on a run of several ranks),
+     - How a copy stays valid after a write, which also fixes the memory
+       model the program must satisfy — ``INV`` (default; invalidation:
+       directory write-invalidate with acknowledged per-release
+       invalidation rounds on a run of several ranks),
        ``VAL`` (validation: versioned snapshots, readers never
        blocked/invalidated), or ``EXCL`` (exclusion: per-DB distributed
        reader-writer lock), all under the OCR model (races legal, the
-       runtime orders every conflict it must); or ``FLUSH`` (fetch the
-       whole payload at every remote acquire, write it back at every remote
-       RW release) under the DB-WRF model (exclusive write acquisition: the
-       program guarantees that at most one write-mode acquisition of a
-       DataBlock is live at any time, system-wide; evaluation only), with
-       no write- or release-policy axis of its own.
-       Valid combos: {VAL,INV}×WT×{PURGE,RETAIN}, {VAL,INV}×WB×RETAIN,
-       EXCL×WB×{PURGE,RETAIN}, FLUSH.  Compile-time; all ranks must share
-       one build.
-   * - ``ARTS_WRITE_POLICY``
-     - WB
-     - Write policy at release granularity, live in INV/VAL — ``WT``
-       (write-through at release; the home holds a current copy and serves
-       reads) or ``WB`` (write-back; the payload stays with the last writer
-       and moves on demand).
-   * - ``ARTS_RELEASE_POLICY``
+       runtime orders every conflict it must); or ``FLUSH`` (a copy is
+       valid only inside the acquiring EDT: fetch the whole payload at
+       every remote acquire, write it back at every remote RW release)
+       under the CDAG model (the program orders every pair of a
+       DataBlock's write acquisitions by happens-before, through any
+       release; evaluation only), with neither a retention nor a read
+       source.  Built: EXCL·PURGE·HOME, EXCL·RETAIN·OWNER,
+       {INV,VAL}·PURGE·HOME, {INV,VAL}·RETAIN·{HOME,OWNER}, FLUSH.
+       Compile-time; all ranks must share one build.
+   * - ``ARTS_RETENTION``
      - RETAIN
-     - Release policy, live in EXCL and in WT × {VAL, INV} — ``PURGE``
-       (copy and permission return to the home when the last local user
-       finishes) or ``RETAIN`` (keep both until another node asks; the home
-       recalls on demand). ``WB`` requires ``RETAIN``.
+     - Who starts the ownership's return — ``PURGE`` (the holder: copy
+       and permission return to the home when the last local user
+       finishes) or ``RETAIN`` (the home: the holder keeps both until
+       another node asks, and the home recalls on demand).  FLUSH has
+       none.
+   * - ``ARTS_READ_SOURCE``
+     - OWNER
+     - Where a reader's copy comes from — ``HOME`` (every release ships
+       the payload to the home, which holds a current copy and serves
+       reads) or ``OWNER`` (the payload stays with the last writer and
+       moves on demand).  ``OWNER`` requires ``RETAIN``; under EXCL the
+       retention fixes it (``HOME`` with ``PURGE``, ``OWNER`` with
+       ``RETAIN``); FLUSH has none.  Any other combination is a
+       configure error naming its reason and the value to pass.
    * - ``ARTS_MALLOC``
      - mimalloc
      - General allocator — ``mimalloc`` (default; vendored static, the
@@ -165,10 +169,11 @@ All options are set with ``-D<NAME>=<VALUE>`` on the cmake line.
    * - ``ARTS_USE_CXL``
      - OFF
      - This tree's own library keeps every data block's payload in CXL
-       memory.  Requires ``ARTS_COHERENCE_PROTOCOL=EXCL``,
-       ``ARTS_RELEASE_POLICY=PURGE``, ``ARTS_CXL_RESIDENCY`` and an x86-64
-       target (the store orders the device with x86 flush and fence
-       instructions); anything else is a configure error.
+       memory.  Requires EXCL·PURGE·HOME (``ARTS_VALIDITY=EXCL``,
+       ``ARTS_RETENTION=PURGE``, ``ARTS_READ_SOURCE=HOME``),
+       ``ARTS_CXL_RESIDENCY`` and an x86-64 target (the store orders the
+       device with x86 flush and fence instructions); anything else is a
+       configure error.
    * - ``ARTS_CXL_RESIDENCY``
      - (empty)
      - ``STAGED`` (a rank-local copy staged from the block's slot at the

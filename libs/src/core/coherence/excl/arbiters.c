@@ -13,7 +13,7 @@
  *
  * NOT listed in CMakeLists.txt as a standalone TU.
  */
-#ifdef ARTS_RELEASE_PURGE
+#ifdef ARTS_RETENTION_PURGE
 
 #include "arts/coherence/excl/types.h"
 
@@ -324,9 +324,9 @@ static uint64_t cache_compute_next(uint64_t cur, int op, uint32_t *out_action) {
   }
   return CACHE_MAKE_X(rws, ros, par, stub, wc, rc);
 }
-#endif /* ARTS_RELEASE_PURGE */
+#endif /* ARTS_RETENTION_PURGE */
 
-#ifdef ARTS_RELEASE_RETAIN
+#ifdef ARTS_RETENTION_RETAIN
 
 #include "arts/coherence/excl/types.h"
 
@@ -659,4 +659,4 @@ static uint64_t lock_owner_compute_next(uint64_t cur, int op,
   *out_action = action;
   return LOCK_MAKE(phase, owner, w, r);
 }
-#endif /* ARTS_RELEASE_RETAIN */
+#endif /* ARTS_RETENTION_RETAIN */

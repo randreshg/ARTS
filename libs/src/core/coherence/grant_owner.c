@@ -198,7 +198,7 @@ static void owner_response_commit(struct arts_db_s *db, uint64_t home_token) {
   /* RW drain is DEFERRED to the CONFIRM_ACK handler (home has not flipped
    * rw_holder to us yet).  Reads are not: a read waiter resumed here gets
    * the transferred (pre-write) version, which is correct. */
-#ifdef ARTS_PROTOCOL_VAL
+#ifdef ARTS_VALIDITY_VAL
   /* Read waiters batched while this rank had no local copy resume here
    * against the transferred buffer instead of re-fetching remotely. */
   arts_db_ro_combine_grant_drain(cache);
@@ -486,7 +486,7 @@ void arts_handler_db_grant_invalidate(void *item_v, void *args_v) {
  * The GRANT_RESPONSE wire sender, the owner→owner ship and the CONFIRM
  * sender are shared (coherence/grant.c); only the WB-only CONFIRM_ACK sender
  * is here.  The versioned-snapshot redirect, handler and sender, is VAL's
- * (coherence/val/wb.c). */
+ * (coherence/val/owner.c). */
 
 void arts_send_db_grant_confirm_ack(
     struct arts_db_s *db, unsigned int new_owner_rank, uint64_t new_owner_token,

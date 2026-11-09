@@ -1013,7 +1013,7 @@ def main():
     ap.add_argument("--build-dir", required=True)
     ap.add_argument("--work-dir", required=True)
     ap.add_argument("--register", required=True)
-    ap.add_argument("--cell", required=True, help="ARM.WRITE.RELEASE")
+    ap.add_argument("--cell", required=True, help="VALIDITY.RETENTION.READ_SOURCE")
     ap.add_argument("--reference", action="store_true")
     ap.add_argument("--gcc", required=True)
     ap.add_argument("--clang", default="")

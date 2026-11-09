@@ -34,7 +34,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#if !defined(ARTS_PROTOCOL_VAL) && !defined(ARTS_PROTOCOL_INV)
+#if !defined(ARTS_VALIDITY_VAL) && !defined(ARTS_VALIDITY_INV)
 #error "db_reader_pool is built only where the arm chains readers by index"
 #endif
 
@@ -65,7 +65,7 @@ static unsigned int slot_of(uint32_t idx) { return idx ^ 0x2B5u; }
 
 /* ---- the arm's request word -------------------------------------------- */
 
-#if defined(ARTS_PROTOCOL_INV)
+#if defined(ARTS_VALIDITY_INV)
 #define WORD(c) (&(c)->cache_state)
 #define OP_ACQ_RO INV_CACHE_OP_ACQ_RO
 #define ACT_PARK INV_CACHE_ACT_PARK
@@ -179,7 +179,7 @@ static void part_wide(struct arts_db_cache_s *c) {
   uint32_t served = 0u;
   uint64_t pre, post;
   uint32_t act;
-#if defined(ARTS_PROTOCOL_INV)
+#if defined(ARTS_VALIDITY_INV)
   /* The reply publishes the copy and takes the whole chain. */
   pre = step(c, INV_CACHE_OP_DELIVER, 0u, &post, &act);
   CHECK(act == INV_CACHE_ACT_PUBLISH && INV_CACHE_HEAD_RO(post) == 0u,
@@ -360,7 +360,7 @@ int main(void) {
   part_concurrent();
 
   /* 4: readers still parked when the cache goes. */
-#if defined(ARTS_PROTOCOL_INV)
+#if defined(ARTS_VALIDITY_INV)
   {
     /* The copy part 1 left valid would serve them: retire it first. */
     uint64_t post;

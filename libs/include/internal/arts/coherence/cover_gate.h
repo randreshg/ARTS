@@ -35,8 +35,8 @@ enum arts_cover_gate_op {
   ARTS_COVER_GATE_MARK,       /* the destroy */
 };
 
-#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV) ||                \
-    (defined(ARTS_PROTOCOL_EXCL) && defined(ARTS_RELEASE_RETAIN))
+#if defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV) ||                \
+    (defined(ARTS_VALIDITY_EXCL) && defined(ARTS_RETENTION_RETAIN))
 /* One RMW of the gate; its pre-image decides the edge (true: this step left a
  * marked gate with nothing owed, and the caller tears down).  A step outside
  * its precondition is fatal after its RMW has committed, so while the abort

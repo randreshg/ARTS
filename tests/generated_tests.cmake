@@ -3,7 +3,7 @@
 # tests/CMakeLists.txt includes this file.  add_arts_test takes a test's source
 # from tests/ocr or tests/unit, so programs of both kinds are registered here.
 #
-# Protocol selection (ARTS_PROTOCOL_* / ARTS_WRITE_POLICY_* / ARTS_RELEASE_*)
+# Protocol selection (ARTS_VALIDITY_* / ARTS_RETENTION_* / ARTS_READ_SOURCE_*)
 # is applied per target from the build directory's coherence configuration
 # (arts_apply_protocol, in add_arts_test and add_pure_unit_src) -- it is
 # deliberately NOT hardcoded here, so each test compiles under whatever
@@ -35,7 +35,7 @@ function(add_pure_unit_src name)
     # requires exactly one compile-time coherence-protocol selection.  Apply it
     # unconditionally — tests that do not include protocol-sensitive headers
     # simply leave the macros unused, so this is harmless for all others.
-    arts_apply_protocol(${name} ${ARTS_COHERENCE_ARM} ${ARTS_WRITE_POLICY} ${ARTS_RELEASE_POLICY})
+    arts_apply_protocol(${name} ${ARTS_VALIDITY} ${ARTS_RETENTION} ${ARTS_READ_SOURCE})
     set_property(TARGET ${name} PROPERTY POSITION_INDEPENDENT_CODE OFF)
     target_compile_options(${name} PRIVATE ${ARTS_NON_PIE_COMPILE_OPTIONS})
     target_link_options(${name} PRIVATE ${ARTS_NON_PIE_LINK_OPTIONS})
@@ -226,7 +226,7 @@ endif()
 # --- DB lifecycle & acquire/release accounting ---
 # The exclusion arm's lock state under a creator's release with nothing to
 # publish.
-if(ARTS_COHERENCE_ARM STREQUAL "EXCL")
+if(ARTS_VALIDITY STREQUAL "EXCL")
 add_arts_test(db_excl_creator_release_keeps_joiner_write)
 register_single_node_test(db_excl_creator_release_keeps_joiner_write TIMEOUT 30)
 set_tests_properties(db_excl_creator_release_keeps_joiner_write PROPERTIES
@@ -275,7 +275,7 @@ endif()
 # --- event channel / satisfy / destroy / create-collision ---
 # These three record into one block from EDTs with no order among them, which
 # DB-WRF does not admit.
-if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
+if(NOT ARTS_VALIDITY STREQUAL "FLUSH")
 add_arts_test(event_channel_transient_null)
 add_arts_test(event_satisfy_adddep_window)
 add_arts_test(group_latch_rearm)
@@ -330,9 +330,9 @@ endif()
 # goes back at the zero edge.  Under the write-through arms' PURGE a grant goes
 # back to its home at the zero edge, and on one rank it is already there, so
 # there the test checks only the holds counted under it.
-if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH" AND
-   NOT (ARTS_COHERENCE_ARM STREQUAL "EXCL" AND
-        ARTS_RELEASE_POLICY STREQUAL "PURGE"))
+if(NOT ARTS_VALIDITY STREQUAL "FLUSH" AND
+   NOT (ARTS_VALIDITY STREQUAL "EXCL" AND
+        ARTS_RETENTION STREQUAL "PURGE"))
 add_arts_test(grant_sticky)
 register_single_node_test(grant_sticky TIMEOUT 60)
 set_tests_properties(grant_sticky PROPERTIES PASS_REGULAR_EXPRESSION "PASS grant_sticky")
@@ -346,8 +346,8 @@ endif()
 # one shape with two progress threads per rank, so the home's handlers for one
 # transfer run on either.  The shutdown waits on a group that covers
 # every task, so the teardown walk must stay silent.
-if((ARTS_COHERENCE_ARM STREQUAL "VAL" OR ARTS_COHERENCE_ARM STREQUAL "INV")
-   AND ARTS_RELEASE_POLICY STREQUAL "PURGE")
+if((ARTS_VALIDITY STREQUAL "VAL" OR ARTS_VALIDITY STREQUAL "INV")
+   AND ARTS_RETENTION STREQUAL "PURGE")
 add_arts_test(grant_purge_possession)
 register_multinode_test(grant_purge_possession TIMEOUT 120
                         VARIANTS 2n_9w_1p 2n_8w_2p)
@@ -361,7 +361,7 @@ endif()
 # A GRANT_RESPONSE shorter than its header, or declaring a version map other
 # than the bytes that follow the header, is fatal on the receiving rank.  The
 # migrating grant exists on VAL and INV, with one handler per write policy.
-if(ARTS_COHERENCE_ARM STREQUAL "VAL" OR ARTS_COHERENCE_ARM STREQUAL "INV")
+if(ARTS_VALIDITY STREQUAL "VAL" OR ARTS_VALIDITY STREQUAL "INV")
 add_arts_test(grant_response_bounds)
 arts_test_cfg(_cfg 1n_20w)
 arts_add_test(grant_response_bounds_short STATUS 1
@@ -384,7 +384,7 @@ endif()
 # --- EXCL protocol-specific ---
 # The exclusion arm's own cache and home paths, built and registered in its
 # trees only.
-if(ARTS_COHERENCE_ARM STREQUAL "EXCL")
+if(ARTS_VALIDITY STREQUAL "EXCL")
 # A same-rank cohort of write acquisitions of one block, every one of which
 # must be granted: a lost wakeup leaves the cohort short and the run hangs.
 # Two ranks already put the home off the cohort's rank.
@@ -434,7 +434,7 @@ endif()
 # must run exactly once.  A valid write-churn check on every arm whose
 # runtime orders writers; under DB-WRF that ordering is the program's, and
 # this program omits it.
-if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
+if(NOT ARTS_VALIDITY STREQUAL "FLUSH")
 add_arts_test(excl_multiconsumer_queue)
 register_single_node_test(excl_multiconsumer_queue TIMEOUT 60)
 register_multinode_test(excl_multiconsumer_queue TIMEOUT 60)
@@ -449,7 +449,7 @@ endif()
 # These assert what the runtime's exclusive-RW serialization guarantees; under
 # DB-WRF that ordering is the program's, and these programs deliberately omit
 # it.
-if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
+if(NOT ARTS_VALIDITY STREQUAL "FLUSH")
 add_arts_test(excl_req_before_create)
 register_multinode_test(excl_req_before_create TIMEOUT 90 VARIANTS 4n_4w_1p)
 arts_test_properties(excl_req_before_create_4n_4w_1p PROPERTIES
@@ -479,7 +479,7 @@ register_multinode_test(db_create_claims_first_touch_stub TIMEOUT 120
 # path, so a create-touch-destroy churn on every rank leaves no descriptor
 # pinned.  Its write turns on each block are unordered, which DB-WRF does not
 # admit.
-if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
+if(NOT ARTS_VALIDITY STREQUAL "FLUSH")
 add_arts_test(cat_c_ref_balance)
 register_single_node_test(cat_c_ref_balance TIMEOUT 120)
 register_multinode_test(cat_c_ref_balance TIMEOUT 120)
@@ -509,14 +509,14 @@ endif()
 # test.  The shutdown leaves work undone by design, so the walk's markers do
 # not judge it.
 set(_blocked_publishes OFF)
-if(ARTS_COHERENCE_ARM MATCHES "^(VAL|INV)$" AND
-   (ARTS_WRITE_POLICY STREQUAL "WT" OR ARTS_COHERENCE_ARM STREQUAL "INV"))
+if(ARTS_VALIDITY MATCHES "^(VAL|INV)$" AND
+   (ARTS_READ_SOURCE STREQUAL "HOME" OR ARTS_VALIDITY STREQUAL "INV"))
     set(_blocked_publishes ON)
 endif()
 set(_blocked_fail
     "teardown skipped: (origin|the node|[0-9]+ thread\\(s\\) stopped mid-transition)")
-if(_blocked_publishes OR ARTS_COHERENCE_ARM STREQUAL "FLUSH" OR
-   (ARTS_COHERENCE_ARM STREQUAL "EXCL" AND ARTS_RELEASE_POLICY STREQUAL "PURGE"
+if(_blocked_publishes OR ARTS_VALIDITY STREQUAL "FLUSH" OR
+   (ARTS_VALIDITY STREQUAL "EXCL" AND ARTS_RETENTION STREQUAL "PURGE"
     AND NOT ARTS_USE_CXL))
 add_arts_test(shutdown_blocked_release_ends)
 register_multinode_test(shutdown_blocked_release_ends TIMEOUT 30
@@ -629,7 +629,7 @@ endforeach()
 # thread's own deque; every EDT runs exactly once.  One rank.
 # It records into one block from EDTs with no order among them, which DB-WRF
 # does not admit.
-if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
+if(NOT ARTS_VALIDITY STREQUAL "FLUSH")
 add_arts_test(scheduler_acquire_bias)
 register_single_node_test(scheduler_acquire_bias TIMEOUT 120)
 set_tests_properties(scheduler_acquire_bias PROPERTIES PASS_REGULAR_EXPRESSION "scheduler_acquire_bias: .* — PASS")
@@ -1533,8 +1533,8 @@ if(_c)
                          0:NUM_DB_PAYLOAD_SENT=0 0:BYTES_DB_PAYLOAD_SENT=0)
     endif()
     arts_counters_captured(_c NUM_PURGE_RETURN)
-    if(_c AND ARTS_RELEASE_POLICY STREQUAL "PURGE"
-       AND NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
+    if(_c AND ARTS_RETENTION STREQUAL "PURGE"
+       AND NOT ARTS_VALIDITY STREQUAL "FLUSH")
         list(APPEND _one 0:NUM_PURGE_RETURN=0)
     endif()
     arts_add_test(counter_exact_one RECORDS 1
@@ -1550,19 +1550,19 @@ if(_c)
     # then rank 0, the home, reads.  Rank 0 also holds two creates.
     set(_two 0:NUM_DB_ACQUIRE_READ=1 0:NUM_DB_ACQUIRE_WRITE=2
              1:NUM_DB_ACQUIRE_READ=4 1:NUM_DB_ACQUIRE_WRITE=1)
-    set(_cell "${ARTS_COHERENCE_ARM}_${ARTS_WRITE_POLICY}_${ARTS_RELEASE_POLICY}")
-    if(ARTS_COHERENCE_ARM STREQUAL "FLUSH")
+    set(_cell "${ARTS_VALIDITY}_${ARTS_RETENTION}_${ARTS_READ_SOURCE}")
+    if(ARTS_VALIDITY STREQUAL "FLUSH")
         set(_cell "FLUSH")
     endif()
     # rank 0 local, rank 0 remote, rank 1 local, rank 1 remote
-    set(_census_VAL_WT_RETAIN 3 0 1 4)
-    set(_census_VAL_WT_PURGE 3 0 0 5)
-    set(_census_VAL_WB_RETAIN 2 1 1 4)
-    set(_census_INV_WT_RETAIN 3 0 3 2)
-    set(_census_INV_WT_PURGE 3 0 3 2)
-    set(_census_INV_WB_RETAIN 2 1 3 2)
-    set(_census_EXCL_WB_PURGE 3 0 0 5)
-    set(_census_EXCL_WB_RETAIN 2 1 3 2)
+    set(_census_VAL_RETAIN_HOME 3 0 1 4)
+    set(_census_VAL_PURGE_HOME 3 0 0 5)
+    set(_census_VAL_RETAIN_OWNER 2 1 1 4)
+    set(_census_INV_RETAIN_HOME 3 0 3 2)
+    set(_census_INV_PURGE_HOME 3 0 3 2)
+    set(_census_INV_RETAIN_OWNER 2 1 3 2)
+    set(_census_EXCL_PURGE_HOME 3 0 0 5)
+    set(_census_EXCL_RETAIN_OWNER 2 1 3 2)
     set(_census_FLUSH 3 0 0 5)
     list(GET _census_${_cell} 0 _l0)
     list(GET _census_${_cell} 1 _r0)
@@ -1574,30 +1574,30 @@ if(_c)
                      1:NUM_DB_ACQUIRE_REMOTE=${_r1})
     arts_counters_captured(_c NUM_SNAPSHOT_REQUEST NUM_RO_COMBINE_WINDOW
                            NUM_RO_COMBINE_JOINED NUM_SNAPSHOT_HEADER_ONLY)
-    if(_c AND _cell STREQUAL "VAL_WT_RETAIN")
+    if(_c AND _cell STREQUAL "VAL_RETAIN_HOME")
         list(APPEND _two 1:NUM_SNAPSHOT_REQUEST=3 1:NUM_RO_COMBINE_WINDOW=3
                          1:NUM_RO_COMBINE_JOINED=0 0:NUM_SNAPSHOT_REQUEST=0
                          0:NUM_SNAPSHOT_HEADER_ONLY=2)
-    elseif(_c AND _cell STREQUAL "VAL_WT_PURGE")
+    elseif(_c AND _cell STREQUAL "VAL_PURGE_HOME")
         list(APPEND _two 1:NUM_SNAPSHOT_REQUEST=4 1:NUM_RO_COMBINE_WINDOW=4
                          1:NUM_RO_COMBINE_JOINED=0 0:NUM_SNAPSHOT_REQUEST=0
                          0:NUM_SNAPSHOT_HEADER_ONLY=3)
-    elseif(_c AND _cell STREQUAL "VAL_WB_RETAIN")
+    elseif(_c AND _cell STREQUAL "VAL_RETAIN_OWNER")
         list(APPEND _two 1:NUM_SNAPSHOT_REQUEST=3 1:NUM_RO_COMBINE_WINDOW=3
                          1:NUM_RO_COMBINE_JOINED=0 0:NUM_SNAPSHOT_REQUEST=1
                          0:NUM_RO_COMBINE_WINDOW=1 0:NUM_SNAPSHOT_HEADER_ONLY=2
                          1:NUM_SNAPSHOT_HEADER_ONLY=0)
     endif()
     arts_counters_captured(_c NUM_EXCL_RECALL_SENT)
-    if(_c AND _cell STREQUAL "EXCL_WB_RETAIN")
+    if(_c AND _cell STREQUAL "EXCL_RETAIN_OWNER")
         list(APPEND _two 0:NUM_EXCL_RECALL_SENT=1 1:NUM_EXCL_RECALL_SENT=0)
     endif()
     # Hand-backs: rank 0's hold of the block homed on rank 1; on rank 1 the
     # write turn, and under exclusion every read turn too.
     arts_counters_captured(_purge NUM_PURGE_RETURN)
-    if(_purge AND _cell STREQUAL "EXCL_WB_PURGE")
+    if(_purge AND _cell STREQUAL "EXCL_PURGE_HOME")
         list(APPEND _two 0:NUM_PURGE_RETURN=1 1:NUM_PURGE_RETURN=5)
-    elseif(_purge AND _cell MATCHES "_PURGE$")
+    elseif(_purge AND _cell MATCHES "_PURGE_")
         list(APPEND _two 0:NUM_PURGE_RETURN=1 1:NUM_PURGE_RETURN=1)
     endif()
     if(ARTS_TEST_REFERENCE_TREE)
@@ -1614,20 +1614,20 @@ if(_c)
               1:NUM_DB_ACQUIRE_READ=0 1:NUM_DB_ACQUIRE_WRITE=1
               1:NUM_DB_ACQUIRE_LOCAL_HIT=0 1:NUM_DB_ACQUIRE_REMOTE=1)
     # rank 0 local, rank 0 remote
-    set(_home_VAL_WT_RETAIN 2 1)
-    set(_home_VAL_WT_PURGE 3 0)
-    set(_home_VAL_WB_RETAIN 1 2)
-    set(_home_INV_WT_RETAIN 2 1)
-    set(_home_INV_WT_PURGE 3 0)
-    set(_home_INV_WB_RETAIN 1 2)
-    set(_home_EXCL_WB_PURGE 3 0)
-    set(_home_EXCL_WB_RETAIN 1 2)
+    set(_home_VAL_RETAIN_HOME 2 1)
+    set(_home_VAL_PURGE_HOME 3 0)
+    set(_home_VAL_RETAIN_OWNER 1 2)
+    set(_home_INV_RETAIN_HOME 2 1)
+    set(_home_INV_PURGE_HOME 3 0)
+    set(_home_INV_RETAIN_OWNER 1 2)
+    set(_home_EXCL_PURGE_HOME 3 0)
+    set(_home_EXCL_RETAIN_OWNER 1 2)
     set(_home_FLUSH 3 0)
     list(GET _home_${_cell} 0 _l0)
     list(GET _home_${_cell} 1 _r0)
     list(APPEND _home 0:NUM_DB_ACQUIRE_LOCAL_HIT=${_l0}
                       0:NUM_DB_ACQUIRE_REMOTE=${_r0})
-    if(_purge AND _cell MATCHES "_PURGE$")
+    if(_purge AND _cell MATCHES "_PURGE_")
         list(APPEND _home 0:NUM_PURGE_RETURN=0 1:NUM_PURGE_RETURN=1)
     endif()
 
@@ -1639,12 +1639,12 @@ if(_c)
                 1:NUM_DB_ACQUIRE_READ=1 1:NUM_DB_ACQUIRE_WRITE=0
                 1:NUM_DB_ACQUIRE_LOCAL_HIT=0 1:NUM_DB_ACQUIRE_REMOTE=1)
     arts_counters_captured(_c NUM_EXCL_RECALL_SENT)
-    if(_c AND _cell STREQUAL "EXCL_WB_RETAIN")
+    if(_c AND _cell STREQUAL "EXCL_RETAIN_OWNER")
         list(APPEND _recall 0:NUM_EXCL_RECALL_SENT=1 1:NUM_EXCL_RECALL_SENT=0)
     endif()
-    if(_purge AND _cell STREQUAL "EXCL_WB_PURGE")
+    if(_purge AND _cell STREQUAL "EXCL_PURGE_HOME")
         list(APPEND _recall 0:NUM_PURGE_RETURN=0 1:NUM_PURGE_RETURN=1)
-    elseif(_purge AND _cell MATCHES "_PURGE$")
+    elseif(_purge AND _cell MATCHES "_PURGE_")
         list(APPEND _recall 0:NUM_PURGE_RETURN=0 1:NUM_PURGE_RETURN=0)
     endif()
 
@@ -1661,7 +1661,7 @@ if(_c)
         list(APPEND _claim 1:NUM_DB_ACQUIRE_LOCAL_HIT=2
                            1:NUM_DB_ACQUIRE_REMOTE=0)
     endif()
-    if(_purge AND _cell MATCHES "_PURGE$")
+    if(_purge AND _cell MATCHES "_PURGE_")
         list(APPEND _claim 0:NUM_PURGE_RETURN=0 1:NUM_PURGE_RETURN=1)
     endif()
 
@@ -1673,14 +1673,14 @@ if(_c)
     set(_pub 0:NUM_DB_ACQUIRE_READ=1 0:NUM_DB_ACQUIRE_WRITE=0
              1:NUM_DB_ACQUIRE_READ=0 1:NUM_DB_ACQUIRE_WRITE=1
              1:NUM_DB_ACQUIRE_LOCAL_HIT=1 1:NUM_DB_ACQUIRE_REMOTE=0)
-    if(_cell MATCHES "_PURGE$" OR _cell STREQUAL "FLUSH")
+    if(_cell MATCHES "_PURGE_" OR _cell STREQUAL "FLUSH")
         list(APPEND _pub 0:NUM_DB_ACQUIRE_LOCAL_HIT=1
                          0:NUM_DB_ACQUIRE_REMOTE=0)
     else()
         list(APPEND _pub 0:NUM_DB_ACQUIRE_LOCAL_HIT=0
                          0:NUM_DB_ACQUIRE_REMOTE=1)
     endif()
-    if(_purge AND _cell MATCHES "_PURGE$")
+    if(_purge AND _cell MATCHES "_PURGE_")
         list(APPEND _pub 0:NUM_PURGE_RETURN=0 1:NUM_PURGE_RETURN=1)
     endif()
 
@@ -1699,9 +1699,9 @@ if(_c)
         list(APPEND _join 1:NUM_DB_ACQUIRE_LOCAL_HIT=1
                           1:NUM_DB_ACQUIRE_REMOTE=2)
     endif()
-    if(_purge AND _cell STREQUAL "EXCL_WB_PURGE")
+    if(_purge AND _cell STREQUAL "EXCL_PURGE_HOME")
         list(APPEND _join 0:NUM_PURGE_RETURN=0 1:NUM_PURGE_RETURN=1)
-    elseif(_purge AND _cell MATCHES "_PURGE$")
+    elseif(_purge AND _cell MATCHES "_PURGE_")
         list(APPEND _join 0:NUM_PURGE_RETURN=0 1:NUM_PURGE_RETURN=0)
     endif()
 
@@ -1728,7 +1728,7 @@ if(_c)
     set(_shapes two home recall claim pub)
     if(ARTS_DEBUG_INJECTION)
         list(APPEND _shapes join)
-        if(_cell MATCHES "_RETAIN$")
+        if(_cell MATCHES "_RETAIN_")
             list(APPEND _shapes gate)
         endif()
     endif()
@@ -1822,7 +1822,7 @@ endforeach()
 # ends with status 0; where the tree writes counter files, the rank's file
 # names the program as the origin and status 0.  Its initiators acquire one
 # block RW with no order among them, which DB-WRF does not admit.
-if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
+if(NOT ARTS_VALIDITY STREQUAL "FLUSH")
 add_arts_test(runtime_concurrent_shutdown)
 arts_counters_captured(_c NUM_EDT_CREATE)
 if(_c)
@@ -1846,7 +1846,7 @@ endif()
 
 # Its fires record into one block with no order among them, which DB-WRF does
 # not admit.
-if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
+if(NOT ARTS_VALIDITY STREQUAL "FLUSH")
 add_arts_test(api_latch_incr_slot)
 register_single_node_test(api_latch_incr_slot TIMEOUT 10)
 set_tests_properties(api_latch_incr_slot PROPERTIES PASS_REGULAR_EXPRESSION "PASS api_latch_incr_slot")
@@ -1863,7 +1863,7 @@ endif()
 
 # --- EDT semantics ---
 # Its writers are unordered, which DB-WRF does not admit.
-if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
+if(NOT ARTS_VALIDITY STREQUAL "FLUSH")
 add_arts_test(edt_create_single_fire)
 register_single_node_test(edt_create_single_fire TIMEOUT 30)
 set_tests_properties(edt_create_single_fire PROPERTIES PASS_REGULAR_EXPRESSION "PASS edt_create_single_fire")
@@ -1872,7 +1872,7 @@ endif()
 # edt_completion_event: the consumer sits on rank 1 when there is one, and the
 # release that precedes the completion event sends nothing a second peer would
 # see.  Its writers are unordered, which DB-WRF does not admit.
-if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
+if(NOT ARTS_VALIDITY STREQUAL "FLUSH")
 add_arts_test(edt_completion_event)
 register_single_node_test(edt_completion_event TIMEOUT 30)
 register_multinode_test(edt_completion_event TIMEOUT 60 VARIANTS 2n_9w_1p)
@@ -1937,7 +1937,7 @@ endif()
 
 # directory_grantreq_queue: VAL/EXCL/INV link the one queue body; FLUSH has no
 # home request queue.
-if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
+if(NOT ARTS_VALIDITY STREQUAL "FLUSH")
 add_pure_unit_src(directory_grantreq_queue
     SOURCES ${CMAKE_SOURCE_DIR}/libs/src/core/coherence/grantreq_queue.c
     DEFINES ARTS_UNIT_STANDALONE_SHIMS PASS_REGEX "PASS directory_grantreq_queue:" TIMEOUT 60)
@@ -1950,13 +1950,13 @@ add_pure_unit_src(pending_rw_treiber DEFINES ARTS_UNIT_STANDALONE_SHIMS PASS_REG
 endif()
 
 # excl_compute_next: EXCL only, each release policy's arbiters.
-if(ARTS_COHERENCE_ARM STREQUAL "EXCL")
+if(ARTS_VALIDITY STREQUAL "EXCL")
 add_pure_unit_src(excl_compute_next DEFINES ARTS_UNIT_STANDALONE_SHIMS PASS_REGEX "PASS excl_compute_next:" TIMEOUT 60)
 endif()
 
 # val_request_word: VAL only (the request word's arbiter, both write policies
 # and release policies alike).
-if(ARTS_COHERENCE_ARM STREQUAL "VAL")
+if(ARTS_VALIDITY STREQUAL "VAL")
 add_pure_unit_src(val_request_word DEFINES ARTS_UNIT_STANDALONE_SHIMS PASS_REGEX "PASS val_request_word:" TIMEOUT 60)
 endif()
 
@@ -1964,8 +1964,8 @@ endif()
 # buffer, and a Debug build ends a release that names another one in the
 # named fatal error.  Each write policy has its own release and its own check
 # (the PURGE release shares the WT one).
-if(CMAKE_BUILD_TYPE STREQUAL "Debug" AND ARTS_COHERENCE_ARM STREQUAL "VAL" AND
-   ARTS_RELEASE_POLICY STREQUAL "RETAIN")
+if(CMAKE_BUILD_TYPE STREQUAL "Debug" AND ARTS_VALIDITY STREQUAL "VAL" AND
+   ARTS_RETENTION STREQUAL "RETAIN")
 add_arts_test(val_release_buffer_check)
 register_single_node_test(val_release_buffer_check TIMEOUT 30 STATUS 1)
 set_tests_properties(val_release_buffer_check PROPERTIES
@@ -1974,14 +1974,14 @@ endif()
 
 # inv_compute_next: INV only.  One truth table covers both write policies —
 # the arbiters do not depend on the write policy.
-if(ARTS_COHERENCE_ARM STREQUAL "INV")
+if(ARTS_VALIDITY STREQUAL "INV")
 add_pure_unit_src(inv_compute_next DEFINES ARTS_UNIT_STANDALONE_SHIMS PASS_REGEX "PASS inv_compute_next:" TIMEOUT 60)
 endif()
 
 # db_reader_pool: the parked-reader pool on a cache of the cell, with no
 # runtime started (links libarts for the cell's arbiter and destructor).  The
 # arms that chain readers by index only; each cell's destructor is its own.
-if(ARTS_COHERENCE_ARM STREQUAL "VAL" OR ARTS_COHERENCE_ARM STREQUAL "INV")
+if(ARTS_VALIDITY STREQUAL "VAL" OR ARTS_VALIDITY STREQUAL "INV")
 add_arts_test(db_reader_pool)
 register_pure_unit_test(db_reader_pool TIMEOUT 120)
 set_tests_properties(db_reader_pool PROPERTIES PASS_REGULAR_EXPRESSION "PASS db_reader_pool:")

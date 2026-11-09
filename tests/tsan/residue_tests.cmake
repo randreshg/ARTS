@@ -20,34 +20,34 @@
 # An exclusion arm (EXCL, the CXL store) orders every copy by its admission
 # and has no residue; a single-rank run brings no fabric up.
 #
-# One entry per (test, cells): the cells whose arm reaches a shape in that
-# test's program, the shapes, and the multinode variants that reach them
-# (every multinode variant the test registers when VARIANTS is absent).  A
-# ThreadSanitizer tree of one of those cells runs exactly those variants with
-# the suppressions of the entry's shapes: the provider's send-side copies for
-# R1, R2 and R4, its receive-side copies as well only for an entry that lists
-# R3 or R5.  Every other test keeps the provider's frames visible, so a
+# One entry per (test, cells): the cells whose residue kind reaches a shape
+# in that test's program, the shapes, and the multinode variants that reach
+# them (every multinode variant the test registers when VARIANTS is absent).
+# A ThreadSanitizer tree of one of those cells runs exactly those variants
+# with the suppressions of the entry's shapes: the provider's send-side copies
+# for R1, R2 and R4, its receive-side copies as well only for an entry that
+# lists R3 or R5.  Every other test keeps the provider's frames visible, so a
 # provider-frame report there fails it.  A shape stays listed when a run
 # happens not to reach it: whether it does depends on timing.  A shape must
-# be one the cell's arm can reach (R1 on every arm but FLUSH, R2 and R3 under
-# write-through only, R4 and R5 under FLUSH only).
+# be one the cell's residue kind can reach (R1 on every kind but FLUSH, R2
+# and R3 under the HOME read source only, R4 and R5 under FLUSH only).
 #
-# Cells: VAL/WB/RETAIN, INV/WB/RETAIN, VAL/WT/RETAIN, VAL/WT/PURGE,
-# INV/WT/RETAIN, INV/WT/PURGE, FLUSH.
+# Cells: VAL/RETAIN/OWNER, INV/RETAIN/OWNER, VAL/RETAIN/HOME, VAL/PURGE/HOME,
+# INV/RETAIN/HOME, INV/PURGE/HOME, FLUSH.
 
 # RO readers on a rotating window of ranks, unordered with the round's
 # writers on every rank, several writers per rank, homes round-robin.
 arts_tsan_residue(coherence_writer_ro_overlap
-    CELLS VAL/WB/RETAIN INV/WB/RETAIN SHAPES R1)
+    CELLS VAL/RETAIN/OWNER INV/RETAIN/OWNER SHAPES R1)
 arts_tsan_residue(coherence_writer_ro_overlap
-    CELLS VAL/WT/RETAIN VAL/WT/PURGE INV/WT/RETAIN INV/WT/PURGE
+    CELLS VAL/RETAIN/HOME VAL/PURGE/HOME INV/RETAIN/HOME INV/PURGE/HOME
     SHAPES R1 R2 R3)
 
 # An unordered reader on another rank against the creator, which writes the
 # block through its create hold on the home.
 arts_tsan_residue(db_create_claims_first_touch_stub
-    CELLS VAL/WB/RETAIN INV/WB/RETAIN VAL/WT/RETAIN VAL/WT/PURGE
-          INV/WT/RETAIN INV/WT/PURGE
+    CELLS VAL/RETAIN/OWNER INV/RETAIN/OWNER VAL/RETAIN/HOME VAL/PURGE/HOME
+          INV/RETAIN/HOME INV/PURGE/HOME
     SHAPES R1)
 arts_tsan_residue(db_create_claims_first_touch_stub
     CELLS FLUSH SHAPES R4)
@@ -55,8 +55,8 @@ arts_tsan_residue(db_create_claims_first_touch_stub
 # One writer and one reader per rank in each generation, unordered; the
 # readers read nothing, so only the serve of a written buffer races.
 arts_tsan_residue(cat_c_ref_balance
-    CELLS VAL/WB/RETAIN INV/WB/RETAIN VAL/WT/RETAIN VAL/WT/PURGE
-          INV/WT/RETAIN INV/WT/PURGE
+    CELLS VAL/RETAIN/OWNER INV/RETAIN/OWNER VAL/RETAIN/HOME VAL/PURGE/HOME
+          INV/RETAIN/HOME INV/PURGE/HOME
     SHAPES R1)
 
 # The first writer, off the home, against unordered readers: served by the
@@ -64,9 +64,9 @@ arts_tsan_residue(cat_c_ref_balance
 # with two ranks, where the write-through publish and the FLUSH write-back
 # land in the buffer they read.
 arts_tsan_residue(db_no_acquire_wb_first_writer
-    CELLS VAL/WB/RETAIN INV/WB/RETAIN SHAPES R1)
+    CELLS VAL/RETAIN/OWNER INV/RETAIN/OWNER SHAPES R1)
 arts_tsan_residue(db_no_acquire_wb_first_writer
-    CELLS VAL/WT/RETAIN VAL/WT/PURGE INV/WT/RETAIN INV/WT/PURGE
+    CELLS VAL/RETAIN/HOME VAL/PURGE/HOME INV/RETAIN/HOME INV/PURGE/HOME
     SHAPES R3 VARIANTS 2n_9w_1p)
 arts_tsan_residue(db_no_acquire_wb_first_writer
     CELLS FLUSH SHAPES R5 VARIANTS 2n_9w_1p)
@@ -74,9 +74,9 @@ arts_tsan_residue(db_no_acquire_wb_first_writer
 # Writers (atomic increments, several per rank) and readers that read
 # nothing, unordered, on every rank.
 arts_tsan_residue(excl_multiconsumer_queue
-    CELLS VAL/WB/RETAIN INV/WB/RETAIN SHAPES R1)
+    CELLS VAL/RETAIN/OWNER INV/RETAIN/OWNER SHAPES R1)
 arts_tsan_residue(excl_multiconsumer_queue
-    CELLS VAL/WT/RETAIN VAL/WT/PURGE INV/WT/RETAIN INV/WT/PURGE
+    CELLS VAL/RETAIN/HOME VAL/PURGE/HOME INV/RETAIN/HOME INV/PURGE/HOME
     SHAPES R1 R2)
 
 # Several unordered writers of one block on a rank that is not its home; a
@@ -91,7 +91,7 @@ foreach(_t IN ITEMS
         quiescent_shutdown_no_residue
         shutdown_blocked_release_ends_contended)
     arts_tsan_residue(${_t}
-        CELLS VAL/WT/RETAIN VAL/WT/PURGE INV/WT/RETAIN INV/WT/PURGE
+        CELLS VAL/RETAIN/HOME VAL/PURGE/HOME INV/RETAIN/HOME INV/PURGE/HOME
         SHAPES R2)
 endforeach()
 
@@ -99,14 +99,14 @@ endforeach()
 # same rank, which it does not order: the hold's release publishes while that
 # writer writes.
 arts_tsan_residue(db_create_after_dep_asked
-    CELLS VAL/WT/RETAIN VAL/WT/PURGE INV/WT/RETAIN INV/WT/PURGE
+    CELLS VAL/RETAIN/HOME VAL/PURGE/HOME INV/RETAIN/HOME INV/PURGE/HOME
     SHAPES R2)
 
 # The frontier's one writer per step, on its home, against the RO instances on
 # other ranks, which never read it.
 arts_tsan_residue(random_access_example_smoke
-    CELLS VAL/WB/RETAIN INV/WB/RETAIN VAL/WT/RETAIN VAL/WT/PURGE
-          INV/WT/RETAIN INV/WT/PURGE
+    CELLS VAL/RETAIN/OWNER INV/RETAIN/OWNER VAL/RETAIN/HOME VAL/PURGE/HOME
+          INV/RETAIN/HOME INV/PURGE/HOME
     SHAPES R1)
 arts_tsan_residue(random_access_example_smoke
     CELLS FLUSH SHAPES R4)
@@ -115,8 +115,8 @@ arts_tsan_residue(random_access_example_smoke
 # while the vertex-corner reduction and the face neighbours read other words
 # of those blocks, unordered with the write.
 arts_tsan_residue(lulesh_example
-    CELLS VAL/WB/RETAIN INV/WB/RETAIN VAL/WT/RETAIN VAL/WT/PURGE
-          INV/WT/RETAIN INV/WT/PURGE
+    CELLS VAL/RETAIN/OWNER INV/RETAIN/OWNER VAL/RETAIN/HOME VAL/PURGE/HOME
+          INV/RETAIN/HOME INV/PURGE/HOME
     SHAPES R1)
 arts_tsan_residue(lulesh_example
     CELLS FLUSH SHAPES R4)
@@ -128,32 +128,43 @@ arts_tsan_residue(lulesh_example
 # and the reader on the block's home runs after every writer, so no read is
 # served from a written buffer.
 arts_tsan_residue(db_destroy_claimed_first_touch
-    CELLS VAL/WT/RETAIN VAL/WT/PURGE INV/WT/RETAIN INV/WT/PURGE SHAPES R2)
+    CELLS VAL/RETAIN/HOME VAL/PURGE/HOME INV/RETAIN/HOME INV/PURGE/HOME
+    SHAPES R2)
 arts_tsan_residue(db_destroy_claimed_first_touch_delay
-    CELLS VAL/WT/RETAIN VAL/WT/PURGE INV/WT/RETAIN INV/WT/PURGE SHAPES R2)
+    CELLS VAL/RETAIN/HOME VAL/PURGE/HOME INV/RETAIN/HOME INV/PURGE/HOME
+    SHAPES R2)
 arts_tsan_residue(db_destroy_claimed_first_touch_wave2
-    CELLS VAL/WT/RETAIN VAL/WT/PURGE INV/WT/RETAIN INV/WT/PURGE SHAPES R2)
+    CELLS VAL/RETAIN/HOME VAL/PURGE/HOME INV/RETAIN/HOME INV/PURGE/HOME
+    SHAPES R2)
 arts_tsan_residue(db_destroy_claimed_first_touch_wave2_delay
-    CELLS VAL/WT/RETAIN VAL/WT/PURGE INV/WT/RETAIN INV/WT/PURGE SHAPES R2)
+    CELLS VAL/RETAIN/HOME VAL/PURGE/HOME INV/RETAIN/HOME INV/PURGE/HOME
+    SHAPES R2)
 arts_tsan_residue(db_destroy_cover_settles_t1
-    CELLS VAL/WT/RETAIN VAL/WT/PURGE INV/WT/RETAIN INV/WT/PURGE SHAPES R2)
+    CELLS VAL/RETAIN/HOME VAL/PURGE/HOME INV/RETAIN/HOME INV/PURGE/HOME
+    SHAPES R2)
 arts_tsan_residue(db_destroy_cover_settles_t1_delay
-    CELLS VAL/WT/RETAIN VAL/WT/PURGE INV/WT/RETAIN INV/WT/PURGE SHAPES R2)
+    CELLS VAL/RETAIN/HOME VAL/PURGE/HOME INV/RETAIN/HOME INV/PURGE/HOME
+    SHAPES R2)
 arts_tsan_residue(db_create_races_acquire_writers
-    CELLS VAL/WT/RETAIN VAL/WT/PURGE INV/WT/RETAIN INV/WT/PURGE SHAPES R2)
+    CELLS VAL/RETAIN/HOME VAL/PURGE/HOME INV/RETAIN/HOME INV/PURGE/HOME
+    SHAPES R2)
 arts_tsan_residue(db_create_races_acquire_writers_fuzz
-    CELLS VAL/WT/RETAIN VAL/WT/PURGE INV/WT/RETAIN INV/WT/PURGE SHAPES R2)
+    CELLS VAL/RETAIN/HOME VAL/PURGE/HOME INV/RETAIN/HOME INV/PURGE/HOME
+    SHAPES R2)
 arts_tsan_residue(db_create_races_acquire_mixed
-    CELLS VAL/WT/RETAIN VAL/WT/PURGE INV/WT/RETAIN INV/WT/PURGE SHAPES R2)
+    CELLS VAL/RETAIN/HOME VAL/PURGE/HOME INV/RETAIN/HOME INV/PURGE/HOME
+    SHAPES R2)
 arts_tsan_residue(db_create_races_acquire_mixed_fuzz
-    CELLS VAL/WT/RETAIN VAL/WT/PURGE INV/WT/RETAIN INV/WT/PURGE SHAPES R2)
+    CELLS VAL/RETAIN/HOME VAL/PURGE/HOME INV/RETAIN/HOME INV/PURGE/HOME
+    SHAPES R2)
 # A downgrader on the home re-reads the range no writer writes while writers
 # on another rank, ordered after its hand-off, write the other range: each
 # write-through release and each FLUSH write-back lands its whole image in the
 # home's buffer in place, rewriting the downgrader's range with equal values
 # under its reads.
 arts_tsan_residue(db_downgrade_disjoint_remote
-    CELLS VAL/WT/RETAIN VAL/WT/PURGE INV/WT/RETAIN INV/WT/PURGE SHAPES R3
+    CELLS VAL/RETAIN/HOME VAL/PURGE/HOME INV/RETAIN/HOME INV/PURGE/HOME
+    SHAPES R3
     VARIANTS 2n_9w_1p 2n_8w_2p)
 arts_tsan_residue(db_downgrade_disjoint_remote
     CELLS FLUSH SHAPES R5 VARIANTS 2n_9w_1p 2n_8w_2p)

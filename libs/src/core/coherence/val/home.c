@@ -3,8 +3,8 @@
  * WT write-policy translation unit: defines the WT-specific
  * arts_handler_db_* / arts_db_* bodies directly (CMake links exactly this TU
  * for a VAL+WT build) plus the WT-only wire handlers/senders.
- * Compiled only for ARTS_COHERENCE_PROTOCOL=VAL with
- * ARTS_WRITE_POLICY=WT (selected in libs/src/core/CMakeLists.txt).
+ * Compiled only for ARTS_VALIDITY=VAL with
+ * ARTS_READ_SOURCE=HOME (selected in libs/src/core/CMakeLists.txt).
  * Contains NO protocol/write-policy preprocessor logic.
  */
 #include <assert.h>
@@ -229,7 +229,7 @@ void arts_db_cache_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
                         uint64_t db_size, arts_db_init_kind_t kind,
                         unsigned int creator_rank) {
   arts_pending_rw_queue_init(&c->pending_rw);
-#ifndef ARTS_RELEASE_PURGE
+#ifndef ARTS_RETENTION_PURGE
   /* Target of the grant's next ship, published by each round's INVALIDATE
    * before it withdraws the sentinel.  Starts at the sentinel: no transfer
    * pending. */
@@ -243,7 +243,7 @@ void arts_db_cache_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
    * owner→owner transfer always ships an empty map.  NULL so the shared ship
    * helper's map-build gate takes its empty-map branch. */
   c->cached_version = NULL;
-#ifdef ARTS_RELEASE_PURGE
+#ifdef ARTS_RETENTION_PURGE
   atomic_init(&c->pending_grant_return, 0u);
   atomic_init(&c->grant_generation, 0u);
 #endif
@@ -265,7 +265,7 @@ void arts_db_home_init(struct arts_db_s *db, unsigned int rw_holder,
                        unsigned int nranks) {
   /* A revoking home names the holder it will revoke; a home whose grants
    * come back unasked names none — its own possession is its directory. */
-#ifndef ARTS_RELEASE_PURGE
+#ifndef ARTS_RETENTION_PURGE
   atomic_store_explicit(&db->rw_holder, rw_holder, memory_order_relaxed);
 #endif
   arts_home_grantreq_queue_init(&db->pending_rw);
@@ -280,10 +280,10 @@ void arts_db_home_init(struct arts_db_s *db, unsigned int rw_holder,
   if (rw_holder != arts_global_rank_id && rw_holder < nranks) {
     arts_rank_bitset_set(&db->cached_ranks, rw_holder);
   }
-#ifndef ARTS_RELEASE_PURGE
+#ifndef ARTS_RETENTION_PURGE
   atomic_store_explicit(&db->pending_install_owner, 0u, memory_order_relaxed);
 #endif
-#ifdef ARTS_RELEASE_PURGE
+#ifdef ARTS_RETENTION_PURGE
   atomic_store_explicit(&db->pending_return_from, ARTS_GRANT_NO_RETURNER,
                         memory_order_relaxed);
 #endif

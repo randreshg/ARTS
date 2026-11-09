@@ -64,29 +64,29 @@
 #include "coherence/rank_u64_map.c"
 #include "coherence/reader_pool.c"
 #include "coherence/senders.c"
-#ifdef ARTS_WRITE_POLICY_WB
-#include "coherence/grant_wb.c"
+#ifdef ARTS_READ_SOURCE_OWNER
+#include "coherence/grant_owner.c"
 #else
-#include "coherence/grant_wt.c"
+#include "coherence/grant_home.c"
 #endif
-#ifdef ARTS_RELEASE_PURGE
+#ifdef ARTS_RETENTION_PURGE
 #include "coherence/grant_purge.c"
 #else
 #include "coherence/grant_retain.c"
 #endif
-#ifdef ARTS_PROTOCOL_INV
+#ifdef ARTS_VALIDITY_INV
 #include "coherence/inv/directory.c"
 #include "coherence/inv/engine.c"
-#ifdef ARTS_WRITE_POLICY_WB
-#include "coherence/inv/wb.c"
+#ifdef ARTS_READ_SOURCE_OWNER
+#include "coherence/inv/owner.c"
 #else
-#include "coherence/inv/wt.c"
+#include "coherence/inv/home.c"
 #endif
 #else
-#ifdef ARTS_WRITE_POLICY_WB
-#include "coherence/val/wb.c"
+#ifdef ARTS_READ_SOURCE_OWNER
+#include "coherence/val/owner.c"
 #else
-#include "coherence/val/wt.c"
+#include "coherence/val/home.c"
 #endif
 #endif
 #include "utils/shared.c"
@@ -100,7 +100,7 @@
 #include <sanitizer/asan_interface.h>
 #endif
 
-#if !defined(ARTS_WRITE_POLICY_WB) || defined(ARTS_PROTOCOL_INV)
+#if !defined(ARTS_READ_SOURCE_OWNER) || defined(ARTS_VALIDITY_INV)
 #define PUBLISHES 1 /* releases publish to the home: a flight axis exists */
 #else
 #define PUBLISHES 0
@@ -423,7 +423,7 @@ void arts_ooo_dispatch_on(arts_shared_ptr_t h, ooo_kind_t kind,
     arts_handler_db_publish(obj, copy);
     break;
 #endif
-#ifdef ARTS_PROTOCOL_VAL
+#ifdef ARTS_VALIDITY_VAL
   case OOO_DB_SNAPSHOT_REQUEST:
 #else
   case OOO_DB_INV_REQUEST:
@@ -433,7 +433,7 @@ void arts_ooo_dispatch_on(arts_shared_ptr_t h, ooo_kind_t kind,
       g_dispatch_hook = NULL;
       hook();
     }
-#ifdef ARTS_PROTOCOL_VAL
+#ifdef ARTS_VALIDITY_VAL
     arts_handler_db_snapshot_request(obj, copy);
 #else
     arts_handler_db_inv_request(obj, copy);
@@ -680,7 +680,7 @@ static void acquire(arts_db_access_mode_t mode) {
 
 /* ---- answers, built from the requests ---- */
 
-#ifdef ARTS_PROTOCOL_VAL
+#ifdef ARTS_VALIDITY_VAL
 static const struct arts_msg_snapshot_request_packet_s *read_request(int nth) {
   return (const struct arts_msg_snapshot_request_packet_s *)sent(
       MSG_DB_SNAPSHOT_REQUEST, nth);
@@ -764,7 +764,7 @@ static void write_answer(int nth, bool payload) {
 /* Under write-back the request closes at the CONFIRM_ACK, which answers the
  * CONFIRM the grant's commit sent. */
 static void confirm_ack(void) {
-#ifdef ARTS_WRITE_POLICY_WB
+#ifdef ARTS_READ_SOURCE_OWNER
   const struct arts_msg_grant_confirm_packet_s *c =
       (const struct arts_msg_grant_confirm_packet_s *)sent(MSG_DB_GRANT_CONFIRM,
                                                            0);
@@ -1018,7 +1018,7 @@ static void write_retired(int how) {
   end(0);
 }
 
-#ifdef ARTS_WRITE_POLICY_WB
+#ifdef ARTS_READ_SOURCE_OWNER
 static void confirm_ack_retired(void) {
   begin("CONFIRM_ACK on a retired descriptor", GUID_SIZED, false);
   acquire(DB_MODE_RW);
@@ -1031,7 +1031,7 @@ static void confirm_ack_retired(void) {
 
 #ifdef ARTS_DEBUG_INJECTION
 static bool write_axis_idle(void) {
-#ifdef ARTS_PROTOCOL_VAL
+#ifdef ARTS_VALIDITY_VAL
   return VREQ_RW(atomic_load_explicit(&g_db->cache.req_state,
                                       memory_order_acquire)) == VREQ_RW_IDLE;
 #else
@@ -1089,7 +1089,7 @@ static void home_buffer(uint64_t version) {
   arts_shared_slot_store(&g_db->cache.buffer, b->cb);
 }
 
-#ifdef ARTS_RELEASE_PURGE
+#ifdef ARTS_RETENTION_PURGE
 /* The holder's hand-back, accepted at the home. */
 static void hand_back(void) {
   struct arts_db_grant_return_reply_s reply = {
@@ -1136,7 +1136,7 @@ static void home_wake_drops_last(void) {
   }
   g_wake_drops_ref = true;
   g_poison = true;
-#ifdef ARTS_RELEASE_PURGE
+#ifdef ARTS_RETENTION_PURGE
   hand_back();
 #else
   holder_ships_to_home(0);
@@ -1155,7 +1155,7 @@ static void home_wake_drops_last(void) {
 static void home_request_served_in_body(void) {
   begin("home's own write request served inside its self-sent body", GUID_SIZED,
         true);
-#ifdef ARTS_RELEASE_PURGE
+#ifdef ARTS_RETENTION_PURGE
   hand_back();
   int wakes = 1;
 #else
@@ -1179,7 +1179,7 @@ static void home_request_served_in_body(void) {
   end_dropped(wakes);
 }
 
-#ifdef ARTS_WRITE_POLICY_WB
+#ifdef ARTS_READ_SOURCE_OWNER
 /* Between a self-sent read request's send and its body at the home: this
  * rank's writer commits its write request, which names the read request out;
  * the home takes that declaration in; and the block's destroy marks the cover
@@ -1211,7 +1211,7 @@ static void declare_then_destroy(void) {
 static void home_read_dismissed_teardown(void) {
   begin("home's own read request dismissed with its teardown due", GUID_SIZED,
         true);
-#ifdef ARTS_PROTOCOL_VAL
+#ifdef ARTS_VALIDITY_VAL
   acquire(DB_MODE_RO);
   const struct arts_msg_snapshot_redirect_packet_s *rd =
       (const struct arts_msg_snapshot_redirect_packet_s *)sent(
@@ -1242,7 +1242,7 @@ static void home_read_dismissed_teardown(void) {
   end_dropped(0);
 }
 
-#ifdef ARTS_PROTOCOL_INV
+#ifdef ARTS_VALIDITY_INV
 /* At the serve of the home's own read request, after the home processed it
  * and before the deliver's look at the token: the same declaration and
  * destroy, which now find nothing owed, so the teardown retires the
@@ -1277,7 +1277,7 @@ static void home_read_served_retired(void) {
 #endif
 
 #if PUBLISHES
-#ifdef ARTS_PROTOCOL_INV
+#ifdef ARTS_VALIDITY_INV
 /* REQ's ack to the INVALIDATE that just left, echoing the round's home
  * token. */
 static void ack_remote_invalidate(void) {
@@ -1301,7 +1301,7 @@ static void ack_remote_invalidate(void) {
  * finisher still ends its hold on the descriptor afterwards.  The deleter may
  * run only once the publish's body has returned. */
 static void home_flight_relaunch_lands(void) {
-#ifdef ARTS_PROTOCOL_INV
+#ifdef ARTS_VALIDITY_INV
   begin("home's relaunched flight landed by its own round's ACK", GUID_SIZED,
         true);
 #else
@@ -1309,7 +1309,7 @@ static void home_flight_relaunch_lands(void) {
 #endif
   struct arts_db_cache_s *cache = &g_db->cache;
   home_buffer(2u);
-#ifdef ARTS_PROTOCOL_INV
+#ifdef ARTS_VALIDITY_INV
   (void)arts_rank_bitset_set(&g_db->roster, REQ);
 #endif
   atomic_store_explicit(&cache->pub_flight, 1u, memory_order_relaxed);
@@ -1326,12 +1326,12 @@ static void home_flight_relaunch_lands(void) {
   arts_shared_ptr_t h = g_db->self_cb;
   arts_shared_release(&h);
   g_poison = true;
-#ifdef ARTS_PROTOCOL_INV
+#ifdef ARTS_VALIDITY_INV
   g_send_hook = ack_remote_invalidate;
   g_send_hook_type = MSG_DB_INV_INVALIDATE;
 #endif
   arts_handler_db_publish_ack(&a);
-#ifdef ARTS_PROTOCOL_INV
+#ifdef ARTS_VALIDITY_INV
   if (g_send_hook != NULL) {
     g_send_hook = NULL;
     fail("the relaunched round retired no copy");
@@ -1346,7 +1346,7 @@ static void home_flight_relaunch_lands(void) {
 }
 #endif
 
-#ifdef ARTS_RELEASE_PURGE
+#ifdef ARTS_RETENTION_PURGE
 /* The home's own write request, queued while another rank holds the right,
  * is served from the front of the queue by the hand-back's acceptance. */
 static void write_self_front(void) {
@@ -1436,20 +1436,20 @@ int main(void) {
   write_retired(0);
   write_retired(1);
   write_retired(2);
-#ifdef ARTS_WRITE_POLICY_WB
+#ifdef ARTS_READ_SOURCE_OWNER
   confirm_ack_retired();
 #endif
 #ifdef ARTS_DEBUG_INJECTION
   write_rearmed();
 #endif
-#ifdef ARTS_RELEASE_PURGE
+#ifdef ARTS_RETENTION_PURGE
   write_self_front();
 #endif
   home_wake_drops_last();
   home_request_served_in_body();
-#ifdef ARTS_WRITE_POLICY_WB
+#ifdef ARTS_READ_SOURCE_OWNER
   home_read_dismissed_teardown();
-#ifdef ARTS_PROTOCOL_INV
+#ifdef ARTS_VALIDITY_INV
   home_read_served_retired();
 #endif
 #endif

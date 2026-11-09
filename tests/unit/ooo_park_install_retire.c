@@ -232,21 +232,21 @@ void arts_handler_db_destroy(void *i, void *a) { unexpected(i, a); }
 void arts_db_acquire_replay_dep(void *i, void *a) { unexpected(i, a); }
 void arts_handler_db_snapshot_request(void *i, void *a) { unexpected(i, a); }
 void arts_handler_db_publish(void *i, void *a) { unexpected(i, a); }
-#if defined(ARTS_PROTOCOL_EXCL)
+#if defined(ARTS_VALIDITY_EXCL)
 void arts_handler_db_excl_request(void *i, void *a) { unexpected(i, a); }
 void arts_handler_db_excl_release(void *i, void *a) { unexpected(i, a); }
-#elif defined(ARTS_PROTOCOL_INV)
+#elif defined(ARTS_VALIDITY_INV)
 void arts_handler_db_grant_request(void *i, void *a) { unexpected(i, a); }
 void arts_handler_db_inv_request(void *i, void *a) { unexpected(i, a); }
-#ifdef ARTS_RELEASE_PURGE
+#ifdef ARTS_RETENTION_PURGE
 void arts_handler_db_grant_return(void *i, void *a) { unexpected(i, a); }
 #endif
-#elif defined(ARTS_PROTOCOL_FLUSH)
+#elif defined(ARTS_VALIDITY_FLUSH)
 void arts_handler_db_fetch_request(void *i, void *a) { unexpected(i, a); }
 void arts_handler_db_flush_announce(void *i, void *a) { unexpected(i, a); }
-#elif defined(ARTS_PROTOCOL_VAL)
+#elif defined(ARTS_VALIDITY_VAL)
 void arts_handler_db_grant_request(void *i, void *a) { unexpected(i, a); }
-#ifdef ARTS_RELEASE_PURGE
+#ifdef ARTS_RETENTION_PURGE
 void arts_handler_db_grant_return(void *i, void *a) { unexpected(i, a); }
 #endif
 #endif

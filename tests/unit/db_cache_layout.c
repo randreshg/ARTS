@@ -58,15 +58,15 @@
 
 /* The protocol-dependent first home-arm field, mirroring
  * arts_db_cache_stub_size() in coherence/types.h. */
-#if defined(ARTS_PROTOCOL_EXCL)
+#if defined(ARTS_VALIDITY_EXCL)
 #define FIRST_HOME_ARM_OFF offsetof(struct arts_db_s, lock_state)
-#elif defined(ARTS_PROTOCOL_INV)
+#elif defined(ARTS_VALIDITY_INV)
 #define FIRST_HOME_ARM_OFF offsetof(struct arts_db_s, round_queue)
-#elif defined(ARTS_PROTOCOL_FLUSH)
+#elif defined(ARTS_VALIDITY_FLUSH)
 #define FIRST_HOME_ARM_OFF offsetof(struct arts_db_s, sharers)
-#elif defined(ARTS_PROTOCOL_VAL) && defined(ARTS_RELEASE_PURGE)
+#elif defined(ARTS_VALIDITY_VAL) && defined(ARTS_RETENTION_PURGE)
 #define FIRST_HOME_ARM_OFF offsetof(struct arts_db_s, pending_rw)
-#elif defined(ARTS_PROTOCOL_VAL)
+#elif defined(ARTS_VALIDITY_VAL)
 #define FIRST_HOME_ARM_OFF offsetof(struct arts_db_s, rw_holder)
 #endif
 
@@ -116,15 +116,15 @@ typedef struct arts_db_s db_t;
 typedef struct arts_db_buffer_s buffer_t;
 typedef struct arts_db_read_waiter_s read_waiter_t;
 typedef struct arts_db_rw_waiter_s rw_waiter_t;
-#ifndef ARTS_PROTOCOL_FLUSH
+#ifndef ARTS_VALIDITY_FLUSH
 typedef struct arts_home_grantreq_node_s grantreq_node_t;
 typedef struct arts_home_grantreq_queue_s grantreq_queue_t;
 #endif
-#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
+#if defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)
 typedef struct arts_db_reader_pool_s reader_pool_t;
 typedef struct arts_db_reader_node_s reader_node_t;
 #endif
-#ifdef ARTS_PROTOCOL_EXCL
+#ifdef ARTS_VALIDITY_EXCL
 typedef struct arts_lock_ro_node_s lock_ro_node_t;
 typedef struct arts_db_excl_waiter_s excl_waiter_t;
 #endif
@@ -158,7 +158,7 @@ static void print_fingerprint(void) {
   MEMBER(rw_waiter_t, edt_guid);
 #endif
   MEMBER(rw_waiter_t, slot);
-#ifndef ARTS_PROTOCOL_FLUSH
+#ifndef ARTS_VALIDITY_FLUSH
   TYPE(grantreq_node_t);
   MEMBER(grantreq_node_t, next);
   MEMBER(grantreq_node_t, rank);
@@ -172,19 +172,19 @@ static void print_fingerprint(void) {
 #endif
 
   TYPE(cache_t);
-#if defined(ARTS_PROTOCOL_INV) || defined(ARTS_PROTOCOL_EXCL)
+#if defined(ARTS_VALIDITY_INV) || defined(ARTS_VALIDITY_EXCL)
   MEMBER(cache_t, cache_state);
 #endif
-#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
+#if defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)
   MEMBER(cache_t, writer_count);
 #endif
   MEMBER(cache_t, buffer);
-#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
+#if defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)
   MEMBER(cache_t, pending_rw);
-#ifdef ARTS_PROTOCOL_VAL
+#ifdef ARTS_VALIDITY_VAL
   MEMBER(cache_t, req_state);
 #endif
-#ifndef ARTS_RELEASE_PURGE
+#ifndef ARTS_RETENTION_PURGE
   MEMBER(cache_t, incoming_new_owner);
   MEMBER(cache_t, incoming_new_owner_rdzv);
   MEMBER(cache_t, incoming_new_owner_have);
@@ -192,27 +192,27 @@ static void print_fingerprint(void) {
   MEMBER(cache_t, incoming_new_owner_home_token);
 #endif
   MEMBER(cache_t, cached_version);
-#if defined(ARTS_WRITE_POLICY_WT)
+#if defined(ARTS_READ_SOURCE_HOME)
   MEMBER(cache_t, publication_waiters);
 #endif
-#if defined(ARTS_PROTOCOL_INV) || defined(ARTS_WRITE_POLICY_WT)
+#if defined(ARTS_VALIDITY_INV) || defined(ARTS_READ_SOURCE_HOME)
   MEMBER(cache_t, pub_flight);
   MEMBER(cache_t, pub_waiters);
   MEMBER(cache_t, pub_parked);
-#ifdef ARTS_WRITE_POLICY_WT
+#ifdef ARTS_READ_SOURCE_HOME
   MEMBER(cache_t, home_pub_addr);
   MEMBER(cache_t, home_pub_rkey);
   MEMBER(cache_t, home_pub_txid);
 #endif
 #endif
-#ifdef ARTS_RELEASE_PURGE
+#ifdef ARTS_RETENTION_PURGE
   MEMBER(cache_t, pending_grant_return);
   MEMBER(cache_t, grant_generation);
 #endif
 #endif
-#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
+#if defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)
   MEMBER(cache_t, reader_pool);
-#ifdef ARTS_PROTOCOL_INV
+#ifdef ARTS_VALIDITY_INV
   MEMBER(cache_t, owed_ack_token);
 #endif
   TYPE(reader_pool_t);
@@ -227,7 +227,7 @@ static void print_fingerprint(void) {
   MEMBER(reader_node_t, edt_guid);
 #endif
 #endif
-#ifdef ARTS_PROTOCOL_EXCL
+#ifdef ARTS_VALIDITY_EXCL
   TYPE(lock_ro_node_t);
   MEMBER(lock_ro_node_t, link);
   MEMBER(lock_ro_node_t, rank);
@@ -242,7 +242,7 @@ static void print_fingerprint(void) {
   MEMBER(excl_waiter_t, slot);
   MEMBER(cache_t, ro_pending);
   MEMBER(cache_t, rw_pending);
-#if defined(ARTS_RELEASE_RETAIN)
+#if defined(ARTS_RETENTION_RETAIN)
   MEMBER(cache_t, ro_serve);
   MEMBER(cache_t, migrate_rdzv);
   MEMBER(cache_t, migrate_token);
@@ -254,7 +254,7 @@ static void print_fingerprint(void) {
   MEMBER(cache_t, cxl_addr);
 #endif
 #endif
-#ifdef ARTS_PROTOCOL_FLUSH
+#ifdef ARTS_VALIDITY_FLUSH
   MEMBER(cache_t, home_line_addr);
   MEMBER(cache_t, home_line_rkey);
   MEMBER(cache_t, flush_txid);
@@ -269,8 +269,8 @@ static void print_fingerprint(void) {
   MEMBER(db_t, db_type);
   MEMBER(db_t, self_cb);
   MEMBER(db_t, home_initialized);
-#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
-#ifndef ARTS_RELEASE_PURGE
+#if defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)
+#ifndef ARTS_RETENTION_PURGE
   MEMBER(db_t, rw_holder);
   MEMBER(db_t, pending_install_owner);
 #else
@@ -288,31 +288,31 @@ static void print_fingerprint(void) {
   MEMBER(db_t, cover_gate);
   MEMBER(db_t, claim_rank);
 #endif
-#if defined(ARTS_PROTOCOL_VAL) && defined(ARTS_WRITE_POLICY_WT)
+#if defined(ARTS_VALIDITY_VAL) && defined(ARTS_READ_SOURCE_HOME)
   MEMBER(db_t, cached_version);
 #endif
-#ifdef ARTS_PROTOCOL_INV
+#ifdef ARTS_VALIDITY_INV
   MEMBER(db_t, round_queue);
   MEMBER(db_t, round_acks);
-#ifdef ARTS_WRITE_POLICY_WT
+#ifdef ARTS_READ_SOURCE_HOME
   MEMBER(db_t, hver);
 #endif
   MEMBER(db_t, round_entries);
   MEMBER(db_t, roster);
 #endif
-#ifdef ARTS_PROTOCOL_EXCL
+#ifdef ARTS_VALIDITY_EXCL
   MEMBER(db_t, lock_state);
   MEMBER(db_t, rw_waiters);
   MEMBER(db_t, ro_waiters);
   MEMBER(db_t, cached_ranks);
   MEMBER(db_t, ro_parity);
   MEMBER(db_t, claim_rank);
-#ifdef ARTS_RELEASE_RETAIN
+#ifdef ARTS_RETENTION_RETAIN
   MEMBER(db_t, cover_gate);
   MEMBER(db_t, ro_retainers);
 #endif
 #endif
-#ifdef ARTS_PROTOCOL_FLUSH
+#ifdef ARTS_VALIDITY_FLUSH
   MEMBER(db_t, sharers);
   MEMBER(db_t, sharer_words);
 #endif

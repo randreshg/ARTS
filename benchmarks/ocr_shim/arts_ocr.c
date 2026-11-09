@@ -373,7 +373,7 @@ static int extract_db_affinity(ocrHint_t *hint) {
    * data-movement ones (OCR_HINT_DB_EAGER eager-push, OCR_HINT_DB_LAZY
    * lazy-migrate) and the memory-level ones (NEAR/INTER/FAR/HIGHBW) — are
    * advisory under the OCR spec and intentionally ignored: ARTS coherence is a
-   * compile-time global protocol (ARTS_COHERENCE_PROTOCOL), not a per-DB
+   * compile-time global protocol (ARTS_VALIDITY), not a per-DB
    * policy, so a per-DB data-movement hint carries no runtime meaning here. */
   int idx = OCR_HINT_DB_AFFINITY - OCR_HINT_DB_PROP_START - 1;
   if (idx < 0 || !(hint->propMask & (1ULL << idx))) {

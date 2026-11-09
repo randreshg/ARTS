@@ -19,7 +19,7 @@
  * Write ownership is not here at all: it is the migrating sentinel grant
  * (coherence/grant.c plus its write-policy half), shared with VAL.
  *
- * Compiled only for ARTS_COHERENCE_PROTOCOL=INV.
+ * Compiled only for ARTS_VALIDITY=INV.
  */
 #include "arts/coherence/inv/types.h"
 
@@ -181,14 +181,14 @@ void arts_db_cache_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
    * create-default RW acquire's own hold under it; everyone else starts at
    * the all-zero word, which IS "not the owner". */
   atomic_init(&c->writer_count, creator ? ARTS_GRANT_SEED_HOLDING : 0u);
-#ifdef ARTS_RELEASE_PURGE
+#ifdef ARTS_RETENTION_PURGE
   atomic_init(&c->pending_grant_return, 0u);
   atomic_init(&c->grant_generation, 0u);
 #endif
   arts_pending_rw_queue_init(&c->pending_rw);
   c->owed_ack_token = 0u;
 
-#ifndef ARTS_RELEASE_PURGE
+#ifndef ARTS_RETENTION_PURGE
   c->incoming_new_owner = ARTS_NO_PENDING_OWNER;
   c->incoming_new_owner_rdzv = (struct arts_rdzv_landing_s){0, 0, 0, 0};
   c->incoming_new_owner_have = ARTS_GRANT_VERSION_NONE;
@@ -302,7 +302,7 @@ void arts_db_create_claim_creator_copy(struct arts_db_s *db) {
 
 void arts_db_create_install_home_buffer(struct arts_db_cache_s *cache,
                                         uint64_t db_size) {
-#ifdef ARTS_WRITE_POLICY_WT
+#ifdef ARTS_READ_SOURCE_HOME
   /* The write-through home owns ONE stable buffer for the DB's whole
    * lifetime, installed here at version 0 — "allocated, never published".
    * Publishes land in it one-sided and in place; the round's version bump
@@ -384,7 +384,7 @@ static struct arts_db_inv_pub_s *
 inv_round_run(struct arts_db_s *db, struct arts_db_inv_pub_s *batch) {
   struct arts_db_cache_s *cache = &db->cache;
   INCREMENT_NUM_INVALIDATE_ROUND_BY(1);
-#ifdef ARTS_WRITE_POLICY_WT
+#ifdef ARTS_READ_SOURCE_HOME
   /* Single publication point: a landed entry's bytes are already IN PLACE in
    * the stable buffer (the commit-leg pairing gates the queue), so publishing
    * is the version stamp alone.  At most one entry of a batch carries data —
@@ -526,7 +526,7 @@ static void inv_round_finish(struct arts_db_s *db,
         returning = e;
         continue;
       }
-#ifdef ARTS_WRITE_POLICY_WT
+#ifdef ARTS_READ_SOURCE_HOME
       /* Write-through commits land in the stable buffer, so the ACK refills
        * the releaser's in-place credit. */
       arts_send_db_publish_ack(e->releaser_rank, db, 0u, e->vnew,
@@ -551,7 +551,7 @@ static void inv_round_finish(struct arts_db_s *db,
           .token = returning->token,
           .version = returning->vnew,
           .ack = true,
-#ifdef ARTS_WRITE_POLICY_WT
+#ifdef ARTS_READ_SOURCE_HOME
           .credit = true,
 #else
           .credit = false,
@@ -622,7 +622,7 @@ static void inv_round_submit(struct arts_db_s *db,
 
 /* ===== wire handler bodies (OoO Cat-B) ================================== */
 
-#ifdef ARTS_WRITE_POLICY_WT
+#ifdef ARTS_READ_SOURCE_HOME
 /* Commit-leg pairing continuation: the dirty bytes are in the home landing;
  * submit the entry to the round.  The pairing holds the home descriptor the
  * publish ran on; the releaser blocks on the round's ACK, which keeps the
@@ -655,7 +655,7 @@ void arts_handler_db_publish(void *item_v, void *args_v) {
       (struct arts_ooo_args_db_publish_s *)args_v;
   assert((a->returns_grant == 0u || a->rdzv_txid != 0u) &&
          "a hand-back rides a payload commit leg only");
-#ifdef ARTS_WRITE_POLICY_WT
+#ifdef ARTS_READ_SOURCE_HOME
   struct arts_db_cache_s *cache = &db->cache;
   if (a->data_size != 0 && a->rdzv_txid == 0) {
     /* Announce leg: advertise the STABLE buffer as the landing (the PUT
@@ -704,7 +704,7 @@ void arts_handler_db_publish(void *item_v, void *args_v) {
   e->releaser_rank = a->releaser;
   e->token = a->token;
   e->returns_grant = a->returns_grant;
-#ifdef ARTS_WRITE_POLICY_WT
+#ifdef ARTS_READ_SOURCE_HOME
   e->landed = false;
   if (a->rdzv_txid != 0) {
     /* Commit leg: the entry may only queue once the one-sided payload has
@@ -1153,7 +1153,7 @@ void arts_send_db_inv_deliver(unsigned int requester_rank,
   arts_shared_ptr_t src_h = arts_db_buf_acquire(cache);
   struct arts_db_buffer_s *src =
       (struct arts_db_buffer_s *)arts_shared_get(src_h);
-#ifdef ARTS_WRITE_POLICY_WT
+#ifdef ARTS_READ_SOURCE_HOME
   /* Stamp on the home's publication axis, never the buffer's own lane — see
    * hver.  The stamp exists only to arbitrate the receiver's two asynchronous
    * install lanes; nothing compares it to decide whether a copy is valid. */
@@ -1229,7 +1229,7 @@ void arts_send_db_inv_deliver(unsigned int requester_rank,
  * that happens to sit on the home rank goes stale exactly like any other and
  * must be registered. */
 void arts_db_grant_note_ex_holder(struct arts_db_s *db, unsigned int rank) {
-#ifdef ARTS_WRITE_POLICY_WT
+#ifdef ARTS_READ_SOURCE_HOME
   if (rank == arts_global_rank_id) {
     return;
   }

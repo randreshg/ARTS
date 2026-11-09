@@ -2,7 +2,7 @@
 #
 #   <cells> <function> <kind> <object> <ordinal>/<count> <order> ["<anchor>"]
 #
-# <cells>: comma-separated ARM.WRITE.RELEASE patterns (fnmatch), or
+# <cells>: comma-separated VALIDITY.RETENTION.READ_SOURCE patterns (fnmatch), or
 # "reference" for code no cell compiles differently: the reference tree checks
 # those rows, and they name their functions' accesses in every tree.  <kind>:
 # load, store, rmw (any read-modify-write, a compare-exchange included), init
@@ -74,14 +74,14 @@ reference  net_rdzv_event  rmw    word           3/3  acq_rel  "&w, to,"
 reference                    arts_net_selfcheck                   ref   net_selfcheck_arrived    -/1  -
 INV.*.*,VAL.*.*,EXCL.*.*     arts_db_rdzv_discard_landing         ref   rdzv_discard_cb          -/1  -
 INV.*.*                      inv_deliver_on                       ref   inv_landed_cb            -/1  -
-INV.WT.*                     arts_handler_db_publish              ref   inv_pub_landed_cb        -/1  -
+INV.*.HOME                   arts_handler_db_publish              ref   inv_pub_landed_cb        -/1  -
 VAL.*.*                      arts_handler_db_snapshot_response    ref   snapshot_landed_cb       -/1  -
-VAL.WT.*                     arts_handler_db_publish              ref   pub_landed_cb            -/1  -
-VAL.WT.*,INV.WT.*            arts_db_grant_response_on            ref   home_response_landed_cb  -/1  -
-VAL.WB.*,INV.WB.*            arts_db_grant_response_on            ref   owner_response_landed_cb -/1  -
-EXCL.*.PURGE                 excl_grant_on                        ref   lock_grant_landed_cb     -/1  -
-EXCL.*.PURGE                 arts_handler_db_excl_release         ref   lock_release_landed_cb   -/1  -
-EXCL.*.RETAIN                excl_deliver_on                      ref   lock_deliver_landed_cb   -/1  -
+VAL.*.HOME                   arts_handler_db_publish              ref   pub_landed_cb            -/1  -
+VAL.*.HOME,INV.*.HOME        arts_db_grant_response_on            ref   home_response_landed_cb  -/1  -
+VAL.*.OWNER,INV.*.OWNER      arts_db_grant_response_on            ref   owner_response_landed_cb -/1  -
+EXCL.PURGE.*                 excl_grant_on                        ref   lock_grant_landed_cb     -/1  -
+EXCL.PURGE.*                 arts_handler_db_excl_release         ref   lock_release_landed_cb   -/1  -
+EXCL.RETAIN.*                excl_deliver_on                      ref   lock_deliver_landed_cb   -/1  -
 
 # ---- The slot: a separately landed buffer reaches every later loader ----
 #
@@ -137,19 +137,19 @@ INV.*.*  inv_req_step_tok         rmw   cache_state                 1/1  acquire
 # thread claims an idle round, or pushes the entry with a release that the
 # holder's take acquires.  The claim and the round's end order rounds, not a
 # landing.
-INV.WT.*  inv_pub_landed_cb           call   inv_round_submit          -/1  -
-INV.WT.*  inv_round_submit            rmw    round_queue               2/2  release  ") : atomic_compare_exchange_weak_explicit"
-INV.WT.*  inv_round_finish            rmw    round_queue               2/2  acquire  "batch ="
-INV.WT.*  inv_round_run               call   arts_db_buf_bump_inplace  -/1  -
-INV.WT.*  inv_round_run               store  hver                      1/1  release
-INV.WT.*  arts_handler_db_acquire     load   version                   1/2  acquire
-INV.WT.*  arts_handler_db_acquire     load   version                   2/2  acquire
-INV.WT.*  arts_send_db_inv_deliver    load   hver                      1/1  acquire
+INV.*.HOME  inv_pub_landed_cb           call   inv_round_submit          -/1  -
+INV.*.HOME  inv_round_submit            rmw    round_queue               2/2  release  ") : atomic_compare_exchange_weak_explicit"
+INV.*.HOME  inv_round_finish            rmw    round_queue               2/2  acquire  "batch ="
+INV.*.HOME  inv_round_run               call   arts_db_buf_bump_inplace  -/1  -
+INV.*.HOME  inv_round_run               store  hver                      1/1  release
+INV.*.HOME  arts_handler_db_acquire     load   version                   1/2  acquire
+INV.*.HOME  arts_handler_db_acquire     load   version                   2/2  acquire
+INV.*.HOME  arts_send_db_inv_deliver    load   hver                      1/1  acquire
 # The home's grant serve under PURGE decides from the stamp whether the target
 # already holds the bytes.  The possession, baton and return-latch exchanges
 # also order it after a landed release; this read is the one the register
 # keeps.  Under RETAIN the function is compiled and not called.
-INV.WT.*  arts_db_grant_serve_version load   hver                      1/1  acquire
+INV.*.HOME  arts_db_grant_serve_version load   hver                      1/1  acquire
 
 # ---- VAL ----------------------------------------------------------------
 #
@@ -162,37 +162,37 @@ VAL.*.*  arts_db_ro_combine_on_terminal  call  val_req_step                    -
 VAL.*.*  val_req_step                    rmw   req_state                       1/1  acq_rel
 # Write-through: a release's bytes land in place in the home's buffer and
 # the stamp publishes them; the home and an owner serve reads from it.
-VAL.WT.*  pub_landed_cb            call  arts_db_buf_bump_inplace  -/1  -
-VAL.WT.*  arts_handler_db_acquire  load  writer_count              1/1  acquire
-VAL.WT.*  arts_handler_db_acquire  load  version                   1/2  acquire
-VAL.WT.*  arts_handler_db_acquire  load  version                   2/2  acquire
+VAL.*.HOME  pub_landed_cb            call  arts_db_buf_bump_inplace  -/1  -
+VAL.*.HOME  arts_handler_db_acquire  load  writer_count              1/1  acquire
+VAL.*.HOME  arts_handler_db_acquire  load  version                   1/2  acquire
+VAL.*.HOME  arts_handler_db_acquire  load  version                   2/2  acquire
 # The home's serve of a remote read: it may claim the slot before the stamp's
 # own thread does, so the stamp it reads carries the bytes only through this
 # acquire (the loads before it steer and re-check).  The grant serve under
 # PURGE: as for INV's, of its edges the register keeps the stamp's read.
-VAL.WT.*  arts_handler_db_snapshot_request  load  version  3/3  acquire  "uint64_t master_v"
-VAL.WT.*  arts_db_grant_serve_version       load  version  1/1  acquire
+VAL.*.HOME  arts_handler_db_snapshot_request  load  version  3/3  acquire  "uint64_t master_v"
+VAL.*.HOME  arts_db_grant_serve_version       load  version  1/1  acquire
 # A read that reached the home before the first publish is served later from
 # the publication waiters; its thread is ordered after the first stamp, not
 # after a later release's, so the stamp it ships carries the bytes only
 # through this acquire, as above.
-VAL.WT.*  home_serve_deferred_read          load  version  1/1  acquire
-VAL.WB.*  arts_handler_db_acquire  load  writer_count              1/1  acquire
+VAL.*.HOME   home_serve_deferred_read          load  version  1/1  acquire
+VAL.*.OWNER  arts_handler_db_acquire  load  writer_count              1/1  acquire
 
 # ---- The write grant with bytes (VAL, INV) ------------------------------
 #
 # Install, then the possession edge on writer_count releases the installed
 # buffer with the right.  A writer is admitted by its exchange on the count
 # and uses the buffer the grant installed; the load before it only steers.
-VAL.*.*,INV.*.*              arts_db_acquire_rw_local_fast  rmw   writer_count                1/1  acquire
-VAL.WT.*,INV.WT.*            home_response_landed_cb        call  arts_db_buf_install_landed  -/1  -
-VAL.WT.*,INV.WT.*            home_response_landed_cb        call  home_response_commit        -/1  -
-VAL.WT.*,INV.WT.*            home_response_commit           call  arts_db_grant_install       -/1  -
-VAL.WT.RETAIN,INV.WT.RETAIN  arts_db_grant_install          rmw   writer_count                1/1  release
-VAL.WT.PURGE,INV.WT.PURGE    arts_db_grant_install          rmw   writer_count                1/1  release
-VAL.WB.*,INV.WB.*            owner_response_landed_cb       call  arts_db_buf_install_landed  -/1  -
-VAL.WB.*,INV.WB.*            owner_response_landed_cb       call  owner_response_commit       -/1  -
-VAL.WB.*,INV.WB.*            owner_response_commit          rmw   writer_count                1/1  release
+VAL.*.*,INV.*.*                  arts_db_acquire_rw_local_fast  rmw   writer_count                1/1  acquire
+VAL.*.HOME,INV.*.HOME            home_response_landed_cb        call  arts_db_buf_install_landed  -/1  -
+VAL.*.HOME,INV.*.HOME            home_response_landed_cb        call  home_response_commit        -/1  -
+VAL.*.HOME,INV.*.HOME            home_response_commit           call  arts_db_grant_install       -/1  -
+VAL.RETAIN.HOME,INV.RETAIN.HOME  arts_db_grant_install          rmw   writer_count                1/1  release
+VAL.PURGE.HOME,INV.PURGE.HOME    arts_db_grant_install          rmw   writer_count                1/1  release
+VAL.*.OWNER,INV.*.OWNER          owner_response_landed_cb       call  arts_db_buf_install_landed  -/1  -
+VAL.*.OWNER,INV.*.OWNER          owner_response_landed_cb       call  owner_response_commit       -/1  -
+VAL.*.OWNER,INV.*.OWNER          owner_response_commit          rmw   writer_count                1/1  release
 # PURGE: a remote holder's last release hands the right back with its bytes,
 # which land in place at the home; the landing's thread stamps them and
 # latches the hand-back.  The latch is the edge the code names for what that
@@ -203,13 +203,13 @@ VAL.WB.*,INV.WB.*            owner_response_commit          rmw   writer_count  
 # release, and the acquire of the writer's fast-path exchange (above) or of
 # the baton holder that serves the home's own queued request.  The baton
 # orders its holders among themselves; no home writer is admitted on it.
-VAL.WT.PURGE  pub_landed_cb     call  arts_db_grant_return_arrived  -/1  -
-INV.WT.PURGE  inv_round_finish  call  arts_db_grant_return_arrived  -/1  -
-VAL.WT.PURGE,INV.WT.PURGE  arts_db_grant_return_arrived  rmw   pending_return_from  1/2  release  "&slot_empty"
-VAL.WT.PURGE,INV.WT.PURGE  arts_db_grant_return_arrived  rmw   pending_return_from  2/2  acquire  "&want"
-VAL.WT.PURGE,INV.WT.PURGE  grant_tail                    rmw   pending_return_from  1/1  acquire
-VAL.WT.PURGE,INV.WT.PURGE  grant_tail                    rmw   writer_count         2/2  release  "&prev, ARTS_GRANT_SEED_IDLE"
-VAL.WT.PURGE,INV.WT.PURGE  grant_home_holds              load  writer_count         1/1  acquire
+VAL.PURGE.HOME  pub_landed_cb     call  arts_db_grant_return_arrived  -/1  -
+INV.PURGE.HOME  inv_round_finish  call  arts_db_grant_return_arrived  -/1  -
+VAL.PURGE.HOME,INV.PURGE.HOME  arts_db_grant_return_arrived  rmw   pending_return_from  1/2  release  "&slot_empty"
+VAL.PURGE.HOME,INV.PURGE.HOME  arts_db_grant_return_arrived  rmw   pending_return_from  2/2  acquire  "&want"
+VAL.PURGE.HOME,INV.PURGE.HOME  grant_tail                    rmw   pending_return_from  1/1  acquire
+VAL.PURGE.HOME,INV.PURGE.HOME  grant_tail                    rmw   writer_count         2/2  release  "&prev, ARTS_GRANT_SEED_IDLE"
+VAL.PURGE.HOME,INV.PURGE.HOME  grant_home_holds              load  writer_count         1/1  acquire
 
 # ---- EXCL ---------------------------------------------------------------
 #
@@ -218,28 +218,28 @@ VAL.WT.PURGE,INV.WT.PURGE  grant_home_holds              load  writer_count     
 # drains reach it through their own stack, so its acquire half carries
 # nothing here.  An acquire admitted by its own exchange self-serves from the
 # buffer.
-EXCL.*.PURGE  lock_grant_landed_cb     call  lock_grant_commit  -/1  -
-EXCL.*.PURGE  lock_grant_commit        rmw   cache_state        1/1  release
-EXCL.*.PURGE  arts_handler_db_acquire  rmw   cache_state        1/1  acquire
+EXCL.PURGE.*  lock_grant_landed_cb     call  lock_grant_commit  -/1  -
+EXCL.PURGE.*  lock_grant_commit        rmw   cache_state        1/1  release
+EXCL.PURGE.*  arts_handler_db_acquire  rmw   cache_state        1/1  acquire
 # PURGE, the write release at the home: its bytes land in place in the
 # home's buffer, and the lock word's transition releases them to whichever
 # thread grants next and ships that buffer.  A request granted at once reads
 # the word with its exchange, or with the load after a reader's push.
-EXCL.*.PURGE  lock_release_landed_cb       call  lock_release_commit  -/1  -
-EXCL.*.PURGE  lock_release_commit          rmw   lock_state           1/1  release
-EXCL.*.PURGE  arts_handler_db_excl_request rmw   lock_state           1/2  acquire
-EXCL.*.PURGE  arts_handler_db_excl_request rmw   lock_state           2/2  acquire
+EXCL.PURGE.*  lock_release_landed_cb       call  lock_release_commit  -/1  -
+EXCL.PURGE.*  lock_release_commit          rmw   lock_state           1/1  release
+EXCL.PURGE.*  arts_handler_db_excl_request rmw   lock_state           1/2  acquire
+EXCL.PURGE.*  arts_handler_db_excl_request rmw   lock_state           2/2  acquire
 # The load after a reader's push is also ordered by the push's exchange
 # against the flip's drain of the stack; the register keeps it.
-EXCL.*.PURGE  arts_handler_db_excl_request load  lock_state           3/3  acquire  "lock_read_phase_open"
+EXCL.PURGE.*  arts_handler_db_excl_request load  lock_state           3/3  acquire  "lock_read_phase_open"
 # RETAIN, the deliver: a migration lands in place in the stable buffer, and
 # the exchange that makes this rank the owner (a write deliver) or opens the
 # read turn (a read deliver) is the publication.  As for PURGE, the drained
 # waiters come through their own stack.
-EXCL.*.RETAIN  lock_deliver_landed_cb   call  lock_deliver_commit  -/1  -
-EXCL.*.RETAIN  lock_deliver_commit      rmw   cache_state          1/2  release
-EXCL.*.RETAIN  lock_deliver_commit      rmw   cache_state          2/2  release
-EXCL.*.RETAIN  arts_handler_db_acquire  rmw   cache_state          1/1  acquire
+EXCL.RETAIN.*  lock_deliver_landed_cb   call  lock_deliver_commit  -/1  -
+EXCL.RETAIN.*  lock_deliver_commit      rmw   cache_state          1/2  release
+EXCL.RETAIN.*  lock_deliver_commit      rmw   cache_state          2/2  release
+EXCL.RETAIN.*  arts_handler_db_acquire  rmw   cache_state          1/1  acquire
 
 # ---- Accesses of the registered objects that carry no edge of a landed install
 #
@@ -249,24 +249,24 @@ EXCL.*.RETAIN  arts_handler_db_acquire  rmw   cache_state          1/1  acquire
 
 # Initialization before the object is shared, teardown, and the debug walks
 # that run after the runtime's threads have stopped.
-INV.*.*,EXCL.*.*             arts_db_cache_init                   store cache_state   -/1  -
-INV.*.*                      arts_db_debug_quiescence_check       load  cache_state   -/2  -
-EXCL.*.*                     arts_db_debug_quiescence_check       load  cache_state   -/1  -
-INV.*.*,EXCL.*.*             arts_db_sweep_open_items             load  cache_state   -/1  -
-EXCL.*.PURGE                 arts_db_debug_quiescence_check       load  lock_state    -/1  -
-EXCL.*.PURGE                 arts_db_home_init                    store lock_state    -/1  -
-EXCL.*.PURGE                 arts_db_home_seed_owed               load  lock_state    -/1  -
-EXCL.*.PURGE                 arts_db_home_seed_owed               store lock_state    -/1  -
-VAL.*.*                      arts_db_debug_quiescence_check       load  req_state     -/2  -
-VAL.*.*                      arts_db_sweep_open_items             load  req_state     -/1  -
-INV.WT.*                     arts_db_home_init                    store hver          -/1  -
-INV.WT.*                     arts_db_debug_quiescence_check       load  round_queue   -/1  -
-INV.WT.*                     arts_db_home_init                    store round_queue   -/1  -
-INV.WT.*                     arts_db_home_teardown                rmw   round_queue   -/1  -
-INV.WT.PURGE,VAL.WT.PURGE    arts_db_home_init                    store pending_return_from -/1  -
-INV.WT.PURGE,VAL.WT.PURGE    arts_db_debug_quiescence_check       load  pending_return_from -/1  -
-INV.*.*,VAL.*.*              arts_db_debug_quiescence_check       load  writer_count  -/2  -
-reference                    net_rdzv_teardown                    load  word          -/1  -
+INV.*.*,EXCL.*.*                 arts_db_cache_init                   store cache_state   -/1  -
+INV.*.*                          arts_db_debug_quiescence_check       load  cache_state   -/2  -
+EXCL.*.*                         arts_db_debug_quiescence_check       load  cache_state   -/1  -
+INV.*.*,EXCL.*.*                 arts_db_sweep_open_items             load  cache_state   -/1  -
+EXCL.PURGE.*                     arts_db_debug_quiescence_check       load  lock_state    -/1  -
+EXCL.PURGE.*                     arts_db_home_init                    store lock_state    -/1  -
+EXCL.PURGE.*                     arts_db_home_seed_owed               load  lock_state    -/1  -
+EXCL.PURGE.*                     arts_db_home_seed_owed               store lock_state    -/1  -
+VAL.*.*                          arts_db_debug_quiescence_check       load  req_state     -/2  -
+VAL.*.*                          arts_db_sweep_open_items             load  req_state     -/1  -
+INV.*.HOME                       arts_db_home_init                    store hver          -/1  -
+INV.*.HOME                       arts_db_debug_quiescence_check       load  round_queue   -/1  -
+INV.*.HOME                       arts_db_home_init                    store round_queue   -/1  -
+INV.*.HOME                       arts_db_home_teardown                rmw   round_queue   -/1  -
+INV.PURGE.HOME,VAL.PURGE.HOME    arts_db_home_init                    store pending_return_from -/1  -
+INV.PURGE.HOME,VAL.PURGE.HOME    arts_db_debug_quiescence_check       load  pending_return_from -/1  -
+INV.*.*,VAL.*.*                  arts_db_debug_quiescence_check       load  writer_count  -/2  -
+reference                        net_rdzv_teardown                    load  word          -/1  -
 
 # The pairing word's pass count: a relaxed read-modify-write, which continues
 # the release sequences of the claim, the mark and the publish and orders
@@ -304,53 +304,53 @@ EXCL.*.*                     arts_db_create_take_hold             load  cache_st
 EXCL.*.*                     arts_db_create_take_hold             rmw   cache_state   -/1  -
 EXCL.*.*                     db_create_no_acquire_idle            store cache_state   -/1  -
 EXCL.*.*                     db_create_no_acquire_local           store cache_state   -/1  -
-EXCL.*.PURGE                 db_create_no_acquire_idle            store lock_state    -/1  -
-EXCL.*.PURGE                 db_create_no_acquire_local           store lock_state    -/1  -
+EXCL.PURGE.*                 db_create_no_acquire_idle            store lock_state    -/1  -
+EXCL.PURGE.*                 db_create_no_acquire_local           store lock_state    -/1  -
 INV.*.*,VAL.*.*              arts_db_create_take_hold             rmw   writer_count  -/1  -
 INV.*.*,VAL.*.*              db_create_no_acquire_local           store writer_count  -/1  -
 
 # A load that only steers the exchange after it, or reads back what its own
 # thread wrote.
-INV.*.*                      inv_deliver_commit                   load  cache_state   -/2  -
-INV.*.*                      inv_req_step_tok                     load  cache_state   -/1  -
-EXCL.*.*                     arts_handler_db_acquire              load  cache_state   -/1  -
-EXCL.*.PURGE                 lock_grant_commit                    load  cache_state   -/1  -
-EXCL.*.RETAIN                lock_deliver_commit                  load  cache_state   -/2  -
-EXCL.*.PURGE                 lock_release_commit                  load  lock_state    -/1  -
-VAL.*.*                      val_req_step                         load  req_state     -/1  -
-INV.WT.*                     inv_round_submit                     load  round_queue   -/1  -
-INV.WT.PURGE,VAL.WT.PURGE    grant_tail                           load  pending_return_from -/1  -
-INV.WT.*                     inv_round_run                        load  hver          -/1  -
-INV.WT.*                     inv_round_run                        load  version       -/1  -
-INV.*.*,VAL.*.*              arts_db_acquire_rw_local_fast        load  writer_count  -/1  -
-reference                    net_cq_trylock                       load  g_net_cq_busy -/1  -
-reference                    arts_shared_slot_compare_exchange    load  slot          -/1  -
-reference                    arts_shared_slot_load                load  slot          -/1  -
-reference                    arts_db_buf_bump_inplace             load  version       -/1  -
-reference                    buf_publish                          load  version       -/1  -
+INV.*.*                          inv_deliver_commit                   load  cache_state   -/2  -
+INV.*.*                          inv_req_step_tok                     load  cache_state   -/1  -
+EXCL.*.*                         arts_handler_db_acquire              load  cache_state   -/1  -
+EXCL.PURGE.*                     lock_grant_commit                    load  cache_state   -/1  -
+EXCL.RETAIN.*                    lock_deliver_commit                  load  cache_state   -/2  -
+EXCL.PURGE.*                     lock_release_commit                  load  lock_state    -/1  -
+VAL.*.*                          val_req_step                         load  req_state     -/1  -
+INV.*.HOME                       inv_round_submit                     load  round_queue   -/1  -
+INV.PURGE.HOME,VAL.PURGE.HOME    grant_tail                           load  pending_return_from -/1  -
+INV.*.HOME                       inv_round_run                        load  hver          -/1  -
+INV.*.HOME                       inv_round_run                        load  version       -/1  -
+INV.*.*,VAL.*.*                  arts_db_acquire_rw_local_fast        load  writer_count  -/1  -
+reference                        net_cq_trylock                       load  g_net_cq_busy -/1  -
+reference                        arts_shared_slot_compare_exchange    load  slot          -/1  -
+reference                        arts_shared_slot_load                load  slot          -/1  -
+reference                        arts_db_buf_bump_inplace             load  version       -/1  -
+reference                        buf_publish                          load  version       -/1  -
 
 # Transitions of other events: releases, a downgrade's join of the read
 # side, the request axes, invalidation, the size round, destroy and the owed
 # releases.
-EXCL.*.PURGE                 arts_db_release_ro                   load  cache_state   -/1  -
-EXCL.*.RETAIN                arts_db_release_ro                   load  cache_state   -/2  -
-EXCL.*.*                     arts_db_release_ro                   rmw   cache_state   -/1  -
-EXCL.*.*                     arts_db_join_read                    load  cache_state   -/1  -
-EXCL.*.*                     arts_db_join_read                    rmw   cache_state   -/1  -
-EXCL.*.*                     arts_db_release_rw                   load  cache_state   -/1  -
-EXCL.*.*                     arts_db_release_rw                   rmw   cache_state   -/1  -
-EXCL.*.*                     arts_handler_db_excl_cts             load  cache_state   -/2  -
-EXCL.*.*                     arts_handler_db_excl_cts             rmw   cache_state   -/2  -
-INV.*.*                      arts_handler_db_inv_invalidate       load  cache_state   -/1  -
-INV.*.*                      arts_handler_db_inv_invalidate       rmw   cache_state   -/1  -
-INV.*.*                      arts_handler_db_inv_invalidate       load  writer_count  -/1  -
-EXCL.*.PURGE                 arts_db_destroy_arrived              load  lock_state    -/1  -
-EXCL.*.PURGE                 arts_db_destroy_arrived              rmw   lock_state    -/1  -
-EXCL.*.PURGE                 lock_owed_step                       load  lock_state    -/1  -
-EXCL.*.PURGE                 lock_owed_step                       rmw   lock_state    -/1  -
-INV.*.*,VAL.*.*              arts_db_release_rw                   rmw   version       -/1  -
-INV.*.*,VAL.WT.*             pub_flight_drive                     load  version       -/1  -
-INV.*.*,VAL.*.*              arts_send_db_grant_request           load  version       -/1  -
+EXCL.PURGE.*                   arts_db_release_ro                   load  cache_state   -/1  -
+EXCL.RETAIN.*                  arts_db_release_ro                   load  cache_state   -/2  -
+EXCL.*.*                       arts_db_release_ro                   rmw   cache_state   -/1  -
+EXCL.*.*                       arts_db_join_read                    load  cache_state   -/1  -
+EXCL.*.*                       arts_db_join_read                    rmw   cache_state   -/1  -
+EXCL.*.*                       arts_db_release_rw                   load  cache_state   -/1  -
+EXCL.*.*                       arts_db_release_rw                   rmw   cache_state   -/1  -
+EXCL.*.*                       arts_handler_db_excl_cts             load  cache_state   -/2  -
+EXCL.*.*                       arts_handler_db_excl_cts             rmw   cache_state   -/2  -
+INV.*.*                        arts_handler_db_inv_invalidate       load  cache_state   -/1  -
+INV.*.*                        arts_handler_db_inv_invalidate       rmw   cache_state   -/1  -
+INV.*.*                        arts_handler_db_inv_invalidate       load  writer_count  -/1  -
+EXCL.PURGE.*                   arts_db_destroy_arrived              load  lock_state    -/1  -
+EXCL.PURGE.*                   arts_db_destroy_arrived              rmw   lock_state    -/1  -
+EXCL.PURGE.*                   lock_owed_step                       load  lock_state    -/1  -
+EXCL.PURGE.*                   lock_owed_step                       rmw   lock_state    -/1  -
+INV.*.*,VAL.*.*                arts_db_release_rw                   rmw   version       -/1  -
+INV.*.*,VAL.*.HOME             pub_flight_drive                     load  version       -/1  -
+INV.*.*,VAL.*.*                arts_send_db_grant_request           load  version       -/1  -
 
 # The grant's count after the install's possession edge.  Every write of the
 # count is a read-modify-write, so each continues the install's release
@@ -358,42 +358,42 @@ INV.*.*,VAL.*.*              arts_send_db_grant_request           load  version 
 # register keeps.  Under write-back the install's edge is
 # owner_response_commit's, and arts_db_grant_install is compiled and not
 # called.
-INV.*.*,VAL.*.*              arts_db_drain_pending_rw_after_grant rmw   writer_count  -/1  -
-INV.*.*,VAL.*.*              arts_db_grant_claim_writers          rmw   writer_count  -/1  -
-INV.WT.PURGE,VAL.WT.PURGE    arts_db_grant_commit_drain           rmw   writer_count  -/1  -
-INV.*.RETAIN,VAL.*.RETAIN    arts_db_grant_commit_finish          rmw   writer_count  -/1  -
-INV.WB.*,VAL.WB.*            arts_db_grant_install                rmw   writer_count  -/1  -
-INV.WT.PURGE,VAL.WT.PURGE    arts_db_grant_release_claim          load  writer_count  -/1  -
-INV.WT.PURGE,VAL.WT.PURGE    arts_db_grant_release_claim          rmw   writer_count  -/1  -
-INV.*.RETAIN,VAL.*.RETAIN    arts_db_grant_release_commit         rmw   writer_count  -/1  -
-INV.WT.PURGE,VAL.WT.PURGE    arts_db_grant_release_settle         load  writer_count  -/1  -
-INV.*.*,VAL.*.*              arts_db_grant_release_skip           load  writer_count  -/1  -
-INV.WT.PURGE,VAL.WT.PURGE    arts_db_grant_return_claim_leg       load  writer_count  -/1  -
-INV.WB.*,VAL.WB.*            arts_handler_db_grant_confirm_ack    rmw   writer_count  -/3  -
-INV.*.RETAIN,VAL.*.RETAIN    arts_handler_db_grant_invalidate     rmw   writer_count  -/1  -
-INV.WT.PURGE,VAL.WT.PURGE    grant_commit_count_edge              load  writer_count  -/1  -
-INV.WT.PURGE,VAL.WT.PURGE    grant_commit_count_edge              rmw   writer_count  -/1  -
-INV.WT.PURGE,VAL.WT.PURGE    grant_tail                           load  writer_count  -/1  -
+INV.*.*,VAL.*.*                  arts_db_drain_pending_rw_after_grant rmw   writer_count  -/1  -
+INV.*.*,VAL.*.*                  arts_db_grant_claim_writers          rmw   writer_count  -/1  -
+INV.PURGE.HOME,VAL.PURGE.HOME    arts_db_grant_commit_drain           rmw   writer_count  -/1  -
+INV.RETAIN.*,VAL.RETAIN.*        arts_db_grant_commit_finish          rmw   writer_count  -/1  -
+INV.*.OWNER,VAL.*.OWNER          arts_db_grant_install                rmw   writer_count  -/1  -
+INV.PURGE.HOME,VAL.PURGE.HOME    arts_db_grant_release_claim          load  writer_count  -/1  -
+INV.PURGE.HOME,VAL.PURGE.HOME    arts_db_grant_release_claim          rmw   writer_count  -/1  -
+INV.RETAIN.*,VAL.RETAIN.*        arts_db_grant_release_commit         rmw   writer_count  -/1  -
+INV.PURGE.HOME,VAL.PURGE.HOME    arts_db_grant_release_settle         load  writer_count  -/1  -
+INV.*.*,VAL.*.*                  arts_db_grant_release_skip           load  writer_count  -/1  -
+INV.PURGE.HOME,VAL.PURGE.HOME    arts_db_grant_return_claim_leg       load  writer_count  -/1  -
+INV.*.OWNER,VAL.*.OWNER          arts_handler_db_grant_confirm_ack    rmw   writer_count  -/3  -
+INV.RETAIN.*,VAL.RETAIN.*        arts_handler_db_grant_invalidate     rmw   writer_count  -/1  -
+INV.PURGE.HOME,VAL.PURGE.HOME    grant_commit_count_edge              load  writer_count  -/1  -
+INV.PURGE.HOME,VAL.PURGE.HOME    grant_commit_count_edge              rmw   writer_count  -/1  -
+INV.PURGE.HOME,VAL.PURGE.HOME    grant_tail                           load  writer_count  -/1  -
 
 # Serves ordered after the landing by a message (a home names an owner only
 # after the owner's confirmation, sent after its install's edge), by an
 # acquire the register keeps on the same thread, or by the possession edges
 # of the grant plane; and a debug assertion.
-EXCL.*.RETAIN                excl_forward_on                      load  cache_state   -/1  -
-EXCL.*.RETAIN                excl_forward_on                      rmw   cache_state   -/2  -
-EXCL.*.RETAIN                excl_recall_on                       load  cache_state   -/1  -
-EXCL.*.RETAIN                excl_recall_on                       rmw   cache_state   -/1  -
-EXCL.*.RETAIN                owner_serve_readers                  load  cache_state   -/1  -
-EXCL.*.RETAIN                owner_serve_readers                  rmw   cache_state   -/1  -
-EXCL.*.RETAIN                owner_try_execute                    rmw   cache_state   -/2  -
-EXCL.*.PURGE                 lock_home_serve_ro                   load  lock_state    -/2  -
-INV.WB.*                     arts_send_db_inv_deliver             load  version       -/1  -
-INV.WT.*                     arts_handler_db_inv_request          load  version       -/2  -
-VAL.WB.*                     arts_handler_db_snapshot_redirect    load  version       -/1  -
-VAL.WB.*                     arts_handler_db_snapshot_redirect    load  writer_count  -/1  -
-VAL.*.*                      arts_handler_db_snapshot_response    load  version       -/1  -
-INV.WB.*,VAL.WB.*            arts_db_grant_ship_pending           load  version       -/1  -
-INV.*.*,VAL.*.*              arts_db_send_grant_response          load  version       -/1  -
+EXCL.RETAIN.*                      excl_forward_on                      load  cache_state   -/1  -
+EXCL.RETAIN.*                      excl_forward_on                      rmw   cache_state   -/2  -
+EXCL.RETAIN.*                      excl_recall_on                       load  cache_state   -/1  -
+EXCL.RETAIN.*                      excl_recall_on                       rmw   cache_state   -/1  -
+EXCL.RETAIN.*                      owner_serve_readers                  load  cache_state   -/1  -
+EXCL.RETAIN.*                      owner_serve_readers                  rmw   cache_state   -/1  -
+EXCL.RETAIN.*                      owner_try_execute                    rmw   cache_state   -/2  -
+EXCL.PURGE.*                       lock_home_serve_ro                   load  lock_state    -/2  -
+INV.*.OWNER                        arts_send_db_inv_deliver             load  version       -/1  -
+INV.*.HOME                         arts_handler_db_inv_request          load  version       -/2  -
+VAL.*.OWNER                        arts_handler_db_snapshot_redirect    load  version       -/1  -
+VAL.*.OWNER                        arts_handler_db_snapshot_redirect    load  writer_count  -/1  -
+VAL.*.*                            arts_handler_db_snapshot_response    load  version       -/1  -
+INV.*.OWNER,VAL.*.OWNER            arts_db_grant_ship_pending           load  version       -/1  -
+INV.*.*,VAL.*.*                    arts_db_send_grant_response          load  version       -/1  -
 
 # Other atomics of the same name, and the slot helpers that install an empty
 # or adopted buffer, never landed bytes.  The addr markers: addresses of other
@@ -405,8 +405,8 @@ INV.*.*,VAL.*.*,EXCL.*.*     arts_db_cache_common_destroy_pre     addr  buffer  
 reference                    net_rdzv_slot                        addr  slot          -/1  -
 reference                    net_rdzv_teardown                    addr  slot          -/1  -
 reference                    regpool_class_slot                   addr  slot          -/1  -
-EXCL.*.PURGE                 arts_db_cache_stub_size              addr  lock_state    -/1  -
-INV.WT.*                     arts_db_cache_stub_size              addr  round_queue   -/1  -
+EXCL.PURGE.*                 arts_db_cache_stub_size              addr  lock_state    -/1  -
+INV.*.HOME                   arts_db_cache_stub_size              addr  round_queue   -/1  -
 reference                    route_key_cas                        rmw   word          -/1  -
 reference                    arts_shared_slot_empty               load  slot          -/1  -
 reference                    arts_shared_slot_holds               load  slot          -/1  -

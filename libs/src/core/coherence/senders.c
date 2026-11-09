@@ -47,7 +47,7 @@
  * GRANT_RESPONSE sender (arts_db_send_grant_response) all live in
  * coherence/grant.c, shared by WT and WB. */
 
-#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
+#if defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)
 void arts_send_db_publish(struct arts_db_s *db, uint64_t version, uint64_t cv,
                           uint64_t data_size, uint64_t rdzv_txid,
                           uint64_t rdzv_cookie, bool return_grant) {
@@ -66,7 +66,7 @@ void arts_send_db_publish(struct arts_db_s *db, uint64_t version, uint64_t cv,
   p.token = arts_db_token(db);
 /* The OoO kind exists only in arms that publish at a release; VAL under WB
  * publishes nothing, so its local-hit branch is compiled out with it. */
-#if !defined(ARTS_WRITE_POLICY_WB) || defined(ARTS_PROTOCOL_INV)
+#if !defined(ARTS_READ_SOURCE_OWNER) || defined(ARTS_VALIDITY_INV)
   /* Local hit: the home is this rank, whose one descriptor of the block is
    * the releaser's own, so the publish body runs on it.  A descriptor not yet
    * installed (or retired) takes the engine by GUID as the wire's publish
@@ -108,9 +108,9 @@ void arts_send_db_publish(struct arts_db_s *db, uint64_t version, uint64_t cv,
  * under VAL or INV) or for EXCL PURGE's landing-less release.
  * Never a self-send (a same-rank publish is an ordering round alone).
  * Compiled for exactly the cells whose dispatcher accepts the message. */
-#if ((defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)) &&             \
-     defined(ARTS_WRITE_POLICY_WT)) ||                                         \
-    (defined(ARTS_PROTOCOL_EXCL) && defined(ARTS_RELEASE_PURGE))
+#if ((defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)) &&             \
+     defined(ARTS_READ_SOURCE_HOME)) ||                                        \
+    (defined(ARTS_VALIDITY_EXCL) && defined(ARTS_RETENTION_PURGE))
 void arts_send_db_publish_cts(unsigned int releaser_rank, arts_guid_t db_guid,
                                 const struct arts_rdzv_landing_s *landing,
                                 uint64_t cv) {
@@ -132,8 +132,8 @@ void arts_send_db_publish_cts(unsigned int releaser_rank, arts_guid_t db_guid,
  * and, under PURGE, a grant return sent on its own.  VAL WB publishes nothing
  * at a release (ownership moves owner→owner), so it never sends or receives
  * PUBLISH_ACK and its dispatcher refuses the wire message. */
-#if (defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)) &&             \
-    (!defined(ARTS_WRITE_POLICY_WB) || defined(ARTS_PROTOCOL_INV))
+#if (defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)) &&             \
+    (!defined(ARTS_READ_SOURCE_OWNER) || defined(ARTS_VALIDITY_INV))
 void arts_send_db_publish_ack(unsigned int releaser_rank, struct arts_db_s *db,
                               uint64_t cv, uint64_t version, bool credit,
                               uint64_t token) {
@@ -192,8 +192,8 @@ void arts_send_db_publish_ack(unsigned int releaser_rank, struct arts_db_s *db,
 
 /* The create's credit is minted by every arm whose remote creator writes into
  * a line the home owns. */
-#if (!defined(ARTS_PROTOCOL_EXCL) && defined(ARTS_WRITE_POLICY_WT)) ||        \
-    defined(ARTS_PROTOCOL_FLUSH)
+#if (!defined(ARTS_VALIDITY_EXCL) && defined(ARTS_READ_SOURCE_HOME)) ||        \
+    defined(ARTS_VALIDITY_FLUSH)
 void arts_send_db_create_return(unsigned int creator_rank,
                                 struct arts_db_cache_s *home_cache) {
   uint64_t home_size =
@@ -231,7 +231,7 @@ void arts_send_db_create_return(unsigned int creator_rank,
 
 /* The versioned-snapshot read path: VAL only.  INV's readers hold
  * durable copies and fetch with INV_REQUEST instead. */
-#if defined(ARTS_PROTOCOL_VAL)
+#if defined(ARTS_VALIDITY_VAL)
 /* One request on the wire per combining window. */
 void arts_send_db_snapshot_request(struct arts_db_cache_s *cache,
                                    uint32_t cover) {
@@ -430,5 +430,5 @@ void arts_send_db_cache_destroy(unsigned int sharer_rank, arts_guid_t db_guid) {
 }
 
 /* The WB-only senders (CONFIRM_ACK, SNAPSHOT_REDIRECT) live in
- * coherence/grant_wb.c and coherence/val/wb.c alongside their handlers;
+ * coherence/grant_owner.c and coherence/val/owner.c alongside their handlers;
  * the VAL GRANT_RESPONSE senders live in coherence/grant.c (shared by WT and WB). */

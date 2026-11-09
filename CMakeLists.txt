@@ -270,83 +270,90 @@ cmake_dependent_option(ARTS_USE_LOCAL_CUDA_ARCHITECTURES
     "Auto-detect CUDA architectures from local GPUs using nvidia-smi" ON
     "ARTS_USE_GPU" OFF)
 
-# ── Coherence protocol × write policy × release policy ─────────────────────
+# ── Coherence: validity × retention × read source ───────────────────────────
 # Compile-time switches — one binary is exactly one configuration; all ranks in
-# a multinode run must use the same build.  Every coherence protocol requires
-# a memory model of the program: VAL/INV/EXCL require OCR (the OCR v1.2.0 §1.6
-# model: races legal, the runtime orders every conflict it must); FLUSH
-# requires DB-WRF (exclusive write acquisition: at most one write-mode
-# acquisition of a DataBlock is live at any time, and the program guarantees
-# it by happens-before; read acquisitions are free).
-#   ARTS_COHERENCE_PROTOCOL  Coherence family — who keeps reader copies valid:
-#                            INV (default) — invalidation: reader copies stay
-#                            valid until a writer's release retires every
-#                            standing copy in an acknowledged invalidation
-#                            round.
-#                            VAL — validation: each read acquire checks its
-#                            cached copy's version at the serving side and
-#                            refetches only when stale; readers are never
-#                            blocked, tracked, or invalidated.
-#                            EXCL — exclusion: queue-fair distributed
-#                            reader-writer lock per DB; readers and writers
-#                            take turns, so no stale copy ever exists.
-#                            FLUSH — fetch at acquire, flush at release: every
-#                            remote acquire fetches the current payload and
-#                            every remote RW release writes it through; requires
-#                            the DB-WRF model (the program keeps every DB's
-#                            write acquisitions exclusive), which is what makes
-#                            the fetch-then-flush pair correct without any
-#                            tracking of readers or writers at the home.
-#   ARTS_WRITE_POLICY        WT | WB (default) — write policy of a node's
-#                            data-block cache at release granularity: WT =
-#                            write-through (payload flushed to the block's home
-#                            at every release; home serves reads), WB =
-#                            write-back (payload stays with the last writer;
-#                            directory forwards on demand). Live in INV/VAL.
-#   ARTS_RELEASE_POLICY      PURGE | RETAIN (default) — WHO initiates the
-#                            grant's return: PURGE = the holder, unasked, at
-#                            its own idle edge (the home sends the holder
-#                            nothing); RETAIN = the home, on demand, and an
-#                            unasked holder keeps the grant. Live in EXCL and
-#                            in WT × {VAL, INV}.
-# The OCR-model protocols' axes are nominally independent: 12 combinations, 8
-# built, plus the ninth build FLUSH (no write/release policy axis).
-# Everything else is a configure error naming the reason:
-#   VAL  × {WT, WB} × RETAIN
-#   VAL  × WT × PURGE
-#   INV  × {WT, WB} × RETAIN
-#   INV  × WT × PURGE
-#   EXCL × WB × {PURGE, RETAIN}
-#   FLUSH (no write/release policy axis)
-# Not built: EXCL×WT (the payload rides the permission, so the release policy
-# already decides both), INV/VAL×WB×PURGE (a voluntary return hands back only
-# the permission while the bytes stay at the ex-owner, so the home still
-# cannot serve alone — and shipping them home too is write-through).
+# a multinode run must use the same build.  Three axes, in this order:
+#   ARTS_VALIDITY     how a copy stays valid after a write:
+#                     INV (default) — invalidation: a reader copy stays valid
+#                     until a writer's release retires every standing copy in
+#                     an acknowledged invalidation round.
+#                     VAL — validation: each read acquire checks its cached
+#                     copy's version at the serving side and refetches only
+#                     when stale; readers are never blocked, tracked, or
+#                     invalidated.
+#                     EXCL — exclusion: queue-fair distributed reader-writer
+#                     lock per DB; readers and writers take turns, so no stale
+#                     copy ever exists.
+#                     FLUSH — a copy is valid only inside the acquiring EDT:
+#                     every remote acquire fetches the current payload and
+#                     every remote RW release writes it back, with no tracking
+#                     of readers or writers at the home.
+#   ARTS_RETENTION    who starts the ownership's return: PURGE = the holder,
+#                     unasked, at its own idle edge (the home sends the holder
+#                     nothing); RETAIN (default) = the home, on demand, and an
+#                     unasked holder keeps the ownership.
+#   ARTS_READ_SOURCE  where a reader's copy comes from: HOME = the home (every
+#                     release ships the payload to the block's home, which
+#                     serves reads); OWNER (default) = the last writer (the
+#                     payload stays with it and the home forwards a read on
+#                     demand).
+# The memory model follows from the validity: VAL, INV and EXCL implement OCR
+# (the OCR v1.2.0 §1.6 model: races legal, the runtime orders every conflict
+# it must); FLUSH implements CDAG (the program orders every pair of a
+# DataBlock's write acquisitions by happens-before, through any release; read
+# acquisitions are free), which is what makes the fetch-then-write-back pair
+# correct.
+# Built: EXCL·PURGE·HOME, EXCL·RETAIN·OWNER, {INV,VAL}·PURGE·HOME and
+# {INV,VAL}·RETAIN·{HOME,OWNER} (OCR), and FLUSH (CDAG; neither a retention
+# nor a read source).  Everything else is a configure error naming the reason:
+#   EXCL·PURGE·OWNER, EXCL·RETAIN·HOME — under EXCL no copy outlives a write
+#     turn, so the payload rides the ownership and the retention decides where
+#     it rests: PURGE at the home, RETAIN with the last writer.
+#   {INV,VAL}·PURGE·OWNER — a voluntary return hands back only the ownership
+#     while the bytes stay at the ex-owner, so the home still cannot serve a
+#     reader alone; shipping them home too is the HOME read source.
+#   FLUSH with a retention or a read source other than the default.
+# The INV and EXCL arms in more detail:
+#   INV (invalidation): readers are never blocked, tracked only as a
+#     node-granular copy roster, and every RW release retires every valid copy
+#     in an invalidation round whose acks it collects before returning.  Under
+#     HOME each release also publishes to the home (home-canonical); under
+#     OWNER the canonical copy stays at the owner and moves owner-to-owner by
+#     migration (the home is a pure directory that redirects reads), so the
+#     publish is control only: it opens the round and carries no payload, and
+#     its ack is awaited like the invalidate acks.
+#   EXCL (exclusion, entry-consistency style): a DB is held in one access mode
+#     at a time (RO-shared or RW-exclusive); reader and writer are
+#     time-exclusive; writers are passive (park, no invalidate push); all
+#     inter-node transitions serialize through the GUID home's single
+#     lock_state word.  The retention decides what the zero edge does: PURGE
+#     returns grant and payload to the home, RETAIN keeps both until the home
+#     recalls them.
 # The build's default cell; the test suite's reference tree is the tree of
 # this cell.
-set(_ARTS_DEFAULT_COHERENCE_PROTOCOL "INV")
-set(_ARTS_DEFAULT_WRITE_POLICY "WB")
-set(_ARTS_DEFAULT_RELEASE_POLICY "RETAIN")
-set(ARTS_COHERENCE_PROTOCOL "${_ARTS_DEFAULT_COHERENCE_PROTOCOL}" CACHE STRING
-    "Coherence protocol: INV (default; release-time invalidation rounds), VAL (acquire-time version validation), EXCL (per-DB distributed reader-writer lock) — the three OCR-model protocols — or FLUSH (fetch at acquire, flush at release; requires the DB-WRF model: the program keeps every DB's write acquisitions exclusive)")
-set_property(CACHE ARTS_COHERENCE_PROTOCOL PROPERTY STRINGS INV VAL EXCL FLUSH)
-set(ARTS_WRITE_POLICY "${_ARTS_DEFAULT_WRITE_POLICY}" CACHE STRING
-    "Write policy at release granularity: WT (flush to the home at every release) or WB (resident with the last writer, default). Live in INV/VAL; EXCL requires WB")
-set_property(CACHE ARTS_WRITE_POLICY PROPERTY STRINGS WT WB)
-set(ARTS_RELEASE_POLICY "${_ARTS_DEFAULT_RELEASE_POLICY}" CACHE STRING
-    "Who initiates the grant's return: PURGE (the holder, unasked, at its own idle edge) or RETAIN (the home, on demand; default). Live in EXCL and in WT x {VAL, INV}; INV/VAL x WB require RETAIN")
-set_property(CACHE ARTS_RELEASE_POLICY PROPERTY STRINGS PURGE RETAIN)
+set(_ARTS_DEFAULT_VALIDITY "INV")
+set(_ARTS_DEFAULT_RETENTION "RETAIN")
+set(_ARTS_DEFAULT_READ_SOURCE "OWNER")
+set(ARTS_VALIDITY "${_ARTS_DEFAULT_VALIDITY}" CACHE STRING
+    "How a copy stays valid after a write: INV (default; release-time invalidation rounds), VAL (acquire-time version validation), EXCL (per-DB distributed reader-writer lock) — the OCR model — or FLUSH (fetch at acquire, write back at release; the CDAG model: the program orders every DB's write acquisitions)")
+set_property(CACHE ARTS_VALIDITY PROPERTY STRINGS INV VAL EXCL FLUSH)
+set(ARTS_RETENTION "${_ARTS_DEFAULT_RETENTION}" CACHE STRING
+    "Who starts the ownership's return: PURGE (the holder, unasked, at its own idle edge) or RETAIN (the home, on demand; default). FLUSH has none")
+set_property(CACHE ARTS_RETENTION PROPERTY STRINGS PURGE RETAIN)
+set(ARTS_READ_SOURCE "${_ARTS_DEFAULT_READ_SOURCE}" CACHE STRING
+    "Where a reader's copy comes from: HOME (every release ships the payload home) or OWNER (the last writer keeps it; default). OWNER needs RETAIN; EXCL takes HOME with PURGE and OWNER with RETAIN; FLUSH has none")
+set_property(CACHE ARTS_READ_SOURCE PROPERTY STRINGS HOME OWNER)
 set(ARTS_MALLOC "mimalloc" CACHE STRING
     "General allocator: mimalloc (default, vendored static) or system (libc malloc)")
 set_property(CACHE ARTS_MALLOC PROPERTY STRINGS mimalloc system)
 
-# ── CXL: CXL memory as the payload store of EXCL x WB x PURGE ──
+# ── CXL: CXL memory as the payload store of EXCL·PURGE·HOME ──
 # A data block keeps its GUID, its home and its kind; a CXL build changes only
 # where its bytes rest.  The store is a per-target choice like the protocol,
 # so ONE benchmark tree holds the two CXL variants beside the nine others,
 # and this option says whether the TREE'S OWN library (what tests link) is one.
 option(ARTS_USE_CXL
-    "This tree's own library keeps every data block's payload in CXL memory (EXCL x WB x PURGE only; needs ARTS_CXL_RESIDENCY)"
+    "This tree's own library keeps every data block's payload in CXL memory (EXCL·PURGE·HOME only; needs ARTS_CXL_RESIDENCY)"
     OFF)
 set(ARTS_CXL_RESIDENCY "" CACHE STRING
     "Where an EDT's working bytes live under ARTS_USE_CXL=ON: STAGED (a rank-local copy at the two ownership edges) or DIRECT (the CXL slot itself)")
@@ -513,82 +520,56 @@ set(ARTS_COUNTER_CONFIG
     "${CMAKE_CURRENT_SOURCE_DIR}/configs/counters_off.cfg"
     CACHE FILEPATH "ARTS counter configuration file (parsed to generate introspection macros)")
 
-# ── Protocol × second-axes validation + arm derivation ─────────────────────
-# The user-facing axes reduce to one protocol ARM — the TU family that gets
-# compiled and the ARTS_PROTOCOL_* macro it defines:
-#   (VAL,  WT/WB)  -> arm VAL      (coherence/val/,     ARTS_PROTOCOL_VAL)
-#   (INV,  WT/WB)  -> arm INV      (coherence/inv/,     ARTS_PROTOCOL_INV)
-#   (EXCL, P/R)    -> arm EXCL     (coherence/excl/,    ARTS_PROTOCOL_EXCL)
-#   (FLUSH)        -> arm FLUSH    (coherence/flush/,   ARTS_PROTOCOL_FLUSH)
-# ARTS_COHERENCE_ARM is internal — downstream CMake (TU selection, tests)
-# branches on the arm, never on the raw axes.
-if(NOT ARTS_COHERENCE_PROTOCOL STREQUAL "VAL" AND
-   NOT ARTS_COHERENCE_PROTOCOL STREQUAL "INV" AND
-   NOT ARTS_COHERENCE_PROTOCOL STREQUAL "EXCL" AND
-   NOT ARTS_COHERENCE_PROTOCOL STREQUAL "FLUSH")
+# ── Coherence configuration: validation ─────────────────────────────────────
+# Downstream CMake (TU selection, tests) branches on ARTS_VALIDITY, which names
+# the arm that gets compiled and the ARTS_VALIDITY_* macro it defines, and on
+# ARTS_RETENTION and ARTS_READ_SOURCE where the arm has them.
+if(NOT ARTS_VALIDITY STREQUAL "INV" AND
+   NOT ARTS_VALIDITY STREQUAL "VAL" AND
+   NOT ARTS_VALIDITY STREQUAL "EXCL" AND
+   NOT ARTS_VALIDITY STREQUAL "FLUSH")
   message(FATAL_ERROR
-          "ARTS_COHERENCE_PROTOCOL must be VAL, INV, EXCL or FLUSH, got: ${ARTS_COHERENCE_PROTOCOL}")
+          "ARTS_VALIDITY must be INV, VAL, EXCL or FLUSH, got: ${ARTS_VALIDITY}")
 endif()
-if(NOT ARTS_WRITE_POLICY STREQUAL "WT" AND NOT ARTS_WRITE_POLICY STREQUAL "WB")
+if(NOT ARTS_RETENTION STREQUAL "PURGE" AND NOT ARTS_RETENTION STREQUAL "RETAIN")
   message(FATAL_ERROR
-          "ARTS_WRITE_POLICY must be WT or WB, got: ${ARTS_WRITE_POLICY}")
+          "ARTS_RETENTION must be PURGE or RETAIN, got: ${ARTS_RETENTION}")
 endif()
-if(NOT ARTS_RELEASE_POLICY STREQUAL "PURGE" AND NOT ARTS_RELEASE_POLICY STREQUAL "RETAIN")
+if(NOT ARTS_READ_SOURCE STREQUAL "HOME" AND NOT ARTS_READ_SOURCE STREQUAL "OWNER")
   message(FATAL_ERROR
-          "ARTS_RELEASE_POLICY must be PURGE or RETAIN, got: ${ARTS_RELEASE_POLICY}")
+          "ARTS_READ_SOURCE must be HOME or OWNER, got: ${ARTS_READ_SOURCE}")
 endif()
-# Per-family live axis: the dead axis must sit at its required value.
-if(ARTS_COHERENCE_PROTOCOL STREQUAL "EXCL" AND ARTS_WRITE_POLICY STREQUAL "WT")
+if(ARTS_VALIDITY STREQUAL "EXCL" AND
+   ((ARTS_RETENTION STREQUAL "PURGE" AND ARTS_READ_SOURCE STREQUAL "OWNER") OR
+    (ARTS_RETENTION STREQUAL "RETAIN" AND ARTS_READ_SOURCE STREQUAL "HOME")))
   message(FATAL_ERROR
-          "EXCL x WT is not built: under exclusion no copy outlives a write "
-          "turn, so the payload rides the permission and the release policy "
-          "(ARTS_RELEASE_POLICY=PURGE|RETAIN) already decides both. "
-          "Use ARTS_WRITE_POLICY=WB.")
+          "EXCL·${ARTS_RETENTION}·${ARTS_READ_SOURCE} is not built: under EXCL "
+          "no copy outlives a write turn, so the payload rides the ownership "
+          "and the retention decides where it rests: PURGE at the home, "
+          "RETAIN with the last writer. Use -DARTS_READ_SOURCE=HOME with "
+          "PURGE, -DARTS_READ_SOURCE=OWNER with RETAIN.")
 endif()
-if((ARTS_COHERENCE_PROTOCOL STREQUAL "INV" OR ARTS_COHERENCE_PROTOCOL STREQUAL "VAL")
-   AND ARTS_RELEASE_POLICY STREQUAL "PURGE"
-   AND ARTS_WRITE_POLICY STREQUAL "WB")
+if((ARTS_VALIDITY STREQUAL "INV" OR ARTS_VALIDITY STREQUAL "VAL")
+   AND ARTS_RETENTION STREQUAL "PURGE"
+   AND ARTS_READ_SOURCE STREQUAL "OWNER")
   message(FATAL_ERROR
-          "${ARTS_COHERENCE_PROTOCOL} x WB x PURGE is not built: a voluntary "
-          "return hands back only the permission while the bytes stay at the "
-          "ex-owner, so the home still cannot serve a reader on its own — and "
-          "shipping the bytes home too is, by definition, write-through. "
-          "Use ARTS_WRITE_POLICY=WT (where the return is metadata-only) or "
-          "ARTS_RELEASE_POLICY=RETAIN.")
+          "${ARTS_VALIDITY}·PURGE·OWNER is not built: a voluntary return hands "
+          "back only the ownership while the bytes stay at the ex-owner, so "
+          "the home still cannot serve a reader alone; shipping them home too "
+          "is the HOME read source. Use -DARTS_READ_SOURCE=HOME (the return "
+          "then moves no payload) or -DARTS_RETENTION=RETAIN.")
 endif()
-if(ARTS_COHERENCE_PROTOCOL STREQUAL "FLUSH")
-  if(NOT ARTS_WRITE_POLICY STREQUAL _ARTS_DEFAULT_WRITE_POLICY OR
-     NOT ARTS_RELEASE_POLICY STREQUAL _ARTS_DEFAULT_RELEASE_POLICY)
+if(ARTS_VALIDITY STREQUAL "FLUSH")
+  if(NOT ARTS_RETENTION STREQUAL _ARTS_DEFAULT_RETENTION OR
+     NOT ARTS_READ_SOURCE STREQUAL _ARTS_DEFAULT_READ_SOURCE)
     message(FATAL_ERROR
-            "FLUSH has no write-policy or release-policy axis: every remote "
-            "acquire fetches and every remote RW release writes through, so "
-            "leave ARTS_WRITE_POLICY and ARTS_RELEASE_POLICY at their defaults.")
+            "FLUSH has neither a retention nor a read source: every remote "
+            "acquire fetches and every remote RW release writes back. Leave "
+            "ARTS_RETENTION and ARTS_READ_SOURCE at their defaults.")
   endif()
-  set(ARTS_COHERENCE_ARM "FLUSH")
-  message(STATUS "ARTS: model DB-WRF, protocol FLUSH")
-elseif(ARTS_COHERENCE_PROTOCOL STREQUAL "INV")
-  # INV (invalidation): readers are never blocked, tracked only as a
-  # node-granular copy roster, and every RW release retires every valid copy
-  # in an invalidation round whose acks it collects before returning.  WT
-  # additionally publishes each release to the home (home-canonical); WB
-  # keeps the canonical copy at the owner and moves it owner-to-owner by
-  # migration (home is a pure directory that redirects reads), so its publish
-  # is control only: it opens the round and carries no payload, and its ack is
-  # awaited like the invalidate acks.
-  set(ARTS_COHERENCE_ARM "INV")
-  message(STATUS "ARTS: model OCR, family INV, write policy ${ARTS_WRITE_POLICY}, release policy ${ARTS_RELEASE_POLICY}")
-elseif(ARTS_COHERENCE_PROTOCOL STREQUAL "EXCL")
-  # EXCL (exclusion, entry-consistency style): a DB is held in one access mode
-  # at a time (RO-shared or RW-exclusive); reader/writer are time-exclusive;
-  # writers are passive (park, no invalidate push); all inter-node transitions
-  # serialize through the GUID home's single lock_state word.  The release
-  # policy decides what the zero edge does: PURGE returns grant and payload to
-  # the home, RETAIN keeps both until the home recalls them.
-  set(ARTS_COHERENCE_ARM "EXCL")
-  message(STATUS "ARTS: model OCR, family EXCL, release policy ${ARTS_RELEASE_POLICY}")
-elseif(ARTS_COHERENCE_PROTOCOL STREQUAL "VAL")
-  set(ARTS_COHERENCE_ARM "VAL")
-  message(STATUS "ARTS: model OCR, family VAL, write policy ${ARTS_WRITE_POLICY}, release policy ${ARTS_RELEASE_POLICY}")
+  message(STATUS "ARTS: model CDAG, validity FLUSH")
+else()
+  message(STATUS "ARTS: model OCR, validity ${ARTS_VALIDITY}, retention ${ARTS_RETENTION}, read source ${ARTS_READ_SOURCE}")
 endif()
 if(ARTS_MALLOC STREQUAL "mimalloc")
   add_compile_definitions(ARTS_MALLOC_MIMALLOC=1)
@@ -623,12 +604,15 @@ if(ARTS_USE_CXL)
             "of memory with AMD64 cache-flush and fence instructions, so it "
             "exists for AMD64 only")
     endif()
-    if(NOT ARTS_COHERENCE_PROTOCOL STREQUAL "EXCL" OR NOT ARTS_RELEASE_POLICY STREQUAL "PURGE")
+    if(NOT ARTS_VALIDITY STREQUAL "EXCL" OR
+       NOT ARTS_RETENTION STREQUAL "PURGE" OR
+       NOT ARTS_READ_SOURCE STREQUAL "HOME")
         message(FATAL_ERROR
-            "ARTS_USE_CXL=ON requires ARTS_COHERENCE_PROTOCOL=EXCL and "
-            "ARTS_RELEASE_POLICY=PURGE (EXCL already implies WB): the store is "
-            "the cell that moves permission, not payload; got "
-            "${ARTS_COHERENCE_PROTOCOL} x ${ARTS_RELEASE_POLICY}")
+            "ARTS_USE_CXL=ON requires EXCL·PURGE·HOME: the store is the cell "
+            "that moves the ownership, not the payload; got "
+            "${ARTS_VALIDITY}·${ARTS_RETENTION}·${ARTS_READ_SOURCE}. Use "
+            "-DARTS_VALIDITY=EXCL -DARTS_RETENTION=PURGE "
+            "-DARTS_READ_SOURCE=HOME.")
     endif()
     if(NOT ARTS_CXL_RESIDENCY MATCHES "^(STAGED|DIRECT)$")
         message(FATAL_ERROR

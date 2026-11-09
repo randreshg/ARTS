@@ -7,7 +7,7 @@
  * Defines: arts_home_grantreq_queue_{init,push,pop,peek,pop_linked,
  * peek_linked,empty,pending,destroy}.
  *
- * Compiled for ARTS_COHERENCE_PROTOCOL = VAL, INV and EXCL.
+ * Compiled for ARTS_VALIDITY = VAL, INV and EXCL.
  */
 
 #include "arts/coherence/directory.h"

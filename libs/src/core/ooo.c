@@ -159,34 +159,34 @@ static const arts_ooo_handler_fn_t g_ooo_table[OOO_KIND_COUNT] = {
     [OOO_EDT_DESTROY] = arts_handler_edt_destroy,
     [OOO_EVENT_DESTROY] = arts_handler_event_destroy,
     [OOO_DB_DESTROY] = arts_handler_db_destroy,
-#if defined(ARTS_PROTOCOL_EXCL) && defined(ARTS_RELEASE_PURGE)
+#if defined(ARTS_VALIDITY_EXCL) && defined(ARTS_RETENTION_PURGE)
     [OOO_DB_ACQUIRE] = arts_db_acquire_replay_dep,
     [OOO_DB_EXCL_REQUEST] = arts_handler_db_excl_request,
     [OOO_DB_EXCL_RELEASE] = arts_handler_db_excl_release,
-#elif defined(ARTS_PROTOCOL_EXCL) && defined(ARTS_RELEASE_RETAIN)
+#elif defined(ARTS_VALIDITY_EXCL) && defined(ARTS_RETENTION_RETAIN)
     [OOO_DB_ACQUIRE] = arts_db_acquire_replay_dep,
     [OOO_DB_EXCL_REQUEST] = arts_handler_db_excl_request,
-#elif defined(ARTS_PROTOCOL_INV)
+#elif defined(ARTS_VALIDITY_INV)
     [OOO_DB_ACQUIRE] = arts_db_acquire_replay_dep,
     [OOO_DB_GRANT_REQUEST] = arts_handler_db_grant_request,
     [OOO_DB_INV_REQUEST] = arts_handler_db_inv_request,
     [OOO_DB_PUBLISH] = arts_handler_db_publish,
-#ifdef ARTS_RELEASE_PURGE
+#ifdef ARTS_RETENTION_PURGE
     [OOO_DB_GRANT_RETURN] = arts_handler_db_grant_return,
 #endif
-#elif defined(ARTS_WRITE_POLICY_WT)
+#elif defined(ARTS_READ_SOURCE_HOME)
     [OOO_DB_ACQUIRE] = arts_db_acquire_replay_dep,
     [OOO_DB_SNAPSHOT_REQUEST] = arts_handler_db_snapshot_request,
     [OOO_DB_GRANT_REQUEST] = arts_handler_db_grant_request,
     [OOO_DB_PUBLISH] = arts_handler_db_publish,
-#ifdef ARTS_RELEASE_PURGE
+#ifdef ARTS_RETENTION_PURGE
     [OOO_DB_GRANT_RETURN] = arts_handler_db_grant_return,
 #endif
-#elif defined(ARTS_WRITE_POLICY_WB)
+#elif defined(ARTS_READ_SOURCE_OWNER)
     [OOO_DB_ACQUIRE] = arts_db_acquire_replay_dep,
     [OOO_DB_SNAPSHOT_REQUEST] = arts_handler_db_snapshot_request,
     [OOO_DB_GRANT_REQUEST] = arts_handler_db_grant_request,
-#elif defined(ARTS_PROTOCOL_FLUSH)
+#elif defined(ARTS_VALIDITY_FLUSH)
     [OOO_DB_ACQUIRE] = arts_db_acquire_replay_dep,
     [OOO_DB_FETCH_REQUEST] = arts_handler_db_fetch_request,
     [OOO_DB_FLUSH_ANNOUNCE] = arts_handler_db_flush_announce,

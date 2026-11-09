@@ -93,8 +93,8 @@ bool arts_db_create_claims_stub(struct arts_db_cache_s *cache) {
  *
  * The arms that share this shape are the ones whose cache carries a home
  * directory; an arm without one builds its cache itself. */
-#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV) ||               \
-    defined(ARTS_PROTOCOL_EXCL)
+#if defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV) ||               \
+    defined(ARTS_VALIDITY_EXCL)
 void arts_db_cache_common_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
                                uint64_t db_size, arts_db_init_kind_t kind,
                                unsigned int creator_rank) {
@@ -110,8 +110,8 @@ void arts_db_cache_common_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
   atomic_init(&c->cxl_addr, (uint64_t)0);
 #endif
   arts_db_cache_kind_seed(c, kind);
-#if (defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)) &&              \
-    defined(ARTS_WRITE_POLICY_WT)
+#if (defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)) &&              \
+    defined(ARTS_READ_SOURCE_HOME)
   arts_lf_stack_init(&c->publication_waiters);
 #if ARTS_DB_CENSUS
   /* Only a home's create-time image is ever unpublished, and the creator's
@@ -120,13 +120,13 @@ void arts_db_cache_common_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
                                 creator_rank != arts_global_rank_id);
 #endif
 #endif
-#ifdef ARTS_PROTOCOL_VAL
+#ifdef ARTS_VALIDITY_VAL
   atomic_init(&c->req_state,
               (kind == ARTS_DB_INIT_STUB && ARTS_DB_STUB_CLAIMABLE(db_guid))
                   ? VREQ_MAKE(0u, 0u, 0u, 0u, 1u, 0u, 0u)
                   : (uint64_t)0);
 #endif
-#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
+#if defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)
   arts_db_reader_pool_init(&c->reader_pool);
 #endif
   /* Initialize the inlined home-directory fields only on the rank that owns
@@ -145,13 +145,13 @@ void arts_db_cache_common_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
   } else if (kind == ARTS_DB_INIT_CREATOR_HOME) {
     arts_db_home_init(db_self, self, n);
     db_self->home_initialized = true;
-#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
+#if defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)
     /* The creator boots holding the write right, with its own create-time
      * hold under it: possession, and one live writer. */
     atomic_init(&c->writer_count, ARTS_GRANT_SEED_HOLDING);
 #endif
   } else if (kind == ARTS_DB_INIT_CREATOR_REMOTE) {
-#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
+#if defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)
     atomic_init(&c->writer_count, ARTS_GRANT_SEED_HOLDING);
 #endif
   }
@@ -273,7 +273,7 @@ static void resolve_slot_body(struct arts_edt_s *edt, unsigned int slot,
   arts_db_acquire_account(edt);
 }
 
-#ifdef ARTS_PROTOCOL_FLUSH
+#ifdef ARTS_VALIDITY_FLUSH
 void arts_db_resolve_slot(struct arts_edt_s *edt, unsigned int slot,
                           arts_shared_ptr_t buf_h) {
   arts_dep_acq_resolve_once(edt, slot);
@@ -281,8 +281,8 @@ void arts_db_resolve_slot(struct arts_edt_s *edt, unsigned int slot,
 }
 #endif
 
-#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV) ||               \
-    defined(ARTS_PROTOCOL_EXCL)
+#if defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV) ||               \
+    defined(ARTS_VALIDITY_EXCL)
 /* The cache-slot form: the buffer is whatever this rank's cache holds for the
  * block, read through the descriptor the slot pins, so the pin and the ref
  * name one object by construction.  It never materializes a buffer: the arm
@@ -370,7 +370,7 @@ void *arts_db_acquire_local(struct arts_db_cache_s *cache) {
 
 /* ===== Case 7: remote-RO / remote-snapshot path =================== */
 
-#if defined(ARTS_PROTOCOL_VAL)
+#if defined(ARTS_VALIDITY_VAL)
 /* ===== The read path and the request word ============================
  *
  * Every remote read-only acquire rides its cache's one window: at most one
@@ -622,8 +622,8 @@ uint8_t arts_db_val_claim_cover(struct arts_db_cache_s *cache) {
  * is an acq_rel exchange paired with each parker's acq_rel push: a parker
  * re-reads the version after its push, and a publisher drains after its
  * stamp, so one of the two always sees the other. */
-#if (defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)) &&              \
-    defined(ARTS_WRITE_POLICY_WT)
+#if (defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)) &&              \
+    defined(ARTS_READ_SOURCE_HOME)
 void arts_db_drain_publication_waiters(struct arts_db_cache_s *cache) {
   arts_lf_link_t *node = arts_lf_stack_drain(&cache->publication_waiters);
   /* Every waiter here waits for the first publication, so it counts from the
@@ -700,8 +700,8 @@ void arts_db_await_ack(sem_t *cv) {
  * carries the home's next in-place credit {stable-buffer addr, rkey, txid},
  * consumed 1:1 by the next payload flight, so the steady state is one PUT +
  * one commit + one blocked wait, announce-free. */
-#if (defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)) &&             \
-    (!defined(ARTS_WRITE_POLICY_WB) || defined(ARTS_PROTOCOL_INV))
+#if (defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)) &&             \
+    (!defined(ARTS_READ_SOURCE_OWNER) || defined(ARTS_VALIDITY_INV))
 
 #define ARTS_PUB_FLYING 1u
 #define ARTS_PUB_DIRTY 2u
@@ -715,7 +715,7 @@ struct arts_db_pub_waiter_s {
 /* The write-back invalidation arm publishes control only: none of its
  * flights carries payload, so none consumes a credit or leaves a payload leg
  * that could carry a hand-back. */
-#if defined(ARTS_PROTOCOL_INV) && defined(ARTS_WRITE_POLICY_WB)
+#if defined(ARTS_VALIDITY_INV) && defined(ARTS_READ_SOURCE_OWNER)
 #define ARTS_PUB_CONTROL_ONLY 1
 #else
 #define ARTS_PUB_CONTROL_ONLY 0
@@ -725,7 +725,7 @@ struct arts_db_pub_waiter_s {
 /* Does a payload commit leg leaving now owe the home a hand-back of the write
  * right?  Only an arm whose write right migrates can owe one. */
 static inline bool pub_leg_takes_grant_return(struct arts_db_cache_s *cache) {
-#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
+#if defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)
   return arts_db_grant_return_claim_leg(cache);
 #else
   (void)cache;
@@ -739,7 +739,7 @@ static inline bool pub_leg_takes_grant_return(struct arts_db_cache_s *cache) {
  * ordering round alone), and the write-back invalidation arm publishes
  * control only. */
 static bool pub_flight_carries_payload(struct arts_db_cache_s *cache) {
-#if defined(ARTS_PROTOCOL_INV) && defined(ARTS_WRITE_POLICY_WB)
+#if defined(ARTS_VALIDITY_INV) && defined(ARTS_READ_SOURCE_OWNER)
   (void)cache;
   return false;
 #else
@@ -1003,7 +1003,7 @@ void arts_handler_db_publish_ack(const struct arts_db_publish_ack_args_s *a) {
 }
 #endif /* publishing arms */
 
-#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
+#if defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)
 void arts_db_release_ro(struct arts_db_cache_s *cache) {
   /* A VAL or INV read hold is the EDT's buffer ref alone, which the caller
    * drops: no protocol state counts readers. */
@@ -1013,7 +1013,7 @@ void arts_db_release_ro(struct arts_db_cache_s *cache) {
 void arts_db_join_read(struct arts_db_cache_s *cache) { (void)cache; }
 #endif /* arms whose read hold is nothing but the EDT's own ref */
 
-#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
+#if defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)
 /* ===== The declared-arrival rule (home side) ==========================
  *
  * A request whose waiters a write turn of its own rank serves (a covered
@@ -1122,8 +1122,8 @@ void arts_db_cover_home_teardown(struct arts_db_s *db) {
  * teardown), so the per-arm wrapper runs pre, its own teardown, then post.
  * The descriptor's storage is freed after the wrapper returns. */
 
-#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV) ||               \
-    defined(ARTS_PROTOCOL_EXCL)
+#if defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV) ||               \
+    defined(ARTS_VALIDITY_EXCL)
 /* Release the cache-hold on the buffer (store NULL into the shared slot).  If
  * no acquirer holds a ref the cb deleter ends the buffer now; otherwise it
  * survives until the last in-flight acquirer releases.  Runs first, ahead of
@@ -1156,7 +1156,7 @@ void arts_db_cache_common_destroy_pre(struct arts_db_cache_s *cache) {
  * diagnostic messages, so it is also gated on the log level that compiles
  * those messages: below DEBUG its body is empty. */
 #if defined(ARTS_DEBUG_TEARDOWN) && ARTS_LOG_LEVEL >= 3 &&                     \
-    defined(ARTS_PROTOCOL_EXCL)
+    defined(ARTS_VALIDITY_EXCL)
 /* One axis row of the EXCL cache word: report `bad` always, or only after a
  * quiescent shutdown when `quiet_only`. */
 static unsigned int excl_axis_row(const struct arts_db_cache_s *c, uint64_t cw,
@@ -1184,7 +1184,7 @@ static unsigned int excl_cache_word_rows(const struct arts_db_cache_s *c,
                                          uint64_t cw, bool quiescent) {
   uint32_t rws = CACHE_RW_ST(cw), ros = CACHE_RO_ST(cw);
   uint32_t wcn = CACHE_RW_CNT(cw), rcn = CACHE_RO_CNT(cw);
-#ifdef ARTS_RELEASE_RETAIN
+#ifdef ARTS_RETENTION_RETAIN
   bool read_cover =
       rws == CACHE_ST_REQ || rws == CACHE_ST_GRANT || CACHE_OWNER(cw) == 1u;
   bool purge = false;
@@ -1329,13 +1329,13 @@ void arts_db_debug_quiescence_check(const struct arts_teardown_exempt_s *ex,
         caller_held += exempt ? 1u : 0u;
         const bool quiescent = walk_quiescent && !exempt;
         (void)quiescent;
-#ifdef ARTS_PROTOCOL_FLUSH
+#ifdef ARTS_VALIDITY_FLUSH
         /* FLUSH keeps no wait structure on a descriptor — a blocked release
          * waits on a semaphore in its own frame that the home's answer posts
          * — so a walk has nothing to report. */
 #else
         struct arts_db_cache_s *c = &db->cache;
-#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
+#if defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)
         /* What each rule can see.  A parked waiter belongs to an EDT that has
          * not finished, which makes the shutdown non-quiescent; a blocked
          * releaser keeps its thread from stopping, so the walk does not run
@@ -1345,8 +1345,8 @@ void arts_db_debug_quiescence_check(const struct arts_teardown_exempt_s *ex,
          * ungated rules are states no interleaving and no message still in
          * flight can leave, and they hold after any shutdown. */
 #endif
-#if (defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)) &&             \
-    (!defined(ARTS_WRITE_POLICY_WB) || defined(ARTS_PROTOCOL_INV))
+#if (defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)) &&             \
+    (!defined(ARTS_READ_SOURCE_OWNER) || defined(ARTS_VALIDITY_INV))
         if (quiescent && (!arts_lf_stack_empty(&c->pub_waiters) ||
                           atomic_load_explicit(&c->pub_parked,
                                                memory_order_relaxed) != NULL)) {
@@ -1356,7 +1356,7 @@ void arts_db_debug_quiescence_check(const struct arts_teardown_exempt_s *ex,
           viol++;
         }
 #endif
-#ifdef ARTS_PROTOCOL_VAL
+#ifdef ARTS_VALIDITY_VAL
         {
           uint64_t rq =
               atomic_load_explicit(&c->req_state, memory_order_relaxed);
@@ -1384,8 +1384,8 @@ void arts_db_debug_quiescence_check(const struct arts_teardown_exempt_s *ex,
           }
         }
 #endif
-#if (defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)) &&              \
-    defined(ARTS_WRITE_POLICY_WT)
+#if (defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)) &&              \
+    defined(ARTS_READ_SOURCE_HOME)
         if (quiescent) {
           /* Only a read of this rank's own: a deferred serve belongs to an
            * EDT on the requesting rank, whose shutdown judges it. */
@@ -1406,13 +1406,13 @@ void arts_db_debug_quiescence_check(const struct arts_teardown_exempt_s *ex,
           }
         }
 #endif
-#ifdef ARTS_PROTOCOL_EXCL
+#ifdef ARTS_VALIDITY_EXCL
         if (db->home_initialized) {
           /* The cover gate: marked with nothing owed (and, on PURGE, nothing
            * counted) means the teardown was skipped; a pre-claim request owed
            * with nothing owed is a broken count.  Something owed is legal and
            * only counted. */
-#ifdef ARTS_RELEASE_PURGE
+#ifdef ARTS_RETENTION_PURGE
           uint64_t ls =
               atomic_load_explicit(&db->lock_state, memory_order_relaxed);
           bool gtd = EXCL_STATE_TEARDOWN(ls) != 0u;
@@ -1473,7 +1473,7 @@ void arts_db_debug_quiescence_check(const struct arts_teardown_exempt_s *ex,
           }
         }
 #endif
-#ifdef ARTS_PROTOCOL_INV
+#ifdef ARTS_VALIDITY_INV
         {
           uint64_t cs =
               atomic_load_explicit(&c->cache_state, memory_order_relaxed);
@@ -1499,7 +1499,7 @@ void arts_db_debug_quiescence_check(const struct arts_teardown_exempt_s *ex,
           }
         }
 #endif
-#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
+#if defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)
         if (quiescent && !arts_lf_stack_empty(&c->pending_rw)) {
           ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu has parked RW waiters after "
                      "a quiescent shutdown",
@@ -1510,7 +1510,7 @@ void arts_db_debug_quiescence_check(const struct arts_teardown_exempt_s *ex,
           /* A write request opens only for a parked writer, and only its
            * grant's take (or a create's claim) empties the stack, which also
            * closes the axis: a write request out with no writer is lost. */
-#ifdef ARTS_PROTOCOL_VAL
+#ifdef ARTS_VALIDITY_VAL
           bool rw_sent = VREQ_RW(atomic_load_explicit(
                              &c->req_state, memory_order_relaxed)) ==
                          VREQ_RW_SENT;
@@ -1546,7 +1546,7 @@ void arts_db_debug_quiescence_check(const struct arts_teardown_exempt_s *ex,
             marked_owed++;
           }
         }
-#ifdef ARTS_PROTOCOL_INV
+#ifdef ARTS_VALIDITY_INV
         if (db->home_initialized) {
           /* The invalidation round.  Unarmed, it is held only by a thread
            * running or finishing it, so once every thread has stopped a held
@@ -1581,7 +1581,7 @@ void arts_db_debug_quiescence_check(const struct arts_teardown_exempt_s *ex,
         if (db->home_initialized) {
           bool baton = atomic_load_explicit(&db->grant_baton,
                                             memory_order_relaxed) != 0u;
-#ifdef ARTS_RELEASE_PURGE
+#ifdef ARTS_RETENTION_PURGE
           unsigned int hw =
               atomic_load_explicit(&c->writer_count, memory_order_relaxed);
           /* The home names no holder: its own possession is the directory.
@@ -1655,7 +1655,7 @@ void arts_db_debug_quiescence_check(const struct arts_teardown_exempt_s *ex,
                        (unsigned long)c->db_guid, ARTS_GRANT_COUNT_OF(w), w);
             viol++;
           }
-#ifndef ARTS_WRITE_POLICY_WB
+#ifndef ARTS_READ_SOURCE_OWNER
           /* Without the unconfirmed-install marker nothing sets the word's
            * sign bit, so a negative word is a count that underflowed: a
            * release with no matching acquire.  (Under write-back the marker
@@ -1667,7 +1667,7 @@ void arts_db_debug_quiescence_check(const struct arts_teardown_exempt_s *ex,
             viol++;
           }
 #endif
-#ifdef ARTS_RELEASE_PURGE
+#ifdef ARTS_RETENTION_PURGE
           /* Where the right goes back unasked, the edge that drops a
            * non-home holder's last hold returns the right in the same step,
            * so possession with no hold under it and no return owed is a
@@ -1683,7 +1683,7 @@ void arts_db_debug_quiescence_check(const struct arts_teardown_exempt_s *ex,
           }
 #endif
         }
-#ifdef ARTS_RELEASE_PURGE
+#ifdef ARTS_RETENTION_PURGE
         if (atomic_load_explicit(&c->pending_grant_return,
                                  memory_order_relaxed) != 0u) {
           ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu rests owing a return of the "
@@ -1693,7 +1693,7 @@ void arts_db_debug_quiescence_check(const struct arts_teardown_exempt_s *ex,
         }
 #endif
 #endif
-#if defined(ARTS_PROTOCOL_EXCL) && defined(ARTS_RELEASE_RETAIN)
+#if defined(ARTS_VALIDITY_EXCL) && defined(ARTS_RETENTION_RETAIN)
         /* A read grant marked to return owes exactly one return, payable at
          * the read count's zero edge.  Resting at that edge still marked is
          * the signature of a promise made after the edge it named had already
@@ -1713,7 +1713,7 @@ void arts_db_debug_quiescence_check(const struct arts_teardown_exempt_s *ex,
           viol += excl_cache_word_rows(c, cw, quiescent);
         }
 #endif
-#if defined(ARTS_PROTOCOL_EXCL) && defined(ARTS_RELEASE_PURGE) &&             \
+#if defined(ARTS_VALIDITY_EXCL) && defined(ARTS_RETENTION_PURGE) &&            \
     !defined(ARTS_USE_CXL)
         viol += excl_cache_word_rows(
             c, atomic_load_explicit(&c->cache_state, memory_order_relaxed),
@@ -1809,7 +1809,7 @@ void arts_db_debug_quiescence_check(const struct arts_teardown_exempt_s *ex,
           }
         }
 #endif /* ARTS_USE_CXL */
-#endif /* ARTS_PROTOCOL_FLUSH */
+#endif /* ARTS_VALIDITY_FLUSH */
       }
       if (h) {
         arts_shared_release(&h);
@@ -1847,17 +1847,17 @@ void arts_db_debug_quiescence_check(const struct arts_teardown_exempt_s *ex,
  * home fields, which a cache-only stub does not carry. */
 void arts_db_sweep_open_items(struct arts_db_s *db, arts_shared_ptr_t cb) {
   unsigned int open = 0u;
-#if defined(ARTS_PROTOCOL_VAL)
+#if defined(ARTS_VALIDITY_VAL)
   uint64_t s = atomic_load_explicit(&db->cache.req_state, memory_order_relaxed);
   open += val_read_open(s) ? 1u : 0u;
   open += (VREQ_RW(s) == VREQ_RW_SENT) ? 1u : 0u;
-#ifdef ARTS_WRITE_POLICY_WT
+#ifdef ARTS_READ_SOURCE_HOME
   open +=
       atomic_load_explicit(&db->cache.pub_flight, memory_order_relaxed) != 0u
           ? 1u
           : 0u;
 #endif
-#elif defined(ARTS_PROTOCOL_INV)
+#elif defined(ARTS_VALIDITY_INV)
   uint64_t s =
       atomic_load_explicit(&db->cache.cache_state, memory_order_relaxed);
   open += INV_CACHE_INFLIGHT(s);
@@ -1872,12 +1872,12 @@ void arts_db_sweep_open_items(struct arts_db_s *db, arts_shared_ptr_t cb) {
                 ? 1u
                 : 0u;
   }
-#elif defined(ARTS_PROTOCOL_EXCL)
+#elif defined(ARTS_VALIDITY_EXCL)
   uint64_t s =
       atomic_load_explicit(&db->cache.cache_state, memory_order_relaxed);
   open += (CACHE_RO_ST(s) == CACHE_ST_REQ) ? 1u : 0u;
   open += (CACHE_RW_ST(s) == CACHE_ST_REQ) ? 1u : 0u;
-#ifdef ARTS_RELEASE_RETAIN
+#ifdef ARTS_RETENTION_RETAIN
   /* The home's count, held while w is above zero: after the stop, a write
    * request the home took in whose CONFIRM the shutdown cut. */
   if (db->home_initialized &&
@@ -1889,8 +1889,8 @@ void arts_db_sweep_open_items(struct arts_db_s *db, arts_shared_ptr_t cb) {
 #else
   (void)db;
 #endif
-#if (defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)) &&              \
-    !defined(ARTS_RELEASE_PURGE)
+#if (defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)) &&              \
+    !defined(ARTS_RETENTION_PURGE)
   if (db->home_initialized) {
     /* A held baton: once every thread has stopped, a tenure whose transfer
      * awaits its CONFIRM. */
@@ -1905,8 +1905,8 @@ void arts_db_sweep_open_items(struct arts_db_s *db, arts_shared_ptr_t cb) {
   }
 }
 
-#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV) ||               \
-    defined(ARTS_PROTOCOL_EXCL)
+#if defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV) ||               \
+    defined(ARTS_VALIDITY_EXCL)
 /* Free the read waiters a destroy found still parked, then tear down the
  * inlined home-directory sub-resources.  Runs AFTER the protocol
  * field-destroy. */
@@ -1914,8 +1914,8 @@ void arts_db_cache_common_destroy_post(struct arts_db_cache_s *cache) {
   if (cache == NULL) {
     return;
   }
-#if (defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)) &&              \
-    defined(ARTS_WRITE_POLICY_WT)
+#if (defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)) &&              \
+    defined(ARTS_READ_SOURCE_HOME)
   {
     arts_lf_link_t *n = arts_lf_stack_drain(&cache->publication_waiters);
     while (n != NULL) {
@@ -1926,7 +1926,7 @@ void arts_db_cache_common_destroy_post(struct arts_db_cache_s *cache) {
     }
   }
 #endif
-#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
+#if defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)
   /* Readers still parked at destroy are freed with the pool, not woken. */
   arts_db_reader_pool_destroy(&cache->reader_pool);
 #endif

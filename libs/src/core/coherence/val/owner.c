@@ -3,8 +3,8 @@
  * WB write-policy translation unit: defines the WB-specific
  * arts_handler_db_* / arts_db_* bodies directly (CMake links exactly this TU
  * for a VAL+WB build) plus the WB-only wire handlers/senders.
- * Compiled only for ARTS_COHERENCE_PROTOCOL=VAL with
- * ARTS_WRITE_POLICY=WB (selected in libs/src/core/CMakeLists.txt).
+ * Compiled only for ARTS_VALIDITY=VAL with
+ * ARTS_READ_SOURCE=OWNER (selected in libs/src/core/CMakeLists.txt).
  * Contains NO protocol/write-policy preprocessor logic.
  */
 #include <stdbool.h>
