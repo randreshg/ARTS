@@ -321,15 +321,14 @@ All options are set with ``-D<NAME>=<VALUE>`` on the cmake line.
        60 s.
    * - ``ARTS_COUNTER_CONFIG``
      - configs/counters_off.cfg
-     - Counter configuration file parsed into introspection macros. The
-       default is the all-OFF file; ``configs/counters.cfg`` is the
-       profiling example, not the default, and the validation trees pass
-       ``configs/counters_validation.cfg``, which captures only the counters
-       a test reads back; the reference tree (INV × WB) and its sanitizer
-       twins pass ``configs/counters_validation_capture.cfg`` instead, the
-       same set plus one PERIODIC counter no test reads back, which starts
-       the capture thread and, on a run of several ranks, the counters'
-       time sync.
+     - Counter configuration file parsed into introspection macros. The default
+       is the all-OFF file; ``configs/counters.cfg`` is the profiling example,
+       not the default, and the validation trees pass
+       ``configs/counters_validation.cfg``, which captures only the counters a
+       test reads back; the reference tree (INV·RETAIN·OWNER) and its sanitizer
+       twins pass ``configs/counters_validation_capture.cfg`` instead, the same
+       set plus one PERIODIC counter no test reads back, which starts the
+       capture thread and, on a run of several ranks, the counters' time sync.
 
 To pick a faster linker, use CMake's own ``-DCMAKE_LINKER_TYPE=MOLD`` (cmake ≥ 3.29).
 

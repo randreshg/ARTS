@@ -11,22 +11,22 @@ This page is **normative**. It defines the memory-model contracts an ARTS
 build can provide, the coherence protocols that implement them, and the
 surrounding design space — both implemented and roadmap.
 
-Model, family, and the second axes
-----------------------------------
+Memory model, validity, retention and read source
+--------------------------------------------------
 
 A *memory (consistency) model* is a contract: it defines which values a read
 may legally return, and therefore which programs are valid. A *coherence
 protocol* is an implementation mechanism — replica management, admission
 control, ownership transfer, write-back — that satisfies some contract as a
-consequence of its design. **Each coherence protocol requires a memory
-model of the program**, so the protocol is the build axis and the
-**contract** the build implements follows from it: ``OCR`` (races legal,
-the runtime orders every conflict it must — required by
-``VAL``/``INV``/``EXCL``) or ``DB-WRF`` (exclusive write acquisition: the
-program guarantees that at most one write-mode acquisition of a DataBlock
-is live at any time, system-wide — required by ``FLUSH``; see
-:ref:`db_wrf_contract`). Beside the protocol, two second axes say what a
-release moves and when a grant goes back:
+consequence of its design. A build selects its protocol along three axes, in
+this order: the **validity**, the **retention** and the **read source**. The
+validity also fixes the **memory model** the program must satisfy: ``OCR``
+(races legal, the runtime orders every conflict it must — implemented by
+``VAL``, ``INV`` and ``EXCL``) or ``CDAG`` (the program orders every pair of
+a DataBlock's write acquisitions by happens-before, through any release —
+implemented by ``FLUSH``; see :ref:`cdag_contract`). The retention says when
+a node's ownership goes back, the read source where a reader's copy comes
+from:
 
 * ``ARTS_VALIDITY`` selects how a copy stays valid after a write. Under the
   ``OCR`` model, who keeps reader copies valid: ``INV`` (default;
@@ -36,39 +36,41 @@ release moves and when a grant goes back:
   at the serving side and refetches only when stale; readers are never
   blocked, tracked, or invalidated), or ``EXCL`` (*exclusion* — queue-fair
   distributed reader–writer lock per DB; nodes take turns, so no stale copy
-  ever exists). Under the ``DB-WRF`` model, the one protocol
-  is ``FLUSH`` (fetch the whole payload at every remote acquire, write it
-  back at every remote RW release; see :ref:`flush_protocol`).
-* ``ARTS_READ_SOURCE`` selects where a reader's copy comes from — live under
-  INV/VAL: ``HOME`` (every release ships the payload to the DB's home, which
-  then serves reads) or ``OWNER`` (default; the payload stays with the last
-  writer and moves only on demand, through directory forwarding). FLUSH has
-  no read source: it fetches and writes back the whole payload every time,
-  unconditionally.
+  ever exists). Under the ``CDAG`` model the one validity is ``FLUSH``: a
+  fetched copy is valid only inside the EDT that acquired it (fetch the whole
+  payload at every remote acquire, write it back at every remote RW release;
+  see :ref:`flush_protocol`).
 * ``ARTS_RETENTION`` selects who starts the ownership's return — what a node
-  does with its grant when the last local user finishes — live under EXCL and
-  under ``HOME`` in VAL/INV: ``PURGE`` (hand copy and permission back to the
-  home) or ``RETAIN`` (default; keep both until another node asks, and let
-  the home recall them). FLUSH has no retention either — there is no grant to
-  retain, only a per-release round trip.
+  does with its grant when the last local user finishes: ``PURGE`` (hand copy
+  and permission back to the home, unasked, at the node's own idle edge) or
+  ``RETAIN`` (default; keep both until another node asks, and let the home
+  recall them). FLUSH has no retention — there is no grant to retain, only a
+  per-release round trip.
+* ``ARTS_READ_SOURCE`` selects where a reader's copy comes from: ``HOME``
+  (every release ships the payload to the DB's home, which then serves reads)
+  or ``OWNER`` (default; the payload stays with the last writer and moves
+  only on demand, through directory forwarding). Under EXCL the retention
+  fixes it: ``HOME`` with ``PURGE``, ``OWNER`` with ``RETAIN``. FLUSH has no
+  read source: it fetches and writes back the whole payload every time,
+  unconditionally.
 
-The OCR-model axes are nominally independent: the family × write-policy ×
-release-policy space has 12 combinations, of which **eight** are built (the
-dead ones excluded by the reasons below). DB-WRF has exactly one protocol —
-``FLUSH`` needs neither second axis — for **nine build configurations** in
-total, one build directory each:
-OCR×VAL×WT×{PURGE,RETAIN}, OCR×VAL×WB×RETAIN, OCR×INV×WT×{PURGE,RETAIN},
-OCR×INV×WB×RETAIN, OCR×EXCL×WB×{PURGE,RETAIN}, DB-WRF×FLUSH.
+The OCR-model axes span 3 × 2 × 2 = 12 combinations, of which **eight** are
+built (the others excluded by the reasons below). CDAG has exactly one
+validity — ``FLUSH`` has neither a retention nor a read source — for **nine
+build configurations** in total, one build directory each:
+EXCL·PURGE·HOME, EXCL·RETAIN·OWNER, {INV,VAL}·PURGE·HOME and
+{INV,VAL}·RETAIN·{HOME,OWNER} under OCR, and CDAG·FLUSH.
 Everything else is a configure-time ``FATAL_ERROR`` naming the reason:
-EXCL×WT (under exclusion no copy outlives a write turn, so the payload
-rides the permission and the release policy already decides both),
-and INV/VAL×WB×PURGE (a voluntary return hands back only the permission
+EXCL·PURGE·OWNER and EXCL·RETAIN·HOME (under exclusion no copy outlives a
+write turn, so the payload rides the permission and the retention decides
+where it rests: at the home under PURGE, with the last writer under RETAIN),
+and {INV,VAL}·PURGE·OWNER (a voluntary return hands back only the permission
 while the bytes stay at the ex-owner, so the home still cannot serve a
-reader on its own — and shipping the bytes home too is, by definition,
-write-through; at ``WT`` the same return costs no data motion, which is why
-PURGE is built there instead — see :ref:`orthogonal_dimensions`). DB-WRF
-pairs with no protocol but FLUSH: VAL, INV and EXCL each already order
-writers across nodes at runtime — a migrating grant for VAL/INV, admission
+reader on its own — and shipping the bytes home too is, by definition, the
+``HOME`` read source; under ``HOME`` the same return costs no data motion,
+which is why PURGE is built there instead — see :ref:`orthogonal_dimensions`).
+CDAG pairs with no validity but FLUSH: VAL, INV and EXCL each already order
+writers across nodes at run time — a migrating grant for VAL/INV, admission
 for EXCL — so under them the program-side write-ordering obligation would be
 redundant.
 
@@ -79,13 +81,13 @@ Every rank in a multinode run must use the same build.
 The OCR contract (reference)
 -----------------------------
 
-The contract delivered by the default build (OCR × INV) is the memory model
-of the *Open Community Runtime Interface*, version 1.2.0, §1.6, with the
-``synchronized-with`` relation completed as in Dokulil, "Consistency model for
-runtime objects in the Open Community Runtime", J. Supercomputing 75:2725–2760,
-2018 (doi:10.1007/s11227-018-2681-2), which this document incorporates by
-reference. The version pin matters: the OCR specification itself reserves the
-right to relax its race rules in future versions.
+The contract delivered by the default build (OCR·INV·RETAIN·OWNER) is the
+memory model of the *Open Community Runtime Interface*, version 1.2.0, §1.6,
+with the ``synchronized-with`` relation completed as in Dokulil, "Consistency
+model for runtime objects in the Open Community Runtime", J. Supercomputing
+75:2725–2760, 2018 (doi:10.1007/s11227-018-2681-2), which this document
+incorporates by reference. The version pin matters: the OCR specification
+itself reserves the right to relax its race rules in future versions.
 
 Its skeleton:
 
@@ -159,31 +161,40 @@ them as RW.
 Implementations may be stronger; programs must not rely on it
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Every conforming implementation (all three ARTS families, and likewise XSOCR and
-OCR-Vx) is incidentally *stronger* than the contract in places — e.g. the VAL
-protocol serializes unordered inter-node RW sessions via single-owner grants,
-and remote RO acquires observe an installed-version copy. These
+Every conforming implementation (all three OCR-model validities of ARTS, and
+likewise XSOCR and OCR-Vx) is incidentally *stronger* than the contract in
+places — e.g. VAL serializes unordered inter-node RW sessions via
+single-owner grants, and remote RO acquires observe an installed-version
+copy. These
 strengthenings are **never** part of the contract. A program that depends on
 them is *non-portable* (it may break on another conforming implementation or
 protocol), not invalid. Keeping the contract maximally relaxed preserves
 implementation freedom — including future multi-writer merge protocols.
 
-.. _db_wrf_contract:
+.. _cdag_contract:
 
-The DB-WRF contract
--------------------
+The CDAG contract
+-----------------
 
-The DB-WRF model, which ``FLUSH`` requires, is a deliberately **weaker**
-contract than OCR — *exclusive write acquisition*:
+ARTS's second memory model is CDAG, *CDAG with explicit release*. It keeps
+the name of Cache DAG Consistency (Landwehr et al., 2017) and its premise
+that the application partitions its data to keep concurrent writers apart,
+and differs from it in two ways. The original admits only implicit release,
+along the edges of the task DAG; ARTS's CDAG admits every release — an
+explicit release, a downgrade, or an EDT's completion. And the original gives
+a reader the version its last ancestor wrote, its refinement of the read rule
+of DAG consistency (Blumofe et al., 1996); under ARTS's CDAG a read unordered
+with a write returns unspecified bytes. ``FLUSH`` requires it:
 
   A write acquisition of a DataBlock is any acquisition in a write mode: an
   EDT dependence in RW mode, or the hold a creating EDT takes when it
   creates the block without ``ARTS_DB_PROP_NO_ACQUIRE``. A program is
-  DB-WRF-valid iff, for every DataBlock, every pair of its write
+  CDAG-valid iff, for every DataBlock, every pair of its write
   acquisitions is ordered by happens-before — one is released (explicitly,
   by a downgrade, or by its EDT's completion) before the other begins.
   Read acquisitions (RO, CONST) are unconstrained: they may overlap writes
-  and each other.
+  and each other, and a read unordered with a write returns unspecified
+  bytes.
   Granularity is the whole DataBlock; writers to disjoint byte ranges of one
   block are still two write acquisitions. The property is
   placement-independent: where the EDTs run, and where the block is homed,
@@ -196,33 +207,39 @@ nothing new. A write acquisition that violates the contract is a
 race their whole-DB write-backs and the last one wins, so the outcome is
 undefined, not merely stale.
 
-The lattice of program classes is ``DB-WRF ⊂ OCR-legal``: every DB-WRF-valid
+The lattice of program classes is ``CDAG ⊂ OCR-legal``: every CDAG-valid
 program is OCR-legal, but OCR-legal programs that rely on the runtime to
-order overlapping writers — whole-DB fan-out, disjoint-region sibling
-writers, a hand-off without a preceding release — are **outside DB-WRF**
-and can silently produce wrong answers under a build that requires it. A
-creator hold is a write acquisition: passing a freshly created block to a
-child in RW without releasing it first is a DB-WRF violation regardless of
-whether the creator happens to be the block's home (the OCR spec §1.6.2(c)
-already demands the release before the satisfy).
+order overlapping writers — whole-DB fan-out writers and disjoint-region
+sibling writers — are **outside CDAG** and can silently produce wrong
+answers under a build that requires it. A hand-off without a preceding
+release is not among them: OCR itself leaves it undefined, since a block's
+writes are guaranteed visible through an event only when the block was
+released before the event was satisfied (OCR v1.2.0, §1.6, and the
+``ocrEventSatisfySlot`` entry of its event API). A creator hold is a write
+acquisition: passing a freshly created block to a child in RW without
+releasing it first is a CDAG violation regardless of whether the creator
+happens to be the block's home, and OCR already demands that release
+before the satisfy (§1.6.2(c)).
 
-Each coherence protocol requires a memory model: ``VAL``/``INV``/``EXCL``
-require only ``OCR`` (the runtime orders every conflict). ``FLUSH`` (see
-:ref:`flush_protocol`) requires ``DB-WRF``. ``EXCL`` and ``INV`` under
-DB-WRF would be redundant — both already order writers across nodes at
-runtime, which is exactly what DB-WRF asks of the program instead — which is
-why DB-WRF has exactly one protocol and CMake refuses the rest.
+The model follows from the validity: ``VAL``/``INV``/``EXCL`` implement
+``OCR`` (the runtime orders every conflict), and ``FLUSH`` (see
+:ref:`flush_protocol`) is CDAG's only validity. ``EXCL`` and ``INV`` under
+CDAG would be redundant — both already order writers across nodes at run
+time, which is exactly what CDAG asks of the program instead — which is why
+CDAG has exactly one validity, ``FLUSH``, and a build gets the model by
+selecting that validity.
 
 .. warning::
 
-   DB-WRF exists to measure the cost of coherence obligations in benchmarks.
-   Never use DB-WRF as a correctness baseline. The experiment driver's
+   CDAG exists to measure the cost of coherence obligations in benchmarks.
+   Never use CDAG as a correctness baseline. The experiment driver's
    catalog marks applications whose wiring relies on guarantees outside
    this contract with ``unordered_writes`` (a reason plus file:line — a
    contract-ineligibility declaration, not a bug mask); such a row is
-   ``N/A`` on the FLUSH entry and runs unaffected on every OCR-model entry.
+   ``N/A`` on the FLUSH entry only and runs unaffected on every OCR-model
+   entry.
 
-A CXL store is reached a different way: on ``EXCL`` × ``PURGE`` the
+A CXL store is reached a different way: on ``EXCL·PURGE·HOME`` the
 store a payload rests in between write turns is selectable — the
 home's DRAM (default) or CXL memory (``ARTS_USE_CXL``) — with the same
 state machine, the same PURGE rule and the same re-fetch every turn;
@@ -336,12 +353,12 @@ read partly before and partly after the write; only a reader unordered with
 that write receives such a snapshot, and the value of its racing read is
 unspecified.
 
-Reader-side invalidation — in any form — is a **non-goal** of this protocol
-family: read-mostly cases where a lock or invalidation protocol wins are a
-philosophy difference, not a defect. RO snapshot serving is deduplicated by a
-per-rank ``cached_version`` ledger (a monotonic floor of what each rank's
-cache holds, credited by serves, by write-through publishes at the home, and
-by the releaser/shipper itself under WB): a request from a rank whose ledger
+Reader-side invalidation — in any form — is a **non-goal** of this validity:
+read-mostly cases where a lock or invalidation protocol wins are a philosophy
+difference, not a defect. RO snapshot serving is deduplicated by a per-rank
+``cached_version`` ledger (a monotonic floor of what each rank's cache holds,
+credited by serves, by the home's publishes under ``HOME``, and by the
+releaser/shipper itself under ``OWNER``): a request from a rank whose ledger
 already matches the master version receives a header-only, no-data reply.
 
 Request combining layers on top of this dedup: at most one snapshot request
@@ -350,11 +367,11 @@ parks, and the readers parked when it completes share the next request and
 its response; a reader never rides a request sent before it parked, whose
 response may predate the releases it is ordered after. A reader that finds
 its node's write request out opens no window and rides the write request
-instead. Every remote read-only acquire combines. It is orthogonal to write
-and release policy, and it is how the validation pull path suppresses
-duplicate concurrent requests, as every other message class does structurally
-(parked acquires under EXCL/INV, batched invalidation rounds, publish
-flights).
+instead. Every remote read-only acquire combines. It is orthogonal to the
+retention and the read source, and it is how the validation pull path
+suppresses duplicate concurrent requests, as every other message class does
+structurally (parked acquires under EXCL/INV, batched invalidation rounds,
+publish flights).
 
 INV — write-invalidate, durable reader copies (default)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -365,22 +382,22 @@ grant plane ``coherence/grant.c``); selected by ``-DARTS_VALIDITY=INV`` (the
 default), read source by ``ARTS_READ_SOURCE={HOME,OWNER}`` (default
 ``OWNER``).
 
-The mirror of VAL on the validity-agent axis: the *writer* keeps reader
-copies valid. A reader's copy is durable — holding the copy is the
+The mirror of VAL: there a reader checks its copy's validity, here the *writer*
+keeps reader copies valid. A reader's copy is durable — holding the copy is the
 permission to read it, so a repeated read on that node is a pure local load
 with no message, no atomic update, and no version comparison; a copy dies
 exactly one way, when an invalidation arrives. In exchange, every RW release
 returns only after an *invalidation round* covering it has closed: the home
-snapshots its sharer roster (one bit per node, set before a copy is served,
-so it safely over-approximates who might hold one), multicasts an
-invalidation, and collects an acknowledgment from every target; concurrent
-releases may be covered by one round. On a run of one rank no other node can
-hold a copy, so a release runs no round. Write ownership is the same migrating
-grant VAL uses, and the sharer plane is deliberately **version-free** — a
-versioned sharer plane would already be halfway to VAL. Under ``WT`` the
-release additionally publishes the payload to the home, which then serves
-reads; under ``WB`` the publish is control-only and the home is a pure
-directory that registers readers and redirects them to the owner.
+snapshots its sharer roster (one bit per node, set before a copy is served, so
+it safely over-approximates who might hold one), multicasts an invalidation,
+and collects an acknowledgment from every target; concurrent releases may be
+covered by one round. On a run of one rank no other node can hold a copy, so a
+release runs no round. Write ownership is the same migrating grant VAL uses,
+and the sharer plane is deliberately **version-free** — a versioned sharer
+plane would already be halfway to VAL. Under ``HOME`` the release additionally
+publishes the payload to the home, which then serves reads; under ``OWNER`` the
+publish is control-only and the home is a pure directory that registers readers
+and redirects them to the owner.
 
 EXCL — queue-fair distributed reader–writer lock
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -412,7 +429,9 @@ admission, not by promise.  It serves as the lock-philosophy point of the
 design-space comparison.
 
 Because no copy outlives a write turn, permission and payload are one token
-here, and the release policy decides when that token goes back. Under
+here, and the retention decides when that token goes back — and so where a
+reader's copy comes from: the home under PURGE (EXCL·PURGE·HOME), the last
+writer under RETAIN (EXCL·RETAIN·OWNER). Under
 ``PURGE`` the release that ends a node's turn carries the payload to the
 home and returns the grant in the same message, making the home canonical;
 the next turn re-requests and re-fetches. Under ``RETAIN`` a release with
@@ -435,14 +454,14 @@ holding any migration, until the node holds nothing.
 
 .. _flush_protocol:
 
-FLUSH — fetch at acquire, flush at release (requires DB-WRF)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+FLUSH — fetch at acquire, flush at release (requires CDAG)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 *Status:* implemented (``libs/src/core/coherence/flush/flush.c``); selected
 by ``-DARTS_VALIDITY=FLUSH``, whose programs must satisfy the
-DB-WRF model (see :ref:`db_wrf_contract`). No write-policy or
-release-policy axis: every remote acquire fetches and every remote RW
-release writes back, unconditionally.
+CDAG model (see :ref:`cdag_contract`). No retention and no read source:
+every remote acquire fetches and every remote RW release writes back,
+unconditionally.
 
 .. list-table::
    :header-rows: 1
@@ -488,16 +507,20 @@ The home keeps a sharer bitset — ranks that ever fetched the line or were
 told its credential — used only by destroy fan-out; it is lifecycle
 bookkeeping, not coherence state. FLUSH also serves as the no-optimization
 baseline against the OCR-model protocols; it is a different mechanism from
-the CXL store described above, which lives entirely inside ``EXCL`` ×
-``PURGE`` and keeps that protocol's own state machine.
+the CXL store described above, which lives entirely inside
+``EXCL·PURGE·HOME`` and keeps that configuration's own state machine.
 
 Rejected arms
 ~~~~~~~~~~~~~
 
 * **MRSW** (multi-reader, single *global* writer; version-isolated reads) —
-  its extra strength over OCR×VAL (forbidding even node-interleaved writer
-  overlap) buys no benchmark insight for its maintenance cost. A mirror of
-  the VAL engine with that admission is kept in ``archive/coherence-mrsw/``.
+  the design point the original Cache DAG Consistency maps to, a globally
+  single-writer admission whose readers see their last ancestor's version
+  (see :ref:`cdag_contract`). Its extra strength over VAL (forbidding even
+  node-interleaved writer overlap, and reducing the parallelism of programs
+  that exploit OCR's non-overlapping rule) buys no benchmark insight for its
+  maintenance cost. A mirror of the VAL engine with that admission is kept in
+  ``archive/coherence-mrsw/``.
 * **SRSW** (fully serialized single-reader/single-writer) — never built;
   useful only as a debug lower bound, and EXCL already serializes nodes.
 
@@ -510,31 +533,32 @@ The implemented axes fix nine points in a larger design space. The following
 dimensions are orthogonal to each other; entries marked *roadmap* are
 documented options, not commitments.
 
-Write policy (payload placement)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Read source
+~~~~~~~~~~~
 
-Where does the canonical payload rest between write turns? Live under
-INV/VAL (``ARTS_READ_SOURCE``):
+Where does a reader's copy come from — where does the canonical payload rest
+between write turns? Live under INV/VAL (``ARTS_READ_SOURCE``):
 
-* **WT** (write-through at release) — the payload returns to the DB's home
+* **HOME** (write-through at release) — the payload returns to the DB's home
   at every RW release, synchronously acknowledged; the home always holds a
   current copy and serves reads. Trades release-side flush bandwidth for
   one-hop reads.
-* **WB** (write-back, default) — no payload moves at release: the canonical
-  payload stays with the last writer, and the home directory forwards
-  requesters to the owner. Trades a forwarding hop on first access for zero
-  flush traffic while ownership is reused.
+* **OWNER** (default) — no payload moves at release: the canonical payload
+  stays with the last writer, and the home directory forwards requesters to
+  the owner. Trades a forwarding hop on first access for zero flush traffic
+  while ownership is reused.
 
-Under EXCL this axis is pinned at WB: no reader copy outlives a write turn,
-so a per-release flush would have nobody to serve, and the payload instead
-rides the permission (the release policy below decides both).
+Under EXCL the retention fixes this axis: no reader copy outlives a write
+turn, so a per-release flush would have nobody to serve, and the payload
+instead rides the permission — it rests at the home under PURGE (``HOME``)
+and with the last writer under RETAIN (``OWNER``).
 
-Release policy (permission return)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Retention
+~~~~~~~~~
 
-When does the write grant go back? Live under EXCL
-(``ARTS_RETENTION``), and — since it governs the same migrating grant —
-under ``WT`` in VAL/INV as well:
+When does the write grant go back? Live under EXCL (``ARTS_RETENTION``),
+and — since it governs the same migrating grant — under ``HOME`` in VAL/INV
+as well:
 
 * **PURGE** — the holder returns copy and permission unasked, at its own
   idle edge (the moment its last local writer finishes); the home never
@@ -544,11 +568,11 @@ under ``WT`` in VAL/INV as well:
 
 Under EXCL no reader copy outlives a write turn, so payload and permission
 are one token and this axis alone decides when it returns — see the EXCL
-family description above for the mechanics.
+description above for the mechanics.
 
-Under VAL/INV the write policy already moves the *payload* at every release
-under ``WT``, so PURGE there is a decision about the *grant* alone, layered
-on top of that:
+Under VAL/INV the ``HOME`` read source already moves the *payload* at every
+release, so PURGE there is a decision about the *grant* alone, layered on
+top of that:
 
 * Every grant transfer, in either direction, passes through the home — a
   holder never sends another holder a revocation, and, unlike RETAIN, never
@@ -557,9 +581,9 @@ on top of that:
   requester.
 * Because the payload already reached the home on the release that made the
   holder idle, the permission's return costs no data motion — only a
-  metadata handoff. This is exactly why PURGE is built at ``WT``, where that
-  holds, and refused at ``WB``, where it does not (see the combination list
-  above).
+  metadata handoff. This is exactly why PURGE is built with ``HOME``, where
+  that holds, and refused with ``OWNER``, where it does not (see the
+  combination list above).
 * The return travels with that same release's write-through publish when
   one is still in flight, at no extra message cost; a release with nothing
   left to publish sends a standalone return instead. Either path lands the
@@ -570,11 +594,10 @@ on top of that:
   a rank re-acquiring a DB it already holds a current copy of — the home
   grants permission only, with no payload in the reply.
 
-Under ``WB`` the release policy is pinned at RETAIN in every family: a
-voluntary return there would hand back only the permission while the
-canonical bytes stay at the ex-owner, so the home still could not serve a
-reader on its own — and shipping the bytes home too is, by definition,
-write-through.
+Under ``OWNER`` the retention is RETAIN in every validity: a voluntary return
+there would hand back only the permission while the canonical bytes stay at
+the ex-owner, so the home still could not serve a reader on its own — and
+shipping the bytes home too is, by definition, the ``HOME`` read source.
 
 Propagation strategy
 ~~~~~~~~~~~~~~~~~~~~
@@ -593,7 +616,7 @@ How does fresh data reach readers?
   new value to current readers. Eliminates the pull round trip when the same
   DB is re-acquired RO by many readers in succession; costly if the push is
   discarded. Aggregation-style RO improvements are the accepted evolution
-  path for the VAL family (never reader invalidation).
+  path for VAL (never reader invalidation).
 
 Directory / ownership
 ~~~~~~~~~~~~~~~~~~~~~
@@ -602,11 +625,12 @@ Where does coherence bookkeeping live?
 
 * **Fixed home** (all current arms) — each DB has a designated home rank
   (set at creation; encoded in the GUID rank field). The home holds the
-  authoritative directory entry (VAL×OCR: grant directory; INV: grant
+  authoritative directory entry (VAL: grant directory; INV: grant
   directory + sharer roster; EXCL: ``lock_state``; FLUSH: the canonical
   payload itself — the home line). Simple and
   predictable; the home can become a hot-spot for highly shared DBs.
-* **Migratory owner** (current WB placements, and EXCL under RETAIN) — the
+* **Migratory owner** (the current ``OWNER`` read source:
+  {VAL,INV}·RETAIN·OWNER and EXCL·RETAIN·OWNER) — the
   payload (and, under VAL, the per-rank serving ledger) migrates with the
   write grant; the home keeps only directory state and forwards requesters.
   Full pointer-forwarding migration (home consulted only on miss) remains
@@ -650,19 +674,19 @@ Multi-writer resolution
 When two writers' accesses to one DB are unordered, how are their writes
 reconciled?
 
-* **Node-exclusive serialization** (OCR×VAL, OCR×INV) — intra-node:
+* **Node-exclusive serialization** (VAL, INV) — intra-node:
   concurrent hardware-coherent writes to a shared buffer; inter-node: the
   single-owner grant serializes writers one node at a time. Preserves the
   OCR non-overlapping rule.
-* **Admission exclusion** (OCR×EXCL) — the lock never grants the write turn
+* **Admission exclusion** (EXCL) — the lock never grants the write turn
   to two nodes at once; within the node that holds it, writers share the
   turn and their concurrent writes are hardware-coherent, as under
   node-exclusive serialization.
 * **Lossy whole-DB write-back** (FLUSH) — each RW release PUTs the whole DB
-  back into the home line. A DB-WRF-valid program never has two such
+  back into the home line. A CDAG-valid program never has two such
   releases overlapping, so nothing is ever actually lost; a program that
-  violates the contract's write-exclusivity guarantee gets undefined
-  results here precisely because the last write-back wins with no merge.
+  violates the CDAG contract gets undefined results here precisely because
+  the last write-back wins with no merge.
 * **Non-lossy merge** (roadmap) — diff- or twin-based merging in the
   TreadMarks / Midway tradition would reconcile concurrent writers' disjoint
   changes, achieving the full OCR non-overlapping rule while admitting true
@@ -679,30 +703,6 @@ allows concurrent per-device replicas merged by reduction at release. Both
 are **app-ordered (full DRF) contracts**: the application must event-order
 *every* conflicting access pair — read-write included — because there is no
 snapshot or admission machinery underneath.
-
-.. _cdag_dropped:
-
-Considered and dropped: CDAG
------------------------------
-
-*Cache DAG Consistency* (Landwehr et al., 2017) is a variant of DAG
-consistency (Blumofe et al., 1996) in which a task observes the write of the
-immediately preceding ancestor version of a shared location ("last-ancestor"
-read). It effectively maps to a globally single-writer admission policy with
-version-isolated reads — the MRSW design point (see the rejected arms
-above).
-
-CDAG was considered as a coherence option for ARTS and was dropped:
-
-1. **Small delta over the VAL engine.** The single-owner grant already
-   serializes inter-node writers; adding global writer exclusion and
-   last-ancestor reads is a refinement of MRSW, not a separate protocol —
-   and MRSW itself buys no benchmark insight.
-2. **Weaker parallelism.** Forbidding competing concurrent writes entirely
-   reduces parallelism for programs that exploit the OCR non-overlapping
-   data-race rule.
-3. **Recoverable.** ``archive/coherence-mrsw/`` preserves the engine CDAG
-   semantics would build on, should the design point be revisited.
 
 References
 ----------

@@ -197,9 +197,9 @@ turn or read-only phase with a valid copy, a durable copy, the write right,
 or, under ``VAL``, the block's home answering itself), and remote when the
 copy or the read permission had to come from another rank; under ``VAL`` a
 read off the block's home rank that its rank's write right does not cover is
-remote, since its version check goes to the home.  Under the voluntary-return
-release policy (``PURGE``) the write right belongs to the block's home, so
-every acquisition on the home rank is a local hit.  The state at an
+remote, since its version check goes to the home.  Under the ``PURGE``
+retention the write right belongs to the block's home, so every acquisition
+on the home rank is a local hit.  The state at an
 acquisition's decision classifies it: one whose rank holds what it needs there
 is a local hit even if it then waits behind a gate (a write right installed on
 its rank that the home has not yet confirmed).  One that parks without it is
@@ -420,7 +420,7 @@ Validation Arm (VAL) — Read Requests
 A reply with no payload is one the version ledger saved; a size round
 (``data_present`` 2, never a dismiss) negotiates a landing for a request
 that could not size one.  A window is a read request that is not a re-
-send.  Inert unless the build compiles the VAL family in.
+send.  Inert unless the build's validity is VAL.
 
 .. list-table::
    :header-rows: 1
@@ -436,8 +436,8 @@ send.  Inert unless the build compiles the VAL family in.
      - Read replies with no payload because the requester's ledger already
        held that version, counted at the replying rank.
    * - ``NUM_SNAPSHOT_SIZE_CTS``
-     - Read size rounds, counted at the replying rank (the home, or the
-       owner under WB).
+     - Read size rounds, counted at the replying rank (the home, or, under
+       ``OWNER``, the owner).
    * - ``NUM_RO_COMBINE_WINDOW``
      - Read windows opened: a first reader's request, the next window an
        answer opens, and a write give-back's.
@@ -485,10 +485,10 @@ acks are in.
      - Invalidation rounds at the home that retired at least one release.
    * - ``NUM_INVALIDATE_ACK``
      - Sharer copies the rounds targeted, one ack each (a target that held
-       no valid copy and the WB home's own copy included).
+       no valid copy and, under ``OWNER``, the home's own copy included).
    * - ``TIME_INVALIDATE_ROUND``
-     - Time an RW release blocks on its round; under WT it includes the
-       payload's write-through, and a release that joined another's flight
+     - Time an RW release blocks on its round; under ``HOME`` it includes
+       the payload's write-through, and a release that joined another's flight
        waits for that flight.
 
 Migrating Write Permission
@@ -514,9 +514,8 @@ Exclusion Arm (EXCL)
 ~~~~~~~~~~~~~~~~~~~~
 
 Requests the home could not grant at its decision: the reader/writer
-serialization its philosophy pays for.  Under the retention release
-policy the home also asks retained read grants back before a write
-phase.
+serialization its philosophy pays for.  Under ``RETAIN`` the home also
+asks retained read grants back before a write phase.
 
 .. list-table::
    :header-rows: 1
@@ -568,19 +567,19 @@ Grant Plane Rare Paths
      - Description
    * - ``NUM_GRANT_BATON_RECLAIM``
      - A home's baton holder tried to put the baton down and met a claim
-       made since it last looked (a request, or under the voluntary-return
-       policy a parked hand-back or the home writers' idle edge), so it kept
+       made since it last looked (a request, or under ``PURGE`` a parked
+       hand-back or the home writers' idle edge), so it kept
        the baton and looked again; or a holder that gave up for live home
        writers re-claimed the baton at their idle edge.
    * - ``NUM_GRANT_HOME_DATALESS``
-     - Write requests the write-through home sent its own directory,
+     - Write requests the home sent its own directory under ``HOME``,
        asking for the permission alone (it already holds the newest
        bytes).
 
-Voluntary-Return Release Policy
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The PURGE Retention
+~~~~~~~~~~~~~~~~~~~
 
-``NUM_PURGE_RETURN`` counts this policy's hand-backs on every arm.  On
+``NUM_PURGE_RETURN`` counts the PURGE retention's hand-backs on every arm.  On
 the grant plane ``RETURN`` and ``FLAG`` are the two vehicles of a
 hand-back and do not overlap: their sum is every hand-back, and
 ``RETURN`` alone is what the fallback still costs.  ``RETURN`` plus

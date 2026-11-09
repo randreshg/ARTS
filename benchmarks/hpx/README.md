@@ -401,7 +401,7 @@ sizing note), and `network_storage_hpx` by the origin's 4096 MB store. CPU budge
 108 of 112 threads and HPX on all 112, a linear bound of 1.037 on `r`, reported as a
 band and not corrected for.
 
-| row | T (s) | ARTS INV/WB (min–max) | VAL/WB | EXCL/RETAIN | HPX (min–max) | peak RSS GB ARTS / HPX | r = HPX / ARTS INV/WB (min–max) | class |
+| row | T (s) | ARTS INV·RETAIN·OWNER (min–max) | VAL·RETAIN·OWNER | EXCL·RETAIN·OWNER | HPX (min–max) | peak RSS GB ARTS / HPX | r = HPX / ARTS INV·RETAIN·OWNER (min–max) | class |
 |---|---|---|---|---|---|---|---|---|
 | `stencil1d_hpx` | 100 | 22.0 (21.8–22.0) | 22.2 | 21.9 | 19.4 (17.2–20.3) | 175.7 / 96.2 | 0.89 (0.78–0.92) | **parity** |
 | `fib_hpx` | 100 | 92.5 (92.5–92.5) | 92.5 | 92.5 | 108.2 (107.0–109.2) | 6.1 / 0.2 | 1.17 (1.16–1.18) | **parity** |
@@ -411,9 +411,10 @@ band and not corrected for.
 Rows outside parity at the anchor, and what each one is:
 
 - `fft_hpx` (1.67, recorded): every ARTS arm carries one slow repeat at this size —
-  INV/WB 39.8 / 40.5 / 55.2 s, VAL 36.7 / 59.1 / 74.3 s, EXCL 37.2 / 41.5 / 67.0 s at
-  172 GB resident, the near-ceiling regime the sizing found above 60 480 — against HPX's
-  66.9–67.7 s; the ratio is reported on the median.
+  INV·RETAIN·OWNER 39.8 / 40.5 / 55.2 s, VAL·RETAIN·OWNER 36.7 / 59.1 / 74.3 s,
+  EXCL·RETAIN·OWNER 37.2 / 41.5 / 67.0 s at 172 GB resident, the near-ceiling regime the
+  sizing found above 60 480 — against HPX's 66.9–67.7 s; the ratio is reported on the
+  median.
 - `network_storage_hpx` (0.69, recorded): the toy's one-node ratio matches the trend's
   1n column (0.69 at small arguments); the cause is the scheduler's locality named
   above, a runtime property disclosed, not sized around.
@@ -668,7 +669,7 @@ no lock, and the mirror adds no chain of write turns: a chain would need a
 cross-rank sequencer the origin does not have, a bandwidth test whose
 storage is deliberately unsynchronised would stop being the same program,
 and the counts do not read the racing bytes. This row's *payload* is
-therefore outside DB-WRF at block granularity: the counts survive only
+therefore outside CDAG at block granularity: the counts survive only
 because every completion runs on the counters' home rank — an
 implementation accident, not program ordering. It is also a row
 in which a slot is read from another rank while its home writes it, so each
@@ -775,7 +776,7 @@ worker count. These are the origin's own parallel units,
 carried unchanged: many split tasks hold one phase's chunk blocks
 `DB_MODE_RW` at once and many transpose tasks hold the phase's destination
 buffer `RW` at once, all writing disjoint bytes. The row is therefore outside
-DB-WRF by design — the same-DB write-write conflicts the code does not
+CDAG by design — the same-DB write-write conflicts the code does not
 event-order are exactly what that model requires to be ordered — and no
 coherence-plane cell runs it. The copies, the bytes and the
 one message per (source, destination) are unchanged.

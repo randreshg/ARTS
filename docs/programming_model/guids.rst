@@ -215,7 +215,7 @@ installs when that block's teardown notice retires it.  While a create on a
 rank is deciding or parked, an acquire there that finds the slot empty waits
 for the create's install instead of making a cache.  At the home, an acquire
 of a block that is not installed waits for the create.  On the arms where a
-creator's first publish goes back to the home (write-through, and FLUSH),
+creator's first publish goes back to the home ({VAL,INV}·HOME, and FLUSH),
 the home answers the announce with a credit for that publish.
 
 A labeled data-block GUID is reserved before its block exists, so it
@@ -242,7 +242,7 @@ that reuses a label a message meant for one generation can be applied to
 another: a satisfy, dependence, acquire or release that reaches the home
 before the previous generation's destroy, a teardown notice that reaches a
 rank caching the block after that rank's use of the next generation, or,
-on the write-through and FLUSH arms, the home's answer to a create that
+on {VAL,INV}·HOME and FLUSH, the home's answer to a create that
 reaches the next generation's creator, whose first publish then writes into
 the previous block's released buffer.  A program written to ARTS's model,
 with a fresh GUID for every object, never meets this.  Where an OCR program
