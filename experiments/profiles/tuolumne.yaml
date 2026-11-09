@@ -23,8 +23,7 @@ pin: true
 provider: cxi
 route_table_size: 16
 core_dump: false
-port_count: 1
-ports: [25000]
+ports: 25000
 
 flux:
   queue: pbatch

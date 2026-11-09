@@ -182,11 +182,9 @@ class Profile(BaseModel):
     # runtime whose depth the stack actually bounds, and say why in the profile.
     stack_size_mb: int = Field(default=8, ge=0)
 
-    # Parallel connections each node opens.  A local run has the runtime find
-    # its own block of node_count x port_count; a remote one must be told which
-    # ports to use, and then the list has to name exactly this many.
-    port_count: int = Field(default=1, ge=1)
-    ports: list[int] = Field(default_factory=list)
+    # Every rank listens on one port.  A local run has the spawner claim a
+    # block of node_count ports itself; a remote one must be told the port.
+    ports: int | None = Field(default=None, ge=1, le=65535)
 
     ssh: SshSettings | None = None
     slurm: SlurmSettings | None = None
@@ -280,19 +278,14 @@ class Profile(BaseModel):
     @model_validator(mode="after")
     def _check(self) -> "Profile":
         if self.launcher is Launcher.LOCAL:
-            if self.ports:
+            if self.ports is not None:
                 raise ValueError(
                     "ports must not be set for launcher=local: the ranks share a "
                     "machine, so the spawner finds a free block itself"
                 )
         else:
-            if not self.ports:
+            if self.ports is None:
                 raise ValueError(f"ports is required for launcher={self.launcher}")
-            if len(self.ports) != self.port_count:
-                raise ValueError(
-                    f"ports names {len(self.ports)} port(s) but port_count is "
-                    f"{self.port_count}; the list must name exactly that many"
-                )
         if self.launcher is Launcher.SSH:
             if self.ssh is None:
                 raise ValueError("launcher=ssh requires an ssh section")

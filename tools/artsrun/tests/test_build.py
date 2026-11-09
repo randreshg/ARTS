@@ -56,7 +56,7 @@ def test_a_cxl_entry_always_wants_its_target(tmp_path):
     local = Profile(name="p", launcher=Launcher.LOCAL, nodes=[1],
                     workers=2, progress=1)
     remote = Profile(name="p", launcher=Launcher.SLURM, nodes=[1],
-                     workers=2, progress=1, ports=[25000],
+                     workers=2, progress=1, ports=25000,
                      slurm=SlurmSettings())
     for prof in (local, remote, None):
         plan = plan_targets(sel, plane, catalog, bs, tmp_path, prof)

@@ -333,8 +333,6 @@ class ProfilePanel(VerticalScroll):
         for section, owner in form.LAUNCHER_SECTIONS.items():
             block = self.query_one(f"#section-{section}", Vertical)
             block.display = launcher == owner
-        # The connection count applies to every launcher; only the port
-        # numbers are the remote launchers' business.
         ports = self.query_one("#f-ports", Input)
         ports.disabled = launcher == "local"
         ports.placeholder = (

@@ -112,7 +112,7 @@ RESULTS_ROOT = REPO_ROOT / "results" / "cxl_strong_scaling_optimal"
 
 # ARTS runtime configuration written into each cell's arts.cfg.
 ARTS_LAUNCHER = "ssh"          # ARTS remote-launches ranks onto NODES over ssh
-ARTS_PORTS = [25000]           # base port(s); length must equal port count
+ARTS_PORT = 25000              # the one port every rank listens on
 ARTS_PROVIDER = "tcp"          # e.g. "tcp", "verbs;ofi_rxm", "cxi"
 ARTS_NET_INTERFACE = None      # e.g. "ib0"; None lets the runtime choose
 ARTS_PIN = True
@@ -409,8 +409,7 @@ def render_arts_cfg(nodes: int, counter_folder: Path) -> str:
         f"pin={1 if ARTS_PIN else 0}",
         f"route_table_size={ARTS_ROUTE_TABLE_SIZE}",
         "core_dump=0",
-        f"port_count={len(ARTS_PORTS)}",
-        f"ports={','.join(str(p) for p in ARTS_PORTS)}",
+        f"ports={ARTS_PORT}",
         f"counter_folder={counter_folder}",
         f"counter_capture_interval={COUNTER_CAPTURE_INTERVAL}",
     ]
@@ -731,7 +730,7 @@ def write_manifest(run_dir: Path, cells, args):
             "run_py_args": RUN_PY_ARGS,
             "run_py_updates_cfg": RUN_PY_UPDATES_CFG,
             "arts_launcher": ARTS_LAUNCHER,
-            "arts_ports": ARTS_PORTS,
+            "arts_port": ARTS_PORT,
             "arts_provider": ARTS_PROVIDER,
             "arts_net_interface": ARTS_NET_INTERFACE,
             "arts_pin": ARTS_PIN,

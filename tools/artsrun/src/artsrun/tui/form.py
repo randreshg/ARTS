@@ -108,16 +108,9 @@ PROFILE_FIELDS: list[FieldSpec] = [
               "the runtimes. Reserved, not committed, so it costs address "
               "space until a recursion descends",
               example="256", section="run"),
-    FieldSpec("port_count", "connections / node", "int",
-              "parallel connections each node opens. A local run has the "
-              "runtime claim node_count x this many ports itself; every "
-              "other launcher must be given the ports below, exactly this "
-              "many of them",
-              example="1", section="transport"),
-    FieldSpec("ports", "ports", "int_list",
-              "one base port per connection — must name exactly "
-              "'connections / node' entries. Locked for a local run, whose "
-              "ranks share a machine and claim their own block",
+    FieldSpec("ports", "port", "int",
+              "the port every rank listens on. Locked for a local run, whose "
+              "spawner claims a block of ports itself",
               example="25000", optional=True, section="transport"),
 
     FieldSpec("ssh.budget", "node budget", "int",
@@ -353,7 +346,6 @@ def blank_values() -> dict[str, Any]:
         "launcher": "local",
         "nodes": [1],
         "workers": "4", "progress": "1",
-        "port_count": "1",
         "repeats": "1", "cell_timeout_s": "300", "build_jobs": "",
         "stack_size_mb": "256",
         "provider": "", "net_interface": "", "route_table_size": "16",

@@ -59,7 +59,7 @@ def _cell(kind: RuntimeKind, nodes: int, cfg: Path | None = None,
 def _flux_profile(**flux) -> Profile:
     return Profile.model_validate({
         "name": "t", "launcher": "flux", "nodes": [1, 2, 4],
-        "workers": 15, "progress": 1, "ports": [25000], "flux": flux,
+        "workers": 15, "progress": 1, "ports": 25000, "flux": flux,
     })
 
 

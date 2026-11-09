@@ -481,10 +481,11 @@ class Campaign:
 def _check_ssh_submitter(profile: Profile) -> None:
     """An ssh campaign must be launched from hosts[0].
 
-    arts runs rank 0 in-process and ssh-launches only the REST of its node
-    table, while mpirun places rank 0 on the first listed host — launched
-    from anywhere else, the two land on different node sets, double-booking
-    one host and never using hosts[0].
+    A one-node cell runs in the process artsrun starts, on the submitting
+    host (ARTS's one rank starts no spawner; a single ocr-vx or HPX rank is
+    an MPI singleton), while xsocr and every multi-node cell start on the
+    profile's hosts: only from hosts[0] does every cell of every runtime
+    measure the same nodes.
     """
     import os
     import socket
@@ -497,11 +498,12 @@ def _check_ssh_submitter(profile: Profile) -> None:
     head = profile.hosts[0] if profile.hosts else ""
     if short(head) not in mine:
         raise ValueError(
-            f"an ssh campaign must be launched from hosts[0] ({head!r}): arts "
-            f"runs rank 0 in-process and ssh-launches only the rest, while "
-            f"mpirun places rank 0 on the first listed host — launching from "
-            f"elsewhere gives the runtimes different node sets (this host is "
-            f"known as: {', '.join(sorted(mine))})"
+            f"an ssh campaign must be launched from hosts[0] ({head!r}): a "
+            f"one-node cell runs on the submitting host (ARTS's one rank "
+            f"starts no spawner; a single ocr-vx or HPX rank is an MPI "
+            f"singleton), while xsocr and every multi-node cell start on the "
+            f"profile's hosts (this host is known as: "
+            f"{', '.join(sorted(mine))})"
         )
 
 

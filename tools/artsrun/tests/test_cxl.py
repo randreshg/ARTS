@@ -31,7 +31,7 @@ def profile(**kw) -> Profile:
     base.update(kw)
     launcher = base["launcher"]
     if launcher != "local":
-        base.setdefault("ports", [25000])
+        base.setdefault("ports", 25000)
     if launcher == "slurm":
         base.setdefault("slurm", {})
     if launcher == "flux":
@@ -87,12 +87,12 @@ def test_paths_must_be_absolute():
 
 
 def test_fake_off_the_local_launcher_runs_on_one_host_only():
-    multi = profile(launcher="slurm", nodes=[1, 2], ports=[25000])   # loads: it is Dane's shape
+    multi = profile(launcher="slurm", nodes=[1, 2], ports=25000)   # loads: it is Dane's shape
     with pytest.raises(ValueError, match="nodes"):
         multi.check_cxl(["arts_excl_purge_home_cxl_staged"])
     multi.check_cxl([])                                              # no CXL entry: fine
-    profile(launcher="slurm", nodes=[1], ports=[25000]).check_cxl(["arts_excl_purge_home_cxl_staged"])
-    profile(launcher="slurm", nodes=[1, 4], ports=[25000], **REAL).check_cxl(["arts_excl_purge_home_cxl_staged"])
+    profile(launcher="slurm", nodes=[1], ports=25000).check_cxl(["arts_excl_purge_home_cxl_staged"])
+    profile(launcher="slurm", nodes=[1, 4], ports=25000, **REAL).check_cxl(["arts_excl_purge_home_cxl_staged"])
     # local ranks share one host at any count
     profile(nodes=[1, 2]).check_cxl(["arts_excl_purge_home_cxl_staged"])
 

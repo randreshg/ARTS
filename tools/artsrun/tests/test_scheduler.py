@@ -119,7 +119,7 @@ def test_a_slurm_job_asks_for_the_width_it_will_use(tmp_path):
 
     profile = Profile.model_validate({
         "name": "t", "launcher": "slurm", "nodes": [1, 2],
-        "workers": 63, "progress": 1, "ports": [25000],
+        "workers": 63, "progress": 1, "ports": 25000,
         "slurm": {},
     })
     cell = _cell(2)
@@ -211,7 +211,7 @@ def test_a_marker_is_the_authority_on_how_a_job_ended(tmp_path):
 
     profile = Profile.model_validate({
         "name": "t", "launcher": "slurm", "nodes": [1, 2],
-        "workers": 2, "progress": 1, "ports": [25000], "slurm": {},
+        "workers": 2, "progress": 1, "ports": 25000, "slurm": {},
     })
     backend = SlurmBackend(profile, tmp_path)
     cell = _cell(2)
@@ -267,7 +267,7 @@ def test_build_work_on_slurm_rides_a_small_job_not_a_node():
 
     profile = Profile.model_validate({
         "name": "t", "launcher": "slurm", "nodes": [1, 2],
-        "workers": 63, "progress": 1, "ports": [25000],
+        "workers": 63, "progress": 1, "ports": 25000,
         "slurm": {"partition": "pbatch", "build_partition": "pdebug"},
     })
     prefix = srun_build_prefix(profile)

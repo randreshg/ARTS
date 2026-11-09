@@ -24,8 +24,7 @@ route_table_size: 16
 # A failing rank at 32 nodes would drop one core file per rank onto the
 # shared filesystem; the campaign's evidence is its logs and markers.
 core_dump: false
-port_count: 1
-ports: [25000]
+ports: 25000
 
 slurm:
   poll_interval_s: 10

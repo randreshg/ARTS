@@ -38,9 +38,27 @@ def _cell(kind: RuntimeKind, nodes: int, cfg: Path | None = None):
 def _ssh_profile() -> Profile:
     return Profile.model_validate({
         "name": "t", "launcher": "ssh", "nodes": [1, 2, 4],
-        "workers": 15, "progress": 1, "ports": [25000],
+        "workers": 15, "progress": 1, "ports": 25000,
         "ssh": {"budget": 4, "hosts": ["n01", "n02", "n03", "n04"]},
     })
+
+
+def test_an_ssh_campaign_from_another_host_is_refused_for_its_one_node_cells():
+    import socket
+
+    from artsrun import campaign
+
+    def profile(head: str) -> Profile:
+        return Profile.model_validate({
+            "name": "t", "launcher": "ssh", "nodes": [1, 2],
+            "workers": 15, "progress": 1, "ports": 25000,
+            "ssh": {"budget": 2, "hosts": [head, "n02"]},
+        })
+
+    with pytest.raises(ValueError,
+                       match="a one-node cell runs on the submitting host"):
+        campaign._check_ssh_submitter(profile("no-such-host.invalid"))
+    campaign._check_ssh_submitter(profile(socket.gethostname()))
 
 
 # -- ssh: mpirun with a forced ssh bootstrap and an explicit host list ------

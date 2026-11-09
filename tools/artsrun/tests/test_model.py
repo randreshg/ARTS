@@ -374,7 +374,7 @@ def _local(**over):
 
 def test_local_profile_rejects_ports():
     with pytest.raises(ValidationError, match="ports must not be set"):
-        Profile.model_validate(_local(ports=[25000]))
+        Profile.model_validate(_local(ports=25000))
 
 
 def test_the_local_cxl_smoke_profile_loads_and_fits_the_host(monkeypatch,
@@ -461,7 +461,7 @@ def test_profile_refuses_unknown_keys():
         Profile.model_validate(_local(typoed_key=1))
     with pytest.raises(ValidationError, match="extra_forbidden|Extra inputs"):
         Profile.model_validate(_local(
-            launcher="slurm", ports=[25000], slurm={"budget": 32},
+            launcher="slurm", ports=25000, slurm={"budget": 32},
         ))
 
 
@@ -471,7 +471,7 @@ def test_profile_refuses_unknown_keys():
 def test_ssh_hosts_must_be_names_the_runtime_takes_as_one_node(host):
     with pytest.raises(ValidationError, match="not a plain host name"):
         Profile.model_validate(_local(
-            launcher="ssh", ports=[25000],
+            launcher="ssh", ports=25000,
             ssh={"budget": 2, "hosts": ["n00", host]},
         ))
 
@@ -479,7 +479,7 @@ def test_ssh_hosts_must_be_names_the_runtime_takes_as_one_node(host):
 def test_ssh_hosts_must_be_distinct():
     with pytest.raises(ValidationError, match="distinct"):
         Profile.model_validate(_local(
-            launcher="ssh", ports=[25000],
+            launcher="ssh", ports=25000,
             ssh={"budget": 2, "hosts": ["n01", "n01"]},
         ))
 
@@ -489,7 +489,7 @@ def test_slurm_needs_no_budget_and_defaults_its_build_slot():
     # up front, so a profile carries no admission budget — only where the
     # cells and the build work go, and how wide the build slot is.
     profile = Profile.model_validate(_local(
-        launcher="slurm", nodes=[1, 2, 4, 8], ports=[25000],
+        launcher="slurm", nodes=[1, 2, 4, 8], ports=25000,
         slurm={"partition": "pbatch", "build_partition": "pdebug"},
     ))
     assert profile.slurm.partition == "pbatch"
@@ -766,32 +766,37 @@ def test_an_empty_experiment_defers_to_the_catalog_defaults():
 
 
 # --- ports and hosts ------------------------------------------------------
-def test_a_local_run_states_a_connection_count_but_no_ports():
-    profile = Profile.model_validate(_local(port_count=4))
-    assert profile.port_count == 4
-    assert profile.ports == []
+def test_a_local_profile_names_no_port_and_no_connection_count():
+    profile = Profile.model_validate(_local())
+    assert profile.ports is None
+    assert not hasattr(profile, "port_count")
 
 
-def test_a_remote_port_list_must_match_the_connection_count():
-    with pytest.raises(ValidationError, match="must name exactly that many"):
+def test_a_remote_profile_names_one_port():
+    profile = Profile.model_validate(_local(
+        launcher="slurm", ports=25000, slurm={},
+    ))
+    assert profile.ports == 25000
+
+
+def test_a_port_list_is_refused():
+    with pytest.raises(ValidationError):
         Profile.model_validate(_local(
-            launcher="slurm", ports=[25000], port_count=2,
-            slurm={},
+            launcher="slurm", ports=[25000], slurm={},
         ))
 
 
-def test_a_matching_port_list_is_accepted():
-    profile = Profile.model_validate(_local(
-        launcher="slurm", ports=[25000, 25001], port_count=2,
-        slurm={},
-    ))
-    assert len(profile.ports) == profile.port_count
+def test_a_connection_count_is_refused_as_an_unknown_key():
+    with pytest.raises(ValidationError, match="extra_forbidden|Extra inputs"):
+        Profile.model_validate(_local(
+            launcher="slurm", ports=25000, port_count=1, slurm={},
+        ))
 
 
 def test_ssh_hosts_must_number_exactly_the_node_budget():
     with pytest.raises(ValidationError, match="name one host per node"):
         Profile.model_validate(_local(
-            launcher="ssh", ports=[25000],
+            launcher="ssh", ports=25000,
             ssh={"budget": 4, "hosts": ["n01", "n02"]},
         ))
 
@@ -799,14 +804,14 @@ def test_ssh_hosts_must_number_exactly_the_node_budget():
 def test_ssh_budget_below_the_widest_cell_is_refused():
     with pytest.raises(ValidationError, match="nowhere to run"):
         Profile.model_validate(_local(
-            launcher="ssh", nodes=[1, 4], ports=[25000],
+            launcher="ssh", nodes=[1, 4], ports=25000,
             ssh={"budget": 2, "hosts": ["n01", "n02"]},
         ))
 
 
 def test_a_consistent_ssh_profile_is_accepted():
     profile = Profile.model_validate(_local(
-        launcher="ssh", nodes=[1, 2, 4], ports=[25000],
+        launcher="ssh", nodes=[1, 2, 4], ports=25000,
         ssh={"budget": 4, "hosts": ["n01", "n02", "n03", "n04"]},
     ))
     assert profile.hosts == ["n01", "n02", "n03", "n04"]
@@ -1080,7 +1085,7 @@ def test_a_dry_run_leaves_nothing_under_the_campaign_log_root(tmp_path, monkeypa
 
 def test_flux_requires_its_section():
     with pytest.raises(ValidationError, match="requires a flux section"):
-        Profile.model_validate(_local(launcher="flux", ports=[25000]))
+        Profile.model_validate(_local(launcher="flux", ports=25000))
 
 
 def test_flux_profile_requires_ports_like_every_remote_launcher():
@@ -1090,7 +1095,7 @@ def test_flux_profile_requires_ports_like_every_remote_launcher():
 
 def test_flux_defaults_state_the_llnl_posture():
     profile = Profile.model_validate(_local(
-        launcher="flux", ports=[25000],
+        launcher="flux", ports=25000,
         flux={"queue": "pbatch", "bank": "guests"},
     ))
     # mpibind is on by default at the sites this exists for; build work
@@ -1105,9 +1110,9 @@ def test_sched_settings_reads_the_launchers_own_section():
     # Build sizing and poll cadence go through one accessor, so a consumer
     # wired to profile.slurm cannot silently ignore a flux profile's values.
     slurm = Profile.model_validate(_local(
-        launcher="slurm", ports=[25000], slurm={"build_cpus": 4}))
+        launcher="slurm", ports=25000, slurm={"build_cpus": 4}))
     flux = Profile.model_validate(_local(
-        launcher="flux", ports=[25000], flux={"build_cpus": 12}))
+        launcher="flux", ports=25000, flux={"build_cpus": 12}))
     local = Profile.model_validate(_local())
     assert slurm.sched_settings.build_cpus == 4
     assert flux.sched_settings.build_cpus == 12
@@ -1261,7 +1266,7 @@ def _reference_fixture():
     local = Profile(name="p", launcher=Launcher.LOCAL, nodes=[1, 2],
                     workers=2, progress=1)
     remote = Profile(name="p", launcher=Launcher.SLURM, nodes=[1],
-                     workers=2, progress=1, ports=[25000],
+                     workers=2, progress=1, ports=25000,
                      slurm=SlurmSettings())
     return plane, app, local, remote
 

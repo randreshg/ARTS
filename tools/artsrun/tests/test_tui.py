@@ -440,8 +440,19 @@ def test_a_machine_with_no_profiles_can_bootstrap_one():
     )
     assert profile.launcher is Launcher.LOCAL
     assert profile.nodes == [1]
-    assert profile.port_count == 1
-    assert profile.ports == []  # local claims its own block
+    assert not hasattr(profile, "port_count")
+    assert profile.ports is None  # local's spawner claims its own block
+
+
+def test_a_slurm_form_saves_its_one_port():
+    from artsrun.model.profile import Profile
+    from artsrun.tui import form
+
+    values = form.blank_values()
+    values.update({"launcher": "slurm", "ports": "25000",
+                   "slurm.partition": "batch"})
+    profile = Profile.model_validate(form.values_to_profile_data("c", values))
+    assert profile.ports == 25000
 
 
 # --- profile editing ------------------------------------------------------

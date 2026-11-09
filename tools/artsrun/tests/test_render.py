@@ -32,13 +32,16 @@ def test_arts_config_carries_the_profile_s_shape():
 
 def test_arts_config_omits_ports_for_a_local_run():
     profile = load_profile("fixture-local")
-    assert "ports" not in render_arts(profile, 4)
+    text = render_arts(profile, 4)
+    assert "ports" not in text
+    assert "port_count" not in text
 
 
 def test_arts_config_names_ports_for_a_cluster_run():
     profile = load_profile("junction")
     text = render_arts(profile, 8)
     assert "ports=25000" in text
+    assert "port_count" not in text
     assert "node_count=8" in text
     assert "provider=verbs" in text
 
@@ -83,7 +86,7 @@ def test_arts_config_for_flux_names_ports_but_no_hosts():
 
     profile = Profile.model_validate({
         "name": "t", "launcher": "flux", "nodes": [1, 2, 4],
-        "workers": 15, "progress": 1, "ports": [25000], "flux": {},
+        "workers": 15, "progress": 1, "ports": 25000, "flux": {},
     })
     text = render_arts(profile, 4)
     assert "launcher=flux" in text

@@ -54,7 +54,7 @@ def _cell(kind: RuntimeKind, nodes: int, cfg: Path | None = None,
 def _slurm_profile(**slurm) -> Profile:
     return Profile.model_validate({
         "name": "t", "launcher": "slurm", "nodes": [1, 2, 4],
-        "workers": 15, "progress": 1, "ports": [25000], "slurm": slurm,
+        "workers": 15, "progress": 1, "ports": 25000, "slurm": slurm,
     })
 
 

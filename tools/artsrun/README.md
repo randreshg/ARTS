@@ -285,10 +285,9 @@ list); unchecking changes only this campaign, so narrowing one run costs
 nothing and needs no save.
 
 Only the sections the launcher decides are shown — the SSH roster for ssh,
-the Slurm settings for slurm. Every launcher states `connections / node`;
-only the remote ones name the ports, and then the list must hold exactly that
-many. A local run's ranks share a machine, so the runtime claims its own block
-of `node_count × connections` instead.
+the Slurm settings for slurm. Every launcher's rank listens on one port;
+only the remote ones name it. A local run's ranks share a machine, so the
+spawner claims a block of `node_count` ports instead.
 
 An ssh profile declares how many nodes it may use and must name exactly that
 many hosts. A Slurm profile declares no budget at all: **every cell is

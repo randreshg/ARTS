@@ -48,7 +48,6 @@ def render_arts(profile: Profile, nodes: int, *, counter_folder: str | None = No
         # the two cannot drift apart.
         stack_size_bytes=profile.stack_size_mb * 1024 * 1024,
         ports=profile.ports,
-        port_count=profile.port_count,
         hosts=hosts,
         counter_folder=counter_folder,
         counter_capture_interval=capture_interval,

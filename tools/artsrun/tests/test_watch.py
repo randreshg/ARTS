@@ -26,7 +26,7 @@ def _profile(launcher: str = "local") -> Profile:
         "workers": 2, "progress": 1,
     }
     if launcher in ("slurm", "flux"):
-        data["ports"] = [25000]
+        data["ports"] = 25000
         data[launcher] = {}
     return Profile.model_validate(data)
 

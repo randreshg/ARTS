@@ -1,8 +1,8 @@
 {# Runtime configuration.  Every key is emitted only when the profile sets it,
    so an unset key falls through to the runtime's own default instead of being
    written as an empty value.  Ports are a launcher property: a local run's
-   ranks share a machine and each claims its own block, so naming ports there
-   is a configuration error. #}
+   ranks share a machine and the spawner claims their ports, so naming one
+   there is a configuration error. #}
 [ARTS]
 worker_threads={{ workers }}
 progress_threads={{ progress }}
@@ -24,9 +24,8 @@ fabric_domain={{ fabric_domain }}
 {%- if regpool_slab_mb %}
 regpool_slab_mb={{ regpool_slab_mb }}
 {%- endif %}
-port_count={{ port_count }}
 {%- if ports %}
-ports={{ ports | join(',') }}
+ports={{ ports }}
 {%- endif %}
 {%- if hosts %}
 nodes={{ hosts | join(',') }}

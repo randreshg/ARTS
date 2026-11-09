@@ -15,7 +15,7 @@ pin: true
 provider: verbs;ofi_rxm
 route_table_size: 16
 core_dump: true
-ports: [25000]
+ports: 25000
 
 slurm:
   poll_interval_s: 10
