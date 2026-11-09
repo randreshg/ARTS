@@ -43,38 +43,42 @@
 extern "C" {
 #endif
 #include "arts/system/config.h"
+#include <assert.h>
 #include <netinet/in.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
-/* The bootstrap mesh's sockets, set up by arts_transport_setup_outgoing /
- * _incoming on the main thread and read by the address exchange on that same
- * thread, and by any thread from arts_socket_armed returning true until the
- * process ends or, in a tree with a teardown, arts_socket_cleanup:
- *   arts_socket_send_list[peer * arts_socket_ports + port]  this rank's
- *     connection to peer;
- *   arts_socket_receive_list[port + conn * arts_socket_ports]  accepted peer
- *     connections, in acceptance order.
- * arts_socket_ports is the configuration's port count. */
-extern unsigned int arts_socket_ports;
-extern int *arts_socket_send_list;
-extern int *arts_socket_receive_list;
+/* The bootstrap mesh: one connection per rank pair, opened by the higher rank,
+ * whose first 8 bytes are its hello.  arts_socket_fd[peer] is this rank's
+ * established connection to peer (non-blocking, close-on-exec, kept alive),
+ * -1 at this rank.  Written by arts_mesh_form on the main thread; valid there
+ * after it returns, and on any thread from arts_socket_armed returning true
+ * until the process ends or, in a tree with a teardown, arts_socket_cleanup. */
+extern int *arts_socket_fd;
 
-int arts_get_new_socket();
-int arts_get_socket_listening(struct sockaddr_in *listening_socket,
-                              unsigned int port);
-int arts_get_socket_outgoing(struct sockaddr_in *outgoing_socket,
-                             unsigned int port, in_addr_t s_addr);
+#define ARTS_MESH_HELLO_MAGIC 0x4d535241u
+/* The connector's first bytes on a mesh connection, host-endian like the
+ * address frame (every rank of a run shares one ABI). */
+struct arts_mesh_hello_s {
+  uint32_t magic;
+  uint32_t rank;
+};
+static_assert(sizeof(struct arts_mesh_hello_s) == 8u,
+              "the hello is 8 bytes on the wire");
 
 void arts_transport_set_config(struct arts_config_s *config);
-/* Slide a local multi-node run's port block past whatever already holds it, by
- * probing the exact set of ports the run is about to claim; rewrites
- * config->ports on success.  Callable only from the spawner — the ranks
- * inherit the chosen base and must not probe again.  Returns false when no
- * free block fits below the ephemeral range, leaving the configured ports in
- * place. */
-bool arts_transport_select_local_ports(struct arts_config_s *config);
+/* Main thread, a process of a run of several: resolves every routing-table
+ * row and learns this rank; rows that do not resolve end the rank after the
+ * pass with a resolve line listing them (arts_mesh_fail). */
+void arts_socket_setup(struct arts_config_s *config);
+/* Slide a local multi-node run's port block (node_count ports from
+ * config->port) past whatever already holds it, by probing the exact ports the
+ * run is about to claim; rewrites config->port and every row's port on
+ * success.  Callable only from the spawner: the ranks inherit the chosen base
+ * and must not probe again.  Returns false when no free block fits below the
+ * ephemeral range, leaving the configured block in place. */
+bool arts_transport_select_local_port(struct arts_config_s *config);
 
 /* The steps of a process's startup, in their order, and the phases a startup
  * failure line names: every step, and a peer's end seen before the arm. */
@@ -149,12 +153,11 @@ size_t arts_startup_expired_line(char *buf, size_t cap);
 /* A startup this rank cannot complete: ends the startup bound, closes every
  * mesh socket, so its peers see their connections end, and, when the end is
  * its own, ends the process with status 75.  Once this process is a rank
- * (arts_exit_rank_known) it
- * takes the rank's end, and only a taker writes the line; before, it writes
- * the line and ends the process unless this process's end began
- * (arts_exit_began), in which case it leaves the end to the thread that
- * began it and never returns.  missing as for arts_mesh_format_line, over
- * the routing table. */
+ * (arts_exit_rank_known) it takes the rank's end, and only a taker writes the
+ * line; before, it writes the line unless this process's end began
+ * (arts_exit_began), and ends the process, or, when the end began, joins it
+ * as a late entry.  missing as for arts_mesh_format_line, over the routing
+ * table. */
 #ifdef __cplusplus
 [[noreturn]]
 #else
@@ -162,13 +165,19 @@ _Noreturn
 #endif
 void arts_mesh_fail(enum arts_mesh_phase phase, const bool *missing);
 
-void arts_transport_setup_outgoing();
-bool arts_transport_setup_incoming();
-/* Convert the bootstrap TCP mesh into payload-free liveness sentinels once the
- * fi-address exchange has finished: every established connection stays open
- * (connection lifetime doubles as peer liveness — orderly close and process
- * death both surface as HUP on the peer's accept-side socket); only the
- * listening sockets are closed.  Its last act arms the mesh
+/* Main thread, after arts_socket_setup and once this process is a rank:
+ * forms the mesh under the startup deadline, entering the listen and connect
+ * steps.  It reserves the descriptors the mesh needs, listens on this rank's
+ * port, connects to every lower rank (an error retried 100 ms later, a
+ * connect still in progress after 1 s re-issued) and takes every higher
+ * rank's hello.  It reads no byte past a hello, and returns only with every
+ * connection established; otherwise it ends the rank (arts_mesh_fail). */
+void arts_mesh_form(struct arts_config_s *config);
+
+/* Turns the mesh into payload-free liveness sentinels once the address
+ * exchange has finished: every connection stays open (its lifetime doubles as
+ * the peer's: an orderly close and a process's death both surface as an end
+ * of file or a hangup at the other end).  Its last act arms the mesh
  * (arts_socket_armed). */
 void arts_socket_sentinel_arm(void);
 
@@ -196,7 +205,7 @@ bool arts_socket_peer_gone(unsigned int rank);
  * own *next_ns. */
 bool arts_socket_probe_due(uint64_t *next_ns);
 
-/* Non-blocking probe of the accept-side sentinels for a closed peer
+/* Non-blocking probe of the sentinels for a closed peer
  * (POLLHUP/POLLERR/EOF): true when a peer's connection closed.  It enters
  * nothing: its caller starts the shutdown, as a rank that learned of the
  * end.  Stands down (false) once this rank's shutdown is in progress.
@@ -206,6 +215,11 @@ bool arts_socket_probe_due(uint64_t *next_ns);
  * orderly teardown can reach the probe first; its caller joins the same
  * shutdown.  Serialized internally to a single prober. */
 bool arts_socket_sentinel_check(void);
+#ifdef ARTS_DEBUG_TEARDOWN
+/* Closes the sentinels and frees the mesh's state, once every thread that may
+ * read them stopped. */
+void arts_socket_cleanup(void);
+#endif
 #ifdef __cplusplus
 }
 #endif

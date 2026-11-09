@@ -87,6 +87,7 @@ bool arts_exit_rank_known(void) { return true; }
 bool arts_shutdown_taken(void) { return false; }
 void *arts_malloc(size_t s) { return malloc(s); }
 void *arts_calloc(size_t n, size_t s) { return calloc(n, s); }
+void *arts_realloc(void *p, size_t s) { return realloc(p, s); }
 void arts_free(void *p) { free(p); }
 void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
   (void)packet;
@@ -177,20 +178,17 @@ static void run_child(const struct remap_case_s *c) {
   unsetenv("SLURM_PROCID");
 
   static struct arts_config_table_s table[2];
-  static unsigned int p0[1] = {25000};
-  static unsigned int p1[1] = {25001};
   memset(table, 0, sizeof(table));
   table[0].rank = 0;
   table[0].ip_address = (char *)c->row0;
-  table[0].ports = p0;
+  table[0].port = 25000;
   table[1].rank = 1;
   table[1].ip_address = (char *)c->row1;
-  table[1].ports = p1;
+  table[1].port = 25001;
 
   static struct arts_config_s cfg;
   memset(&cfg, 0, sizeof(cfg));
   cfg.table_length = 2;
-  cfg.port_count = 1;
   cfg.nodes = 2;
   cfg.net_interface = (char *)c->net_interface;
   cfg.table = table;

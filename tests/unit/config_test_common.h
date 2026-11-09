@@ -2,7 +2,7 @@
  *
  * Common stubs for the config.c pure-unit tests.
  *
- * The config parser's static helpers (parse_port_spec, handle_launcher,
+ * The config parser's static helpers (handle_launcher,
  * handle_cxl_db_allocation_strategy, config_compute_derived, ...) have no
  * header prototype, so each test TU pulls the whole translation unit in with
  *     #include "../../libs/src/core/system/config.c"

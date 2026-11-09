@@ -18,8 +18,8 @@
  * This is a config-parser test: it calls arts_config_load() directly against
  * crafted temp cfgs (no runtime started, no fabric brought up, no ports
  * bound).  Self-contained: it sets its own ARTS_CONFIG and clears the
- * inherited `ports`/`port_count`/`provider`/`regpool_slab_mb`/`net_interface`
- * env overrides, since an environment variable named after a key overrides the
+ * inherited `ports`/`provider`/`regpool_slab_mb`/`net_interface` env
+ * overrides, since an environment variable named after a key overrides the
  * cfg.  Orthogonal to the coherence configuration (config.c is
  * protocol-agnostic).
  */
@@ -60,7 +60,6 @@ static int load_cfg(const char *tag, const char *extra_lines,
   }
   setenv("ARTS_CONFIG", cfg_path, 1);
   unsetenv("ports");
-  unsetenv("port_count");
   unsetenv("provider");
   unsetenv("regpool_slab_mb");
   if (netif_env != NULL) {

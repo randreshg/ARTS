@@ -132,13 +132,14 @@ extern struct arts_exit_meta_s arts_exit_meta;
  * no other rank and no other thread.  Every later call, on any thread, is a
  * late entry: its rc is folded into the rank's status and its thread parks
  * for good, except on the owner's own thread, where the process ends at once.
- * Before this process became a rank (arts_exit_publish_rank) the process ends
- * with rc and nothing else.  In the process arts_rt started (not a child it
- * forked), every step from the shutdown point (or, before the process became
- * a rank, from the call) to the process's end is bounded by the watchdog:
- * ARTS_EXIT_WATCHDOG_S seconds, longer by the counter record's estimated
- * write time once the record begins, plus at most a second while the
- * watchdog's line waits for stderr. */
+ * An end that takes the point before this process became a rank
+ * (arts_exit_publish_rank) has late entries too; it posts nothing, writes no
+ * record, and ends the process with the highest of its rc and theirs (a
+ * FAULT raises its signal).  In the process arts_rt started (not a child it
+ * forked), every step from the shutdown point to the process's end is
+ * bounded by the watchdog: ARTS_EXIT_WATCHDOG_S seconds, longer by the
+ * counter record's estimated write time once the record begins, plus at
+ * most a second while the watchdog's line waits for stderr. */
 #ifdef __cplusplus
 [[noreturn]]
 #else
@@ -171,9 +172,9 @@ void arts_exit_poll(void);
  * wrote before the take is visible after a true. */
 bool arts_shutdown_taken(void);
 
-/* Whether this process's end began: the rank's shutdown point was taken, or
- * an end armed the watchdog (the end of a process that is no rank arms it
- * first thing).  Async-signal-safe. */
+/* Whether this process's end began: its shutdown point was taken, or the
+ * watchdog holds a deadline (the spawner's end arms it without taking the
+ * point).  Async-signal-safe. */
 bool arts_exit_began(void);
 
 /* Whether this process became a rank (arts_exit_publish_rank); acquire, so

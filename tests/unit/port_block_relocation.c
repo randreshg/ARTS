@@ -44,7 +44,7 @@
 /// anywhere in it has to be found BEFORE the peers exist — once they are told a
 /// base, nothing can move it.  This occupies one port of the block the selector
 /// starts from and checks the selector slides the whole run somewhere free,
-/// keeping the ranks' blocks disjoint and the base list in step with the table.
+/// rank i on the block's base + i, the base and the table in step.
 ///
 /// Two legs.  In the first the occupied port is declared rather than taken from
 /// the host — a declared port refuses every bind, as a foreign process's live
@@ -141,53 +141,53 @@ static int hold_port(unsigned int port) {
 
 /* Run the selector from `start` with port `held` occupied: it must leave the
  * block, land on one that does not cover the held port, keep the table in
- * step with the base list, and stay inside the window. */
+ * step with the base, and stay inside the window. */
 static void relocate_past(struct arts_config_s *cfg, unsigned int start,
                           unsigned int held, const char *leg) {
-  cfg->ports[0] = start;
-  if (!arts_transport_select_local_ports(cfg)) {
+  cfg->port = start;
+  if (!arts_transport_select_local_port(cfg)) {
     printf("FAIL port_block_relocation (%s): selector found no free block at "
            "all\n",
            leg);
     fails++;
     return;
   }
-  if (cfg->ports[0] == start) {
+  if (cfg->port == start) {
     printf("FAIL port_block_relocation (%s): stayed on block %u with port %u "
            "occupied\n",
            leg, start, held);
     fails++;
   } else {
-    const unsigned int chosen = cfg->ports[0];
-    if (!arts_transport_select_local_ports(cfg) || cfg->ports[0] != chosen) {
+    const unsigned int chosen = cfg->port;
+    if (!arts_transport_select_local_port(cfg) || cfg->port != chosen) {
       printf("FAIL port_block_relocation (%s): selector left the free block "
              "%u it had chosen\n",
              leg, chosen);
       fails++;
     }
-    cfg->ports[0] = chosen;
+    cfg->port = chosen;
   }
-  if (cfg->ports[0] <= held && held < cfg->ports[0] + NODES) {
+  if (cfg->port <= held && held < cfg->port + NODES) {
     printf("FAIL port_block_relocation (%s): new block %u still covers "
            "occupied port %u\n",
-           leg, cfg->ports[0], held);
+           leg, cfg->port, held);
     fails++;
   }
   for (unsigned int i = 0; i < NODES; i++) {
-    unsigned int want = cfg->ports[0] + (i * cfg->port_count);
-    if (cfg->table[i].ports == NULL || cfg->table[i].ports[0] != want) {
+    unsigned int want = cfg->port + i;
+    if (cfg->table[i].port != want) {
       printf("FAIL port_block_relocation (%s): rank %u has port %u, want "
              "%u\n",
-             leg, i, cfg->table[i].ports ? cfg->table[i].ports[0] : 0, want);
+             leg, i, cfg->table[i].port, want);
       fails++;
       break;
     }
   }
-  if (cfg->ports[0] < ARTS_PORT_WINDOW_LO ||
-      cfg->ports[0] + NODES > ARTS_PORT_WINDOW_HI) {
+  if (cfg->port < ARTS_PORT_WINDOW_LO ||
+      cfg->port + NODES > ARTS_PORT_WINDOW_HI) {
     printf("FAIL port_block_relocation (%s): block %u..%u outside the window "
            "%u-%u\n",
-           leg, cfg->ports[0], cfg->ports[0] + NODES - 1, ARTS_PORT_WINDOW_LO,
+           leg, cfg->port, cfg->port + NODES - 1, ARTS_PORT_WINDOW_LO,
            ARTS_PORT_WINDOW_HI);
     fails++;
   }
@@ -213,28 +213,27 @@ int main(void) {
 
   setenv("ARTS_CONFIG", cfg_path, 1);
   unsetenv("ports");
-  unsetenv("port_count");
-  unsetenv(ARTS_RESOLVED_PORTS_ENV);
+  unsetenv(ARTS_RESOLVED_PORT_ENV);
 
   struct arts_config_s cfg;
   arts_config_load(&cfg);
   (void)remove(cfg_path);
 
-  if (cfg.table_length != NODES || cfg.ports == NULL || cfg.port_count != 1) {
+  if (cfg.table_length != NODES || cfg.port == 0) {
     printf("FAIL port_block_relocation: config did not resolve (len=%u "
-           "ports=%p port_count=%u)\n",
-           cfg.table_length, (void *)cfg.ports, cfg.port_count);
+           "port=%u)\n",
+           cfg.table_length, cfg.port);
     return 1;
   }
 
-  const unsigned int seed = cfg.ports[0];
+  const unsigned int seed = cfg.port;
 
   /* Declared leg: rank r's port of the seeded block is the only one
      occupied. */
   for (unsigned int r = 0; r < NODES; r++) {
     char leg[32];
     snprintf(leg, sizeof leg, "declared, rank %u's port", r);
-    cfg.ports[0] = seed;
+    cfg.port = seed;
     g_held_base = seed + r;
     g_held_count = 1;
     relocate_past(&cfg, seed, seed + r, leg);
@@ -243,7 +242,7 @@ int main(void) {
 
   /* Kernel leg: a real listener on the last rank's port of a block the
      selector has just found free. */
-  unsigned int base = cfg.ports[0];
+  unsigned int base = cfg.port;
   unsigned int port = 0;
   int fd = -1;
   for (int attempt = 0; attempt < 8; attempt++) {
@@ -252,11 +251,11 @@ int main(void) {
     if (fd >= 0 || errno != EADDRINUSE) {
       break;
     }
-    cfg.ports[0] = base + NODES;
-    if (!arts_transport_select_local_ports(&cfg)) {
+    cfg.port = base + NODES;
+    if (!arts_transport_select_local_port(&cfg)) {
       break;
     }
-    base = cfg.ports[0];
+    base = cfg.port;
   }
   if (fd < 0) {
     printf("FAIL port_block_relocation: cannot hold a listener on the last "

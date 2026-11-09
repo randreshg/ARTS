@@ -235,10 +235,10 @@ void arts_net_put_payload(int rank, uint64_t raddr, uint64_t rkey,
 /* Upper bound on a serialized fabric (fi_getname) address blob. */
 #define ARTS_NET_ADDR_MAX 256u
 
-/* The bootstrap address frame, as it goes on the wire: the sender's rank (so
- * the receiver can demux acceptance-ordered connections back to rank order),
- * the fabric address blob's length, the sender's run id (rank 0's is the
- * run's; every other rank sends 0, having learned none yet), then the blob.
+/* The bootstrap address frame, as it goes on the wire: the sender's rank
+ * (which must be the peer of the connection it rides), the fabric address
+ * blob's length, the sender's run id (rank 0's is the run's; every other
+ * rank sends 0, having learned none yet), then the blob.
  * The header fields are host-endian on the wire: peers share one ABI and
  * endianness (the launcher never spans heterogeneous nodes), so no byte-order
  * conversion is applied.

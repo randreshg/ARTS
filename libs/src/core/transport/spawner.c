@@ -305,24 +305,12 @@ unsigned int arts_end_grace_s(void) {
 }
 
 /* The ranks of a local run re-read the same configuration, which names no
- * ports, so the block this process settled on reaches them only through the
- * environment they inherit. */
-static void arts_export_local_ports(const struct arts_config_s *config) {
-  char port_spec[512];
-  size_t spec_len = 0;
-  port_spec[0] = '\0';
-  for (unsigned int j = 0; j < config->port_count && config->ports; j++) {
-    int written = snprintf(port_spec + spec_len, sizeof(port_spec) - spec_len,
-                           "%s%u", j == 0 ? "" : ",", config->ports[j]);
-    if (written < 0 || (size_t)written >= sizeof(port_spec) - spec_len) {
-      port_spec[0] = '\0';
-      break;
-    }
-    spec_len += (size_t)written;
-  }
-  if (port_spec[0] != '\0') {
-    setenv(ARTS_RESOLVED_PORTS_ENV, port_spec, 1);
-  }
+ * port, so the block's base this process settled on reaches them only through
+ * the environment they inherit. */
+static void arts_export_local_port(const struct arts_config_s *config) {
+  char port[16];
+  snprintf(port, sizeof(port), "%u", config->port);
+  setenv(ARTS_RESOLVED_PORT_ENV, port, 1);
 }
 
 static const char *arts_spawner_signal_name(int sig) {
@@ -389,8 +377,8 @@ _Noreturn void arts_spawn(struct arts_config_s *config, int argc, char **argv) {
       ARTS_ERROR("spawner: getcwd failed: %s", strerror(errno));
     }
   } else {
-    (void)arts_transport_select_local_ports(config);
-    arts_export_local_ports(config);
+    (void)arts_transport_select_local_port(config);
+    arts_export_local_port(config);
   }
 
   /* Every signal the spawner acts on is taken by sigwaitinfo and never

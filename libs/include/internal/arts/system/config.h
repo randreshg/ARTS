@@ -59,15 +59,15 @@ typedef enum {
    would collide at random with an outgoing connection's source port. */
 #define ARTS_PORT_WINDOW_LO 20000U
 #define ARTS_PORT_WINDOW_HI 32000U
-/* How the spawner tells the ranks it starts what the run settled on.  Not a
-   config key: it is an internal handoff, and a local run rejects any attempt
-   to name ports by hand. */
-#define ARTS_RESOLVED_PORTS_ENV "ARTS_RESOLVED_PORTS"
+/* How the spawner tells the ranks it starts the base of the block the run
+   settled on.  Not a config key: it is an internal handoff, and a local run
+   rejects any attempt to name a port by hand. */
+#define ARTS_RESOLVED_PORT_ENV "ARTS_RESOLVED_PORT"
 
 struct arts_config_table_s {
   unsigned int rank;
   char *ip_address;
-  unsigned int *ports; // Port list (port_count entries), always populated
+  unsigned int port; /* the one port this row's rank listens on */
 };
 
 struct arts_config_variable_s {
@@ -82,12 +82,10 @@ struct arts_config_s {
   char *master_node;
   char *net_interface;
   char *launcher;
-  unsigned int port_count;
-  /* Base list every node's ports are derived from; exactly port_count entries.
-     Named by the config for a remote launcher, chosen by the runtime for a
-     local one. */
-  unsigned int *ports;
-  unsigned int ports_count;
+  /* The port every row's is derived from (0 while unset): named by the
+     config for a remote launcher, where every rank listens on it; chosen by
+     the runtime for a local one, where rank i listens on port + i. */
+  unsigned int port;
   char *provider; /* libfabric provider name (fi_getinfo hints prov_name);
                      NULL/empty = auto-select.  Overrides the ambient
                      FI_PROVIDER env var when set. */

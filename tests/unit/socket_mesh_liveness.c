@@ -5,9 +5,9 @@
  * TARGET: the bootstrap mesh of libs/src/core/transport/socket.c.
  *
  * PROPERTIES UNDER TEST:
- *   1. Every socket the mesh creates (the three factories) or accepts is
- *      close-on-exec, so no process a rank execs keeps a mesh connection
- *      open after the rank ends.
+ *   1. Both ends of the mesh's connection are close-on-exec, so no process
+ *      a rank execs keeps a mesh connection open after the rank ends, and
+ *      the formation leaves no listener open.
  *   2. Both ends of every established mesh connection carry keepalive:
  *      SO_KEEPALIVE on, idle 30 s, interval 10 s, 4 probes.
  *   3. arts_socket_peer_gone(r) reads this rank's connection to r: false for
@@ -23,19 +23,18 @@
  *   5. arts_socket_probe_due is false before the arm whatever the cadence;
  *      after it, false until the coarse monotonic clock reaches *next_ns,
  *      and once it has, true with *next_ns moved 1 ms past the clock's
- *      reading.  arts_socket_sentinel_check reports the accepted connection
- *      a peer closed, and enters nothing (this test links no shutdown
- *      entry).
+ *      reading.  arts_socket_sentinel_check reports the connection a peer
+ *      closed, and enters nothing (this test links no shutdown entry).
  *
  * HARNESS: a two-rank mesh on loopback, one port per rank.  The port block is
- * chosen by arts_transport_select_local_ports, as the spawner does; the
+ * chosen by arts_transport_select_local_port, as the spawner does; the
  * process then forks, and parent (rank 0) and child (rank 1) each fix their
- * startup deadline (arts_startup_begin) and run
- * arts_transport_setup_outgoing and arts_transport_setup_incoming, so every
- * connection is made by arts_transport_connect and taken by the accept path.
- * Each process checks the fds it holds; the child reports by exit status.
+ * startup deadline (arts_startup_begin) and run arts_mesh_form, so the one
+ * connection is made by rank 1's connect and taken by rank 0's accept.
+ * Each process checks the fd it holds; the child reports by exit status and
+ * ends only once the parent formed.
  * Properties 3 and 4 run in the parent on connections it builds itself and
- * installs as rank 1's send socket.  socket.c's poll and recv go through
+ * installs as rank 1's connection.  socket.c's poll and recv go through
  * switchable shims: by default each passes through; poll can be made to fail
  * with EINTR and recv with a chosen errno.
  *
@@ -108,6 +107,7 @@ bool arts_exit_rank_known(void) { return true; }
 bool arts_shutdown_taken(void) { return false; }
 void *arts_malloc(size_t s) { return malloc(s); }
 void *arts_calloc(size_t n, size_t s) { return calloc(n, s); }
+void *arts_realloc(void *p, size_t s) { return realloc(p, s); }
 void arts_free(void *p) { free(p); }
 void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
   (void)packet;
@@ -173,17 +173,13 @@ static bool has_mesh_keepalive(int fd) {
          sockopt_int(fd, IPPROTO_TCP, TCP_KEEPCNT) == 4;
 }
 
-/* The fds one rank of the mesh holds: its listener, its connection to the
- * peer and the connection it accepted from the peer. */
+/* The connection one rank of the mesh holds, and no listener left open. */
 static int check_mesh_ends(unsigned int peer) {
-  int listener = local_socket_receive[0];
-  int sent = arts_socket_send_list[peer * arts_socket_ports];
-  int taken = arts_socket_receive_list[0];
-  CHECK(is_cloexec(listener), "listening socket is not close-on-exec");
-  CHECK(is_cloexec(sent), "connected socket is not close-on-exec");
-  CHECK(is_cloexec(taken), "accepted socket is not close-on-exec");
-  CHECK(has_mesh_keepalive(sent), "connected socket lacks keepalive 1/30/10/4");
-  CHECK(has_mesh_keepalive(taken), "accepted socket lacks keepalive 1/30/10/4");
+  int fd = arts_socket_fd[peer];
+  CHECK(g_mesh_listener == -1, "the formation left its listener open");
+  CHECK(arts_socket_fd[1 - peer] == -1, "this rank's own entry holds an fd");
+  CHECK(is_cloexec(fd), "mesh connection is not close-on-exec");
+  CHECK(has_mesh_keepalive(fd), "mesh connection lacks keepalive 1/30/10/4");
   return 0;
 }
 
@@ -229,83 +225,69 @@ static int run_rank(struct arts_config_s *config, unsigned int me) {
   ip_list = (char *)arts_malloc(200);
   strcpy(ip_list, "127.0.0.1");
   strcpy(ip_list + 100, "127.0.0.1");
-  arts_transport_setup_outgoing();
-  CHECK(arts_transport_setup_incoming(), "mesh setup failed");
+  arts_startup_begin();
+  arts_mesh_form(config);
   return check_mesh_ends(1 - me);
 }
 
 int main(void) {
-  /* ---- 1. the factories ---- */
-  {
-    struct sockaddr_in sa;
-    int fd = arts_get_new_socket();
-    CHECK(fd >= 0 && is_cloexec(fd), "arts_get_new_socket: not close-on-exec");
-    close(fd);
-    fd = arts_get_socket_listening(&sa, 25123);
-    CHECK(fd >= 0 && is_cloexec(fd),
-          "arts_get_socket_listening: not close-on-exec");
-    close(fd);
-    fd = arts_get_socket_outgoing(&sa, 25124, inet_addr("127.0.0.1"));
-    CHECK(fd >= 0 && is_cloexec(fd),
-          "arts_get_socket_outgoing: not close-on-exec");
-    close(fd);
-  }
-
-  /* ---- 2. a two-rank loopback mesh ---- */
-  unsigned int base_ports[1] = {ARTS_PORT_WINDOW_LO +
-                                ((unsigned int)getpid() % 5000u) * 2u};
-  unsigned int row_ports[2][1] = {{0}, {0}};
-  struct arts_config_table_s rows[2] = {
-      {.rank = 0, .ip_address = "127.0.0.1", .ports = row_ports[0]},
-      {.rank = 1, .ip_address = "127.0.0.1", .ports = row_ports[1]}};
+  /* ---- 1, 2. a two-rank loopback mesh ---- */
+  struct arts_config_table_s rows[2] = {{.rank = 0, .ip_address = "127.0.0.1"},
+                                        {.rank = 1, .ip_address = "127.0.0.1"}};
   struct arts_config_s config;
   memset(&config, 0, sizeof(config));
   config.launcher = "local";
-  config.port_count = 1;
-  config.ports = base_ports;
+  config.port = ARTS_PORT_WINDOW_LO + ((unsigned int)getpid() % 5000u) * 2u;
   config.table_length = 2;
   config.nodes = 2;
   config.table = rows;
-  unsetenv(ARTS_RESOLVED_PORTS_ENV);
-  CHECK(arts_transport_select_local_ports(&config), "no free port block");
+  unsetenv(ARTS_RESOLVED_PORT_ENV);
+  CHECK(arts_transport_select_local_port(&config), "no free port block");
 
+  int formed[2];
+  CHECK(pipe(formed) == 0, "pipe failed");
   pid_t child = fork();
   CHECK(child >= 0, "fork failed");
   if (child == 0) {
     g_who = "rank 1";
-    arts_startup_begin();
-    _exit(run_rank(&config, 1));
+    close(formed[1]);
+    int rc = run_rank(&config, 1);
+    char b;
+    (void)read(formed[0], &b, 1);
+    _exit(rc);
   }
-  arts_startup_begin();
+  close(formed[0]);
   int rc = run_rank(&config, 0);
+  (void)write(formed[1], "x", 1);
+  close(formed[1]);
   int status = 0;
   CHECK(waitpid(child, &status, 0) == child, "waitpid failed");
   CHECK(rc == 0, "rank 0's mesh ends");
   CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0, "rank 1's mesh ends");
+  const int mesh_fd = arts_socket_fd[1];
 
   /* ---- 3. arts_socket_peer_gone ---- */
   int near_a, far_a, near_b, far_b, near_c, far_c;
   CHECK(loopback_pair(&near_a, &far_a), "loopback pair A");
   close(far_a);
   CHECK(await_hangup(near_a), "pair A's FIN never arrived");
-  close(arts_socket_send_list[1 * arts_socket_ports]);
-  arts_socket_send_list[1 * arts_socket_ports] = near_a;
+  arts_socket_fd[1] = near_a;
   CHECK(!arts_socket_armed(), "armed before the arm");
   CHECK(!arts_socket_peer_gone(1), "a peer reported gone before the arm");
   uint64_t next_ns = 0;
   CHECK(!arts_socket_probe_due(&next_ns) && next_ns == 0,
         "a probe due before the arm");
 
+  /* The sentinels poll the mesh's own connection. */
+  arts_socket_fd[1] = mesh_fd;
   arts_socket_sentinel_arm();
   CHECK(arts_socket_armed(), "not armed after the arm");
-  CHECK(local_socket_receive[0] == 0, "the arm left the listener open");
 
-  close(arts_socket_send_list[0]);
-  arts_socket_send_list[0] = near_a;
+  arts_socket_fd[0] = near_a;
   CHECK(!arts_socket_peer_gone(0), "this rank reported gone");
 
   CHECK(loopback_pair(&near_b, &far_b), "loopback pair B");
-  arts_socket_send_list[1 * arts_socket_ports] = near_b;
+  arts_socket_fd[1] = near_b;
   CHECK(!arts_socket_peer_gone(1), "an open peer reported gone");
   g_poll_eintr = true;
   CHECK(!arts_socket_peer_gone(1), "an open peer reported gone (peek)");
@@ -320,7 +302,7 @@ int main(void) {
   g_poll_eintr = false;
 
   CHECK(loopback_pair(&near_c, &far_c), "loopback pair C");
-  arts_socket_send_list[1 * arts_socket_ports] = near_c;
+  arts_socket_fd[1] = near_c;
   CHECK(!arts_socket_peer_gone(1), "an open peer reported gone");
   struct linger reset = {.l_onoff = 1, .l_linger = 0};
   CHECK(setsockopt(far_c, SOL_SOCKET, SO_LINGER, &reset, sizeof(reset)) == 0,
@@ -340,7 +322,7 @@ int main(void) {
   /* ---- 4. each errno the peek can return ---- */
   int near_d, far_d;
   CHECK(loopback_pair(&near_d, &far_d), "loopback pair D");
-  arts_socket_send_list[1 * arts_socket_ports] = near_d;
+  arts_socket_fd[1] = near_d;
   g_poll_eintr = true;
   static const int gone[] = {ECONNRESET, ETIMEDOUT, EPIPE, EHOSTUNREACH,
                              ENETUNREACH};
@@ -381,8 +363,7 @@ int main(void) {
   uint64_t after = coarse_now_ns();
   CHECK(next_ns >= before + 1000000ull && next_ns <= after + 1000000ull,
         "a due probe did not move the cadence 1 ms past the clock");
-  CHECK(await_hangup(arts_socket_receive_list[0]),
-        "rank 1's end never reached its accepted connection");
+  CHECK(await_hangup(mesh_fd), "rank 1's end never reached its connection");
   CHECK(arts_socket_sentinel_check(), "a closed peer's sentinel not reported");
 
   printf("PASS socket_mesh_liveness\n");

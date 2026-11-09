@@ -11,7 +11,7 @@
  * Because both are `static`, this TU #include's spawner.c directly so they
  * are compiled into the test (precedent: edt_gpu.cu #include's edt.c).
  * spawner.c's other functions, compiled here but not called, reference
- * runtime symbols (arts_transport_select_local_ports, arts_startup_budget_s,
+ * runtime symbols (arts_transport_select_local_port, arts_startup_budget_s,
  * arts_fake_cxl_fini_replay, the watchdog's two calls, ARTS_ERROR ->
  * arts_thread_info / arts_global_rank_id / arts_exit, ...), so trivial
  * stubs/defs below satisfy the link.  The command builder calls arts_malloc's
@@ -95,7 +95,7 @@ _Noreturn void arts_exit(int rc, enum arts_exit_origin origin) {
  * struct arts_runtime_private_s + the extern arts_thread_info). */
 #include "transport/spawner.c"
 
-bool arts_transport_select_local_ports(struct arts_config_s *config) {
+bool arts_transport_select_local_port(struct arts_config_s *config) {
   (void)config;
   return true;
 }

@@ -438,8 +438,6 @@ char *arts_get_next_partition(char **remainder) {
   return NULL;
 }
 
-static unsigned int *parse_port_spec(const char *spec, unsigned int *count);
-
 void arts_config_create_routing_table(struct arts_config_s **config,
                                       char *node_list) {
   unsigned int node_count;
@@ -793,18 +791,7 @@ static void handle_net_interface(struct arts_config_s *config,
   }
 }
 
-/*
- * parse_port_spec — Parse a port specification string into an array.
- *
- * Supported formats:
- *   "50000"              → [50000]              (single port)
- *   "[50000-50001]"      → [50000, 50001]       (range)
- *   "50000,50020,50040"  → [50000, 50020, 50040] (comma-separated)
- *
- * Returns: dynamically allocated array (caller must free), sets *count.
- * Returns NULL with *count=0 when the spec is absent, empty, or malformed —
- * every port must be a bare decimal number a TCP socket can carry.
- */
+/* One decimal port in 1-65535, leading zeros allowed. */
 static bool parse_one_port(const char *text, unsigned int *out) {
   uint64_t value = 0;
   if (!config_parse_decimal(text, UINT16_MAX, &value) || value == 0) {
@@ -814,100 +801,17 @@ static bool parse_one_port(const char *text, unsigned int *out) {
   return true;
 }
 
-static unsigned int *parse_port_spec(const char *spec, unsigned int *count) {
-  *count = 0;
-  if (!spec || !*spec) {
-    return NULL;
-  }
-
-  if (spec[0] == '[') {
-    /* Range format: [start-end].  The bounds are cut out of a copy, so a
-       bound takes the same forms as a single port, leading zeros included. */
-    size_t len = strlen(spec);
-    char *copy = (char *)arts_malloc(len + 1);
-    memcpy(copy, spec, len + 1);
-    char *dash = strchr(copy, '-');
-    char *close = strchr(copy, ']');
-    uint64_t start = 0;
-    uint64_t end = 0;
-    unsigned int *ports = NULL;
-    if (dash != NULL && close != NULL && close > dash && close[1] == '\0') {
-      *dash = '\0';
-      *close = '\0';
-      if (config_parse_decimal(copy + 1, UINT16_MAX, &start) &&
-          config_parse_decimal(dash + 1, UINT16_MAX, &end) && start <= end &&
-          start > 0) {
-        unsigned int n = (unsigned int)(end - start + 1);
-        ports = (unsigned int *)arts_malloc(n * sizeof(unsigned int));
-        for (unsigned int i = 0; i < n; i++) {
-          ports[i] = (unsigned int)(start + i);
-        }
-        *count = n;
-      }
-    }
-    arts_free(copy);
-    /* A malformed range is reported as "no ports parsed" so the caller can
-       fail the load: substituting a port here would bind something the
-       operator never named. */
-    return ports;
-  }
-
-  /* Check for comma-separated list */
-  if (strchr(spec, ',')) {
-    unsigned int n = 1;
-    for (const char *p = spec; *p; p++) {
-      if (*p == ',') {
-        n++;
-      }
-    }
-    unsigned int *ports = (unsigned int *)arts_malloc(n * sizeof(unsigned int));
-    char *copy = arts_config_make_new_var(spec);
-    char *tok = strtok(copy, ",");
-    unsigned int i = 0;
-    bool well_formed = true;
-    while (tok && i < n) {
-      if (!parse_one_port(tok, &ports[i])) {
-        well_formed = false;
-        break;
-      }
-      i++;
-      tok = strtok(NULL, ",");
-    }
-    arts_free(copy);
-    if (!well_formed || i != n) {
-      arts_free(ports);
-      return NULL;
-    }
-    *count = i;
-    return ports;
-  }
-
-  /* Single port */
-  unsigned int *ports = (unsigned int *)arts_malloc(sizeof(unsigned int));
-  if (!parse_one_port(spec, &ports[0])) {
-    arts_free(ports);
-    return NULL;
-  }
-  *count = 1;
-  return ports;
-}
-
 static void handle_ports(struct arts_config_s *config, const char *value,
                          struct arts_config_variable_s **vars) {
   (void)vars;
   if (!value) {
-    /* Absent: resolved (or rejected) in config_compute_derived, which knows
-       whether this run is allowed to choose its own. */
+    /* Absent: resolved (or refused) in config_compute_derived, which knows
+       whether this run may choose its own. */
     return;
   }
-  if (config->ports) {
-    arts_free(config->ports);
-  }
-  config->ports = parse_port_spec(value, &config->ports_count);
-  if (config->ports == NULL) {
-    ARTS_ERROR("Malformed ports '%s': expected a port (25000), a range "
-               "([25000-25001]), or a comma-separated list (25000,25010), "
-               "each entry in 1-65535",
+  if (!parse_one_port(value, &config->port)) {
+    ARTS_ERROR("ports names the one port every rank listens on, a number in "
+               "1-65535, not '%s'",
                value);
   }
 }
@@ -967,7 +871,6 @@ static const struct arts_config_entry_s config_entries[] = {
     /* --- Networking (conditional defaults applied in config_compute_derived)
        --- */
     {"progress_threads", CONFIG_UINT, OFF(progress_thread_count), NULL, NULL},
-    {"port_count", CONFIG_UINT, OFF(port_count), NULL, NULL},
     {"master_node", CONFIG_STRING, OFF(master_node), NULL, NULL},
     {"provider", CONFIG_STRING, OFF(provider), NULL, NULL},
     {"fabric_domain", CONFIG_STRING, OFF(fabric_domain), NULL, NULL},
@@ -1417,46 +1320,36 @@ static void config_compute_derived(struct arts_config_s *config) {
       ARTS_WARN("Multi-node: defaulting progress_threads to 1");
     }
 
-    /* Who fixes the listen ports.  A launcher that places ranks on other
+    /* Who fixes the listen port.  A launcher that places ranks on other
        machines cannot leave it to the runtime: each of those ranks resolves
-       its peers' ports from its own copy of the config, and a probe on the
+       its peers' port from its own copy of the config, and a probe on the
        launching machine says nothing about a remote host.  A local run is the
-       opposite — every rank is here, so the runtime always picks, and naming
-       ports by hand would only invite the collisions it exists to avoid. */
+       opposite: every rank is here, so the runtime always picks, and naming
+       a port by hand would only invite the collisions it exists to avoid. */
     const bool local_run =
         config->launcher != NULL && strcmp(config->launcher, "local") == 0;
 
-    if (!config->port_count) {
-      config->port_count = config->ports_count > 0 ? config->ports_count : 1;
-    }
-    if (config->ports_count > 0 && config->ports_count != config->port_count) {
-      ARTS_ERROR("ports names %u port(s) but port_count=%u — the ports key must "
-                 "name exactly port_count ports",
-                 config->ports_count, config->port_count);
-    }
-
     if (!local_run) {
-      if (config->ports_count == 0) {
-        ARTS_ERROR("ports is required with launcher=%s: every rank resolves its "
-                   "peers' ports from its own copy of this config, so nothing "
-                   "else can supply them",
+      if (config->port == 0) {
+        ARTS_ERROR("ports is required with launcher=%s: every rank resolves "
+                   "its peers' port from its own copy of this config, so "
+                   "nothing else can supply it",
                    config->launcher ? config->launcher : "(unset)");
       }
     } else {
-      if (config->ports_count > 0) {
+      if (config->port != 0) {
         ARTS_ERROR("ports cannot be set with launcher=local: all ranks share "
                    "one machine, so the runtime claims a free block itself and "
                    "hands it to the ranks it spawns.  Remove the key");
       }
       /* A spawned rank is told what the run settled on; it must not choose
          again, or the ranks would disagree about each other's ports. */
-      const char *resolved = getenv(ARTS_RESOLVED_PORTS_ENV);
+      const char *resolved = getenv(ARTS_RESOLVED_PORT_ENV);
       if (resolved != NULL) {
-        config->ports = parse_port_spec(resolved, &config->ports_count);
-        if (config->ports == NULL || config->ports_count != config->port_count) {
-          ARTS_ERROR("%s from the spawner is unusable ('%s') — expected "
-                     "%u port(s)",
-                     ARTS_RESOLVED_PORTS_ENV, resolved, config->port_count);
+        if (!parse_one_port(resolved, &config->port)) {
+          ARTS_ERROR("%s from the spawner is unusable ('%s'): expected one "
+                     "port",
+                     ARTS_RESOLVED_PORT_ENV, resolved);
         }
       } else {
         /* Seed the search somewhere this process is unlikely to share with
@@ -1465,43 +1358,26 @@ static void config_compute_derived(struct arts_config_s *config) {
            with no way left to move (its peers already hold the answer).  The
            pid is the only per-run entropy available before anything is bound.
            The transport slides this seed past whatever actually holds it. */
-        const unsigned int span = config->table_length * config->port_count;
+        const unsigned int span = config->table_length;
         unsigned int seed = ARTS_PORT_WINDOW_LO;
         if (ARTS_PORT_WINDOW_HI > ARTS_PORT_WINDOW_LO + span) {
           unsigned int room = ARTS_PORT_WINDOW_HI - ARTS_PORT_WINDOW_LO - span;
-          seed += ((unsigned int)getpid() % (room / config->port_count + 1)) *
-                  config->port_count;
+          seed += (unsigned int)getpid() % (room + 1);
         }
-        config->ports_count = config->port_count;
-        config->ports = (unsigned int *)arts_malloc(config->port_count *
-                                                    sizeof(unsigned int));
-        for (unsigned int i = 0; i < config->port_count; i++) {
-          config->ports[i] = seed + i;
-        }
+        config->port = seed;
       }
     }
 
-    /* Every node's ports come from the one base list. */
-    if (config->table != NULL) {
-      for (unsigned int i = 0; i < config->table_length; i++) {
-        if (config->table[i].ports == NULL) {
-          config->table[i].ports = (unsigned int *)arts_malloc(
-              config->port_count * sizeof(unsigned int));
-          if (config->shared_pu_pool) {
-            /* Every rank shares 127.0.0.1, so each takes its own disjoint
-               block: node i gets ports[j] + i * port_count. */
-            for (unsigned int j = 0; j < config->port_count; j++) {
-              config->table[i].ports[j] =
-                  config->ports[j] + (i * config->port_count);
-            }
-            ARTS_INFO("Local multi-node: node %u takes port(s) starting at %u",
-                      i, config->table[i].ports[0]);
-          } else {
-            memcpy(config->table[i].ports, config->ports,
-                   config->port_count * sizeof(unsigned int));
-          }
-        }
-      }
+    /* Every rank of a local run shares 127.0.0.1, so rank i takes the
+       block's base + i; every rank of another launcher has a host of its
+       own and listens on the one port. */
+    for (unsigned int i = 0; config->table != NULL && i < config->table_length;
+         i++) {
+      config->table[i].port = local_run ? config->port + i : config->port;
+    }
+    if (local_run) {
+      ARTS_INFO("Local multi-node: rank i listens on port %u + i",
+                config->port);
     }
   }
 
@@ -1613,14 +1489,8 @@ void arts_config_destroy(struct arts_config_s *config) {
   if (config->table) {
     for (unsigned int i = 0; i < config->table_length; i++) {
       arts_free(config->table[i].ip_address);
-      if (config->table[i].ports) {
-        arts_free(config->table[i].ports);
-      }
     }
     arts_free(config->table);
-  }
-  if (config->ports) {
-    arts_free(config->ports);
   }
   if (config->master_node) {
     arts_free(config->master_node);

@@ -40,61 +40,96 @@
 #include "arts/transport/socket.h"
 
 #include <errno.h>
+#include <limits.h>
+#include <poll.h>
 #include <stdint.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <time.h>
 
 #include "arts/system/identity.h" /* arts_global_rank_id / arts_global_rank_count */
 #include "arts/system/print.h"
+#include "arts/system/shutdown.h"
 #include "arts/utils/malloc.h"
 
-/* The bootstrap mesh's sockets (socket.h).  The exchange rides them once,
- * while the runtime is otherwise quiescent (this runs before any worker or
- * progress thread is spawned, so no live traffic contends for these fds), and
- * consumes exactly one address frame per peer connection; afterward the
- * sockets carry no data and stay open only as liveness sentinels.  The
- * receive list is in ACCEPTANCE order (not rank order), hence the
- * embedded-rank demux. */
+/* One peer's side of the exchange: the frame read from it so far and the
+ * bytes of this rank's frame written to it. */
+struct exchange_peer_s {
+  struct arts_net_addr_frame_s in;
+  size_t got;
+  size_t sent;
+  bool active;
+};
 
-static bool xfer_write_all(int fd, const void *buf, size_t len) {
-  const uint8_t *p = (const uint8_t *)buf;
-  size_t done = 0;
-  while (done < len) {
-    ssize_t n = send(fd, p + done, len - done, 0);
-    if (n > 0) {
-      done += (size_t)n;
-    } else if (n < 0 && (errno == EINTR || errno == EAGAIN)) {
-      continue;
-    } else {
-      return false;
-    }
-  }
-  return true;
+static uint64_t exchange_now_ns(void) {
+  struct timespec ts;
+  (void)clock_gettime(CLOCK_MONOTONIC, &ts);
+  return ((uint64_t)ts.tv_sec * 1000000000ull) + (uint64_t)ts.tv_nsec;
 }
 
-static bool xfer_read_all(int fd, void *buf, size_t len) {
-  uint8_t *p = (uint8_t *)buf;
-  size_t done = 0;
-  while (done < len) {
-    ssize_t n = recv(fd, p + done, len - done, 0);
-    if (n > 0) {
-      done += (size_t)n;
-    } else if (n < 0 && (errno == EINTR || errno == EAGAIN)) {
+/* Reads what is left of the peer's frame, never a byte past it; true when
+ * the peer's end showed. */
+static bool exchange_read(struct exchange_peer_s *e, unsigned int p,
+                          unsigned int n, unsigned int own_len) {
+  const size_t head = offsetof(struct arts_net_addr_frame_s, addr);
+  for (;;) {
+    const size_t whole = head + (e->got >= head ? e->in.len : 0u);
+    if (e->got >= head && e->got == whole) {
+      return false;
+    }
+    const size_t want = (e->got < head ? head : whole) - e->got;
+    const ssize_t r =
+        recv(arts_socket_fd[p], (uint8_t *)&e->in + e->got, want, MSG_DONTWAIT);
+    if (r > 0) {
+      e->got += (size_t)r;
+      if (e->got == head) {
+        if (e->in.rank != p) {
+          ARTS_ERROR("arts_net_exchange: rank %u's connection carries a frame "
+                     "naming rank %u",
+                     p, e->in.rank);
+        }
+        if (!arts_net_addr_frame_ok(e->in.rank, e->in.len, n, own_len)) {
+          ARTS_ERROR("arts_net_exchange: bad address frame (rank=%u len=%u; "
+                     "expected rank<%u len=%u) — a length other than this "
+                     "rank's means the peer's endpoint carries another "
+                     "address format",
+                     e->in.rank, e->in.len, n, own_len);
+        }
+      }
+      continue;
+    }
+    if (r < 0 && errno == EINTR) {
+      continue;
+    }
+    return !(r < 0 && (errno == EAGAIN || errno == EWOULDBLOCK));
+  }
+}
+
+/* Writes what is left of this rank's frame to the peer; true when the
+ * peer's end showed. */
+static bool exchange_write(struct exchange_peer_s *e, unsigned int p,
+                           const void *out, size_t out_bytes) {
+  while (e->sent < out_bytes) {
+    const ssize_t r = send(arts_socket_fd[p], (const uint8_t *)out + e->sent,
+                           out_bytes - e->sent, MSG_NOSIGNAL | MSG_DONTWAIT);
+    if (r > 0) {
+      e->sent += (size_t)r;
+    } else if (r < 0 && errno == EINTR) {
       continue;
     } else {
-      return false; /* n == 0 is a peer FIN mid-exchange — fatal */
+      return !(r < 0 && (errno == EAGAIN || errno == EWOULDBLOCK));
     }
   }
-  return true;
+  return false;
 }
 
 uint64_t arts_net_exchange_addresses(uint64_t run_id) {
-  unsigned n = arts_global_rank_count;
-  unsigned self = arts_global_rank_id;
+  const unsigned int n = arts_global_rank_count;
+  const unsigned int self = arts_global_rank_id;
 
   /* Own address blob (fixed size within a homogeneous provider run). */
   uint8_t own[ARTS_NET_ADDR_MAX];
-  unsigned own_len = arts_net_own_address(own, sizeof(own));
+  const unsigned int own_len = arts_net_own_address(own, sizeof(own));
   if (own_len == 0 || own_len > ARTS_NET_ADDR_MAX) {
     ARTS_ERROR("arts_net_exchange: own address length %u out of range", own_len);
   }
@@ -103,53 +138,104 @@ uint64_t arts_net_exchange_addresses(uint64_t run_id) {
   uint8_t *table = (uint8_t *)arts_calloc(n, own_len);
   memcpy(table + (size_t)self * own_len, own, own_len);
 
-  /* Send our frame to every peer over that peer's port-0 send socket. */
   struct arts_net_addr_frame_s out;
   out.rank = self;
   out.len = own_len;
   out.run_id = run_id;
   memcpy(out.addr, own, own_len);
-  size_t frame_bytes = offsetof(struct arts_net_addr_frame_s, addr) + own_len;
-  for (unsigned r = 0; r < n; r++) {
-    if (r == self) {
-      continue;
-    }
-    int fd = arts_socket_send_list[(size_t)r * arts_socket_ports + 0];
-    if (!xfer_write_all(fd, &out, frame_bytes)) {
-      ARTS_ERROR("arts_net_exchange: send of address to rank %u failed: %s", r,
-                 strerror(errno));
-    }
-  }
+  const size_t head = offsetof(struct arts_net_addr_frame_s, addr);
+  const size_t frame_bytes = head + own_len;
 
-  /* Read one frame from each accepted connection's port-0 socket and demux by
-   * the embedded rank (accept order != rank order). */
+  struct exchange_peer_s *peer =
+      (struct exchange_peer_s *)arts_calloc(n, sizeof(struct exchange_peer_s));
+  struct pollfd *pfd = (struct pollfd *)arts_calloc(n, sizeof(struct pollfd));
+  unsigned int *who = (unsigned int *)arts_calloc(n, sizeof(unsigned int));
+  bool *flagged = (bool *)arts_calloc(n, sizeof(bool));
+  for (unsigned int p = 0; p < n; p++) {
+    peer[p].active = p != self;
+  }
+  const uint64_t deadline = arts_startup_deadline_ns();
   uint64_t run = run_id;
-  unsigned peers = n - 1;
-  for (unsigned c = 0; c < peers; c++) {
-    int fd = arts_socket_receive_list[(size_t)c * arts_socket_ports + 0];
-    struct arts_net_addr_frame_s in;
-    if (!xfer_read_all(fd, &in, offsetof(struct arts_net_addr_frame_s, addr))) {
-      ARTS_ERROR("arts_net_exchange: address frame header recv failed: %s",
-                 strerror(errno));
+  for (;;) {
+    if (arts_exit_began()) {
+      arts_exit(ARTS_MESH_EXIT_STATUS, ARTS_EXIT_RUNTIME_ERROR);
     }
-    if (!arts_net_addr_frame_ok(in.rank, in.len, n, own_len)) {
-      ARTS_ERROR("arts_net_exchange: bad address frame (rank=%u len=%u; "
-                 "expected rank<%u len=%u) — a length other than this rank's "
-                 "means the peer's endpoint carries another address format",
-                 in.rank, in.len, n, own_len);
+    unsigned int k = 0;
+    for (unsigned int p = 0; p < n; p++) {
+      if (!peer[p].active) {
+        continue;
+      }
+      short events = POLLRDHUP;
+      if (peer[p].got < frame_bytes) {
+        events |= POLLIN;
+      }
+      if (peer[p].sent < frame_bytes) {
+        events |= POLLOUT;
+      }
+      pfd[k] = (struct pollfd){.fd = arts_socket_fd[p], .events = events};
+      who[k++] = p;
     }
-    if (!xfer_read_all(fd, in.addr, in.len)) {
-      ARTS_ERROR("arts_net_exchange: address blob recv from rank %u failed: %s",
-                 in.rank, strerror(errno));
+    if (k == 0) {
+      break;
     }
-    memcpy(table + (size_t)in.rank * own_len, in.addr, own_len);
-    if (in.rank == 0) {
-      run = in.run_id;
+    const uint64_t now = exchange_now_ns();
+    if (now >= deadline) {
+      for (unsigned int p = 0; p < n; p++) {
+        flagged[p] = peer[p].active && peer[p].got < frame_bytes;
+      }
+      arts_mesh_fail(ARTS_MESH_PHASE_EXCHANGE, flagged);
+    }
+    const uint64_t ms = (deadline - now + 999999u) / 1000000u;
+    if (poll(pfd, (nfds_t)k, ms > (uint64_t)INT_MAX ? INT_MAX : (int)ms) < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
+      ARTS_ERROR("arts_net_exchange: poll: %s", strerror(errno));
+    }
+    bool ended_any = false;
+    memset(flagged, 0, n * sizeof(bool));
+    for (unsigned int i = 0; i < k; i++) {
+      const short re = pfd[i].revents;
+      if (re == 0) {
+        continue;
+      }
+      const unsigned int p = who[i];
+      struct exchange_peer_s *e = &peer[p];
+      bool ended = (re & (POLLRDHUP | POLLHUP | POLLERR | POLLNVAL)) != 0;
+      if (e->sent < frame_bytes) {
+        ended |= exchange_write(e, p, &out, frame_bytes);
+      }
+      if (e->got < frame_bytes) {
+        ended |= exchange_read(e, p, n, own_len);
+        if (e->got == frame_bytes) {
+          memcpy(table + (size_t)p * own_len, e->in.addr, own_len);
+          if (p == 0) {
+            run = e->in.run_id;
+          }
+        }
+      }
+      /* A peer cannot arm before it holds this rank's whole frame, and its
+       * own frame precedes its end, so an end proves it never armed only
+       * while either frame is unfinished; after both, it is left to the
+       * sentinels. */
+      if (e->got == frame_bytes && e->sent == frame_bytes) {
+        e->active = false;
+      } else if (ended) {
+        flagged[p] = true;
+        ended_any = true;
+      }
+    }
+    if (ended_any) {
+      arts_mesh_fail(ARTS_MESH_PHASE_HANGUP, flagged);
     }
   }
 
   /* Insert the whole table in rank order so fi_addr_t == rank. */
   arts_net_av_insert_table(table, own_len, n);
+  arts_free(flagged);
+  arts_free(who);
+  arts_free(pfd);
+  arts_free(peer);
   arts_free(table);
   ARTS_INFO("arts_net: address exchange complete (%u ranks, %u-byte addrs)", n,
             own_len);

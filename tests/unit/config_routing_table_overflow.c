@@ -47,9 +47,6 @@ int main(void) {
     if (cfg.table[i].ip_address) {
       arts_free(cfg.table[i].ip_address);
     }
-    if (cfg.table[i].ports) {
-      arts_free(cfg.table[i].ports);
-    }
   }
   arts_free(cfg.table);
 

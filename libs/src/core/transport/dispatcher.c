@@ -60,12 +60,6 @@
 #include "arts/utils/malloc.h"
 #include "arts/utils/shared.h" /* arts_shared_get / arts_shared_release */
 
-void arts_transport_setup(struct arts_config_s *config) {
-  /* Establish the bootstrap TCP mesh; each producing thread injects its own
-   * sends directly onto the fabric. */
-  arts_socket_setup(config);
-}
-
 void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
   switch (packet->message_type) {
   case MSG_SHUTDOWN:

@@ -48,7 +48,6 @@
 #include "arts/system/shutdown.h"
 #include "arts/system/signals.h"
 #include "arts/system/threads.h"
-#include "arts/transport/dispatcher.h"
 #include "arts/transport/socket.h"
 #include "arts/transport/spawner.h"
 
@@ -158,19 +157,14 @@ int arts_rt(int argc, char **argv) {
 
   if (config.table_length > 1) {
     arts_startup_step(ARTS_MESH_PHASE_RESOLVE);
-    arts_transport_setup(&config);
+    arts_socket_setup(&config);
     arts_exit_publish_rank(config.counter_folder);
   }
   arts_signal_handlers_set_rank(arts_global_rank_id);
   arts_global_master_rank_id = config.master_rank;
 
   if (arts_global_rank_count > 1) {
-    arts_transport_setup_outgoing();
-    /* Each failure was reported where it happened, and a rank whose own end
-     * began during its startup stops trying. */
-    if (!arts_transport_setup_incoming()) {
-      arts_exit(75, ARTS_EXIT_RUNTIME_ERROR);
-    }
+    arts_mesh_form(&config);
     arts_startup_step(ARTS_MESH_PHASE_FABRIC);
   }
 

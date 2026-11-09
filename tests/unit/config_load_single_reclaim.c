@@ -61,7 +61,6 @@ int main(void) {
      per-test `ports` override (it is irrelevant single-node). */
   setenv("ARTS_CONFIG", cfg_path, 1);
   unsetenv("ports");
-  unsetenv("port_count");
 
   struct arts_config_s config;
   arts_config_load(&config);

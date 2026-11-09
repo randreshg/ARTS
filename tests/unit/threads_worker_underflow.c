@@ -133,7 +133,6 @@ static unsigned int run_derivation(unsigned int rank_count,
   memset(&c, 0, sizeof(c));
   c.thread_count = thread_count;
   c.progress_thread_count = progress;
-  c.port_count = 64; /* large so max_net never trips for our small counts */
   c.stack_size = 0;
   c.pin_threads = false;
 

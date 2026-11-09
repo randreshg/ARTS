@@ -151,6 +151,8 @@ add_pure_unit_src(socket_helpers PASS_REGEX "PASS socket_helpers" TIMEOUT 60)
 # Every mesh socket is close-on-exec and kept alive at both ends, and a
 # peer's closed or reset connection reads as gone once the mesh is armed.
 add_pure_unit_src(socket_mesh_liveness PASS_REGEX "PASS socket_mesh_liveness" TIMEOUT 60)
+# It binds ports in the spawner's window, as a multinode run does.
+set_property(TEST socket_mesh_liveness APPEND PROPERTY RESOURCE_LOCK "arts_runtime")
 # The startup failure line: one write of at most 2048 bytes, cut on an entry
 # boundary, the two lists parallel; and the budget each process reads.
 add_pure_unit_src(mesh_line PASS_REGEX "PASS mesh_line" TIMEOUT 60)
@@ -161,6 +163,13 @@ set_tests_properties(mesh_line_budget_set PROPERTIES
     LABELS "single_node" TIMEOUT 60 RESOURCE_LOCK "pure_unit_test"
     ENVIRONMENT "ARTS_STARTUP_TIMEOUT_S=37"
     PASS_REGULAR_EXPRESSION "PASS mesh_line")
+# The mesh's formation over loopback ranks (a late listener, refused and
+# blackholed peers, strays, early frame bytes, a peer's end, a held port, the
+# descriptor limit, a signalled rank, a lost take) and the address exchange
+# under the startup deadline.
+add_pure_unit_src(mesh_form PASS_REGEX "PASS mesh_form" TIMEOUT 120)
+set_property(TEST mesh_form APPEND PROPERTY RESOURCE_LOCK "arts_runtime")
+add_pure_unit_src(mesh_exchange PASS_REGEX "PASS mesh_exchange" TIMEOUT 60)
 add_pure_unit_src(socket_net_interface_remap PASS_REGEX "PASS socket_net_interface_remap" TIMEOUT 60)
 add_pure_unit_src(launcher_shell_quote PASS_REGEX "PASS launcher_shell_quote" TIMEOUT 60)
 # Configuration parsing stays inside what it allocated: a routing table
@@ -170,7 +179,6 @@ add_pure_unit_src(launcher_shell_quote PASS_REGEX "PASS launcher_shell_quote" TI
 add_pure_unit_src(config_routing_table_overflow PASS_REGEX "PASS config_routing_table_overflow" TIMEOUT 60)
 add_pure_unit_src(config_lsf_single_host_oob PASS_REGEX "PASS config_lsf_single_host_oob" TIMEOUT 60)
 add_pure_unit_src(config_find_variable PASS_REGEX "PASS config_find_variable" TIMEOUT 60)
-add_pure_unit_src(config_parse_port_spec PASS_REGEX "PASS config_parse_port_spec" TIMEOUT 60)
 add_pure_unit_src(config_count_nodes PASS_REGEX "PASS config_count_nodes" TIMEOUT 60)
 add_pure_unit_src(config_get_variables_oob PASS_REGEX "PASS config_get_variables_oob" TIMEOUT 60)
 add_pure_unit_src(config_routing_table_ssh_bracket PASS_REGEX "PASS config_routing_table_ssh_bracket" TIMEOUT 60)
@@ -831,21 +839,87 @@ set_tests_properties(startup_bound_one_rank PROPERTIES
 if(ARTS_DEBUG_INJECTION)
     if(ARTS_DEBUG_SANITIZER)
         set(_mesh_bound 30000)
+        set(_mesh_fast 20000)
     else()
         set(_mesh_bound 16000)
+        set(_mesh_fast 8000)
     endif()
     # A rank stuck in its configuration step is ended by the startup timer
-    # 1 s after its deadline, with its own line naming the step and no rank.
+    # 1 s after its deadline, with its own line naming the step and no rank;
+    # its peers end at their deadline naming it, or at once when a peer that
+    # gave up first closes its connections.
     arts_test_cfg(_cfg3 4n_4w_1p)
     arts_add_multinode_test(mesh_stall_config_3n
         COMMAND ${ARTS_SPAWNER_DRIVER} --want 75 --bound-ms ${_mesh_bound}
                 --bound-from launch
                 --lines "^ARTS_MESH_FAILED rank=- host=[^ ]+ phase=config missing=- missing_hosts=- more=0$" 1 1
+                --lines "rank=[02] .* phase=connect missing=1 " 1 2
+                --lines "rank=[02] .* phase=(connect missing=1|hangup missing=[0-9,]+) " 2 2
                 -- $<TARGET_FILE:spawner_rank_probe>)
     arts_test_properties(mesh_stall_config_3n PROPERTIES
         LABELS "multinode" TIMEOUT 90 RESOURCE_LOCK "arts_runtime"
         ENVIRONMENT "ARTS_CONFIG=${_cfg3};node_count=3;ARTS_STARTUP_TIMEOUT_S=10;ARTS_MESH_FAULT=1:stall:config"
         ARTS_RANK_STATUSES 75)
+    # A rank stuck in its listen step: the peers end at their deadline
+    # naming it (or at once with a hangup line when a peer gave up first),
+    # and the startup timer ends it with its own listen line.
+    arts_add_multinode_test(mesh_stall_listen_4n
+        COMMAND ${ARTS_SPAWNER_DRIVER} --want 75 --bound-ms ${_mesh_bound}
+                --bound-from launch
+                --lines "^ARTS_MESH_FAILED rank=[012] host=\\S+ phase=connect missing=3 missing_hosts=\\S+ more=0$" 1 3
+                --lines "^ARTS_MESH_FAILED rank=[012] host=\\S+ phase=(connect missing=3|hangup missing=[0-9,]+) " 3 3
+                --lines "^ARTS_MESH_FAILED rank=3 host=\\S+ phase=listen missing=- missing_hosts=- more=0$" 1 1
+                --lines "ARTS_MESH_FAILED" 4 4
+                -- $<TARGET_FILE:spawner_rank_probe>)
+    arts_test_properties(mesh_stall_listen_4n PROPERTIES
+        LABELS "multinode" TIMEOUT 90 RESOURCE_LOCK "arts_runtime"
+        ENVIRONMENT "ARTS_CONFIG=${_cfg3};ARTS_STARTUP_TIMEOUT_S=10;ARTS_MESH_FAULT=3:stall:listen"
+        ARTS_RANK_STATUSES 75)
+    # A rank stuck after the formation, or at the start of its exchange:
+    # each survivor holds the other's frame and wrote its own, so the first
+    # one's end does not end the second, and both end at their deadline
+    # naming the stuck rank.
+    foreach(_step fabric exchange)
+        arts_add_multinode_test(mesh_stall_${_step}_3n
+            COMMAND ${ARTS_SPAWNER_DRIVER} --want 75 --bound-ms ${_mesh_bound}
+                    --bound-from launch
+                    --lines "rank=[02] .* phase=exchange missing=1 " 2 2
+                    --lines "rank=1 .* phase=${_step} missing=- " 1 1
+                    -- $<TARGET_FILE:spawner_rank_probe>)
+        arts_test_properties(mesh_stall_${_step}_3n PROPERTIES
+            LABELS "multinode" TIMEOUT 90 RESOURCE_LOCK "arts_runtime"
+            ENVIRONMENT "ARTS_CONFIG=${_cfg3};node_count=3;ARTS_STARTUP_TIMEOUT_S=10;ARTS_MESH_FAULT=1:stall:${_step}"
+            ARTS_RANK_STATUSES 75)
+    endforeach()
+    # A rank that exits after the formation ends its peers at once, well
+    # inside a 60 s budget, each with a hangup line and no cause line.
+    arts_add_multinode_test(mesh_exit_fabric_3n
+        COMMAND ${ARTS_SPAWNER_DRIVER} --want 75 --bound-ms ${_mesh_fast}
+                --bound-from launch
+                --lines "phase=hangup missing=[0-9,]*\\b1\\b" 1 2
+                --lines "phase=hangup missing=[0-9,]+ " 2 2
+                --lines "ARTS_MESH_FAILED .* phase=(config|resolve|listen|connect|fabric|exchange) " 0 0
+                -- $<TARGET_FILE:spawner_rank_probe>)
+    arts_test_properties(mesh_exit_fabric_3n PROPERTIES
+        LABELS "multinode" TIMEOUT 90 RESOURCE_LOCK "arts_runtime"
+        ENVIRONMENT "ARTS_CONFIG=${_cfg3};node_count=3;ARTS_STARTUP_TIMEOUT_S=60;ARTS_MESH_FAULT=1:exit:fabric"
+        ARTS_RANK_STATUSES "1;75")
+    # A lowest rank that listens 3 s late, one whose formation waits 3 s
+    # while its peers' frames queue behind their hellos, and a connector
+    # that starts 3 s late: each run forms and ends 0.
+    foreach(_case "late_listen;0:delay:listen:3000"
+                  "early_frame;0:delay:connect:3000"
+                  "late_connector;3:delay:connect:3000")
+        list(GET _case 0 _name)
+        list(GET _case 1 _fault)
+        arts_add_multinode_test(mesh_${_name}_4n
+            COMMAND ${ARTS_SPAWNER_DRIVER} --want 0 --bound-from launch
+                    --lines "ARTS_MESH_FAILED" 0 0
+                    -- $<TARGET_FILE:spawner_rank_probe>)
+        arts_test_properties(mesh_${_name}_4n PROPERTIES
+            LABELS "multinode" TIMEOUT 90 RESOURCE_LOCK "arts_runtime"
+            ENVIRONMENT "ARTS_CONFIG=${_cfg3};ARTS_STARTUP_TIMEOUT_S=10;ARTS_MESH_FAULT=${_fault}")
+    endforeach()
     # A malformed hook value is refused by the process you start.
     arts_add_multinode_test(mesh_fault_malformed_2n_9w_1p STATUS 1
                             COMMAND spawner_rank_probe)
@@ -880,6 +954,7 @@ if(ARTS_DEBUG_INJECTION)
         PASS_REGULAR_EXPRESSION "ARTS_MESH_FAULT is set, but launcher=lsf"
         FAIL_REGULAR_EXPRESSION "ALL_RANKS_READY")
     unset(_mesh_bound)
+    unset(_mesh_fast)
     unset(_cfg3)
 endif()
 unset(_cfg1)
@@ -1212,6 +1287,7 @@ arts_test_cfg(_cfg 2n_9w_1p)
 arts_add_multinode_test(shutdown_sigterm_during_bootstrap
     COMMAND ${ARTS_SPAWNER_DRIVER} --want 143,75 --on launch
             --signal TERM --target spawner
+            --lines "ARTS_MESH_FAILED .* phase=(config|resolve|listen|connect|fabric|exchange) " 0 0
             -- $<TARGET_FILE:spawner_rank_probe> 30000)
 arts_test_properties(shutdown_sigterm_during_bootstrap PROPERTIES
     LABELS "multinode" TIMEOUT 90 RESOURCE_LOCK "arts_runtime"
@@ -1229,6 +1305,24 @@ if(_records)
         PASS_REGULAR_EXPRESSION "STATUS_ABOVE_RECORD: rank 1 waits"
         FAIL_REGULAR_EXPRESSION "FAIL")
 endif()
+
+# An end that began before the process became a rank is its one end: an
+# arts_exit made once the rank is published is a late entry, and the first
+# end keeps its status.
+add_arts_test(shutdown_unranked_end_once)
+arts_add_test(shutdown_unranked_end_once STATUS 143
+              COMMAND shutdown_unranked_end_once)
+set_tests_properties(shutdown_unranked_end_once PROPERTIES
+    LABELS "single_node" TIMEOUT 30 RESOURCE_LOCK "arts_runtime"
+    PASS_REGULAR_EXPRESSION "UNRANKED_END rc=143"
+    FAIL_REGULAR_EXPRESSION "UNRANKED_END rc=75")
+# Its status takes a late entry's rc, as a rank end's does: an end begun by
+# an error (1) that a signal (143) joins ends 143.
+arts_add_test(shutdown_unranked_end_late_status STATUS 143
+              COMMAND shutdown_unranked_end_once late)
+set_tests_properties(shutdown_unranked_end_late_status PROPERTIES
+    LABELS "single_node" TIMEOUT 30 RESOURCE_LOCK "arts_runtime"
+    PASS_REGULAR_EXPRESSION "UNRANKED_END rc=1\n")
 
 # A step of the rank's end that never finishes is ended by the watchdog, no
 # sooner than the bound less a second after the take and no later than the

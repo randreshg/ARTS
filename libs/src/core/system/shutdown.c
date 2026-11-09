@@ -77,9 +77,11 @@
 
 struct arts_exit_meta_s arts_exit_meta;
 
-/* The rank's state word: bit 31 taken, bits 28-30 the owner's origin, bits
- * 0-27 the owner thread's token.  Taken once, by a compare-exchange from 0;
- * every later reader is a compare-exchange or an acquire load of it. */
+/* The process's state word: bit 31 taken, bits 28-30 the owner's origin,
+ * bits 0-27 the owner thread's token.  Taken once, by a compare-exchange from
+ * 0, by the process's first end, a rank's or one that began before the
+ * process became a rank; every later reader is a compare-exchange or an
+ * acquire load of it. */
 #define EXIT_TAKEN 0x80000000u
 #define EXIT_ORIGIN_SHIFT 28
 #define EXIT_TOKEN_MASK 0x0fffffffu
@@ -217,13 +219,6 @@ static _Noreturn void exit_raise(int sig) {
   exit_group_now(128 + sig);
 }
 
-static _Noreturn void exit_end(int rc, enum arts_exit_origin origin) {
-  if (origin == ARTS_EXIT_FAULT) {
-    exit_raise(rc - 128);
-  }
-  exit_group_now(rc);
-}
-
 /* Sets `timer` to fire at `deadline`, or disarms it when deadline is 0. */
 static void exit_settime(timer_t timer, uint64_t deadline) {
   struct itimerspec at;
@@ -293,7 +288,8 @@ bool arts_exit_rank_known(void) {
   return atomic_load_explicit(&g_rank_known, memory_order_acquire);
 }
 
-/* Step 0: a process that is not a rank ends with its rc and nothing else. */
+/* Step 0: a process arts_rt never recorded, or a child it forked, ends with
+ * its rc and nothing else. */
 static void exit_guard(int rc, enum arts_exit_origin origin) {
   pid_t recorded = atomic_load_explicit(&g_exit_pid, memory_order_relaxed);
   if (recorded == 0) {
@@ -306,15 +302,23 @@ static void exit_guard(int rc, enum arts_exit_origin origin) {
     }
     exit_group_now(rc);
   }
-  if (!arts_exit_rank_known()) {
-    exit_watchdog_arm_now(rc, origin == ARTS_EXIT_FAULT ? rc - 128 : 0);
-    if (origin == ARTS_EXIT_FAULT) {
-      arts_signal_crash_report(rc - 128);
-    }
-    (void)fflush(NULL);
-    arts_fake_cxl_fini_replay();
-    exit_end(rc, origin);
+}
+
+/* Step 0's end of a recorded process that is not yet a rank, once it took
+ * the word: the watchdog, the flush, and its rc folded with every late
+ * entry's, as a rank end's status is; nothing else.  A FAULT raises its
+ * signal instead. */
+static _Noreturn void exit_unranked(int rc, enum arts_exit_origin origin) {
+  exit_watchdog_arm_now(rc, origin == ARTS_EXIT_FAULT ? rc - 128 : 0);
+  if (origin == ARTS_EXIT_FAULT) {
+    arts_signal_crash_report(rc - 128);
   }
+  (void)fflush(NULL);
+  arts_fake_cxl_fini_replay();
+  if (origin == ARTS_EXIT_FAULT) {
+    exit_raise(rc - 128);
+  }
+  exit_group_now(exit_max(rc, exit_late_rc()));
 }
 
 /* Steps 1-2 once the word was taken: the record's stamps, the watchdog armed
@@ -401,6 +405,9 @@ _Noreturn void arts_exit(int rc, enum arts_exit_origin origin) {
                                                memory_order_acq_rel,
                                                memory_order_acquire)) {
     exit_late(rc, origin, expected);
+  }
+  if (!arts_exit_rank_known()) {
+    exit_unranked(rc, origin);
   }
   exit_close(rc, origin);
   arts_exit_resume();

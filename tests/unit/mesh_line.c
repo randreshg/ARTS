@@ -26,9 +26,9 @@
  *      rank and its routing-table name, whichever such step comes first
  *      (fabric here), and keeps them at the steps after it.
  *   6. A give-up before the process is a rank writes its line (no rank, the
- *      node name) and ends the process with status 75, unless the process's
- *      end already began: then it writes nothing and leaves that end to the
- *      thread that began it.
+ *      node name) and ends through arts_exit with status 75; when the
+ *      process's end already began it writes nothing and still enters
+ *      arts_exit, whose late entry leaves that end to its thread.
  *
  * The real socket.c is compiled into this TU; externs are stubbed locally.
  */
@@ -86,6 +86,7 @@ bool arts_exit_rank_known(void) { return g_rank_known; }
 bool arts_shutdown_taken(void) { return false; }
 void *arts_malloc(size_t s) { return malloc(s); }
 void *arts_calloc(size_t n, size_t s) { return calloc(n, s); }
+void *arts_realloc(void *p, size_t s) { return realloc(p, s); }
 void arts_free(void *p) { free(p); }
 void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
   (void)packet;
@@ -320,7 +321,7 @@ int main(int argc, char **argv) {
 
   /* PRE_RANK_GIVE_UP and PRE_RANK_END_BEGAN: arts_mesh_fail in a child
    * that is no rank yet, its stderr a pipe; the stubbed arts_exit ends it
-   * with 70 + rc. */
+   * with 70 + rc, so either child shows that the give-up entered it. */
   g_rank_known = false;
   for (int began = 0; began < 2; began++) {
     int err[2];
@@ -335,21 +336,7 @@ int main(int argc, char **argv) {
     }
     close(err[1]);
     int status = 0;
-    pid_t ended = 0;
-    if (!began) {
-      ended = waitpid(child, &status, 0);
-    } else {
-      /* A child that leaves the end to another thread never returns. */
-      for (int i = 0; i < 50 && ended == 0; i++) {
-        ended = waitpid(child, &status, WNOHANG);
-        struct timespec tick = {0, 10000000L};
-        nanosleep(&tick, NULL);
-      }
-      if (ended == 0) {
-        kill(child, SIGKILL);
-        waitpid(child, &status, 0);
-      }
-    }
+    pid_t ended = waitpid(child, &status, 0);
     char got[4096];
     ssize_t len = read(err[0], got, sizeof(got) - 1);
     got[len > 0 ? len : 0] = '\0';
@@ -364,7 +351,9 @@ int main(int argc, char **argv) {
             "PRE_RANK_GIVE_UP: the process's end");
       CHECK(strcmp(got, expect) == 0, "PRE_RANK_GIVE_UP: the line");
     } else {
-      CHECK(ended == 0, "PRE_RANK_END_BEGAN: a second end began");
+      CHECK(ended == child && WIFEXITED(status) &&
+                WEXITSTATUS(status) == 70 + ARTS_MESH_EXIT_STATUS,
+            "PRE_RANK_END_BEGAN: the give-up did not enter arts_exit");
       CHECK(got[0] == '\0', "PRE_RANK_END_BEGAN: a line was written");
     }
   }

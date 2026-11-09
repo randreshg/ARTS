@@ -4,7 +4,7 @@
  *
  * Drives a full arts_config_load() end-to-end over a cfg the test writes and
  * names through ARTS_CONFIG.  The cfg populates: launcher (ssh), routing
- * table (3 hosts, each row with its own copy of the port list), ports,
+ * table (3 hosts, each row its own host name and the one port), ports,
  * master_node, net_interface and counter_folder.  Then arts_config_destroy
  * frees them.
  *
@@ -25,7 +25,7 @@ int main(void) {
      config_destroy must free. */
   static const char cfg_text[] = "launcher=ssh\n"
                                  "nodes=n[01-03]\n"
-                                 "ports=[25000-25001]\n"
+                                 "ports=25000\n"
                                  "node_count=3\n"
                                  "net_interface=eth0\n"
                                  "counter_folder=./artscnt\n"

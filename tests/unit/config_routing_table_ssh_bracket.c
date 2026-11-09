@@ -8,8 +8,8 @@
  *   table[1] = {rank 1, "n02"}
  *   table[2] = {rank 2, "n03"}
  * and all allocations free cleanly (each node owns its own ip_address malloc).
- * The list carries hostnames only — ports are never named per node, they come
- * from the one shared base every rank derives from.
+ * The list carries hostnames only: a port is never named per node, it comes
+ * from the one configured port.
  *
  * Pure unit + ASan: exercises the per-node malloc + "%0*u" zero-pad snprintf
  * that is otherwise entirely uncovered.  The node count (3) matches
@@ -55,11 +55,12 @@ int main(void) {
               want_ip[i]);
       fails++;
     }
-    /* The nodes list never carries ports; the shared base fills these in
-       later, in config_compute_derived. */
-    if (cfg.table[i].ports != NULL) {
+    /* The nodes list never carries a port; the one configured port fills
+       it in later, in config_compute_derived. */
+    if (cfg.table[i].port != 0) {
       fprintf(stderr,
-              "FAIL ssh_bracket: table[%u] got ports from the nodes list\n", i);
+              "FAIL ssh_bracket: table[%u] got a port from the nodes list\n",
+              i);
       fails++;
     }
   }

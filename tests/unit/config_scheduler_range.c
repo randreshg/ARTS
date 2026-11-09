@@ -49,7 +49,6 @@ static int load_refused(unsigned int index) {
     setenv("ARTS_CONFIG", path, 1);
     unsetenv("scheduler");
     unsetenv("ports");
-    unsetenv("port_count");
     struct arts_config_s config;
     arts_config_load(&config);
     _exit(0);
