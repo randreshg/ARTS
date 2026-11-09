@@ -11,6 +11,7 @@ largest record the cell's counters can produce.  G is at least B.
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Mapping
 from dataclasses import replace
 
@@ -21,6 +22,8 @@ PROBE_LATENCY_S = 1
 END_BOUND_S = 10
 WATCHDOG_LINE_S = 1
 STARTUP_BUDGET_DEFAULT_S = 20
+STARTUP_BUDGET_MIN_S = 10
+STARTUP_BUDGET_MAX_S = 86400
 RECORD_RATE_BYTES_S = 4 << 20
 
 BASE_RECORD_BYTES = 4096
@@ -44,18 +47,18 @@ def check_value(value: int, what: str = "--end-grace") -> int:
 
 
 def startup_budget_s(env: Mapping[str, str]) -> int:
+    """The runtime's rule: unset reads the default; any set value, the empty
+    one included, is ASCII decimal digits naming 10-86400 seconds or is
+    refused."""
     raw = env.get("ARTS_STARTUP_TIMEOUT_S")
-    if raw is None or raw == "":
+    if raw is None:
         return STARTUP_BUDGET_DEFAULT_S
-    try:
-        value = int(raw)
-    except ValueError:
-        value = 0
-    if value < 1:
+    if (re.fullmatch(r"[0-9]+", raw) is None
+            or not STARTUP_BUDGET_MIN_S <= int(raw) <= STARTUP_BUDGET_MAX_S):
         raise EndGraceError(
-            f"ARTS_STARTUP_TIMEOUT_S={raw!r} is not a positive whole "
-            "number of seconds")
-    return value
+            f'ARTS_STARTUP_TIMEOUT_S="{raw}" is not a whole number of seconds '
+            f"in {STARTUP_BUDGET_MIN_S}-{STARTUP_BUDGET_MAX_S}")
+    return int(raw)
 
 
 def record_bytes(cell: Cell, counterset: Counterset | None,

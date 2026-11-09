@@ -285,7 +285,7 @@ unsigned int arts_end_grace_s(void) {
    * is ending ends within the shutdown bound, so a grace below their sum
    * could kill a rank that is about to end on its own. */
   const unsigned int floor_s =
-      (arts_startup_budget_ms() / 1000u) + (unsigned int)ARTS_EXIT_WATCHDOG_S;
+      arts_startup_budget_s() + (unsigned int)ARTS_EXIT_WATCHDOG_S;
   const char *text = getenv("ARTS_END_GRACE_S");
   if (text == NULL) {
     return floor_s > 30u ? floor_s : 30u;

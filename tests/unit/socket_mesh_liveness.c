@@ -26,14 +26,11 @@
  *      reading.  arts_socket_sentinel_check reports the accepted connection
  *      a peer closed, and enters nothing (this test links no shutdown
  *      entry).
- *   6. arts_startup_budget_ms reads 20000 with ARTS_STARTUP_TIMEOUT_S unset,
- *      and the value the variable sets otherwise: argv[1], in milliseconds,
- *      names what it must read.  Its first answer is the process's, so it
- *      runs first and each value is a run of its own.
  *
  * HARNESS: a two-rank mesh on loopback, one port per rank.  The port block is
  * chosen by arts_transport_select_local_ports, as the spawner does; the
- * process then forks, and parent (rank 0) and child (rank 1) each run
+ * process then forks, and parent (rank 0) and child (rank 1) each fix their
+ * startup deadline (arts_startup_begin) and run
  * arts_transport_setup_outgoing and arts_transport_setup_incoming, so every
  * connection is made by arts_transport_connect and taken by the accept path.
  * Each process checks the fds it holds; the child reports by exit status.
@@ -92,10 +89,22 @@ ARTS_THREAD_LOCAL_IE struct arts_runtime_private_s arts_thread_info;
 unsigned int arts_global_rank_id;
 unsigned int arts_global_rank_count;
 
+static int g_exit_rc;
 _Noreturn void arts_exit(int rc, enum arts_exit_origin origin) {
   (void)origin;
   _exit(70 + rc);
 }
+bool arts_exit_take(int rc, enum arts_exit_origin origin) {
+  (void)origin;
+  g_exit_rc = rc;
+  return true;
+}
+_Noreturn void arts_exit_resume(void) { _exit(70 + g_exit_rc); }
+void arts_exit_startup_arm(uint64_t at_ns) { (void)at_ns; }
+void arts_exit_startup_disarm(void) {}
+unsigned int arts_signal_handlers_rank(void) { return 0; }
+bool arts_exit_began(void) { return false; }
+bool arts_exit_rank_known(void) { return true; }
 bool arts_shutdown_taken(void) { return false; }
 void *arts_malloc(size_t s) { return malloc(s); }
 void *arts_calloc(size_t n, size_t s) { return calloc(n, s); }
@@ -225,19 +234,7 @@ static int run_rank(struct arts_config_s *config, unsigned int me) {
   return check_mesh_ends(1 - me);
 }
 
-int main(int argc, char **argv) {
-  /* ---- 6. the startup budget ---- */
-  {
-    unsigned long want = (argc > 1) ? strtoul(argv[1], NULL, 10) : 20000ul;
-    if (arts_startup_budget_ms() != want) {
-      fprintf(stderr,
-              "FAIL socket_mesh_liveness: the startup budget reads %u ms, "
-              "not %lu\n",
-              arts_startup_budget_ms(), want);
-      return 1;
-    }
-  }
-
+int main(void) {
   /* ---- 1. the factories ---- */
   {
     struct sockaddr_in sa;
@@ -276,8 +273,10 @@ int main(int argc, char **argv) {
   CHECK(child >= 0, "fork failed");
   if (child == 0) {
     g_who = "rank 1";
+    arts_startup_begin();
     _exit(run_rank(&config, 1));
   }
+  arts_startup_begin();
   int rc = run_rank(&config, 0);
   int status = 0;
   CHECK(waitpid(child, &status, 0) == child, "waitpid failed");

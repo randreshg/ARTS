@@ -62,7 +62,7 @@ int main(int argc, char **argv) {
   setenv(SPAWNED_MARK, "1", 1);
   /* Only a regressed guard reaches the transport, which then waits this long
    * for ranks the tripwire has already ended. */
-  setenv("ARTS_STARTUP_TIMEOUT_S", "1", 1);
+  setenv("ARTS_STARTUP_TIMEOUT_S", "10", 1);
 
   /* Force an over-limit configured rank count via the env override path.  The
    * GUID rank field is 14 bits (max usable 16382); 16383 is one past it. */

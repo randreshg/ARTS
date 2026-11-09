@@ -114,7 +114,7 @@ static _Atomic(bool) g_exit_cut;
 #endif
 
 /* The watchdog: a CLOCK_MONOTONIC timer whose signal reaches whichever thread
- * the kernel picks.  Its handler reads only lock-free atomic objects, each a
+ * the kernel picks.  Its fire reads only lock-free atomic objects, each a
  * value of its own (the deadline, the timer, the phase, the fault signal, the
  * owner's rc, the late rc, the spawner flag), and publishes nothing. */
 static_assert(ATOMIC_LONG_LOCK_FREE == 2 && ATOMIC_LLONG_LOCK_FREE == 2,
@@ -151,6 +151,20 @@ static _Atomic(uint64_t) g_exit_deadline;
 static _Atomic(unsigned int) g_exit_phase;
 /* Set once by the spawner, whose watchdog line names no rank. */
 static _Atomic(bool) g_exit_spawner;
+/* The startup timer shares the watchdog's signal and handler; the value its
+ * signal carries tells the two apart.  Its handle is written by
+ * arts_exit_process_init before any other thread exists. */
+#define EXIT_TIMER_WATCHDOG 0
+#define EXIT_TIMER_STARTUP 1
+static timer_t g_startup_timer;
+/* Whether the startup bound is open.  Set by the main thread (release)
+ * before the startup timer is armed, which publishes what arts_startup_begin
+ * wrote before the arming (the budget, the deadline, the node name and the
+ * config step) to the handler's acquire load; cleared (relaxed) before the
+ * timer is disarmed, since a handler that reads false reads nothing else.
+ * The steps at and past listen publish the rest of the line through
+ * socket.c's step word. */
+static _Atomic(bool) g_startup_open;
 
 static uint32_t exit_token(void) {
   if (t_exit_token == 0) {
@@ -210,14 +224,19 @@ static _Noreturn void exit_end(int rc, enum arts_exit_origin origin) {
   exit_group_now(rc);
 }
 
-static void exit_watchdog_settime(uint64_t deadline) {
+/* Sets `timer` to fire at `deadline`, or disarms it when deadline is 0. */
+static void exit_settime(timer_t timer, uint64_t deadline) {
   struct itimerspec at;
   at.it_interval.tv_sec = 0;
   at.it_interval.tv_nsec = 0;
   at.it_value.tv_sec = (time_t)(deadline / EXIT_NS_PER_S);
   at.it_value.tv_nsec = (long)(deadline % EXIT_NS_PER_S);
-  (void)timer_settime(atomic_load_explicit(&g_exit_timer, memory_order_relaxed),
-                      TIMER_ABSTIME, &at, NULL);
+  (void)timer_settime(timer, TIMER_ABSTIME, &at, NULL);
+}
+
+static void exit_watchdog_settime(uint64_t deadline) {
+  exit_settime(atomic_load_explicit(&g_exit_timer, memory_order_relaxed),
+               deadline);
 }
 
 /* Arms the watchdog to `deadline`: the value its handler judges a fire by,
@@ -270,7 +289,7 @@ static void exit_watchdog_extend(uint64_t record_bytes) {
   exit_watchdog_set(arts_exit_meta.t0_mono_ns + EXIT_WATCHDOG_NS + write_ns);
 }
 
-static bool exit_rank_known(void) {
+bool arts_exit_rank_known(void) {
   return atomic_load_explicit(&g_rank_known, memory_order_acquire);
 }
 
@@ -287,7 +306,7 @@ static void exit_guard(int rc, enum arts_exit_origin origin) {
     }
     exit_group_now(rc);
   }
-  if (!exit_rank_known()) {
+  if (!arts_exit_rank_known()) {
     exit_watchdog_arm_now(rc, origin == ARTS_EXIT_FAULT ? rc - 128 : 0);
     if (origin == ARTS_EXIT_FAULT) {
       arts_signal_crash_report(rc - 128);
@@ -511,6 +530,11 @@ bool arts_shutdown_taken(void) {
           EXIT_TAKEN) != 0u;
 }
 
+bool arts_exit_began(void) {
+  return arts_shutdown_taken() ||
+         atomic_load_explicit(&g_exit_deadline, memory_order_relaxed) != 0u;
+}
+
 static const char *exit_phase_name(unsigned int phase) {
   switch (phase) {
   case EXIT_PHASE_POST:
@@ -597,6 +621,34 @@ static void exit_watchdog_fire(int sig) {
   exit_group_now(status != 0 || phase == EXIT_PHASE_RECORD ? status : 71);
 }
 
+/* The startup timer's fire.  Async-signal-safe. */
+static void exit_startup_fire(void) {
+  const int given_errno = errno;
+  if (!atomic_load_explicit(&g_startup_open, memory_order_acquire) ||
+      arts_exit_began()) {
+    errno = given_errno;
+    return;
+  }
+  /* A startup line lists no rank, so it is far shorter than this. */
+  char line[512];
+  const size_t n = arts_startup_expired_line(line, sizeof(line));
+  struct pollfd err = {STDERR_FILENO, POLLOUT, 0};
+  if (poll(&err, 1, 1000) == 1 && (err.revents & POLLOUT) != 0) {
+    (void)write(STDERR_FILENO, line, n);
+  }
+  exit_group_now(ARTS_MESH_EXIT_STATUS);
+}
+
+static void exit_timer_fire(int sig, siginfo_t *info, void *context) {
+  (void)context;
+  if (info != NULL && info->si_code == SI_TIMER &&
+      info->si_value.sival_int == EXIT_TIMER_STARTUP) {
+    exit_startup_fire();
+    return;
+  }
+  exit_watchdog_fire(sig);
+}
+
 void arts_exit_process_init(void) {
   atomic_store_explicit(&g_exit_pid, getpid(), memory_order_relaxed);
   /* Made here, outside any end: timer_create is not async-signal-safe, and
@@ -604,9 +656,9 @@ void arts_exit_process_init(void) {
   const int sig = SIGRTMIN + 1;
   struct sigaction sa;
   memset(&sa, 0, sizeof(sa));
-  sa.sa_handler = exit_watchdog_fire;
+  sa.sa_sigaction = exit_timer_fire;
   sigemptyset(&sa.sa_mask);
-  sa.sa_flags = SA_RESTART;
+  sa.sa_flags = SA_SIGINFO | SA_RESTART;
   /* A mask the process was started with may block the signal; every thread
    * it starts, and through the spawner every rank, inherits this thread's
    * mask, so the signal would stay pending on all of them. */
@@ -617,6 +669,7 @@ void arts_exit_process_init(void) {
   memset(&ev, 0, sizeof(ev));
   ev.sigev_notify = SIGEV_SIGNAL;
   ev.sigev_signo = sig;
+  ev.sigev_value.sival_int = EXIT_TIMER_WATCHDOG;
   timer_t timer;
   if (sigaction(sig, &sa, NULL) != 0 ||
       pthread_sigmask(SIG_UNBLOCK, &watchdog, NULL) != 0 ||
@@ -625,6 +678,27 @@ void arts_exit_process_init(void) {
   }
   atomic_store_explicit(&g_exit_timer, timer, memory_order_relaxed);
   atomic_store_explicit(&g_exit_timer_made, true, memory_order_relaxed);
+  ev.sigev_value.sival_int = EXIT_TIMER_STARTUP;
+  if (timer_create(CLOCK_MONOTONIC, &ev, &g_startup_timer) != 0) {
+    ARTS_ERROR("startup timer: cannot make it: %s", strerror(errno));
+  }
+}
+
+void arts_exit_startup_arm(uint64_t at_ns) {
+  if (!atomic_load_explicit(&g_exit_timer_made, memory_order_relaxed)) {
+    return;
+  }
+  atomic_store_explicit(&g_startup_open, true, memory_order_release);
+  exit_settime(g_startup_timer, at_ns);
+}
+
+void arts_exit_startup_disarm(void) {
+  /* The main thread reads its own store. */
+  if (!atomic_load_explicit(&g_startup_open, memory_order_relaxed)) {
+    return;
+  }
+  atomic_store_explicit(&g_startup_open, false, memory_order_relaxed);
+  exit_settime(g_startup_timer, 0u);
 }
 
 void arts_exit_publish_rank(const char *counter_folder) {

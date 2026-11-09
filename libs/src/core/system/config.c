@@ -1185,9 +1185,9 @@ static void config_setup_flux(struct arts_config_s *config) {
     }
   }
 
-  /* popen is safe here because configuration loads before signal handlers
-   * are installed and before any thread exists, and the runtime installs
-   * no SIGCHLD handler that could reap or race the child. */
+  /* popen is safe here: no other thread exists yet, the runtime installs no
+   * SIGCHLD handler that could reap the child, and the one handler installed
+   * by now (SIGRTMIN+1's) reaps nothing. */
   errno = 0;
   FILE *pipe = popen("flux hostlist -e local", "r");
   if (pipe == NULL) {

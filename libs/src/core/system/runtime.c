@@ -165,6 +165,7 @@ void arts_runtime_node_init(struct arts_config_s *config) {
       ARTS_ERROR("arts_runtime_node_init: registered pool init failed");
     }
     arts_net_rx_arm();
+    arts_startup_step(ARTS_MESH_PHASE_EXCHANGE);
     run_id = arts_net_exchange_addresses(run_id);
     atomic_store_explicit(&arts_exit_meta.run_id, run_id, memory_order_relaxed);
     /* Providers whose one-sided immediate path can be configured out prove
@@ -177,6 +178,7 @@ void arts_runtime_node_init(struct arts_config_s *config) {
      * close surfaces as HUP, probed by the progress loop and the ring-full
      * spin) and only the listeners close. */
     arts_socket_sentinel_arm();
+    arts_startup_end();
   } else {
 #ifdef ARTS_DEBUG_INJECTION
     /* A one-rank run brings no fabric up, so a fabric hook it asks for would

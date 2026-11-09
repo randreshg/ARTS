@@ -151,15 +151,16 @@ add_pure_unit_src(socket_helpers PASS_REGEX "PASS socket_helpers" TIMEOUT 60)
 # Every mesh socket is close-on-exec and kept alive at both ends, and a
 # peer's closed or reset connection reads as gone once the mesh is armed.
 add_pure_unit_src(socket_mesh_liveness PASS_REGEX "PASS socket_mesh_liveness" TIMEOUT 60)
-# The startup budget reads 20 s with ARTS_STARTUP_TIMEOUT_S unset, and the
-# value it sets otherwise; each value is a run of its own.
-set_tests_properties(socket_mesh_liveness PROPERTIES
+# The startup failure line: one write of at most 2048 bytes, cut on an entry
+# boundary, the two lists parallel; and the budget each process reads.
+add_pure_unit_src(mesh_line PASS_REGEX "PASS mesh_line" TIMEOUT 60)
+set_tests_properties(mesh_line PROPERTIES
     ENVIRONMENT_MODIFICATION "ARTS_STARTUP_TIMEOUT_S=unset:")
-arts_add_test(socket_mesh_liveness_budget_set COMMAND socket_mesh_liveness 7000)
-set_tests_properties(socket_mesh_liveness_budget_set PROPERTIES
+arts_add_test(mesh_line_budget_set COMMAND mesh_line 37)
+set_tests_properties(mesh_line_budget_set PROPERTIES
     LABELS "single_node" TIMEOUT 60 RESOURCE_LOCK "pure_unit_test"
-    ENVIRONMENT "ARTS_STARTUP_TIMEOUT_S=7"
-    PASS_REGULAR_EXPRESSION "PASS socket_mesh_liveness")
+    ENVIRONMENT "ARTS_STARTUP_TIMEOUT_S=37"
+    PASS_REGULAR_EXPRESSION "PASS mesh_line")
 add_pure_unit_src(socket_net_interface_remap PASS_REGEX "PASS socket_net_interface_remap" TIMEOUT 60)
 add_pure_unit_src(launcher_shell_quote PASS_REGEX "PASS launcher_shell_quote" TIMEOUT 60)
 # Configuration parsing stays inside what it allocated: a routing table
@@ -662,6 +663,19 @@ function(arts_product_bound out)
     endif()
 endfunction()
 
+# The driver's line check counts the program's lines by regex.
+arts_add_test(spawner_driver_lines
+    COMMAND ${ARTS_SPAWNER_DRIVER} --want 0 --lines "^A$" 2 2
+            -- ${CMAKE_CURRENT_SOURCE_DIR}/tools/print_lines.sh A B A)
+set_tests_properties(spawner_driver_lines PROPERTIES
+    LABELS "single_node" TIMEOUT 30 RESOURCE_LOCK "arts_runtime")
+arts_add_test(spawner_driver_lines_miss STATUS 1
+    COMMAND ${ARTS_SPAWNER_DRIVER} --want 0 --lines "^A$" 1 1
+            -- ${CMAKE_CURRENT_SOURCE_DIR}/tools/print_lines.sh A A)
+set_tests_properties(spawner_driver_lines_miss PROPERTIES
+    LABELS "single_node" TIMEOUT 30 RESOURCE_LOCK "arts_runtime"
+    PASS_REGULAR_EXPRESSION "spawner_driver: --lines .* matched 2 lines, want 1..1")
+
 # The spawner starts each rank once, rank 0 included, as its own child: every
 # rank knows its rank and the total, and every one has the same live parent;
 # four ranks make the spawn loop start more than one child past rank 0.
@@ -782,6 +796,93 @@ arts_test_properties(shutdown_spin_peer_killed PROPERTIES
     LABELS "multinode" TIMEOUT 120 RESOURCE_LOCK "arts_runtime"
     ENVIRONMENT "ARTS_CONFIG=${_cfg}"
     ARTS_RANK_STATUSES 137)
+
+# The startup budget is ASCII digits in 10-86400; any other set value is
+# refused by the process you start, before any rank starts.
+arts_test_cfg(_cfg 2n_9w_1p)
+foreach(_case "low;9" "high;86401" "text;10s" "zero;0" "empty;")
+    list(GET _case 0 _name)
+    list(GET _case 1 _value)
+    arts_add_multinode_test(startup_budget_refused_${_name}_2n_9w_1p STATUS 1
+                            COMMAND spawner_rank_probe)
+    arts_test_properties(startup_budget_refused_${_name}_2n_9w_1p PROPERTIES
+        LABELS "multinode" TIMEOUT 30 RESOURCE_LOCK "arts_runtime"
+        ENVIRONMENT "ARTS_CONFIG=${_cfg};SPAWNER_PROBE_NO_RANK=1;ARTS_STARTUP_TIMEOUT_S=${_value}"
+        PASS_REGULAR_EXPRESSION "ARTS_STARTUP_TIMEOUT_S=\"${_value}\" is not a whole number of seconds in 10-86400"
+        FAIL_REGULAR_EXPRESSION "SPAWNER_PROBE_RANK_STARTED")
+endforeach()
+# The startup bound ends at the arm on every rank and before the spawn in
+# the spawner: a run that outlives budget + 1 s ends 0 with no line.
+arts_add_multinode_test(startup_bound_ends_at_arm_2n_9w_1p
+    COMMAND spawner_rank_probe 13000)
+arts_test_properties(startup_bound_ends_at_arm_2n_9w_1p PROPERTIES
+    LABELS "multinode" TIMEOUT 60 RESOURCE_LOCK "arts_runtime"
+    ENVIRONMENT "ARTS_CONFIG=${_cfg};ARTS_STARTUP_TIMEOUT_S=10"
+    PASS_REGULAR_EXPRESSION "ALL_RANKS_READY"
+    FAIL_REGULAR_EXPRESSION "ARTS_MESH_FAILED")
+# A one-rank run ends its bound once its configuration is loaded.
+arts_test_cfg(_cfg1 1n_20w)
+arts_add_test(startup_bound_one_rank COMMAND spawner_rank_probe 13000)
+set_tests_properties(startup_bound_one_rank PROPERTIES
+    LABELS "single_node" TIMEOUT 60 RESOURCE_LOCK "arts_runtime"
+    ENVIRONMENT "ARTS_CONFIG=${_cfg1};ARTS_STARTUP_TIMEOUT_S=10"
+    PASS_REGULAR_EXPRESSION "ALL_RANKS_READY"
+    FAIL_REGULAR_EXPRESSION "ARTS_MESH_FAILED")
+if(ARTS_DEBUG_INJECTION)
+    if(ARTS_DEBUG_SANITIZER)
+        set(_mesh_bound 30000)
+    else()
+        set(_mesh_bound 16000)
+    endif()
+    # A rank stuck in its configuration step is ended by the startup timer
+    # 1 s after its deadline, with its own line naming the step and no rank.
+    arts_test_cfg(_cfg3 4n_4w_1p)
+    arts_add_multinode_test(mesh_stall_config_3n
+        COMMAND ${ARTS_SPAWNER_DRIVER} --want 75 --bound-ms ${_mesh_bound}
+                --bound-from launch
+                --lines "^ARTS_MESH_FAILED rank=- host=[^ ]+ phase=config missing=- missing_hosts=- more=0$" 1 1
+                -- $<TARGET_FILE:spawner_rank_probe>)
+    arts_test_properties(mesh_stall_config_3n PROPERTIES
+        LABELS "multinode" TIMEOUT 90 RESOURCE_LOCK "arts_runtime"
+        ENVIRONMENT "ARTS_CONFIG=${_cfg3};node_count=3;ARTS_STARTUP_TIMEOUT_S=10;ARTS_MESH_FAULT=1:stall:config"
+        ARTS_RANK_STATUSES 75)
+    # A malformed hook value is refused by the process you start.
+    arts_add_multinode_test(mesh_fault_malformed_2n_9w_1p STATUS 1
+                            COMMAND spawner_rank_probe)
+    arts_test_properties(mesh_fault_malformed_2n_9w_1p PROPERTIES
+        LABELS "multinode" TIMEOUT 30 RESOURCE_LOCK "arts_runtime"
+        ENVIRONMENT "ARTS_CONFIG=${_cfg};SPAWNER_PROBE_NO_RANK=1;ARTS_MESH_FAULT=1:stall:nowhere"
+        PASS_REGULAR_EXPRESSION "ARTS_MESH_FAULT=\"1:stall:nowhere\""
+        FAIL_REGULAR_EXPRESSION "SPAWNER_PROBE_RANK_STARTED")
+    # A hook naming a rank outside the run is refused by the process you
+    # start.
+    arts_add_multinode_test(mesh_fault_rank_outside_2n_9w_1p STATUS 1
+                            COMMAND spawner_rank_probe)
+    arts_test_properties(mesh_fault_rank_outside_2n_9w_1p PROPERTIES
+        LABELS "multinode" TIMEOUT 30 RESOURCE_LOCK "arts_runtime"
+        ENVIRONMENT "ARTS_CONFIG=${_cfg};SPAWNER_PROBE_NO_RANK=1;ARTS_MESH_FAULT=2:stall:config"
+        PASS_REGULAR_EXPRESSION "ARTS_MESH_FAULT names rank 2, but the run's ranks are 0-1"
+        FAIL_REGULAR_EXPRESSION "SPAWNER_PROBE_RANK_STARTED")
+    # A run of one rank refuses the hook before any step acts.
+    arts_add_test(mesh_fault_one_rank_refused STATUS 1
+                  COMMAND spawner_rank_probe)
+    set_tests_properties(mesh_fault_one_rank_refused PROPERTIES
+        LABELS "single_node" TIMEOUT 30 RESOURCE_LOCK "arts_runtime"
+        ENVIRONMENT "ARTS_CONFIG=${_cfg1};ARTS_RANK=0;ARTS_MESH_FAULT=0:stall:config"
+        PASS_REGULAR_EXPRESSION "ARTS_MESH_FAULT is set, but a one-rank run"
+        FAIL_REGULAR_EXPRESSION "ALL_RANKS_READY")
+    # Under lsf no variable names the rank, so the hook is refused there (a
+    # run of two ranks: the host list's first entry is the batch host).
+    arts_add_test(mesh_fault_lsf_refused STATUS 1 COMMAND spawner_rank_probe)
+    set_tests_properties(mesh_fault_lsf_refused PROPERTIES
+        LABELS "single_node" TIMEOUT 30 RESOURCE_LOCK "arts_runtime"
+        ENVIRONMENT "ARTS_CONFIG=${_cfg};launcher=lsf;LSB_HOSTS=batch 127.0.0.1 localhost;ports=25000;ARTS_MESH_FAULT=0:stall:config"
+        PASS_REGULAR_EXPRESSION "ARTS_MESH_FAULT is set, but launcher=lsf"
+        FAIL_REGULAR_EXPRESSION "ALL_RANKS_READY")
+    unset(_mesh_bound)
+    unset(_cfg3)
+endif()
+unset(_cfg1)
 
 # --- config loading ---
 add_arts_test(config_load_single_reclaim)

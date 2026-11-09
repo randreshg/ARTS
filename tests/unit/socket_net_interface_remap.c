@@ -62,12 +62,28 @@ unsigned int arts_global_rank_id;
 unsigned int arts_global_rank_count;
 
 /* The runtime's abort exits with the code it is given. */
+static int g_exit_rc;
 _Noreturn void arts_exit(int rc, enum arts_exit_origin origin) {
   (void)origin;
   (void)fflush(stdout);
   (void)fflush(stderr);
   _exit(rc);
 }
+bool arts_exit_take(int rc, enum arts_exit_origin origin) {
+  (void)origin;
+  g_exit_rc = rc;
+  return true;
+}
+_Noreturn void arts_exit_resume(void) {
+  (void)fflush(stdout);
+  (void)fflush(stderr);
+  _exit(g_exit_rc);
+}
+void arts_exit_startup_arm(uint64_t at_ns) { (void)at_ns; }
+void arts_exit_startup_disarm(void) {}
+unsigned int arts_signal_handlers_rank(void) { return 0; }
+bool arts_exit_began(void) { return false; }
+bool arts_exit_rank_known(void) { return true; }
 bool arts_shutdown_taken(void) { return false; }
 void *arts_malloc(size_t s) { return malloc(s); }
 void *arts_calloc(size_t n, size_t s) { return calloc(n, s); }

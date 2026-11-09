@@ -99,6 +99,7 @@ int arts_rt(int argc, char **argv) {
     return 1;
   }
   arts_exit_process_init();
+  arts_startup_begin();
   /* A rank a remote shell started in the background inherits SIGINT ignored;
    * the default lets an interrupt end it before its handling is installed. */
   (void)signal(SIGINT, SIG_DFL);
@@ -118,6 +119,7 @@ int arts_rt(int argc, char **argv) {
                config.table_length, ARTS_GUID_RANK_MASK - 1U);
   }
   (void)arts_end_grace_s();
+  arts_startup_check_run(&config);
   const bool local = strcmp(config.launcher, "local") == 0;
   if (local) {
     int cpus = arts_rt_cpu_count();
@@ -132,8 +134,10 @@ int arts_rt(int argc, char **argv) {
   if (getenv("ARTS_RANK") == NULL &&
       (local || strcmp(config.launcher, "ssh") == 0) &&
       config.table_length > 1) {
+    arts_startup_end();
     arts_spawn(&config, argc, argv);
   }
+  arts_startup_config_done(&config);
   /* A process of a run of several takes its rank from its launcher's word in
    * the transport setup below. */
   arts_global_rank_id = 0;
@@ -153,6 +157,7 @@ int arts_rt(int argc, char **argv) {
   arts_configure_core_dumps(config.core_dump);
 
   if (config.table_length > 1) {
+    arts_startup_step(ARTS_MESH_PHASE_RESOLVE);
     arts_transport_setup(&config);
     arts_exit_publish_rank(config.counter_folder);
   }
@@ -166,6 +171,7 @@ int arts_rt(int argc, char **argv) {
     if (!arts_transport_setup_incoming()) {
       arts_exit(75, ARTS_EXIT_RUNTIME_ERROR);
     }
+    arts_startup_step(ARTS_MESH_PHASE_FABRIC);
   }
 
   arts_thread_init(&config);

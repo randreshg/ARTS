@@ -39,8 +39,10 @@
 #include "arts/transport/socket.h"
 
 #include "arts/utils/stdatomic_compat.h"
+#include <assert.h>
 #include <errno.h>
 #include <inttypes.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -52,6 +54,7 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h> /* TCP_NODELAY, TCP_KEEP* */
 #include <poll.h>
+#include <sys/utsname.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -60,6 +63,7 @@
 #include "arts/system/config.h"
 #include "arts/system/print.h"
 #include "arts/system/shutdown.h"
+#include "arts/system/signals.h"
 #include "arts/system/threads.h"
 #include "arts/transport/dispatcher.h"
 #include "arts/transport/netif.h"
@@ -657,25 +661,474 @@ void arts_socket_cleanup() {
 }
 #endif
 
-/* How long one connection of the socket mesh may take to start: 20 s unless
- * ARTS_STARTUP_TIMEOUT_S sets another.  An accept waits up to the budget for
- * its next peer; a connect is retried budget / 100 ms times, 100 ms apart, and
- * each attempt blocks for as long as the kernel's connect does, so the connect
- * side counts attempts, not time.  The skew between the ranks of one job is
- * the launcher's, not the runtime's, so the budget is a knob. */
-#define ARTS_STARTUP_TIMEOUT_DEFAULT_S 20u
-unsigned int arts_startup_budget_ms(void) {
-  static unsigned int cached_ms = 0;
-  if (cached_ms == 0) {
-    const char *s = getenv("ARTS_STARTUP_TIMEOUT_S");
-    char *end = NULL;
-    unsigned long v = (s != NULL) ? strtoul(s, &end, 10) : 0;
-    if (s == NULL || end == s || v == 0 || v > 86400ul) {
-      v = ARTS_STARTUP_TIMEOUT_DEFAULT_S;
-    }
-    cached_ms = (unsigned int)v * 1000u;
+/* The startup bound (socket.h), written by the main thread.  The budget, the
+ * deadline and the node name are written by arts_startup_begin before the
+ * startup timer's arming, which publishes them to its handler; the own table
+ * name once, before the first store of a step at or past listen, which
+ * publishes it. */
+static unsigned int g_startup_budget_s;
+static uint64_t g_startup_deadline_ns;
+static char g_startup_node[256];
+static char g_startup_host[256];
+static bool g_startup_host_set;
+/* The step the process is in: release stores by the main thread, acquire
+ * loads by the startup timer's handler.  A store of a step at or past listen
+ * publishes g_startup_host and the rank the signal handlers print. */
+static_assert(ATOMIC_INT_LOCK_FREE == 2,
+              "a signal handler reads an atomic unsigned int");
+static _Atomic(unsigned int) g_startup_step;
+
+#define STARTUP_NS_PER_S 1000000000ull
+
+static const char *mesh_phase_name(enum arts_mesh_phase phase) {
+  switch (phase) {
+  case ARTS_MESH_PHASE_CONFIG:
+    return "config";
+  case ARTS_MESH_PHASE_RESOLVE:
+    return "resolve";
+  case ARTS_MESH_PHASE_LISTEN:
+    return "listen";
+  case ARTS_MESH_PHASE_CONNECT:
+    return "connect";
+  case ARTS_MESH_PHASE_FABRIC:
+    return "fabric";
+  case ARTS_MESH_PHASE_EXCHANGE:
+    return "exchange";
+  case ARTS_MESH_PHASE_HANGUP:
+    return "hangup";
   }
-  return cached_ms;
+  return "?";
+}
+
+/* A line under construction: a byte that would pass lim is not written, and
+ * marks the line cut. */
+struct mesh_line_s {
+  char *buf;
+  size_t n;
+  size_t lim;
+  bool cut;
+};
+
+static void mesh_put(struct mesh_line_s *l, const char *s) {
+  for (; *s != '\0'; s++) {
+    if (l->n == l->lim) {
+      l->cut = true;
+      return;
+    }
+    l->buf[l->n++] = *s;
+  }
+}
+
+static void mesh_put_u(struct mesh_line_s *l, uint64_t v) {
+  char num[24];
+  char *d = num + sizeof(num) - 1;
+  *d = '\0';
+  do {
+    *--d = (char)('0' + (v % 10u));
+    v /= 10u;
+  } while (v != 0u);
+  mesh_put(l, d);
+}
+
+static void mesh_line_put(struct mesh_line_s *l, int rank, const char *host,
+                          enum arts_mesh_phase phase, const bool *missing,
+                          unsigned int n,
+                          const struct arts_config_table_s *table,
+                          unsigned int listed, unsigned int total) {
+  mesh_put(l, "ARTS_MESH_FAILED rank=");
+  if (rank < 0) {
+    mesh_put(l, "-");
+  } else {
+    mesh_put_u(l, (uint64_t)rank);
+  }
+  mesh_put(l, " host=");
+  mesh_put(l, host);
+  mesh_put(l, " phase=");
+  mesh_put(l, mesh_phase_name(phase));
+  for (int hosts = 0; hosts < 2; hosts++) {
+    mesh_put(l, hosts ? " missing_hosts=" : " missing=");
+    unsigned int put = 0;
+    for (unsigned int i = 0; i < n && put < listed; i++) {
+      if (!missing[i]) {
+        continue;
+      }
+      if (put++ > 0) {
+        mesh_put(l, ",");
+      }
+      if (!hosts) {
+        mesh_put_u(l, i);
+      } else {
+        mesh_put(l, table != NULL && table[i].ip_address != NULL
+                        ? table[i].ip_address
+                        : "?");
+      }
+    }
+    if (put == 0) {
+      mesh_put(l, "-");
+    }
+  }
+  mesh_put(l, " more=");
+  mesh_put_u(l, total - listed);
+}
+
+size_t arts_mesh_format_line(char *buf, size_t cap, int rank, const char *host,
+                             enum arts_mesh_phase phase, const bool *missing,
+                             unsigned int n,
+                             const struct arts_config_table_s *table) {
+  if (cap < 2) {
+    if (cap == 1) {
+      buf[0] = '\0';
+    }
+    return 0;
+  }
+  const size_t lim =
+      cap - 1 < ARTS_MESH_LINE_MAX ? cap - 1 : ARTS_MESH_LINE_MAX;
+  unsigned int total = 0;
+  for (unsigned int i = 0; missing != NULL && i < n; i++) {
+    total += missing[i] ? 1u : 0u;
+  }
+  unsigned int listed =
+      total < ARTS_MESH_LINE_RANKS ? total : ARTS_MESH_LINE_RANKS;
+  struct mesh_line_s l;
+  for (;;) {
+    l = (struct mesh_line_s){.buf = buf, .n = 0, .lim = lim - 1, .cut = false};
+    mesh_line_put(&l, rank, host != NULL ? host : "-", phase, missing, n, table,
+                  listed, total);
+    if (!l.cut || listed == 0) {
+      break;
+    }
+    listed--;
+  }
+  buf[l.n++] = '\n';
+  buf[l.n] = '\0';
+  return l.n;
+}
+
+size_t arts_startup_expired_line(char *buf, size_t cap) {
+  const unsigned int step =
+      atomic_load_explicit(&g_startup_step, memory_order_acquire);
+  if (step >= ARTS_MESH_PHASE_LISTEN) {
+    return arts_mesh_format_line(buf, cap, (int)arts_signal_handlers_rank(),
+                                 g_startup_host, (enum arts_mesh_phase)step,
+                                 NULL, 0, NULL);
+  }
+  return arts_mesh_format_line(buf, cap, -1, g_startup_node,
+                               (enum arts_mesh_phase)step, NULL, 0, NULL);
+}
+
+static void startup_copy(char *to, size_t cap, const char *from) {
+  size_t n = 0;
+  for (; from != NULL && from[n] != '\0' && n < cap - 1; n++) {
+    to[n] = from[n];
+  }
+  to[n] = '\0';
+}
+
+/* ASCII decimal digits naming a value in lo..hi. */
+static bool startup_digits(const char *text, unsigned long lo, unsigned long hi,
+                           unsigned long *out) {
+  unsigned long v = 0;
+  if (*text == '\0') {
+    return false;
+  }
+  for (; *text != '\0'; text++) {
+    if (*text < '0' || *text > '9') {
+      return false;
+    }
+    v = (v * 10u) + (unsigned long)(*text - '0');
+    if (v > hi) {
+      return false;
+    }
+  }
+  if (v < lo) {
+    return false;
+  }
+  *out = v;
+  return true;
+}
+
+#ifdef ARTS_DEBUG_INJECTION
+enum startup_fault_kind {
+  STARTUP_FAULT_NONE,
+  STARTUP_FAULT_STALL,
+  STARTUP_FAULT_EXIT,
+  STARTUP_FAULT_DELAY,
+};
+#define STARTUP_FAULT_MS_MAX 600000ul
+/* Parsed by arts_startup_begin and armed by arts_startup_config_done in the
+ * rank it names; read by the main thread alone. */
+static struct {
+  enum startup_fault_kind kind;
+  unsigned long rank;
+  enum arts_mesh_phase step;
+  unsigned long ms;
+  bool armed;
+} g_startup_fault;
+
+static void startup_fault_parse(void) {
+  const char *text = getenv("ARTS_MESH_FAULT");
+  if (text == NULL || text[0] == '\0') {
+    return;
+  }
+  char copy[128];
+  char *field[5];
+  int fields = 0;
+  bool ok = strlen(text) < sizeof(copy);
+  if (ok) {
+    memcpy(copy, text, strlen(text) + 1);
+    char *save = NULL;
+    for (char *f = strtok_r(copy, ":", &save); f != NULL && fields < 5;
+         f = strtok_r(NULL, ":", &save)) {
+      field[fields++] = f;
+    }
+    ok = text[0] != ':' && text[strlen(text) - 1] != ':' &&
+         strstr(text, "::") == NULL;
+  }
+  enum startup_fault_kind kind = STARTUP_FAULT_NONE;
+  if (ok && fields == 3 && strcmp(field[1], "stall") == 0) {
+    kind = STARTUP_FAULT_STALL;
+  } else if (ok && fields == 3 && strcmp(field[1], "exit") == 0) {
+    kind = STARTUP_FAULT_EXIT;
+  } else if (ok && fields == 4 && strcmp(field[1], "delay") == 0) {
+    kind = STARTUP_FAULT_DELAY;
+  }
+  bool step_ok = false;
+  enum arts_mesh_phase step = ARTS_MESH_PHASE_CONFIG;
+  for (int p = ARTS_MESH_PHASE_CONFIG;
+       kind != STARTUP_FAULT_NONE && p <= ARTS_MESH_PHASE_EXCHANGE; p++) {
+    if (strcmp(field[2], mesh_phase_name((enum arts_mesh_phase)p)) == 0) {
+      step = (enum arts_mesh_phase)p;
+      step_ok = true;
+    }
+  }
+  unsigned long rank = 0;
+  unsigned long ms = 0;
+  if (!step_ok || !startup_digits(field[0], 0, UINT_MAX, &rank) ||
+      (kind == STARTUP_FAULT_DELAY &&
+       !startup_digits(field[3], 1, STARTUP_FAULT_MS_MAX, &ms))) {
+    ARTS_ERROR("ARTS_MESH_FAULT=\"%s\" is not <rank>:stall:<step>, "
+               "<rank>:exit:<step> or <rank>:delay:<step>:<ms> (a step is "
+               "config, resolve, listen, connect, fabric or exchange; ms is "
+               "1-%lu)",
+               text, STARTUP_FAULT_MS_MAX);
+  }
+  g_startup_fault.kind = kind;
+  g_startup_fault.rank = rank;
+  g_startup_fault.step = step;
+  g_startup_fault.ms = ms;
+}
+
+/* A hook the run cannot act on would leave it unchanged, and the run would
+ * read as one that exercised the hook. */
+static void startup_fault_check(const struct arts_config_s *config) {
+  if (g_startup_fault.kind == STARTUP_FAULT_NONE) {
+    return;
+  }
+  if (config->table_length <= 1) {
+    ARTS_ERROR("ARTS_MESH_FAULT is set, but a one-rank run has no mesh for it "
+               "to act on");
+  }
+  if (strcmp(config->launcher, "lsf") == 0) {
+    ARTS_ERROR("ARTS_MESH_FAULT is set, but launcher=lsf names no rank for it "
+               "to act on");
+  }
+  if (g_startup_fault.rank >= config->table_length) {
+    ARTS_ERROR("ARTS_MESH_FAULT names rank %lu, but the run's ranks are 0-%u",
+               g_startup_fault.rank, config->table_length - 1u);
+  }
+}
+
+/* The hook acts only in the rank its launcher's own rank variable names. */
+static void startup_fault_arm(const struct arts_config_s *config) {
+  if (g_startup_fault.kind == STARTUP_FAULT_NONE) {
+    return;
+  }
+  const char *var = "ARTS_RANK";
+  if (strcmp(config->launcher, "flux") == 0) {
+    var = "FLUX_TASK_RANK";
+  } else if (strcmp(config->launcher, "slurm") == 0) {
+    var = "SLURM_PROCID";
+  }
+  const char *text = getenv(var);
+  unsigned long rank = 0;
+  g_startup_fault.armed = text != NULL &&
+                          startup_digits(text, 0, UINT_MAX, &rank) &&
+                          rank == g_startup_fault.rank;
+}
+
+static void startup_fault_act(enum arts_mesh_phase step) {
+  if (!g_startup_fault.armed || g_startup_fault.step != step) {
+    return;
+  }
+  switch (g_startup_fault.kind) {
+  case STARTUP_FAULT_STALL:
+    for (;;) {
+      (void)pause();
+    }
+  case STARTUP_FAULT_EXIT:
+    arts_print_line("[ARTS] mesh fault: rank %lu exits at %s\n",
+                    g_startup_fault.rank, mesh_phase_name(step));
+    arts_exit(1, ARTS_EXIT_RUNTIME_ERROR);
+  case STARTUP_FAULT_DELAY: {
+    struct timespec left = {.tv_sec = (time_t)(g_startup_fault.ms / 1000u),
+                            .tv_nsec =
+                                (long)(g_startup_fault.ms % 1000u) * 1000000L};
+    while (clock_nanosleep(CLOCK_MONOTONIC, 0, &left, &left) == EINTR) {
+    }
+    break;
+  }
+  case STARTUP_FAULT_NONE:
+    break;
+  }
+}
+#else
+#ifndef NDEBUG
+/* A hook's variable set where the hooks are not compiled would leave the run
+ * unchanged, and the run would read as one that exercised the hook. */
+static void startup_fault_parse(void) {
+  const char *text = getenv("ARTS_MESH_FAULT");
+  if (text != NULL && text[0] != '\0') {
+    ARTS_ERROR("ARTS_MESH_FAULT is set, but this build compiles no injection "
+               "hooks (configure it with -DARTS_DEBUG_INJECTION=ON)");
+  }
+}
+#else
+static void startup_fault_parse(void) {}
+#endif
+static void startup_fault_check(const struct arts_config_s *config) {
+  (void)config;
+}
+static void startup_fault_arm(const struct arts_config_s *config) {
+  (void)config;
+}
+static void startup_fault_act(enum arts_mesh_phase step) { (void)step; }
+#endif
+
+void arts_startup_begin(void) {
+  const char *text = getenv("ARTS_STARTUP_TIMEOUT_S");
+  unsigned long budget = ARTS_STARTUP_BUDGET_DEFAULT_S;
+  if (text != NULL && !startup_digits(text, ARTS_STARTUP_BUDGET_MIN_S,
+                                      ARTS_STARTUP_BUDGET_MAX_S, &budget)) {
+    ARTS_ERROR("ARTS_STARTUP_TIMEOUT_S=\"%s\" is not a whole number of "
+               "seconds in %u-%u",
+               text, ARTS_STARTUP_BUDGET_MIN_S, ARTS_STARTUP_BUDGET_MAX_S);
+  }
+  g_startup_budget_s = (unsigned int)budget;
+  struct timespec now;
+  (void)clock_gettime(CLOCK_MONOTONIC, &now);
+  g_startup_deadline_ns = ((uint64_t)now.tv_sec * STARTUP_NS_PER_S) +
+                          (uint64_t)now.tv_nsec +
+                          ((uint64_t)budget * STARTUP_NS_PER_S);
+  struct utsname name;
+  startup_copy(g_startup_node, sizeof(g_startup_node),
+               uname(&name) == 0 ? name.nodename : "?");
+  startup_fault_parse();
+  atomic_store_explicit(&g_startup_step, (unsigned int)ARTS_MESH_PHASE_CONFIG,
+                        memory_order_release);
+  arts_exit_startup_arm(g_startup_deadline_ns + STARTUP_NS_PER_S);
+}
+
+unsigned int arts_startup_budget_s(void) { return g_startup_budget_s; }
+
+uint64_t arts_startup_deadline_ns(void) { return g_startup_deadline_ns; }
+
+void arts_startup_step(enum arts_mesh_phase step) {
+  if (step >= ARTS_MESH_PHASE_LISTEN && !g_startup_host_set &&
+      arts_global_message_table != NULL) {
+    const struct arts_config_s *config = arts_global_message_table;
+    startup_copy(g_startup_host, sizeof(g_startup_host),
+                 config->table[config->my_rank].ip_address);
+    g_startup_host_set = true;
+  }
+  atomic_store_explicit(&g_startup_step, (unsigned int)step,
+                        memory_order_release);
+  startup_fault_act(step);
+}
+
+void arts_startup_check_run(const struct arts_config_s *config) {
+  startup_fault_check(config);
+}
+
+void arts_startup_config_done(const struct arts_config_s *config) {
+  startup_fault_arm(config);
+  startup_fault_act(ARTS_MESH_PHASE_CONFIG);
+  if (config->table_length <= 1) {
+    arts_startup_end();
+  }
+}
+
+void arts_startup_end(void) { arts_exit_startup_disarm(); }
+
+/* Closes every mesh socket this rank holds, the listeners included, so each
+ * peer sees its connection end. */
+static void mesh_close_all(void) {
+  const struct arts_config_s *config = arts_global_message_table;
+  if (config == NULL) {
+    return;
+  }
+  const size_t ports = arts_socket_ports;
+  const size_t count = config->table_length;
+  for (size_t z = 0; local_socket_receive != NULL && z < ports; z++) {
+    if (local_socket_receive[z] > 0) {
+      close(local_socket_receive[z]);
+      local_socket_receive[z] = 0;
+    }
+  }
+  for (size_t i = 0; arts_socket_send_list != NULL && i < count * ports; i++) {
+    if (arts_socket_send_list[i] >= 0) {
+      close(arts_socket_send_list[i]);
+      arts_socket_send_list[i] = -1;
+    }
+  }
+  for (size_t i = 0;
+       arts_socket_receive_list != NULL && count > 0 && i < (count - 1) * ports;
+       i++) {
+    if (arts_socket_receive_list[i] >= 0) {
+      close(arts_socket_receive_list[i]);
+      arts_socket_receive_list[i] = -1;
+    }
+  }
+}
+
+/* One write, made only if stderr takes it within a second: a reader that
+ * stopped draining must not hold the rank's end. */
+static void mesh_write_line(const char *line, size_t n) {
+  struct pollfd err = {.fd = STDERR_FILENO, .events = POLLOUT};
+  if (poll(&err, 1, 1000) == 1 && (err.revents & POLLOUT) != 0) {
+    (void)write(STDERR_FILENO, line, n);
+  }
+}
+
+_Noreturn void arts_mesh_fail(enum arts_mesh_phase phase, const bool *missing) {
+  /* The give-up owns this rank's line from here on. */
+  arts_exit_startup_disarm();
+  mesh_close_all();
+  const struct arts_config_s *config = arts_global_message_table;
+  const unsigned int n = config != NULL ? config->table_length : 0u;
+  const struct arts_config_table_s *table =
+      config != NULL ? config->table : NULL;
+  char line[ARTS_MESH_LINE_MAX + 1];
+  if (arts_exit_rank_known()) {
+    if (!arts_exit_take(ARTS_MESH_EXIT_STATUS, ARTS_EXIT_RUNTIME_ERROR)) {
+      arts_exit(ARTS_MESH_EXIT_STATUS, ARTS_EXIT_RUNTIME_ERROR);
+    }
+    const char *host =
+        config != NULL ? table[config->my_rank].ip_address : g_startup_node;
+    mesh_write_line(line, arts_mesh_format_line(line, sizeof(line),
+                                                (int)arts_global_rank_id, host,
+                                                phase, missing, n, table));
+    arts_exit_resume();
+  }
+  if (arts_exit_began()) {
+    /* The end in progress is another thread's, bounded by its watchdog. */
+    for (;;) {
+      (void)pause();
+    }
+  }
+  mesh_write_line(line,
+                  arts_mesh_format_line(line, sizeof(line), -1, g_startup_node,
+                                        phase, missing, n, table));
+  arts_exit(ARTS_MESH_EXIT_STATUS, ARTS_EXIT_RUNTIME_ERROR);
 }
 
 static inline bool arts_transport_connect(int rank, unsigned int port) {
@@ -692,7 +1145,7 @@ static inline bool arts_transport_connect(int rank, unsigned int port) {
     /* The peer may not be listening yet: ranks of one job start with a
      * skew the launcher does not bound, so retry until the startup budget
      * is spent. */
-    int max_retries = (int)(arts_startup_budget_ms() / 100u);
+    int max_retries = (int)(arts_startup_budget_s() * 1000u / 100u);
     int retry_count = 0;
     while (connect(arts_socket_send_list[idx], (struct sockaddr *)addr,
                    sizeof(struct sockaddr_in)) < 0) {
@@ -736,6 +1189,9 @@ bool arts_transport_setup_incoming() {
 
   arts_socket_receive_list =
       (int *)arts_malloc(sizeof(int) * (size_t)(count + 1) * arts_socket_ports);
+  for (size_t r = 0; r < (size_t)(count + 1) * arts_socket_ports; r++) {
+    arts_socket_receive_list[r] = -1;
+  }
   poll_incoming = (struct pollfd *)arts_malloc(sizeof(struct pollfd) *
                                                (count + 1) * arts_socket_ports);
 
@@ -815,13 +1271,14 @@ bool arts_transport_setup_incoming() {
            * ends the rank instead of hanging it. */
           struct pollfd accept_pfd = {.fd = local_socket_receive[z],
                                       .events = POLLIN};
-          int poll_res = poll(&accept_pfd, 1, (int)arts_startup_budget_ms());
+          int poll_res =
+              poll(&accept_pfd, 1, (int)(arts_startup_budget_s() * 1000u));
           if (poll_res <= 0) {
             ARTS_WARN("arts_transport_setup_incoming: rank %u timed out "
                       "after %u s waiting for peer connection %d of %d on "
                       "port index %d (poll=%d, errno=%d: %s)",
-                      arts_global_rank_id, arts_startup_budget_ms() / 1000u,
-                      j + 1, count, z, poll_res, errno, strerror(errno));
+                      arts_global_rank_id, arts_startup_budget_s(), j + 1,
+                      count, z, poll_res, errno, strerror(errno));
             return false;
           }
 

@@ -171,6 +171,15 @@ void arts_exit_poll(void);
  * wrote before the take is visible after a true. */
 bool arts_shutdown_taken(void);
 
+/* Whether this process's end began: the rank's shutdown point was taken, or
+ * an end armed the watchdog (the end of a process that is no rank arms it
+ * first thing).  Async-signal-safe. */
+bool arts_exit_began(void);
+
+/* Whether this process became a rank (arts_exit_publish_rank); acquire, so
+ * what the publication covers is visible after a true. */
+bool arts_exit_rank_known(void);
+
 /* arts_rt's first act: names this process as the one whose end arts_exit
  * runs, and makes the watchdog that bounds that end (disarmed), its signal
  * unblocked on the calling thread, from which every thread the process
@@ -189,6 +198,17 @@ void arts_exit_mark_spawner(void);
  * 0.  A no-op in a process that never ran
  * arts_exit_process_init.  Async-signal-safe; leaves errno as it found it. */
 void arts_exit_watchdog_arm(int rc);
+
+/* The startup timer, beside the watchdog on its signal: armed once, on the
+ * main thread before any runtime thread exists, to fire at `at_ns`
+ * (CLOCK_MONOTONIC); the arming publishes to the timer's handler what the
+ * caller wrote before it.  A fire before the disarm, while this process's
+ * end has not begun (arts_exit_began), writes arts_startup_expired_line's
+ * line if stderr takes it within a second and ends the process with status
+ * 75; any other fire does nothing.  Both are no-ops in a process that never
+ * ran arts_exit_process_init; the disarm is idempotent. */
+void arts_exit_startup_arm(uint64_t at_ns);
+void arts_exit_startup_disarm(void);
 
 /* This process became a rank: its id and the rank count are final, and
  * `counter_folder` (copied) is where its counter record goes.  Called once,

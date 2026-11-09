@@ -36,7 +36,11 @@ given, and every requested check holds:
                            most n ms.  The default start is the action's
                            signal when one is given, else first-end;
   --end-spread-ms <n>      every one of --ranks ranks named its pid and ended,
-                           and the last end lies at most n ms after the first.
+                           and the last end lies at most n ms after the first;
+  --lines <regex> <min> <max>
+                           the number of the program's output lines, as read,
+                           that match regex (re.search) lies in min..max;
+                           repeatable.
 --repeat <n> runs the program n times in sequence, judging each run.  On every
 exit path the driver kills the spawner if it still runs and then every process
 still running the program's executable, so a stopped rank never outlives the
@@ -163,6 +167,7 @@ def one_run(args, run):
     if args.on and args.on.startswith("line:"):
         on_line = re.compile(args.on[len("line:"):])
     window_re = re.compile(args.line_window[0]) if args.line_window else None
+    counted = [[re.compile(spec[0]), 0] for spec in args.lines]
     ranks = {}
     failures = []
     fired_at = None
@@ -202,6 +207,9 @@ def one_run(args, run):
             if window_re is not None and window_at is None \
                     and window_re.search(text):
                 window_at = stamp
+            for entry in counted:
+                if entry[0].search(text):
+                    entry[1] += 1
         if args.on == "pids" and len(ranks) >= args.ranks:
             triggered = True
 
@@ -330,6 +338,11 @@ def one_run(args, run):
                 say("run %d: end spread %.0f ms within %d ms"
                     % (run, spread, args.end_spread_ms))
 
+    for (regex, lo, hi), (_, n) in zip(args.lines, counted):
+        if not lo <= n <= hi:
+            say("--lines %s matched %d lines, want %d..%d" % (regex, n, lo, hi))
+            failures.append("the line check of %s failed" % regex)
+
     if args.absent and os.path.exists(args.absent):
         failures.append("%s exists after the run" % args.absent)
 
@@ -361,6 +374,7 @@ def main():
     parser.add_argument("--bound-from")
     parser.add_argument("--bound-ranks", default="all")
     parser.add_argument("--end-spread-ms", type=int)
+    parser.add_argument("--lines", nargs=3, action="append", default=[])
     parser.add_argument("--poll-ms", type=int, default=10)
     parser.add_argument("--settle-s", type=float, default=5.0)
     parser.add_argument("command", nargs=argparse.REMAINDER)
@@ -396,6 +410,15 @@ def main():
     args.signal = signal_name(args.signal)
     if not hasattr(signal, "SIG" + args.signal):
         parser.error("no signal SIG%s" % args.signal)
+    lines = []
+    for regex, lo, hi in args.lines:
+        try:
+            re.compile(regex)
+            lines.append((regex, int(lo), int(hi)))
+        except (re.error, ValueError):
+            parser.error("--lines takes <regex> <min> <max>, not %s %s %s"
+                         % (regex, lo, hi))
+    args.lines = lines
     args.want = args.want.split(",")
     EXE = os.path.realpath(args.command[0])
 

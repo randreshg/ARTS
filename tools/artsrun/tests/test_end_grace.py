@@ -16,7 +16,7 @@ from artsrun.model.plane import RuntimeKind, SelectionEntry
 from artsrun.model.profile import Profile
 from artsrun.run.command import build_env
 from artsrun.run.grace import (EndGraceError, apply_grace, cell_bound_s,
-                               reconcile, record_bytes)
+                               reconcile, record_bytes, startup_budget_s)
 from artsrun.run.manifest import Manifest, write_manifest
 from artsrun.run.types import Cell
 
@@ -84,6 +84,19 @@ def test_a_startup_budget_in_the_environment_raises_b():
     assert cell_bound_s(cell, env) == 70
     [out] = apply_grace([cell], 30, False, env)
     assert out.end_grace_s == 70
+
+
+@pytest.mark.parametrize("raw", ["9", "86401", "10s", "0", "+20", " 20", "",
+                                 "\u0661\u0660"])
+def test_a_startup_budget_outside_the_runtime_rule_is_refused(raw):
+    with pytest.raises(EndGraceError, match="ARTS_STARTUP_TIMEOUT_S"):
+        startup_budget_s({"ARTS_STARTUP_TIMEOUT_S": raw})
+
+
+def test_the_budget_floor_ceiling_and_default():
+    assert startup_budget_s({"ARTS_STARTUP_TIMEOUT_S": "10"}) == 10
+    assert startup_budget_s({"ARTS_STARTUP_TIMEOUT_S": "86400"}) == 86400
+    assert startup_budget_s({}) == 20
 
 
 def test_reference_cells_carry_no_grace_and_no_bound_check():
