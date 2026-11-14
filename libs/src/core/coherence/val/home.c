@@ -131,6 +131,16 @@ void arts_handler_db_acquire(void *item, void *args) {
 }
 
 bool arts_db_acquire_is_serialized(arts_db_access_mode_t mode) {
+  /* A write acquire can wait for another rank's writers to release, so
+   * acquire-all issues it in the one global GUID order.  A read acquire
+   * stays off that walk: a window's request and its answer are messages in
+   * flight, and a reader parked for the next window waits for the open
+   * window's answer and the request that answer sends; the home answers
+   * without waiting for any EDT that can itself be waiting for an acquire;
+   * a request that reaches the home before the block's create waits for the
+   * create, which the program orders; and a read that finds the home's
+   * buffer unpublished, the home rank's own included, waits for the creating
+   * EDT's first publish, the release of an EDT that is already running. */
   return mode == DB_MODE_RW;
 }
 
@@ -191,7 +201,7 @@ void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload) {
    * (a non-home owner; home owners already hold the canonical buffer).  Under
    * RETAIN the publish moves no ownership (that is the separate owner→owner
    * ship); under PURGE its commit leg may carry the hand-back.  Derived ONCE:
-   * the hand-back rides this decision, and deriving it twice is how the two
+   * the hand-back follows this decision, and deriving it twice is how the two
    * drift apart. */
   bool will_publish = (!is_home && buf != NULL);
   /* Where the write right goes back unasked it can travel with these bytes
@@ -271,7 +281,8 @@ void arts_db_home_init(struct arts_db_s *db, unsigned int rw_holder,
   atomic_store_explicit(&db->grant_baton, 0u, memory_order_relaxed);
   db->cached_version = arts_rank_u64_map_create(nranks);
   arts_rank_bitset_init(&db->cached_ranks, nranks);
-  arts_db_cover_home_init(db, nranks);
+  atomic_store_explicit(&db->cover_gate, 0u, memory_order_relaxed);
+  db->claim_rank = (unsigned int)-1;
   /* A creator on another rank holds a cache of the block from the moment it
    * made it, so the destroy must reach that rank too: its cache would
    * otherwise outlive the block, keeping its storage and the rank's route
@@ -295,7 +306,6 @@ void arts_db_home_teardown(struct arts_db_s *db) {
   arts_home_grantreq_queue_destroy(&db->pending_rw);
   arts_rank_u64_map_destroy(db->cached_version);
   arts_rank_bitset_destroy(&db->cached_ranks);
-  arts_db_cover_home_teardown(db);
   /* No free: home fields are inlined in the arts_db_s. */
 }
 
@@ -495,7 +505,7 @@ static void pub_landed_cb(void *arg) {
      * here and not a moment earlier is what makes the two one event: the
      * stamp above is already in place, so a block handed straight on carries
      * a version this release has not moved past.  The publish's
-     * acknowledgement rides the hand-back and leaves once the home has
+     * acknowledgement leaves with the hand-back's answer, once the home has
      * applied it. */
     struct arts_db_grant_return_reply_s reply = {.cv = ctx->cv,
                                                  .token = ctx->token,
@@ -526,9 +536,9 @@ void arts_handler_db_publish(void *item_v, void *args_v) {
 
   if (a->data_size == 0) {
     /* Data-less ordering round (sentinel DB): install nothing, ACK.  A
-     * hand-back rides payload legs only. */
+     * hand-back travels with payload legs only. */
     assert(a->returns_grant == 0u &&
-           "a hand-back never rides a data-less publish");
+           "a data-less publish never carries a hand-back");
     arts_send_db_publish_ack(a->releaser, arts_db_of_cache(cache), a->cv,
                              a->version, /*credit=*/true, a->token);
     return;
@@ -581,19 +591,19 @@ void arts_db_destroy_arrived(struct arts_db_s *db) {
   arts_db_cover_destroy(db);
 }
 
-/* The teardown, run by whichever of the destroy and the last request the home
- * was told is coming reaches the gate's edge.  Roster fan-out
- * (cached_ranks), then the slot return; a waiter left parked at the destroy
- * (outside the destroy contract) is never woken, and the cb deleter frees the
- * cache once every count drains.  The queued ownership requesters are NOT
- * drained for the roster: the FIFO has exactly one consumer — the rank
- * holding the transfer baton — and the roster is complete without them.  No
- * release is waited for: every release that sends the home anything (a
- * publish, a hand-back) blocks until the home ACKs it, so under the destroy
- * contract none arrives after the destroy.  Where the home revokes, a
- * transfer's CONFIRM can: nothing gates on it, so the new owner's writers
- * may run, release, and be followed by the destroy before it lands.  It
- * reaches the retired descriptor through its home token, which the baton
+/* The teardown, run by whichever of the destroy and the claiming creator's
+ * pre-claim write request, where the home was told one is coming, reaches the
+ * gate's edge.  Roster fan-out (cached_ranks), then the slot return; a waiter
+ * left parked at the destroy (outside the destroy contract) is never woken,
+ * and the cb deleter frees the cache once every count drains.  The queued
+ * ownership requesters are NOT drained for the roster: the FIFO has exactly
+ * one consumer — the rank holding the transfer baton — and the roster is
+ * complete without them.  No release is waited for: every release that sends
+ * the home anything (a publish, a hand-back) blocks until the home ACKs it, so
+ * under the destroy contract none arrives after the destroy.  Where the home
+ * revokes, a transfer's CONFIRM can: nothing gates on it, so the new owner's
+ * writers may run, release, and be followed by the destroy before it lands.
+ * It reaches the retired descriptor through its home token, which the baton
  * tenure's count keeps, and only ends the tenure. */
 void arts_db_home_destroy_now(struct arts_db_s *db) {
   arts_guid_t guid = db->cache.db_guid;

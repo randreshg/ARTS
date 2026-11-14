@@ -34,8 +34,9 @@
 #include "arts/counter/Preamble.h"
 
 /* ===== acquire ==========================================================
- * The two planes are answered independently, because they are independent:
- * a read never waits on a writer and a write never waits on a reader.
+ * The two planes are answered independently: a write waits for the write
+ * right, which other ranks' writers release, and a read waits for no EDT
+ * that can itself be waiting for an acquire.
  *
  *   RO — served from the home (HOME read source puts current bytes there).  A
  *        rank holding a VALID copy short-circuits to a pure load; otherwise it
@@ -46,10 +47,14 @@
  */
 
 bool arts_db_acquire_is_serialized(arts_db_access_mode_t mode) {
-  /* A write acquire can wait on another rank's release (cross-DB cyclic
-   * hazard: acquire-all must issue it in the one global GUID order).  A read
-   * acquire waits only on the home's reply — never on another EDT's release —
-   * so it carries no cycle risk and may issue in parallel. */
+  /* A write acquire can wait for another rank's writers to release, so
+   * acquire-all issues it in the one global GUID order.  A read acquire
+   * stays off that walk: its fetch and the reply are messages in flight; the
+   * home replies without waiting for any EDT that can itself be waiting for
+   * an acquire; a fetch that reaches the home before the block's create
+   * waits for the create, which the program orders; and a read that finds
+   * the home's buffer unpublished, the home rank's own included, waits for
+   * the creating EDT's first publish, the release of an EDT already running. */
   return mode == DB_MODE_RW;
 }
 
@@ -233,7 +238,7 @@ void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload) {
    * none: its roster can name only this rank, the releaser of every round
    * there, and a round never targets its releasers; its buffers start
    * published (version 1), so no read waits for the round's drain either.
-   * Derived ONCE: the hand-back rides this decision, and deriving it twice
+   * Derived ONCE: the hand-back follows this decision, and deriving it twice
    * is how the two drift apart. */
   bool will_publish = (buf != NULL && arts_global_rank_count > 1);
   assert((arts_global_rank_count > 1 || new_version != 1u) &&

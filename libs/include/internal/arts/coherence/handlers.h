@@ -22,8 +22,8 @@
  *     the wire dispatcher does a ref-pinned lookup via
  *     arts_route_table_lookup_db; on HIT it calls the pure (item, args)
  *     body, on MISS it applies the handler's exact miss-action (a silent
- *     drop, a dismiss, or the reply its round still needs, such as an ACK
- *     — see each body).
+ *     drop, EXCL·RETAIN's dismiss of a read FORWARD, or the reply its round
+ *     still needs, such as an ACK — see each body).
  *   Either way an (item, args) body is handed its block already acquired
  *   and ref-pinned and does not look it up to operate on it.  A message
  *   handed over as the whole packet (the EXCL·RETAIN FORWARD, RO_RETURN and
@@ -74,8 +74,9 @@ struct arts_db_cache_s;
  * the ref-pinned lookup-acquire (a self-send borrows its caller's descriptor
  * while it is live, or takes a copy of its own where the body can drop the
  * count its caller runs under); on a HIT it calls the pure (item, args) body,
- * and on a MISS it applies that handler's exact miss-action (a silent drop, a
- * dismiss, or the reply its round still needs — see each handler's contract).
+ * and on a MISS it applies that handler's exact miss-action (a silent drop,
+ * EXCL·RETAIN's dismiss of a read FORWARD, or the reply its round still
+ * needs — see each handler's contract).
  * An answer's args carry the token and GUID its entry acts on.  These args
  * structs are stack-built by the dispatcher (or a self-send) from the decoded
  * wire packet and passed by pointer to the body; unlike the OoO Cat-B args they
@@ -340,7 +341,10 @@ void arts_send_db_grant_confirm(struct arts_db_s *db, uint64_t home_token);
  * rank-by-rank).  When the requester knows db_size a fresh transfer landing
  * is allocated and advertised in the request; a size-unknown first touch
  * sends landing-less (txid 0) and home answers GRANT_CTS, whose handler
- * re-issues through this sender with the landing attached. */
+ * re-issues through this sender with the landing attached.  cover is the
+ * request's cover word, read by the commit that opened it: a PRECLAIM request
+ * leaves without a landing whatever size the cache knows, and the home
+ * absorbs it when a create on this rank claimed the cache meanwhile. */
 void arts_send_db_grant_request(struct arts_db_cache_s *cache, uint32_t cover);
 /* GRANT_CTS at the requester (an answer): on the descriptor the packet's
  * token names, learns db_size and re-issues the in-flight GRANT_REQUEST with
@@ -416,8 +420,8 @@ void arts_send_db_snapshot_response(unsigned int requester_rank, uint64_t token,
                                     uint32_t kind, uint64_t db_size,
                                     const struct arts_rdzv_landing_s *landing,
                                     arts_shared_ptr_t src_h);
-/* owed: what the claimed first-touch cache had already asked the home for
- * (ARTS_CREATE_OWED_*), 0 for every other create. */
+/* owed: the requests of the claimed first-touch cache that the claim closed
+ * while they were still out (ARTS_CREATE_OWED_*), 0 for every other create. */
 void arts_send_db_create_coherent(unsigned int home_rank, arts_guid_t db_guid,
                                   uint64_t db_size, uint16_t flags,
                                   uint16_t db_type, uint64_t cxl_addr,

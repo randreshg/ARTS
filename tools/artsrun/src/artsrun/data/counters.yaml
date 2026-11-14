@@ -193,7 +193,7 @@ counters:
   NUM_SNAPSHOT_REQUEST:
     group: 'Validation arm'
     unit: count
-    help: 'VAL read requests this rank sent, one per message: re-sends after a size round, a dismiss or a write give-back and the home''s request to itself included'
+    help: 'VAL read requests this rank sent, one per message: re-sends after a size round and the home''s request to itself included'
 
   NUM_SNAPSHOT_HEADER_ONLY:
     group: 'Validation arm'
@@ -203,17 +203,17 @@ counters:
   NUM_SNAPSHOT_SIZE_CTS:
     group: 'Validation arm'
     unit: count
-    help: 'VAL read size rounds (the size alone, to a request that could not size a landing), counted at the replying rank; dismisses excluded'
+    help: 'VAL read size rounds (the size alone, to a request that could not size a landing), counted at the replying rank'
 
   NUM_RO_COMBINE_WINDOW:
     group: 'Validation arm'
     unit: count
-    help: 'VAL read windows opened: every read request that is not a re-send (a first reader''s, the next window an answer opens, a write give-back''s)'
+    help: 'VAL read windows opened: every read request that is not a re-send (a first reader''s, the next window an answer opens)'
 
   NUM_RO_COMBINE_JOINED:
     group: 'Validation arm'
     unit: count
-    help: 'VAL readers that sent no request of their own: parked for the next window or riding the rank''s write request'
+    help: 'VAL readers that sent no request of their own: parked for the next window'
 
   NUM_GRANT_SIZE_CTS:
     group: 'Size rounds'
@@ -228,7 +228,7 @@ counters:
   NUM_INV_SIZE_CTS:
     group: 'Size rounds'
     unit: count
-    help: 'Size rounds on the INV read plane, counted at the home; dismisses excluded'
+    help: 'Size rounds on the INV read plane, counted at the home'
 
   NUM_FLUSH_SIZE_CTS:
     group: 'Size rounds'

@@ -42,8 +42,9 @@
 #include "arts/counter/Preamble.h"
 
 /* ===== acquire ==========================================================
- * The two planes are answered independently, because they are independent:
- * a read never waits on a writer and a write never waits on a reader.
+ * The two planes are answered independently: a write waits for the write
+ * right, which other ranks' writers release, and a read waits for no EDT
+ * that can itself be waiting for an acquire.
  *
  *   RO — no rank can serve a read from a home buffer here (there is none), so
  *        a rank without a covering copy always fetches: it joins or opens the
@@ -53,10 +54,13 @@
  */
 
 bool arts_db_acquire_is_serialized(arts_db_access_mode_t mode) {
-  /* A write acquire can wait on another rank's release (cross-DB cyclic
-   * hazard: acquire-all must issue it in the one global GUID order).  A read
-   * acquire waits only on the serve — never on another EDT's release — so it
-   * carries no cycle risk and may issue in parallel. */
+  /* A write acquire can wait for another rank's writers to release, so
+   * acquire-all issues it in the one global GUID order.  A read acquire
+   * stays off that walk: its fetch, the home's redirect, a holder's bounce
+   * and the reply are messages in flight; the home and the holder answer
+   * without waiting for any EDT that can itself be waiting for an acquire;
+   * and a fetch that reaches the home before the block's create waits for
+   * the create, which the program orders. */
   return mode == DB_MODE_RW;
 }
 
@@ -295,9 +299,9 @@ void arts_handler_db_inv_redirect(void *item_v, void *args_v) {
 
 /* ===== OWNER-only senders =============================================== */
 
-/* home → the current grant holder: serve this reader.  The subject rides in
- * the packet because the holder answers it directly, so the wire sender and
- * the requester are different ranks. */
+/* home → the current grant holder: serve this reader.  The packet names the
+ * subject because the holder answers it directly, so the wire sender and the
+ * requester are different ranks. */
 void arts_send_db_inv_redirect(unsigned int holder_rank, arts_guid_t db_guid,
                                unsigned int requester,
                                const struct arts_rdzv_landing_s *rdzv,

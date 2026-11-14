@@ -17,8 +17,9 @@
  *     SNAPSHOT_REDIRECT / GRANT_INVALIDATE / CREATE_RETURN / FLUSH_COMMIT):
  *     the wire dispatcher does the ref-pinned lookup-acquire; on a HIT it
  *     calls the pure (item, args) body, and on a MISS it applies that
- *     handler's exact miss-action (a silent drop, a dismiss, or the reply its
- *     round still needs, such as an ACK — see each body).
+ *     handler's exact miss-action (a silent drop, EXCL·RETAIN's dismiss of a
+ *     read FORWARD, or the reply its round still needs, such as an ACK — see
+ *     each body).
  * Either way an (item, args) body operates on the already-acquired,
  * ref-pinned cache (the FIRST member of the db_s the caller hands it) and
  * does not look it up to operate on it.  A message handed over as the whole
@@ -282,8 +283,8 @@ void arts_handler_db_create(void *item_v, void *args_v) {
   } else {
     arts_db_cache_init(&stub->cache, db_guid, db_size, ARTS_DB_INIT_HOME_RECV,
                        creator_rank);
-    /* Still unpublished: the requests the claimed first touch had sent are
-     * owed before anything can reach the descriptor. */
+    /* Still unpublished: the requests the creator's claim closed while they
+     * were out are owed before anything can reach the descriptor. */
     arts_db_home_seed_owed(stub, creator_rank, p->owed);
   }
 #ifdef ARTS_USE_CXL

@@ -418,9 +418,9 @@ Validation Arm (VAL) — Read Requests
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 A reply with no payload is one the version ledger saved; a size round
-(``data_present`` 2, never a dismiss) negotiates a landing for a request
-that could not size one.  A window is a read request that is not a re-
-send.  Inert unless the build's validity is VAL.
+(``data_present`` 2) negotiates a landing for a request that could not size
+one.  A window is a read request that is not a re-send.  Inert unless the
+build's validity is VAL.
 
 .. list-table::
    :header-rows: 1
@@ -430,8 +430,7 @@ send.  Inert unless the build's validity is VAL.
      - Description
    * - ``NUM_SNAPSHOT_REQUEST``
      - VAL read requests this rank sent, one per message: re-sends after a
-       size round, a dismiss or a write give-back, and the home's request
-       to itself, included.
+       size round, and the home's request to itself, included.
    * - ``NUM_SNAPSHOT_HEADER_ONLY``
      - Read replies with no payload because the requester's ledger already
        held that version, counted at the replying rank.
@@ -439,17 +438,17 @@ send.  Inert unless the build's validity is VAL.
      - Read size rounds, counted at the replying rank (the home, or, under
        ``OWNER``, the owner).
    * - ``NUM_RO_COMBINE_WINDOW``
-     - Read windows opened: a first reader's request, the next window an
-       answer opens, and a write give-back's.
+     - Read windows opened: a first reader's request, and the next window
+       an answer opens.
    * - ``NUM_RO_COMBINE_JOINED``
      - Readers that sent no request of their own: parked for the next
-       window or riding the rank's write request.
+       window.
 
 Size Rounds on the Other Planes
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Counted at the replying rank, a dismiss never among them.  With the GUID
-size hint only a reserved or labeled GUID (or a size past the hint's
+Counted at the replying rank; an EXCL dismiss is never among them.  With the
+GUID size hint only a reserved or labeled GUID (or a size past the hint's
 range) takes one, so a nonzero steady rate is the hint NOT covering a
 workload.
 

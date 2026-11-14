@@ -318,7 +318,7 @@ struct arts_ooo_args_db_grant_request_s {
   arts_guid_t db_guid;
   struct arts_rdzv_landing_s rdzv; /* requester's transfer landing */
   uint64_t have_version;           /* version the requester already holds */
-  uint32_t cover;                  /* ARTS_COVER_* */
+  uint32_t cover;                  /* ARTS_COVER_PRECLAIM or 0 */
 #if defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)
   uint64_t token; /* the requester's answer token */
 #endif

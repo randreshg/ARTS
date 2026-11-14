@@ -49,6 +49,11 @@
  *               served inside its own self-sent body once the right is idle
  *               at the home (RETAIN: the home revokes itself and ships the
  *               grant to itself; PURGE: it serves its own front);
+ *   the destroy's gate at the home: the claiming creator's pre-claim write
+ *               request absorbed before the destroy, which then tears down;
+ *               the destroy waiting for that request, whose arrival tears
+ *               down; the same request from a rank that claimed nothing,
+ *               answered its size;
  *   publish flight (where releases publish) closed by its ACK; an ACK on a
  *               retired descriptor; the home's flight relaunched by its ACK
  *               and landed inside the relaunched publish (INV: by its own
@@ -775,6 +780,16 @@ static const struct arts_msg_grant_request_packet_s *write_request(int nth) {
       MSG_DB_GRANT_REQUEST, nth);
 }
 
+/* The nth write request's cover word, the bit above its version; the version
+ * below it is the one the cache held, none in every scenario here. */
+static uint32_t write_cover(int nth) {
+  uint64_t v = write_request(nth)->have_version;
+  if ((v & ARTS_GRANT_REQ_VERSION_MASK) != ARTS_GRANT_VERSION_NONE) {
+    fail("a write request names a version its cache does not hold");
+  }
+  return (uint32_t)(v >> ARTS_GRANT_REQ_VERSION_BITS);
+}
+
 /* The grant, from another rank: no payload, or a one-sided one. */
 static void write_answer(int nth, bool payload) {
   const struct arts_msg_grant_request_packet_s *r = write_request(nth);
@@ -890,6 +905,9 @@ static void write_answered(bool payload) {
                 : "write axis closed by its answer",
         GUID_SIZED, false);
   acquire(DB_MODE_RW);
+  if (write_cover(0) != 0u) {
+    fail("a cache no create can claim sent a pre-claim request");
+  }
   write_answer(0, payload);
   if (payload) {
     pairing_fire(true);
@@ -903,10 +921,16 @@ static void write_answered(bool payload) {
 static void write_size_rounds(void) {
   begin("write size round keeps the axis open", GUID_CLAIM, false);
   acquire(DB_MODE_RW);
+  if (write_cover(0) != ARTS_COVER_PRECLAIM) {
+    fail("a claimable first touch's request is not marked pre-claim");
+  }
   write_size_round(0);
   if (write_request(1)->token != write_request(0)->token ||
       write_request(1)->rdzv.cookie == 0u) {
     fail("the re-sent request is not the same request with a landing");
+  }
+  if (write_cover(1) != 0u) {
+    fail("a request re-sent after its size round is still marked pre-claim");
   }
   write_answer(1, false);
   confirm_ack();
@@ -916,8 +940,12 @@ static void write_size_rounds(void) {
 static void write_claimed(void) {
   begin("write axis closed by a create's claim", GUID_CLAIM, false);
   acquire(DB_MODE_RW);
-  if ((claim() & ARTS_CREATE_OWED_RW) == 0u) {
-    fail("the claim did not close the write request");
+  if (write_cover(0) != ARTS_COVER_PRECLAIM ||
+      write_request(0)->rdzv.cookie != 0u) {
+    fail("the request the claim closes is not a landing-less pre-claim one");
+  }
+  if (claim() != ARTS_CREATE_OWED_RW) {
+    fail("the claim did not announce the write request alone");
   }
   end(1);
 }
@@ -1105,6 +1133,114 @@ static void home_request_served_in_body(void) {
     fail("the home's own request left the rank");
   }
   end_dropped(wakes);
+}
+
+/* A write request from rank `from` that a claimable first touch opened, as
+ * the engine hands it to the home: under the dispatcher's pin. */
+#define FAR_TOKEN ((uint64_t)0x6b6b00u)
+static void write_request_with(unsigned int from, uint32_t cover) {
+  struct arts_ooo_args_db_grant_request_s a = {
+      .requester = from,
+      .db_guid = g_db->cache.db_guid,
+      .have_version = ARTS_GRANT_VERSION_NONE,
+      .cover = cover,
+      .token = FAR_TOKEN,
+  };
+  arts_shared_ptr_t pin = arts_shared_copy(g_db->self_cb);
+  arts_handler_db_grant_request(g_db, &a);
+  arts_shared_release(&pin);
+}
+
+static void preclaim_write_request(unsigned int from) {
+  write_request_with(from, ARTS_COVER_PRECLAIM);
+}
+
+static void destroy_arrives(void) {
+  arts_shared_ptr_t pin = arts_shared_copy(g_db->self_cb);
+  arts_db_destroy_arrived(g_db);
+  arts_shared_release(&pin);
+}
+
+/* The destroy's gate at the home of a block whose creator claimed a
+ * first-touch cache with its write request out.  The home absorbs that
+ * request, queueing and answering nothing, and tears down at whichever of the
+ * destroy and the request's arrival comes second, once.  The same request
+ * from a rank whose create claimed nothing is a first touch like any other:
+ * the home answers its size. */
+static void home_gate(int how) {
+  static const char *names[] = {
+      "claimer's pre-claim write request absorbed, then the destroy",
+      "destroy waits for the claimer's pre-claim write request",
+      "pre-claim write request of a rank that claimed nothing"};
+  begin(names[how], GUID_CLAIM, true);
+  if (how == 2) {
+    preclaim_write_request(REQ);
+    if (g_nsent != 1 || count_sent(MSG_DB_GRANT_CTS) != 1 ||
+        ((const struct arts_msg_grant_cts_packet_s *)sent(MSG_DB_GRANT_CTS, 0))
+                ->token != FAR_TOKEN) {
+      fail("a landing-less first touch was not answered its size");
+    }
+    end(0);
+    return;
+  }
+  g_poison = true;
+  arts_db_home_seed_owed(g_db, REQ, ARTS_CREATE_OWED_RW);
+  if (how == 1) {
+    destroy_arrives();
+    if (g_deleted != 0 || g_nsent != 0 ||
+        atomic_load_explicit(&g_db->cover_gate, memory_order_acquire) !=
+            (ARTS_COVER_GATE_TD | ARTS_COVER_GATE_RWO | 1u)) {
+      fail("the destroy did not wait for the request the home is owed");
+    }
+  }
+  preclaim_write_request(REQ);
+  if (count_sent(MSG_DB_GRANT_CTS) != 0 ||
+      count_sent(MSG_DB_GRANT_RESPONSE) != 0) {
+    fail("the home answered a request the claim had closed");
+  }
+  if (how == 0) {
+    if (g_deleted != 0 || g_nsent != 0 ||
+        !arts_home_grantreq_queue_empty(&g_db->pending_rw) ||
+        atomic_load_explicit(&g_db->cover_gate, memory_order_acquire) != 0u) {
+      fail("the absorbed request left something behind at the home");
+    }
+    destroy_arrives();
+  }
+  if (g_nsent != 1 || count_sent(MSG_DB_CACHE_DESTROY) != 1) {
+    fail("the teardown did not tell the creator's rank exactly once");
+  }
+  end_dropped(0);
+}
+
+/* A write request the gate does not absorb is an ordinary first touch, and
+ * leaves the gate's owed request owed: the claimer's own request sent after
+ * its claim carries no PRECLAIM, and a pre-claim request of another rank is
+ * not the one the claim closed. */
+static void home_gate_unabsorbed(int how) {
+  static const char *names[] = {
+      "claimer's write request after its claim is not absorbed",
+      "pre-claim write request of another rank leaves the claimer's owed"};
+  const uint32_t owed = ARTS_COVER_GATE_RWO | 1u;
+  begin(names[how], GUID_CLAIM, true);
+  arts_db_home_seed_owed(g_db, REQ, ARTS_CREATE_OWED_RW);
+  write_request_with(how == 0 ? REQ : REQ + 1u,
+                     how == 0 ? 0u : ARTS_COVER_PRECLAIM);
+  if (g_nsent != 1 || count_sent(MSG_DB_GRANT_CTS) != 1 ||
+      ((const struct arts_msg_grant_cts_packet_s *)sent(MSG_DB_GRANT_CTS, 0))
+              ->token != FAR_TOKEN) {
+    fail("a request the claim had not closed was not answered its size");
+  }
+  if (atomic_load_explicit(&g_db->cover_gate, memory_order_acquire) != owed) {
+    fail("a request the claim had not closed settled the gate");
+  }
+  if (how == 1) {
+    preclaim_write_request(REQ);
+    if (g_nsent != 1 ||
+        atomic_load_explicit(&g_db->cover_gate, memory_order_acquire) != 0u) {
+      fail("the claimer's own request did not settle the gate");
+    }
+  }
+  end(0);
 }
 
 #ifdef ARTS_VALIDITY_VAL
@@ -1594,6 +1730,11 @@ int main(void) {
 #endif
   home_wake_drops_last();
   home_request_served_in_body();
+  home_gate(0);
+  home_gate(1);
+  home_gate(2);
+  home_gate_unabsorbed(0);
+  home_gate_unabsorbed(1);
 #if PUBLISHES
   home_flight_relaunch_lands();
   flight_landed();

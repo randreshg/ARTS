@@ -86,6 +86,15 @@ void arts_handler_db_acquire(void *item, void *args) {
 }
 
 bool arts_db_acquire_is_serialized(arts_db_access_mode_t mode) {
+  /* A write acquire can wait for another rank's writers to release, so
+   * acquire-all issues it in the one global GUID order.  A read acquire
+   * stays off that walk: a window's request, the home's redirect and the
+   * answer are messages in flight, and a reader parked for the next window
+   * waits for the open window's answer and the request that answer sends;
+   * the home and the holder answer without waiting for any EDT that can
+   * itself be waiting for an acquire; and a request that reaches the home
+   * before the block's create waits for the create, which the program
+   * orders. */
   return mode == DB_MODE_RW;
 }
 
@@ -184,7 +193,8 @@ void arts_db_home_init(struct arts_db_s *db, unsigned int rw_holder,
   arts_home_grantreq_queue_init(&db->pending_rw);
   atomic_store_explicit(&db->grant_baton, 0u, memory_order_relaxed);
   arts_rank_bitset_init(&db->cached_ranks, nranks);
-  arts_db_cover_home_init(db, nranks);
+  atomic_store_explicit(&db->cover_gate, 0u, memory_order_relaxed);
+  db->claim_rank = (unsigned int)-1;
   /* A creator on another rank holds a cache of the block from the moment it
    * made it, so the destroy must reach that rank too: its cache would
    * otherwise outlive the block, keeping its storage and the rank's route
@@ -201,7 +211,6 @@ void arts_db_home_teardown(struct arts_db_s *db) {
   }
   arts_home_grantreq_queue_destroy(&db->pending_rw);
   arts_rank_bitset_destroy(&db->cached_ranks);
-  arts_db_cover_home_teardown(db);
   /* No free: home fields are inlined in the arts_db_s. */
 }
 
@@ -249,17 +258,18 @@ void arts_db_destroy_arrived(struct arts_db_s *db) {
   arts_db_cover_destroy(db);
 }
 
-/* The teardown, run by whichever of the destroy and the last request the home
- * was told is coming reaches the gate's edge: roster fan-out, then the slot
- * return; a waiter left parked at the destroy (outside the destroy contract)
- * is never woken.  The roster is the cached-ranks bit-set: the creator joins
- * it at create and every requester when its request arrives, so it names
- * rw_holder and, during a transfer, pending_install_owner too.  The request
- * FIFO is not read: its one consumer is the baton holder, and every queued
- * requester is already on the bit-set.  Nothing else is waited for: no
- * release on this arm sends the home anything, and a transfer's CONFIRM is
- * answered before the new owner's writers run, so under the destroy contract
- * nothing owed to the home arrives after the destroy. */
+/* The teardown, run by whichever of the destroy and the claiming creator's
+ * pre-claim write request, where the home was told one is coming, reaches the
+ * gate's edge: roster fan-out, then the slot return; a waiter left parked at
+ * the destroy (outside the destroy contract) is never woken.  The roster is
+ * the cached-ranks bit-set: the creator joins it at create and every requester
+ * when its request arrives, so it names rw_holder and, during a transfer,
+ * pending_install_owner too.  The request FIFO is not read: its one consumer
+ * is the baton holder, and every queued requester is already on the bit-set.
+ * Nothing else is waited for: no release on this arm sends the home anything,
+ * and a transfer's CONFIRM is answered before the new owner's writers run, so
+ * under the destroy contract nothing owed to the home arrives after the
+ * destroy. */
 void arts_db_home_destroy_now(struct arts_db_s *db) {
   struct arts_rank_bitset_cursor_s c =
       arts_rank_bitset_cursor(&db->cached_ranks);

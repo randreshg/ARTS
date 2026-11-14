@@ -198,9 +198,10 @@ unsigned int arts_grant_purge_release_next(unsigned int cur, bool purgeable,
 #define ARTS_GRANT_NO_RETURNER ((unsigned int)-1)
 #endif /* grant plane */
 
-/* A create announce's owed byte: the requests the first-touch cache a create
- * claimed had already sent its home -- a read request (with its parity) and a
- * write request.  The home tears the block down only once each has arrived. */
+/* A create announce's owed byte: the requests of the first-touch cache a
+ * create claimed that the claim closed while they were still out -- its write
+ * request and, on EXCL, its read request (with its parity).  The home tears
+ * the block down only once each has arrived. */
 #define ARTS_CREATE_OWED_RO 0x1u
 #define ARTS_CREATE_OWED_RO_PAR 0x2u
 #define ARTS_CREATE_OWED_RW 0x4u
@@ -213,13 +214,10 @@ unsigned int arts_grant_purge_release_next(unsigned int cur, bool purgeable,
 #define ARTS_DB_STUB_CLAIMABLE(guid)                                           \
   (ARTS_GUID_DB_GET_SZHINT(guid) == ARTS_GUID_DB_SZHINT_NONE)
 
-/* A request's cover word: a read request carries its parity; a write request
- * declares the read request its rank has out (open + parity) and whether it
- * was opened by a first-touch cache no create had claimed yet. */
-#define ARTS_COVER_PAR 0x1u
-#define ARTS_COVER_RO_OPEN 0x2u
-#define ARTS_COVER_RO_PAR 0x4u
-#define ARTS_COVER_PRECLAIM 0x8u
+/* A VAL or INV write request's cover word: whether a first-touch cache no
+ * create had claimed yet opened it.  A create that then claims the cache
+ * closes the request, and the block's home absorbs it. */
+#define ARTS_COVER_PRECLAIM 0x1u
 
 /* In-memory rendezvous landing descriptor — the coherence-side mirror of the
  * packed wire struct arts_msg_rdzv_landing_s (protocol.h): where a payload
@@ -318,9 +316,8 @@ struct arts_db_read_waiter_s {
   unsigned int slot;
   /* Deferred-serve arm: NULL = local waiter (the drain resolves the parked
    * slot on the installed buffer).  Non-NULL = deferred remote serve; the
-   * drain invokes serve(cache, w) BEFORE freeing w, and
-   * requester/cover/rdzv/token carry the original request. */
-  uint32_t cover;
+   * drain invokes serve(cache, w) BEFORE freeing w, and requester/rdzv/token
+   * carry the original request. */
   void (*serve)(struct arts_db_cache_s *cache, struct arts_db_read_waiter_s *w);
   unsigned int requester;
   struct arts_rdzv_landing_s rdzv;

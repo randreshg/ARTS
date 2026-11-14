@@ -120,7 +120,7 @@ void arts_db_rw_req_clear(struct arts_db_cache_s *cache) {
   }
 }
 
-uint32_t arts_db_rw_req_declaim(struct arts_db_cache_s *cache) {
+void arts_db_rw_req_declaim(struct arts_db_cache_s *cache) {
   uint64_t post;
   uint32_t act;
   uint64_t pre = inv_req_step(cache, INV_CACHE_OP_DECLAIM, &post, &act);
@@ -129,7 +129,6 @@ uint32_t arts_db_rw_req_declaim(struct arts_db_cache_s *cache) {
                "for (word=%llx)",
                (unsigned long)cache->db_guid, (unsigned long long)pre);
   }
-  return inv_rw_cover(post);
 }
 
 /* ===== cache lifecycle ================================================== */
@@ -294,18 +293,18 @@ void arts_db_destroy_arrived(struct arts_db_s *db) {
   arts_db_cover_destroy(db);
 }
 
-/* The teardown, run by whichever of the destroy and the last request the home
- * was told is coming reaches the gate's edge.  The roster is complete: every
- * rank holding a cache of the block (its creator, every read requester and
- * every write requester) has a bit, so each is told.  No pending_rw drain:
- * the grant request queue is single-consumer (the transfer baton's holder),
- * and a legitimately destroyed DB has no outstanding acquires.  No release is
- * waited for: every release that sends the home anything (a round, a
- * hand-back) blocks until the home ACKs it, so under the destroy contract none
- * arrives after the destroy; a transfer's CONFIRM that does (where the home
- * revokes and nothing gates on it) reaches the retired descriptor through its
- * home token, which the baton tenure's count keeps, and only ends the
- * tenure. */
+/* The teardown, run by whichever of the destroy and the claiming creator's
+ * pre-claim write request, where the home was told one is coming, reaches the
+ * gate's edge.  The roster is complete: every rank holding a cache of the
+ * block (its creator, every read requester and every write requester) has a
+ * bit, so each is told.  No pending_rw drain: the grant request queue is
+ * single-consumer (the transfer baton's holder), and a legitimately destroyed
+ * DB has no outstanding acquires.  No release is waited for: every release
+ * that sends the home anything (a round, a hand-back) blocks until the home
+ * ACKs it, so under the destroy contract none arrives after the destroy; a
+ * transfer's CONFIRM that does (where the home revokes and nothing gates on
+ * it) reaches the retired descriptor through its home token, which the baton
+ * tenure's count keeps, and only ends the tenure. */
 void arts_db_home_destroy_now(struct arts_db_s *db) {
   struct arts_db_cache_s *cache = &db->cache;
   arts_guid_t guid = cache->db_guid;
@@ -506,13 +505,13 @@ static void inv_round_finish(struct arts_db_s *db,
       arts_free(e);
     }
     if (returning != NULL) {
-      /* Accepted only now, after the acks of the round it rode: that round
-       * has retired every stale copy (and stamped the publication axis), so a
-       * block handed straight on from here carries no copy this release has
-       * already invalidated.  Accepted under the hold, which is safe only
-       * because the acceptance never waits on anything the round gates; its
-       * acknowledgement rides the hand-back and leaves once the home has
-       * applied it. */
+      /* Accepted only now, after the acks of the round that carried it: that
+       * round has retired every stale copy (and stamped the publication
+       * axis), so a block handed straight on from here carries no copy this
+       * release has already invalidated.  Accepted under the hold, which is
+       * safe only because the acceptance never waits on anything the round
+       * gates; its acknowledgement leaves with the hand-back's answer, once
+       * the home has applied it. */
       struct arts_db_grant_return_reply_s reply = {
           .cv = 0u,
           .token = returning->token,
@@ -621,7 +620,7 @@ void arts_handler_db_publish(void *item_v, void *args_v) {
   struct arts_ooo_args_db_publish_s *a =
       (struct arts_ooo_args_db_publish_s *)args_v;
   assert((a->returns_grant == 0u || a->rdzv_txid != 0u) &&
-         "a hand-back rides a payload commit leg only");
+         "only a payload commit leg carries a hand-back");
 #ifdef ARTS_READ_SOURCE_HOME
   struct arts_db_cache_s *cache = &db->cache;
   if (a->data_size != 0 && a->rdzv_txid == 0) {

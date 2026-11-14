@@ -146,7 +146,6 @@ static void print_fingerprint(void) {
   MEMBER(read_waiter_t, edt_guid);
 #endif
   MEMBER(read_waiter_t, slot);
-  MEMBER(read_waiter_t, cover);
   MEMBER(read_waiter_t, serve);
   MEMBER(read_waiter_t, requester);
   MEMBER(read_waiter_t, rdzv);
@@ -284,7 +283,6 @@ static void print_fingerprint(void) {
   MEMBER(db_t, pending_rw);
   MEMBER(db_t, grant_baton);
   MEMBER(db_t, cached_ranks);
-  MEMBER(db_t, ro_parity);
   MEMBER(db_t, cover_gate);
   MEMBER(db_t, claim_rank);
 #endif

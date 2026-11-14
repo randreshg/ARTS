@@ -123,7 +123,8 @@ route slot the object occupies:
   as the GUID's **next generation**.
 
 Every other message keeps its own rule: it runs against the object the slot
-holds, and while the slot is empty it waits for the next install.  A create
+holds, and while the slot is empty it waits for the next install (for a data
+block's acquire, see `An acquire that waits for a create`_).  A create
 parked behind an occupant that never ends stays parked until the run ends,
 where the teardown walk of a tree built with ``ARTS_DEBUG_TEARDOWN`` counts it
 among the work left undone (the ``ooo`` contributor), so the shutdown is
@@ -221,6 +222,35 @@ the home answers the announce with a credit for that publish.
 A labeled data-block GUID is reserved before its block exists, so it
 carries no size hint, and a rank's first fetch of the block from its home
 asks for the size first.
+
+.. _acquire-waits-for-create:
+
+An acquire that waits for a create
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+A dependence can name a reserved or labeled data block before the block is
+created.  Its acquire then waits for the create: at the home, where a
+request from another rank waits too, or on a rank where the create is
+deciding or parked.  The EDT the dependence belongs to is in the middle
+of acquiring its blocks, and it keeps what it already acquired while it
+waits.  Under ``VAL``, ``INV`` and ``EXCL`` an EDT's write accesses, and
+under ``EXCL`` its read accesses too, are acquired one after another in
+GUID order, and each is kept until the EDT releases it.  A write access
+keeps the writers of every other node waiting for that block, and under
+``EXCL`` its readers as well; a read access under ``EXCL`` keeps the
+block's writers waiting.
+
+The program therefore has one duty towards a create that EDTs wait for:
+**nothing the creating EDT waits for may be held by an EDT that waits for
+the block.**  Suppose the EDT that creates block ``D`` runs only after an
+EDT ``X`` completed, and ``X`` needs an access to a block ``B`` that an EDT
+waiting for ``D`` already holds.  Then ``X`` waits for that EDT, that EDT
+waits for ``D``, and ``D`` is never created.  The runtime neither detects
+nor breaks such a wait.  Under ``VAL`` and ``INV`` only a write access of
+``X`` can wait this way: a read access is served there without waiting for
+another node's writers to release (:ref:`coherence_protocols`, Requests per
+node).  Under ``FLUSH`` no acquire waits for an access another EDT holds, so
+the duty asks nothing there.
 
 Reuse and generations
 ~~~~~~~~~~~~~~~~~~~~~

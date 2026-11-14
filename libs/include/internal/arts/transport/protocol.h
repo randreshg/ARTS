@@ -278,15 +278,15 @@ struct ARTS_PACKED arts_msg_grant_request_packet_s {
   /* The version of the copy this requester ALREADY holds, so a server can
    * tell "needs the bytes" from "needs only the permission" without asking
    * anyone.  ARTS_GRANT_VERSION_NONE = holds nothing worth keeping, which is
-   * also what an unpublished copy reports: both need the bytes.  The top four
-   * bits carry the request's ARTS_COVER_* word (the read request its rank has
-   * out, and PRECLAIM): a version counts releases and never reaches 2^60. */
+   * also what an unpublished copy reports: both need the bytes.  The top bit
+   * is the request's cover word (ARTS_COVER_PRECLAIM): a version counts
+   * releases and never reaches 2^63. */
   uint64_t have_version;
 #if defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)
   uint64_t token; /* the requester's answer token */
 #endif
 };
-#define ARTS_GRANT_REQ_VERSION_BITS 60
+#define ARTS_GRANT_REQ_VERSION_BITS 63
 #define ARTS_GRANT_REQ_VERSION_MASK                                            \
   (((uint64_t)1 << ARTS_GRANT_REQ_VERSION_BITS) - 1)
 
@@ -534,7 +534,8 @@ struct ARTS_PACKED arts_msg_db_create_coherent_packet_s {
 #endif
   uint16_t flags;
   uint16_t db_type;
-  uint8_t owed; /* the claimed first touch's requests still out */
+  uint8_t owed; /* ARTS_CREATE_OWED_*: the claimed first touch's requests the
+                   claim closed, which the home must still expect */
   uint8_t pad[3];
 };
 

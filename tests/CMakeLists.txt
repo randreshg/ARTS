@@ -1375,12 +1375,13 @@ if((ARTS_VALIDITY STREQUAL "VAL" OR ARTS_VALIDITY STREQUAL "INV")
 endif()
 # Each open request axis of a cache owns one count on the requester's
 # descriptor, taken where the axis opens and dropped once by whatever closes
-# it: the answer (acting on the token it echoes), a size round or dismiss, a
-# create's claim, the teardown sweep.  Every VAL and INV tree compiles that
+# it: the answer (acting on the token it echoes), a create's claim of the
+# write axis, the teardown sweep.  Every VAL and INV tree compiles that
 # accounting differently: the two arms keep the read axis in different words,
 # the read sources close the write axis at different sites (the grant, or
 # the CONFIRM_ACK), PURGE adds the home's self-served front, and only the
-# publishing cells have a flight.
+# publishing cells have a flight.  The request a claim closes is the one the
+# home's gate holds the teardown for, so the gate's scenarios run here too.
 if(ARTS_VALIDITY STREQUAL "VAL" OR ARTS_VALIDITY STREQUAL "INV")
     arts_grant_home_unit(token_axis_pairing_valinv 30)
 endif()

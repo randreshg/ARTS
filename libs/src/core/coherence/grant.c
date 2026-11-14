@@ -510,15 +510,14 @@ void arts_handler_db_grant_request(void *item_v, void *args_v) {
   unsigned int requester = a->requester;
 
   struct arts_db_s *db = arts_db_of_cache(cache);
-  /* The declared-arrival rule: a write request a create's claim covered is
-   * absorbed, and one that declares its rank's read request counts it. */
+  /* The claiming creator's pre-claim write request: the claim served its
+   * writers, so it is neither queued nor answered. */
   {
     bool td = false;
-    int r = arts_db_cover_request(db, requester, true, a->cover, &td);
-    if (r != ARTS_COVER_PROCESS) {
-      /* A write request a claim covered was committed with PRECLAIM, which
-       * sends it without a landing: nothing to give back. */
-      assert((a->cover & ARTS_COVER_PRECLAIM) == 0u || a->rdzv.cookie == 0u);
+    if (arts_db_preclaim_write_absorb(db, requester, a->cover, &td)) {
+      /* Committed with PRECLAIM, it left without a landing: nothing to give
+       * back. */
+      assert(a->rdzv.cookie == 0u);
       if (td) {
         arts_db_home_destroy_now(db);
       }
@@ -631,11 +630,16 @@ void arts_send_db_grant_request(struct arts_db_cache_s *cache,
   arts_fill_packet_header(&p.header, sizeof(p), MSG_DB_GRANT_REQUEST);
   p.header.rank = arts_global_rank_id;
   p.db_guid = db_guid;
+  static_assert(
+      ((uint64_t)ARTS_COVER_PRECLAIM << ARTS_GRANT_REQ_VERSION_BITS) ==
+          ~ARTS_GRANT_REQ_VERSION_MASK,
+      "the cover word is the one bit above the request's version");
   if (have_version > ARTS_GRANT_REQ_VERSION_MASK) {
     ARTS_ERROR("grant: guid %lu reached version %llu, past the request's "
-               "60-bit version field",
+               "63-bit version field",
                (unsigned long)db_guid, (unsigned long long)have_version);
   }
+  assert((cover & ~ARTS_COVER_PRECLAIM) == 0u);
   p.have_version =
       have_version | ((uint64_t)cover << ARTS_GRANT_REQ_VERSION_BITS);
   p.rdzv.addr = rdzv.addr;
@@ -695,10 +699,11 @@ void arts_handler_db_grant_cts(struct arts_msg_grant_cts_packet_s *p) {
   struct arts_db_cache_s *cache = &db->cache;
   arts_db_cache_learn_size(cache, p->db_size);
   /* Only a request the home did not absorb gets a size round, so this cache
-   * is no claim's and never will be: the size round clears its stub bit in
-   * the same atom that reads the re-send's cover word, and every later
-   * request of this cache carries a landing. */
-  arts_send_db_grant_request(cache, arts_db_rw_req_declaim(cache));
+   * is no claim's and never will be: the size round clears its stub bit, and
+   * the re-send and every later request of this cache carry a landing and no
+   * PRECLAIM. */
+  arts_db_rw_req_declaim(cache);
+  arts_send_db_grant_request(cache, 0u);
 }
 
 #ifndef ARTS_RETENTION_PURGE

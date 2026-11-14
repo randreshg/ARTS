@@ -282,18 +282,72 @@ driver's cross-entry consensus and on the device itself.
 The protocols
 -------------
 
-Requests per node; a write turn covers reads
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Requests per node
+~~~~~~~~~~~~~~~~~
 
 On the three arms that aggregate a node's acquires (VAL, INV, EXCL) requests
 are per node: a node has at most one read request and one write request out
-per DB, each closed only by its own answer — data, a size round (the size
-alone, for a request that could not name a landing), or a *dismiss* (an
-answer without data) — or by a create's claim of a cache the node made by a
-first touch, which closes both.  Write access covers read access
-(RW ⊇ RO), so:
+per DB, and an acquire that finds its request out sends no other: it joins
+that request (a VAL reader joins the node's next one, see below).  A node
+whose read request is out sends its write request at once, without waiting
+for the read request's answer.  A reader that arrives while its node can
+serve it — by each arm's own test: the node holds the write right, a read
+grant, a valid copy, or the home's own bytes — is served there and sends
+nothing.  The arms differ in what a reader does while its node's write
+request is out, and in what closes a request.
 
-- a node whose read request is out sends its write request at once;
+**VAL and INV: each request is closed only by its own answer.**  A node's
+two requests neither wait for nor replace each other:
+
+- a reader its node cannot serve opens the node's read request, or joins the
+  one that is out, whatever the state of the node's write request;
+- write permission that reaches the node — a grant, or a create's own hold
+  on a cache the node made by a first touch before the create — serves the
+  writers parked there and no reader: the readers parked on the node's read
+  request stay parked until that request's answer;
+- the home answers a read request as a read — itself or, under ``OWNER``, by
+  redirecting it to the node that holds the bytes — whatever the requesting
+  node's write request is doing.  The answer brings the data or, when the
+  requester's copy is already current, no payload; a request that could not
+  name a landing first gets a *size round* (the size alone) and is sent
+  again with one.
+
+So no reader is left parked behind a write request.  A parked reader waits
+only for messages in flight; for the answer of the home, or of the node the
+home redirects the request to, neither of which waits for an EDT that can
+itself be waiting for an acquire; for the DB's create, when the request
+reached the home before it; and, under ``HOME``, for the creating EDT's
+first release, while the home's copy is not yet published (a reader on the
+home node waits for that release too, with no request).  A read waits for no
+release of an EDT that can itself be waiting for an acquire; the one release
+it can wait for is the creating EDT's first, and a running EDT waits for
+nothing.  That is why an EDT's read
+dependences are acquired in parallel, while its write dependences are
+acquired one after another in one global GUID order.  The wait for a create
+leaves the program one duty (:ref:`acquire-waits-for-create`).
+
+A create's claim is the one thing besides its answer that closes a request.
+A create issued on a node other than the DB's home claims the cache a
+dependence made on that node by a first touch, and the claim is a write
+acquire: it serves the writers parked on that cache and closes the cache's
+write request, which may still be travelling.  A read request the cache has
+out stays out and is answered like any other once the home is installed.
+That *pre-claim write request* is the only request that can reach the home
+after the program destroyed the DB, a destroy that is legal because every
+hold was released.  The create's announce tells the home that the request is
+coming; the home tears the DB down only once it has arrived, and absorbs it
+without an answer.  No read request can trail a legal destroy: its readers
+are still parked, and a destroy issued while an acquire is pending is a
+program error.  Under ``OWNER`` a redirect or a holder's bounce of a read
+request that finds the DB torn down, which only such a program produces, is
+dropped.
+
+**EXCL: a write turn covers the node's read request.**  A request is closed
+by its own answer — data, a size round, or a *dismiss* (an answer without
+data) — or by a create's claim of a cache the node made by a first touch,
+which closes both requests.  Write access covers read access (RW ⊇ RO), for
+the readers of a read request that is out as well:
+
 - a reader that arrives while the node's write request is out sends nothing
   and rides it;
 - when write permission reaches the node first — a grant, or a create's own
@@ -303,22 +357,23 @@ first touch, which closes both.  Write access covers read access
 
 A request whose waiters something other than its own answer served (a
 *covered* request) can still be travelling when the program destroys the
-DB, a destroy that is legal because every hold was released.  The home
-neither serves such a request against a destroyed DB nor parks it: the
-node's write request names the read request it covers (by a one-bit parity),
-the create's announce names the requests a claimed cache had sent, and the
-home keeps one parity bit per requester node and a count of what is still
-coming.  The teardown waits for that count to reach zero, and a covered read
-request that reaches the home after the write request that named it is
-dismissed rather than served, before or after the destroy.  On EXCL a
-covered read request that reached the home first and still waits in its
-read queue is taken by that write request and dismissed when the queue
-drains, instead of being granted a read turn its node's write turn already
-served.  A redirect or forward of a request the home already took in is
-never an early arrival: if it finds the DB torn down it answers a dismiss
-(VAL, INV) or is dropped (EXCL, whose landing is the requester's own
-buffer).  FLUSH aggregates nothing — a fetch is answered before its EDT
-runs — so no request of it is ever covered.
+DB.  The home neither serves such a request against a destroyed DB nor parks
+it: the node's write request names the read request it covers (by a one-bit
+parity), the create's announce names the requests a claimed cache had sent,
+and the home keeps one parity bit per requester node and a count of what is
+still coming.  The teardown waits for that count to reach zero, and a
+covered read request that reaches the home after the write request that
+named it is dismissed rather than served, before or after the destroy.  A
+covered read request that reached the home first and still waits in its read
+queue is taken by that write request and dismissed when the queue drains,
+instead of being granted a read turn its node's write turn already served.
+Under ``RETAIN`` the home forwards a request to the DB's owner, and a
+forward is never an early arrival: if it finds the DB torn down, a read
+request's forward is answered with a dismiss and a write request's is
+dropped.
+
+FLUSH aggregates nothing: a fetch belongs to one EDT and is answered before
+that EDT runs, so none can trail a legal destroy.
 
 VAL — versioned snapshots, externally ordered updates
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -364,14 +419,15 @@ already matches the master version receives a header-only, no-data reply.
 Request combining layers on top of this dedup: at most one snapshot request
 per DB and rank is in flight. A read acquire that finds one outstanding
 parks, and the readers parked when it completes share the next request and
-its response; a reader never rides a request sent before it parked, whose
-response may predate the releases it is ordered after. A reader that finds
-its node's write request out opens no window and rides the write request
-instead. Every remote read-only acquire combines. It is orthogonal to the
-retention and the read source, and it is how the validation pull path
-suppresses duplicate concurrent requests, as every other message class does
-structurally (parked acquires under EXCL/INV, batched invalidation rounds,
-publish flights).
+its response; a reader is never served by a request sent before it parked,
+whose response may predate the releases it is ordered after. The node's
+write request changes none of this: a reader opens or joins a read request
+whether or not the write request is out, and the answer to a read request
+opens the next one for the readers parked meanwhile. Every remote read-only
+acquire combines. It is orthogonal to the retention and the read source, and
+it is how the validation pull path suppresses duplicate concurrent requests,
+as every other message class does structurally (parked acquires under
+EXCL/INV, batched invalidation rounds, publish flights).
 
 INV — write-invalidate, durable reader copies (default)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

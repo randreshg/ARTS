@@ -249,12 +249,16 @@ every rank that caches it, and a rank's copy is retired when that notice
 lands.  A release message sent before the destroy may still reach the home
 after it, since nothing orders the delivery of the two messages; the runtime
 absorbs it, and storage is freed once the last outstanding reference drains.
-So does a request whose waiters something else already served: a node's read
-request whose readers the node's own write turn served, or a request a node
-sent before its own create of the block claimed the cache that sent it (see
+So does a request whose waiters something other than its own answer served:
+the write request a node sent before its own create of the block claimed the
+cache that sent it and, under ``EXCL``, that cache's read request and a
+node's read request whose readers the node's own write turn served (see
 :ref:`coherence_protocols`).  The home is told of each such request before
-the destroy can be issued, tears the block down only once each has arrived,
-and answers it without data, so the program never orders anything after it.
+the destroy can be issued and tears the block down only once each has
+arrived; it serves none of them, so the program never orders anything after
+it.  Under ``VAL`` and ``INV`` a read request is never among them: its
+readers wait for its own answer, so it is out only while an acquisition is
+pending.
 A program that creates a block with a pre-reserved GUID names one from
 :c:func:`arts_guid_reserve` or :c:func:`arts_guid_reserve_range`; a GUID an
 earlier create minted is refused, and the run aborts.

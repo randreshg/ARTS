@@ -51,10 +51,11 @@ extern "C" {
  * axis owns one count on the requester's descriptor.  The CAS that opens the
  * axis takes it, after it commits and before the request leaves; whichever
  * frame commits a transition that closes the axis drops it at its own end,
- * after its last access: the answer, a size round or dismiss that closes, a
- * create's claim, or, for an axis a cut shutdown left open on a descriptor
- * still installed at teardown, the teardown sweep (arts_db_sweep_open_items, in
- * a sanitizer build, once the other runtime threads have stopped); a
+ * after its last access: the answer, on EXCL a size round or dismiss that
+ * closes, a create's claim, or, for an axis a cut shutdown left open on a
+ * descriptor still installed at teardown, the teardown sweep
+ * (arts_db_sweep_open_items, in a sanitizer build, once the other runtime
+ * threads have stopped); a
  * descriptor retired with an axis open keeps that count to the process exit.
  * A re-send, a size round that re-sends, a hop or a relaunch leaves the count
  * where it is: it belongs to the axis, never to a message.
@@ -189,8 +190,8 @@ static inline void arts_db_axis_drop(struct arts_db_s *db, unsigned int n) {
     arts_shared_release(&h);
   }
 }
-/* The axes a create's claim closed, as its owed byte names them: a read
- * request and a write request still out. */
+/* The axes a create's claim closed, as its owed byte names them: the write
+ * request still out and, on EXCL, the read request still out. */
 static inline unsigned int arts_db_claim_closed_axes(uint8_t owed) {
   return ((owed & ARTS_CREATE_OWED_RO) != 0u ? 1u : 0u) +
          ((owed & ARTS_CREATE_OWED_RW) != 0u ? 1u : 0u);
@@ -302,14 +303,13 @@ arts_db_cache_stub_install_into(struct arts_route_item_s *slot,
  * run, so the record's pin stays); an off-walk OoO replay through the OoO
  * dispatcher's pin on the installed object, held across every dispatch -- not
  * through the record's pin, which the EDT's release drops.  So the rest of an
- * off-walk replay's handler (a read's request send, the re-check and drain
- * of a home's publication waiters under HOME) may run after the slot's EDT
- * ran, released and the program legally destroyed the block: the caller's pin
- * covers the free; the destroy's synchronous half touches no state that rest
- * touches; and a request sent after its slot was served is a covered request
- * the home already counts (declared by a write request or owed by a create's
- * announce).  A serialized slot's replay runs under the account its worklist
- * entry owes, so its handler finishes before its EDT can run. */
+ * off-walk replay's handler (the re-check and drain of a home's publication
+ * waiters under HOME) may run after the slot's EDT ran, released and the
+ * program legally destroyed the block: the caller's pin covers the free, and
+ * the destroy's synchronous half touches no state that rest touches.  An
+ * off-walk read's request leaves before anything can serve its slot, which
+ * only its answer does.  A serialized slot's replay runs under the account
+ * its worklist entry owes, so its handler finishes before its EDT can run. */
 void arts_handler_db_acquire(void *item, void *args);
 
 /* Decrement acquire_remaining; schedule the EDT if it reaches 0. Caller must
@@ -342,11 +342,18 @@ void arts_db_acquire_resolved(struct arts_edt_s *edt, unsigned int slot);
 void arts_db_fill_aliases(struct arts_edt_s *edt, unsigned int owner_slot);
 
 /* Per-protocol classification used by the arts_db_acquire_all driver: returns
- * true for the dep modes whose acquire can WAIT on another rank, which the
- * engine must therefore fire in one global GUID order so an EDT's own
- * acquisitions cannot deadlock against another EDT's.  An arm whose acquire
- * waits on nobody serializes nothing.  DB_MODE_NULL acquires nothing and is
- * never serialized.  Defined in each arm's own read-source TU. */
+ * true for the dep modes whose acquire can wait for what another EDT holds
+ * until that EDT releases it, which the engine must therefore fire in one
+ * global GUID order, so that no cycle of EDTs each holding what the next
+ * waits for can form.  A mode stays off that walk only while its acquire
+ * waits for nothing an EDT that is itself waiting for an acquire can hold
+ * back: messages in flight; answers a home or a holder gives without waiting
+ * for such an EDT; the block's create, when the acquire came before it (the
+ * program's duty: nothing the creating EDT waits for is held by an EDT that
+ * waits for the block); and, where the home serves reads, the creating EDT's
+ * first publish, the release of an EDT that is already running.
+ * DB_MODE_NULL acquires nothing and is never serialized.  Defined in each
+ * arm's own read-source TU. */
 bool arts_db_acquire_is_serialized(arts_db_access_mode_t mode);
 
 /*--- Release path --------------------------------------------------------
@@ -625,24 +632,25 @@ bool arts_db_create_take_hold(struct arts_db_cache_s *cache, uint8_t *owed);
 /* The write-request axis of the arm's request word, for the shared grant
  * plane.  claim: IDLE -> OPEN (true = won), handing back the stub bit it read
  * as the OPEN's token.  commit: OPEN -> SENT only while the stub bit still
- * equals the token, returning the request's ARTS_COVER_* word read in that
- * same atom; false = a create's claim reset this OPEN (the claim clears the
- * stub bit exactly once, so an OPEN claimed after it carries another token
- * and a stale holder can never commit it), and the claim serves the waiter.
+ * equals the token, returning the request's cover word (ARTS_COVER_PRECLAIM
+ * while the stub bit is set, else 0) read in that same atom; false = a
+ * create's claim reset this OPEN (the claim clears the stub bit exactly once,
+ * so an OPEN claimed after it carries another token and a stale holder can
+ * never commit it), and the claim serves the waiter.
  * giveback: OPEN -> IDLE with nothing to ask for, under the same token.
  * clear: SENT -> IDLE where a grant lands, clearing the stub bit; it serves
  * no reader.  declaim: a size round answered the write request (rw must be
  * SENT): clear the stub bit -- the home is installed and was created
- * elsewhere, so this cache can never be claimed -- and return the cover word
- * the re-send carries (never PRECLAIM).  The axis counts: a won commit's
- * caller takes the write axis's before it sends the request; clear closes it,
- * and its count passes to the frame that runs the grant. */
+ * elsewhere, so this cache can never be claimed, and the re-send carries no
+ * PRECLAIM.  The axis counts: a won commit's caller takes the write axis's
+ * before it sends the request; clear closes it, and its count passes to the
+ * frame that runs the grant. */
 bool arts_db_rw_req_claim(struct arts_db_cache_s *cache, uint32_t *tok);
 bool arts_db_rw_req_commit(struct arts_db_cache_s *cache, uint32_t tok,
                            uint32_t *cover);
 void arts_db_rw_req_giveback(struct arts_db_cache_s *cache, uint32_t tok);
 void arts_db_rw_req_clear(struct arts_db_cache_s *cache);
-uint32_t arts_db_rw_req_declaim(struct arts_db_cache_s *cache);
+void arts_db_rw_req_declaim(struct arts_db_cache_s *cache);
 /* The grant plane's half of a create's claim (grant.c): claim_writers serves
  * every parked writer under the create's hold, each with a hold of its own,
  * BEFORE the arm's CLAIM transition reopens the write axis; rearm, after it,
@@ -650,23 +658,20 @@ uint32_t arts_db_rw_req_declaim(struct arts_db_cache_s *cache);
 void arts_db_grant_claim_writers(struct arts_db_cache_s *cache);
 void arts_db_grant_rearm(struct arts_db_cache_s *cache);
 
-/* The declared-arrival rule at the home (coherence.c).  cover_request says
- * what becomes of an arriving request (ARTS_COVER_*); cover_destroy marks
- * the gate and completes the teardown now when nothing is owed; the arm's
+/* The destroy's gate at the home (coherence.c; the word is cover_gate.h's).
+ * preclaim_write_absorb: true when an arriving write request is the claiming
+ * creator's pre-claim request (PRECLAIM in its cover word, from the rank the
+ * create's announce named).  The claim served that request's writers and
+ * closed its axis, so the caller queues nothing and answers nothing;
+ * *teardown says the arrival was the one a marked gate waited for, and the
+ * caller then runs arts_db_home_destroy_now.  cover_destroy marks the gate
+ * and tears down at once unless that request is still owed; the arm's
  * destroy_now is the teardown itself (fan-out and slot return), run by
- * whichever of the destroy and the last owed arrival reaches the edge. */
-#define ARTS_COVER_PROCESS 0
-#define ARTS_COVER_DROP 1    /* discarded unanswered: a pre-claim request */
-#define ARTS_COVER_DISMISS 2 /* declared: answer with a dismiss (no data; the
-                                landing comes back) and process nothing */
-/* *teardown: this arrival completed the gate; the caller runs
- * arts_db_home_destroy_now after any reply. */
-int arts_db_cover_request(struct arts_db_s *db, unsigned int requester,
-                          bool write, uint32_t cover, bool *teardown);
+ * whichever of the destroy and the owed arrival reaches the edge. */
+bool arts_db_preclaim_write_absorb(struct arts_db_s *db, unsigned int requester,
+                                   uint32_t cover, bool *teardown);
 void arts_db_cover_destroy(struct arts_db_s *db);
 void arts_db_home_destroy_now(struct arts_db_s *db);
-void arts_db_cover_home_init(struct arts_db_s *db, unsigned int nranks);
-void arts_db_cover_home_teardown(struct arts_db_s *db);
 
 /* The parked-reader pool (struct arts_db_reader_pool_s, reader_pool.c).
  * alloc hands out an index the caller owns until it links the node; free

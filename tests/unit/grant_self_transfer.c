@@ -135,13 +135,14 @@ UNREACHED(bool arts_db_rw_req_claim(struct arts_db_cache_s *c, uint32_t *t))
 UNREACHED(bool arts_db_rw_req_commit(struct arts_db_cache_s *c, uint32_t t,
                                      uint32_t *cover))
 UNREACHED(void arts_db_rw_req_giveback(struct arts_db_cache_s *c, uint32_t t))
-UNREACHED(uint32_t arts_db_rw_req_declaim(struct arts_db_cache_s *c))
+UNREACHED(void arts_db_rw_req_declaim(struct arts_db_cache_s *c))
 UNREACHED(void arts_ooo_dispatch_on(arts_shared_ptr_t h, ooo_kind_t k,
                                     arts_guid_t g, const void *a, uint32_t s))
 UNREACHED(void arts_db_grant_note_ex_holder(struct arts_db_s *db,
                                             unsigned int r))
-UNREACHED(int arts_db_cover_request(struct arts_db_s *db, unsigned int r,
-                                   bool w, uint32_t c, bool *t))
+UNREACHED(bool arts_db_preclaim_write_absorb(struct arts_db_s *db,
+                                             unsigned int r, uint32_t c,
+                                             bool *t))
 UNREACHED(void arts_db_home_destroy_now(struct arts_db_s *db))
 UNREACHED(void arts_home_grantreq_queue_push(
     struct arts_home_grantreq_queue_s *q, unsigned int r,

@@ -449,12 +449,11 @@ struct arts_db_s {
   struct arts_rank_bitset_s cached_ranks;
   /* The destroy's gate [td:1 | rwo:1 | roo:1 | owed:29] (cover_gate.h):
    * the destroy's mark and the claiming creator's pre-claim write request,
-   * which the announce says is still coming (rwo, owed 1); every write after
-   * init an acq_rel RMW.  The rank whose create claimed a first-touch cache,
-   * written before the descriptor is published.  ro_parity is the shared
-   * gate helpers' per-rank set, which no request of this arm writes. */
-  struct arts_rank_bitset_s ro_parity;
+   * which the announce says is still coming (rwo, owed 1); roo stays clear
+   * and owed never passes one.  Every write after init is an acq_rel RMW. */
   _Atomic(uint32_t) cover_gate;
+  /* The rank whose create claimed a first-touch cache ((unsigned int)-1:
+   * none): written before the descriptor is published, plain. */
   unsigned int claim_rank;
 
 #ifdef ARTS_GPU_LAYOUT

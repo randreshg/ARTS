@@ -511,7 +511,7 @@ void arts_db_rw_req_clear(struct arts_db_cache_s *cache) {
   }
 }
 
-uint32_t arts_db_rw_req_declaim(struct arts_db_cache_s *cache) {
+void arts_db_rw_req_declaim(struct arts_db_cache_s *cache) {
   uint64_t post;
   uint32_t act;
   uint64_t pre = val_req_step(cache, VREQ_OP_DECLAIM, 0u, &post, &act);
@@ -520,7 +520,6 @@ uint32_t arts_db_rw_req_declaim(struct arts_db_cache_s *cache) {
                "for (word=%llx)",
                (unsigned long)cache->db_guid, (unsigned long long)pre);
   }
-  return val_rw_cover(post);
 }
 
 /* The create's claim of the write axis, after its hold is taken on the grant
@@ -945,82 +944,42 @@ void arts_db_join_read(struct arts_db_cache_s *cache) { (void)cache; }
 #endif /* arms whose read hold is nothing but the EDT's own ref */
 
 #if defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)
-/* ===== The declared-arrival rule (home side) ==========================
+/* ===== The destroy's gate (home side) =================================
  *
- * A request whose waiters a write turn of its own rank serves (a covered
- * request) may reach the home after the program legally destroyed the block.
- * The home learns of each one before the turn that covers it can end: a write
- * request declares the read request its rank has out (by that request's
- * parity), and a create's announce declares the requests the first-touch
- * cache it claimed had sent (marked PRECLAIM).  The cover gate counts what is
- * still coming; the teardown waits for it to reach zero.
+ * One request can reach the home after the program legally destroyed the
+ * block: the write request a first-touch cache sent before a create on its
+ * rank claimed that cache.  The claim served the request's writers, so no
+ * acquire waits for its answer, and the claim's announce tells the home that
+ * it is still coming.  The gate (arts/coherence/cover_gate.h) holds it as rwo
+ * with a count of one; the destroy marks the gate, and the teardown runs at
+ * the step that leaves the gate marked with nothing owed: the destroy, or
+ * that request's arrival.  The home absorbs the request, queueing and
+ * answering nothing, since the claim closed the requester's write axis.
  *
- * The gate's layout and its one step are arts/coherence/cover_gate.h's.
- *
- * A read request and its declaration each put the request's parity in the
- * requester's bit of ro_parity with one RMW; whichever comes second finds the
- * bit already there.  A declaration counts before its parity step, so the
- * arrival that reads that step finds the count.  A declared read request is
- * never processed as a read: the home settles the count and answers with a
- * dismiss (no data, no read turn), and the requester's cohort rides the
- * write turn its rank holds or has requested.  The claiming creator's
- * pre-claim requests (rwo, roo) are discarded unanswered: the claim closed
- * both axes, and the announce seeded the parity bit as if the read request
- * had arrived. */
+ * No read request passes the gate.  Its readers stay parked until its own
+ * answer, and a destroy issued while an acquire is in progress is the
+ * program's error, so no read request is out when a legal destroy is
+ * issued. */
 void arts_db_home_seed_owed(struct arts_db_s *db, unsigned int creator,
                             uint8_t owed) {
   if (owed == 0u) {
     return;
   }
+  assert(owed == ARTS_CREATE_OWED_RW &&
+         "a claim closes its cache's write request and nothing else");
   db->claim_rank = creator;
-  uint32_t n = 0u, flags = 0u;
-  if (owed & ARTS_CREATE_OWED_RO) {
-    /* As if the pre-claim read request had arrived: the creator's next read
-     * request (the opposite parity) pairs as any. */
-    (void)arts_rank_bitset_put(&db->ro_parity, creator,
-                               (owed & ARTS_CREATE_OWED_RO_PAR) != 0u);
-    flags |= ARTS_COVER_GATE_ROO;
-    n++;
-  }
-  if (owed & ARTS_CREATE_OWED_RW) {
-    flags |= ARTS_COVER_GATE_RWO;
-    n++;
-  }
-  atomic_store_explicit(&db->cover_gate, flags | n, memory_order_relaxed);
+  atomic_store_explicit(&db->cover_gate, ARTS_COVER_GATE_RWO | 1u,
+                        memory_order_relaxed);
 }
 
-int arts_db_cover_request(struct arts_db_s *db, unsigned int requester,
-                          bool write, uint32_t cover, bool *teardown) {
+bool arts_db_preclaim_write_absorb(struct arts_db_s *db, unsigned int requester,
+                                   uint32_t cover, bool *teardown) {
   *teardown = false;
-  if ((cover & ARTS_COVER_PRECLAIM) != 0u && requester == db->claim_rank) {
-    /* The claiming creator's pre-claim request: discarded unanswered, its
-     * parity not applied (the announce seeded it). */
-    *teardown = arts_cover_gate_step(db, write ? ARTS_COVER_GATE_RWO_ARRIVE
-                                               : ARTS_COVER_GATE_ROO_ARRIVE);
-    return ARTS_COVER_DROP;
+  if ((cover & ARTS_COVER_PRECLAIM) == 0u || requester != db->claim_rank) {
+    return false;
   }
-  if (write && (cover & ARTS_COVER_RO_OPEN) != 0u) {
-    bool par = (cover & ARTS_COVER_RO_PAR) != 0u;
-    (void)arts_cover_gate_step(db, ARTS_COVER_GATE_OWE);
-    if (arts_rank_bitset_put(&db->ro_parity, requester, par) == par) {
-      /* The undo is a settling step like any: if it is the one that leaves
-       * a marked gate with nothing owed, it owns the teardown, and the
-       * request reached a destroyed block (outside the contract): dropped. */
-      if (arts_cover_gate_step(db, ARTS_COVER_GATE_ARRIVE)) {
-        *teardown = true;
-        return ARTS_COVER_DROP;
-      }
-    }
-  }
-  if (!write) {
-    bool par = (cover & ARTS_COVER_PAR) != 0u;
-    if (arts_rank_bitset_put(&db->ro_parity, requester, par) == par) {
-      /* Declared first: a write turn of this rank covers the request. */
-      *teardown = arts_cover_gate_step(db, ARTS_COVER_GATE_ARRIVE);
-      return ARTS_COVER_DISMISS;
-    }
-  }
-  return ARTS_COVER_PROCESS;
+  *teardown = arts_cover_gate_step(db, ARTS_COVER_GATE_RWO_ARRIVE);
+  return true;
 }
 
 void arts_db_cover_destroy(struct arts_db_s *db) {
@@ -1028,17 +987,7 @@ void arts_db_cover_destroy(struct arts_db_s *db) {
     arts_db_home_destroy_now(db);
   }
 }
-
-void arts_db_cover_home_init(struct arts_db_s *db, unsigned int nranks) {
-  arts_rank_bitset_init(&db->ro_parity, nranks);
-  atomic_store_explicit(&db->cover_gate, 0u, memory_order_relaxed);
-  db->claim_rank = (unsigned int)-1;
-}
-
-void arts_db_cover_home_teardown(struct arts_db_s *db) {
-  arts_rank_bitset_destroy(&db->ro_parity);
-}
-#endif /* the declared-arrival absorb */
+#endif /* the destroy's gate */
 
 /* ================================================================== */
 /* ===== Destroy lifecycle ========================================== */
@@ -1197,8 +1146,8 @@ void arts_db_debug_quiescence_check(const struct arts_teardown_exempt_s *ex,
   }
 #endif
   unsigned int viol = 0;
-  /* Homes a destroy marked that still wait for a declared request: legal at
-   * any shutdown, printed so a campaign can watch it. */
+  /* Homes a destroy marked that still wait for a request they were told is
+   * coming: legal at any shutdown, printed so a campaign can watch it. */
   unsigned int marked_owed = 0;
   const unsigned int nt = (unsigned int)arts_guid_table_count;
   /* Whether this shutdown was quiescent, named by contributor so a log's
@@ -1453,22 +1402,24 @@ void arts_db_debug_quiescence_check(const struct arts_teardown_exempt_s *ex,
           }
         }
         if (db->home_initialized) {
-          /* The cover gate: marked with nothing owed means the teardown was
-           * skipped; the creator's write request owed with nothing owed is a
-           * broken count.  Something owed is legal (a declared request may be
-           * undelivered at any shutdown) and only counted. */
+          /* The gate owes the claiming creator's pre-claim write request or
+           * nothing: rwo with a count of one, or neither.  Marked with
+           * nothing owed means the teardown was skipped; any other word no
+           * step leaves.  The request owed is legal at any shutdown (it may
+           * be undelivered) and only counted. */
           uint32_t gate =
               atomic_load_explicit(&db->cover_gate, memory_order_relaxed);
-          if ((gate & ARTS_COVER_GATE_OWED) == 0u &&
-              (gate & (ARTS_COVER_GATE_TD | ARTS_COVER_GATE_RWO |
-                       ARTS_COVER_GATE_ROO)) != 0u) {
+          bool gtd = (gate & ARTS_COVER_GATE_TD) != 0u;
+          bool grwo = (gate & ARTS_COVER_GATE_RWO) != 0u;
+          if ((gate & ARTS_COVER_GATE_ROO) != 0u ||
+              (gate & ARTS_COVER_GATE_OWED) != (grwo ? 1u : 0u) ||
+              (gtd && !grwo)) {
             ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu cover gate rests where no "
                        "step leaves it (gate=%x)",
                        (unsigned long)c->db_guid, gate);
             viol++;
           }
-          if ((gate & ARTS_COVER_GATE_TD) != 0u &&
-              (gate & ARTS_COVER_GATE_OWED) != 0u) {
+          if (gtd && grwo) {
             marked_owed++;
           }
         }
