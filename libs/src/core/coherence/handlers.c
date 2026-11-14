@@ -391,7 +391,6 @@ struct snapshot_landed_ctx_s {
   struct arts_db_buffer_s *landing;
   uint64_t version;
   uint64_t data_size;
-  uint32_t cover;
 };
 
 static void snapshot_landed_cb(void *arg) {
@@ -410,7 +409,7 @@ static void snapshot_landed_cb(void *arg) {
                              ctx->data_size);
   /* A one-sided payload comes from another rank. */
   uint8_t census = arts_db_census_serving(true);
-  bool closed = arts_db_ro_combine_on_terminal(cache, ctx->cover);
+  bool closed = arts_db_ro_combine_on_terminal(cache);
   arts_db_census_served(census);
   arts_free(ctx);
   arts_db_axis_drop(db, closed ? 1u : 0u);
@@ -429,13 +428,14 @@ static void snapshot_landed_discard(void *arg) {
  * which the read request's count keeps; a retired one only ends the landing
  * and drops that count.
  *
- * The response ends the requester's combining window, whose cohort is the
- * cache's own chain; it echoes the request's cover word, whose parity must be
- * the open window's (checked in the CAS that consumes the answer).  Bytes
- * that travel one-sided are installed first (version-conditional); a reply
- * that moves none names a version this cache already holds, and resumes
- * against the live buffer.  The frame that closes the window drops its count
- * last.  Shared verbatim by HOME/OWNER. */
+ * The response answers the requester's one open window, whose cohort is the
+ * cache's own chain; with no window open it is fatal (checked in the CAS that
+ * consumes the answer).  Bytes that travel one-sided are installed first,
+ * version-conditionally: at a rank holding the write right the answer's
+ * version is never above the buffer its writers use, which therefore stays.
+ * A reply that moves none names a version this cache already holds, and
+ * resumes against the live buffer.  The frame that closes the window drops
+ * its count last.  Shared verbatim by HOME/OWNER. */
 void arts_handler_db_snapshot_response(
     struct arts_db_snapshot_response_args_s *a) {
   struct arts_db_s *db = arts_db_from_token(a->token, a->db_guid);
@@ -451,16 +451,11 @@ void arts_handler_db_snapshot_response(
   arts_db_cache_learn_size(cache, a->db_size);
 
   if (a->data_present == 2) {
-    /* An answer without data: a size round (our request carried no landing)
-     * or a dismiss (a write turn this rank holds or has requested covers the
-     * request).  Either returns the landing it named; the window then
-     * re-sends for a cohort that rides no write request, or closes. */
-    if (a->rdzv_cookie != 0) {
-      arts_db_buf_landing_return(
-          (struct arts_db_buffer_s *)(uintptr_t)a->rdzv_cookie);
-    }
-    bool closed = arts_db_ro_combine_on_cts(cache, a->cover);
-    arts_db_axis_drop(db, closed ? 1u : 0u);
+    /* A size round: our request carried no landing.  The window's request
+     * goes out again with one, under the same count. */
+    assert(a->rdzv_cookie == 0 &&
+           "a size round answers a read request that carried no landing");
+    arts_db_ro_combine_on_cts(cache);
     return;
   }
 
@@ -475,7 +470,6 @@ void arts_handler_db_snapshot_response(
     ctx->landing = (struct arts_db_buffer_s *)(uintptr_t)a->rdzv_cookie;
     ctx->version = a->version;
     ctx->data_size = a->db_size;
-    ctx->cover = a->cover;
     arts_net_rdzv_expect(a->rdzv_txid, a->db_size, snapshot_landed_cb,
                          snapshot_landed_discard, ctx);
     return;
@@ -521,7 +515,7 @@ void arts_handler_db_snapshot_response(
            "a reply that moves no bytes named a version this cache lacks");
   }
 #endif
-  bool closed = arts_db_ro_combine_on_terminal(cache, a->cover);
+  bool closed = arts_db_ro_combine_on_terminal(cache);
   arts_db_axis_drop(db, closed ? 1u : 0u);
 }
 #endif /* the versioned-snapshot read path */

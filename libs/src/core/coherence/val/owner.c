@@ -210,27 +210,6 @@ void arts_handler_db_snapshot_request(void *item_v, void *args_v) {
   struct arts_ooo_args_db_snapshot_request_s *a =
       (struct arts_ooo_args_db_snapshot_request_s *)args_v;
   unsigned int requester = a->requester;
-  uint32_t cover = a->cover;
-  {
-    bool td = false;
-    int r = arts_db_cover_request(arts_db_of_cache(cache), requester, false,
-                                  cover, &td);
-    if (r == ARTS_COVER_DISMISS) {
-      /* Declared: a write turn of the requester's rank covers this request.
-       * Dismiss it -- no data, no read turn -- returning the landing. */
-      arts_send_db_snapshot_response(
-          requester, a->token, cache->db_guid, /*version=*/0, cover,
-          /*kind=*/2,
-          atomic_load_explicit(&cache->db_size, memory_order_relaxed),
-          &a->rdzv, NULL);
-    }
-    if (td) {
-      arts_db_home_destroy_now(arts_db_of_cache(cache));
-    }
-    if (r != ARTS_COVER_PROCESS) {
-      return;
-    }
-  }
 
   /* OWNER home-side RO routing.
    *
@@ -240,9 +219,8 @@ void arts_handler_db_snapshot_request(void *item_v, void *args_v) {
    * directly, applying the owner-side cached_version dedup.
    *
    * Record the requester in the cached-ranks set, then redirect to the current
-   * owner.  A request reaching a home its destroy marked but did not yet tear
-   * down is settled by the cover step above; one arriving after the teardown
-   * finds the slot empty. */
+   * owner, the requester itself included: that rank answers its own request
+   * from the copy it holds. */
   struct arts_db_s *db = arts_db_of_cache(cache);
   arts_rank_bitset_note(&db->cached_ranks, requester);
   /* Forward to the current owner unconditionally: even mid-transfer, rw_holder
@@ -258,14 +236,13 @@ void arts_handler_db_snapshot_request(void *item_v, void *args_v) {
      * landing and is then redirected for real. */
     INCREMENT_NUM_SNAPSHOT_SIZE_CTS_BY(1);
     arts_send_db_snapshot_response(requester, a->token, cache->db_guid,
-                                   /*version=*/0, cover, /*kind=*/2, db_size,
+                                   /*version=*/0, /*kind=*/2, db_size,
                                    &a->rdzv, NULL);
     return;
   }
   unsigned int owner =
       atomic_load_explicit(&db->rw_holder, memory_order_acquire);
-  arts_send_db_snapshot_redirect(db, owner, requester, cover, &a->rdzv,
-                                 a->token);
+  arts_send_db_snapshot_redirect(db, owner, requester, &a->rdzv, a->token);
 }
 
 void arts_db_destroy_arrived(struct arts_db_s *db) {
@@ -295,14 +272,12 @@ void arts_db_home_destroy_now(struct arts_db_s *db) {
   (void)arts_ooo_retire(db->cache.db_guid, db->self_cb);
 }
 
-/* Retract nothing: this arm's readers hold no durable copy claim — every
- * acquire re-validates against a version, so a creator that was given no
- * storage simply has nothing to assert. */
 /* The hold is possession plus this create's own writer, from a word that
- * holds nothing.  It is a write permission landing on this rank, so every EDT
- * parked on the first-touch cache is served under it -- readers whose read
- * request is still out included -- and the requests that cache sent are the
- * home's to absorb (the announce names them). */
+ * holds nothing.  It is a write permission landing on this rank, so every
+ * writer parked on the first-touch cache is served under it, and the write
+ * request that cache sent is the home's to absorb (the announce names it).
+ * A read request the cache has out stays out until its own answer, which
+ * serves its cohort. */
 bool arts_db_create_take_hold(struct arts_db_cache_s *cache, uint8_t *owed) {
   *owed = 0u;
   unsigned int none = 0u;
@@ -316,14 +291,17 @@ bool arts_db_create_take_hold(struct arts_db_cache_s *cache, uint8_t *owed) {
    * (PRECLAIM); one that pushed after the take is re-armed below.  The
    * creator's own hold keeps the right here throughout. */
   arts_db_grant_claim_writers(cache);
-  *owed = arts_db_val_claim_cover(cache);
+  *owed = arts_db_val_claim_rw_axis(cache);
   arts_db_grant_rearm(cache);
-  /* The claim closed the requests the cache had out: their counts go, under
-   * the create's own. */
+  /* The claim closed the write request the cache had out: its count goes,
+   * under the create's own. */
   arts_db_axis_drop(arts_db_of_cache(cache), arts_db_claim_closed_axes(*owed));
   return true;
 }
 
+/* Retract nothing: this arm's readers hold no durable copy claim — every
+ * acquire re-validates against a version, so a creator that was given no
+ * storage simply has nothing to assert. */
 void arts_db_create_retract_creator_copy(struct arts_db_s *db) { (void)db; }
 
 /* Claim nothing either: a reader here re-validates against a version at
@@ -336,7 +314,6 @@ void arts_handler_db_snapshot_redirect(void *item_v, void *args_v) {
   struct arts_db_snapshot_redirect_args_s *a =
       (struct arts_db_snapshot_redirect_args_s *)args_v;
   unsigned int requester = a->requester_rank;
-  uint32_t cover = a->cover;
 
   /* A remote first use of a block whose create took no hold: this rank owes
    * the reply the block's first image, so it materializes one (on a progress
@@ -369,7 +346,7 @@ void arts_handler_db_snapshot_redirect(void *item_v, void *args_v) {
      * reads that as "nobody has written the block", adopting its own
      * advertised landing as the storage it is owed. */
     arts_send_db_snapshot_response(requester, a->token, a->db_guid,
-                                   /*version=*/0, cover, /*kind=*/0, db_size,
+                                   /*version=*/0, /*kind=*/0, db_size,
                                    &a->rdzv, NULL);
     return;
   }
@@ -390,7 +367,7 @@ void arts_handler_db_snapshot_redirect(void *item_v, void *args_v) {
     INCREMENT_NUM_SNAPSHOT_HEADER_ONLY_BY(1);
     arts_db_buf_release(&buf_h);
     arts_send_db_snapshot_response(requester, a->token, a->db_guid, cur_v,
-                                   cover, /*kind=*/0, db_size, &a->rdzv, NULL);
+                                   /*kind=*/0, db_size, &a->rdzv, NULL);
   } else if (a->rdzv.txid == 0) {
     /* Data must move but no landing was forwarded (a first-touch request that
      * slipped past home's CTS gate can only mean home learned the size after
@@ -399,19 +376,19 @@ void arts_handler_db_snapshot_redirect(void *item_v, void *args_v) {
     arts_db_buf_release(&buf_h);
     INCREMENT_NUM_SNAPSHOT_SIZE_CTS_BY(1);
     arts_send_db_snapshot_response(requester, a->token, a->db_guid, cur_v,
-                                   cover, /*kind=*/2, db_size, &a->rdzv, NULL);
+                                   /*kind=*/2, db_size, &a->rdzv, NULL);
   } else {
     /* Advance dedup watermark (monotonic max), then PUT the payload into the
      * forwarded landing (buf_h transfers into the sender). */
     arts_rank_u64_map_advance(cache->cached_version, requester, cur_v);
     arts_send_db_snapshot_response(requester, a->token, a->db_guid, cur_v,
-                                   cover, /*kind=*/1, db_size, &a->rdzv, buf_h);
+                                   /*kind=*/1, db_size, &a->rdzv, buf_h);
   }
 }
 
 void arts_send_db_snapshot_redirect(struct arts_db_s *db,
                                     unsigned int owner_rank,
-                                    unsigned int requester_rank, uint32_t cover,
+                                    unsigned int requester_rank,
                                     const struct arts_rdzv_landing_s *rdzv,
                                     uint64_t token) {
   arts_guid_t db_guid = db->cache.db_guid;
@@ -422,7 +399,7 @@ void arts_send_db_snapshot_redirect(struct arts_db_s *db,
   p.header.rank = arts_global_rank_id;
   p.db_guid = db_guid;
   p.requester_rank = requester_rank;
-  p.cover = cover;
+  p.pad = 0u;
   p.rdzv.addr = fwd.addr;
   p.rdzv.key = fwd.key;
   p.rdzv.txid = fwd.txid;
@@ -431,13 +408,12 @@ void arts_send_db_snapshot_redirect(struct arts_db_s *db,
   if (owner_rank == arts_global_rank_id) {
     /* Self-send: the owner's cache is the home's descriptor, which the caller
      * holds.  The body serves SNAPSHOT_RESPONSE from it while it is live, and
-     * from what a lookup finds otherwise; a miss dismisses the requester, as
-     * the wire path does.  No count of its own: the body drops no count its
-     * caller runs under. */
+     * from what a lookup finds otherwise; a miss is dropped, as on the wire
+     * path.  No count of its own: the body drops no count its caller runs
+     * under. */
     struct arts_db_snapshot_redirect_args_s args = {
         .db_guid = db_guid,
         .requester_rank = requester_rank,
-        .cover = cover,
         .rdzv = fwd,
         .token = token,
     };
@@ -447,11 +423,6 @@ void arts_send_db_snapshot_redirect(struct arts_db_s *db,
                                                               db_guid, &looked);
     if (owner != NULL) {
       arts_handler_db_snapshot_redirect(owner, &args);
-    } else {
-      /* Torn down after the home took the request in: dismiss it. */
-      arts_send_db_snapshot_response(requester_rank, token, db_guid,
-                                     /*version=*/0, cover, /*kind=*/2,
-                                     /*db_size=*/0, &fwd, NULL);
     }
     arts_shared_release(&looked);
     return;

@@ -187,19 +187,19 @@ static void part_wide(struct arts_db_cache_s *c) {
   take_back(&c->reader_pool, INV_CACHE_HEAD_RO(pre), seen, &served);
 #else
   /* The answer serves the window's cohort and moves the wide chain into the
-   * next window's cohort, so it crosses both head fields; the write
-   * permission's cover then takes it. */
-  pre = step(c, VREQ_OP_ANSWER, VREQ_PAR(w), &post, &act);
+   * next window's cohort, so it crosses both head fields; that window's own
+   * answer then takes it. */
+  pre = step(c, VREQ_OP_ANSWER, 0u, &post, &act);
   CHECK(act == VREQ_ACT_SERVE_SEND && VREQ_GROUP(post) == last &&
             VREQ_NEXT(post) == 0u,
         "the answer left group %u next %u (act %u)", VREQ_GROUP(post),
         VREQ_NEXT(post), act);
   take_back(&c->reader_pool, VREQ_GROUP(pre), seen, &served);
-  pre = step(c, VREQ_OP_COVER, 0u, &post, &act);
-  CHECK(VREQ_GROUP(post) == 0u && VREQ_NEXT(post) == 0u,
-        "the cover left a chain on the word");
+  pre = step(c, VREQ_OP_ANSWER, 0u, &post, &act);
+  CHECK(act == VREQ_ACT_SERVE && VREQ_RO(post) == 0u &&
+            VREQ_GROUP(post) == 0u && VREQ_NEXT(post) == 0u,
+        "the next window's answer left a chain on the word (act %u)", act);
   take_back(&c->reader_pool, VREQ_GROUP(pre), seen, &served);
-  take_back(&c->reader_pool, VREQ_NEXT(pre), seen, &served);
 #endif
   CHECK(served == NPARK, "served %u of %u parked readers", served, NPARK);
 

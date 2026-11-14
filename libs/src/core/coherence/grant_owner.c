@@ -196,13 +196,7 @@ static void owner_response_commit(struct arts_db_s *db, uint64_t home_token) {
 #endif
 
   /* RW drain is DEFERRED to the CONFIRM_ACK handler (home has not flipped
-   * rw_holder to us yet).  Reads are not: a read waiter resumed here gets
-   * the transferred (pre-write) version, which is correct. */
-#ifdef ARTS_VALIDITY_VAL
-  /* Read waiters batched while this rank had no local copy resume here
-   * against the transferred buffer instead of re-fetching remotely. */
-  arts_db_ro_combine_grant_drain(cache);
-#endif
+   * rw_holder to us yet). */
 
   /* No racing INVALIDATE can have reached us yet: the home holds this round's
    * baton until this CONFIRM arrives and starts the next round only from it

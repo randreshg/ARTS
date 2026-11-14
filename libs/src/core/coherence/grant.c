@@ -165,9 +165,9 @@ arts_db_acquire_remote_rw(struct arts_db_cache_s *cache, struct arts_edt_s *edt,
     for (;;) {
       arts_sched_fuzz_point(); /* widen the flag-win<->pending-check window */
       if (arts_pending_rw_queue_pending(&cache->pending_rw)) {
-        /* The commit is the request: it reads the read request this rank
-         * has out in the same atom, and fails if a create's claim reset this
-         * OPEN (the token), whose take then served this waiter. */
+        /* The commit is the request: it reads the request's cover word in
+         * the same atom, and fails if a create's claim reset this OPEN (the
+         * token), whose take then served this waiter. */
         uint32_t cover = 0u;
         if (arts_db_rw_req_commit(cache, tok, &cover)) {
           INCREMENT_NUM_GRANT_MIGRATE_BY(1);

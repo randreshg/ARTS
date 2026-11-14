@@ -52,38 +52,35 @@ extern "C" {
 /* ========================================================================= */
 
 /*--- The request word ---------------------------------------------------
- * One 64-bit word per cache holds both axes' request state and the chains of
- * readers parked on them, so every decision that couples the axes is one CAS:
+ * One 64-bit word per cache holds both axes' request state and the chain of
+ * readers parked on the read axis.  The axes are independent: no transition
+ * of one reads the other, except that the stub bit is the write axis's token
+ * while it is OPEN.
  *
- *   [ rw:2 (63..62) | ro:1 (61) | rp:1 (60) | par:1 (59) | stub:1 (58) |
+ *   [ rw:2 (63..62) | ro:1 (61) | spare:2 (60..59) | stub:1 (58) |
  *     group:29 (57..29) | next:29 (28..0) ]
  *
  *   rw    the write request: IDLE, OPEN (claimed, not yet committed) or SENT.
- *   ro    a read request (the window) is out.
- *   rp    the window's request was answered by a size round or a dismiss
- *         while a write request was out (or OPEN): its cohort rides that write
- *         request instead.
- *   par   the parity of the last read request this cache sent.
+ *   ro    a read request (the window) is out; then group is non-empty.
  *   stub  a dependence's first touch made the cache and nothing has shown the
  *         home installed yet: the create's claim clears it, and so does every
  *         reply unless rw is OPEN (the OPEN's holder acts only while the bit
- *         it read stands).  A request sent while it is set carries PRECLAIM.
+ *         it read stands).  A write request sent while it is set carries
+ *         PRECLAIM.
  *   group the window's cohort, fixed when its request left (reader pool
- *         indices).
- *   next  readers waiting for the next window, or riding the write request.
+ *         indices); only the window's answer serves it.
+ *   next  readers waiting for the next window, which the window's answer
+ *         opens; non-empty only while ro is set.
  */
 #define VREQ_HEAD_BITS ARTS_DB_READER_IDX_BITS
 #define VREQ_HEAD_MASK ((uint64_t)((1ULL << VREQ_HEAD_BITS) - 1))
 #define VREQ_NEXT(s) ((uint32_t)((s) & VREQ_HEAD_MASK))
 #define VREQ_GROUP(s) ((uint32_t)(((s) >> VREQ_HEAD_BITS) & VREQ_HEAD_MASK))
 #define VREQ_STUB(s) ((uint32_t)(((s) >> 58) & 1ULL))
-#define VREQ_PAR(s) ((uint32_t)(((s) >> 59) & 1ULL))
-#define VREQ_RP(s) ((uint32_t)(((s) >> 60) & 1ULL))
 #define VREQ_RO(s) ((uint32_t)(((s) >> 61) & 1ULL))
 #define VREQ_RW(s) ((uint32_t)(((s) >> 62) & 3ULL))
-#define VREQ_MAKE(rw, ro, rp, par, stub, group, next)                          \
+#define VREQ_MAKE(rw, ro, stub, group, next)                                   \
   ((((uint64_t)(rw) & 3ULL) << 62) | (((uint64_t)(ro) & 1ULL) << 61) |        \
-   (((uint64_t)(rp) & 1ULL) << 60) | (((uint64_t)(par) & 1ULL) << 59) |       \
    (((uint64_t)(stub) & 1ULL) << 58) |                                        \
    (((uint64_t)(group) & VREQ_HEAD_MASK) << VREQ_HEAD_BITS) |                 \
    ((uint64_t)(next) & VREQ_HEAD_MASK))
@@ -97,29 +94,27 @@ static_assert(2 * VREQ_HEAD_BITS == 58,
 enum {
   VREQ_OP_ACQ_RO,    /* park a reader (idx), or open a request for it */
   VREQ_OP_ANSWER,    /* the window's request was answered */
-  VREQ_OP_CTS,       /* ... by a size round or a dismiss (no data) */
-  VREQ_OP_COVER,     /* a write permission landed: serve every chain */
+  VREQ_OP_CTS,       /* ... by a size round: ask again with a landing */
   VREQ_OP_RW_CLAIM,  /* IDLE -> OPEN */
   VREQ_OP_RW_COMMIT, /* OPEN -> SENT */
   VREQ_OP_RW_GIVE,   /* OPEN -> IDLE */
-  VREQ_OP_RW_CLEAR,  /* SENT -> IDLE where the grant lands, + COVER */
-  VREQ_OP_CLAIM,     /* a create claims the cache: COVER, the write axis is
-                        the claim's, and the cache is no longer a stub */
+  VREQ_OP_RW_CLEAR,  /* SENT -> IDLE where the grant lands */
+  VREQ_OP_CLAIM,     /* a create claims the cache: the write axis is the
+                        claim's, and the cache is no longer a stub */
   VREQ_OP_DECLAIM,   /* a size round answered the write request: the home is
                         installed and was created elsewhere, so the cache can
                         never be claimed (precondition rw == SENT) */
 };
 enum {
   VREQ_ACT_NONE,
-  VREQ_ACT_PARK,     /* linked onto next */
-  VREQ_ACT_SEND_RO,  /* opened a window with this reader as its cohort */
-  VREQ_ACT_SERVE,    /* serve the chains the transition took */
-  VREQ_ACT_SERVE_SEND, /* + the window re-armed: send its request */
-  VREQ_ACT_RESEND,   /* a size round, dismiss or give-back re-sends the
-                        window's request */
+  VREQ_ACT_PARK,       /* linked onto next */
+  VREQ_ACT_SEND_RO,    /* opened a window with this reader as its cohort */
+  VREQ_ACT_SERVE,      /* serve the window's cohort the answer took */
+  VREQ_ACT_SERVE_SEND, /* + the next window opened: send its request */
+  VREQ_ACT_RESEND,     /* a size round re-sends the window's request */
   VREQ_ACT_WON,
   VREQ_ACT_LOST,
-  VREQ_ACT_LATE,     /* an answer for no request out: the caller raises it */
+  VREQ_ACT_LATE, /* an answer for no request out: the caller raises it */
 };
 
 uint64_t arts_val_req_compute_next(uint64_t cur, int op, uint32_t idx,
@@ -352,12 +347,12 @@ struct arts_db_s {
   /* destroy fan-out roster: creator, readers, writers; the creator's bit is
    * set at home init, every other by arts_rank_bitset_note */
   struct arts_rank_bitset_s cached_ranks;
-  /* The declared-arrival state: per requester rank the parity of its last
-   * read request this home accounted for (by its arrival or a declaration of
-   * it, whichever came first); the gate [td:1 | rwo:1 | roo:1 | owed:29],
-   * the destroy's mark and what the home was told is still coming, every
-   * write after init an acq_rel RMW; the rank whose create claimed a
-   * first-touch cache, written before the descriptor is published. */
+  /* The destroy's gate [td:1 | rwo:1 | roo:1 | owed:29] (cover_gate.h):
+   * the destroy's mark and the claiming creator's pre-claim write request,
+   * which the announce says is still coming (rwo, owed 1); every write after
+   * init an acq_rel RMW.  The rank whose create claimed a first-touch cache,
+   * written before the descriptor is published.  ro_parity is the shared
+   * gate helpers' per-rank set, which no request of this arm writes. */
   struct arts_rank_bitset_s ro_parity;
   _Atomic(uint32_t) cover_gate;
   unsigned int claim_rank;
@@ -381,12 +376,12 @@ struct arts_db_s {
   /* destroy fan-out roster; the creator's bit is set at home init, every
    * other by arts_rank_bitset_note */
   struct arts_rank_bitset_s cached_ranks;
-  /* The declared-arrival state: per requester rank the parity of its last
-   * read request this home accounted for (by its arrival or a declaration of
-   * it, whichever came first); the gate [td:1 | rwo:1 | roo:1 | owed:29],
-   * the destroy's mark and what the home was told is still coming, every
-   * write after init an acq_rel RMW; the rank whose create claimed a
-   * first-touch cache, written before the descriptor is published. */
+  /* The destroy's gate [td:1 | rwo:1 | roo:1 | owed:29] (cover_gate.h):
+   * the destroy's mark and the claiming creator's pre-claim write request,
+   * which the announce says is still coming (rwo, owed 1); every write after
+   * init an acq_rel RMW.  The rank whose create claimed a first-touch cache,
+   * written before the descriptor is published.  ro_parity is the shared
+   * gate helpers' per-rank set, which no request of this arm writes. */
   struct arts_rank_bitset_s ro_parity;
   _Atomic(uint32_t) cover_gate;
   unsigned int claim_rank;

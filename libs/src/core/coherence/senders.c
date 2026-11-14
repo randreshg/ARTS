@@ -233,8 +233,7 @@ void arts_send_db_create_return(unsigned int creator_rank,
  * durable copies and fetch with INV_REQUEST instead. */
 #if defined(ARTS_VALIDITY_VAL)
 /* One request on the wire per combining window. */
-void arts_send_db_snapshot_request(struct arts_db_cache_s *cache,
-                                   uint32_t cover) {
+void arts_send_db_snapshot_request(struct arts_db_cache_s *cache) {
   INCREMENT_NUM_SNAPSHOT_REQUEST_BY(1);
   arts_guid_t db_guid = cache->db_guid;
   unsigned int home_rank = arts_guid_get_rank(db_guid);
@@ -244,18 +243,13 @@ void arts_send_db_snapshot_request(struct arts_db_cache_s *cache,
    * fallback (whose handler re-enters this sender). */
   struct arts_rdzv_landing_s rdzv = {0, 0, 0, 0};
   uint64_t fetch_size = arts_db_first_fetch_size(cache);
-  /* A request a first-touch cache sent before any create claimed it leaves
-   * without a landing: the home absorbs it unanswered if that create is this
-   * rank's (the size may be learned just before the claim). */
-  if (fetch_size > 0 && (cover & ARTS_COVER_PRECLAIM) == 0u) {
+  if (fetch_size > 0) {
     (void)arts_db_buf_landing_alloc(fetch_size, &rdzv);
   }
   struct arts_msg_snapshot_request_packet_s p;
   arts_fill_packet_header(&p.header, sizeof(p), MSG_DB_SNAPSHOT_REQUEST);
   p.header.rank = arts_global_rank_id;
   p.db_guid = db_guid;
-  p.cover = cover;
-  p.pad = 0u;
   p.rdzv.addr = rdzv.addr;
   p.rdzv.key = rdzv.key;
   p.rdzv.txid = rdzv.txid;
@@ -266,12 +260,11 @@ void arts_send_db_snapshot_request(struct arts_db_cache_s *cache,
      * request body runs; one not yet installed takes the engine by GUID,
      * deferred until the home installs and drains.  The body can answer the
      * request inline, dropping the read request's count, which a re-sending
-     * answer runs under, and still run on (a dismiss's teardown): it runs
-     * under a count of its own. */
+     * answer runs under, and still run on: it runs under a count of its
+     * own. */
     struct arts_ooo_args_db_snapshot_request_s args = {
         .requester = p.header.rank,
         .db_guid = db_guid,
-        .cover = cover,
         .rdzv = rdzv,
         .token = p.token,
     };
@@ -290,8 +283,7 @@ void arts_send_db_snapshot_request(struct arts_db_cache_s *cache,
 
 void arts_send_db_snapshot_response(unsigned int requester_rank, uint64_t token,
                                     arts_guid_t db_guid, uint64_t version,
-                                    uint32_t cover, uint32_t kind,
-                                    uint64_t db_size,
+                                    uint32_t kind, uint64_t db_size,
                                     const struct arts_rdzv_landing_s *landing,
                                     arts_shared_ptr_t src_h) {
   struct arts_db_buffer_s *src =
@@ -301,8 +293,8 @@ void arts_send_db_snapshot_response(unsigned int requester_rank, uint64_t token,
   p.header.rank = arts_global_rank_id;
   p.db_guid = db_guid;
   p.version = version;
-  p.cover = cover;
   p.data_present = kind;
+  p.pad = 0u;
   p.db_size = db_size;
   p.rdzv_txid = 0;
   p.rdzv_cookie = (landing != NULL) ? landing->cookie : 0;
@@ -317,7 +309,6 @@ void arts_send_db_snapshot_response(unsigned int requester_rank, uint64_t token,
     struct arts_db_snapshot_response_args_s args = {
         .db_guid = db_guid,
         .token = token,
-        .cover = cover,
         .data_present = kind,
         .version = version,
         .db_size = db_size,
@@ -333,7 +324,7 @@ void arts_send_db_snapshot_response(unsigned int requester_rank, uint64_t token,
     return;
   }
   /* A kind-0 reply is a ledger hit or a holder with nothing to serve, and a
-   * kind-2 one a size round or a dismiss: their sites count what each is. */
+   * kind-2 one a size round: their sites count what each is. */
   if (kind == 1) {
     /* One-sided serve: PUT straight from the live buffer into the
      * requester's landing — zero copy at the source.  The strong buffer ref

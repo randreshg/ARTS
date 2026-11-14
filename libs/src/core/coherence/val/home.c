@@ -91,7 +91,6 @@ void arts_handler_db_acquire(void *item, void *args) {
         w->edt = edt;
         ARTS_DEP_WAITER_SET(w, edt);
         w->slot = slot;
-        w->cover = 0u;
         w->serve = NULL;
         arts_lf_stack_push(&cache->publication_waiters, &w->link);
         /* Race recovery: a publication may have landed between the version
@@ -308,7 +307,6 @@ void arts_db_home_teardown(struct arts_db_s *db) {
 static void update_cached_version_max(struct arts_db_cache_s *cache,
                                       unsigned int requester, uint64_t master_v,
                                       arts_shared_ptr_t master_h,
-                                      uint32_t cover,
                                       const struct arts_rdzv_landing_s *rdzv,
                                       uint64_t token) {
   struct arts_db_s *db = arts_db_of_cache(cache);
@@ -324,7 +322,7 @@ static void update_cached_version_max(struct arts_db_cache_s *cache,
     INCREMENT_NUM_SNAPSHOT_HEADER_ONLY_BY(1);
     arts_db_buf_release(&master_h);
     arts_send_db_snapshot_response(requester, token, cache->db_guid, master_v,
-                                   cover, /*kind=*/0, db_size, rdzv, NULL);
+                                   /*kind=*/0, db_size, rdzv, NULL);
     return;
   }
   if (rdzv->txid == 0) {
@@ -334,13 +332,13 @@ static void update_cached_version_max(struct arts_db_cache_s *cache,
     arts_db_buf_release(&master_h);
     INCREMENT_NUM_SNAPSHOT_SIZE_CTS_BY(1);
     arts_send_db_snapshot_response(requester, token, cache->db_guid, master_v,
-                                   cover, /*kind=*/2, db_size, rdzv, NULL);
+                                   /*kind=*/2, db_size, rdzv, NULL);
     return;
   }
   arts_rank_u64_map_advance(db->cached_version, requester, master_v);
   /* master_h transfers into the sender (PUT source-lifetime pin). */
   arts_send_db_snapshot_response(requester, token, cache->db_guid, master_v,
-                                 cover, /*kind=*/1, db_size, rdzv, master_h);
+                                 /*kind=*/1, db_size, rdzv, master_h);
 }
 
 /* Deferred SNAPSHOT_REQUEST serve (a read waiter's `serve` arm): the request
@@ -361,8 +359,8 @@ static void home_serve_deferred_read(struct arts_db_cache_s *cache,
           : 0u;
   assert(master_v >= 1 && "a deferred read is served only once published");
   /* master_h transfers into the reply path (consumed there). */
-  update_cached_version_max(cache, w->requester, master_v, master_h, w->cover,
-                            &w->rdzv, w->token);
+  update_cached_version_max(cache, w->requester, master_v, master_h, &w->rdzv,
+                            w->token);
 }
 
 /* ===== Per-protocol wire-handler bodies =============================== */
@@ -376,27 +374,6 @@ void arts_handler_db_snapshot_request(void *item_v, void *args_v) {
   struct arts_ooo_args_db_snapshot_request_s *a =
       (struct arts_ooo_args_db_snapshot_request_s *)args_v;
   unsigned int requester = a->requester;
-  uint32_t cover = a->cover;
-  {
-    bool td = false;
-    int r = arts_db_cover_request(arts_db_of_cache(cache), requester, false,
-                                  cover, &td);
-    if (r == ARTS_COVER_DISMISS) {
-      /* Declared: a write turn of the requester's rank covers this request.
-       * Dismiss it -- no data, no read turn -- returning the landing. */
-      arts_send_db_snapshot_response(
-          requester, a->token, cache->db_guid, /*version=*/0, cover,
-          /*kind=*/2,
-          atomic_load_explicit(&cache->db_size, memory_order_relaxed),
-          &a->rdzv, NULL);
-    }
-    if (td) {
-      arts_db_home_destroy_now(arts_db_of_cache(cache));
-    }
-    if (r != ARTS_COVER_PROCESS) {
-      return;
-    }
-  }
   /* A reader holds a cache of the block from here on, so the destroy must
    * reach it (a size-0 block's reply credits no version to the ledger). */
   if (requester != arts_global_rank_id) {
@@ -440,7 +417,6 @@ void arts_handler_db_snapshot_request(void *item_v, void *args_v) {
           (struct arts_db_read_waiter_s *)arts_malloc(sizeof(*w));
       w->edt = NULL;
       w->slot = 0u;
-      w->cover = cover;
       w->serve = home_serve_deferred_read;
       w->requester = requester;
       w->rdzv = a->rdzv;
@@ -463,7 +439,7 @@ void arts_handler_db_snapshot_request(void *item_v, void *args_v) {
       return;
     }
     arts_send_db_snapshot_response(requester, a->token, cache->db_guid,
-                                   /*version=*/0, cover, /*kind=*/0, db_size,
+                                   /*version=*/0, /*kind=*/0, db_size,
                                    &a->rdzv, NULL);
     return;
   }
@@ -472,8 +448,8 @@ void arts_handler_db_snapshot_request(void *item_v, void *args_v) {
   uint64_t master_v =
       atomic_load_explicit(&master->version, memory_order_acquire);
   /* master_h transfers into the reply path (consumed there). */
-  update_cached_version_max(cache, requester, master_v, master_h, cover,
-                            &a->rdzv, a->token);
+  update_cached_version_max(cache, requester, master_v, master_h, &a->rdzv,
+                            a->token);
 }
 
 /* Cat-B pure body (OoO g_ooo_table[OOO_DB_PUBLISH]): the OoO engine has
@@ -632,14 +608,12 @@ void arts_db_home_destroy_now(struct arts_db_s *db) {
   (void)arts_ooo_retire(guid, db->self_cb);
 }
 
-/* Retract nothing: this arm's readers hold no durable copy claim — every
- * acquire re-validates against a version, so a creator that was given no
- * storage simply has nothing to assert. */
 /* The hold is possession plus this create's own writer, from a word that
- * holds nothing.  It is a write permission landing on this rank, so every EDT
- * parked on the first-touch cache is served under it -- readers whose read
- * request is still out included -- and the requests that cache sent are the
- * home's to absorb (the announce names them). */
+ * holds nothing.  It is a write permission landing on this rank, so every
+ * writer parked on the first-touch cache is served under it, and the write
+ * request that cache sent is the home's to absorb (the announce names it).
+ * A read request the cache has out stays out until its own answer, which
+ * serves its cohort. */
 bool arts_db_create_take_hold(struct arts_db_cache_s *cache, uint8_t *owed) {
   *owed = 0u;
   unsigned int none = 0u;
@@ -653,14 +627,17 @@ bool arts_db_create_take_hold(struct arts_db_cache_s *cache, uint8_t *owed) {
    * (PRECLAIM); one that pushed after the take is re-armed below.  The
    * creator's own hold keeps the right here throughout. */
   arts_db_grant_claim_writers(cache);
-  *owed = arts_db_val_claim_cover(cache);
+  *owed = arts_db_val_claim_rw_axis(cache);
   arts_db_grant_rearm(cache);
-  /* The claim closed the requests the cache had out: their counts go, under
-   * the create's own. */
+  /* The claim closed the write request the cache had out: its count goes,
+   * under the create's own. */
   arts_db_axis_drop(arts_db_of_cache(cache), arts_db_claim_closed_axes(*owed));
   return true;
 }
 
+/* Retract nothing: this arm's readers hold no durable copy claim — every
+ * acquire re-validates against a version, so a creator that was given no
+ * storage simply has nothing to assert. */
 void arts_db_create_retract_creator_copy(struct arts_db_s *db) { (void)db; }
 
 /* Claim nothing either: a reader here re-validates against a version at

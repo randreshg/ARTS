@@ -334,7 +334,6 @@ struct arts_ooo_args_db_grant_return_s {
 struct arts_ooo_args_db_snapshot_request_s {
   unsigned int requester;
   arts_guid_t db_guid;
-  uint32_t cover;                  /* ARTS_COVER_PAR | ARTS_COVER_PRECLAIM */
   struct arts_rdzv_landing_s rdzv; /* requester's snapshot landing */
 #if defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)
   uint64_t token; /* the requester's answer token */

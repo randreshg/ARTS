@@ -477,14 +477,11 @@ struct ARTS_PACKED arts_msg_grant_confirm_ack_packet_s {
 #endif
 };
 
+/* SNAPSHOT_REQUEST — VAL: a rank's read request.  The window's cohort is the
+ * requester's own chain, so the request names no EDT. */
 struct ARTS_PACKED arts_msg_snapshot_request_packet_s {
   struct arts_msg_header_s header;
   arts_guid_t db_guid;
-  /* ARTS_COVER_PAR | ARTS_COVER_PRECLAIM: the request's parity, and whether a
-   * first-touch cache no create had claimed sent it.  The window's cohort is
-   * the requester's own chain, so the request names no EDT. */
-  uint32_t cover;
-  uint32_t pad;
   /* Requester's landing for the snapshot payload.  txid==0 = requester does
    * not yet know db_size (first touch): the server answers a size-only CTS
    * response (data_present == 2) and the requester re-issues with a landing. */
@@ -497,7 +494,7 @@ struct ARTS_PACKED arts_msg_snapshot_request_packet_s {
 /* SNAPSHOT_RESPONSE — the snapshot payload does NOT ride the wire; it is PUT
  * into the landing the requester advertised.  It names no EDT: the request is
  * the rank's, and its answer serves the readers the requester's request word
- * parked for the request whose parity `cover` echoes.
+ * parked for the one read request it has out.
  * data_present values:
  *   0 = no payload moved (requester's version is current, or nothing
  *       published yet).  A nonzero rdzv_cookie echoes the unused landing so
@@ -511,8 +508,8 @@ struct ARTS_PACKED arts_msg_snapshot_response_packet_s {
   struct arts_msg_header_s header;
   arts_guid_t db_guid;
   uint64_t version;
-  uint32_t cover;       /* the answered request's cover word, echoed */
   uint32_t data_present;
+  uint32_t pad;         /* keeps the fields below 8-aligned; written 0 */
   uint64_t db_size;     /* payload/allocation byte count (see data_present) */
   uint64_t rdzv_txid;   /* write-completion pairing id (0 = no PUT) */
   uint64_t rdzv_cookie; /* requester's landing handle, echoed verbatim */
@@ -523,7 +520,8 @@ struct ARTS_PACKED arts_msg_snapshot_response_packet_s {
 
 /* DB_CREATE_COHERENT — no trailing payload.  Body:
  *   db_guid(8) + db_size(8) [+ cxl_addr(8) under ARTS_USE_CXL]
- *   + flags(2) + db_type(2) + pad[4]  =  24 bytes, or 32 under ARTS_USE_CXL,
+ *   + flags(2) + db_type(2) + owed(1) + pad[3]  =  24 bytes, or 32 under
+ *   ARTS_USE_CXL,
  * 8-aligned either way.  The block's slot is named by its address alone.  The
  * one conditional member makes the layout build-conditional: every rank in a
  * run must be built alike. */
@@ -562,7 +560,7 @@ struct ARTS_PACKED arts_msg_snapshot_redirect_packet_s {
   struct arts_msg_header_s header;
   arts_guid_t db_guid;
   uint32_t requester_rank;
-  uint32_t cover; /* the request's cover word, forwarded for the answer */
+  uint32_t pad; /* keeps the fields below 8-aligned; written 0 */
   /* Requester's landing, forwarded verbatim from its SNAPSHOT_REQUEST. */
   struct arts_msg_rdzv_landing_s rdzv;
 #ifdef ARTS_VALIDITY_VAL

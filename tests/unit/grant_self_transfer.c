@@ -259,13 +259,6 @@ void arts_db_drain_publication_waiters(struct arts_db_cache_s *cache) {
   }
 }
 #endif
-#ifdef ARTS_VALIDITY_VAL
-void arts_db_ro_combine_grant_drain(struct arts_db_cache_s *cache) {
-  if (cache != &g_db->cache) {
-    fail("the read combine drained on another cache");
-  }
-}
-#endif
 
 void arts_db_rw_req_clear(struct arts_db_cache_s *cache) {
   if (cache != &g_db->cache) {

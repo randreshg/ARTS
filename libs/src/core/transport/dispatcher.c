@@ -294,7 +294,6 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
     struct arts_ooo_args_db_snapshot_request_s args = {
         .requester = pack->header.rank,
         .db_guid = pack->db_guid,
-        .cover = pack->cover,
         .rdzv = {.addr = pack->rdzv.addr,
                  .key = pack->rdzv.key,
                  .txid = pack->rdzv.txid,
@@ -315,7 +314,6 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
     struct arts_db_snapshot_response_args_s args = {
         .db_guid = pack->db_guid,
         .token = pack->token,
-        .cover = pack->cover,
         .data_present = pack->data_present,
         .version = pack->version,
         .db_size = pack->db_size,
@@ -683,14 +681,13 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
     ARTS_DEBUG("Coh SNAPSHOT_REDIRECT Received");
     struct arts_msg_snapshot_redirect_packet_s *pack =
         (struct arts_msg_snapshot_redirect_packet_s *)(packet);
-    /* Cat-C lookup-or-dismiss: HIT serves SNAPSHOT_RESPONSE from the
+    /* Cat-C lookup-or-drop: HIT serves SNAPSHOT_RESPONSE from the
      * ref-pinned owner-side db_s; MISS is a block torn down after the home
-     * took the read in (the home names only an installed owner), answered
-     * with a dismiss that returns the reader's landing. */
+     * took the read in (the home names only an installed owner), which only
+     * a destroy issued with the reader's acquire in progress leaves. */
     struct arts_db_snapshot_redirect_args_s args = {
         .db_guid = pack->db_guid,
         .requester_rank = pack->requester_rank,
-        .cover = pack->cover,
         .rdzv = {.addr = pack->rdzv.addr,
                  .key = pack->rdzv.key,
                  .txid = pack->rdzv.txid,
@@ -701,11 +698,6 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
     struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(h);
     if (db != NULL) {
       arts_handler_db_snapshot_redirect(db, &args);
-    } else {
-      arts_send_db_snapshot_response(pack->requester_rank, pack->token,
-                                     pack->db_guid, /*version=*/0, pack->cover,
-                                     /*kind=*/2, /*db_size=*/0, &args.rdzv,
-                                     NULL);
     }
     arts_shared_release(&h);
     break;

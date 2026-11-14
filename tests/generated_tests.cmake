@@ -1853,12 +1853,19 @@ if(_c)
     endif()
 
     # The claim program: rank 1's reader acquires the block before rank 1
-    # creates it, and the create's claim of rank 1's first-touch cache serves
-    # it, except where every acquisition fetches from the home.
+    # creates it; the create's hold is rank 1's write, a local hit.  On VAL the
+    # create's claim of rank 1's first-touch cache serves no reader, and the
+    # reader is served by its own read request's answer: on the HOME cells
+    # the home, rank 0, answers once the creator's first publication has
+    # reached it, so the read is remote; on VAL·RETAIN·OWNER the home
+    # redirects the request to the holder it names, rank 1 itself, which
+    # answers from its own copy, so the read is local.  On the other cells the
+    # claim serves the reader, a local hit, except where every acquisition
+    # fetches from the home (FLUSH).
     set(_claim 0:NUM_DB_ACQUIRE_READ=0 0:NUM_DB_ACQUIRE_WRITE=0
                0:NUM_DB_ACQUIRE_LOCAL_HIT=0 0:NUM_DB_ACQUIRE_REMOTE=0
                1:NUM_DB_ACQUIRE_READ=1 1:NUM_DB_ACQUIRE_WRITE=1)
-    if(_cell STREQUAL "FLUSH")
+    if(_cell STREQUAL "FLUSH" OR _cell MATCHES "^VAL_.*_HOME$")
         list(APPEND _claim 1:NUM_DB_ACQUIRE_LOCAL_HIT=1
                            1:NUM_DB_ACQUIRE_REMOTE=1)
     else()
@@ -1920,7 +1927,6 @@ if(_c)
     arts_counters_captured(_c NUM_RO_COMBINE_WINDOW NUM_RO_COMBINE_JOINED)
     if(_c AND _cell MATCHES "^VAL_")
         list(APPEND _join 1:NUM_RO_COMBINE_WINDOW=3 1:NUM_RO_COMBINE_JOINED=2)
-        list(APPEND _gate 1:NUM_RO_COMBINE_WINDOW=1 1:NUM_RO_COMBINE_JOINED=1)
     endif()
 
     # join and gate hold every read request.  join's leaves once the EDT
@@ -1928,11 +1934,11 @@ if(_c)
     # the next reader parked on it, and on VAL the first reader's, after the
     # third parked on the next window; so each later reader parks on the
     # request out whatever the timing.  gate's are held past the run, so the
-    # write turn serves them.
+    # write turn serves them, which on VAL serves no reader.
     set(_shapes two home recall claim pub)
     if(ARTS_DEBUG_INJECTION)
         list(APPEND _shapes join)
-        if(_cell MATCHES "_RETAIN_")
+        if(_cell MATCHES "_RETAIN_" AND NOT _cell MATCHES "^VAL_")
             list(APPEND _shapes gate)
         endif()
     endif()

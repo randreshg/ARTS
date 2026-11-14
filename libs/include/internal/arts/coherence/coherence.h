@@ -511,20 +511,12 @@ void arts_db_drain_publication_waiters(struct arts_db_cache_s *cache);
 
 #ifdef ARTS_VALIDITY_VAL
 /* Response-terminal hook of the remote-read combining window: resume the
- * in-flight batch against the now-current buffer, then re-arm the window with
- * whatever accumulated meanwhile or release it.  Call at every point the
- * response path resumes the on-wire requester.  Returns whether the read
- * axis closed (a re-armed window keeps it open), whose count the caller then
- * drops at its end. */
-bool arts_db_ro_combine_on_terminal(struct arts_db_cache_s *cache,
-                                    uint32_t cover);
-
-/* Ownership-arrival hook of the combining window: resume every read waiter
- * still accumulating (not the in-flight group) against the just-transferred
- * buffer.  Must be called from the transfer-commit body while its
- * sentinel/guard pins writer_count — the bracket that makes the local serve
- * race-free against a concurrent ownership departure. */
-void arts_db_ro_combine_grant_drain(struct arts_db_cache_s *cache);
+ * window's cohort against the now-current buffer, then open the next window
+ * for the readers parked since, or close the read axis.  Call at every point
+ * the response path resumes the on-wire requester; a call with no window out
+ * is fatal.  Returns whether the read axis closed (a re-armed window keeps
+ * it open), whose count the caller then drops at its end. */
+bool arts_db_ro_combine_on_terminal(struct arts_db_cache_s *cache);
 #endif
 
 /* Shared cache_s construct/destruct sub-helpers.  The per-protocol
@@ -638,14 +630,15 @@ bool arts_db_create_take_hold(struct arts_db_cache_s *cache, uint8_t *owed);
  * stub bit exactly once, so an OPEN claimed after it carries another token
  * and a stale holder can never commit it), and the claim serves the waiter.
  * giveback: OPEN -> IDLE with nothing to ask for, under the same token.
- * clear: SENT -> IDLE where a grant lands, serving the readers that rode it,
- * and clearing the stub bit.  declaim: a size round answered the write
- * request (rw must be SENT): clear the stub bit -- the home is installed and
- * was created elsewhere, so this cache can never be claimed -- and return the
- * cover word the re-send carries (never PRECLAIM).  The axis counts: a won
- * commit's caller takes the write axis's before it sends the request; clear
- * closes it, and its count passes to the frame that runs the grant; a
- * giveback that re-opens the read window takes the read axis's itself. */
+ * clear: SENT -> IDLE where a grant lands, clearing the stub bit (INV also
+ * serves the readers parked on the rank there).  declaim: a size round
+ * answered the write request (rw must be SENT): clear the stub bit -- the home
+ * is installed and was created elsewhere, so this cache can never be claimed
+ * -- and return the cover word the re-send carries (never PRECLAIM).
+ * The axis counts: a won commit's caller takes the write axis's before it
+ * sends the request; clear closes it, and its count passes to the frame that
+ * runs the grant; an INV giveback that opens a read request for its riders
+ * takes the read axis's itself. */
 bool arts_db_rw_req_claim(struct arts_db_cache_s *cache, uint32_t *tok);
 bool arts_db_rw_req_commit(struct arts_db_cache_s *cache, uint32_t tok,
                            uint32_t *cover);
@@ -695,10 +688,12 @@ void arts_db_reader_serve_chain(struct arts_db_reader_pool_s *p,
 void arts_db_reader_pool_destroy(struct arts_db_reader_pool_s *p);
 #endif
 #ifdef ARTS_VALIDITY_VAL
-/* A size round or a dismiss answered the read window: re-send it, or close
- * the axis (returned: the caller drops its count at its end). */
-bool arts_db_ro_combine_on_cts(struct arts_db_cache_s *cache, uint32_t cover);
-uint8_t arts_db_val_claim_cover(struct arts_db_cache_s *cache);
+/* A size round answered the read window: its request goes out again, now
+ * with a landing, and the axis stays open under the same count; a call with
+ * no window out is fatal.  claim_rw_axis: the create's claim of the write
+ * axis (see the definition), returning the announce's owed byte. */
+void arts_db_ro_combine_on_cts(struct arts_db_cache_s *cache);
+uint8_t arts_db_val_claim_rw_axis(struct arts_db_cache_s *cache);
 #endif
 
 /* The counterpart, for a create that gives the block its first image in a

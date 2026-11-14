@@ -249,10 +249,30 @@ _Static_assert(sizeof(struct arts_msg_grant_cts_packet_s) == 32,
 _Static_assert(sizeof(struct arts_msg_grant_confirm_packet_s) == 24,
                "ownership_confirm sizeof drifted");
 #endif
+/* A read request, its redirect and its answer carry no cover word; the
+ * pads keep the answer's and the redirect's 64-bit fields 8-aligned. */
+_Static_assert(offsetof(struct arts_msg_snapshot_request_packet_s, rdzv) == 24,
+               "snapshot_request rdzv drifted");
+_Static_assert(offsetof(struct arts_msg_snapshot_response_packet_s,
+                        data_present) == 32,
+               "snapshot_response data_present drifted");
+_Static_assert(offsetof(struct arts_msg_snapshot_response_packet_s, pad) == 36,
+               "snapshot_response pad drifted");
+_Static_assert(offsetof(struct arts_msg_snapshot_response_packet_s, db_size) ==
+                   40,
+               "snapshot_response db_size drifted");
+_Static_assert(offsetof(struct arts_msg_snapshot_redirect_packet_s,
+                        requester_rank) == 24,
+               "snapshot_redirect requester_rank drifted");
+_Static_assert(offsetof(struct arts_msg_snapshot_redirect_packet_s, pad) == 28,
+               "snapshot_redirect pad drifted");
+_Static_assert(offsetof(struct arts_msg_snapshot_redirect_packet_s, rdzv) ==
+                   32,
+               "snapshot_redirect rdzv drifted");
 #ifdef ARTS_VALIDITY_VAL
-_Static_assert(sizeof(struct arts_msg_snapshot_request_packet_s) == 72,
+_Static_assert(sizeof(struct arts_msg_snapshot_request_packet_s) == 64,
                "snapshot_request sizeof drifted");
-_Static_assert(offsetof(struct arts_msg_snapshot_request_packet_s, token) == 64,
+_Static_assert(offsetof(struct arts_msg_snapshot_request_packet_s, token) == 56,
                "snapshot_request token drifted");
 _Static_assert(sizeof(struct arts_msg_snapshot_response_packet_s) == 72,
                "snapshot_response sizeof drifted");
@@ -265,7 +285,7 @@ _Static_assert(offsetof(struct arts_msg_snapshot_redirect_packet_s, token) ==
                    64,
                "snapshot_redirect token drifted");
 #else
-_Static_assert(sizeof(struct arts_msg_snapshot_request_packet_s) == 64,
+_Static_assert(sizeof(struct arts_msg_snapshot_request_packet_s) == 56,
                "snapshot_request sizeof drifted");
 _Static_assert(sizeof(struct arts_msg_snapshot_response_packet_s) == 64,
                "snapshot_response sizeof drifted");

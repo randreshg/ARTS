@@ -123,7 +123,7 @@ void arts_db_cache_common_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
 #ifdef ARTS_VALIDITY_VAL
   atomic_init(&c->req_state,
               (kind == ARTS_DB_INIT_STUB && ARTS_DB_STUB_CLAIMABLE(db_guid))
-                  ? VREQ_MAKE(0u, 0u, 0u, 0u, 1u, 0u, 0u)
+                  ? VREQ_MAKE(0u, 0u, 1u, 0u, 0u)
                   : (uint64_t)0);
 #endif
 #if defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)
@@ -373,21 +373,20 @@ void *arts_db_acquire_local(struct arts_db_cache_s *cache) {
 #if defined(ARTS_VALIDITY_VAL)
 /* ===== The read path and the request word ============================
  *
- * Every remote read-only acquire rides its cache's one window: at most one
+ * Every remote read-only acquire joins its cache's one window: at most one
  * read request per cache is out, and a reader that arrives while it is out
- * waits for the next one -- a reader may only ride a request sent AFTER its
- * park, because the server serves the version current when the request
- * arrives, and any release the reader is ordered after was published before
- * its park.  A reader that arrives while the rank's write request is out
- * sends nothing: the write turn covers it (RW ⊇ RO).  When a write
- * permission reaches the rank -- a grant, or the create's own hold on a cache
- * the rank made before the create -- every parked reader is served at once,
- * the window's cohort included; the window's request stays out until its own
- * answer, which then serves nobody it already served.
+ * waits for the next one -- a reader may only be served by a request sent
+ * AFTER its park, because the server serves the version current when the
+ * request arrives, and any release the reader is ordered after was published
+ * before its park.  The read axis never waits on the write axis: a reader
+ * opens its window whatever write request the rank has out, and only the
+ * window's own answer serves its cohort, so a parked reader waits for
+ * messages in flight and for answers no EDT's acquire holds up.
  *
  * The chains live in the request word (val/types.h), so parking IS the
- * acquire's decision CAS and a serve takes a whole chain in the CAS that
- * decides it: no reader can miss the request it joined or be served twice. */
+ * acquire's decision CAS and the answer takes the whole cohort in the CAS
+ * that decides it: no reader can miss the request it joined or be served
+ * twice. */
 
 /* ---- the arbiter (val/arbiters.c: a pure function of the word) ---------- */
 #include "val/arbiters.c"
@@ -418,16 +417,6 @@ static uint64_t val_req_step(struct arts_db_cache_s *cache, int op,
   return cur;
 }
 
-static void val_send_window(struct arts_db_cache_s *cache, uint64_t post) {
-  arts_send_db_snapshot_request(
-      cache, (VREQ_PAR(post) ? ARTS_COVER_PAR : 0u) |
-                 (VREQ_STUB(post) ? ARTS_COVER_PRECLAIM : 0u));
-}
-
-/* The read axis is open while a window's request is out and answers it: rp
- * hands the window's cohort to the write request, which closes the axis. */
-static bool val_read_open(uint64_t s) { return VREQ_RO(s) && !VREQ_RP(s); }
-
 arts_db_acquire_result_t
 arts_db_acquire_remote_ro(struct arts_db_cache_s *cache, struct arts_edt_s *edt,
                           unsigned int slot) {
@@ -446,64 +435,41 @@ arts_db_acquire_remote_ro(struct arts_db_cache_s *cache, struct arts_edt_s *edt,
   if (act == VREQ_ACT_SEND_RO) {
     INCREMENT_NUM_RO_COMBINE_WINDOW_BY(1);
     arts_db_axis_take(arts_db_of_cache(cache));
-    val_send_window(cache, post);
+    arts_send_db_snapshot_request(cache);
   } else {
     INCREMENT_NUM_RO_COMBINE_JOINED_BY(1);
   }
   return ARTS_DB_ACQUIRE_PARK;
 }
 
-bool arts_db_ro_combine_on_terminal(struct arts_db_cache_s *cache,
-                                    uint32_t cover) {
+bool arts_db_ro_combine_on_terminal(struct arts_db_cache_s *cache) {
   uint64_t post;
   uint32_t act;
-  uint64_t pre = val_req_step(cache, VREQ_OP_ANSWER, cover & ARTS_COVER_PAR,
-                              &post, &act);
+  uint64_t pre = val_req_step(cache, VREQ_OP_ANSWER, 0u, &post, &act);
   if (act == VREQ_ACT_LATE) {
-    ARTS_ERROR("val: guid %lu got a read answer (parity %u) it has no "
-               "request out for (word=%llx)",
-               (unsigned long)cache->db_guid, cover & ARTS_COVER_PAR,
-               (unsigned long long)pre);
+    ARTS_ERROR("val: guid %lu got a read answer it has no request out for "
+               "(word=%llx)",
+               (unsigned long)cache->db_guid, (unsigned long long)pre);
   }
-  /* The cohort that rode this request, unless a write permission already
-   * served it (then the chain is empty: the answer serves nobody). */
   arts_db_reader_serve_chain(&cache->reader_pool, VREQ_GROUP(pre));
   if (act == VREQ_ACT_SERVE_SEND) {
     INCREMENT_NUM_RO_COMBINE_WINDOW_BY(1);
-    val_send_window(cache, post);
+    arts_send_db_snapshot_request(cache);
+    return false;
   }
-  return val_read_open(pre) && !val_read_open(post);
+  return true;
 }
 
-bool arts_db_ro_combine_on_cts(struct arts_db_cache_s *cache, uint32_t cover) {
+void arts_db_ro_combine_on_cts(struct arts_db_cache_s *cache) {
   uint64_t post;
   uint32_t act;
-  uint64_t pre =
-      val_req_step(cache, VREQ_OP_CTS, cover & ARTS_COVER_PAR, &post, &act);
+  uint64_t pre = val_req_step(cache, VREQ_OP_CTS, 0u, &post, &act);
   if (act == VREQ_ACT_LATE) {
-    ARTS_ERROR("val: guid %lu got a read size round or dismiss (parity %u) it "
-               "has no request out for (word=%llx)",
-               (unsigned long)cache->db_guid, cover & ARTS_COVER_PAR,
-               (unsigned long long)pre);
+    ARTS_ERROR("val: guid %lu got a read size round it has no request out "
+               "for (word=%llx)",
+               (unsigned long)cache->db_guid, (unsigned long long)pre);
   }
-  if (act == VREQ_ACT_RESEND) {
-    val_send_window(cache, post);
-  }
-  return val_read_open(pre) && !val_read_open(post);
-}
-
-/* A write permission landed (the grant's install): every parked reader is
- * served under it, the in-flight window's cohort included.  Called with the
- * install's own hold on the grant word, which keeps the permission here for
- * the whole walk.  The buffer this rank now holds contains every release
- * completed before the transfer (the ownership chain linearizes all
- * writers), so resuming against it is correct whenever a reader parked. */
-void arts_db_ro_combine_grant_drain(struct arts_db_cache_s *cache) {
-  uint64_t post;
-  uint32_t act;
-  uint64_t pre = val_req_step(cache, VREQ_OP_COVER, 0u, &post, &act);
-  arts_db_reader_serve_chain(&cache->reader_pool, VREQ_GROUP(pre));
-  arts_db_reader_serve_chain(&cache->reader_pool, VREQ_NEXT(pre));
+  arts_send_db_snapshot_request(cache);
 }
 
 /* ---- the write axis, for the shared grant plane ------------------------- */
@@ -516,17 +482,7 @@ bool arts_db_rw_req_claim(struct arts_db_cache_s *cache, uint32_t *tok) {
 }
 
 static uint32_t val_rw_cover(uint64_t s) {
-  uint32_t c = 0u;
-  if (VREQ_RO(s) && !VREQ_RP(s)) {
-    c |= ARTS_COVER_RO_OPEN;
-    if (VREQ_PAR(s)) {
-      c |= ARTS_COVER_RO_PAR;
-    }
-  }
-  if (VREQ_STUB(s)) {
-    c |= ARTS_COVER_PRECLAIM;
-  }
-  return c;
+  return VREQ_STUB(s) ? ARTS_COVER_PRECLAIM : 0u;
 }
 
 bool arts_db_rw_req_commit(struct arts_db_cache_s *cache, uint32_t tok,
@@ -541,18 +497,7 @@ bool arts_db_rw_req_commit(struct arts_db_cache_s *cache, uint32_t tok,
 void arts_db_rw_req_giveback(struct arts_db_cache_s *cache, uint32_t tok) {
   uint64_t post;
   uint32_t act;
-  uint64_t pre = val_req_step(cache, VREQ_OP_RW_GIVE, tok, &post, &act);
-  if (act == VREQ_ACT_SEND_RO) {
-    INCREMENT_NUM_RO_COMBINE_WINDOW_BY(1);
-  }
-  if (act == VREQ_ACT_RESEND || act == VREQ_ACT_SEND_RO) {
-    /* Either re-opens the read axis: a window that rode the write request
-     * asks again, or riders open a fresh one. */
-    assert(!val_read_open(pre) && val_read_open(post));
-    (void)pre;
-    arts_db_axis_take(arts_db_of_cache(cache));
-    val_send_window(cache, post);
-  }
+  (void)val_req_step(cache, VREQ_OP_RW_GIVE, tok, &post, &act);
 }
 
 void arts_db_rw_req_clear(struct arts_db_cache_s *cache) {
@@ -564,8 +509,6 @@ void arts_db_rw_req_clear(struct arts_db_cache_s *cache) {
                "(word=%llx)",
                (unsigned long)cache->db_guid, (unsigned long long)pre);
   }
-  arts_db_reader_serve_chain(&cache->reader_pool, VREQ_GROUP(pre));
-  arts_db_reader_serve_chain(&cache->reader_pool, VREQ_NEXT(pre));
 }
 
 uint32_t arts_db_rw_req_declaim(struct arts_db_cache_s *cache) {
@@ -580,26 +523,16 @@ uint32_t arts_db_rw_req_declaim(struct arts_db_cache_s *cache) {
   return val_rw_cover(post);
 }
 
-/* The create's claim: the hold is taken on the grant word first, then every
- * parked reader is served under it and the write axis becomes the claim's.
- * Returns the owed byte the announce carries. */
-uint8_t arts_db_val_claim_cover(struct arts_db_cache_s *cache) {
+/* The create's claim of the write axis, after its hold is taken on the grant
+ * word: a write request out is the claimer's pre-claim request, which the
+ * announce names for the home to absorb, and an OPEN is reset (its commit
+ * then loses on the token).  A read request out stays out for its own
+ * answer.  Returns the owed byte the announce carries. */
+uint8_t arts_db_val_claim_rw_axis(struct arts_db_cache_s *cache) {
   uint64_t post;
   uint32_t act;
   uint64_t pre = val_req_step(cache, VREQ_OP_CLAIM, 0u, &post, &act);
-  uint8_t owed = 0u;
-  if (VREQ_RO(pre) && !VREQ_RP(pre)) {
-    owed |= ARTS_CREATE_OWED_RO;
-    if (VREQ_PAR(pre)) {
-      owed |= ARTS_CREATE_OWED_RO_PAR;
-    }
-  }
-  if (VREQ_RW(pre) == VREQ_RW_SENT) {
-    owed |= ARTS_CREATE_OWED_RW;
-  }
-  arts_db_reader_serve_chain(&cache->reader_pool, VREQ_GROUP(pre));
-  arts_db_reader_serve_chain(&cache->reader_pool, VREQ_NEXT(pre));
-  return owed;
+  return VREQ_RW(pre) == VREQ_RW_SENT ? ARTS_CREATE_OWED_RW : 0u;
 }
 #endif /* the versioned-snapshot read path */
 
@@ -1358,13 +1291,11 @@ void arts_db_debug_quiescence_check(const struct arts_teardown_exempt_s *ex,
         {
           uint64_t rq =
               atomic_load_explicit(&c->req_state, memory_order_relaxed);
-          /* A window whose request is out with nothing parked on it is a
-           * covered request whose answer was in flight: legal.  A parked
-           * reader is an unfinished acquire: reported after a quiescent
-           * shutdown.  A write axis left OPEN has lost its writer thread; a
-           * rider with no request of either kind to serve it, or a window
-           * parked behind a write request that is not out, will never be
-           * served: always reported. */
+          /* A parked reader is an unfinished acquire: reported after a
+           * quiescent shutdown.  A write axis left OPEN has lost its writer
+           * thread; a window out with nobody in it, and a reader parked for
+           * a next window with no window out whose answer opens it, are words
+           * no transition makes: always reported. */
           if (quiescent && (VREQ_GROUP(rq) != 0u || VREQ_NEXT(rq) != 0u)) {
             ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu has a parked read after a "
                        "quiescent shutdown (word=%llx)",
@@ -1372,9 +1303,8 @@ void arts_db_debug_quiescence_check(const struct arts_teardown_exempt_s *ex,
             viol++;
           }
           if (VREQ_RW(rq) == VREQ_RW_OPEN ||
-              (VREQ_NEXT(rq) != 0u && !VREQ_RO(rq) &&
-               VREQ_RW(rq) == VREQ_RW_IDLE) ||
-              (VREQ_RP(rq) && VREQ_RW(rq) == VREQ_RW_IDLE)) {
+              (VREQ_RO(rq) && VREQ_GROUP(rq) == 0u) ||
+              (VREQ_NEXT(rq) != 0u && !VREQ_RO(rq))) {
             ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu request word rests where "
                        "nothing serves it (word=%llx)",
                        (unsigned long)c->db_guid, (unsigned long long)rq);
@@ -1847,7 +1777,7 @@ void arts_db_sweep_open_items(struct arts_db_s *db, arts_shared_ptr_t cb) {
   unsigned int open = 0u;
 #if defined(ARTS_VALIDITY_VAL)
   uint64_t s = atomic_load_explicit(&db->cache.req_state, memory_order_relaxed);
-  open += val_read_open(s) ? 1u : 0u;
+  open += VREQ_RO(s);
   open += (VREQ_RW(s) == VREQ_RW_SENT) ? 1u : 0u;
 #ifdef ARTS_READ_SOURCE_HOME
   open +=

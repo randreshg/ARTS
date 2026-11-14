@@ -89,7 +89,6 @@ struct arts_db_cache_s;
 struct arts_db_snapshot_response_args_s {
   arts_guid_t db_guid;
   uint64_t token; /* the request's, echoed */
-  uint32_t cover; /* the answered request's cover word */
   uint32_t data_present;
   uint64_t version;
   uint64_t db_size;     /* CTS: allocation size; data: landed byte count */
@@ -180,7 +179,6 @@ void arts_handler_db_flush_cts(const struct arts_db_flush_cts_args_s *a);
 struct arts_db_snapshot_redirect_args_s {
   arts_guid_t db_guid;
   unsigned int requester_rank;
-  uint32_t cover;
   struct arts_rdzv_landing_s rdzv; /* requester's landing, forwarded by home */
   uint64_t token;                  /* requester's, forwarded by home */
 };
@@ -309,9 +307,9 @@ void arts_handler_db_cache_destroy(void *item_v, void *args_v);
 /* Cat-C pure body (SNAPSHOT_REDIRECT, owner side): item_v is the db_s the
  * dispatcher acquired (cache is its first member); args_v is an
  * arts_db_snapshot_redirect_args_s.  NOT OoO-deferrable — a redirect continues
- * a request the home already took in, so the dispatcher (and the self-send)
- * answers a MISS (a block torn down since) with a dismiss that gives the
- * reader its landing back, never a park. */
+ * a request the home already took in, whose readers are still parked, so a
+ * block torn down since is a destroy the program issued with an acquire in
+ * progress: the dispatcher (and the self-send) drops a MISS, never parks it. */
 void arts_handler_db_snapshot_redirect(void *item_v, void *args_v);
 #endif /* VAL·OWNER */
 
@@ -401,24 +399,21 @@ void arts_send_db_grant_invalidate(
     const struct arts_rdzv_landing_s *new_owner_rdzv, uint64_t new_owner_have,
     uint64_t new_owner_token);
 /* Send SNAPSHOT_REQUEST to the DB's home, advertising a fresh
- * snapshot landing when db_size is known (multi-rank runs); a size-unknown
+ * snapshot landing when the size is known (multi-rank runs); a size-unknown
  * first touch sends landing-less and the server answers a size-only CTS
  * response (data_present == 2), whose handler re-enters this sender. */
-void arts_send_db_snapshot_request(struct arts_db_cache_s *cache,
-                                   uint32_t cover);
+void arts_send_db_snapshot_request(struct arts_db_cache_s *cache);
 /* Send SNAPSHOT_RESPONSE.  kind (-> wire data_present): 0 = no data moved (a
  * non-NULL landing's cookie is echoed so the requester returns it), 1 =
  * payload (PUT from src_h's buffer into `landing`; src_h — a strong buffer
  * ref — is CONSUMED: transferred to the PUT's local completion, or released
- * after an inline self-serve), 2 = an answer without data: a size round
- * (db_size) or a dismiss, either returning the landing.  cover echoes the
- * answered request's cover word, whose parity the requester checks.  src_h
- * must be NULL for kinds 0/2.  token is the request's, echoed: to a
- * requester that is this rank the reply runs on the descriptor it names. */
+ * after an inline self-serve), 2 = a size round (db_size) for a request that
+ * carried no landing.  src_h must be NULL for kinds 0/2.  token is the
+ * request's, echoed: to a requester that is this rank the reply runs on the
+ * descriptor it names. */
 void arts_send_db_snapshot_response(unsigned int requester_rank, uint64_t token,
                                     arts_guid_t db_guid, uint64_t version,
-                                    uint32_t cover, uint32_t kind,
-                                    uint64_t db_size,
+                                    uint32_t kind, uint64_t db_size,
                                     const struct arts_rdzv_landing_s *landing,
                                     arts_shared_ptr_t src_h);
 /* owed: what the claimed first-touch cache had already asked the home for
@@ -441,7 +436,7 @@ void arts_send_db_cache_destroy(unsigned int sharer_rank, arts_guid_t db_guid);
  * requester's, forwarded for the answer. */
 void arts_send_db_snapshot_redirect(struct arts_db_s *db,
                                     unsigned int owner_rank,
-                                    unsigned int requester_rank, uint32_t cover,
+                                    unsigned int requester_rank,
                                     const struct arts_rdzv_landing_s *rdzv,
                                     uint64_t token);
 #endif

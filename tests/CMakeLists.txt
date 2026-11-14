@@ -3198,15 +3198,19 @@ if(ARTS_TEST_REFERENCE_TREE)
 endif()
 
 # Covered requests: a request whose waiters something other than its own
-# answer served -- its rank's write turn, or a create's hold on the cache its
-# rank made by a first touch -- is still travelling when the program destroys
-# the block.  The home learns of each before the turn that covers it can end
-# and tears the block down only once every one has arrived.  Requests combine
-# per rank on every arm but FLUSH, whose fetch is answered before its EDT
-# runs, so no cover exists there and these are neither built nor registered
-# in that tree.  A variant that sets an injection hook (ARTS_REQUEST_DELAY_MS
-# reorders requests on the wire or holds one kind of them; ARTS_SCHED_FUZZ
-# widens the decision windows) registers only where the hooks are compiled.
+# answer served -- a create's hold on the cache its rank made by a first touch
+# (its write request, on every arm), or on INV and EXCL also its rank's write
+# turn (covering the read request of that rank still out when the turn
+# arrives) -- is still travelling when the program destroys the
+# block.  The home learns of each before the turn that covers it can end and
+# tears the block down only once every one has arrived.  Requests combine per
+# rank on every arm but FLUSH, whose fetch is answered before its EDT runs, so
+# no cover exists there and these are neither built nor registered in that
+# tree; a write turn covers no read request on VAL, so the read requests'
+# programs are neither built nor registered in its trees.  A variant that sets
+# an injection hook (ARTS_REQUEST_DELAY_MS reorders requests on the wire or
+# holds one kind of them; ARTS_SCHED_FUZZ widens the decision windows)
+# registers only where the hooks are compiled.
 # Each name_<variant> runs PROGRAM with ARGS on that variant's cfg, the HOOK
 # variable added to its environment.
 function(arts_cover_test name program)
@@ -3239,12 +3243,19 @@ function(arts_cover_test name program)
 endfunction()
 
 if(NOT ARTS_VALIDITY STREQUAL "FLUSH")
+    # Whether a write turn covers its rank's read request.
+    set(_cover_reads OFF)
+    if(NOT ARTS_VALIDITY STREQUAL "VAL")
+        set(_cover_reads ON)
+    endif()
     # db_destroy_covered_read: rounds of blocks whose read request a write
     # turn of its own rank served, each block destroyed once its holds are
     # released; with the hook, requests overtake each other.
-    add_arts_test(db_destroy_covered_read)
-    arts_cover_test(db_destroy_covered_read db_destroy_covered_read
-                    PASS "PASS: db_destroy_covered_read 8 rounds x 32 blocks")
+    if(_cover_reads)
+        add_arts_test(db_destroy_covered_read)
+        arts_cover_test(db_destroy_covered_read db_destroy_covered_read
+                        PASS "PASS: db_destroy_covered_read 8 rounds x 32 blocks")
+    endif()
     # db_destroy_claimed_first_touch: a create claims the cache its rank's
     # consumers made by a first touch -- read-only, read-write and both --
     # while their requests are on their way; wave2 adds consumers after the
@@ -3262,17 +3273,21 @@ if(NOT ARTS_VALIDITY STREQUAL "FLUSH")
     # sent right behind its rank's write request the home takes the write
     # request in first, the dismiss overtakes the grant and the readers ride
     # the write request, so the strict oracle applies.
-    add_arts_test(db_read_dismissed_before_grant)
-    arts_cover_test(db_read_dismissed_before_grant
-                    db_read_dismissed_before_grant VARIANTS 4n_4w_1p
-                    PASS "PASS: db_read_dismissed_before_grant 8 blocks")
+    if(_cover_reads)
+        add_arts_test(db_read_dismissed_before_grant)
+        arts_cover_test(db_read_dismissed_before_grant
+                        db_read_dismissed_before_grant VARIANTS 4n_4w_1p
+                        PASS "PASS: db_read_dismissed_before_grant 8 blocks")
+    endif()
     # db_destroy_cover_settles and db_create_races_acquire wait after their
     # last destroy for every home of their blocks to be torn down and, where
     # the build counts rendezvous landings, for every landing to end: an
     # over-count at a home is a liveness failure no shutdown check sees.
     add_arts_test(db_destroy_cover_settles)
-    arts_cover_test(db_destroy_cover_settles_t2 db_destroy_cover_settles
-                    ARGS t2 PASS "PASS: db_destroy_cover_settles 8 rounds x 32 blocks \\(t2\\)")
+    if(_cover_reads)
+        arts_cover_test(db_destroy_cover_settles_t2 db_destroy_cover_settles
+                        ARGS t2 PASS "PASS: db_destroy_cover_settles 8 rounds x 32 blocks \\(t2\\)")
+    endif()
     arts_cover_test(db_destroy_cover_settles_t1 db_destroy_cover_settles
                     ARGS t1 PASS "PASS: db_destroy_cover_settles 8 rounds x 32 blocks \\(t1\\)")
     add_arts_test(db_create_races_acquire)
@@ -3283,9 +3298,12 @@ if(NOT ARTS_VALIDITY STREQUAL "FLUSH")
                     ARGS 3 3 VARIANTS 2n_9w_1p 2n_8w_2p
                     PASS "PASS: db_create_races_acquire 32 blocks")
     if(ARTS_DEBUG_INJECTION)
-        arts_cover_test(db_destroy_covered_read_delay db_destroy_covered_read
-                        HOOK "ARTS_REQUEST_DELAY_MS=5"
-                        PASS "PASS: db_destroy_covered_read 8 rounds x 32 blocks")
+        if(_cover_reads)
+            arts_cover_test(db_destroy_covered_read_delay
+                            db_destroy_covered_read
+                            HOOK "ARTS_REQUEST_DELAY_MS=5"
+                            PASS "PASS: db_destroy_covered_read 8 rounds x 32 blocks")
+        endif()
         arts_cover_test(db_destroy_claimed_first_touch_delay
                         db_destroy_claimed_first_touch
                         HOOK "ARTS_REQUEST_DELAY_MS=5"
@@ -3294,22 +3312,24 @@ if(NOT ARTS_VALIDITY STREQUAL "FLUSH")
                         db_destroy_claimed_first_touch ARGS wave2
                         HOOK "ARTS_REQUEST_DELAY_MS=5"
                         PASS "PASS: db_destroy_claimed_first_touch 64 blocks \\(second wave\\)")
-        # db_read_rides_write: every read request held 60 s and no write
-        # request, so the write turn answers first; a reader left waiting for
-        # its own answer would outlast the budget.
-        add_arts_test(db_read_rides_write)
-        arts_cover_test(db_read_rides_write db_read_rides_write TIMEOUT 45
-                        HOOK "ARTS_REQUEST_DELAY_MS=60000:ro"
-                        PASS "PASS: db_read_rides_write 16 blocks")
-        arts_cover_test(db_read_dismissed_before_grant_strict
-                        db_read_dismissed_before_grant ARGS strict
-                        VARIANTS 4n_4w_1p
-                        HOOK "ARTS_REQUEST_DELAY_MS=60000:trail"
-                        PASS "PASS: db_read_dismissed_before_grant 8 blocks")
-        arts_cover_test(db_destroy_cover_settles_t2_delay
-                        db_destroy_cover_settles ARGS t2
-                        HOOK "ARTS_REQUEST_DELAY_MS=5"
-                        PASS "PASS: db_destroy_cover_settles 8 rounds x 32 blocks \\(t2\\)")
+        if(_cover_reads)
+            # db_read_rides_write: every read request held 60 s and no write
+            # request, so the write turn answers first; a reader left
+            # waiting for its own answer would outlast the budget.
+            add_arts_test(db_read_rides_write)
+            arts_cover_test(db_read_rides_write db_read_rides_write TIMEOUT 45
+                            HOOK "ARTS_REQUEST_DELAY_MS=60000:ro"
+                            PASS "PASS: db_read_rides_write 16 blocks")
+            arts_cover_test(db_read_dismissed_before_grant_strict
+                            db_read_dismissed_before_grant ARGS strict
+                            VARIANTS 4n_4w_1p
+                            HOOK "ARTS_REQUEST_DELAY_MS=60000:trail"
+                            PASS "PASS: db_read_dismissed_before_grant 8 blocks")
+            arts_cover_test(db_destroy_cover_settles_t2_delay
+                            db_destroy_cover_settles ARGS t2
+                            HOOK "ARTS_REQUEST_DELAY_MS=5"
+                            PASS "PASS: db_destroy_cover_settles 8 rounds x 32 blocks \\(t2\\)")
+        endif()
         arts_cover_test(db_destroy_cover_settles_t1_delay
                         db_destroy_cover_settles ARGS t1
                         HOOK "ARTS_REQUEST_DELAY_MS=5"
@@ -3322,13 +3342,13 @@ if(NOT ARTS_VALIDITY STREQUAL "FLUSH")
                         db_create_races_acquire ARGS 3 3
                         VARIANTS 2n_9w_1p 2n_8w_2p HOOK "ARTS_SCHED_FUZZ=40"
                         PASS "PASS: db_create_races_acquire 32 blocks")
-        # A hop -- a home's redirect under OWNER, a holder's bounce, an
+        # A hop -- INV·OWNER's redirect and a holder's bounce, an
         # EXCL·RETAIN home's forward -- continues a request the home took in,
         # so it is never an early arrival: held 200 ms it lands after the
         # teardown and is answered (or dropped) rather than parked.  Only
         # the arms whose home hops have one; four ranks give the holder a
         # rank of its own.
-        if((ARTS_VALIDITY MATCHES "^(VAL|INV)$" AND
+        if((ARTS_VALIDITY STREQUAL "INV" AND
             ARTS_READ_SOURCE STREQUAL "OWNER") OR
            (ARTS_VALIDITY STREQUAL "EXCL" AND
             ARTS_RETENTION STREQUAL "RETAIN"))
@@ -3606,6 +3626,21 @@ foreach(_t IN LISTS _writer_ro_cases)
         PASS_REGULAR_EXPRESSION "PASS: rw-write window/ro-overlap rounds=16 dbs=8 reads=1024 writes=1152"
         FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
 endforeach()
+endif()
+
+# db_read_while_write_waits: a reader on a rank whose write request for a
+# block waits behind another rank's writer, where the chain that lets that
+# writer run waits for the reader.  A VAL read waits for no release, so the
+# run ends.  Under EXCL a read waits behind the other node's write turn and
+# the program blocks by design, and its unordered writers are outside CDAG.
+if(ARTS_VALIDITY STREQUAL "VAL")
+    add_arts_test(db_read_while_write_waits)
+    register_multinode_test(db_read_while_write_waits TIMEOUT 60)
+    foreach(_v IN LISTS ARTS_TEST_MULTINODE_VARIANTS)
+        arts_test_properties(db_read_while_write_waits_${_v} PROPERTIES
+            PASS_REGULAR_EXPRESSION "PASS: db_read_while_write_waits"
+            FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
+    endforeach()
 endif()
 
 # --- CDAG / FLUSH arm tests ------------------------------------------------

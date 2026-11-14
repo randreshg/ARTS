@@ -66,21 +66,15 @@ static void home_response_commit(struct arts_db_s *db, uint64_t home_token) {
    * writer drain turns it into the woken writers' holds. */
   arts_db_grant_install(cache);
 
-  /* Readers parked before this grant resume against the bytes it installed,
-   * and must do so while the install's own hold is still on the word: that
-   * hold keeps the right on this rank, so no write elsewhere can be ordered
-   * before a reader resumed here.  The writer drain below may turn the hold
-   * into the woken writers' holds, and where a holder hands the right back
-   * unasked the last of them can give it away while this thread is still
-   * running — so the reader drains come first. */
+  /* Reads this rank parked as the block's home before its first publication
+   * resume against the bytes this grant installed, and must do so while the
+   * install's own hold is still on the word: that hold keeps the right on
+   * this rank, so no write elsewhere can be ordered before a read resumed
+   * here.  The writer drain below may turn the hold into the woken writers'
+   * holds, and where a holder hands the right back unasked the last of them
+   * can give it away while this thread is still running — so this drain comes
+   * first. */
   arts_db_drain_publication_waiters(cache);
-#ifdef ARTS_VALIDITY_VAL
-  /* Read waiters batched while this rank had no local copy resume here
-   * against the buffer it now holds instead of re-fetching remotely — the
-   * bytes that arrived with the grant, or the ones already here that a
-   * permission-only grant certified as current. */
-  arts_db_ro_combine_grant_drain(cache);
-#endif
 
   /* HOME drains + runs NOW (no confirm-ack gate): home serves RO so there is
    * no stale-RO window. */

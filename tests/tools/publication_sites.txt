@@ -155,7 +155,7 @@ INV.*.HOME  arts_db_grant_serve_version load   hver                      1/1  ac
 #
 # The snapshot: install, then the answer's exchange on the request word.  The
 # one exchange serves every operation on the word: a reader's park releases
-# its node, and the answer acquires the cohort that rode the request.
+# its node, and the answer acquires the cohort of its window.
 VAL.*.*  snapshot_landed_cb              call  arts_db_buf_install_landed      -/1  -
 VAL.*.*  snapshot_landed_cb              call  arts_db_ro_combine_on_terminal  -/1  -
 VAL.*.*  arts_db_ro_combine_on_terminal  call  val_req_step                    -/1  -

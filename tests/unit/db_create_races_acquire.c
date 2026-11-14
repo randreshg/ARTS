@@ -10,9 +10,13 @@
  * Per block g (reserved, home H): on rank C != H a setup EDT makes readers
  * and writers ready on g through a trigger EDT that runs on another worker of
  * C, spins a little (a different length per block), then creates g on C.
- * The acquires run beside the create's claim: each is served by the claim's
- * hold or by a request of its own, and a request the claim found already sent
- * is discarded by the home, which the create's announce told it to expect.
+ * The acquires run beside the create's claim: a writer is served by the
+ * claim's hold or by a write request of its own, and a write request the
+ * claim found already sent is discarded by the home, which the create's
+ * announce told it to expect.  A reader is served by its own read request's
+ * answer, except on an arm whose write turn serves its rank's readers, where
+ * the claim's hold serves a reader parked before it and the home discards
+ * that reader's request as well.
  * A reader on H acquires each block once its acquirers and the create have
  * released, and the destroy follows the reader's release.  After every block
  * is destroyed, each rank polls the route table for its own homes of the

@@ -11,16 +11,19 @@
  * Per block g (pre-reserved, home H): a setup EDT on rank C != H makes one to
  * three consumer EDTs on C ready on g first -- read-only, read-write, or both
  * modes at once -- so their acquires find no copy on C and ask H for the
- * block; only then does it create g on C, whose hold serves those consumers
- * while their requests are still on their way to H.  The setup EDT and every
- * consumer count down a latch; a reader on H then acquires g, and once it
- * has released, a destroyer on H or on C (alternating) destroys g.  With the
- * argument `wave2` a second wave of consumers acquires g on C after the first
- * wave and the create have released, so requests sent after the claim travel
- * beside the ones sent before it.  Sizes cycle through sized blocks and a
- * zero-sized one.  A consumer's read races the setup EDT's write, so no value
- * is checked: the verdict is the exit status, no FAIL line, and a quiescent
- * shutdown (no QUIESCENCE-DEBUG marker).
+ * block; only then does it create g on C, whose hold serves the read-write
+ * consumers while their write request is still on its way to H.  A read-only
+ * consumer waits for its own read request's answer, except on an arm whose
+ * write turn serves its rank's readers, where the hold serves it too.  The
+ * setup EDT and every consumer count down a latch; a reader on H then
+ * acquires g, and once it has released, a destroyer on H or on C
+ * (alternating) destroys g.  With the argument `wave2` a second wave of
+ * consumers acquires g on C after the first wave and the create have
+ * released, so requests sent after the claim travel beside the ones sent
+ * before it.  Sizes cycle through sized blocks and a zero-sized one.  A
+ * consumer's read races the setup EDT's write, so no value is checked: the
+ * verdict is the exit status, no FAIL line, and a quiescent shutdown (no
+ * QUIESCENCE-DEBUG marker).
  *
  * The reader on H makes the block's install precede its destroy.  The create's
  * announce travels fire-and-forget beside C's requests, releases and destroy;

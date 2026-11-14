@@ -10,10 +10,13 @@
  * every home of its blocks to go.
  *
  * Rounds of blocks on fresh homes, in one of two shapes.  `t2`: on a rank
- * C != H a reader then a writer acquire a block H created, so C's write turn
- * can serve the reader while C's read request is still on its way.  `t1`: C's
- * reader and writer first touch a reserved GUID homed on H, then C creates
- * it, so the create's hold serves both while their requests are on their way.
+ * C != H a reader then a writer acquire a block H created, so on an arm whose
+ * write turn serves its rank's readers C's write turn can serve the reader
+ * while C's read request is still on its way.  `t1`: C's reader and writer
+ * first touch a reserved GUID homed on H, then C creates it, so the create's
+ * hold serves the writer while its write request is on its way; the reader
+ * waits for its own read request's answer, except on an arm whose write turn
+ * serves its rank's readers, where the hold serves it too.
  * Each block is destroyed by H or by C once every hold is released; in `t1` a
  * reader on H acquires the block first and the destroy follows its release.
  * After the last round every rank polls the route table for its own homes of

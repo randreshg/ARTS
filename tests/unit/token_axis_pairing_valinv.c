@@ -19,13 +19,22 @@
  * woken EDT's slot takes is dropped by the release the scenario stands in for.
  *
  * Scenarios, in every VAL and INV cell:
- *   read axis   closed by its answer, by a dismiss while the rank's write
- *               request is out, by a dismiss after the write turn served
- *               the window (no write request out), by a create's claim; an
- *               answer and a dismiss on a retired descriptor; a one-sided
- *               answer's pairing callback, on a live and on a retired
- *               descriptor, and a pairing the teardown discards (the count
- *               is then the sweep's); opened by a writer's give-back, for
+ *   read axis   closed by its answer; an answer on a retired descriptor; a
+ *               one-sided answer's pairing callback, on a live and on a
+ *               retired descriptor, and a pairing the teardown discards (the
+ *               count is then the sweep's);
+ *     VAL:      opened while the rank's write request is out, the grant
+ *               serving the writer alone and a header-only answer at the
+ *               write holder serving the reader against the holder's
+ *               buffer; a one-sided answer at the write holder likewise,
+ *               the holder's buffer staying; kept open by a create's claim
+ *               and closed by its own answer after a size round; a reply of
+ *               each kind (header-only, one-sided, size round) arriving
+ *               with no request out is fatal;
+ *     INV:      closed by a dismiss while the rank's write request is out,
+ *               by a dismiss after the write turn served the window (no
+ *               write request out), by a create's claim; a dismiss on a
+ *               retired descriptor; opened by a writer's give-back, for
  *               riders and for a window a size round closed while the write
  *               axis was open;
  *   write axis  closed by its answer (HOME: the grant; OWNER: the
@@ -45,8 +54,8 @@
  *               and landed inside the relaunched publish (INV: by its own
  *               round's ACK, which arrives while the round is still
  *               sending);
- *   the home's own read request (OWNER) dismissed inside its self-send with
- *               the teardown due, and (INV) served by the home on a
+ *   the home's own read request (INV·OWNER) dismissed inside its self-send
+ *               with the teardown due, and served by the home on a
  *               descriptor retired since the request was processed;
  *   the teardown sweep: one count per open axis.
  * Wherever the last reference goes inside a frame, nothing may touch the
@@ -91,10 +100,12 @@
 #endif
 #include "utils/shared.c"
 
+#include <fcntl.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #if defined(__SANITIZE_ADDRESS__)
 #include <sanitizer/asan_interface.h>
@@ -134,8 +145,15 @@ static void fail(const char *what) {
   _exit(1);
 }
 
+/* Set in a scenario's child whose step must end the run. */
+static bool g_expect_abort;
+#define EXPECTED_ABORT 42
+
 _Noreturn void arts_exit(int rc, enum arts_exit_origin origin) {
   (void)origin;
+  if (g_expect_abort) {
+    _exit(EXPECTED_ABORT);
+  }
   printf("FAIL token_axis_pairing_valinv: %s: the runtime aborted\n",
          g_scenario);
   fflush(stdout);
@@ -286,13 +304,15 @@ bool arts_db_buf_adopt_landing(struct arts_db_cache_s *c, uint64_t v,
   landing_end(l);
   return true;
 }
+/* The version the last landed install offered the slot. */
+static uint64_t g_installed_v;
 struct arts_db_buffer_s *arts_db_buf_install_landed(struct arts_db_cache_s *c,
                                                     uint64_t v,
                                                     struct arts_db_buffer_s *l,
                                                     uint64_t s) {
   (void)c;
-  (void)v;
   (void)s;
+  g_installed_v = v;
   landing_end(l);
   return NULL;
 }
@@ -686,24 +706,35 @@ static const struct arts_msg_snapshot_request_packet_s *read_request(int nth) {
       MSG_DB_SNAPSHOT_REQUEST, nth);
 }
 
-/* kind: 0 nothing moved, 1 a one-sided payload, 2 a size round or dismiss. */
-static void read_answer(int nth, uint32_t kind) {
-  const struct arts_msg_snapshot_request_packet_s *r = read_request(nth);
+/* An answer to request r naming `version`: kind 0 nothing moved, 1 a
+ * one-sided payload into `landing`, 2 a size round. */
+static void read_reply(const struct arts_msg_snapshot_request_packet_s *r,
+                       uint32_t kind, uint64_t version,
+                       const struct arts_rdzv_landing_s *landing) {
   struct arts_db_snapshot_response_args_s a = {
       .db_guid = r->db_guid,
       .token = r->token,
-      .cover = r->cover,
       .data_present = kind,
-      .version = kind == 1u ? 3u : 0u,
+      .version = version,
       .db_size = SIZE,
-      .rdzv_txid = kind == 1u ? r->rdzv.txid : 0u,
-      .rdzv_cookie = r->rdzv.cookie,
+      .rdzv_txid = kind == 1u ? landing->txid : 0u,
+      .rdzv_cookie = landing->cookie,
   };
   /* A read answer on the wire comes from another rank (the dispatcher's
    * serve section). */
   uint8_t census = arts_db_census_serving(true);
   arts_handler_db_snapshot_response(&a);
   arts_db_census_served(census);
+}
+
+/* The nth request's answer, into the landing it named. */
+static void read_answer(int nth, uint32_t kind) {
+  const struct arts_msg_snapshot_request_packet_s *r = read_request(nth);
+  struct arts_rdzv_landing_s l = {.addr = r->rdzv.addr,
+                                  .key = r->rdzv.key,
+                                  .txid = r->rdzv.txid,
+                                  .cookie = r->rdzv.cookie};
+  read_reply(r, kind, kind == 1u ? 3u : 0u, &l);
 }
 #else
 static const struct arts_msg_inv_request_packet_s *read_request(int nth) {
@@ -819,6 +850,7 @@ static void read_answered(void) {
   end(1);
 }
 
+#ifdef ARTS_VALIDITY_INV
 static void read_dismissed(void) {
   begin("read axis closed by a dismiss, the write request out", GUID_SIZED,
         false);
@@ -906,6 +938,7 @@ static void read_claimed(void) {
   }
   end(1);
 }
+#endif
 
 static void read_retired(void) {
   begin("read answer on a retired descriptor", GUID_SIZED, false);
@@ -915,6 +948,7 @@ static void read_retired(void) {
   end(0);
 }
 
+#ifdef ARTS_VALIDITY_INV
 /* The write turn served the window and the block's teardown retired the
  * descriptor before the dismiss of the read request, still out, arrived: the
  * dismiss only returns the landing and drops the count. */
@@ -931,6 +965,7 @@ static void read_dismissed_retired(void) {
   }
   end(2);
 }
+#endif
 
 static void read_paired(bool retired_first) {
   begin(retired_first ? "read pairing callback on a retired descriptor"
@@ -1179,7 +1214,7 @@ static void home_request_served_in_body(void) {
   end_dropped(wakes);
 }
 
-#ifdef ARTS_READ_SOURCE_OWNER
+#if defined(ARTS_VALIDITY_INV) && defined(ARTS_READ_SOURCE_OWNER)
 /* Between a self-sent read request's send and its body at the home: this
  * rank's writer commits its write request, which names the read request out;
  * the home takes that declaration in; and the block's destroy marks the cover
@@ -1204,45 +1239,20 @@ static void declare_then_destroy(void) {
 /* The home's own read request, dismissed inside its self-send with the
  * teardown due: the dismiss closes the read axis and drops its count, the
  * teardown retires the descriptor, and the deleter may run only once the
- * request's body has returned.  Under VAL the home redirects its request to
- * the owner, whose size round has the window ask again, and the re-send is
- * the one dismissed; INV's home sends no size round for its own fetch, so
- * the first request is. */
+ * request's body has returned.  The home sends no size round for its own
+ * fetch, so the first request is the one dismissed. */
 static void home_read_dismissed_teardown(void) {
   begin("home's own read request dismissed with its teardown due", GUID_SIZED,
         true);
-#ifdef ARTS_VALIDITY_VAL
-  acquire(DB_MODE_RO);
-  const struct arts_msg_snapshot_redirect_packet_s *rd =
-      (const struct arts_msg_snapshot_redirect_packet_s *)sent(
-          MSG_DB_SNAPSHOT_REDIRECT, 0);
-  struct arts_db_snapshot_response_args_s a = {
-      .db_guid = rd->db_guid,
-      .token = rd->token,
-      .cover = rd->cover,
-      .data_present = 2u,
-      .version = 0u,
-      .db_size = SIZE,
-      .rdzv_txid = 0u,
-      .rdzv_cookie = rd->rdzv.cookie,
-  };
-  g_dispatch_hook = declare_then_destroy;
-  g_poison = true;
-  uint8_t census = arts_db_census_serving(true);
-  arts_handler_db_snapshot_response(&a);
-  arts_db_census_served(census);
-#else
   g_dispatch_hook = declare_then_destroy;
   g_poison = true;
   acquire(DB_MODE_RO);
-#endif
   if (g_dispatch_hook != NULL) {
     fail("no read request reached the home");
   }
   end_dropped(0);
 }
 
-#ifdef ARTS_VALIDITY_INV
 /* At the serve of the home's own read request, after the home processed it
  * and before the deliver's look at the token: the same declaration and
  * destroy, which now find nothing owed, so the teardown retires the
@@ -1274,6 +1284,177 @@ static void home_read_served_retired(void) {
   end_dropped(0);
 }
 #endif
+
+#ifdef ARTS_VALIDITY_VAL
+/* The reader parked on the open window, which only the window's answer
+ * serves. */
+static bool reader_parked(void) {
+  uint64_t w = atomic_load_explicit(&g_db->cache.req_state,
+                                    memory_order_acquire);
+  return VREQ_RO(w) && VREQ_GROUP(w) != 0u;
+}
+
+/* The buffer this rank's slot holds. */
+static struct arts_db_buffer_s *slot_buffer(void) {
+  arts_shared_ptr_t h = arts_shared_slot_load(&g_db->cache.buffer);
+  struct arts_db_buffer_s *b = (struct arts_db_buffer_s *)arts_shared_get(h);
+  arts_shared_release(&h);
+  return b;
+}
+
+/* The answer at the write holder served `reader` against the holder's
+ * buffer b, which the slot still holds at its version; then both EDTs
+ * release their buffer holds. */
+static void served_by_holder_buffer(struct arts_db_buffer_s *b, int reader) {
+  if (g_wakes != 2) {
+    fail("the read answer did not serve its cohort");
+  }
+  if (slot_buffer() != b ||
+      atomic_load_explicit(&b->version, memory_order_relaxed) != 3u) {
+    fail("the read answer replaced the write holder's buffer");
+  }
+  if (g_edts[reader]->acq[0].ptr != b->data) {
+    fail("the reader was not served the write holder's buffer");
+  }
+  release_buffer_hold(&g_edts[0]->edt);
+  release_buffer_hold(&g_edts[1]->edt);
+}
+
+/* A reader that arrives while its rank's write request is out opens its own
+ * read request.  The grant serves the writer alone; the read answer, naming
+ * the version the rank now holds and moving nothing, serves the reader
+ * against the holder's buffer.  The slot holds the bytes the grant certifies
+ * as current from the start. */
+static void read_opened_under_write(void) {
+  begin("read request opened while the write request is out", GUID_SIZED,
+        false);
+  home_buffer(3u);
+  struct arts_db_buffer_s *b = slot_buffer();
+  acquire(DB_MODE_RW);
+  acquire(DB_MODE_RO);
+  if (read_requests() != 1) {
+    fail("the reader did not open a read request of its own");
+  }
+  write_answer(0, false);
+  confirm_ack();
+  if (g_wakes != 1 || !reader_parked()) {
+    fail("the write grant served the reader");
+  }
+  const struct arts_msg_snapshot_request_packet_s *r = read_request(0);
+  struct arts_rdzv_landing_s l = {.addr = r->rdzv.addr,
+                                  .key = r->rdzv.key,
+                                  .txid = r->rdzv.txid,
+                                  .cookie = r->rdzv.cookie};
+  read_reply(r, 0u, 3u, &l);
+  served_by_holder_buffer(b, 1);
+  end(2);
+}
+
+/* A one-sided read answer that lands once the rank holds the write right
+ * offers its bytes at their version, which is not above the holder's: the
+ * holder's buffer stays, and the reader is served against it. */
+static void read_put_at_holder(void) {
+  begin("one-sided read answer at the write holder", GUID_SIZED, false);
+  home_buffer(3u);
+  struct arts_db_buffer_s *b = slot_buffer();
+  acquire(DB_MODE_RO);
+  acquire(DB_MODE_RW);
+  write_answer(0, false);
+  confirm_ack();
+  if (g_wakes != 1 || !reader_parked()) {
+    fail("the write grant served the reader");
+  }
+  g_installed_v = 0u;
+  read_answer(0, 1u);
+  pairing_fire(true);
+  if (g_installed_v != 3u) {
+    fail("the answer's bytes were not offered at their version");
+  }
+  served_by_holder_buffer(b, 0);
+  end(2);
+}
+
+/* A create's claim takes the write axis alone: the reader whose request the
+ * first-touch cache sent, landing-less as the cache knew no size, stays
+ * parked, and is served by that request's own answer after a size round. */
+static void read_kept_by_claim(void) {
+  begin("read axis kept by a create's claim, closed by its answer",
+        GUID_CLAIM, false);
+  acquire(DB_MODE_RO);
+  if (read_request(0)->rdzv.cookie != 0u) {
+    fail("a request that knew no size carried a landing");
+  }
+  if (claim() != 0u) {
+    fail("the claim named a request with no write request out");
+  }
+  if (g_wakes != 0 || !reader_parked()) {
+    fail("the claim served the reader");
+  }
+  read_answer(0, 2u);
+  if (read_requests() != 2 || read_request(1)->rdzv.cookie == 0u) {
+    fail("the size round did not re-send the request with a landing");
+  }
+  read_answer(1, 0u);
+  end(1);
+}
+
+/* In a child: `step` must end the run; nothing it does reaches this
+ * process. */
+static void expect_fatal(void (*step)(void), const char *what) {
+  fflush(stdout);
+  pid_t pid = fork();
+  if (pid == 0) {
+    /* The fatal line the check prints is the expected outcome, not a verdict
+     * of this test's run. */
+    int devnull = open("/dev/null", O_WRONLY);
+    (void)dup2(devnull, STDOUT_FILENO);
+    (void)dup2(devnull, STDERR_FILENO);
+    g_expect_abort = true;
+    step();
+    _exit(0);
+  }
+  int status = 0;
+  if (pid < 0 || waitpid(pid, &status, 0) != pid || !WIFEXITED(status) ||
+      WEXITSTATUS(status) != EXPECTED_ABORT) {
+    fail(what);
+  }
+}
+
+static void again_header_only(void) { read_answer(0, 0u); }
+/* The one-sided answer again, into a landing of its own. */
+static void again_one_sided(void) {
+  struct arts_rdzv_landing_s l;
+  (void)arts_db_buf_landing_alloc(SIZE, &l);
+  read_reply(read_request(0), 1u, 3u, &l);
+  pairing_fire(true);
+}
+static void again_size_round(void) { read_answer(0, 2u); }
+
+/* A read request is answered once, and a reply carries nothing that tells one
+ * request's answer from another's: a reply of any kind that finds no request
+ * out ends the run. */
+static void read_reply_without_request(int kind) {
+  static const char *names[] = {
+      "header-only read answer with no request out is fatal",
+      "one-sided read answer with no request out is fatal",
+      "read size round with no request out is fatal"};
+  begin(names[kind], kind == 1 ? GUID_SIZED : GUID_CLAIM, false);
+  acquire(DB_MODE_RO);
+  if (kind == 0) {
+    read_answer(0, 0u);
+    expect_fatal(again_header_only, "the second answer did not end the run");
+  } else if (kind == 1) {
+    read_answer(0, 1u);
+    pairing_fire(true);
+    expect_fatal(again_one_sided, "the second answer did not end the run");
+  } else {
+    read_answer(0, 2u);
+    read_answer(1, 0u);
+    expect_fatal(again_size_round,
+                 "a size round after the answer did not end the run");
+  }
+  end(1);
+}
 #endif
 
 #if PUBLISHES
@@ -1419,13 +1600,22 @@ int main(void) {
   (void)sigaction(SIGBUS, &sa, NULL);
 #endif
   read_answered();
+#ifdef ARTS_VALIDITY_VAL
+  read_opened_under_write();
+  read_put_at_holder();
+  read_kept_by_claim();
+  read_reply_without_request(0);
+  read_reply_without_request(1);
+  read_reply_without_request(2);
+#else
   read_dismissed();
   read_dismissed_after_grant();
   read_given_riders();
   read_given_resend();
   read_claimed();
-  read_retired();
   read_dismissed_retired();
+#endif
+  read_retired();
   read_paired(false);
   read_paired(true);
   read_discarded();
@@ -1447,11 +1637,9 @@ int main(void) {
 #endif
   home_wake_drops_last();
   home_request_served_in_body();
-#ifdef ARTS_READ_SOURCE_OWNER
+#if defined(ARTS_VALIDITY_INV) && defined(ARTS_READ_SOURCE_OWNER)
   home_read_dismissed_teardown();
-#ifdef ARTS_VALIDITY_INV
   home_read_served_retired();
-#endif
 #endif
 #if PUBLISHES
   home_flight_relaunch_lands();
