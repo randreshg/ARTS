@@ -26,8 +26,8 @@
  * delivers every request eventually, so the deadline detects a hang and makes
  * no timing claim.  With `hop` (t2, three ranks or more) a third rank D first
  * takes and releases a write turn on each block, so C's read request reaches
- * H while D holds the block and H's answer is a hop (a redirect or forward to
- * D); held with ARTS_REQUEST_DELAY_MS=<n>:hop, that hop lands after the
+ * H while D holds the block and H's answer is a hop (a forward to D); held
+ * with ARTS_REQUEST_DELAY_MS=<n>:hop, that hop lands after the
  * teardown.
  *
  * A home that is not installed reads the same before its create's announce

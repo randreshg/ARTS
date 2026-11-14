@@ -149,6 +149,7 @@ static void c_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_printf("FAIL: db_read_while_write_waits create of D gave no "
                 "storage\n");
     arts_test_fail();
+    arts_shutdown();
     return;
   }
   for (unsigned int i = 0; i < D_WORDS; i++) {
@@ -191,6 +192,7 @@ static void s_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_printf("FAIL: db_read_while_write_waits create of B gave no "
                 "storage\n");
     arts_test_fail();
+    arts_shutdown();
     return;
   }
   for (unsigned int i = 0; i < B_WORDS; i++) {

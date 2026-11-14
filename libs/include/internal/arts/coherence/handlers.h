@@ -511,8 +511,9 @@ struct arts_msg_inv_invalidate_ack_packet_s;
  * the current grant holder) and whether a publish carries payload. */
 void arts_handler_db_inv_request(void *item_v, void *args_v);
 void arts_handler_db_publish(void *item_v, void *args_v);
-/* INV_CTS (an answer) on the descriptor the packet's token names; a retired
- * one only gets its landing back and drops the read request's count. */
+/* INV_CTS (an answer) on the descriptor the packet's token names: the fetch
+ * goes out again with a landing, under the same count; a retired one only
+ * drops the read request's count.  With no fetch open it is fatal. */
 void arts_handler_db_inv_cts(struct arts_msg_inv_cts_packet_s *p);
 void arts_handler_db_inv_deliver(void *payload, size_t size);
 /* INVALIDATE at a sharer (resolved by GUID, or the home's descriptor on a
@@ -527,30 +528,31 @@ void arts_handler_db_inv_invalidate_ack(
     const struct arts_msg_inv_invalidate_ack_packet_s *p);
 #ifdef ARTS_READ_SOURCE_OWNER
 /* The home holds no bytes, so a read request is forwarded to the holder; a
- * holder that no longer has the bytes bounces it back rather than queueing. */
+ * holder that no longer has the bytes bounces it back rather than queueing.
+ * A redirect or a bounce continues a request the home already took in, whose
+ * readers are still parked, so a block torn down since is a destroy the
+ * program issued with an acquire in progress: the dispatcher drops a MISS
+ * and never parks it. */
 void arts_handler_db_inv_redirect(void *item_v, void *args_v);
 /* Never a self-send: the home serves a reader itself when it holds the grant,
  * and a holder that bounces is never the home. */
 void arts_send_db_inv_redirect(unsigned int holder_rank, arts_guid_t db_guid,
-                               unsigned int requester, uint32_t cover,
+                               unsigned int requester,
                                const struct arts_rdzv_landing_s *rdzv,
                                uint64_t token);
 void arts_send_db_inv_request_for(arts_guid_t db_guid, unsigned int requester,
-                                  uint32_t cover,
                                   const struct arts_rdzv_landing_s *rdzv,
                                   uint64_t token);
 #endif
 
 /* Senders. */
 void arts_send_db_inv_request(struct arts_db_cache_s *cache,
-                              arts_db_access_mode_t mode, uint32_t cover);
-/* A size round or a dismiss to a read request: see the packet.  cover is
- * the answered request's cover word; cookie the landing it named (0: none);
- * token the request's, echoed: to a requester that is this rank the reply
+                              arts_db_access_mode_t mode);
+/* A size round to a read request that carried no landing: see the packet.
+ * token is the request's, echoed: to a requester that is this rank the reply
  * runs on the descriptor it names. */
 void arts_send_db_inv_cts(unsigned int requester_rank, uint64_t token,
-                          arts_guid_t db_guid, uint64_t db_size,
-                          uint32_t cover, uint64_t cookie);
+                          arts_guid_t db_guid, uint64_t db_size);
 /* Serve a reader from this rank's installed buffer.  The stamp the reply
  * carries is the install-lane arbitration version ONLY: it decides which of
  * two asynchronous installs wins the receiver's buffer slot, and no branch on

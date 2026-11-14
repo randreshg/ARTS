@@ -16,7 +16,8 @@
  * All are identical under either read source.  None knows about ownership:
  * write ownership is the migrating sentinel grant (coherence/grant.c), which
  * lives in its own counter rather than in either word, so no decider carries
- * rw state or a writer count.
+ * the write right or a writer count (the reader word's rw is the axis of
+ * this rank's write request, not the right).
  *
  * engine.c #includes this file: the round's deciders are its own, and the
  * reader-plane decider is the one the read-source units call too.  The
@@ -41,9 +42,11 @@
  * can never miss the fetch it joined, and the publishing CAS grabs the whole
  * chain in the same atom, so the committer owns exactly its fetch's cohort and
  * serves it as the continuation of its own transition, however late that runs.
+ * Nothing but that reply serves the chain: the write axis's transitions
+ * leave the read plane as they find it.
  *
  * self_idx is the caller's pre-written pool node, consumed only by the actions
- * that park it (SEND_RO / PARK).
+ * that park it (SEND_RO / PARK), or the OPEN's token (RW_COMMIT / RW_GIVE).
  */
 uint64_t arts_inv_cache_compute_next(uint64_t cur, int op, uint32_t self_idx,
                                      uint32_t *out_action) {
@@ -51,7 +54,6 @@ uint64_t arts_inv_cache_compute_next(uint64_t cur, int op, uint32_t self_idx,
   uint32_t inflight = INV_CACHE_INFLIGHT(cur);
   uint32_t hro = INV_CACHE_HEAD_RO(cur);
   uint32_t rw = INV_CACHE_RW(cur);
-  uint32_t par = INV_CACHE_PAR(cur);
   uint32_t stub = INV_CACHE_STUB(cur);
   uint32_t act = INV_CACHE_ACT_NONE;
 
@@ -61,28 +63,25 @@ uint64_t arts_inv_cache_compute_next(uint64_t cur, int op, uint32_t self_idx,
       act = INV_CACHE_ACT_SELF_SERVE; /* the wait-free path */
       break;
     }
-    /* No covering copy.  A write request out covers this reader (RW ⊇ RO):
-     * it opens no read request of its own and the write turn serves it.
-     * Otherwise join the open fetch if there is one, else open it.  A
-     * kill-marked fetch is joinable too: its doomed reply still serves the
-     * chain once before the reserved purge retires the copy. */
-    if (rw != INV_RW_IDLE || inflight != 0u) {
+    /* No covering copy: join the open fetch if there is one, else open it,
+     * whatever the write axis holds.  A kill-marked fetch is joinable too:
+     * its doomed reply still serves the chain once before the reserved purge
+     * retires the copy. */
+    if (inflight != 0u) {
       hro = self_idx;
       act = INV_CACHE_ACT_PARK;
       break;
     }
     ro = INV_RO_REQ;
     inflight = 1u;
-    par ^= 1u;
     hro = self_idx;
     act = INV_CACHE_ACT_SEND_RO;
     break;
 
   case INV_CACHE_OP_DELIVER:
-    /* A reply landed.  Every fetch has exactly one answer (this reply or a
-     * size round), so a word with no fetch open is a reply for no request:
-     * the caller raises it.  A fetch a write turn covered stays open until
-     * this reply: the chain it takes is whoever parked after that turn. */
+    /* A reply landed.  Every fetch has exactly one answer (this reply, or a
+     * size round and then the re-sent fetch's reply), so a word with no
+     * fetch open is a reply for no request: the caller raises it. */
     if (inflight == 0u) {
       act = INV_CACHE_ACT_LATE;
       break;
@@ -115,8 +114,7 @@ uint64_t arts_inv_cache_compute_next(uint64_t cur, int op, uint32_t self_idx,
     }
     if (ro == INV_RO_REQ) {
       /* Mark the in-flight fetch; its reply serves the cohort once, then
-       * purges and fires the ack this transition owes the round (a size
-       * round or dismiss that closes the fetch sends the ack instead). */
+       * purges and fires the ack this transition owes the round. */
       ro = INV_RO_REQ_KILL;
       act = INV_CACHE_ACT_KILL_MARKED;
       break;
@@ -136,31 +134,18 @@ uint64_t arts_inv_cache_compute_next(uint64_t cur, int op, uint32_t self_idx,
     break;
 
   case INV_CACHE_OP_CTS:
-    /* A size round or a dismiss answers the fetch (self_idx: its parity,
-     * which must be the open fetch's).  Re-sent only for readers that still
-     * wait on it and ride no write request; otherwise the fetch closes (a
-     * covered one needs no second leg; riders are the write turn's).  A fetch
-     * can be kill-marked without the home ever serving it: a rank that held
-     * the write permission is rostered as an ex-holder when the permission
-     * moves on, so the next round invalidates it while its covered read
-     * request is still out.  Closing such a fetch sends the ack it owes; a
-     * re-send keeps the mark, so the re-sent fetch's reply serves once,
-     * purges, and only then acks. */
-    if (inflight == 0u || par != self_idx) {
+    /* A size round answers the fetch, which goes out again with a landing
+     * for the same cohort; a fetch's chain is never empty, so one with no
+     * cohort is a reply for no request.  A kill mark stays on the re-sent
+     * fetch, whose reply serves once, purges, and only then acks. */
+    if (inflight == 0u || hro == 0u) {
       act = INV_CACHE_ACT_LATE;
       break;
     }
     if (rw != INV_RW_OPEN) {
       stub = 0u;
     }
-    if (hro != 0u && rw == INV_RW_IDLE) {
-      par ^= 1u;
-      act = INV_CACHE_ACT_RESEND;
-      break;
-    }
-    act = (ro == INV_RO_REQ_KILL) ? INV_CACHE_ACT_CLOSE_ACK : INV_CACHE_ACT_NONE;
-    inflight = 0u;
-    ro = INV_RO_IDLE;
+    act = INV_CACHE_ACT_RESEND;
     break;
 
   case INV_CACHE_OP_RW_CLEAR:
@@ -169,20 +154,12 @@ uint64_t arts_inv_cache_compute_next(uint64_t cur, int op, uint32_t self_idx,
       act = INV_CACHE_ACT_LATE;
       break;
     }
-    hro = 0u; /* every parked reader is served under the permission */
+    /* The write axis only: a fetch still out keeps its chain for its own
+     * reply.  A grant, like the claim, proves the cache will never be
+     * claimed: the home answered, so it is installed, and had this rank been
+     * the creator its claim would have come first. */
     rw = INV_RW_IDLE;
-    if (op == INV_CACHE_OP_CLAIM && inflight != 0u) {
-      /* The claim closes a fetch still out: that pre-claim request is the
-       * home's to discard unanswered (the announce owes it).  No round can
-       * have kill-marked it: the home is not installed before the claim. */
-      inflight = 0u;
-      ro = INV_RO_IDLE;
-    }
-    /* A grant, like the claim, proves the cache will never be claimed: the
-     * home answered, so it is installed, and had this rank been the creator
-     * its claim would have come first. */
     stub = 0u;
-    act = INV_CACHE_ACT_SERVE;
     break;
 
   case INV_CACHE_OP_DECLAIM:
@@ -217,17 +194,6 @@ uint64_t arts_inv_cache_compute_next(uint64_t cur, int op, uint32_t self_idx,
       break; /* a create's claim reset this OPEN */
     }
     rw = INV_RW_IDLE;
-    if (hro != 0u && inflight == 0u && ro != INV_RO_VALID) {
-      /* Riders with no write turn coming: open a fetch for them. */
-      ro = INV_RO_REQ;
-      inflight = 1u;
-      par ^= 1u;
-      act = INV_CACHE_ACT_SEND_RO;
-    } else if (hro != 0u && ro == INV_RO_VALID) {
-      /* Unreachable: a reader never parks on a valid copy, and every way
-       * into one takes the chain.  The caller raises it. */
-      act = INV_CACHE_ACT_LATE;
-    }
     break;
 
   default:
@@ -237,7 +203,7 @@ uint64_t arts_inv_cache_compute_next(uint64_t cur, int op, uint32_t self_idx,
   if (act == INV_CACHE_ACT_LATE) {
     return cur;
   }
-  return INV_CACHE_WITH_REQ(INV_CACHE_MAKE(ro, inflight, hro), rw, par, stub);
+  return INV_CACHE_WITH_REQ(INV_CACHE_MAKE(ro, inflight, hro), rw, stub);
 }
 
 /* ===== inv_round_submit_next ===========================================

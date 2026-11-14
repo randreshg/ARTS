@@ -5,9 +5,10 @@
  *
  * A rank's cache carries two planes that share no word.  The reader plane is
  * one 64-bit word (cache_state, INV_CACHE_*): durable read copies, at most
- * one fetch in flight, and the chain of acquires parked on it.  The writer
- * plane is the migrating write grant every grant-bearing arm shares
- * (writer_count and the grant fields below; coherence/grant.c).
+ * one fetch in flight, and the chain of acquires parked on it; the word also
+ * holds the axis of this rank's write request, which the grant plane drives.
+ * The writer plane is the migrating write grant every grant-bearing arm
+ * shares (writer_count and the grant fields below; coherence/grant.c).
  *
  * The home adds the invalidation round, which is what makes this arm INV:
  * one word (round_queue) that is both the hold admitting one round at a time
@@ -26,8 +27,10 @@
  * Invariants of the reader word (the arbiters keep them):
  *   - a fetch is open (inflight) exactly while ro is REQ or REQ_KILL, so at
  *     most one read reply is in flight per rank;
- *   - a chain is parked only on an open fetch, so a VALID copy has an empty
- *     chain and a covering acquire is a pure load;
+ *   - a chain is parked exactly while a fetch is open: the reader that opens
+ *     a fetch parks in the same CAS, and only the fetch's reply takes the
+ *     chain, so a VALID copy has an empty chain and a covering acquire is a
+ *     pure load;
  *   - a second INVALIDATE on a kill-marked fetch is unreachable: the ack it
  *     owes keeps the round that marked it open, and rounds serialize.
  */
@@ -50,11 +53,11 @@
 extern "C" {
 #endif
 
-/* ── cache word: the READER plane, and only the reader plane ─────────────
+/* ── cache word: the READER plane and the write request's axis ──────────
  * Identical under both read sources — what differs between HOME and OWNER is
  * where a fetch is SERVED FROM, never what the requester's word does.
  *
- *   [ ro:2 (63..62) | inflight:1 (61) | rw:2 (60..59) | par:1 (58) |
+ *   [ ro:2 (63..62) | inflight:1 (61) | rw:2 (60..59) | spare:1 (58) |
  *     stub:1 (57) | spare:28 | head_ro:29 (28..0) ]
  *
  *   ro       ∈ {IDLE, REQ, REQ_KILL, VALID}.  VALID survives reader release:
@@ -67,13 +70,15 @@ extern "C" {
  *              flight per rank and a landing reply always belongs to the unique
  *              open fetch.
  *   rw       = the write request's axis: IDLE, OPEN (claimed, not yet
- *              committed) or SENT.  A reader that finds it out sends no read
- *              request: it parks on the chain and the write turn serves it.
- *   par      = the parity of the last read request this rank sent.
+ *              committed) or SENT.  The two axes are independent: a reader
+ *              opens or joins a fetch whatever rw holds, and a write
+ *              permission arriving (a grant, a create's claim) serves the
+ *              parked writers alone.  The one cross-axis rule is the stub
+ *              bit's, which an OPEN holds as its token.
  *   stub     = a dependence's first touch made the cache and nothing has
  *              shown the home installed yet: the create's claim clears it,
  *              and so does every reply unless rw is OPEN (the OPEN's holder
- *              acts only while the bit it read stands).  A request sent
+ *              acts only while the bit it read stands).  A write request sent
  *              while it is set carries PRECLAIM.
  *   head_ro  = head of the parked-reader chain, an index into the cache's
  *              reader pool (0 = empty), as wide as the pool's index space.
@@ -89,8 +94,8 @@ extern "C" {
  * live in writer_count, RW waiters park on the cache's pending_rw Treiber
  * stack, and the home's rw_holder and grant queue say where the grant is and
  * who asked for it next.  The write plane lives in writer_count and the grant
- * plane, never in this word: it carries no rw state, no writer count and no
- * ownership bit.
+ * plane, never in this word: rw says only whether this rank's write request
+ * is out, and the word carries no writer count and no ownership bit.
  *
  * The install-lane arbitration stamp is not in this word either: it is the
  * buffer's own version field.  Two asynchronous installs can target one rank's
@@ -125,18 +130,14 @@ extern "C" {
 #define INV_CACHE_HEAD_RO(s)                                                   \
   ((uint32_t)(((s) >> INV_CACHE_HEAD_RO_SHIFT) & INV_CACHE_HEAD_MASK))
 #define INV_CACHE_RW_SHIFT 59
-#define INV_CACHE_PAR_SHIFT 58
 #define INV_CACHE_STUB_SHIFT 57
 #define INV_CACHE_RW(s) ((uint32_t)(((s) >> INV_CACHE_RW_SHIFT) & 0x3ULL))
-#define INV_CACHE_PAR(s) ((uint32_t)(((s) >> INV_CACHE_PAR_SHIFT) & 0x1ULL))
 #define INV_CACHE_STUB(s) ((uint32_t)(((s) >> INV_CACHE_STUB_SHIFT) & 0x1ULL))
 #define INV_CACHE_REQ_MASK                                                     \
-  ((0x3ULL << INV_CACHE_RW_SHIFT) | (0x1ULL << INV_CACHE_PAR_SHIFT) |          \
-   (0x1ULL << INV_CACHE_STUB_SHIFT))
-#define INV_CACHE_WITH_REQ(s, rw, par, stub)                                   \
+  ((0x3ULL << INV_CACHE_RW_SHIFT) | (0x1ULL << INV_CACHE_STUB_SHIFT))
+#define INV_CACHE_WITH_REQ(s, rw, stub)                                        \
   (((s) & ~INV_CACHE_REQ_MASK) |                                               \
    (((uint64_t)(rw) & 0x3ULL) << INV_CACHE_RW_SHIFT) |                         \
-   (((uint64_t)(par) & 0x1ULL) << INV_CACHE_PAR_SHIFT) |                       \
    (((uint64_t)(stub) & 0x1ULL) << INV_CACHE_STUB_SHIFT))
 #define INV_RW_IDLE 0u
 #define INV_RW_OPEN 1u
@@ -172,13 +173,13 @@ static_assert(INV_CACHE_HEAD_RO_SHIFT + INV_CACHE_HEAD_BITS <=
               "the chain head must stay below the request bits");
 #define INV_CACHE_PIN_                                                         \
   INV_CACHE_WITH_REQ(INV_CACHE_MAKE(INV_RO_REQ_KILL, 1u, 0x15A5A5A5u),         \
-                     INV_RW_SENT, 1u, 1u)
+                     INV_RW_SENT, 1u)
 static_assert(INV_CACHE_RO(INV_CACHE_PIN_) == INV_RO_REQ_KILL &&
                   INV_CACHE_INFLIGHT(INV_CACHE_PIN_) == 1u &&
                   INV_CACHE_RW(INV_CACHE_PIN_) == INV_RW_SENT &&
-                  INV_CACHE_PAR(INV_CACHE_PIN_) == 1u &&
                   INV_CACHE_STUB(INV_CACHE_PIN_) == 1u &&
-                  INV_CACHE_HEAD_RO(INV_CACHE_PIN_) == 0x15A5A5A5u,
+                  INV_CACHE_HEAD_RO(INV_CACHE_PIN_) == 0x15A5A5A5u &&
+                  (INV_CACHE_PIN_ & (1ULL << 58)) == 0u,
               "cache word field round-trip");
 #undef INV_CACHE_PIN_
 static_assert(INV_ROUND_OPEN == 1u, "the hold is bit 0 of round_queue");
@@ -227,9 +228,8 @@ struct arts_db_inv_pub_s {
 struct arts_db_cache_s {
   /* Reader plane (INV_CACHE_*).  Every modification is an acq_rel CAS from
    * an acquire load: a parker's CAS carries its node's fields to the CAS
-   * that grabs the chain (DELIVER, or a SERVE: RW_CLEAR, CLAIM), and
-   * DELIVER's carries the install it follows to every acquire that then
-   * finds the copy VALID. */
+   * that grabs the chain (DELIVER), and DELIVER's carries the install it
+   * follows to every acquire that then finds the copy VALID. */
   _Atomic(uint64_t) cache_state;
   /* Local writers + the ownership sentinel.  A CAS-loop "increment if > 0"
    * is the whole RW fast path: > 0 means this rank holds the grant.  Every
@@ -258,13 +258,11 @@ struct arts_db_cache_s {
   struct arts_db_reader_pool_s reader_pool; /* nodes of the reader chain */
   /* The home token of the round whose ack a kill-marked fetch owes.  Written
    * by the INVALIDATE that marks the fetch, before its cache_state CAS
-   * commits the mark; read, to send the ack, by the frame whose cache_state
-   * CAS finds the mark (the doomed DELIVER, or the size round or dismiss
-   * that closes the fetch).  Plain, ordered by cache_state: a block runs one
-   * round at a time, and the next round's INVALIDATE follows this ack. */
+   * commits the mark; read, to send the ack, by the doomed DELIVER, whose
+   * cache_state CAS finds the mark (a size round re-sends the fetch with the
+   * mark kept).  Plain, ordered by cache_state: a block runs one round at a
+   * time, and the next round's INVALIDATE follows this ack. */
   uint64_t owed_ack_token;
-  /* The write request's axis lives in cache_state (rw), beside the read
-   * plane, so a reader and a writer decide against each other in one CAS. */
 #ifndef ARTS_RETENTION_PURGE
   /* Next transfer target, published by the INVALIDATE handler BEFORE it
    * withdraws the sentinel.  ARTS_NO_PENDING_OWNER = none pending.  Publishing
@@ -449,12 +447,12 @@ struct arts_db_s {
   /* destroy fan-out roster; the creator's bit is set at home init, every
    * other by arts_rank_bitset_note */
   struct arts_rank_bitset_s cached_ranks;
-  /* The declared-arrival state: per requester rank the parity of its last
-   * read request this home accounted for (by its arrival or a declaration of
-   * it, whichever came first); the gate [td:1 | rwo:1 | roo:1 | owed:29],
-   * the destroy's mark and what the home was told is still coming, every
-   * write after init an acq_rel RMW; the rank whose create claimed a
-   * first-touch cache, written before the descriptor is published. */
+  /* The destroy's gate [td:1 | rwo:1 | roo:1 | owed:29] (cover_gate.h):
+   * the destroy's mark and the claiming creator's pre-claim write request,
+   * which the announce says is still coming (rwo, owed 1); every write after
+   * init an acq_rel RMW.  The rank whose create claimed a first-touch cache,
+   * written before the descriptor is published.  ro_parity is the shared
+   * gate helpers' per-rank set, which no request of this arm writes. */
   struct arts_rank_bitset_s ro_parity;
   _Atomic(uint32_t) cover_gate;
   unsigned int claim_rank;
@@ -481,20 +479,23 @@ struct arts_db_s {
  * about ownership — that is the grant plane's, and it does not live in a
  * word. */
 
-/* arg: ACQ_RO takes the parking node's pool index; the rest ignore it. */
+/* arg: ACQ_RO takes the parking node's pool index, RW_COMMIT and RW_GIVE the
+ * OPEN's token; the rest ignore it. */
 #define INV_CACHE_OP_ACQ_RO 0
 #define INV_CACHE_OP_DELIVER 1    /* a read reply landed (publish attempt) */
 #define INV_CACHE_OP_INVALIDATE 2
 #define INV_CACHE_OP_KILL_PURGE 3 /* reserved invalidate after the kill serve */
-#define INV_CACHE_OP_CTS 4        /* a size round or a dismiss answered the
-                                     read request */
+#define INV_CACHE_OP_CTS 4        /* a size round answered the read request:
+                                     ask again with a landing */
 #define INV_CACHE_OP_DECLAIM 5    /* a size round answered the write request:
                                      the cache can never be claimed */
 #define INV_CACHE_OP_RW_CLAIM 6
 #define INV_CACHE_OP_RW_COMMIT 7
 #define INV_CACHE_OP_RW_GIVE 8
-#define INV_CACHE_OP_RW_CLEAR 9   /* the grant lands: COVER + SENT -> IDLE */
-#define INV_CACHE_OP_CLAIM 10     /* a create claims the cache */
+#define INV_CACHE_OP_RW_CLEAR 9   /* the grant lands: SENT -> IDLE */
+#define INV_CACHE_OP_CLAIM 10     /* a create claims the cache: the write
+                                     axis is the claim's, and the cache is no
+                                     longer a stub */
 
 #define INV_CACHE_ACT_NONE 0
 #define INV_CACHE_ACT_SELF_SERVE 1   /* covering VALID copy: pure load, run */
@@ -505,20 +506,14 @@ struct arts_db_s {
 #define INV_CACHE_ACT_PURGE_ACK 7    /* INVALIDATE on VALID: purged, ack */
 #define INV_CACHE_ACT_KILL_MARKED 8  /* INVALIDATE on REQ: ack owed */
 #define INV_CACHE_ACT_NOOP_ACK 9     /* INVALIDATE idempotent: ack */
-#define INV_CACHE_ACT_RESEND 10      /* a size round or dismiss re-sends the
-                                        fetch (a kill mark stays on it) */
-#define INV_CACHE_ACT_CLOSE_ACK 11   /* a size round or dismiss closes a
-                                        kill-marked fetch: the owed ack goes
-                                        now */
-#define INV_CACHE_ACT_SERVE 12       /* serve the chain the CAS took */
+#define INV_CACHE_ACT_RESEND 10      /* a size round re-sends the fetch (a
+                                        kill mark stays on it) */
 #define INV_CACHE_ACT_WON 13
 #define INV_CACHE_ACT_LOST 14
 /* A reply for no request, or a state no transition reaches: the caller
  * raises. */
 #define INV_CACHE_ACT_LATE 15
 
-/* A read request's cover word from the word that opened it (engine.c). */
-uint32_t arts_inv_read_cover(uint64_t s);
 uint64_t arts_inv_cache_compute_next(uint64_t cur, int op, uint32_t self_idx,
                                      uint32_t *out_action);
 

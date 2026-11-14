@@ -180,10 +180,10 @@ void arts_handler_db_acquire(void *item, void *args) {
     break;
   }
   case INV_CACHE_ACT_SEND_RO:
-    /* The fetch's count; the take rests on the install and the cover gate
-     * (coherence.h, "Orders"). */
+    /* The fetch's count; the take rests on the install and the destroy
+     * contract (coherence.h, "Orders"). */
     arts_db_axis_take(db);
-    arts_send_db_inv_request(cache, DB_MODE_RO, arts_inv_read_cover(next));
+    arts_send_db_inv_request(cache, DB_MODE_RO);
     break;
   default: /* PARK: the fetch's committer will serve us */
     break;
@@ -294,24 +294,6 @@ void arts_handler_db_inv_request(void *item_v, void *args_v) {
   struct arts_ooo_args_db_inv_request_s *a =
       (struct arts_ooo_args_db_inv_request_s *)args_v;
   struct arts_db_cache_s *cache = &db->cache;
-  {
-    bool td = false;
-    int r = arts_db_cover_request(db, a->requester, false, a->cover, &td);
-    if (r == ARTS_COVER_DISMISS) {
-      /* Declared: a write turn of the requester's rank covers this request.
-       * Dismiss it -- no data, no read turn -- returning the landing. */
-      arts_send_db_inv_cts(
-          a->requester, a->token, db->cache.db_guid,
-          atomic_load_explicit(&db->cache.db_size, memory_order_relaxed),
-          a->cover, a->rdzv.cookie);
-    }
-    if (td) {
-      arts_db_home_destroy_now(db);
-    }
-    if (r != ARTS_COVER_PROCESS) {
-      return;
-    }
-  }
   arts_rank_bitset_note(&db->cached_ranks, a->requester);
   if (a->rdzv.txid == 0 &&
       atomic_load_explicit(&cache->db_size, memory_order_relaxed) != 0 &&
@@ -322,8 +304,7 @@ void arts_handler_db_inv_request(void *item_v, void *args_v) {
     INCREMENT_NUM_INV_SIZE_CTS_BY(1);
     arts_send_db_inv_cts(
         a->requester, a->token, cache->db_guid,
-        atomic_load_explicit(&cache->db_size, memory_order_relaxed), a->cover,
-        a->rdzv.cookie);
+        atomic_load_explicit(&cache->db_size, memory_order_relaxed));
     return;
   }
   if (a->mode == DB_MODE_RO) {
@@ -355,7 +336,6 @@ void arts_handler_db_inv_request(void *item_v, void *args_v) {
         w->slot = 0;
         w->serve = home_serve_deferred_read;
         w->requester = a->requester;
-        w->cover = a->cover;
         w->rdzv = a->rdzv;
         w->token = a->token;
         arts_lf_stack_push(&cache->publication_waiters, &w->link);

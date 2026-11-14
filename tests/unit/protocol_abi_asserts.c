@@ -293,13 +293,28 @@ _Static_assert(sizeof(struct arts_msg_snapshot_redirect_packet_s) == 64,
                "snapshot_redirect sizeof drifted");
 #endif
 #ifdef ARTS_VALIDITY_INV
+/* A read request, its redirect and its size round carry no cover word: the
+ * request's flags take the cover byte's slot, the redirect's pad keeps its
+ * 64-bit fields 8-aligned, and the size round's db_size is the size alone. */
+_Static_assert(offsetof(struct arts_msg_inv_request_packet_s, mode) == 24,
+               "inv_request mode drifted");
+_Static_assert(offsetof(struct arts_msg_inv_request_packet_s, flags) == 26,
+               "inv_request flags drifted");
+_Static_assert(sizeof(((struct arts_msg_inv_request_packet_s *)0)->flags) == 2,
+               "inv_request flags width drifted");
+_Static_assert(offsetof(struct arts_msg_inv_request_packet_s, requester) == 28,
+               "inv_request requester drifted");
+_Static_assert(offsetof(struct arts_msg_inv_request_packet_s, rdzv) == 32,
+               "inv_request rdzv drifted");
 _Static_assert(sizeof(struct arts_msg_inv_request_packet_s) == 72,
                "inv_request sizeof drifted");
 _Static_assert(offsetof(struct arts_msg_inv_request_packet_s, token) == 64,
                "inv_request token drifted");
-_Static_assert(sizeof(struct arts_msg_inv_cts_packet_s) == 48,
+_Static_assert(offsetof(struct arts_msg_inv_cts_packet_s, db_size) == 24,
+               "inv_cts db_size drifted");
+_Static_assert(sizeof(struct arts_msg_inv_cts_packet_s) == 40,
                "inv_cts sizeof drifted");
-_Static_assert(offsetof(struct arts_msg_inv_cts_packet_s, token) == 40,
+_Static_assert(offsetof(struct arts_msg_inv_cts_packet_s, token) == 32,
                "inv_cts token drifted");
 _Static_assert(sizeof(struct arts_msg_inv_deliver_packet_s) == 64,
                "inv_deliver sizeof drifted");
@@ -315,6 +330,12 @@ _Static_assert(sizeof(struct arts_msg_inv_invalidate_ack_packet_s) == 32,
 _Static_assert(offsetof(struct arts_msg_inv_invalidate_ack_packet_s,
                         home_token) == 24,
                "inv_invalidate_ack home_token drifted");
+_Static_assert(offsetof(struct arts_msg_inv_redirect_packet_s, requester) == 24,
+               "inv_redirect requester drifted");
+_Static_assert(offsetof(struct arts_msg_inv_redirect_packet_s, pad) == 28,
+               "inv_redirect pad drifted");
+_Static_assert(offsetof(struct arts_msg_inv_redirect_packet_s, rdzv) == 32,
+               "inv_redirect rdzv drifted");
 _Static_assert(sizeof(struct arts_msg_inv_redirect_packet_s) == 72,
                "inv_redirect sizeof drifted");
 _Static_assert(offsetof(struct arts_msg_inv_redirect_packet_s, token) == 64,

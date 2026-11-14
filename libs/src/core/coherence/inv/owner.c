@@ -95,9 +95,11 @@ void arts_handler_db_acquire(void *item, void *args) {
   /* Covering-copy fast path: pure loads, no CAS, no node.  A rank holding a
    * CONFIRMED grant covers reads too — it has the newest bytes by definition.
    * An unconfirmed install does not: until the home publishes the flip, the
-   * bytes here are not yet the ones the directory points readers at.  The
-   * SIGNED test is what draws that line: ARTS_GRANT_UNCONFIRMED puts such an
-   * install below zero, so "> 0" already means "held and confirmed". */
+   * bytes here are not yet the ones the directory points readers at, so a
+   * reader there opens or joins a fetch like any other and is served by its
+   * reply, never by the CONFIRM_ACK.  The SIGNED test is what draws that
+   * line: ARTS_GRANT_UNCONFIRMED puts such an install below zero, so "> 0"
+   * already means "held and confirmed". */
   uint64_t peek =
       atomic_load_explicit(&cache->cache_state, memory_order_acquire);
   /* One observation governs both the decision to answer locally and the
@@ -163,10 +165,10 @@ void arts_handler_db_acquire(void *item, void *args) {
     break;
   }
   case INV_CACHE_ACT_SEND_RO:
-    /* The fetch's count; the take rests on the install and the cover gate
-     * (coherence.h, "Orders"). */
+    /* The fetch's count; the take rests on the install and the destroy
+     * contract (coherence.h, "Orders"). */
     arts_db_axis_take(db);
-    arts_send_db_inv_request(cache, DB_MODE_RO, arts_inv_read_cover(next));
+    arts_send_db_inv_request(cache, DB_MODE_RO);
     break;
   default: /* PARK: the fetch's committer will serve us */
     break;
@@ -217,31 +219,14 @@ void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload) {
  * The home holds no bytes, so it cannot answer.  It registers the requester in
  * the roster — BEFORE the redirect departs, so a copy that is about to exist is
  * already a target of the next round — and points the requester at the rank the
- * directory currently names.
+ * directory currently names, the requester itself included: that rank answers
+ * its own request from the copy it holds.
  */
 void arts_handler_db_inv_request(void *item_v, void *args_v) {
   struct arts_db_s *db = (struct arts_db_s *)item_v;
   struct arts_ooo_args_db_inv_request_s *a =
       (struct arts_ooo_args_db_inv_request_s *)args_v;
   struct arts_db_cache_s *cache = &db->cache;
-  if (!a->bounce) {
-    bool td = false;
-    int r = arts_db_cover_request(db, a->requester, false, a->cover, &td);
-    if (r == ARTS_COVER_DISMISS) {
-      /* Declared: a write turn of the requester's rank covers this request.
-       * Dismiss it -- no data, no read turn -- returning the landing. */
-      arts_send_db_inv_cts(
-          a->requester, a->token, db->cache.db_guid,
-          atomic_load_explicit(&db->cache.db_size, memory_order_relaxed),
-          a->cover, a->rdzv.cookie);
-    }
-    if (td) {
-      arts_db_home_destroy_now(db);
-    }
-    if (r != ARTS_COVER_PROCESS) {
-      return;
-    }
-  }
   arts_rank_bitset_note(&db->cached_ranks, a->requester);
   if (a->rdzv.txid == 0 &&
       atomic_load_explicit(&cache->db_size, memory_order_relaxed) != 0 &&
@@ -251,8 +236,7 @@ void arts_handler_db_inv_request(void *item_v, void *args_v) {
     INCREMENT_NUM_INV_SIZE_CTS_BY(1);
     arts_send_db_inv_cts(
         a->requester, a->token, cache->db_guid,
-        atomic_load_explicit(&cache->db_size, memory_order_relaxed), a->cover,
-        a->rdzv.cookie);
+        atomic_load_explicit(&cache->db_size, memory_order_relaxed));
     return;
   }
   if (a->mode != DB_MODE_RO) {
@@ -273,8 +257,8 @@ void arts_handler_db_inv_request(void *item_v, void *args_v) {
     arts_send_db_inv_deliver(a->requester, db, &a->rdzv, a->token);
     return;
   }
-  arts_send_db_inv_redirect(holder, cache->db_guid, a->requester, a->cover,
-                            &a->rdzv, a->token);
+  arts_send_db_inv_redirect(holder, cache->db_guid, a->requester, &a->rdzv,
+                            a->token);
 }
 
 /* ===== redirect (home -> current holder) ================================
@@ -300,8 +284,8 @@ void arts_handler_db_inv_redirect(void *item_v, void *args_v) {
       /* The bytes moved on between the home's directory read and this
        * arrival.  Bounce rather than queue — a reader must never wait here —
        * and let the next pass resolve against a later generation. */
-      arts_send_db_inv_request_for(cache->db_guid, a->requester, a->cover,
-                                   &a->rdzv, a->token);
+      arts_send_db_inv_request_for(cache->db_guid, a->requester, &a->rdzv,
+                                   a->token);
       return;
     }
   }
@@ -315,7 +299,7 @@ void arts_handler_db_inv_redirect(void *item_v, void *args_v) {
  * the packet because the holder answers it directly, so the wire sender and
  * the requester are different ranks. */
 void arts_send_db_inv_redirect(unsigned int holder_rank, arts_guid_t db_guid,
-                               unsigned int requester, uint32_t cover,
+                               unsigned int requester,
                                const struct arts_rdzv_landing_s *rdzv,
                                uint64_t token) {
   struct arts_msg_inv_redirect_packet_s p;
@@ -323,7 +307,7 @@ void arts_send_db_inv_redirect(unsigned int holder_rank, arts_guid_t db_guid,
   p.header.rank = arts_global_rank_id;
   p.db_guid = db_guid;
   p.requester = requester;
-  p.cover = cover;
+  p.pad = 0u;
   p.rdzv.addr = rdzv->addr;
   p.rdzv.key = rdzv->key;
   p.rdzv.txid = rdzv->txid;
@@ -341,7 +325,6 @@ void arts_send_db_inv_redirect(unsigned int holder_rank, arts_guid_t db_guid,
  * to the home on the reader's behalf.  A retry, not a park — the next pass
  * resolves against a later ownership generation. */
 void arts_send_db_inv_request_for(arts_guid_t db_guid, unsigned int requester,
-                                  uint32_t cover,
                                   const struct arts_rdzv_landing_s *rdzv,
                                   uint64_t token) {
   unsigned int home_rank = arts_guid_get_rank(db_guid);
@@ -350,7 +333,6 @@ void arts_send_db_inv_request_for(arts_guid_t db_guid, unsigned int requester,
   p.header.rank = arts_global_rank_id;
   p.db_guid = db_guid;
   p.mode = (uint16_t)DB_MODE_RO;
-  p.cover = (uint8_t)cover;
   p.flags = ARTS_INV_REQ_BOUNCE;
   p.requester = requester;
   p.rdzv.addr = rdzv->addr;

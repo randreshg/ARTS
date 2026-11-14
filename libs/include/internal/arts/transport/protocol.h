@@ -837,8 +837,7 @@ struct ARTS_PACKED arts_msg_inv_request_packet_s {
   struct arts_msg_header_s header;
   arts_guid_t db_guid;
   uint16_t mode;  /* arts_db_access_mode_t — RO; writes use GRANT_REQUEST */
-  uint8_t cover;  /* ARTS_COVER_PAR: the request's parity */
-  uint8_t flags;  /* ARTS_INV_REQ_BOUNCE: a holder's re-send for the reader */
+  uint16_t flags; /* ARTS_INV_REQ_BOUNCE: a holder's re-send for the reader */
   uint32_t requester;
   /* Requester's landing for the deliver payload.  txid==0 = the requester does
    * not yet know db_size (first touch): the home answers INV_CTS and the
@@ -847,21 +846,15 @@ struct ARTS_PACKED arts_msg_inv_request_packet_s {
   uint64_t token; /* the subject's answer token, a bounce's included */
 };
 
-/* An answer without data to a read request: a size round (the request
- * carried no landing) or a dismiss (a write turn of the requester's rank
- * covers it).  The top four bits of db_size carry the answered request's
- * cover word, whose parity the requester checks; rdzv_cookie returns the
- * landing the request named (0: none).  Reads are the only INV requests, so
- * no mode travels. */
+/* A size round: the read request carried no landing, so the home answers
+ * the block's size and the requester asks again with one.  Reads are the
+ * only INV requests, so no mode travels. */
 struct ARTS_PACKED arts_msg_inv_cts_packet_s {
   struct arts_msg_header_s header;
   arts_guid_t db_guid;
   uint64_t db_size;
-  uint64_t rdzv_cookie;
   uint64_t token; /* the request's, echoed */
 };
-#define ARTS_INV_CTS_SIZE_BITS 60
-#define ARTS_INV_CTS_SIZE_MASK (((uint64_t)1 << ARTS_INV_CTS_SIZE_BITS) - 1)
 
 /* The version is the install-lane arbitration stamp ONLY (two asynchronous
  * installs can target one buffer slot); nothing compares it to judge validity. */
@@ -894,7 +887,7 @@ struct ARTS_PACKED arts_msg_inv_redirect_packet_s {
   struct arts_msg_header_s header;
   arts_guid_t db_guid;
   uint32_t requester;
-  uint32_t cover; /* the request's cover word, forwarded for the answer */
+  uint32_t pad; /* keeps the fields below 8-aligned; written 0 */
   struct arts_msg_rdzv_landing_s rdzv;
   uint64_t token; /* the requester's, forwarded for the answer */
 };

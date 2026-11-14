@@ -145,11 +145,11 @@ enum arts_ooo_kind {
 #endif
 /* GRANT_INVALIDATE, INVALIDATE and REDIRECT are Cat-C: their targets are
  * provably installed (a revoking home names a holder only after that rank
- * installed) or the MISS action is part of the protocol (INVALIDATE MISS →
- * ACK; REDIRECT MISS → the requester is dismissed).  GRANT_RESPONSE, DELIVER,
- * CTS and CONFIRM_ACK answer this rank's own request through its token, and
- * CONFIRM and INV_ACK answer the home's round through the home token; none is
- * looked up or deferred.  A home whose grants come back unasked sends no
+ * installed) or the MISS has an action of its own (an INVALIDATE's still
+ * acks; a REDIRECT's is dropped).  GRANT_RESPONSE, DELIVER, CTS and
+ * CONFIRM_ACK answer this rank's own request through its token, and CONFIRM
+ * and INV_ACK answer the home's round through the home token; none is looked
+ * up or deferred.  A home whose grants come back unasked sends no
  * GRANT_INVALIDATE and receives no CONFIRM. */
 #elif defined(ARTS_VALIDITY_VAL) && defined(ARTS_READ_SOURCE_HOME)
   OOO_DB_ACQUIRE, /* → arts_db_acquire_replay_dep (re-attempts the one deferred
@@ -412,8 +412,6 @@ struct arts_ooo_args_db_inv_request_s {
                              behalf */
   arts_guid_t db_guid;
   arts_db_access_mode_t mode;      /* DB_MODE_RO or DB_MODE_RW */
-  uint32_t cover;                  /* the request's ARTS_COVER_PAR, a holder's
-                                      bounce included */
   bool bounce;                     /* re-sent by a holder that had no bytes */
   struct arts_rdzv_landing_s rdzv; /* deliver/grant landing; txid==0 = first
                                       touch (home replies INV_CTS) */
@@ -429,7 +427,6 @@ struct arts_ooo_args_db_inv_request_s {
  * moved on. */
 struct arts_ooo_args_db_inv_redirect_s {
   unsigned int requester;
-  uint32_t cover;
   arts_guid_t db_guid;
   struct arts_rdzv_landing_s rdzv;
   uint64_t token; /* the requester's answer token */

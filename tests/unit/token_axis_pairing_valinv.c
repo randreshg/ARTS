@@ -22,21 +22,21 @@
  *   read axis   closed by its answer; an answer on a retired descriptor; a
  *               one-sided answer's pairing callback, on a live and on a
  *               retired descriptor, and a pairing the teardown discards (the
- *               count is then the sweep's);
- *     VAL:      opened while the rank's write request is out, the grant
- *               serving the writer alone and a header-only answer at the
- *               write holder serving the reader against the holder's
- *               buffer; a one-sided answer at the write holder likewise,
- *               the holder's buffer staying; kept open by a create's claim
- *               and closed by its own answer after a size round; a reply of
- *               each kind (header-only, one-sided, size round) arriving
- *               with no request out is fatal;
- *     INV:      closed by a dismiss while the rank's write request is out,
- *               by a dismiss after the write turn served the window (no
- *               write request out), by a create's claim; a dismiss on a
- *               retired descriptor; opened by a writer's give-back, for
- *               riders and for a window a size round closed while the write
- *               axis was open;
+ *               count is then the sweep's); opened while the rank's write
+ *               request is out, the grant serving the writer alone and an
+ *               answer that moves no bytes at the write holder serving the
+ *               reader against the holder's buffer; a one-sided answer at
+ *               the write holder likewise, the holder's buffer staying; kept
+ *               open by a create's claim and closed by its own answer after
+ *               a size round; a reply of each kind (one that moves no bytes,
+ *               one-sided, size round) arriving with no request out is
+ *               fatal;
+ *     INV:      a fetch opened while the write request is out, kill-marked
+ *               by a round, whose reply serves once, purges and acks the
+ *               round; a kill-marked fetch its size round re-sends, the ack
+ *               kept for the re-sent fetch's reply; (OWNER) opened while
+ *               the rank's install awaits its confirmation, the CONFIRM_ACK
+ *               waking the writer alone;
  *   write axis  closed by its answer (HOME: the grant; OWNER: the
  *               CONFIRM_ACK its CONFIRM asks for), a size round leaving
  *               it open; by a create's claim; a size round, a grant and
@@ -54,9 +54,6 @@
  *               and landed inside the relaunched publish (INV: by its own
  *               round's ACK, which arrives while the round is still
  *               sending);
- *   the home's own read request (INV·OWNER) dismissed inside its self-send
- *               with the teardown due, and served by the home on a
- *               descriptor retired since the request was processed;
  *   the teardown sweep: one count per open axis.
  * Wherever the last reference goes inside a frame, nothing may touch the
  * descriptor once its deleter ran, and a deleter may run only once every
@@ -256,15 +253,8 @@ UNREACHED(void arts_db_buf_bump_inplace(struct arts_db_cache_s *c, uint64_t v))
 
 static int64_t g_landings; /* drawn and not yet ended */
 static uint64_t g_txid;
-/* Another thread acting at the next look at a buffer slot (called once). */
-static void (*g_buf_hook)(void);
 
 arts_shared_ptr_t arts_db_buf_acquire(struct arts_db_cache_s *cache) {
-  void (*h)(void) = g_buf_hook;
-  if (h != NULL) {
-    g_buf_hook = NULL;
-    h();
-  }
   return arts_shared_slot_load(&cache->buffer);
 }
 void arts_db_buf_release(arts_shared_ptr_t *h) { arts_shared_release(h); }
@@ -420,10 +410,8 @@ arts_shared_ptr_t arts_route_table_copy_live(arts_shared_ptr_t h,
 
 /* A self-send runs the body on the descriptor, as the engine does for an
  * installed one.  The depth lets the deleter tell whether it runs inside such
- * a body; the hook stands for another thread acting between a self-sent
- * read request's send and its body (called once, before the next one). */
+ * a body. */
 static int g_dispatch_depth;
-static void (*g_dispatch_hook)(void);
 
 void arts_ooo_dispatch_on(arts_shared_ptr_t h, ooo_kind_t kind,
                           arts_guid_t guid, const void *args, uint32_t size) {
@@ -448,11 +436,6 @@ void arts_ooo_dispatch_on(arts_shared_ptr_t h, ooo_kind_t kind,
 #else
   case OOO_DB_INV_REQUEST:
 #endif
-    if (g_dispatch_hook != NULL) {
-      void (*hook)(void) = g_dispatch_hook;
-      g_dispatch_hook = NULL;
-      hook();
-    }
 #ifdef ARTS_VALIDITY_VAL
     arts_handler_db_snapshot_request(obj, copy);
 #else
@@ -727,14 +710,14 @@ static void read_reply(const struct arts_msg_snapshot_request_packet_s *r,
   arts_db_census_served(census);
 }
 
-/* The nth request's answer, into the landing it named. */
-static void read_answer(int nth, uint32_t kind) {
+/* The nth request's answer naming `version`, into the landing it named. */
+static void read_answer_at(int nth, uint32_t kind, uint64_t version) {
   const struct arts_msg_snapshot_request_packet_s *r = read_request(nth);
   struct arts_rdzv_landing_s l = {.addr = r->rdzv.addr,
                                   .key = r->rdzv.key,
                                   .txid = r->rdzv.txid,
                                   .cookie = r->rdzv.cookie};
-  read_reply(r, kind, kind == 1u ? 3u : 0u, &l);
+  read_reply(r, kind, version, &l);
 }
 #else
 static const struct arts_msg_inv_request_packet_s *read_request(int nth) {
@@ -742,15 +725,18 @@ static const struct arts_msg_inv_request_packet_s *read_request(int nth) {
                                                             nth);
 }
 
-static void read_answer(int nth, uint32_t kind) {
-  const struct arts_msg_inv_request_packet_s *r = read_request(nth);
+/* An answer to request r naming `version`: kind 0 a deliver that moves no
+ * bytes and names `landing` (the requester adopts or returns it), 1 a
+ * one-sided payload into `landing`, 2 a size round. */
+static void read_reply(const struct arts_msg_inv_request_packet_s *r,
+                       uint32_t kind, uint64_t version,
+                       const struct arts_rdzv_landing_s *landing) {
   if (kind == 2u) {
     struct arts_msg_inv_cts_packet_s p;
     memset(&p, 0, sizeof(p));
     p.header.rank = HOME;
     p.db_guid = r->db_guid;
-    p.db_size = SIZE | ((uint64_t)r->cover << ARTS_INV_CTS_SIZE_BITS);
-    p.rdzv_cookie = r->rdzv.cookie;
+    p.db_size = SIZE;
     p.token = r->token;
     arts_handler_db_inv_cts(&p);
     return;
@@ -759,14 +745,30 @@ static void read_answer(int nth, uint32_t kind) {
   memset(&p, 0, sizeof(p));
   p.header.rank = HOME;
   p.db_guid = r->db_guid;
-  p.version = kind == 1u ? 3u : 0u;
+  p.version = version;
   p.data_size = SIZE;
-  p.rdzv_txid = kind == 1u ? r->rdzv.txid : 0u;
-  p.rdzv_cookie = r->rdzv.cookie;
+  p.rdzv_txid = kind == 1u ? landing->txid : 0u;
+  p.rdzv_cookie = landing->cookie;
   p.token = r->token;
   arts_handler_db_inv_deliver(&p, sizeof(p));
 }
+
+/* The nth request's answer naming `version`, into the landing it named. */
+static void read_answer_at(int nth, uint32_t kind, uint64_t version) {
+  const struct arts_msg_inv_request_packet_s *r = read_request(nth);
+  struct arts_rdzv_landing_s l = {.addr = r->rdzv.addr,
+                                  .key = r->rdzv.key,
+                                  .txid = r->rdzv.txid,
+                                  .cookie = r->rdzv.cookie};
+  read_reply(r, kind, version, &l);
+}
 #endif
+
+/* The nth request's answer, into the landing it named: one that moves bytes
+ * names version 3, one that moves none version 0. */
+static void read_answer(int nth, uint32_t kind) {
+  read_answer_at(nth, kind, kind == 1u ? 3u : 0u);
+}
 
 static const struct arts_msg_grant_request_packet_s *write_request(int nth) {
   return (const struct arts_msg_grant_request_packet_s *)sent(
@@ -850,96 +852,6 @@ static void read_answered(void) {
   end(1);
 }
 
-#ifdef ARTS_VALIDITY_INV
-static void read_dismissed(void) {
-  begin("read axis closed by a dismiss, the write request out", GUID_SIZED,
-        false);
-  acquire(DB_MODE_RO);
-  acquire(DB_MODE_RW);
-  /* The home dismisses the read request the write request declared; the
-   * reader rides the write turn. */
-  read_answer(0, 2u);
-  if (count_sent(MSG_DB_SNAPSHOT_REQUEST) + count_sent(MSG_DB_INV_REQUEST) !=
-      1) {
-    fail("the dismiss re-sent the read request");
-  }
-  write_answer(0, false);
-  confirm_ack();
-  end(2);
-}
-
-/* The write turn serves the window first; the dismiss of its read request,
- * still out, then closes the axis with no write request out. */
-static void read_dismissed_after_grant(void) {
-  begin("read axis closed by a dismiss after the write turn served it",
-        GUID_SIZED, false);
-  acquire(DB_MODE_RO);
-  acquire(DB_MODE_RW);
-  write_answer(0, false);
-  confirm_ack();
-  read_answer(0, 2u);
-  if (read_requests() != 1) {
-    fail("the dismiss re-sent the read request");
-  }
-  end(2);
-}
-
-/* A reader that parks while a writer holds the write axis OPEN rides the
- * request that OPEN would send; the writer gives the axis back unsent, and
- * the riders open the read axis themselves. */
-static void read_given_riders(void) {
-  begin("read axis opened by a writer's give-back, for its riders", GUID_SIZED,
-        false);
-  uint32_t tok = 0u;
-  if (!arts_db_rw_req_claim(&g_db->cache, &tok)) {
-    fail("the write axis was not idle");
-  }
-  acquire(DB_MODE_RO);
-  if (read_requests() != 0) {
-    fail("a rider sent a read request");
-  }
-  arts_db_rw_req_giveback(&g_db->cache, tok);
-  read_answer(0, 0u);
-  end(1);
-}
-
-/* A first touch's size round answers a window while a writer holds the
- * write axis OPEN: the window closes, its cohort riding the write request.
- * The writer gives the axis back unsent, and the window asks again -- still
- * a claimable stub's request, so a second size round re-sends it with a
- * landing. */
-static void read_given_resend(void) {
-  begin("read axis re-opened by a writer's give-back after a size round",
-        GUID_CLAIM, false);
-  acquire(DB_MODE_RO);
-  uint32_t tok = 0u;
-  if (!arts_db_rw_req_claim(&g_db->cache, &tok)) {
-    fail("the write axis was not idle");
-  }
-  read_answer(0, 2u);
-  arts_db_rw_req_giveback(&g_db->cache, tok);
-  if (read_requests() != 2 ||
-      read_request(1)->token != read_request(0)->token) {
-    fail("the give-back did not ask again");
-  }
-  read_answer(1, 2u);
-  if (read_requests() != 3 || read_request(2)->rdzv.cookie == 0u) {
-    fail("the size round did not re-send the request with a landing");
-  }
-  read_answer(2, 0u);
-  end(1);
-}
-
-static void read_claimed(void) {
-  begin("read axis closed by a create's claim", GUID_CLAIM, false);
-  acquire(DB_MODE_RO);
-  if ((claim() & ARTS_CREATE_OWED_RO) == 0u) {
-    fail("the claim did not close the read request");
-  }
-  end(1);
-}
-#endif
-
 static void read_retired(void) {
   begin("read answer on a retired descriptor", GUID_SIZED, false);
   acquire(DB_MODE_RO);
@@ -947,25 +859,6 @@ static void read_retired(void) {
   read_answer(0, 0u);
   end(0);
 }
-
-#ifdef ARTS_VALIDITY_INV
-/* The write turn served the window and the block's teardown retired the
- * descriptor before the dismiss of the read request, still out, arrived: the
- * dismiss only returns the landing and drops the count. */
-static void read_dismissed_retired(void) {
-  begin("read dismiss on a retired descriptor", GUID_SIZED, false);
-  acquire(DB_MODE_RO);
-  acquire(DB_MODE_RW);
-  write_answer(0, false);
-  confirm_ack();
-  retire();
-  read_answer(0, 2u);
-  if (read_requests() != 1) {
-    fail("a retired descriptor re-sent its read request");
-  }
-  end(2);
-}
-#endif
 
 static void read_paired(bool retired_first) {
   begin(retired_first ? "read pairing callback on a retired descriptor"
@@ -1214,77 +1107,6 @@ static void home_request_served_in_body(void) {
   end_dropped(wakes);
 }
 
-#if defined(ARTS_VALIDITY_INV) && defined(ARTS_READ_SOURCE_OWNER)
-/* Between a self-sent read request's send and its body at the home: this
- * rank's writer commits its write request, which names the read request out;
- * the home takes that declaration in; and the block's destroy marks the cover
- * gate, which now waits for the declared read request alone. */
-static void declare_then_destroy(void) {
-  uint32_t tok = 0u;
-  uint32_t cover = 0u;
-  if (!arts_db_rw_req_claim(&g_db->cache, &tok) ||
-      !arts_db_rw_req_commit(&g_db->cache, tok, &cover) ||
-      (cover & ARTS_COVER_RO_OPEN) == 0u) {
-    fail("the write request does not name the read request out");
-  }
-  bool td = false;
-  if (arts_db_cover_request(g_db, HOME, true, cover, &td) !=
-          ARTS_COVER_PROCESS ||
-      td) {
-    fail("the home did not take the declaration in");
-  }
-  arts_db_cover_destroy(g_db);
-}
-
-/* The home's own read request, dismissed inside its self-send with the
- * teardown due: the dismiss closes the read axis and drops its count, the
- * teardown retires the descriptor, and the deleter may run only once the
- * request's body has returned.  The home sends no size round for its own
- * fetch, so the first request is the one dismissed. */
-static void home_read_dismissed_teardown(void) {
-  begin("home's own read request dismissed with its teardown due", GUID_SIZED,
-        true);
-  g_dispatch_hook = declare_then_destroy;
-  g_poison = true;
-  acquire(DB_MODE_RO);
-  if (g_dispatch_hook != NULL) {
-    fail("no read request reached the home");
-  }
-  end_dropped(0);
-}
-
-/* At the serve of the home's own read request, after the home processed it
- * and before the deliver's look at the token: the same declaration and
- * destroy, which now find nothing owed, so the teardown retires the
- * descriptor at once. */
-static void retire_at_serve(void) {
-  if (g_dispatch_depth == 0) {
-    fail("the serve ran outside the home's own read request");
-  }
-  declare_then_destroy();
-}
-
-/* The home's own read request, served by the home as the holder its
- * directory names, on a descriptor retired since the request was processed:
- * the self-serve only drops the read request's count, and the deleter may run
- * only once the request's body has returned. */
-static void home_read_served_retired(void) {
-  begin("home's own read served on a retired descriptor", GUID_SIZED, true);
-  /* The directory names the home the holder while the home has neither a
-   * valid copy nor a write turn: its grant is on its way to a rank that has
-   * not confirmed it yet. */
-  atomic_store_explicit(&g_db->rw_holder, HOME, memory_order_relaxed);
-  g_buf_hook = retire_at_serve;
-  g_poison = true;
-  acquire(DB_MODE_RO);
-  if (g_buf_hook != NULL) {
-    g_buf_hook = NULL;
-    fail("the home did not serve its own read request");
-  }
-  end_dropped(0);
-}
-#endif
-
 #ifdef ARTS_VALIDITY_VAL
 /* The reader parked on the open window, which only the window's answer
  * serves. */
@@ -1293,6 +1115,14 @@ static bool reader_parked(void) {
                                     memory_order_acquire);
   return VREQ_RO(w) && VREQ_GROUP(w) != 0u;
 }
+#else
+/* The reader parked on the open fetch, which only the fetch's reply serves. */
+static bool reader_parked(void) {
+  uint64_t w =
+      atomic_load_explicit(&g_db->cache.cache_state, memory_order_acquire);
+  return INV_CACHE_INFLIGHT(w) != 0u && INV_CACHE_HEAD_RO(w) != 0u;
+}
+#endif
 
 /* The buffer this rank's slot holds. */
 static struct arts_db_buffer_s *slot_buffer(void) {
@@ -1340,12 +1170,7 @@ static void read_opened_under_write(void) {
   if (g_wakes != 1 || !reader_parked()) {
     fail("the write grant served the reader");
   }
-  const struct arts_msg_snapshot_request_packet_s *r = read_request(0);
-  struct arts_rdzv_landing_s l = {.addr = r->rdzv.addr,
-                                  .key = r->rdzv.key,
-                                  .txid = r->rdzv.txid,
-                                  .cookie = r->rdzv.cookie};
-  read_reply(r, 0u, 3u, &l);
+  read_answer_at(0, 0u, 3u);
   served_by_holder_buffer(b, 1);
   end(2);
 }
@@ -1398,6 +1223,116 @@ static void read_kept_by_claim(void) {
   end(1);
 }
 
+#ifdef ARTS_VALIDITY_INV
+/* The round's home token an INVALIDATE names. */
+#define ROUND_TOKEN ((uint64_t)0x7a7a00u)
+
+/* A round's INVALIDATE finds the fetch out: it marks the fetch, and the ack
+ * it owes stays with the rank. */
+static void round_kill_marks(void) {
+  arts_handler_db_inv_invalidate(g_db, ROUND_TOKEN);
+  if (count_sent(MSG_DB_INV_INVALIDATE_ACK) != 0) {
+    fail("an ack owed to a kill-marked fetch left at once");
+  }
+}
+
+/* The kill-marked fetch's reply served its one reader, purged the copy and
+ * then sent the round's ack, once, echoing the round's home token. */
+static void killed_reply_acked(void) {
+  if (g_wakes != 1) {
+    fail("the reply did not serve its cohort");
+  }
+  uint64_t w =
+      atomic_load_explicit(&g_db->cache.cache_state, memory_order_acquire);
+  if (INV_CACHE_RO(w) != INV_RO_IDLE || INV_CACHE_INFLIGHT(w) != 0u ||
+      INV_CACHE_HEAD_RO(w) != 0u) {
+    fail("the reply did not purge the copy it served");
+  }
+  const struct arts_msg_inv_invalidate_ack_packet_s *a =
+      (const struct arts_msg_inv_invalidate_ack_packet_s *)sent(
+          MSG_DB_INV_INVALIDATE_ACK, 0);
+  if (count_sent(MSG_DB_INV_INVALIDATE_ACK) != 1 ||
+      a->home_token != ROUND_TOKEN || a->db_guid != g_db->cache.db_guid) {
+    fail("the owed ack did not leave once with the round's home token");
+  }
+}
+
+/* A round reaches the rank while its write request is out and kill-marks
+ * the fetch opened beside it.  The fetch's reply serves its cohort once,
+ * purges the copy and only then sends the round its ack, echoing the round's
+ * home token; the grant arrives after that ack, as the round orders it, and
+ * serves the writer alone. */
+static void read_killed_under_write(void) {
+  begin("fetch opened under the write request, kill-marked: its reply serves "
+        "once, purges and acks",
+        GUID_SIZED, false);
+  acquire(DB_MODE_RW);
+  acquire(DB_MODE_RO);
+  if (read_requests() != 1) {
+    fail("the reader did not open a read request of its own");
+  }
+  round_kill_marks();
+  read_answer(0, 0u);
+  killed_reply_acked();
+  write_answer(0, false);
+  confirm_ack();
+  end(2);
+}
+
+/* A round kill-marks a fetch that left without a landing.  The size round
+ * that answers it re-sends the fetch with the mark kept and sends no ack;
+ * the re-sent fetch's reply serves the cohort once, purges the copy and
+ * sends the round its ack. */
+static void read_killed_size_round(void) {
+  begin("kill-marked fetch re-sent by its size round: the reply acks",
+        GUID_CLAIM, false);
+  acquire(DB_MODE_RO);
+  round_kill_marks();
+  read_answer(0, 2u);
+  if (read_requests() != 2 || read_request(1)->rdzv.cookie == 0u) {
+    fail("the size round did not re-send the fetch with a landing");
+  }
+  uint64_t w =
+      atomic_load_explicit(&g_db->cache.cache_state, memory_order_acquire);
+  if (count_sent(MSG_DB_INV_INVALIDATE_ACK) != 0 || !reader_parked() ||
+      INV_CACHE_RO(w) != INV_RO_REQ_KILL) {
+    fail("the size round did not keep the kill mark and the ack it owes");
+  }
+  read_answer(1, 0u);
+  killed_reply_acked();
+  end(1);
+}
+#endif
+
+#if defined(ARTS_VALIDITY_INV) && defined(ARTS_READ_SOURCE_OWNER)
+/* A reader that arrives while the rank's install awaits its confirmation is
+ * no local hit: it opens a fetch of its own.  The CONFIRM_ACK wakes the
+ * writer alone, and the fetch's reply, naming the version the rank holds,
+ * serves the reader against the holder's buffer. */
+static void read_in_unconfirmed_window(void) {
+  begin("read request opened while the install awaits its confirmation",
+        GUID_SIZED, false);
+  home_buffer(3u);
+  struct arts_db_buffer_s *b = slot_buffer();
+  acquire(DB_MODE_RW);
+  write_answer(0, false);
+  if (g_wakes != 0) {
+    fail("the writer ran before its confirmation");
+  }
+  acquire(DB_MODE_RO);
+  if (read_requests() != 1 || !reader_parked()) {
+    fail("the reader did not open a fetch of its own");
+  }
+  confirm_ack();
+  if (g_wakes != 1 || !reader_parked()) {
+    fail("the confirmation served the reader");
+  }
+  read_answer_at(0, 0u, 3u);
+  served_by_holder_buffer(b, 1);
+  end(2);
+}
+#endif
+
 /* In a child: `step` must end the run; nothing it does reaches this
  * process. */
 static void expect_fatal(void (*step)(void), const char *what) {
@@ -1420,7 +1355,19 @@ static void expect_fatal(void (*step)(void), const char *what) {
   }
 }
 
-static void again_header_only(void) { read_answer(0, 0u); }
+#ifdef ARTS_VALIDITY_VAL
+/* The header-only answer again: its request carried no landing, so the
+ * answer names none. */
+static void again_no_bytes(void) { read_answer(0, 0u); }
+#else
+/* The deliver that moves no bytes again, into a landing of its own: the
+ * first one ended the landing its request named. */
+static void again_no_bytes(void) {
+  struct arts_rdzv_landing_s l;
+  (void)arts_db_buf_landing_alloc(SIZE, &l);
+  read_reply(read_request(0), 0u, 0u, &l);
+}
+#endif
 /* The one-sided answer again, into a landing of its own. */
 static void again_one_sided(void) {
   struct arts_rdzv_landing_s l;
@@ -1432,17 +1379,30 @@ static void again_size_round(void) { read_answer(0, 2u); }
 
 /* A read request is answered once, and a reply carries nothing that tells one
  * request's answer from another's: a reply of any kind that finds no request
- * out ends the run. */
+ * out ends the run.  VAL's header-only answer is for a request that carried
+ * no landing; INV's deliver that moves no bytes names the landing its
+ * request carried. */
 static void read_reply_without_request(int kind) {
   static const char *names[] = {
+#ifdef ARTS_VALIDITY_VAL
       "header-only read answer with no request out is fatal",
+#else
+      "read deliver that moves no bytes with no request out is fatal",
+#endif
       "one-sided read answer with no request out is fatal",
       "read size round with no request out is fatal"};
-  begin(names[kind], kind == 1 ? GUID_SIZED : GUID_CLAIM, false);
+#ifdef ARTS_VALIDITY_VAL
+  const arts_guid_t no_bytes_guid = GUID_CLAIM;
+#else
+  const arts_guid_t no_bytes_guid = GUID_SIZED;
+#endif
+  begin(names[kind],
+        kind == 0 ? no_bytes_guid : (kind == 1 ? GUID_SIZED : GUID_CLAIM),
+        false);
   acquire(DB_MODE_RO);
   if (kind == 0) {
     read_answer(0, 0u);
-    expect_fatal(again_header_only, "the second answer did not end the run");
+    expect_fatal(again_no_bytes, "the second answer did not end the run");
   } else if (kind == 1) {
     read_answer(0, 1u);
     pairing_fire(true);
@@ -1455,7 +1415,6 @@ static void read_reply_without_request(int kind) {
   }
   end(1);
 }
-#endif
 
 #if PUBLISHES
 #ifdef ARTS_VALIDITY_INV
@@ -1600,21 +1559,19 @@ int main(void) {
   (void)sigaction(SIGBUS, &sa, NULL);
 #endif
   read_answered();
-#ifdef ARTS_VALIDITY_VAL
   read_opened_under_write();
   read_put_at_holder();
   read_kept_by_claim();
+#ifdef ARTS_VALIDITY_INV
+  read_killed_under_write();
+  read_killed_size_round();
+#endif
+#if defined(ARTS_VALIDITY_INV) && defined(ARTS_READ_SOURCE_OWNER)
+  read_in_unconfirmed_window();
+#endif
   read_reply_without_request(0);
   read_reply_without_request(1);
   read_reply_without_request(2);
-#else
-  read_dismissed();
-  read_dismissed_after_grant();
-  read_given_riders();
-  read_given_resend();
-  read_claimed();
-  read_dismissed_retired();
-#endif
   read_retired();
   read_paired(false);
   read_paired(true);
@@ -1637,10 +1594,6 @@ int main(void) {
 #endif
   home_wake_drops_last();
   home_request_served_in_body();
-#if defined(ARTS_VALIDITY_INV) && defined(ARTS_READ_SOURCE_OWNER)
-  home_read_dismissed_teardown();
-  home_read_served_retired();
-#endif
 #if PUBLISHES
   home_flight_relaunch_lands();
   flight_landed();

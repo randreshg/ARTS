@@ -894,8 +894,9 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
   /* INV wire arm.  REQUEST is Cat-B (a message can reach home before the home
    * db_s installs on a remote-create stub-install path); the rest are
    * answers on the descriptor their token names (CTS, DELIVER,
-   * INVALIDATE_ACK) or are answered on a miss (INVALIDATE, REDIRECT): none is
-   * parked, and a miss never strands a round or a parked requester. */
+   * INVALIDATE_ACK) or are looked up (INVALIDATE, whose miss still acks, so
+   * a round is never stranded; REDIRECT and a holder's bounce, whose miss is
+   * dropped): none is parked. */
   case MSG_DB_INV_REQUEST: {
     ARTS_DEBUG("Coh INV_REQUEST Received");
     struct arts_msg_inv_request_packet_s *pack =
@@ -911,7 +912,6 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
 #endif
         .db_guid = pack->db_guid,
         .mode = (arts_db_access_mode_t)pack->mode,
-        .cover = pack->cover,
         .rdzv = {.addr = pack->rdzv.addr,
                  .key = pack->rdzv.key,
                  .txid = pack->rdzv.txid,
@@ -920,16 +920,13 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
     };
     if (args.bounce) {
       /* A holder's re-send of a read its home had already taken in: the home
-       * was installed, so an empty slot is a block torn down since.  Never an
-       * early arrival: answer it with no bytes, which gives the reader its
-       * landing back, rather than park it. */
+       * was installed, so an empty slot is a block torn down since, which
+       * only a destroy issued with the reader's acquire in progress leaves.
+       * Never an early arrival: dropped, never parked. */
       arts_shared_ptr_t h = arts_route_table_lookup_db(pack->db_guid);
       struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(h);
       if (db != NULL) {
         arts_handler_db_inv_request(db, &args);
-      } else {
-        arts_send_db_inv_cts(args.requester, args.token, args.db_guid, 0u,
-                             args.cover, args.rdzv.cookie);
       }
       arts_shared_release(&h);
       break;
@@ -942,8 +939,8 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
     ARTS_DEBUG("Coh INV_CTS Received");
     struct arts_msg_inv_cts_packet_s *pack =
         (struct arts_msg_inv_cts_packet_s *)(packet);
-    /* An answer: on the descriptor the token names it learns db_size,
-     * returns any landing and re-sends or closes the fetch. */
+    /* An answer: on the descriptor the token names it learns db_size and
+     * re-sends the fetch with a landing. */
     arts_handler_db_inv_cts(pack);
     break;
   }
@@ -992,7 +989,6 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
         (struct arts_msg_inv_redirect_packet_s *)(packet);
     struct arts_ooo_args_db_inv_redirect_s args = {
         .requester = pack->requester,
-        .cover = pack->cover,
         .db_guid = pack->db_guid,
         .rdzv = {.addr = pack->rdzv.addr,
                  .key = pack->rdzv.key,
@@ -1002,16 +998,13 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
     };
     /* The home names a holder only after that holder's install (its CONFIRM,
      * or the creator's own announce), so an empty slot here is a cache
-     * destroyed since.  Never an early arrival: answer the reader with no
-     * bytes, which gives its landing back, rather than park it. */
+     * destroyed since, which only a destroy issued with the reader's acquire
+     * in progress leaves.  Never an early arrival: dropped, never parked. */
     {
       arts_shared_ptr_t h = arts_route_table_lookup_db(pack->db_guid);
       struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(h);
       if (db != NULL) {
         arts_handler_db_inv_redirect(db, &args);
-      } else {
-        arts_send_db_inv_cts(args.requester, args.token, args.db_guid, 0u,
-                             args.cover, args.rdzv.cookie);
       }
       arts_shared_release(&h);
     }

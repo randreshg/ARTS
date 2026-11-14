@@ -79,25 +79,8 @@ static uint64_t inv_req_step(struct arts_db_cache_s *cache, int op,
   return inv_req_step_tok(cache, op, 0u, post, act);
 }
 
-/* A read request's cover word: its parity, and PRECLAIM while the cache is a
- * claimable first touch (such a request leaves without a landing). */
-uint32_t arts_inv_read_cover(uint64_t s) {
-  return (INV_CACHE_PAR(s) ? ARTS_COVER_PAR : 0u) |
-         (INV_CACHE_STUB(s) ? ARTS_COVER_PRECLAIM : 0u);
-}
-
 static uint32_t inv_rw_cover(uint64_t s) {
-  uint32_t c = 0u;
-  if (INV_CACHE_INFLIGHT(s) != 0u) {
-    c |= ARTS_COVER_RO_OPEN;
-    if (INV_CACHE_PAR(s)) {
-      c |= ARTS_COVER_RO_PAR;
-    }
-  }
-  if (INV_CACHE_STUB(s)) {
-    c |= ARTS_COVER_PRECLAIM;
-  }
-  return c;
+  return INV_CACHE_STUB(s) ? ARTS_COVER_PRECLAIM : 0u;
 }
 
 bool arts_db_rw_req_claim(struct arts_db_cache_s *cache, uint32_t *tok) {
@@ -121,22 +104,11 @@ bool arts_db_rw_req_commit(struct arts_db_cache_s *cache, uint32_t tok,
 void arts_db_rw_req_giveback(struct arts_db_cache_s *cache, uint32_t tok) {
   uint64_t post;
   uint32_t act;
-  uint64_t pre = inv_req_step_tok(cache, INV_CACHE_OP_RW_GIVE, tok, &post, &act);
-  if (act == INV_CACHE_ACT_LATE) {
-    ARTS_ERROR("inv: guid %lu gave back a write request with readers parked "
-               "on a valid copy (word=%llx)",
-               (unsigned long)cache->db_guid, (unsigned long long)pre);
-  }
-  if (act == INV_CACHE_ACT_SEND_RO) {
-    /* Riders with no write turn coming open the read axis. */
-    arts_db_axis_take(arts_db_of_cache(cache));
-    arts_send_db_inv_request(cache, DB_MODE_RO, arts_inv_read_cover(post));
-  }
+  (void)inv_req_step_tok(cache, INV_CACHE_OP_RW_GIVE, tok, &post, &act);
 }
 
-/* The grant lands (HOME: its install; OWNER: its confirmation): every reader
- * parked on this rank is served under it, a fetch still out included -- that
- * fetch stays open until its own reply. */
+/* The grant lands (HOME: its install; OWNER: its confirmation) and closes the
+ * write axis.  A fetch still out keeps its readers for its own reply. */
 void arts_db_rw_req_clear(struct arts_db_cache_s *cache) {
   uint64_t post;
   uint32_t act;
@@ -146,7 +118,6 @@ void arts_db_rw_req_clear(struct arts_db_cache_s *cache) {
                "(word=%llx)",
                (unsigned long)cache->db_guid, (unsigned long long)pre);
   }
-  arts_db_reader_serve_chain(&cache->reader_pool, INV_CACHE_HEAD_RO(pre));
 }
 
 uint32_t arts_db_rw_req_declaim(struct arts_db_cache_s *cache) {
@@ -174,7 +145,7 @@ void arts_db_cache_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
   if (creator) {
     seed = INV_CACHE_MAKE(INV_RO_VALID, 0u, 0u);
   } else if (kind == ARTS_DB_INIT_STUB && ARTS_DB_STUB_CLAIMABLE(db_guid)) {
-    seed = INV_CACHE_WITH_REQ(0ULL, INV_RW_IDLE, 0u, 1u);
+    seed = INV_CACHE_WITH_REQ(0ULL, INV_RW_IDLE, 1u);
   }
   atomic_store_explicit(&c->cache_state, seed, memory_order_relaxed);
   /* Grant plane.  A creator boots holding the write right with the
@@ -211,10 +182,11 @@ void arts_db_cache_destructor(struct arts_db_cache_s *cache) {
 }
 
 /* The hold is possession plus this create's own writer, from a word that
- * holds nothing.  It is a write permission landing on this rank: every EDT
- * parked on the first-touch cache is served under it -- readers whose fetch
- * is still out included (the claim closes that fetch and its count drops
- * with it) -- and the requests that cache sent are the home's to absorb. */
+ * holds nothing.  It is a write permission landing on this rank, so every
+ * writer parked on the first-touch cache is served under it, and the write
+ * request that cache sent is the home's to absorb (the announce names it).
+ * A fetch the cache has out stays out until its own reply, which serves its
+ * cohort. */
 bool arts_db_create_take_hold(struct arts_db_cache_s *cache, uint8_t *owed) {
   *owed = 0u;
   unsigned int none = 0u;
@@ -231,19 +203,12 @@ bool arts_db_create_take_hold(struct arts_db_cache_s *cache, uint8_t *owed) {
   uint64_t post;
   uint32_t act;
   uint64_t pre = inv_req_step(cache, INV_CACHE_OP_CLAIM, &post, &act);
-  if (INV_CACHE_INFLIGHT(pre) != 0u) {
-    *owed |= ARTS_CREATE_OWED_RO;
-    if (INV_CACHE_PAR(pre)) {
-      *owed |= ARTS_CREATE_OWED_RO_PAR;
-    }
-  }
   if (INV_CACHE_RW(pre) == INV_RW_SENT) {
-    *owed |= ARTS_CREATE_OWED_RW;
+    *owed = ARTS_CREATE_OWED_RW;
   }
-  arts_db_reader_serve_chain(&cache->reader_pool, INV_CACHE_HEAD_RO(pre));
   arts_db_grant_rearm(cache);
-  /* The claim closed the requests the cache had out: their counts go, under
-   * the create's own. */
+  /* The claim closed the write request the cache had out: its count goes,
+   * under the create's own. */
   arts_db_axis_drop(arts_db_of_cache(cache), arts_db_claim_closed_axes(*owed));
   return true;
 }
@@ -265,10 +230,10 @@ void arts_db_create_retract_creator_copy(struct arts_db_s *db) {
     if (INV_CACHE_RO(cur) != INV_RO_VALID) {
       return;
     }
-    next = INV_CACHE_WITH_REQ(
-        INV_CACHE_MAKE(INV_RO_IDLE, INV_CACHE_INFLIGHT(cur),
-                       INV_CACHE_HEAD_RO(cur)),
-        INV_CACHE_RW(cur), INV_CACHE_PAR(cur), INV_CACHE_STUB(cur));
+    next =
+        INV_CACHE_WITH_REQ(INV_CACHE_MAKE(INV_RO_IDLE, INV_CACHE_INFLIGHT(cur),
+                                          INV_CACHE_HEAD_RO(cur)),
+                           INV_CACHE_RW(cur), INV_CACHE_STUB(cur));
   } while (!atomic_compare_exchange_weak_explicit(&cache->cache_state, &cur,
                                                   next, memory_order_acq_rel,
                                                   memory_order_acquire));
@@ -277,10 +242,12 @@ void arts_db_create_retract_creator_copy(struct arts_db_s *db) {
 
 /* One transition, from the one state a create may claim a copy in: the reader
  * word exactly idle.  A fetch in flight is a reader that has already asked,
- * and its delivery brings the copy with it — stamping VALID over it would
- * leave that answer with nowhere to land; a parked chain is the same reader,
- * waiting.  So a non-idle word is left alone and the create simply
- * does not claim. */
+ * and its reply brings the copy with it — stamping VALID over it would leave
+ * that reply with no fetch to answer and its readers parked; so a claimer
+ * whose pre-claim fetch is out leaves the word alone, and its copy turns
+ * VALID when that fetch is answered.  Until then a reader that finds the
+ * write right on this rank is served through it, and any other joins that
+ * fetch. */
 void arts_db_create_claim_creator_copy(struct arts_db_s *db) {
   struct arts_db_cache_s *cache = &db->cache;
   uint64_t cur = atomic_load_explicit(&cache->cache_state, memory_order_acquire);
@@ -290,8 +257,7 @@ void arts_db_create_claim_creator_copy(struct arts_db_s *db) {
       return;
     }
     uint64_t want = INV_CACHE_WITH_REQ(INV_CACHE_MAKE(INV_RO_VALID, 0u, 0u),
-                                       INV_CACHE_RW(cur), INV_CACHE_PAR(cur),
-                                       INV_CACHE_STUB(cur));
+                                       INV_CACHE_RW(cur), INV_CACHE_STUB(cur));
     if (atomic_compare_exchange_weak_explicit(&cache->cache_state, &cur, want,
                                               memory_order_acq_rel,
                                               memory_order_acquire)) {
@@ -728,42 +694,32 @@ void arts_handler_db_publish(void *item_v, void *args_v) {
 
 /* ===== Answers on tokens: INV_CTS, DELIVER, INVALIDATE_ACK ============== */
 
+/* A size round: the fetch carried no landing.  It goes out again with one,
+ * under the same count. */
 void arts_handler_db_inv_cts(struct arts_msg_inv_cts_packet_s *p) {
   struct arts_db_s *db = arts_db_from_token(p->token, p->db_guid);
-  if (p->rdzv_cookie != 0) {
-    arts_db_buf_landing_return(
-        (struct arts_db_buffer_s *)(uintptr_t)p->rdzv_cookie);
-  }
   if (arts_db_token_retired(db, p->db_guid)) {
     arts_db_axis_drop(db, 1u);
     return;
   }
   struct arts_db_cache_s *cache = &db->cache;
-  uint32_t cover = (uint32_t)(p->db_size >> ARTS_INV_CTS_SIZE_BITS);
-  arts_db_cache_learn_size(cache, p->db_size & ARTS_INV_CTS_SIZE_MASK);
+  arts_db_cache_learn_size(cache, p->db_size);
   uint64_t post;
   uint32_t act;
-  uint64_t pre = inv_req_step_tok(cache, INV_CACHE_OP_CTS,
-                                  cover & ARTS_COVER_PAR, &post, &act);
+  uint64_t pre = inv_req_step(cache, INV_CACHE_OP_CTS, &post, &act);
   if (act == INV_CACHE_ACT_LATE) {
-    ARTS_ERROR("inv: guid %lu got a size round or dismiss (parity %u) it has "
-               "no fetch out for (word=%llx)",
-               (unsigned long)cache->db_guid, cover & ARTS_COVER_PAR,
-               (unsigned long long)pre);
+    ARTS_ERROR("inv: guid %lu got a size round it has no fetch out for "
+               "(word=%llx)",
+               (unsigned long)cache->db_guid, (unsigned long long)pre);
   }
-  if (act == INV_CACHE_ACT_RESEND) {
-    arts_send_db_inv_request(cache, DB_MODE_RO, arts_inv_read_cover(post));
-  } else if (act == INV_CACHE_ACT_CLOSE_ACK) {
-    arts_send_db_inv_invalidate_ack(arts_guid_get_rank(cache->db_guid),
-                                    cache->db_guid, cache->owed_ack_token);
-  }
-  /* Anything but a re-send closed the fetch: its count goes last. */
-  arts_db_axis_drop(db, act == INV_CACHE_ACT_RESEND ? 0u : 1u);
+  arts_send_db_inv_request(cache, DB_MODE_RO);
 }
 
 /* Publish + whole-chain grab: install the landed payload (home-issued
  * install-lane version; a stale install retreats and ends its landing), then
- * ONE word CAS takes {REQ->VALID, chain head -> 0} together.  The kill-marked
+ * ONE word CAS takes {REQ->VALID, chain head -> 0} together.  At a rank that
+ * holds the write right the reply's version is never above the buffer its
+ * writers use, so that buffer stays and the chain reads it.  The kill-marked
  * variant serves its cohort once, then executes the reserved purge and the
  * owed ack — the ack LAST, so the round that killed this fetch cannot finish
  * (and nothing newer can complete) until the doomed serve is done.  Runs
@@ -984,20 +940,12 @@ void arts_handler_db_inv_invalidate_ack(
  * (deliver/publish) lands with the data-plane implementation. */
 
 void arts_send_db_inv_cts(unsigned int requester_rank, uint64_t token,
-                          arts_guid_t db_guid, uint64_t db_size,
-                          uint32_t cover, uint64_t cookie) {
+                          arts_guid_t db_guid, uint64_t db_size) {
   struct arts_msg_inv_cts_packet_s p;
   arts_fill_packet_header(&p.header, sizeof(p), MSG_DB_INV_CTS);
   p.header.rank = arts_global_rank_id;
   p.db_guid = db_guid;
-  if (db_size > ARTS_INV_CTS_SIZE_MASK) {
-    ARTS_ERROR("inv: guid %lu has size %llu, past the size round's 60-bit "
-               "size field",
-               (unsigned long)db_guid, (unsigned long long)db_size);
-  }
-  p.db_size = (db_size & ARTS_INV_CTS_SIZE_MASK) |
-              ((uint64_t)cover << ARTS_INV_CTS_SIZE_BITS);
-  p.rdzv_cookie = cookie;
+  p.db_size = db_size;
   p.token = token;
   if (requester_rank == arts_global_rank_id) {
     /* The answer, as on the wire, on the descriptor the token names. */
@@ -1063,7 +1011,7 @@ void arts_send_db_inv_invalidate_ack(unsigned int home_rank,
 }
 
 void arts_send_db_inv_request(struct arts_db_cache_s *cache,
-                              arts_db_access_mode_t mode, uint32_t cover) {
+                              arts_db_access_mode_t mode) {
   arts_guid_t db_guid = cache->db_guid;
   unsigned int home_rank = arts_guid_get_rank(db_guid);
   struct arts_rdzv_landing_s rdzv = {0, 0, 0, 0};
@@ -1081,10 +1029,7 @@ void arts_send_db_inv_request(struct arts_db_cache_s *cache,
    * allocation there silently produced a data-less reply, leaving the reader
    * on whatever stale copy it already had. */
   uint64_t fetch_size = arts_db_first_fetch_size(cache);
-  /* A pre-claim request leaves without a landing: the home discards it
-   * unanswered if the create that claims this cache is this rank's. */
-  if (fetch_size != 0 && arts_global_rank_count > 1 &&
-      (cover & ARTS_COVER_PRECLAIM) == 0u) {
+  if (fetch_size != 0 && arts_global_rank_count > 1) {
     (void)arts_db_buf_landing_alloc(fetch_size, &rdzv);
   }
   uint64_t token = arts_db_token(arts_db_of_cache(cache));
@@ -1093,13 +1038,12 @@ void arts_send_db_inv_request(struct arts_db_cache_s *cache,
      * request body runs; one not yet installed takes the engine by GUID,
      * deferred until the home installs and drains, as the wire's does.  The
      * body can answer the fetch inline, dropping its count, which a
-     * re-sending answer runs under, and still run on (a dismiss's teardown):
-     * it runs under a count of its own. */
+     * re-sending answer runs under, and still run on: it runs under a count
+     * of its own. */
     struct arts_ooo_args_db_inv_request_s args = {
         .requester = arts_global_rank_id,
         .db_guid = db_guid,
         .mode = mode,
-        .cover = cover,
         .rdzv = rdzv,
         .token = token,
     };
@@ -1115,7 +1059,6 @@ void arts_send_db_inv_request(struct arts_db_cache_s *cache,
   p.header.rank = arts_global_rank_id;
   p.db_guid = db_guid;
   p.mode = (uint16_t)mode;
-  p.cover = (uint8_t)cover;
   p.flags = 0u;
   p.requester = arts_global_rank_id;
   p.rdzv.addr = rdzv.addr;
@@ -1170,11 +1113,12 @@ void arts_send_db_inv_deliver(unsigned int requester_rank,
   if (requester_rank == arts_global_rank_id) {
     /* Self-serve: the requester's cache IS this cache, so no payload moves and
      * the reply is dispatched inline.  Reachable whenever the server and the
-     * reader are the same rank (a single-rank run, or a home that also holds
-     * the grant).  With a buffer present the bytes are already where they need
-     * to be and the landing goes back to the pool; with none, the reply is
-     * about to mark this rank's copy VALID for a sized block, so the landing
-     * becomes that copy's storage instead. */
+     * reader are the same rank (a single-rank run, a home that also holds the
+     * grant, or under OWNER the holder the home names for a read request of
+     * that holder's own).  With a buffer present the bytes are already where
+     * they need to be and the landing goes back to the pool; with none, the
+     * reply is about to mark this rank's copy VALID for a sized block, so the
+     * landing becomes that copy's storage instead. */
     bool have_bytes = (src != NULL);
     if (have_bytes) {
       arts_db_buf_release(&src_h);

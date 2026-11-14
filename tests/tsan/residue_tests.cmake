@@ -43,6 +43,14 @@ arts_tsan_residue(coherence_writer_ro_overlap
     CELLS VAL/RETAIN/HOME VAL/PURGE/HOME INV/RETAIN/HOME INV/PURGE/HOME
     SHAPES R1 R2 R3)
 
+# Two blocks homed on rank 0, each written by several unordered writers on
+# both ranks and read on each rank by readers unordered with those writers.
+arts_tsan_residue(db_two_block_readers
+    CELLS VAL/RETAIN/OWNER INV/RETAIN/OWNER SHAPES R1)
+arts_tsan_residue(db_two_block_readers
+    CELLS VAL/RETAIN/HOME VAL/PURGE/HOME INV/RETAIN/HOME INV/PURGE/HOME
+    SHAPES R1 R2 R3)
+
 # An unordered reader on another rank against the creator, which writes the
 # block through its create hold on the home.
 arts_tsan_residue(db_create_claims_first_touch_stub

@@ -26,8 +26,7 @@
  *     for an armed round; under OWNER, the home's own copy retired
  *     inline, its ack counted inline through the round's home token; a
  *     sharer's ack, sent at once with the round's home token or, owed to a
- *     kill-marked fetch, kept with it until the doomed reply or the dismiss
- *     that closes the fetch sends the ack.
+ *     kill-marked fetch, kept with it until the doomed reply sends the ack.
  *   VAL and INV where the home revokes: a tenure that pops nothing; a tenure
  *     ended by its CONFIRM; a tenure carried across a second pop (HOME:
  *     the next INVALIDATE; OWNER: the CONFIRM_ACK's piggyback); a CONFIRM
@@ -701,51 +700,6 @@ static void sharer_owed_deliver(void) {
   end(1);
 }
 
-static void sharer_owed_dismiss(void) {
-  begin("a dismiss that closes a kill-marked fetch sends the owed ack", false);
-  acquire(DB_MODE_RO);
-  acquire(DB_MODE_RW); /* the write request covers the read request */
-  sharer_invalidated();
-  const struct arts_msg_inv_request_packet_s *r =
-      (const struct arts_msg_inv_request_packet_s *)sent(MSG_DB_INV_REQUEST, 0);
-  struct arts_msg_inv_cts_packet_s c;
-  memset(&c, 0, sizeof(c));
-  c.header.rank = HOME;
-  c.db_guid = r->db_guid;
-  c.db_size = SIZE | ((uint64_t)r->cover << ARTS_INV_CTS_SIZE_BITS);
-  c.rdzv_cookie = r->rdzv.cookie;
-  c.token = r->token;
-  arts_handler_db_inv_cts(&c);
-  sharer_acked();
-  /* The write turn serves both. */
-  const struct arts_msg_grant_request_packet_s *w =
-      (const struct arts_msg_grant_request_packet_s *)sent(MSG_DB_GRANT_REQUEST,
-                                                           0);
-  struct {
-    struct arts_msg_grant_response_packet_s hdr;
-    uint32_t map[2];
-  } m;
-  memset(&m, 0, sizeof(m));
-  m.hdr.header.rank = HOME;
-  m.hdr.db_guid = w->db_guid;
-  m.hdr.data_size = SIZE;
-  m.hdr.rdzv_cookie = w->rdzv.cookie;
-  m.hdr.token = w->token;
-  arts_handler_db_grant_response(&m, sizeof(m));
-#ifdef ARTS_READ_SOURCE_OWNER
-  const struct arts_msg_grant_confirm_packet_s *cf =
-      (const struct arts_msg_grant_confirm_packet_s *)sent(MSG_DB_GRANT_CONFIRM,
-                                                           0);
-  struct arts_msg_grant_confirm_ack_packet_s ca;
-  memset(&ca, 0, sizeof(ca));
-  ca.db_guid = cf->db_guid;
-  ca.token = cf->token;
-  ca.new_owner_rank = ARTS_NO_PENDING_OWNER;
-  ca.new_owner_have = ARTS_GRANT_VERSION_NONE;
-  arts_handler_db_grant_confirm_ack(&ca);
-#endif
-  end(2);
-}
 #endif /* ARTS_VALIDITY_INV */
 
 #if REVOKES
@@ -1023,7 +977,6 @@ int main(void) {
 #endif
   sharer_acks_at_once();
   sharer_owed_deliver();
-  sharer_owed_dismiss();
 #endif
 #if REVOKES
   tenure_pops_nothing();

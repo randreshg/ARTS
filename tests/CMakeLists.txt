@@ -3199,18 +3199,18 @@ endif()
 
 # Covered requests: a request whose waiters something other than its own
 # answer served -- a create's hold on the cache its rank made by a first touch
-# (its write request, on every arm), or on INV and EXCL also its rank's write
-# turn (covering the read request of that rank still out when the turn
-# arrives) -- is still travelling when the program destroys the
-# block.  The home learns of each before the turn that covers it can end and
-# tears the block down only once every one has arrived.  Requests combine per
-# rank on every arm but FLUSH, whose fetch is answered before its EDT runs, so
-# no cover exists there and these are neither built nor registered in that
-# tree; a write turn covers no read request on VAL, so the read requests'
-# programs are neither built nor registered in its trees.  A variant that sets
-# an injection hook (ARTS_REQUEST_DELAY_MS reorders requests on the wire or
-# holds one kind of them; ARTS_SCHED_FUZZ widens the decision windows)
-# registers only where the hooks are compiled.
+# (its write request, on every arm), or on EXCL also its rank's write turn
+# (covering the read request of that rank still out when the turn arrives) --
+# is still travelling when the program destroys the block.  The home learns
+# of each before the turn that covers it can end and tears the block down
+# only once every one has arrived.  Requests combine per rank on every arm
+# but FLUSH, whose fetch is answered before its EDT runs, so no cover exists
+# there and these are neither built nor registered in that tree; a write turn
+# covers no read request on VAL or INV, so the read requests' programs are
+# neither built nor registered in their trees.  A variant that sets an
+# injection hook (ARTS_REQUEST_DELAY_MS reorders requests on the wire or holds
+# one kind of them; ARTS_SCHED_FUZZ widens the decision windows) registers
+# only where the hooks are compiled.
 # Each name_<variant> runs PROGRAM with ARGS on that variant's cfg, the HOOK
 # variable added to its environment.
 function(arts_cover_test name program)
@@ -3245,7 +3245,7 @@ endfunction()
 if(NOT ARTS_VALIDITY STREQUAL "FLUSH")
     # Whether a write turn covers its rank's read request.
     set(_cover_reads OFF)
-    if(NOT ARTS_VALIDITY STREQUAL "VAL")
+    if(ARTS_VALIDITY STREQUAL "EXCL")
         set(_cover_reads ON)
     endif()
     # db_destroy_covered_read: rounds of blocks whose read request a write
@@ -3342,16 +3342,13 @@ if(NOT ARTS_VALIDITY STREQUAL "FLUSH")
                         db_create_races_acquire ARGS 3 3
                         VARIANTS 2n_9w_1p 2n_8w_2p HOOK "ARTS_SCHED_FUZZ=40"
                         PASS "PASS: db_create_races_acquire 32 blocks")
-        # A hop -- INV·OWNER's redirect and a holder's bounce, an
-        # EXCL·RETAIN home's forward -- continues a request the home took in,
-        # so it is never an early arrival: held 200 ms it lands after the
-        # teardown and is answered (or dropped) rather than parked.  Only
-        # the arms whose home hops have one; four ranks give the holder a
-        # rank of its own.
-        if((ARTS_VALIDITY STREQUAL "INV" AND
-            ARTS_READ_SOURCE STREQUAL "OWNER") OR
-           (ARTS_VALIDITY STREQUAL "EXCL" AND
-            ARTS_RETENTION STREQUAL "RETAIN"))
+        # A hop -- an EXCL·RETAIN home's forward -- continues a request the
+        # home took in, so it is never an early arrival: held 200 ms it lands
+        # after the teardown and is answered (or dropped) rather than parked.
+        # Only the arm whose home hops a covered read request has one; four
+        # ranks give the holder a rank of its own.
+        if(ARTS_VALIDITY STREQUAL "EXCL" AND
+           ARTS_RETENTION STREQUAL "RETAIN")
             arts_cover_test(db_destroy_cover_settles_hop
                             db_destroy_cover_settles ARGS t2 hop
                             VARIANTS 4n_4w_1p HOOK "ARTS_REQUEST_DELAY_MS=200:hop"
@@ -3630,15 +3627,30 @@ endif()
 
 # db_read_while_write_waits: a reader on a rank whose write request for a
 # block waits behind another rank's writer, where the chain that lets that
-# writer run waits for the reader.  A VAL read waits for no release, so the
-# run ends.  Under EXCL a read waits behind the other node's write turn and
-# the program blocks by design, and its unordered writers are outside CDAG.
-if(ARTS_VALIDITY STREQUAL "VAL")
+# writer run waits for the reader.  A VAL or INV read waits for no release,
+# so the run ends.  Under EXCL a read waits behind the other node's write
+# turn and the program blocks by design, and its unordered writers are
+# outside CDAG.
+if(ARTS_VALIDITY STREQUAL "VAL" OR ARTS_VALIDITY STREQUAL "INV")
     add_arts_test(db_read_while_write_waits)
     register_multinode_test(db_read_while_write_waits TIMEOUT 60)
     foreach(_v IN LISTS ARTS_TEST_MULTINODE_VARIANTS)
         arts_test_properties(db_read_while_write_waits_${_v} PROPERTIES
             PASS_REGULAR_EXPRESSION "PASS: db_read_while_write_waits"
+            FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
+    endforeach()
+endif()
+
+# db_two_block_readers: round after round, each of two ranks writes one of
+# two blocks while reading the other, with more writers of each block on
+# both ranks.  Its writers of a block are unordered, which CDAG does not
+# admit.
+if(NOT ARTS_VALIDITY STREQUAL "FLUSH")
+    add_arts_test(db_two_block_readers)
+    register_multinode_test(db_two_block_readers TIMEOUT 120)
+    foreach(_v IN LISTS ARTS_TEST_MULTINODE_VARIANTS)
+        arts_test_properties(db_two_block_readers_${_v} PROPERTIES
+            PASS_REGULAR_EXPRESSION "PASS: db_two_block_readers"
             FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
     endforeach()
 endif()

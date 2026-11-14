@@ -1405,15 +1405,13 @@ void arts_db_debug_quiescence_check(const struct arts_teardown_exempt_s *ex,
         {
           uint64_t cs =
               atomic_load_explicit(&c->cache_state, memory_order_relaxed);
-          /* A covered fetch whose reply is in flight (inflight with nobody
-           * on the chain) is legal.  A writer thread lost between claim and
-           * commit, or readers no fetch, write request or valid copy can
-           * reach, are reported always; a parked reader after a quiescent
-           * shutdown is an unfinished acquire. */
+          /* A parked reader after a quiescent shutdown is an unfinished
+           * acquire.  A writer thread lost between claim and commit, readers
+           * parked with no fetch out, and a fetch out with nobody parked on
+           * it are words no transition makes: always reported. */
           if (INV_CACHE_RW(cs) == INV_RW_OPEN ||
-              (INV_CACHE_HEAD_RO(cs) != 0u && INV_CACHE_RW(cs) == INV_RW_IDLE &&
-               INV_CACHE_INFLIGHT(cs) == 0u &&
-               INV_CACHE_RO(cs) != INV_RO_VALID)) {
+              (INV_CACHE_HEAD_RO(cs) != 0u) !=
+                  (INV_CACHE_INFLIGHT(cs) != 0u)) {
             ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu reader word rests where "
                        "nothing serves it (word=%llx)",
                        (unsigned long)c->db_guid, (unsigned long long)cs);

@@ -127,10 +127,6 @@ INV.*.*  arts_handler_db_acquire  load  cache_state                 1/2  acquire
 INV.*.*  arts_handler_db_acquire  load  writer_count                1/1  acquire
 INV.*.*  arts_handler_db_acquire  load  cache_state                 2/2  acquire
 INV.*.*  arts_handler_db_acquire  rmw   cache_state                 1/1  release
-# A write grant's landing (HOME: its install; OWNER: its confirmation) serves
-# the readers parked on the write request: the request word's step that takes
-# their chain acquires the nodes the parking exchange released.
-INV.*.*  inv_req_step_tok         rmw   cache_state                 1/1  acquire
 # HOME: a release's bytes land in place in the home's buffer; the
 # round stamps the buffer, then the home's publication axis.
 # The landed entry reaches the thread that runs the round: the landing's own
@@ -344,6 +340,7 @@ EXCL.*.*                       arts_handler_db_excl_cts             rmw   cache_
 INV.*.*                        arts_handler_db_inv_invalidate       load  cache_state   -/1  -
 INV.*.*                        arts_handler_db_inv_invalidate       rmw   cache_state   -/1  -
 INV.*.*                        arts_handler_db_inv_invalidate       load  writer_count  -/1  -
+INV.*.*                        inv_req_step_tok                     rmw   cache_state   -/1  -
 EXCL.PURGE.*                   arts_db_destroy_arrived              load  lock_state    -/1  -
 EXCL.PURGE.*                   arts_db_destroy_arrived              rmw   lock_state    -/1  -
 EXCL.PURGE.*                   lock_owed_step                       load  lock_state    -/1  -

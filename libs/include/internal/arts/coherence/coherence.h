@@ -125,8 +125,8 @@ extern "C" {
  * (on EXCL also the PURGE home's grant and a CTS to its own rank) takes none:
  * it drops its count as its last access, and its caller runs under another
  * count: a request's body under such a count, a lookup's or a drain's; an
- * answer frame that reaches it (an INV CTS that closes, a deliver whose copy a
- * round killed) under its own axis count.  Nor do the self branches whose
+ * answer frame that reaches it (an INV deliver whose copy a round killed)
+ * under its own axis count.  Nor do the self branches whose
  * bodies drop no count their caller runs under: a DESTROY (on the caller's own
  * reference), a snapshot redirect, an INV invalidate and its ack (whose body
  * runs under the round's count and drops it last), EXCL·RETAIN's RECALL and
@@ -630,15 +630,13 @@ bool arts_db_create_take_hold(struct arts_db_cache_s *cache, uint8_t *owed);
  * stub bit exactly once, so an OPEN claimed after it carries another token
  * and a stale holder can never commit it), and the claim serves the waiter.
  * giveback: OPEN -> IDLE with nothing to ask for, under the same token.
- * clear: SENT -> IDLE where a grant lands, clearing the stub bit (INV also
- * serves the readers parked on the rank there).  declaim: a size round
- * answered the write request (rw must be SENT): clear the stub bit -- the home
- * is installed and was created elsewhere, so this cache can never be claimed
- * -- and return the cover word the re-send carries (never PRECLAIM).
- * The axis counts: a won commit's caller takes the write axis's before it
- * sends the request; clear closes it, and its count passes to the frame that
- * runs the grant; an INV giveback that opens a read request for its riders
- * takes the read axis's itself. */
+ * clear: SENT -> IDLE where a grant lands, clearing the stub bit; it serves
+ * no reader.  declaim: a size round answered the write request (rw must be
+ * SENT): clear the stub bit -- the home is installed and was created
+ * elsewhere, so this cache can never be claimed -- and return the cover word
+ * the re-send carries (never PRECLAIM).  The axis counts: a won commit's
+ * caller takes the write axis's before it sends the request; clear closes it,
+ * and its count passes to the frame that runs the grant. */
 bool arts_db_rw_req_claim(struct arts_db_cache_s *cache, uint32_t *tok);
 bool arts_db_rw_req_commit(struct arts_db_cache_s *cache, uint32_t tok,
                            uint32_t *cover);
