@@ -66,7 +66,10 @@ apps:
   fft:
     enabled: true
     versions: [base, hinted]
-    args: ['24']
+    # One block that every task acquires for writing: on a write-through cell
+    # each write release off the home moves the whole block, so the size is set
+    # for the two-rank write-through cells, by far the slowest.
+    args: ['22']
   fft_dist:
     # Two forms of the matrix are live at once (32 bytes per element), which is
     # what bounds the power; tiles and places are clamped to the matrix, and
@@ -192,7 +195,11 @@ apps:
   quicksort:
     enabled: true
     versions: [base, hinted]
-    args: ['2000000', '1000000']
+    # One block that every task acquires for writing, with a write turn per
+    # partition: on a write-through cell each turn off the home writes the whole
+    # block back, so the bytes grow as the square of the array and the size is
+    # set for the two-rank write-through cells.
+    args: ['200000', '1000000']
   quicksort_dist:
     # places must not exceed either the bucket or the chunk count.
     args: ['8000000', '1000000', '64', '64', '8']
