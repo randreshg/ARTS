@@ -18,6 +18,7 @@
 #include "arts/coherence/excl/types.h"
 
 #include "arts/utils/stdatomic_compat.h"
+#include <assert.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdlib.h>
@@ -60,8 +61,10 @@ void arts_db_home_init(struct arts_db_s *db, unsigned int rw_holder,
   arts_home_grantreq_queue_init(&db->rw_waiters);
   arts_lf_stack_init(&db->ro_waiters);
   arts_rank_bitset_init(&db->cached_ranks, nranks);
+#ifdef ARTS_RETENTION_RETAIN
   arts_rank_bitset_init(&db->ro_parity, nranks);
   arts_rank_bitset_init(&db->ro_queued, nranks);
+#endif
   db->claim_rank = (unsigned int)-1;
 #ifdef ARTS_RETENTION_RETAIN
   atomic_store_explicit(&db->cover_gate, 0u, memory_order_relaxed);
@@ -93,15 +96,32 @@ void arts_db_home_teardown(struct arts_db_s *db) {
     node = nx;
   }
   arts_rank_bitset_destroy(&db->cached_ranks);
+#ifdef ARTS_RETENTION_RETAIN
   arts_rank_bitset_destroy(&db->ro_parity);
   arts_rank_bitset_destroy(&db->ro_queued);
-#ifdef ARTS_RETENTION_RETAIN
   /* Retainers are legal at destroy — a retained grant has no live acquire — so
    * a non-empty roster here is a normal path, not an edge case. */
   arts_rank_bitset_destroy(&db->ro_retainers);
 #endif
 }
 
+#ifdef ARTS_RETENTION_PURGE
+void arts_db_home_seed_owed(struct arts_db_s *db, unsigned int creator,
+                            uint8_t owed) {
+  if (owed == 0u) {
+    return;
+  }
+  /* The claim closes the write request alone. */
+  assert(owed == ARTS_CREATE_OWED_RW);
+  db->claim_rank = creator;
+  uint64_t s = atomic_load_explicit(&db->lock_state, memory_order_relaxed);
+  atomic_store_explicit(&db->lock_state,
+                        LOCK_MAKE_STATE_FULL(EXCL_STATE_TEARDOWN(s),
+                                             EXCL_STATE_BIT(s), 1u,
+                                             EXCL_STATE_W(s), EXCL_STATE_R(s)),
+                        memory_order_relaxed);
+}
+#else
 void arts_db_home_seed_owed(struct arts_db_s *db, unsigned int creator,
                             uint8_t owed) {
   if (owed == 0u) {
@@ -118,20 +138,12 @@ void arts_db_home_seed_owed(struct arts_db_s *db, unsigned int creator,
                                (owed & ARTS_CREATE_OWED_RO_PAR) != 0u);
   }
   n = rwo + roo;
-#ifdef ARTS_RETENTION_PURGE
-  uint64_t s = atomic_load_explicit(&db->lock_state, memory_order_relaxed);
-  atomic_store_explicit(
-      &db->lock_state,
-      LOCK_MAKE_STATE_FULL(EXCL_STATE_TEARDOWN(s), EXCL_STATE_BIT(s), rwo, roo,
-                           n, EXCL_STATE_W(s), EXCL_STATE_R(s)),
-      memory_order_relaxed);
-#else
   atomic_store_explicit(&db->cover_gate,
                         (rwo != 0u ? ARTS_COVER_GATE_RWO : 0u) |
                             (roo != 0u ? ARTS_COVER_GATE_ROO : 0u) | n,
                         memory_order_relaxed);
-#endif
 }
+#endif
 
 /* Tear the home down: notify every rank that ever cached this DB, then return
  * the route slot.  The fan-out sits INSIDE the retire's single flight rather

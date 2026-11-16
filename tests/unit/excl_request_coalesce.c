@@ -2,9 +2,8 @@
  *
  * excl_request_coalesce — EXCL-config-specific test for the cache-side request
  * coalescing of arts_handler_db_acquire on its not-held path.  The decision is
- * the cache arbiter's on either retention, with the same rules below:
- * cache_compute_next (coherence/excl/arbiters.c) under PURGE,
- * cache_owner_compute_next (coherence/excl/retain.c) under RETAIN.
+ * the cache arbiter's on either retention (coherence/excl/arbiters.c):
+ * cache_compute_next under PURGE, cache_owner_compute_next under RETAIN.
  *
  * The cache-side coalesce rules under test (observed via correctness, not
  * white-box state):
@@ -13,9 +12,14 @@
  *     writer).  So even when an RO REQUEST is already in flight on this rank,
  *     a concurrent same-rank RW acquire must still drive a writer GRANT and
  *     the writer's store must be observable.
- *   - RO not-held: open an RO request only if NEITHER axis has one in flight
- *     — an in-flight RW already covers RO locally, so a co-pending RO must
- *     coalesce and be served by the RW phase's drain (RW grant drains
+ *   - RO not-held, PURGE: open an RO request unless one is already in flight,
+ *     whatever the write axis holds.  The readers parked on it are served by
+ *     its own grant; a write grant that arrives first serves the writers
+ *     alone, and a reader that arrives while that grant is held is served
+ *     from it.
+ *   - RO not-held, RETAIN: open an RO request only if NEITHER axis has one in
+ *     flight — an in-flight RW already covers RO locally, so a co-pending RO
+ *     must coalesce and be served by the RW phase's drain (RW grant drains
  *     ro_pending too).
  *
  * Construction: many same-rank cohorts each hold a mix of RW and RO acquirers
@@ -23,10 +27,10 @@
  * path concurrently and contend on the cache's request state.  Every RW writer
  * stamps a per-iteration sentinel into the DB; the verify step requires the
  * accumulated write count to equal the writer count (no RW GRANT suppressed by
- * an in-flight RO) and every RO acquirer to have observed non-NULL data (RO
- * coalesced onto the covering phase rather than being lost).  A suppressed RW
- * REQUEST or a lost RO coalesce leaves an EDT parked → LATCH never fires →
- * ctest TIMEOUT (no in-test watchdog, no spin).
+ * an in-flight RO) and every RO acquirer to have observed non-NULL data (each
+ * served by a grant rather than being lost).  A suppressed RW REQUEST or a
+ * lost RO waiter leaves an EDT parked → LATCH never fires → ctest TIMEOUT (no
+ * in-test watchdog, no spin).
  *
  * Built and registered only in an EXCL tree (the coalesce bits are an
  * EXCL-cache concept).

@@ -3200,18 +3200,18 @@ endif()
 
 # Covered requests: a request whose waiters something other than its own
 # answer served -- a create's hold on the cache its rank made by a first touch
-# (its write request, on every arm), or on EXCL also its rank's write turn
-# (covering the read request of that rank still out when the turn arrives) --
-# is still travelling when the program destroys the block.  The home learns
-# of each before the turn that covers it can end and tears the block down
-# only once every one has arrived.  Requests combine per rank on every arm
-# but FLUSH, whose fetch is answered before its EDT runs, so no cover exists
-# there and these are neither built nor registered in that tree; a write turn
-# covers no read request on VAL or INV, so the read requests' programs are
-# neither built nor registered in their trees.  A variant that sets an
-# injection hook (ARTS_REQUEST_DELAY_MS reorders requests on the wire or holds
-# one kind of them; ARTS_SCHED_FUZZ widens the decision windows) registers
-# only where the hooks are compiled.
+# (its write request, on every arm), or on EXCL·RETAIN also its rank's write
+# turn (covering the read request of that rank still out when the turn
+# arrives) -- is still travelling when the program destroys the block.  The
+# home learns of each before the turn that covers it can end and tears the
+# block down only once every one has arrived.  Requests combine per rank on
+# every arm but FLUSH, whose fetch is answered before its EDT runs, so no
+# cover exists there and these are neither built nor registered in that tree;
+# a write turn covers no read request on VAL, INV or EXCL·PURGE, so the read
+# requests' programs are neither built nor registered in their trees.  A
+# variant that sets an injection hook (ARTS_REQUEST_DELAY_MS reorders requests
+# on the wire or holds one kind of them; ARTS_SCHED_FUZZ widens the decision
+# windows) registers only where the hooks are compiled.
 # Each name_<variant> runs PROGRAM with ARGS on that variant's cfg, the HOOK
 # variable added to its environment.
 function(arts_cover_test name program)
@@ -3246,7 +3246,7 @@ endfunction()
 if(NOT ARTS_VALIDITY STREQUAL "FLUSH")
     # Whether a write turn covers its rank's read request.
     set(_cover_reads OFF)
-    if(ARTS_VALIDITY STREQUAL "EXCL")
+    if(ARTS_VALIDITY STREQUAL "EXCL" AND ARTS_RETENTION STREQUAL "RETAIN")
         set(_cover_reads ON)
     endif()
     # db_destroy_covered_read: rounds of blocks whose read request a write
@@ -3640,6 +3640,23 @@ if(ARTS_VALIDITY STREQUAL "VAL" OR ARTS_VALIDITY STREQUAL "INV")
             PASS_REGULAR_EXPRESSION "PASS: db_read_while_write_waits"
             FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
     endforeach()
+endif()
+
+# db_read_joins_read_phase: a reader on a rank whose write request for a
+# block waits behind another rank's reader, where the chain that lets that
+# reader release waits for this one.  The home grants a read request into an
+# open read phase whether or not a writer waits, so the run ends; a runtime
+# that answers the reader only with its rank's write turn never ends it.  The
+# home, the readers' rank and the writer's rank are distinct, which takes four
+# ranks.  Registered on the exclusion arm's PURGE cell, its CXL stores
+# included: under RETAIN the read phase is the owner's to serve.
+if(ARTS_VALIDITY STREQUAL "EXCL" AND ARTS_RETENTION STREQUAL "PURGE")
+    add_arts_test(db_read_joins_read_phase)
+    register_multinode_test(db_read_joins_read_phase TIMEOUT 30
+                            VARIANTS 4n_4w_1p)
+    arts_test_properties(db_read_joins_read_phase_4n_4w_1p PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS: db_read_joins_read_phase"
+        FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
 endif()
 
 # db_two_block_readers: round after round, each of two ranks writes one of

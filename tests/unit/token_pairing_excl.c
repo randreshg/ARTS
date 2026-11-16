@@ -30,12 +30,14 @@
  * descriptor after its send, which is stricter than its pin requires.
  *
  * Scenarios, in every EXCL cell:
- *   read axis   closed by its grant, by a dismiss while the rank's write
- *               request is out, by a create's hold; an answer and a dismiss
- *               on a retired descriptor;
+ *   read axis   closed by its grant; an answer on a retired descriptor; under
+ *               RETAIN also closed by a dismiss while the rank's write
+ *               request is out and by a create's hold, and a dismiss on a
+ *               retired descriptor;
  *   write axis  closed by its grant (under RETAIN the migration's DELIVER,
  *               whose CONFIRM echoes the home's token), a size round leaving
- *               it open, by a create's hold;
+ *               it open (where requests carry a landing), by a create's
+ *               hold;
  *   a one-sided answer's pairing callback, live and retired, and a pairing
  *   the teardown discards (the count is then the sweep's), where answers
  *   carry bytes; bytes in flight to a requester already retired: the count
@@ -57,12 +59,27 @@
  *   turn covered is dismissed by the CONFIRM that finds the home retired; the
  *   sweep's w row.
  * PURGE:
- *   the home's own write request served by its self-grant when the
+ *   the two requests of a rank are independent: a write grant wakes the
+ *   writers alone and sets the readers parked on the read request aside,
+ *   the turn ends without them, a second turn adds to them, and the read
+ *   grant returns them all; the readers are set aside before a writer wakes,
+ *   so a turn that ends inside that wake is followed by a read grant that
+ *   finds them; a holder of the write turn that becomes a reader
+ *   while the read request is out; a create's hold closes the write axis
+ *   alone, and the read request it found out is answered by its own grant
+ *   (after a size round, where one exists); a read grant under the rank's
+ *   write grant and a second read grant are fatal; where grants carry no
+ *   payload a size round is refused.
+ *   The home: its own write request served by its self-grant when the
  *   creator's write turn comes back, and, that turn back first, granted inside
  *   its self-sent body with every reference held outside that body removed at
  *   the wake; its own read request granted from the read drain that return
- *   opens; a read its rank's write turn covered, refused by the torn-down home,
- *   is dismissed.
+ *   opens; a read request granted into an open read phase although its
+ *   rank's write request waits; a read request held through its rank's write
+ *   turn and granted when the turn comes back, with no other answer; the
+ *   claiming creator's pre-claim write request discarded and its read
+ *   request granted; a read request refused by the torn-down home is
+ *   answered nothing.
  *
  * PURE test: no arts_rt, no ports, no threads.
  */
@@ -399,6 +416,9 @@ static int g_wakes;
 static bool g_wake_destroys;
 static int64_t g_wake_refs;
 static struct arts_db_s *g_db;
+/* Runs once inside the next wake: what the woken EDT and the ranks it
+ * messages do before the waking frame goes on. */
+static void (*g_wake_hook)(void);
 
 void *arts_get_depv(void *edt_ptr) {
   return ((struct fake_edt *)edt_ptr)->depv;
@@ -421,6 +441,11 @@ void arts_db_drain_resume_list(void) {}
 void arts_db_acquire_account(struct arts_edt_s *edt) {
   (void)edt;
   g_wakes++;
+  void (*hook)(void) = g_wake_hook;
+  g_wake_hook = NULL;
+  if (hook != NULL) {
+    hook();
+  }
   if (g_wake_destroys) {
     g_wake_destroys = false;
 #ifndef NDEBUG
@@ -512,6 +537,7 @@ static void begin(const char *name, arts_guid_t guid, bool home,
   g_malloc_hook = NULL;
   g_wake_destroys = false;
   g_wake_refs = 0;
+  g_wake_hook = NULL;
   g_poison = false;
 #ifdef ARTS_DEBUG_INJECTION
   g_fuzz_hook = NULL;
@@ -724,6 +750,7 @@ static void write_granted(void) {
   end(1);
 }
 
+#ifdef ARTS_RETENTION_RETAIN
 static void read_dismissed(void) {
   begin("read axis closed by a dismiss, the write request out", GUID_SIZED,
         false, HOME);
@@ -741,7 +768,9 @@ static void read_dismissed(void) {
   grant(DB_MODE_RW, false);
   end(2);
 }
+#endif
 
+#if defined(ARTS_RETENTION_RETAIN) || !defined(ARTS_USE_CXL)
 static void write_size_round(void) {
   begin("write size round keeps the axis open", GUID_SIZED, false, HOME);
   acquire(DB_MODE_RW);
@@ -753,7 +782,9 @@ static void write_size_round(void) {
   grant(DB_MODE_RW, false);
   end(1);
 }
+#endif
 
+#ifdef ARTS_RETENTION_RETAIN
 static void both_claimed(void) {
   begin("read and write axes closed by a create's hold", GUID_CLAIM, false,
         HOME);
@@ -766,11 +797,21 @@ static void both_claimed(void) {
   }
   end(2);
 }
+#endif
 
+/* `dismiss`: an answer without a grant also reaches the retired descriptor,
+ * for the read request while the write request is out (under RETAIN a
+ * dismiss, under PURGE a size round). */
 static void answer_retired(bool dismiss) {
+#ifdef ARTS_RETENTION_RETAIN
   begin(dismiss ? "dismiss on a retired descriptor"
                 : "grant on a retired descriptor",
         GUID_SIZED, false, HOME);
+#else
+  begin(dismiss ? "size round on a retired descriptor"
+                : "grant on a retired descriptor",
+        GUID_SIZED, false, HOME);
+#endif
   acquire(DB_MODE_RO);
   if (dismiss) {
     acquire(DB_MODE_RW);
@@ -1248,35 +1289,398 @@ static void self_grant_in_body(void) {
   end_destroyed(1);
 }
 
-/* Between a read request's arrival step and its count, its rank's write
- * request takes its ro_queued bit, the write turn ends and the destroy tears
- * the home down: the refused read is answered with a dismiss. */
-static void cover_and_teardown(void) {
-  uint64_t td = LOCK_MAKE_STATE_TD(1u, 0u, 0u, 0u);
-  arts_rank_bitset_put(&g_db->ro_queued, REQ, false);
-  atomic_store_explicit(&g_db->lock_state, td, memory_order_relaxed);
-}
+/* ---- the home's side of requests from other ranks ---- */
 
-static void refused_covered_read(void) {
-  begin("covered read refused by a torn-down home is dismissed", GUID_SIZED,
-        true, OTHER);
+static void far_request(unsigned int rank, arts_db_access_mode_t mode,
+                        uint32_t cover) {
   struct arts_ooo_args_db_excl_request_s a;
   memset(&a, 0, sizeof(a));
-  a.requester = REQ;
+  a.requester = rank;
   a.db_guid = g_db->cache.db_guid;
-  a.mode = DB_MODE_RO;
-  a.cover = EXCL_COVER_PAR;
-  a.token = FAR_TOKEN;
-  g_malloc_hook = cover_and_teardown; /* the read's queue node */
+  a.mode = (uint32_t)mode;
+  a.cover = cover;
+  a.token = FAR_TOKEN + rank;
   arts_handler_db_excl_request(g_db, &a);
-  const struct arts_msg_excl_cts_packet_s *c =
-      (const struct arts_msg_excl_cts_packet_s *)sent(MSG_DB_EXCL_CTS, 0);
-  if (g_sent[0].rank != (int)REQ || c->mode != DB_MODE_RO ||
-      c->token != FAR_TOKEN || c->cover != EXCL_COVER_PAR) {
-    fail("the dismiss did not echo the refused read request");
+}
+
+static void far_release(unsigned int rank, arts_db_access_mode_t mode) {
+  struct arts_ooo_args_db_excl_release_s r;
+  memset(&r, 0, sizeof(r));
+  r.releaser = rank;
+  r.db_guid = g_db->cache.db_guid;
+  r.mode = (uint32_t)mode;
+  arts_handler_db_excl_release(g_db, &r);
+}
+
+/* The nth grant the home sent: to `rank`, in `mode`, echoing that rank's
+ * token. */
+static void check_far_grant(int nth, unsigned int rank,
+                            arts_db_access_mode_t mode) {
+  const struct arts_msg_excl_grant_packet_s *g =
+      (const struct arts_msg_excl_grant_packet_s *)sent(MSG_DB_EXCL_GRANT, nth);
+  int at = 0;
+  for (int i = 0, k = nth; i < g_nsent; i++) {
+    if (g_sent[i].type == MSG_DB_EXCL_GRANT && k-- == 0) {
+      at = i;
+    }
+  }
+  if (g_sent[at].rank != (int)rank || g->mode != (uint32_t)mode ||
+      g->token != FAR_TOKEN + rank) {
+    fail("a grant did not answer the request it was owed to");
+  }
+}
+
+static void check_lock(uint32_t rwo, uint32_t w, uint32_t r, const char *what) {
+  uint64_t s = atomic_load_explicit(&g_db->lock_state, memory_order_relaxed);
+  if (EXCL_STATE_TEARDOWN(s) != 0u || EXCL_STATE_RWO(s) != rwo ||
+      EXCL_STATE_W(s) != w || EXCL_STATE_R(s) != r) {
+    fail(what);
+  }
+}
+
+/* A read phase is open and another rank's write request waits behind it.
+ * That rank's read request is granted into the phase, and the write turn
+ * follows both readers' releases. */
+static void read_joins_open_phase(void) {
+  begin("read request granted into an open read phase, its rank's write "
+        "request waiting",
+        GUID_SIZED, true, OTHER);
+  far_release(OTHER, DB_MODE_RW); /* the creator's hold */
+  far_request(READER, DB_MODE_RO, 0u);
+  check_far_grant(0, READER, DB_MODE_RO);
+  far_request(REQ, DB_MODE_RW, 0u);
+  if (count_sent(MSG_DB_EXCL_GRANT) != 1) {
+    fail("a write request was granted into a read phase");
+  }
+  far_request(REQ, DB_MODE_RO, 0u);
+  check_far_grant(1, REQ, DB_MODE_RO);
+  check_lock(0u, 1u, 2u,
+             "the read request was not counted beside the "
+             "waiting writer");
+  far_release(READER, DB_MODE_RO);
+  if (count_sent(MSG_DB_EXCL_GRANT) != 2) {
+    fail("the write turn did not wait for the second reader");
+  }
+  far_release(REQ, DB_MODE_RO);
+  check_far_grant(2, REQ, DB_MODE_RW);
+  far_release(REQ, DB_MODE_RW);
+  check_lock(0u, 0u, 0u, "the turns did not all come back");
+  if (g_nsent != 3) {
+    fail("the home sent something other than the three grants");
   }
   end(0);
 }
+
+/* A rank's read request arrives while that rank holds the write turn: it is
+ * counted, held, and granted as a read once the turn has come back.  The
+ * home answers it with nothing else. */
+static void read_held_through_own_write_turn(void) {
+  begin("read request held through its rank's write turn", GUID_SIZED, true,
+        OTHER);
+  far_release(OTHER, DB_MODE_RW);
+  far_request(REQ, DB_MODE_RW, 0u);
+  check_far_grant(0, REQ, DB_MODE_RW);
+  far_request(REQ, DB_MODE_RO, 0u);
+  check_lock(0u, 1u, 1u, "the held read request was not counted");
+  if (g_nsent != 1) {
+    fail("the home answered a read request under its rank's write turn");
+  }
+  far_release(REQ, DB_MODE_RW);
+  check_far_grant(1, REQ, DB_MODE_RO);
+  far_release(REQ, DB_MODE_RO);
+  check_lock(0u, 0u, 0u, "the turns did not all come back");
+  if (g_nsent != 2) {
+    fail("the home sent something other than the two grants");
+  }
+  end(0);
+}
+
+/* The creator on REQ claimed a first-touch cache whose write and read
+ * requests were out.  The announce names the write request: its arrival is
+ * discarded and settles what the home awaits.  The read request is counted
+ * behind the creator's hold and granted when the hold comes back.  A second
+ * pre-claim write request is one the home was never told of. */
+static void second_preclaim_write(void) {
+  far_request(REQ, DB_MODE_RW, EXCL_COVER_PRECLAIM);
+}
+
+static void expect_abort(void (*body)(void), const char *what);
+
+static void preclaim_requests_at_home(void) {
+  begin("claimer's pre-claim write request discarded, its read request "
+        "granted",
+        GUID_CLAIM, true, REQ);
+  arts_db_home_seed_owed(g_db, REQ, ARTS_CREATE_OWED_RW);
+  check_lock(1u, 1u, 0u, "the announce did not seed the awaited request");
+  far_request(REQ, DB_MODE_RO, 0u);
+  check_lock(1u, 1u, 1u, "the pre-claim read request was not counted");
+  far_request(REQ, DB_MODE_RW, EXCL_COVER_PRECLAIM);
+  check_lock(0u, 1u, 1u,
+             "the pre-claim write request was counted or left "
+             "awaited");
+  if (g_nsent != 0) {
+    fail("the home answered a request under the creator's hold");
+  }
+  expect_abort(second_preclaim_write,
+               "a pre-claim write request the home was never told of did "
+               "not abort");
+  far_release(REQ, DB_MODE_RW);
+  check_far_grant(0, REQ, DB_MODE_RO);
+  far_release(REQ, DB_MODE_RO);
+  check_lock(0u, 0u, 0u, "the turns did not all come back");
+  end(0);
+}
+
+/* A read request that reaches a torn-down home was pending at the destroy:
+ * it is neither counted nor answered. */
+static void tear_down(void) {
+  atomic_store_explicit(&g_db->lock_state, LOCK_MAKE_STATE_TD(1u, 0u, 0u, 0u),
+                        memory_order_relaxed);
+}
+
+static void refused_read(void) {
+  begin("read request refused by a torn-down home is answered nothing",
+        GUID_SIZED, true, OTHER);
+  g_malloc_hook = tear_down; /* the read's queue node */
+  far_request(REQ, DB_MODE_RO, 0u);
+  if (g_nsent != 0) {
+    fail("the torn-down home answered a read request");
+  }
+  if (atomic_load_explicit(&g_db->lock_state, memory_order_relaxed) !=
+      LOCK_MAKE_STATE_TD(1u, 0u, 0u, 0u)) {
+    fail("the torn-down home counted a read request");
+  }
+  end(0);
+}
+
+/* ---- the requester's two axes ---- */
+
+/* Runs `body` in a child and requires the runtime's fatal exit from it. */
+static void expect_abort(void (*body)(void), const char *what) {
+  fflush(stdout);
+  pid_t pid = fork();
+  if (pid == 0) {
+    /* The fatal line the check prints is the expected outcome, not a verdict
+     * of this test's run. */
+    int devnull = open("/dev/null", O_WRONLY);
+    (void)dup2(devnull, STDOUT_FILENO);
+    (void)dup2(devnull, STDERR_FILENO);
+    g_expect_abort = true;
+    body();
+    _exit(0);
+  }
+  int status = 0;
+  if (pid < 0 || waitpid(pid, &status, 0) != pid || !WIFEXITED(status) ||
+      WEXITSTATUS(status) != EXPECTED_ABORT) {
+    fail(what);
+  }
+}
+
+static void check_cache(uint64_t want, uint32_t want_aside, const char *what) {
+  uint64_t w =
+      atomic_load_explicit(&g_db->cache.cache_state, memory_order_relaxed);
+  uint32_t a =
+      atomic_load_explicit(&g_db->cache.ro_aside, memory_order_relaxed);
+  if (w != want || a != want_aside) {
+    char m[160];
+    snprintf(m, sizeof(m), "%s (word=%llx aside=%u, expected %llx and %u)",
+             what, (unsigned long long)w, a, (unsigned long long)want,
+             want_aside);
+    fail(m);
+  }
+}
+
+static void check_released(int n, arts_db_access_mode_t last) {
+  if (count_sent(MSG_DB_EXCL_RELEASE) != n) {
+    fail("a turn's end sent no release, or one was sent early");
+  }
+  if (n != 0 && ((const struct arts_msg_excl_release_packet_s *)sent(
+                     MSG_DB_EXCL_RELEASE, n - 1))
+                        ->mode != (uint32_t)last) {
+    fail("a turn's end returned the other axis's grant");
+  }
+}
+
+#define ST_I CACHE_ST_IDLE
+#define ST_Q CACHE_ST_REQ
+#define ST_G CACHE_ST_GRANT
+
+/* The write grant arrives while the read request is out: it wakes the writer
+ * alone, a reader that arrives under it is a local hit, and the turn ends
+ * with the first readers still parked.  A second write turn finds one more
+ * parked.  The read grant wakes all three. */
+static void write_turns_set_readers_aside(void) {
+  begin("write grants wake writers alone; the read grant returns the readers "
+        "set aside",
+        GUID_SIZED, false, HOME);
+  acquire(DB_MODE_RO);
+  acquire(DB_MODE_RO);
+  acquire(DB_MODE_RW);
+  if (count_sent(MSG_DB_EXCL_REQUEST) != 2 ||
+      request_of(DB_MODE_RO)->cover != 0u ||
+      request_of(DB_MODE_RW)->cover != 0u) {
+    fail("each axis did not send its own plain request");
+  }
+  grant(DB_MODE_RW, false);
+  check_wakes(1);
+  check_cache(CACHE_MAKE(ST_G, ST_Q, 1u, 0u), 2u,
+              "the write grant did not set the parked readers aside");
+  acquire(DB_MODE_RO); /* a local hit under the write grant */
+  check_wakes(2);
+  arts_db_release_ro(&g_db->cache);
+  check_released(0, DB_MODE_RW);
+  arts_db_release_rw(&g_db->cache, NULL);
+  check_released(1, DB_MODE_RW);
+  check_cache(CACHE_MAKE(ST_I, ST_Q, 0u, 0u), 2u,
+              "the write turn did not end with the readers parked");
+  acquire(DB_MODE_RO); /* joins the read request that is out */
+  acquire(DB_MODE_RW);
+  if (count_sent(MSG_DB_EXCL_REQUEST) != 3) {
+    fail("the second write turn's request did not leave alone");
+  }
+  grant(DB_MODE_RW, false);
+  check_wakes(3);
+  check_cache(CACHE_MAKE(ST_G, ST_Q, 1u, 0u), 3u,
+              "the second write grant did not add the reader parked since");
+  arts_db_release_rw(&g_db->cache, NULL);
+  check_released(2, DB_MODE_RW);
+  grant(DB_MODE_RO, false);
+  check_wakes(6);
+  check_cache(CACHE_MAKE(ST_I, ST_G, 0u, 3u), 0u,
+              "the read grant did not return the readers set aside");
+  arts_db_release_ro(&g_db->cache);
+  arts_db_release_ro(&g_db->cache);
+  check_released(2, DB_MODE_RW);
+  arts_db_release_ro(&g_db->cache);
+  check_released(3, DB_MODE_RO);
+  end(6);
+}
+
+/* The writer a write grant wakes runs and releases at once, the turn's end
+ * reaches the home and the read grant comes back, all before the grant's
+ * frame goes on: the parked reader was set aside before the wake, so the
+ * read grant finds it. */
+static void turn_ends_in_wake(void) {
+  arts_db_release_rw(&g_db->cache, NULL);
+  check_released(1, DB_MODE_RW);
+  check_cache(CACHE_MAKE(ST_I, ST_Q, 0u, 0u), 1u,
+              "the reader was not set aside before the writer woke");
+  grant(DB_MODE_RO, false);
+}
+
+static void write_turn_ends_inside_wake(void) {
+  begin("readers are set aside before the write grant wakes a writer",
+        GUID_SIZED, false, HOME);
+  acquire(DB_MODE_RO);
+  acquire(DB_MODE_RW);
+  g_wake_hook = turn_ends_in_wake;
+  grant(DB_MODE_RW, false);
+  check_wakes(2);
+  check_cache(CACHE_MAKE(ST_I, ST_G, 0u, 1u), 0u,
+              "the read grant did not return the reader set aside");
+  arts_db_release_ro(&g_db->cache);
+  check_released(2, DB_MODE_RO);
+  end(2);
+}
+
+/* A holder of the write turn becomes a reader while its rank's read request
+ * is out: it holds on, the turn ends at its read release, and the parked
+ * reader still waits for the read grant. */
+static void downgrade_with_read_request_out(void) {
+  begin("downgrade while the read request is out", GUID_SIZED, false, HOME);
+  acquire(DB_MODE_RO);
+  acquire(DB_MODE_RW);
+  grant(DB_MODE_RW, false);
+  check_wakes(1);
+  arts_db_join_read(&g_db->cache);
+  arts_db_release_rw(&g_db->cache, NULL);
+  check_released(0, DB_MODE_RW);
+  check_cache(CACHE_MAKE(ST_G, ST_Q, 0u, 1u), 1u,
+              "the joined reader does not hold the write turn");
+  arts_db_release_ro(&g_db->cache);
+  check_released(1, DB_MODE_RW);
+  check_cache(CACHE_MAKE(ST_I, ST_Q, 0u, 0u), 1u,
+              "the turn did not end at the joined reader's release");
+  check_wakes(1);
+  grant(DB_MODE_RO, false);
+  check_wakes(2);
+  arts_db_release_ro(&g_db->cache);
+  check_released(2, DB_MODE_RO);
+  end(2);
+}
+
+/* A create claims a first touch whose two requests are out.  The hold wakes
+ * the writer and closes the write request, which the announce names; the
+ * read request stays out, takes its size round where one exists, and is
+ * closed by its own grant after the hold's release. */
+static void claim_closes_write_axis(void) {
+  begin("create's hold closes the write axis alone", GUID_CLAIM, false, HOME);
+  acquire(DB_MODE_RO);
+  acquire(DB_MODE_RW);
+  if (request_of(DB_MODE_RO)->cover != 0u ||
+      request_of(DB_MODE_RW)->cover != EXCL_COVER_PRECLAIM) {
+    fail("the first touch's write request alone is not marked pre-claim");
+  }
+  uint8_t owed = claim();
+  if (owed != ARTS_CREATE_OWED_RW) {
+    fail("the hold did not close the write request alone");
+  }
+  check_wakes(1);
+  check_cache(CACHE_MAKE(ST_G, ST_Q, 2u, 0u), 1u,
+              "the hold did not set the parked reader aside");
+#ifndef ARTS_USE_CXL
+  cts(DB_MODE_RO);
+  if (count_sent(MSG_DB_EXCL_REQUEST) != 3 ||
+      request(2)->mode != (uint32_t)DB_MODE_RO || request(2)->cover != 0u ||
+      request(2)->token != request_of(DB_MODE_RO)->token) {
+    fail("the size round did not re-send the read request");
+  }
+  check_cache(CACHE_MAKE(ST_G, ST_Q, 2u, 0u), 1u,
+              "the size round moved the word");
+#endif
+  arts_db_release_created(&g_db->cache);
+  arts_db_release_rw(&g_db->cache, NULL);
+  check_released(1, DB_MODE_RW);
+  check_wakes(1);
+  grant(DB_MODE_RO, false);
+  check_wakes(2);
+  arts_db_release_ro(&g_db->cache);
+  check_released(2, DB_MODE_RO);
+  end(2);
+}
+
+static void read_grant_now(void) { grant(DB_MODE_RO, false); }
+
+/* The home grants a read request only once no write turn is out, so a read
+ * grant that meets the rank's write grant, the readers set aside, answers
+ * nothing; so does a second grant of one request. */
+static void stray_read_grants(void) {
+  begin("read grant under the rank's write grant is fatal", GUID_SIZED, false,
+        HOME);
+  acquire(DB_MODE_RO);
+  acquire(DB_MODE_RW);
+  grant(DB_MODE_RW, false);
+  expect_abort(read_grant_now,
+               "a read grant under the write grant did not abort");
+  arts_db_release_rw(&g_db->cache, NULL);
+  grant(DB_MODE_RO, false);
+  expect_abort(read_grant_now, "a second read grant did not abort");
+  arts_db_release_ro(&g_db->cache);
+  end(2);
+}
+
+#ifdef ARTS_USE_CXL
+static void size_round_now(void) { cts(DB_MODE_RW); }
+
+static void size_round_refused(void) {
+  begin("size round refused where grants carry no payload", GUID_SIZED, false,
+        HOME);
+  acquire(DB_MODE_RW);
+  expect_abort(size_round_now, "a size round did not abort");
+  grant(DB_MODE_RW, false);
+  end(1);
+}
+#endif
 
 /* The home's own read request waits behind the creator's write turn and is
  * granted from the read drain the turn's return opens, its node carrying the
@@ -1299,11 +1703,15 @@ static void self_read_grant(void) {
 int main(void) {
   read_granted();
   write_granted();
+#ifdef ARTS_RETENTION_RETAIN
   read_dismissed();
-  write_size_round();
   both_claimed();
+#endif
   answer_retired(false);
+#if defined(ARTS_RETENTION_RETAIN) || !defined(ARTS_USE_CXL)
+  write_size_round();
   answer_retired(true);
+#endif
 #if PAIRS
   paired(0);
   paired(1);
@@ -1329,10 +1737,21 @@ int main(void) {
   retired_confirm_dismisses();
   sweep_home();
 #else
+  write_turns_set_readers_aside();
+  write_turn_ends_inside_wake();
+  downgrade_with_read_request_out();
+  claim_closes_write_axis();
+  stray_read_grants();
+#ifdef ARTS_USE_CXL
+  size_round_refused();
+#endif
   self_grant();
   self_grant_in_body();
   self_read_grant();
-  refused_covered_read();
+  read_joins_open_phase();
+  read_held_through_own_write_turn();
+  preclaim_requests_at_home();
+  refused_read();
 #endif
   printf("PASS token_pairing_excl\n");
   return 0;

@@ -51,8 +51,8 @@ extern "C" {
  * axis owns one count on the requester's descriptor.  The CAS that opens the
  * axis takes it, after it commits and before the request leaves; whichever
  * frame commits a transition that closes the axis drops it at its own end,
- * after its last access: the answer, on EXCL a size round or dismiss that
- * closes, a create's claim, or, for an axis a cut shutdown left open on a
+ * after its last access: the answer, on EXCL·RETAIN a size round or dismiss
+ * that closes, a create's claim, or, for an axis a cut shutdown left open on a
  * descriptor still installed at teardown, the teardown sweep
  * (arts_db_sweep_open_items, in a sanitizer build, once the other runtime
  * threads have stopped); a
@@ -106,8 +106,9 @@ extern "C" {
  * descriptor's control block while it is live (arts_route_table_copy_live).  A
  * dispatch onto a descriptor that is not live takes the engine's GUID path,
  * which may defer the body to the install's drain, whose handle holds it.
- * EXCL's request to its own home is one (a CTS's re-send runs under the read
- * request's count, which the body's grant or dismiss can close).  The home's
+ * EXCL's request to its own home is one (under RETAIN a CTS's re-send runs
+ * under the read request's count, which the body's grant or dismiss can
+ * close).  The home's
  * INVALIDATE to its own rank is such a request (its holder body can ship a
  * whole transfer to this rank inline, whose CONFIRM may end the tenure the
  * caller runs under), and so is the EXCL·RETAIN home's FORWARD to itself as
@@ -123,7 +124,8 @@ extern "C" {
  * drops the write request's count its callers run under (it drops the home's
  * count, and its read drain can dismiss this rank's own covered read, dropping
  * that request's count), and they drop it after it returns.  A self-sent answer
- * (on EXCL also the PURGE home's grant and a CTS to its own rank) takes none:
+ * (on EXCL also the PURGE home's grant and, under RETAIN, a CTS to its own
+ * rank) takes none:
  * it drops its count as its last access, and its caller runs under another
  * count: a request's body under such a count, a lookup's or a drain's; an
  * answer frame that reaches it (an INV deliver whose copy a round killed)
@@ -191,7 +193,7 @@ static inline void arts_db_axis_drop(struct arts_db_s *db, unsigned int n) {
   }
 }
 /* The axes a create's claim closed, as its owed byte names them: the write
- * request still out and, on EXCL, the read request still out. */
+ * request still out and, on EXCL·RETAIN, the read request still out. */
 static inline unsigned int arts_db_claim_closed_axes(uint8_t owed) {
   return ((owed & ARTS_CREATE_OWED_RO) != 0u ? 1u : 0u) +
          ((owed & ARTS_CREATE_OWED_RW) != 0u ? 1u : 0u);

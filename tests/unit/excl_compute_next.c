@@ -4,11 +4,11 @@
  * functions of the retention this tree compiles.
  *
  * PURGE: excl_compute_next(cur, op, &grant), the lock-state transition over
- * [td | state_bit | rwo | roo | owed | w | r].  Given the current packed
- * lock_state and an op (RW/RO acquire/release), it returns the next packed
- * state and sets *grant to NONE / ONE_RW / ALL_RO.  This test pins its FULL
- * truth table with explicit, hand-derived expected values — no oracle that
- * merely re-implements the function — covering:
+ * [td | state_bit | rwo | w | r].  Given the current packed lock_state and an
+ * op, it returns the next packed state and sets *grant to NONE / ONE_RW /
+ * ALL_RO / DESTROY.  This test pins its FULL truth table with explicit,
+ * hand-derived expected values — no oracle that merely re-implements the
+ * function — covering:
  *   - none→rw / none→ro grants
  *   - RW arriving while RO held (w==0 && r>0): parks, bit→RO, no grant
  *   - rw→rw (w>0 acquire): bit UNCHANGED, no grant (held writer serves it)
@@ -20,8 +20,12 @@
  *   - state_bit normalization to 0 whenever a counter reaches 0;
  *   - the teardown mark: a destroy with releases owed only marks, the last
  *     release tears down, and the torn-down word counts and grants no
- *     acquire.
- * A CXL tree also pins the PURGE cache-word arbiter cache_compute_next.
+ *     acquire; the claiming creator's pre-claim write request, which the
+ *     teardown waits for;
+ * and walks every word reachable within a small bound.  cache_compute_next,
+ * the cache word's arbiter: every row, sequences driven as the commit sites
+ * drive them (ro_aside beside the word), and every reachable (word,
+ * ro_aside) with ghost counts of the parked and holding acquires.
  *
  * RETAIN: cache_owner_compute_next, the cache word's arbiter (the acquire's
  * count and decision in one transition, the parked populations a serving
@@ -60,7 +64,9 @@
 
 /* Forward decls of the SUT (static in the arbiter TU #included below). */
 static uint64_t excl_compute_next(uint64_t cur, int op, uint32_t *out_grant);
-static uint64_t cache_compute_next(uint64_t cur, int op, uint32_t *out_action);
+static uint64_t cache_compute_next(uint64_t cur, int op, uint32_t taken,
+                                   uint32_t *out_action);
+static inline uint32_t cache_set_aside(uint64_t pre);
 
 static int g_rc = 0;
 static int g_checks = 0;
@@ -87,100 +93,332 @@ static void chk(const char *name, uint32_t in_bit, uint32_t in_w, uint32_t in_r,
   }
 }
 
-/* One step of a lock-word sequence, the teardown mark included: apply `op`,
- * check the word and the grant, carry the produced word on. */
-static void step_lock(const char *name, uint64_t *cur, int op, uint32_t ex_td,
-                      uint32_t ex_bit, uint32_t ex_w, uint32_t ex_r,
-                      uint32_t ex_grant) {
-  uint32_t grant = 0xffffffff;
-  uint64_t next = excl_compute_next(*cur, op, &grant);
-  uint64_t want = LOCK_MAKE_STATE_TD(ex_td, ex_bit, ex_w, ex_r);
-  g_checks++;
-  if (next != want || grant != ex_grant) {
-    (void)fprintf(stderr,
-                  "FAIL [%s]: in(td=%u bit=%u w=%u r=%u) op=%d => out(td=%u "
-                  "bit=%u w=%u r=%u grant=%u) expected(td=%u bit=%u w=%u r=%u "
-                  "grant=%u)\n",
-                  name, EXCL_STATE_TEARDOWN(*cur), EXCL_STATE_BIT(*cur),
-                  EXCL_STATE_W(*cur), EXCL_STATE_R(*cur), op,
-                  EXCL_STATE_TEARDOWN(next), EXCL_STATE_BIT(next),
-                  EXCL_STATE_W(next), EXCL_STATE_R(next), grant, ex_td, ex_bit,
-                  ex_w, ex_r, ex_grant);
-    g_rc = 1;
-  }
-  *cur = next;
-}
-
-/* One step of a lock-word sequence that carries the owed fields. */
-static void step_full(const char *name, uint64_t *cur, int op, uint64_t want,
+/* One step of a lock-word sequence: apply `op`, check the whole word (the
+ * mark, rwo and the spare bits included) and the grant, carry the produced
+ * word on. */
+static void step_lock(const char *name, uint64_t *cur, int op, uint64_t want,
                       uint32_t ex_grant) {
   uint32_t grant = 0xffffffff;
   uint64_t next = excl_compute_next(*cur, op, &grant);
   g_checks++;
   if (next != want || grant != ex_grant) {
     (void)fprintf(stderr,
-                  "FAIL [%s]: op=%d => out(%llx grant=%u) expected(%llx "
-                  "grant=%u)\n",
-                  name, op, (unsigned long long)next, grant,
-                  (unsigned long long)want, ex_grant);
+                  "FAIL [%s]: in %llx op=%d => out(%llx grant=%u) "
+                  "expected(%llx grant=%u)\n",
+                  name, (unsigned long long)*cur, op, (unsigned long long)next,
+                  grant, (unsigned long long)want, ex_grant);
     g_rc = 1;
   }
   *cur = next;
 }
 
-#ifdef ARTS_USE_CXL
-/* The parity and stub bits ride the word; the field checks below ignore
- * them (the request's parity is the sender's, not the arbiter's decision). */
-#define CACHE_STICKY                                                           \
-  (((uint64_t)1 << CACHE_RO_PAR_SHIFT) | ((uint64_t)1 << CACHE_STUB_SHIFT))
-/* Assert: applying `op` to CACHE_MAKE(in_rws,in_ros,in_wc,in_rc) yields
- * CACHE_MAKE(ex_rws,ex_ros,ex_wc,ex_rc) and action == ex_act. */
+/* Every lock word reachable from a fresh home (idle, or seeded with the
+ * creator's hold, with and without the pre-claim write request awaited),
+ * with at most LW_MAX ranks counted per axis.  Each produced word keeps its
+ * spare bits zero and its phase bit normalized; the teardown is returned
+ * exactly on the transition that leaves a marked word with nothing counted
+ * or awaited, and the torn-down word counts and grants no acquire. */
+#define LW_MAX 3u
+static void lock_walk(void) {
+  enum { CAP = 4096 };
+  static uint64_t seen[CAP];
+  int n = 0, head = 0;
+  seen[n++] = LOCK_MAKE_STATE(0u, 0u, 0u);
+  seen[n++] = LOCK_MAKE_STATE(0u, 1u, 0u);
+  seen[n++] = LOCK_MAKE_STATE_FULL(0u, 0u, 1u, 1u, 0u);
+  const uint64_t layout =
+      LOCK_MAKE_STATE_FULL(1u, 1u, 1u, EXCL_STATE_W_MASK, EXCL_STATE_R_MASK);
+  while (head < n) {
+    uint64_t cur = seen[head++];
+    uint32_t w = EXCL_STATE_W(cur), r = EXCL_STATE_R(cur);
+    bool torn = EXCL_STATE_TEARDOWN(cur) && w == 0u && r == 0u &&
+                EXCL_STATE_RWO(cur) == 0u;
+    for (int op = EXCL_OP_RW_ACQ; op <= EXCL_OP_RWO_ARRIVE; op++) {
+      if ((op == EXCL_OP_RW_ACQ && w == LW_MAX) ||
+          (op == EXCL_OP_RO_ACQ && r == LW_MAX) ||
+          (op == EXCL_OP_RW_REL && w == 0u) ||
+          (op == EXCL_OP_RO_REL && r == 0u) ||
+          (op == EXCL_OP_RWO_ARRIVE && EXCL_STATE_RWO(cur) == 0u)) {
+        continue;
+      }
+      uint32_t grant = 0xffffffff;
+      uint64_t next = excl_compute_next(cur, op, &grant);
+      uint32_t nw = EXCL_STATE_W(next), nr = EXCL_STATE_R(next);
+      bool edge = EXCL_STATE_TEARDOWN(next) && nw == 0u && nr == 0u &&
+                  EXCL_STATE_RWO(next) == 0u;
+      g_checks++;
+      bool ok = (next & ~layout) == 0u &&
+                !((nw == 0u || nr == 0u) && EXCL_STATE_BIT(next) != 0u) &&
+                (grant == LOCK_GRANT_DESTROY) == (edge && !torn) &&
+                !(torn && (next != cur || grant != LOCK_GRANT_NONE));
+      /* A grant is given only into the phase it belongs to. */
+      if (grant == LOCK_GRANT_ONE_RW) {
+        ok = ok && nw > 0u && (nr == 0u || op == EXCL_OP_RW_REL);
+      } else if (grant == LOCK_GRANT_ALL_RO) {
+        ok = ok && nr > 0u &&
+             (nw == 0u || EXCL_STATE_BIT(next) == EXCL_PHASE_BIT_RO);
+      }
+      if (!ok) {
+        (void)fprintf(stderr, "FAIL [lock walk]: %llx op=%d => %llx grant=%u\n",
+                      (unsigned long long)cur, op, (unsigned long long)next,
+                      grant);
+        g_rc = 1;
+        return;
+      }
+      int i = 0;
+      while (i < n && seen[i] != next) {
+        i++;
+      }
+      if (i == n) {
+        if (n == CAP) {
+          (void)fprintf(stderr, "FAIL [lock walk]: too many words\n");
+          g_rc = 1;
+          return;
+        }
+        seen[n++] = next;
+      }
+    }
+  }
+}
+
+/* Assert: applying `op` (with `taken` readers returned from ro_aside) to
+ * CACHE_MAKE(in_rws,in_ros,in_wc,in_rc) yields
+ * CACHE_MAKE(ex_rws,ex_ros,ex_wc,ex_rc), action == ex_act, and sets
+ * ex_aside readers aside. */
 static void chk_cache(const char *name, uint32_t in_rws, uint32_t in_ros,
-                      uint32_t in_wc, uint32_t in_rc, int op, uint32_t ex_rws,
-                      uint32_t ex_ros, uint32_t ex_wc, uint32_t ex_rc,
-                      uint32_t ex_act) {
+                      uint32_t in_wc, uint32_t in_rc, int op, uint32_t taken,
+                      uint32_t ex_rws, uint32_t ex_ros, uint32_t ex_wc,
+                      uint32_t ex_rc, uint32_t ex_act, uint32_t ex_aside) {
   uint64_t cur = CACHE_MAKE(in_rws, in_ros, in_wc, in_rc);
   uint32_t act = 0xffffffff;
-  uint64_t next = cache_compute_next(cur, op, &act);
+  uint64_t next = cache_compute_next(cur, op, taken, &act);
   uint64_t want = CACHE_MAKE(ex_rws, ex_ros, ex_wc, ex_rc);
+  uint32_t aside = act == CACHE_ACT_DRAIN_RW ? cache_set_aside(cur) : 0u;
   g_checks++;
-  if ((next & ~CACHE_STICKY) != want || act != ex_act) {
+  if (next != want || act != ex_act || aside != ex_aside) {
     (void)fprintf(stderr,
-                  "FAIL [%s]: in(%u,%u,%u,%u) op=%d => out(%u,%u,%u,%u "
-                  "act=%u) expected(%u,%u,%u,%u act=%u)\n",
-                  name, in_rws, in_ros, in_wc, in_rc, op, CACHE_RW_ST(next),
-                  CACHE_RO_ST(next), CACHE_RW_CNT(next), CACHE_RO_CNT(next),
-                  act, ex_rws, ex_ros, ex_wc, ex_rc, ex_act);
+                  "FAIL [%s]: in(%u,%u,%u,%u) op=%d taken=%u => "
+                  "out(%u,%u,%u,%u act=%u aside=%u) "
+                  "expected(%u,%u,%u,%u act=%u aside=%u)\n",
+                  name, in_rws, in_ros, in_wc, in_rc, op, taken,
+                  CACHE_RW_ST(next), CACHE_RO_ST(next), CACHE_RW_CNT(next),
+                  CACHE_RO_CNT(next), act, aside, ex_rws, ex_ros, ex_wc, ex_rc,
+                  ex_act, ex_aside);
     g_rc = 1;
   }
 }
 
-/* One step of a SEQUENCE: apply `op` to the running word, check the result and
- * the action, then carry the word the arbiter actually produced into the next
- * step.  A single-round table cannot reach a state that takes several
- * transitions to build, which is where a reusable axis and an exactly-once
- * drain are decided. */
-static void step_cache(const char *name, uint64_t *cur, int op, uint32_t ex_rws,
-                       uint32_t ex_ros, uint32_t ex_wc, uint32_t ex_rc,
-                       uint32_t ex_act) {
+/* A cache as its commit sites drive it: the word, and ro_aside, which the
+ * committer of a write-permission transition adds to and the committer of a
+ * read grant takes whole before its CAS. */
+struct cache_sim {
+  uint64_t word;
+  uint32_t aside;
+};
+
+/* One step of a SEQUENCE on a simulated cache: apply `op` as its commit site
+ * does, check the word (the stub bit included), ro_aside and the action,
+ * and carry the result into the next step.  A single-round table cannot
+ * reach a state that takes several transitions to build, which is where a
+ * reusable axis and an exactly-once drain are decided. */
+static void step_cache(const char *name, struct cache_sim *c, int op,
+                       uint64_t want, uint32_t ex_aside, uint32_t ex_act) {
   uint32_t act = 0xffffffff;
-  uint64_t next = cache_compute_next(*cur, op, &act);
-  uint64_t want = CACHE_MAKE(ex_rws, ex_ros, ex_wc, ex_rc);
+  uint32_t taken = op == CACHE_OP_GRANT_RO ? c->aside : 0u;
+  uint64_t next = cache_compute_next(c->word, op, taken, &act);
+  uint32_t aside = c->aside - taken;
+  if (act == CACHE_ACT_DRAIN_RW) {
+    aside += cache_set_aside(c->word);
+  }
   g_checks++;
-  if ((next & ~CACHE_STICKY) != want || act != ex_act) {
-    (void)fprintf(
-        stderr,
-        "FAIL [%s]: in(%u,%u,%u,%u) op=%d => out(%u,%u,%u,%u "
-        "act=%u) expected(%u,%u,%u,%u act=%u)\n",
-        name, CACHE_RW_ST(*cur), CACHE_RO_ST(*cur), CACHE_RW_CNT(*cur),
-        CACHE_RO_CNT(*cur), op, CACHE_RW_ST(next), CACHE_RO_ST(next),
-        CACHE_RW_CNT(next), CACHE_RO_CNT(next), act, ex_rws, ex_ros, ex_wc,
-        ex_rc, ex_act);
+  if (next != want || act != ex_act || aside != ex_aside) {
+    (void)fprintf(stderr,
+                  "FAIL [%s]: in %llx aside=%u op=%d => out(%llx aside=%u "
+                  "act=%u) expected(%llx aside=%u act=%u)\n",
+                  name, (unsigned long long)c->word, c->aside, op,
+                  (unsigned long long)next, aside, act,
+                  (unsigned long long)want, ex_aside, ex_act);
     g_rc = 1;
   }
-  *cur = next;
+  c->word = next;
+  c->aside = aside;
 }
-#endif
+
+/* Every (word, ro_aside) reachable from an idle cache and from a claimable
+ * first touch, with at most CW_MAX acquires per axis outstanding, driven as
+ * the commit sites drive it.  Ghost counts follow each acquire: parked on
+ * its axis's request, or holding.  Checked on every transition:
+ *   - the read count is the parked readers while the read request is out
+ *     and no write grant is held, the holders otherwise, and ro_aside is the
+ *     parked readers that count leaves out; ro_aside is non-zero only while
+ *     the read request is out;
+ *   - the write count is the parked writers at REQ, the holders at GRANT;
+ *   - a request that is out has a waiter parked on it, so no word counts
+ *     readers at IDLE without the write grant held;
+ *   - each drain is owed exactly the waiters parked on its axis;
+ *   - the two grants are never held together.
+ * A grant, a size round or a release is applied only where the arbiter
+ * takes it: one it calls LATE is a message the home never sends.  The walk
+ * must reach a write turn's zero edge with readers still parked on the read
+ * request (set aside), and a local hit under the write grant while the read
+ * request is out. */
+#define CW_MAX 3u
+struct cw_node {
+  uint64_t word;
+  uint32_t aside;
+  uint8_t parked_r, live_r, parked_w, live_w;
+};
+
+static bool cw_invariant(const struct cw_node *s) {
+  uint32_t rws = CACHE_RW_ST(s->word), ros = CACHE_RO_ST(s->word);
+  uint32_t wc = CACHE_RW_CNT(s->word), rc = CACHE_RO_CNT(s->word);
+  bool rc_parked = ros == CACHE_ST_REQ && rws != CACHE_ST_GRANT;
+  return s->parked_r == (rc_parked ? rc : 0u) + s->aside &&
+         s->live_r == (rc_parked ? 0u : rc) &&
+         s->parked_w == (rws == CACHE_ST_REQ ? wc : 0u) &&
+         s->live_w == (rws == CACHE_ST_GRANT ? wc : 0u) &&
+         (s->aside == 0u || ros == CACHE_ST_REQ) &&
+         (ros == CACHE_ST_REQ) == (s->parked_r != 0u) &&
+         (rws == CACHE_ST_REQ) == (s->parked_w != 0u) &&
+         !(ros == CACHE_ST_IDLE && rc != 0u && rws != CACHE_ST_GRANT) &&
+         !(rws == CACHE_ST_GRANT && ros == CACHE_ST_GRANT) &&
+         !(rws == CACHE_ST_GRANT && wc == 0u && rc == 0u) &&
+         !(ros == CACHE_ST_GRANT && rc == 0u) && rws != 3u && ros != 3u &&
+         (s->word & ((uint64_t)1 << 59)) == 0u;
+}
+
+static void cache_walk(void) {
+  enum { CAP = 8192 };
+  static struct cw_node seen[CAP];
+  int n = 0, head = 0;
+  bool turn_ended_with_readers_aside = false;
+  bool hit_under_write_grant_with_request_out = false;
+  bool read_grant_under_write_request = false;
+  memset(seen, 0, sizeof(seen));
+  seen[n++].word = CACHE_MAKE(CACHE_ST_IDLE, CACHE_ST_IDLE, 0u, 0u);
+  seen[n++].word = CACHE_MAKE_X(CACHE_ST_IDLE, CACHE_ST_IDLE, 1u, 0u, 0u);
+  while (head < n) {
+    const struct cw_node cur = seen[head++];
+    uint32_t rws = CACHE_RW_ST(cur.word), ros = CACHE_RO_ST(cur.word);
+    for (int op = CACHE_OP_ACQ_RW; op <= CACHE_OP_DECLAIM; op++) {
+      bool acquire = op == CACHE_OP_ACQ_RW || op == CACHE_OP_ACQ_RO;
+      bool release = op == CACHE_OP_REL_RW || op == CACHE_OP_REL_RO;
+      if (((op == CACHE_OP_ACQ_RW || op == CACHE_OP_CREATE_HOLD) &&
+           cur.parked_w + cur.live_w == CW_MAX) ||
+          (op == CACHE_OP_ACQ_RO && cur.parked_r + cur.live_r == CW_MAX) ||
+          (op == CACHE_OP_REL_RW && cur.live_w == 0u) ||
+          (op == CACHE_OP_REL_RO && cur.live_r == 0u)) {
+        continue;
+      }
+      struct cw_node nx = cur;
+      uint32_t act = 0xffffffff;
+      uint32_t taken = op == CACHE_OP_GRANT_RO ? cur.aside : 0u;
+      nx.word = cache_compute_next(cur.word, op, taken, &act);
+      g_checks++;
+      bool ok = true;
+      if (act == CACHE_ACT_LATE) {
+        /* Refused, the word unchanged: never an acquire inside the bound or
+         * a holder's release. */
+        ok = nx.word == cur.word && !acquire && !release;
+      } else if (act == CACHE_ACT_SELF_SERVE) {
+        ok = acquire;
+        if (op == CACHE_OP_ACQ_RW) {
+          nx.live_w++;
+        } else {
+          nx.live_r++;
+          hit_under_write_grant_with_request_out |=
+              rws == CACHE_ST_GRANT && ros == CACHE_ST_REQ;
+        }
+      } else if (act == CACHE_ACT_SEND_RW || act == CACHE_ACT_SEND_RO ||
+                 act == CACHE_ACT_PARK) {
+        /* The request opens exactly when its own axis is idle. */
+        if (op == CACHE_OP_ACQ_RW) {
+          ok = act ==
+               (rws == CACHE_ST_IDLE ? CACHE_ACT_SEND_RW : CACHE_ACT_PARK);
+          nx.parked_w++;
+        } else {
+          ok = op == CACHE_OP_ACQ_RO &&
+               act ==
+                   (ros == CACHE_ST_IDLE ? CACHE_ACT_SEND_RO : CACHE_ACT_PARK);
+          nx.parked_r++;
+        }
+      } else if (act == CACHE_ACT_DRAIN_RW) {
+        ok = (op == CACHE_OP_GRANT_RW || op == CACHE_OP_CREATE_HOLD) &&
+             CACHE_RW_CNT(cur.word) == cur.parked_w &&
+             cache_set_aside(cur.word) == cur.parked_r - cur.aside;
+        nx.aside += cache_set_aside(cur.word);
+        nx.live_w += nx.parked_w;
+        nx.parked_w = 0u;
+        if (op == CACHE_OP_CREATE_HOLD) {
+          nx.live_w++;
+        }
+      } else if (act == CACHE_ACT_DRAIN_RO) {
+        ok = op == CACHE_OP_GRANT_RO && CACHE_RO_CNT(nx.word) == cur.parked_r;
+        nx.aside = 0u;
+        nx.live_r += nx.parked_r;
+        nx.parked_r = 0u;
+        read_grant_under_write_request |= rws == CACHE_ST_REQ;
+      } else if (act == CACHE_ACT_RESEND_RO) {
+        ok = op == CACHE_OP_CTS_RO && ros == CACHE_ST_REQ;
+      } else if (release) {
+        ok = act == CACHE_ACT_NONE || act == CACHE_ACT_REL_RW ||
+             act == CACHE_ACT_REL_RO;
+        if (op == CACHE_OP_REL_RW) {
+          nx.live_w--;
+        } else {
+          nx.live_r--;
+        }
+        if (act != CACHE_ACT_NONE) {
+          /* A grant goes back when its last holder leaves. */
+          ok = ok && nx.live_w == 0u && nx.live_r == 0u;
+          turn_ended_with_readers_aside |=
+              act == CACHE_ACT_REL_RW && nx.aside != 0u;
+        }
+      } else {
+        /* A write size round, or a create's hold refused under a grant. */
+        ok = act == CACHE_ACT_NONE &&
+             (op == CACHE_OP_DECLAIM ||
+              (op == CACHE_OP_CREATE_HOLD && nx.word == cur.word &&
+               (rws == CACHE_ST_GRANT || ros == CACHE_ST_GRANT)));
+      }
+      if (!ok || !cw_invariant(&nx)) {
+        (void)fprintf(stderr,
+                      "FAIL [cache walk]: %llx aside=%u op=%d => %llx "
+                      "aside=%u act=%u (parked r=%u w=%u, live r=%u w=%u)\n",
+                      (unsigned long long)cur.word, cur.aside, op,
+                      (unsigned long long)nx.word, nx.aside, act, nx.parked_r,
+                      nx.parked_w, nx.live_r, nx.live_w);
+        g_rc = 1;
+        return;
+      }
+      int i = 0;
+      while (i < n && !(seen[i].word == nx.word && seen[i].aside == nx.aside)) {
+        i++;
+      }
+      if (i == n) {
+        if (n == CAP) {
+          (void)fprintf(stderr, "FAIL [cache walk]: too many words\n");
+          g_rc = 1;
+          return;
+        }
+        seen[n++] = nx;
+      }
+    }
+  }
+  if (!turn_ended_with_readers_aside ||
+      !hit_under_write_grant_with_request_out ||
+      !read_grant_under_write_request) {
+    (void)fprintf(stderr,
+                  "FAIL [cache walk]: not reached: a write turn ending with "
+                  "readers set aside (%d), a local hit under the write grant "
+                  "with the read request out (%d), a read grant with the "
+                  "write request out (%d)\n",
+                  (int)turn_ended_with_readers_aside,
+                  (int)hit_under_write_grant_with_request_out,
+                  (int)read_grant_under_write_request);
+    g_rc = 1;
+  }
+}
 
 int main(void) {
   const uint32_t RW = EXCL_PHASE_BIT_RW; /* 0 */
@@ -243,180 +481,220 @@ int main(void) {
      * reaches the zero edge tears down, and the torn-down word refuses every
      * later acquire, a duplicate destroy included. */
     uint64_t w = LOCK_MAKE_STATE(RW, 1, 0);
-    step_lock("td: a reader parks behind the writer", &w, T_RO_ACQ, 0, RW, 1, 1,
-              G_NONE);
-    step_lock("td: the destroy marks", &w, T_TEARDOWN, 1, RW, 1, 1, G_NONE);
-    step_lock("td: a writer that lands now is counted", &w, T_RW_ACQ, 1, RW, 2,
-              1, G_NONE);
-    step_lock("td: the writer's release passes the turn", &w, T_RW_REL, 1, RW,
-              1, 1, G_ONE_RW);
+    step_lock("td: a reader parks behind the writer", &w, T_RO_ACQ,
+              LOCK_MAKE_STATE_TD(0, RW, 1, 1), G_NONE);
+    step_lock("td: the destroy marks", &w, T_TEARDOWN,
+              LOCK_MAKE_STATE_TD(1, RW, 1, 1), G_NONE);
+    step_lock("td: a writer that lands now is counted", &w, T_RW_ACQ,
+              LOCK_MAKE_STATE_TD(1, RW, 2, 1), G_NONE);
+    step_lock("td: the writer's release passes the turn", &w, T_RW_REL,
+              LOCK_MAKE_STATE_TD(1, RW, 1, 1), G_ONE_RW);
     step_lock("td: the last writer's release opens the read phase", &w,
-              T_RW_REL, 1, 0, 0, 1, G_ALL_RO);
-    step_lock("td: the last release tears down", &w, T_RO_REL, 1, 0, 0, 0,
-              G_DESTROY);
-    step_lock("td: a writer after the teardown is refused", &w, T_RW_ACQ, 1, 0,
-              0, 0, G_NONE);
-    step_lock("td: a reader after the teardown is refused", &w, T_RO_ACQ, 1, 0,
-              0, 0, G_NONE);
-    step_lock("td: a duplicate destroy changes nothing", &w, T_TEARDOWN, 1, 0,
-              0, 0, G_NONE);
+              T_RW_REL, LOCK_MAKE_STATE_TD(1, 0, 0, 1), G_ALL_RO);
+    step_lock("td: the last release tears down", &w, T_RO_REL,
+              LOCK_MAKE_STATE_TD(1, 0, 0, 0), G_DESTROY);
+    step_lock("td: a writer after the teardown is refused", &w, T_RW_ACQ,
+              LOCK_MAKE_STATE_TD(1, 0, 0, 0), G_NONE);
+    step_lock("td: a reader after the teardown is refused", &w, T_RO_ACQ,
+              LOCK_MAKE_STATE_TD(1, 0, 0, 0), G_NONE);
+    step_lock("td: a duplicate destroy changes nothing", &w, T_TEARDOWN,
+              LOCK_MAKE_STATE_TD(1, 0, 0, 0), G_NONE);
   }
   {
     /* A destroy that finds nothing owed tears down at once. */
     uint64_t w = LOCK_MAKE_STATE(0, 0, 0);
-    step_lock("td idle: the destroy tears down", &w, T_TEARDOWN, 1, 0, 0, 0,
-              G_DESTROY);
-    step_lock("td idle: a writer after it is refused", &w, T_RW_ACQ, 1, 0, 0, 0,
-              G_NONE);
+    step_lock("td idle: the destroy tears down", &w, T_TEARDOWN,
+              LOCK_MAKE_STATE_TD(1, 0, 0, 0), G_DESTROY);
+    step_lock("td idle: a writer after it is refused", &w, T_RW_ACQ,
+              LOCK_MAKE_STATE_TD(1, 0, 0, 0), G_NONE);
   }
   {
     /* A claimed first touch: the announce seeded the creator's hold (w 1)
-     * and its pre-claim write and read requests (rwo, roo; owed 2). */
-    uint64_t w = LOCK_MAKE_STATE_FULL(0, 0, 1, 1, 2, 1, 0);
-    step_full("owed: the creator's release", &w, T_RW_REL,
-              LOCK_MAKE_STATE_FULL(0, 0, 1, 1, 2, 0, 0), G_NONE);
-    step_full("owed: the destroy only marks", &w, T_TEARDOWN,
-              LOCK_MAKE_STATE_FULL(1, 0, 1, 1, 2, 0, 0), G_NONE);
-    step_full("owed: the pre-claim write request is discarded", &w,
-              EXCL_OP_RWO_ARRIVE, LOCK_MAKE_STATE_FULL(1, 0, 0, 1, 1, 0, 0),
-              G_NONE);
-    step_full("owed: the pre-claim read request tears down", &w,
-              EXCL_OP_ROO_ARRIVE, LOCK_MAKE_STATE_FULL(1, 0, 0, 0, 0, 0, 0),
+     * and its pre-claim write request (rwo), which the teardown waits for.
+     * The home is not torn down while it does: a read request that lands
+     * meanwhile is counted and granted as a read. */
+    uint64_t w = LOCK_MAKE_STATE_FULL(0, 0, 1, 1, 0);
+    step_lock("rwo: the creator's release", &w, T_RW_REL,
+              LOCK_MAKE_STATE_FULL(0, 0, 1, 0, 0), G_NONE);
+    step_lock("rwo: the destroy only marks", &w, T_TEARDOWN,
+              LOCK_MAKE_STATE_FULL(1, 0, 1, 0, 0), G_NONE);
+    step_lock("rwo: a reader that lands now is counted", &w, T_RO_ACQ,
+              LOCK_MAKE_STATE_FULL(1, 0, 1, 0, 1), G_ALL_RO);
+    step_lock("rwo: its release does not tear down", &w, T_RO_REL,
+              LOCK_MAKE_STATE_FULL(1, 0, 1, 0, 0), G_NONE);
+    step_lock("rwo: the pre-claim write request tears down", &w,
+              EXCL_OP_RWO_ARRIVE, LOCK_MAKE_STATE_FULL(1, 0, 0, 0, 0),
               G_DESTROY);
-    step_full("owed: a reader after the teardown is refused", &w, T_RO_ACQ,
-              LOCK_MAKE_STATE_FULL(1, 0, 0, 0, 0, 0, 0), G_NONE);
+    step_lock("rwo: a reader after the teardown is refused", &w, T_RO_ACQ,
+              LOCK_MAKE_STATE_FULL(1, 0, 0, 0, 0), G_NONE);
   }
   {
-    /* A write request declares the rank's read request; its arrival settles
-     * the count (the caller dismisses it), before or after the destroy. */
-    uint64_t w = LOCK_MAKE_STATE_FULL(0, 0, 0, 0, 0, 0, 0);
-    step_full("decl: owed", &w, EXCL_OP_OWE,
-              LOCK_MAKE_STATE_FULL(0, 0, 0, 0, 1, 0, 0), G_NONE);
-    step_full("decl: arrives before the destroy, processed", &w,
-              EXCL_OP_ARRIVE, LOCK_MAKE_STATE_FULL(0, 0, 0, 0, 0, 0, 0), G_NONE);
-    step_full("decl: owed again", &w, EXCL_OP_OWE,
-              LOCK_MAKE_STATE_FULL(0, 0, 0, 0, 1, 0, 0), G_NONE);
-    step_full("decl: a reader counted", &w, T_RO_ACQ,
-              LOCK_MAKE_STATE_FULL(0, 0, 0, 0, 1, 0, 1), G_ALL_RO);
-    step_full("decl: its release", &w, T_RO_REL,
-              LOCK_MAKE_STATE_FULL(0, 0, 0, 0, 1, 0, 0), G_NONE);
-    step_full("decl: the destroy waits for the owed request", &w, T_TEARDOWN,
-              LOCK_MAKE_STATE_FULL(1, 0, 0, 0, 1, 0, 0), G_NONE);
-    step_full("decl: its arrival tears down", &w, EXCL_OP_ARRIVE,
-              LOCK_MAKE_STATE_FULL(1, 0, 0, 0, 0, 0, 0), G_DESTROY);
+    /* The pre-claim write request arrives before the destroy: nothing is
+     * awaited any more, and the destroy tears down at the zero edge. */
+    uint64_t w = LOCK_MAKE_STATE_FULL(0, 0, 1, 1, 0);
+    step_lock("rwo first: the request is discarded", &w, EXCL_OP_RWO_ARRIVE,
+              LOCK_MAKE_STATE_FULL(0, 0, 0, 1, 0), G_NONE);
+    step_lock("rwo first: the destroy marks under the hold", &w, T_TEARDOWN,
+              LOCK_MAKE_STATE_FULL(1, 0, 0, 1, 0), G_NONE);
+    step_lock("rwo first: the creator's release tears down", &w, T_RW_REL,
+              LOCK_MAKE_STATE_FULL(1, 0, 0, 0, 0), G_DESTROY);
   }
   {
-    /* A declaration that would overflow the owed field is refused, the word
-     * unchanged. */
-    uint64_t w = LOCK_MAKE_STATE_FULL(0, 0, 0, 0, 0xffffu, 0, 0);
-    step_full("decl: a full owed field is refused", &w, EXCL_OP_OWE,
-              LOCK_MAKE_STATE_FULL(0, 0, 0, 0, 0xffffu, 0, 0),
-              LOCK_GRANT_FULL);
+    /* The pre-claim write request arrives under the mark with a release
+     * still owed: the last release tears down. */
+    uint64_t w = LOCK_MAKE_STATE_FULL(0, 0, 1, 1, 0);
+    step_lock("mark: destroy with a writer and the request awaited", &w,
+              T_TEARDOWN, LOCK_MAKE_STATE_FULL(1, 0, 1, 1, 0), G_NONE);
+    step_lock("mark: the request is discarded", &w, EXCL_OP_RWO_ARRIVE,
+              LOCK_MAKE_STATE_FULL(1, 0, 0, 1, 0), G_NONE);
+    step_lock("mark: the last release tears down", &w, T_RW_REL,
+              LOCK_MAKE_STATE_FULL(1, 0, 0, 0, 0), G_DESTROY);
   }
-  {
-    /* An owed arrival under the mark with releases still owed settles the
-     * count; the last release tears down. */
-    uint64_t w = LOCK_MAKE_STATE_FULL(0, 0, 0, 0, 1, 1, 0);
-    step_full("mark: destroy with a writer and one owed", &w, T_TEARDOWN,
-              LOCK_MAKE_STATE_FULL(1, 0, 0, 0, 1, 1, 0), G_NONE);
-    step_full("mark: the owed arrival is absorbed", &w, EXCL_OP_ARRIVE,
-              LOCK_MAKE_STATE_FULL(1, 0, 0, 0, 0, 1, 0), G_NONE);
-    step_full("mark: the last release tears down", &w, T_RW_REL,
-              LOCK_MAKE_STATE_FULL(1, 0, 0, 0, 0, 0, 0), G_DESTROY);
-  }
+  lock_walk();
 
-#ifdef ARTS_USE_CXL
-  /* ===== cache-word grant (PURGE) =====
-   * One grant answers one request: only an axis at REQ with its opener
-   * counted takes it, and anything else is a grant for no request (LATE, the
-   * word unchanged, raised by the commit site).  A read grant that finds its
-   * readers already served by a write turn goes straight back. */
+  /* ===== the cache word =====
+   * Each axis has its own request: an acquire opens or joins the request of
+   * its own axis whatever the other axis holds, and one grant answers one
+   * request.  Write permission serves writers and sets the readers parked on
+   * the read request aside; the read grant returns them. */
   const uint32_t I = CACHE_ST_IDLE, Q = CACHE_ST_REQ, G = CACHE_ST_GRANT;
-  chk_cache("rwgrant req wc1", Q, I, 1, 0, CACHE_OP_GRANT_RW, G, I, 1, 0,
-            CACHE_ACT_DRAIN_BOTH);
-  chk_cache("rwgrant req wc1 with the read request out", Q, Q, 1, 2,
-            CACHE_OP_GRANT_RW, G, Q, 1, 2, CACHE_ACT_DRAIN_BOTH);
-  chk_cache("rwgrant with no writer counted is late", Q, I, 0, 2,
-            CACHE_OP_GRANT_RW, Q, I, 0, 2, CACHE_ACT_LATE);
-  chk_cache("rwgrant at idle is late", I, I, 0, 0, CACHE_OP_GRANT_RW, I, I, 0,
-            0, CACHE_ACT_LATE);
-  chk_cache("rwgrant at a live hold is late", G, I, 1, 0, CACHE_OP_GRANT_RW, G,
-            I, 1, 0, CACHE_ACT_LATE);
-  chk_cache("rogrant req rc2", I, Q, 0, 2, CACHE_OP_GRANT_RO, I, G, 0, 2,
-            CACHE_ACT_DRAIN_RO);
-  chk_cache("rogrant req under a pending rw request", Q, Q, 1, 2,
-            CACHE_OP_GRANT_RO, Q, G, 1, 2, CACHE_ACT_DRAIN_RO);
-  chk_cache("rogrant with nobody parked is late", I, Q, 0, 0,
-            CACHE_OP_GRANT_RO, I, Q, 0, 0, CACHE_ACT_LATE);
-  chk_cache("rogrant at idle is late", I, I, 0, 0, CACHE_OP_GRANT_RO, I, I, 0,
-            0, CACHE_ACT_LATE);
+  const uint32_t RMAX = (uint32_t)CACHE_CNT_MASK;
+  const uint32_t WMAX = (uint32_t)CACHE_RW_CNT_MASK;
+
+  chk_cache("roacq opens the read request", I, I, 0, 0, CACHE_OP_ACQ_RO, 0, I,
+            Q, 0, 1, CACHE_ACT_SEND_RO, 0);
+  chk_cache("roacq opens it with the write request out", Q, I, 1, 0,
+            CACHE_OP_ACQ_RO, 0, Q, Q, 1, 1, CACHE_ACT_SEND_RO, 0);
+  chk_cache("roacq joins the read request", I, Q, 0, 1, CACHE_OP_ACQ_RO, 0, I,
+            Q, 0, 2, CACHE_ACT_PARK, 0);
+  chk_cache("roacq joins it with the write request out", Q, Q, 1, 1,
+            CACHE_OP_ACQ_RO, 0, Q, Q, 1, 2, CACHE_ACT_PARK, 0);
+  chk_cache("roacq under the write grant is a local hit", G, I, 1, 0,
+            CACHE_OP_ACQ_RO, 0, G, I, 1, 1, CACHE_ACT_SELF_SERVE, 0);
+  chk_cache("roacq under the write grant, the read request out", G, Q, 1, 0,
+            CACHE_OP_ACQ_RO, 0, G, Q, 1, 1, CACHE_ACT_SELF_SERVE, 0);
+  chk_cache("roacq under the read grant is a local hit", I, G, 0, 1,
+            CACHE_OP_ACQ_RO, 0, I, G, 0, 2, CACHE_ACT_SELF_SERVE, 0);
+  chk_cache("roacq under the read grant, the write request out", Q, G, 1, 1,
+            CACHE_OP_ACQ_RO, 0, Q, G, 1, 2, CACHE_ACT_SELF_SERVE, 0);
+  chk_cache("roacq on a full count is late", I, G, 0, RMAX, CACHE_OP_ACQ_RO, 0,
+            I, G, 0, RMAX, CACHE_ACT_LATE, 0);
+
+  chk_cache("rwacq opens the write request", I, I, 0, 0, CACHE_OP_ACQ_RW, 0, Q,
+            I, 1, 0, CACHE_ACT_SEND_RW, 0);
+  chk_cache("rwacq opens it with the read request out", I, Q, 0, 2,
+            CACHE_OP_ACQ_RW, 0, Q, Q, 1, 2, CACHE_ACT_SEND_RW, 0);
+  chk_cache("rwacq opens it under the read grant", I, G, 0, 2, CACHE_OP_ACQ_RW,
+            0, Q, G, 1, 2, CACHE_ACT_SEND_RW, 0);
+  chk_cache("rwacq joins the write request", Q, I, 1, 0, CACHE_OP_ACQ_RW, 0, Q,
+            I, 2, 0, CACHE_ACT_PARK, 0);
+  chk_cache("rwacq under the write grant is a local hit", G, I, 1, 0,
+            CACHE_OP_ACQ_RW, 0, G, I, 2, 0, CACHE_ACT_SELF_SERVE, 0);
+  chk_cache("rwacq on a full count is late", G, I, WMAX, 0, CACHE_OP_ACQ_RW, 0,
+            G, I, WMAX, 0, CACHE_ACT_LATE, 0);
+
+  chk_cache("rwgrant req wc1", Q, I, 1, 0, CACHE_OP_GRANT_RW, 0, G, I, 1, 0,
+            CACHE_ACT_DRAIN_RW, 0);
+  chk_cache("rwgrant sets the parked readers aside", Q, Q, 1, 2,
+            CACHE_OP_GRANT_RW, 0, G, Q, 1, 0, CACHE_ACT_DRAIN_RW, 2);
+  chk_cache("rwgrant with no writer counted is late", Q, Q, 0, 2,
+            CACHE_OP_GRANT_RW, 0, Q, Q, 0, 2, CACHE_ACT_LATE, 0);
+  chk_cache("rwgrant at idle is late", I, I, 0, 0, CACHE_OP_GRANT_RW, 0, I, I,
+            0, 0, CACHE_ACT_LATE, 0);
+  chk_cache("rwgrant at a live hold is late", G, I, 1, 0, CACHE_OP_GRANT_RW, 0,
+            G, I, 1, 0, CACHE_ACT_LATE, 0);
+  chk_cache("rwgrant under a held read grant is late", Q, G, 1, 1,
+            CACHE_OP_GRANT_RW, 0, Q, G, 1, 1, CACHE_ACT_LATE, 0);
+  chk_cache("rwgrant with readers counted on no request is late", Q, I, 1, 1,
+            CACHE_OP_GRANT_RW, 0, Q, I, 1, 1, CACHE_ACT_LATE, 0);
+
+  chk_cache("rogrant req rc2", I, Q, 0, 2, CACHE_OP_GRANT_RO, 0, I, G, 0, 2,
+            CACHE_ACT_DRAIN_RO, 0);
+  chk_cache("rogrant with the write request out", Q, Q, 1, 2, CACHE_OP_GRANT_RO,
+            0, Q, G, 1, 2, CACHE_ACT_DRAIN_RO, 0);
+  chk_cache("rogrant returns the readers set aside", I, Q, 0, 0,
+            CACHE_OP_GRANT_RO, 2, I, G, 0, 2, CACHE_ACT_DRAIN_RO, 0);
+  chk_cache("rogrant adds them to the readers parked since", I, Q, 0, 1,
+            CACHE_OP_GRANT_RO, 2, I, G, 0, 3, CACHE_ACT_DRAIN_RO, 0);
+  chk_cache("rogrant with nobody parked is late", I, Q, 0, 0, CACHE_OP_GRANT_RO,
+            0, I, Q, 0, 0, CACHE_ACT_LATE, 0);
+  chk_cache("rogrant at idle is late", I, I, 0, 0, CACHE_OP_GRANT_RO, 0, I, I,
+            0, 0, CACHE_ACT_LATE, 0);
+  chk_cache("rogrant at a held read grant is late", I, G, 0, 1,
+            CACHE_OP_GRANT_RO, 0, I, G, 0, 1, CACHE_ACT_LATE, 0);
   chk_cache("rogrant under a held write grant is late", G, Q, 1, 1,
-            CACHE_OP_GRANT_RO, G, Q, 1, 1, CACHE_ACT_LATE);
-  chk_cache("cts re-sends for waiting readers", I, Q, 0, 1, CACHE_OP_CTS_RO, I,
-            Q, 0, 1, CACHE_ACT_RESEND_RO);
-  chk_cache("cts closes a covered axis", I, Q, 0, 0, CACHE_OP_CTS_RO, I, I, 0,
-            0, CACHE_ACT_NONE);
-  chk_cache("cts closes under a write request", Q, Q, 1, 1, CACHE_OP_CTS_RO, Q,
-            I, 1, 1, CACHE_ACT_NONE);
-  chk_cache("cts with no read request out is late", I, I, 0, 0,
-            CACHE_OP_CTS_RO, I, I, 0, 0, CACHE_ACT_LATE);
-  chk_cache("the create's hold closes both requests", Q, Q, 0, 0,
-            CACHE_OP_CREATE_HOLD, G, I, 1, 0, CACHE_ACT_DRAIN_BOTH);
-  chk_cache("the create's hold on a full count is late", Q, I,
-            (uint32_t)CACHE_RW_CNT_MASK, 0, CACHE_OP_CREATE_HOLD, Q, I,
-            (uint32_t)CACHE_RW_CNT_MASK, 0, CACHE_ACT_LATE);
+            CACHE_OP_GRANT_RO, 0, G, Q, 1, 1, CACHE_ACT_LATE, 0);
+  chk_cache("rogrant under a held write grant, readers aside, is late", G, Q, 1,
+            0, CACHE_OP_GRANT_RO, 1, G, Q, 1, 0, CACHE_ACT_LATE, 0);
+  chk_cache("rogrant past the count's limit is late", I, Q, 0, RMAX,
+            CACHE_OP_GRANT_RO, 1, I, Q, 0, RMAX, CACHE_ACT_LATE, 0);
+
+  chk_cache("cts re-sends for the parked readers", I, Q, 0, 1, CACHE_OP_CTS_RO,
+            0, I, Q, 0, 1, CACHE_ACT_RESEND_RO, 0);
+  chk_cache("cts re-sends with the readers set aside", I, Q, 0, 0,
+            CACHE_OP_CTS_RO, 0, I, Q, 0, 0, CACHE_ACT_RESEND_RO, 0);
+  chk_cache("cts re-sends with the write request out", Q, Q, 1, 1,
+            CACHE_OP_CTS_RO, 0, Q, Q, 1, 1, CACHE_ACT_RESEND_RO, 0);
+  chk_cache("cts re-sends under the write grant", G, Q, 1, 0, CACHE_OP_CTS_RO,
+            0, G, Q, 1, 0, CACHE_ACT_RESEND_RO, 0);
+  chk_cache("cts with no read request out is late", I, I, 0, 0, CACHE_OP_CTS_RO,
+            0, I, I, 0, 0, CACHE_ACT_LATE, 0);
+  chk_cache("cts under the read grant is late", I, G, 0, 1, CACHE_OP_CTS_RO, 0,
+            I, G, 0, 1, CACHE_ACT_LATE, 0);
+
+  chk_cache("the create's hold on an idle cache", I, I, 0, 0,
+            CACHE_OP_CREATE_HOLD, 0, G, I, 1, 0, CACHE_ACT_DRAIN_RW, 0);
+  chk_cache("the create's hold closes the write request", Q, I, 1, 0,
+            CACHE_OP_CREATE_HOLD, 0, G, I, 2, 0, CACHE_ACT_DRAIN_RW, 0);
+  chk_cache("the create's hold leaves the read request out", I, Q, 0, 1,
+            CACHE_OP_CREATE_HOLD, 0, G, Q, 1, 0, CACHE_ACT_DRAIN_RW, 1);
+  chk_cache("the create's hold with both requests out", Q, Q, 1, 2,
+            CACHE_OP_CREATE_HOLD, 0, G, Q, 2, 0, CACHE_ACT_DRAIN_RW, 2);
+  chk_cache("the create's hold is refused under the write grant", G, I, 1, 0,
+            CACHE_OP_CREATE_HOLD, 0, G, I, 1, 0, CACHE_ACT_NONE, 0);
+  chk_cache("the create's hold is refused under the read grant", Q, G, 1, 1,
+            CACHE_OP_CREATE_HOLD, 0, Q, G, 1, 1, CACHE_ACT_NONE, 0);
+  chk_cache("the create's hold on a full count is late", Q, I, WMAX, 0,
+            CACHE_OP_CREATE_HOLD, 0, Q, I, WMAX, 0, CACHE_ACT_LATE, 0);
+  chk_cache("the create's hold with readers on no request is late", Q, I, 1, 1,
+            CACHE_OP_CREATE_HOLD, 0, Q, I, 1, 1, CACHE_ACT_LATE, 0);
+
+  chk_cache("declaim keeps the write request out", Q, Q, 1, 1, CACHE_OP_DECLAIM,
+            0, Q, Q, 1, 1, CACHE_ACT_NONE, 0);
+  chk_cache("declaim with no write request out is late", I, Q, 0, 1,
+            CACHE_OP_DECLAIM, 0, I, Q, 0, 1, CACHE_ACT_LATE, 0);
+
+  chk_cache("rwrel with a writer left", G, I, 2, 0, CACHE_OP_REL_RW, 0, G, I, 1,
+            0, CACHE_ACT_NONE, 0);
+  chk_cache("rwrel with a reader left under the turn", G, I, 1, 1,
+            CACHE_OP_REL_RW, 0, G, I, 0, 1, CACHE_ACT_NONE, 0);
+  chk_cache("rwrel at the zero edge", G, I, 1, 0, CACHE_OP_REL_RW, 0, I, I, 0,
+            0, CACHE_ACT_REL_RW, 0);
+  chk_cache("rwrel at the zero edge, the read request out", G, Q, 1, 0,
+            CACHE_OP_REL_RW, 0, I, Q, 0, 0, CACHE_ACT_REL_RW, 0);
+  chk_cache("rorel of the last joiner ends the write turn", G, I, 0, 1,
+            CACHE_OP_REL_RO, 0, I, I, 0, 0, CACHE_ACT_REL_RW, 0);
+  chk_cache("rorel of the last joiner, the read request out", G, Q, 0, 1,
+            CACHE_OP_REL_RO, 0, I, Q, 0, 0, CACHE_ACT_REL_RW, 0);
+  chk_cache("rorel with a reader left", I, G, 0, 2, CACHE_OP_REL_RO, 0, I, G, 0,
+            1, CACHE_ACT_NONE, 0);
+  chk_cache("rorel at the zero edge", I, G, 0, 1, CACHE_OP_REL_RO, 0, I, I, 0,
+            0, CACHE_ACT_REL_RO, 0);
+  chk_cache("rorel at the zero edge, the write request out", Q, G, 1, 1,
+            CACHE_OP_REL_RO, 0, Q, I, 1, 0, CACHE_ACT_REL_RO, 0);
 
   {
-    uint64_t w = CACHE_MAKE(I, I, 0, 0);
-    step_cache("rw round: first writer requests", &w, CACHE_OP_ACQ_RW, Q, I, 1,
-               0, CACHE_ACT_SEND_RW);
-    step_cache("rw round: second writer parks", &w, CACHE_OP_ACQ_RW, Q, I, 2, 0,
-               CACHE_ACT_PARK);
-    step_cache("rw round: a reader rides the write request", &w,
-               CACHE_OP_ACQ_RO, Q, I, 2, 1, CACHE_ACT_PARK);
-    step_cache("rw round: the grant drains both", &w, CACHE_OP_GRANT_RW, G, I,
-               2, 1, CACHE_ACT_DRAIN_BOTH);
-    step_cache("rw round: the reader releases", &w, CACHE_OP_REL_RO, G, I, 2, 0,
-               CACHE_ACT_NONE);
-    step_cache("rw round: a writer releases", &w, CACHE_OP_REL_RW, G, I, 1, 0,
-               CACHE_ACT_NONE);
-    step_cache("rw round: the zero edge", &w, CACHE_OP_REL_RW, I, I, 0, 0,
-               CACHE_ACT_REL_RW);
-  }
-  {
-    uint64_t w = CACHE_MAKE(I, I, 0, 0);
-    /* The write request leaves with the read request out; the write grant
-     * lands first and serves the reader; the home answers the read request
-     * with a dismiss, which closes the covered axis. */
-    step_cache("cover: a reader requests", &w, CACHE_OP_ACQ_RO, I, Q, 0, 1,
-               CACHE_ACT_SEND_RO);
-    if (CACHE_RO_PAR(w) != 1u) {
-      (void)fprintf(stderr, "FAIL [cover: the request flips the parity]\n");
-      g_rc = 1;
-    }
-    step_cache("cover: a writer requests at once", &w, CACHE_OP_ACQ_RW, Q, Q, 1,
-               1, CACHE_ACT_SEND_RW);
-    step_cache("cover: the write grant serves writer and reader", &w,
-               CACHE_OP_GRANT_RW, G, Q, 1, 1, CACHE_ACT_DRAIN_BOTH);
-    step_cache("cover: the reader releases", &w, CACHE_OP_REL_RO, G, Q, 1, 0,
-               CACHE_ACT_NONE);
-    step_cache("cover: the zero edge", &w, CACHE_OP_REL_RW, I, Q, 0, 0,
-               CACHE_ACT_REL_RW);
-    step_cache("cover: the dismiss closes the axis", &w, CACHE_OP_CTS_RO, I, I,
-               0, 0, CACHE_ACT_NONE);
-  }
-  {
-    /* Every reply clears the stub bit: the home is installed and the claim is
-     * elsewhere.  A write size round clears it only for a write request out. */
-    const int ops[4] = {CACHE_OP_GRANT_RW, CACHE_OP_GRANT_RO, CACHE_OP_CTS_RO,
-                        CACHE_OP_DECLAIM};
-    const uint64_t ins[4] = {CACHE_MAKE_X(Q, I, 0u, 1u, 1, 0),
-                             CACHE_MAKE_X(I, Q, 0u, 1u, 0, 1),
-                             CACHE_MAKE_X(I, Q, 0u, 1u, 0, 0),
-                             CACHE_MAKE_X(Q, I, 0u, 1u, 1, 0)};
-    for (int i = 0; i < 4; i++) {
+    /* Every reply and the create's hold clear the stub bit: the home is
+     * installed, or the claim is here.  An acquire keeps it. */
+    const int ops[5] = {CACHE_OP_GRANT_RW, CACHE_OP_GRANT_RO, CACHE_OP_CTS_RO,
+                        CACHE_OP_DECLAIM, CACHE_OP_CREATE_HOLD};
+    const uint64_t ins[5] = {
+        CACHE_MAKE_X(Q, I, 1u, 1, 0), CACHE_MAKE_X(I, Q, 1u, 0, 1),
+        CACHE_MAKE_X(I, Q, 1u, 0, 1), CACHE_MAKE_X(Q, I, 1u, 1, 0),
+        CACHE_MAKE_X(I, I, 1u, 0, 0)};
+    for (int i = 0; i < 5; i++) {
       uint32_t act = 0xffffffff;
-      uint64_t next = cache_compute_next(ins[i], ops[i], &act);
+      uint64_t next = cache_compute_next(ins[i], ops[i], 0u, &act);
       g_checks++;
       if (act == CACHE_ACT_LATE || CACHE_STUB(next) != 0u) {
         (void)fprintf(stderr, "FAIL [reply %d clears stub]: act=%u stub=%u\n",
@@ -424,47 +702,132 @@ int main(void) {
         g_rc = 1;
       }
     }
-    uint32_t act = 0xffffffff;
-    (void)cache_compute_next(CACHE_MAKE_X(I, I, 0u, 1u, 0, 0),
-                             CACHE_OP_DECLAIM, &act);
-    g_checks++;
-    if (act != CACHE_ACT_LATE) {
-      (void)fprintf(stderr, "FAIL [declaim with no write request out]\n");
-      g_rc = 1;
+    for (int op = CACHE_OP_ACQ_RW; op <= CACHE_OP_ACQ_RO; op++) {
+      uint32_t act = 0xffffffff;
+      uint64_t next =
+          cache_compute_next(CACHE_MAKE_X(I, I, 1u, 0, 0), op, 0u, &act);
+      g_checks++;
+      if (CACHE_STUB(next) != 1u) {
+        (void)fprintf(stderr, "FAIL [acquire %d keeps stub]\n", op);
+        g_rc = 1;
+      }
     }
   }
   {
-    uint64_t w = CACHE_MAKE(I, I, 0, 0);
-    step_cache("hold round: a writer requests", &w, CACHE_OP_ACQ_RW, Q, I, 1, 0,
-               CACHE_ACT_SEND_RW);
-    step_cache("hold round: the create takes the hold", &w,
-               CACHE_OP_CREATE_HOLD, G, I, 2, 0, CACHE_ACT_DRAIN_BOTH);
-    step_cache("hold round: a grant under the hold is late", &w,
-               CACHE_OP_GRANT_RW, G, I, 2, 0, CACHE_ACT_LATE);
-    step_cache("hold round: a holder releases", &w, CACHE_OP_REL_RW, G, I, 1, 0,
-               CACHE_ACT_NONE);
-    step_cache("hold round: the zero edge", &w, CACHE_OP_REL_RW, I, I, 0, 0,
-               CACHE_ACT_REL_RW);
-    step_cache("hold round: a hold is refused under a grant", &w,
-               CACHE_OP_ACQ_RW, Q, I, 1, 0, CACHE_ACT_SEND_RW);
-    step_cache("hold round: the next grant", &w, CACHE_OP_GRANT_RW, G, I, 1, 0,
-               CACHE_ACT_DRAIN_BOTH);
-    step_cache("hold round: refused", &w, CACHE_OP_CREATE_HOLD, G, I, 1, 0,
-               CACHE_ACT_NONE);
+    /* The write turn arrives while the read request is out: the grant wakes
+     * the writers alone, the parked readers go aside, a reader that arrives
+     * under the grant is a local hit, and the turn ends without the readers
+     * set aside.  The read request stays out; its grant returns them, with
+     * the reader parked since. */
+    struct cache_sim c = {CACHE_MAKE(I, I, 0, 0), 0u};
+    step_cache("turn: a reader requests", &c, CACHE_OP_ACQ_RO,
+               CACHE_MAKE(I, Q, 0, 1), 0, CACHE_ACT_SEND_RO);
+    step_cache("turn: a second reader joins", &c, CACHE_OP_ACQ_RO,
+               CACHE_MAKE(I, Q, 0, 2), 0, CACHE_ACT_PARK);
+    step_cache("turn: a writer requests at once", &c, CACHE_OP_ACQ_RW,
+               CACHE_MAKE(Q, Q, 1, 2), 0, CACHE_ACT_SEND_RW);
+    step_cache("turn: the write grant sets the readers aside", &c,
+               CACHE_OP_GRANT_RW, CACHE_MAKE(G, Q, 1, 0), 2,
+               CACHE_ACT_DRAIN_RW);
+    step_cache("turn: a reader under the grant is a local hit", &c,
+               CACHE_OP_ACQ_RO, CACHE_MAKE(G, Q, 1, 1), 2,
+               CACHE_ACT_SELF_SERVE);
+    step_cache("turn: it releases", &c, CACHE_OP_REL_RO, CACHE_MAKE(G, Q, 1, 0),
+               2, CACHE_ACT_NONE);
+    step_cache("turn: the zero edge, two readers still parked", &c,
+               CACHE_OP_REL_RW, CACHE_MAKE(I, Q, 0, 0), 2, CACHE_ACT_REL_RW);
+    step_cache("turn: a reader after the turn joins the request", &c,
+               CACHE_OP_ACQ_RO, CACHE_MAKE(I, Q, 0, 1), 2, CACHE_ACT_PARK);
+    step_cache("turn: the read grant finds all three", &c, CACHE_OP_GRANT_RO,
+               CACHE_MAKE(I, G, 0, 3), 0, CACHE_ACT_DRAIN_RO);
+    step_cache("turn: a reader releases", &c, CACHE_OP_REL_RO,
+               CACHE_MAKE(I, G, 0, 2), 0, CACHE_ACT_NONE);
+    step_cache("turn: a reader releases", &c, CACHE_OP_REL_RO,
+               CACHE_MAKE(I, G, 0, 1), 0, CACHE_ACT_NONE);
+    step_cache("turn: the read grant goes back", &c, CACHE_OP_REL_RO,
+               CACHE_MAKE(I, I, 0, 0), 0, CACHE_ACT_REL_RO);
   }
-#endif
+  {
+    /* The read request waits through two write turns: ro_aside sums the
+     * readers each turn found parked. */
+    struct cache_sim c = {CACHE_MAKE(Q, Q, 1, 1), 0u};
+    step_cache("two turns: the first grant", &c, CACHE_OP_GRANT_RW,
+               CACHE_MAKE(G, Q, 1, 0), 1, CACHE_ACT_DRAIN_RW);
+    step_cache("two turns: the first turn ends", &c, CACHE_OP_REL_RW,
+               CACHE_MAKE(I, Q, 0, 0), 1, CACHE_ACT_REL_RW);
+    step_cache("two turns: a reader joins the request", &c, CACHE_OP_ACQ_RO,
+               CACHE_MAKE(I, Q, 0, 1), 1, CACHE_ACT_PARK);
+    step_cache("two turns: a writer requests", &c, CACHE_OP_ACQ_RW,
+               CACHE_MAKE(Q, Q, 1, 1), 1, CACHE_ACT_SEND_RW);
+    step_cache("two turns: the second grant", &c, CACHE_OP_GRANT_RW,
+               CACHE_MAKE(G, Q, 1, 0), 2, CACHE_ACT_DRAIN_RW);
+    step_cache("two turns: the second turn ends", &c, CACHE_OP_REL_RW,
+               CACHE_MAKE(I, Q, 0, 0), 2, CACHE_ACT_REL_RW);
+    step_cache("two turns: the read grant finds both", &c, CACHE_OP_GRANT_RO,
+               CACHE_MAKE(I, G, 0, 2), 0, CACHE_ACT_DRAIN_RO);
+  }
+  {
+    /* The read grant arrives first, the write request out: it serves the
+     * readers and no writer; the write grant follows their release. */
+    struct cache_sim c = {CACHE_MAKE(Q, Q, 1, 2), 0u};
+    step_cache("read first: the read grant", &c, CACHE_OP_GRANT_RO,
+               CACHE_MAKE(Q, G, 1, 2), 0, CACHE_ACT_DRAIN_RO);
+    step_cache("read first: a reader releases", &c, CACHE_OP_REL_RO,
+               CACHE_MAKE(Q, G, 1, 1), 0, CACHE_ACT_NONE);
+    step_cache("read first: the read grant goes back", &c, CACHE_OP_REL_RO,
+               CACHE_MAKE(Q, I, 1, 0), 0, CACHE_ACT_REL_RO);
+    step_cache("read first: the write grant", &c, CACHE_OP_GRANT_RW,
+               CACHE_MAKE(G, I, 1, 0), 0, CACHE_ACT_DRAIN_RW);
+  }
+  {
+    /* A holder of the write turn becomes a reader while the read request is
+     * out: it joins as a holder, and the turn ends at its read release. */
+    struct cache_sim c = {CACHE_MAKE(G, Q, 1, 0), 1u};
+    step_cache("downgrade: the join", &c, CACHE_OP_ACQ_RO,
+               CACHE_MAKE(G, Q, 1, 1), 1, CACHE_ACT_SELF_SERVE);
+    step_cache("downgrade: the write release", &c, CACHE_OP_REL_RW,
+               CACHE_MAKE(G, Q, 0, 1), 1, CACHE_ACT_NONE);
+    step_cache("downgrade: the read release ends the turn", &c, CACHE_OP_REL_RO,
+               CACHE_MAKE(I, Q, 0, 0), 1, CACHE_ACT_REL_RW);
+    step_cache("downgrade: the read grant", &c, CACHE_OP_GRANT_RO,
+               CACHE_MAKE(I, G, 0, 1), 0, CACHE_ACT_DRAIN_RO);
+  }
+  {
+    /* A create claims a first touch with both requests out: the hold serves
+     * the writer and closes the write request; the read request stays out,
+     * takes its size round and is granted after the hold's release. */
+    struct cache_sim c = {CACHE_MAKE_X(I, I, 1u, 0, 0), 0u};
+    step_cache("claim: a reader requests", &c, CACHE_OP_ACQ_RO,
+               CACHE_MAKE_X(I, Q, 1u, 0, 1), 0, CACHE_ACT_SEND_RO);
+    step_cache("claim: a writer requests", &c, CACHE_OP_ACQ_RW,
+               CACHE_MAKE_X(Q, Q, 1u, 1, 1), 0, CACHE_ACT_SEND_RW);
+    step_cache("claim: the create takes the hold", &c, CACHE_OP_CREATE_HOLD,
+               CACHE_MAKE(G, Q, 2, 0), 1, CACHE_ACT_DRAIN_RW);
+    step_cache("claim: a grant under the hold is late", &c, CACHE_OP_GRANT_RW,
+               CACHE_MAKE(G, Q, 2, 0), 1, CACHE_ACT_LATE);
+    step_cache("claim: the size round re-sends the read request", &c,
+               CACHE_OP_CTS_RO, CACHE_MAKE(G, Q, 2, 0), 1, CACHE_ACT_RESEND_RO);
+    step_cache("claim: a holder releases", &c, CACHE_OP_REL_RW,
+               CACHE_MAKE(G, Q, 1, 0), 1, CACHE_ACT_NONE);
+    step_cache("claim: the hold's zero edge", &c, CACHE_OP_REL_RW,
+               CACHE_MAKE(I, Q, 0, 0), 1, CACHE_ACT_REL_RW);
+    step_cache("claim: the read grant", &c, CACHE_OP_GRANT_RO,
+               CACHE_MAKE(I, G, 0, 1), 0, CACHE_ACT_DRAIN_RO);
+    step_cache("claim: a hold is refused under the read grant", &c,
+               CACHE_OP_CREATE_HOLD, CACHE_MAKE(I, G, 0, 1), 0, CACHE_ACT_NONE);
+  }
+  cache_walk();
 
   if (g_rc != 0) {
     return 1;
   }
-  printf("PASS excl_compute_next: %d truth-table transitions "
-         "(RW/RO ACQ/REL, D6 rw->rw chain, D7 new-RO-while-RW-waiting, "
-         "state_bit normalization, the teardown mark and the torn-down word"
-#ifdef ARTS_USE_CXL
-         ", cache-word grant: only a REQ axis takes it, committed hand-backs "
-         "that clear the answered REQ, multi-round sequences"
-#endif
-         ") all correct\n",
+  printf("PASS excl_compute_next: %d transitions (the lock word: RW/RO "
+         "ACQ/REL, D6 rw->rw chain, D7 new-RO-while-RW-waiting, state_bit "
+         "normalization, the teardown mark, the pre-claim write request and "
+         "every reachable word; the cache word: one request per axis, write "
+         "permission that sets the parked readers aside, the read grant that "
+         "returns them, and every reachable word with its parked and holding "
+         "populations) all correct\n",
          g_checks);
   return 0;
 }

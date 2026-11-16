@@ -71,6 +71,11 @@ static bool lock_read_phase_open(uint64_t s) {
          (EXCL_STATE_W(s) == 0u || EXCL_STATE_BIT(s) == EXCL_PHASE_BIT_RO);
 }
 
+/* The grant's body on the requester's descriptor, which the request's axis
+ * count keeps; the frame that commits the grant drops that count. */
+static void excl_grant_on(struct arts_db_s *db,
+                          const struct arts_msg_excl_grant_packet_s *p);
+
 /* Grant every reader queued on ro_waiters, from the home's store (CXL) or
  * from buf_h.  A node is queued only after its reader's count has committed,
  * so a drained reader is always counted.  The drain takes the whole stack,
@@ -85,24 +90,14 @@ static bool lock_read_phase_open(uint64_t s) {
  * The push-back and the flip's drain are acq_rel RMWs of the one stack head:
  * if the drain is the later one it takes the nodes; if not, the last
  * push-back reads it and synchronizes with it, and the load sees the flip. */
-static void lock_release_commit(struct arts_db_s *db,
-                                struct arts_db_cache_s *cache,
-                                arts_db_access_mode_t mode);
-
-/* The grant's body on the requester's descriptor, which the request's axis
- * count keeps; the frame that commits the grant drops that count. */
-static void excl_grant_on(struct arts_db_s *db,
-                          const struct arts_msg_excl_grant_packet_s *p);
-
-/* A node whose rank's write request took its ro_queued bit is not granted:
- * that write turn covers its readers, so it is dismissed and its read count
- * released here, once the batch is out. */
 static void lock_home_serve_ro(struct arts_db_s *db,
                                struct arts_db_cache_s *cache,
                                arts_shared_ptr_t buf_h, uint64_t data_size) {
 #ifdef ARTS_USE_CXL
   struct arts_rdzv_landing_s pub = {arts_db_cxl_slot_addr(cache), 0, 0, 0};
   (void)buf_h;
+#else
+  (void)cache;
 #endif
   for (;;) {
     arts_sched_fuzz_point();
@@ -113,20 +108,11 @@ static void lock_home_serve_ro(struct arts_db_s *db,
     uint64_t fresh =
         atomic_load_explicit(&db->lock_state, memory_order_acquire);
     if (lock_read_phase_open(fresh)) {
-      uint32_t dismissed = 0u;
       while (node != NULL) {
         arts_lf_link_t *nx =
             atomic_load_explicit(&node->next, memory_order_relaxed);
         struct arts_lock_ro_node_s *rn =
             ARTS_CONTAINER_OF(node, struct arts_lock_ro_node_s, link);
-        if (!arts_rank_bitset_put(&db->ro_queued, rn->rank, false)) {
-          arts_send_db_excl_cts(db->cache.db_guid, rn->rank, data_size,
-                                (uint32_t)DB_MODE_RO, rn->cover, rn->token);
-          dismissed++;
-          arts_free(rn);
-          node = nx;
-          continue;
-        }
 #ifdef ARTS_USE_CXL
         arts_send_db_excl_grant(db, rn->rank, DB_MODE_RO, /*version=*/0u,
                                 &rn->rdzv, &pub, /*src_h=*/NULL, data_size,
@@ -140,9 +126,6 @@ static void lock_home_serve_ro(struct arts_db_s *db,
 #endif
         arts_free(rn);
         node = nx;
-      }
-      while (dismissed-- > 0u) {
-        lock_release_commit(db, cache, DB_MODE_RO);
       }
       return;
     }
@@ -318,96 +301,37 @@ void arts_send_db_excl_grant(struct arts_db_s *db, unsigned int requester_rank,
 
 /* ===== arts_handler_db_excl_request ==================================== */
 
-/* One lock_state transition that settles the owed count; returns its grant
- * code (NONE or DESTROY). */
-static uint32_t lock_owed_step(struct arts_db_s *db, int op) {
+/* The claiming creator's pre-claim write request: the create's hold served
+ * its writers and closed the axis, and the announce told the home it is
+ * coming.  It is discarded here, neither counted nor answered, and its
+ * arrival may be the edge a marked home's teardown waited for.  Returns
+ * whether the request was that one. */
+static bool lock_preclaim_write_absorb(struct arts_db_s *db,
+                                       unsigned int requester,
+                                       arts_db_access_mode_t mode,
+                                       uint32_t cover) {
+  /* A read request's word is zero and a write request's carries nothing but
+   * PRECLAIM. */
+  assert((cover & ~EXCL_COVER_PRECLAIM) == 0u &&
+         (cover == 0u || mode == DB_MODE_RW));
+  if (mode != DB_MODE_RW || (cover & EXCL_COVER_PRECLAIM) == 0u ||
+      requester != db->claim_rank) {
+    return false;
+  }
   uint32_t grant;
   uint64_t cur, next;
   do {
     cur = atomic_load_explicit(&db->lock_state, memory_order_acquire);
-    if (op != EXCL_OP_OWE &&
-        (EXCL_STATE_OWED(cur) == 0u ||
-         (op == EXCL_OP_RWO_ARRIVE && EXCL_STATE_RWO(cur) == 0u) ||
-         (op == EXCL_OP_ROO_ARRIVE && EXCL_STATE_ROO(cur) == 0u))) {
+    if (EXCL_STATE_RWO(cur) == 0u) {
       ARTS_ERROR("lock: guid %lu settles a request it was never owed "
                  "(lock_state=%llx)",
                  (unsigned long)db->cache.db_guid, (unsigned long long)cur);
     }
-    next = excl_compute_next(cur, op, &grant);
-    if (grant == LOCK_GRANT_FULL) {
-      ARTS_ERROR("lock: guid %lu owes more requests than its owed field holds "
-                 "(lock_state=%llx)",
-                 (unsigned long)db->cache.db_guid, (unsigned long long)cur);
-    }
+    next = excl_compute_next(cur, EXCL_OP_RWO_ARRIVE, &grant);
   } while (!atomic_compare_exchange_weak_explicit(
       &db->lock_state, &cur, next, memory_order_acq_rel, memory_order_acquire));
-  return grant;
-}
-
-/* The declared-arrival rule, before a request is processed.  Returns false
- * when the request is not processed: the claiming creator's pre-claim
- * requests are discarded unanswered, and a declared read request is
- * dismissed (a data-less answer echoing its token; no read turn, no count).
- * `reads`: a read request that, if not declared, is processed as a read (not
- * answered with a size round). */
-static bool lock_request_cover(struct arts_db_s *db, unsigned int requester,
-                               arts_db_access_mode_t mode, uint32_t cover,
-                               uint64_t token, bool reads) {
-  if ((cover & EXCL_COVER_PRECLAIM) != 0u && requester == db->claim_rank) {
-    /* The claiming creator's pre-claim request: the claim's hold served its
-     * cohort, closed the axis, and the announce owes it.  Not counted, no
-     * size round, no answer; its declaration and parity are not applied (the
-     * announce seeded the parity). */
-    if (lock_owed_step(db, mode == DB_MODE_RW ? EXCL_OP_RWO_ARRIVE
-                                              : EXCL_OP_ROO_ARRIVE) ==
-        LOCK_GRANT_DESTROY) {
-      arts_excl_home_teardown(db, db->cache.db_guid);
-    }
-    return false;
-  }
-  if (mode == DB_MODE_RW && (cover & EXCL_COVER_RO_OPEN) != 0u) {
-    /* The read request this rank has out is covered by this write turn and
-     * may arrive after the block's destroy.  Count it before the parity step,
-     * so its arrival, which reads that step, always finds the count; undo if
-     * it has already arrived. */
-    bool par = (cover & EXCL_COVER_RO_PAR) != 0u;
-    (void)lock_owed_step(db, EXCL_OP_OWE);
-    if (arts_rank_bitset_put(&db->ro_parity, requester, par) == par) {
-      /* The undo is a settling step like any: if it leaves a marked home
-       * with nothing counted or owed it owns the teardown, and the request,
-       * which then meets a destroyed block (outside the contract), is
-       * dropped. */
-      if (lock_owed_step(db, EXCL_OP_ARRIVE) == LOCK_GRANT_DESTROY) {
-        arts_excl_home_teardown(db, db->cache.db_guid);
-        return false;
-      }
-      /* The read request arrived first; if it still waits to be served as a
-       * read, this write turn covers it instead. */
-      (void)arts_rank_bitset_put(&db->ro_queued, requester, false);
-    }
-  }
-  if (mode == DB_MODE_RO) {
-    bool par = (cover & EXCL_COVER_PAR) != 0u;
-    if (reads) {
-      (void)arts_rank_bitset_put(&db->ro_queued, requester, true);
-    }
-    if (arts_rank_bitset_put(&db->ro_parity, requester, par) == par) {
-      if (reads) {
-        (void)arts_rank_bitset_put(&db->ro_queued, requester, false);
-      }
-      /* Declared before it came: a write turn of this rank covers it.  Never
-       * processed as a read: dismissed, whether or not the destroy is
-       * marked. */
-      uint32_t g = lock_owed_step(db, EXCL_OP_ARRIVE);
-      arts_send_db_excl_cts(
-          db->cache.db_guid, requester,
-          atomic_load_explicit(&db->cache.db_size, memory_order_relaxed),
-          (uint32_t)DB_MODE_RO, cover, token);
-      if (g == LOCK_GRANT_DESTROY) {
-        arts_excl_home_teardown(db, db->cache.db_guid);
-      }
-      return false;
-    }
+  if (grant == LOCK_GRANT_DESTROY) {
+    arts_excl_home_teardown(db, db->cache.db_guid);
   }
   return true;
 }
@@ -420,21 +344,14 @@ void arts_handler_db_excl_request(void *item_v, void *args_v) {
   unsigned int requester = a->requester;
   arts_db_access_mode_t mode = (arts_db_access_mode_t)a->mode;
 
-#ifndef ARTS_USE_CXL
-  bool size_round = a->rdzv.txid == 0 && requester != arts_global_rank_id &&
-                    atomic_load_explicit(&cache->db_size,
-                                         memory_order_relaxed) > 0 &&
-                    arts_global_rank_count > 1;
-#else
-  bool size_round = false;
-#endif
-  if (!lock_request_cover(db, requester, mode, a->cover, a->token,
-                          !size_round)) {
+  if (lock_preclaim_write_absorb(db, requester, mode, a->cover)) {
     return;
   }
 
 #ifndef ARTS_USE_CXL
-  if (size_round) {
+  if (a->rdzv.txid == 0 && requester != arts_global_rank_id &&
+      atomic_load_explicit(&cache->db_size, memory_order_relaxed) > 0 &&
+      arts_global_rank_count > 1) {
     /* First-touch request without a landing: the requester did not know
      * db_size.  Answer with the size (CTS) and do NOT enqueue — the grant
      * plane requires a landing.  The requester re-issues with one. */
@@ -442,7 +359,7 @@ void arts_handler_db_excl_request(void *item_v, void *args_v) {
     arts_send_db_excl_cts(
         db->cache.db_guid, requester,
         atomic_load_explicit(&cache->db_size, memory_order_relaxed),
-        (uint32_t)mode, a->cover, a->token);
+        (uint32_t)mode, /*cover=*/0u, a->token);
     return;
   }
 #else
@@ -487,7 +404,6 @@ void arts_handler_db_excl_request(void *item_v, void *args_v) {
   struct arts_lock_ro_node_s *n =
       (struct arts_lock_ro_node_s *)arts_malloc(sizeof(*n));
   n->rank = requester;
-  n->cover = a->cover;
   n->rdzv = a->rdzv;
   n->token = a->token;
   do {
@@ -497,18 +413,8 @@ void arts_handler_db_excl_request(void *item_v, void *args_v) {
                                                   memory_order_acq_rel,
                                                   memory_order_acquire));
   if (next == cur) {
-    /* Refused by a torn-down home.  A read request its rank's write request
-     * took (its ro_queued bit) was covered by that write turn, which ended
-     * before the teardown; it is answered with the dismiss the read drain
-     * would have sent, since its count closes only with an answer.  Any
-     * other was still pending at the destroy, which the contract excludes,
-     * and is not answered. */
-    if (!arts_rank_bitset_put(&db->ro_queued, requester, false)) {
-      arts_send_db_excl_cts(
-          db->cache.db_guid, requester,
-          atomic_load_explicit(&cache->db_size, memory_order_relaxed),
-          (uint32_t)DB_MODE_RO, n->cover, n->token);
-    }
+    /* Refused by a torn-down home: the request was still pending at the
+     * destroy, which the contract excludes, and is not answered. */
     arts_free(n);
     return;
   }
@@ -721,9 +627,10 @@ void arts_db_cache_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
     /* Creator holds RW: GRANT + one writer. */
     seed = CACHE_MAKE(CACHE_ST_GRANT, CACHE_ST_IDLE, 1u, 0u);
   } else if (kind == ARTS_DB_INIT_STUB && ARTS_DB_STUB_CLAIMABLE(db_guid)) {
-    seed = CACHE_MAKE_X(CACHE_ST_IDLE, CACHE_ST_IDLE, 0u, 1u, 0u, 0u);
+    seed = CACHE_MAKE_X(CACHE_ST_IDLE, CACHE_ST_IDLE, 1u, 0u, 0u);
   }
   atomic_store_explicit(&c->cache_state, seed, memory_order_relaxed);
+  atomic_store_explicit(&c->ro_aside, 0u, memory_order_relaxed);
   arts_lf_stack_init(&c->ro_pending);
   arts_lf_stack_init(&c->rw_pending);
 #ifndef ARTS_USE_CXL
@@ -800,11 +707,16 @@ void arts_db_create_install_home_buffer(struct arts_db_cache_s *cache,
 #ifndef ARTS_USE_CXL
 /* Materialize this rank's stable buffer (EXCL's fixed-address backing store)
  * and advertise it as the grant landing: the grant PUT installs IN PLACE,
- * preserving the address across the DB's whole lifetime.  A fresh txid is
- * drawn per request (each request is served by at most one grant).  False
- * only when no payload can move here; a sized block whose buffer cannot be
- * advertised is fatal, since a landing-less request is answered with a size
- * round that would only repeat. */
+ * preserving the address across the DB's whole lifetime.  A request may
+ * leave while this rank holds the other axis's grant, with holders in the
+ * buffer; its grant's bytes still land only while the rank holds no grant
+ * and so has no holder: the home issues a write grant once every read grant
+ * came back, and a read grant once no write turn is out, the requester's
+ * own included, and a grant comes back only after its last holder released.
+ * A fresh txid is drawn per request (each request is served by at most one
+ * grant).  False only when no payload can move here; a sized block whose
+ * buffer cannot be advertised is fatal, since a landing-less request is
+ * answered with a size round that would only repeat. */
 static bool lock_stable_landing(struct arts_db_cache_s *cache,
                                 struct arts_rdzv_landing_s *out) {
   *out = (struct arts_rdzv_landing_s){0, 0, 0, 0};
@@ -846,11 +758,10 @@ void arts_send_db_excl_request(struct arts_db_cache_s *cache,
      * (an acquire on the home rank parks until the home installs), on which
      * the request body runs inline.  The home is the canonical store, so its
      * own grant is data-less and no landing is advertised.  The body can
-     * answer the request inline (its grant, a dismiss), dropping the
-     * request's count, which a re-sending answer runs under, and run on
-     * after it (a dismiss's teardown): it runs under a count of its own.  A
-     * descriptor no longer live was retired, outside the contract, and the
-     * request takes the engine by GUID, as a message would. */
+     * answer the request inline (its grant), dropping the request's count,
+     * and run on after it: it runs under a count of its own.  A descriptor
+     * no longer live was retired, outside the contract, and the request
+     * takes the engine by GUID, as a message would. */
     struct arts_ooo_args_db_excl_request_s args = {
         .requester = arts_global_rank_id,
         .db_guid = db_guid,
@@ -889,11 +800,22 @@ void arts_send_db_excl_request(struct arts_db_cache_s *cache,
   }
 }
 
-/* EXCL_CTS sender (a size round, or a read request's dismiss) +
- * requester-side body. */
+#ifdef ARTS_USE_CXL
+/* A request advertises no landing on this arm, so the home answers it with
+ * its grant alone: no size round exists. */
+void arts_handler_db_excl_cts(const struct arts_msg_excl_cts_packet_s *p) {
+  ARTS_ERROR("cxl: a size round from rank %u for guid %lu; on this arm a "
+             "request is answered by its grant and nothing else",
+             p->header.rank, (unsigned long)p->db_guid);
+}
+#else
+/* EXCL_CTS sender (a size round) + requester-side body. */
 void arts_send_db_excl_cts(arts_guid_t db_guid, unsigned int requester_rank,
                            uint64_t db_size, uint32_t mode, uint32_t cover,
                            uint64_t token) {
+  /* A size round answers a landing-less request, which the home's own never
+   * is. */
+  assert(requester_rank != arts_global_rank_id);
   struct arts_msg_excl_cts_packet_s p;
   arts_fill_packet_header(&p.header, sizeof(p), MSG_DB_EXCL_CTS);
   p.header.rank = arts_global_rank_id;
@@ -902,38 +824,7 @@ void arts_send_db_excl_cts(arts_guid_t db_guid, unsigned int requester_rank,
   p.mode = mode;
   p.cover = cover;
   p.token = token;
-  if (requester_rank == arts_global_rank_id) {
-    /* The home's own read request dismissed: the transport drops a
-     * self-send, so the answer runs here, on the descriptor its token
-     * names. */
-    arts_handler_db_excl_cts(&p);
-    return;
-  }
   arts_transport_send_async((int)requester_rank, (char *)&p, sizeof(p));
-}
-
-/* A read request's cover word: its parity, and PRECLAIM while the cache is a
- * claimable first touch. */
-static uint32_t excl_ro_cover(uint64_t s) {
-  return (CACHE_RO_PAR(s) ? EXCL_COVER_PAR : 0u) |
-         (CACHE_STUB(s) ? EXCL_COVER_PRECLAIM : 0u);
-}
-
-/* The cover word a write request carries: the read request this rank has out,
- * and whether the cache is still an unclaimed first touch.  `s` is the word of
- * the transition that opened (or re-sends) the write request. */
-static uint32_t excl_rw_cover(uint64_t s) {
-  uint32_t c = 0u;
-  if (CACHE_RO_ST(s) == CACHE_ST_REQ) {
-    c |= EXCL_COVER_RO_OPEN;
-    if (CACHE_RO_PAR(s)) {
-      c |= EXCL_COVER_RO_PAR;
-    }
-  }
-  if (CACHE_STUB(s)) {
-    c |= EXCL_COVER_PRECLAIM;
-  }
-  return c;
 }
 
 void arts_handler_db_excl_cts(const struct arts_msg_excl_cts_packet_s *p) {
@@ -942,59 +833,43 @@ void arts_handler_db_excl_cts(const struct arts_msg_excl_cts_packet_s *p) {
     arts_db_axis_drop(db, 1u);
     return;
   }
+  assert(p->cover == 0u);
   struct arts_db_cache_s *cache = &db->cache;
   arts_db_cache_learn_size(cache, p->db_size);
-  if ((arts_db_access_mode_t)p->mode == DB_MODE_RW) {
-    /* A write request is answered by its grant alone, and one whose cohort a
-     * create served was absorbed at the home: the axis is at REQ.  While it
-     * is, no read request opens, so the read state the re-send declares is
-     * the one its first leg declared or one its answer has since closed. */
-    uint32_t dact;
-    uint64_t s, n;
-    do {
-      s = atomic_load_explicit(&cache->cache_state, memory_order_acquire);
-      n = cache_compute_next(s, CACHE_OP_DECLAIM, &dact);
-      if (dact == CACHE_ACT_LATE) {
-        ARTS_ERROR("lock: guid %lu got a size round for a write request it "
-                   "does not have out (word=%llx)",
-                   (unsigned long)cache->db_guid, (unsigned long long)s);
-      }
-    } while (!atomic_compare_exchange_weak_explicit(
-        &cache->cache_state, &s, n, memory_order_acq_rel,
-        memory_order_acquire));
-    arts_send_db_excl_request(cache, DB_MODE_RW, excl_rw_cover(n));
-    return; /* the axis stays open: the re-sent request is the same one */
-  }
-  /* A size round or a dismiss of the read request; its parity must be the
-   * open request's, checked against the word the CAS commits on. */
-  uint32_t par = (p->cover & EXCL_COVER_PAR) != 0u ? 1u : 0u;
+  bool write = (arts_db_access_mode_t)p->mode == DB_MODE_RW;
+  /* A request is answered by its grant alone (a write request whose writers
+   * a create served is absorbed at the home), so its axis is at REQ.  The
+   * re-sent request is the same one: the axis and its count stay open, and
+   * with the stub bit cleared a write request carries no PRECLAIM. */
   uint32_t act;
   uint64_t cur, next;
   do {
     cur = atomic_load_explicit(&cache->cache_state, memory_order_acquire);
-    next = cache_compute_next(cur, CACHE_OP_CTS_RO, &act);
-    if (act == CACHE_ACT_LATE || CACHE_RO_PAR(cur) != par) {
-      ARTS_ERROR("lock: guid %lu got a size round or dismiss (parity %u) for "
-                 "a read request it does not have out (word=%llx)",
-                 (unsigned long)cache->db_guid, par, (unsigned long long)cur);
+    next = cache_compute_next(cur, write ? CACHE_OP_DECLAIM : CACHE_OP_CTS_RO,
+                              0u, &act);
+    if (act == CACHE_ACT_LATE) {
+      ARTS_ERROR("lock: guid %lu got a size round for a %s request it does "
+                 "not have out (word=%llx)",
+                 (unsigned long)cache->db_guid, write ? "write" : "read",
+                 (unsigned long long)cur);
     }
   } while (!atomic_compare_exchange_weak_explicit(&cache->cache_state, &cur,
                                                   next, memory_order_acq_rel,
                                                   memory_order_acquire));
-  if (act == CACHE_ACT_RESEND_RO) {
-    arts_send_db_excl_request(cache, DB_MODE_RO, excl_ro_cover(next));
-    return; /* the axis stays open: the re-sent request is the same one */
-  }
-  arts_db_axis_drop(db, 1u); /* the axis closed: its count goes, last */
+  arts_send_db_excl_request(cache, write ? DB_MODE_RW : DB_MODE_RO,
+                            /*cover=*/0u);
 }
+#endif /* ARTS_USE_CXL */
 
-/* Serve exactly `expected` waiters from `q` — the parked population observed
- * in the counts by the caller's CAS, the one that starts serving the axis (a
- * grant's commit or a create's hold), which is exact: counts return to zero
- * at every 0-edge, arrivals under a held grant self-serve (never push), so
- * everything counted at that CAS is parked (or about to be).  Its committer
- * is the SOLE drainer; each whole-stack atomic-exchange batch is consumed
- * once (exactly-once serve).  A counted waiter may not have pushed yet:
+/* Serve exactly `expected` waiters from `q` — the parked population the
+ * caller's CAS, the one that starts serving the axis (a grant's commit or a
+ * create's hold), counted, which is exact: arrivals under a held grant
+ * self-serve (never push), and a waiter parks only on its own axis's
+ * request, so everything that CAS counted on the axis (for a read grant,
+ * with the readers it returned from ro_aside) is parked (or about to be).
+ * Its committer is the SOLE drainer; each whole-stack atomic-exchange batch
+ * is consumed once (exactly-once serve).  A counted waiter may not have
+ * pushed yet:
  * between the CAS that counted it and its push it only allocates and fills
  * its small node (no lock, no wait), and the drain waits for that by
  * re-draining.
@@ -1030,20 +905,63 @@ static void lock_drain_pending(arts_lf_stack_t *q, uint32_t expected) {
   }
 }
 
+/* Move the readers a write-permission transition took out of the word's
+ * read count (its pre-image's, cache_set_aside) to ro_aside, before the
+ * transition's committer resumes any writer. */
+static void lock_set_readers_aside(struct arts_db_cache_s *cache,
+                                   uint64_t pre) {
+  uint32_t n = cache_set_aside(pre);
+  if (n == 0u) {
+    return;
+  }
+  arts_sched_fuzz_point();
+  uint32_t had =
+      atomic_fetch_add_explicit(&cache->ro_aside, n, memory_order_acq_rel);
+  if ((uint64_t)had + n > CACHE_CNT_MASK) {
+    ARTS_ERROR("lock: guid %lu has more read acquires parked on one rank "
+               "than its cache word can hold (aside=%u, word=%llx)",
+               (unsigned long)cache->db_guid, had, (unsigned long long)pre);
+  }
+#ifndef NDEBUG
+  /* The turn this transition opened still holds the writers it counted,
+   * none resumed yet, so the read grant that will take this count cannot
+   * have come; the word this thread wrote is the latest it can read. */
+  uint64_t now =
+      atomic_load_explicit(&cache->cache_state, memory_order_relaxed);
+  assert(CACHE_RW_ST(now) == CACHE_ST_GRANT &&
+         CACHE_RO_ST(now) == CACHE_ST_REQ);
+#endif
+}
+
+/* A read grant's committer takes the readers set aside, once, before the CAS
+ * that returns them to the word's read count. */
+static uint32_t lock_take_readers_aside(struct arts_db_cache_s *cache) {
+  uint32_t taken =
+      atomic_exchange_explicit(&cache->ro_aside, 0u, memory_order_acq_rel);
+  arts_sched_fuzz_point();
+  return taken;
+}
+
 /* The hold is this arm's own: one CAS of the cache word, through the arbiter
  * like every other transition of it, and then the actions that transition
- * owes.  A read this rank had already asked for is covered by the turn the
- * create takes (RW ⊇ RO) and is served here, exactly as a granted RW phase
- * serves its RO cohort.  The home's directory is not touched from here — it
- * comes from the announce, where arts_db_home_init names the creator. */
+ * owes.  It is a write acquire: it serves the writers parked on the write
+ * request this rank had out, which the home absorbs, and no reader; a read
+ * request this rank has out stays out, to be granted by the home once it is
+ * installed.  The home's directory is not touched from here — it comes from
+ * the announce, where arts_db_home_init names the creator. */
 bool arts_db_create_take_hold(struct arts_db_cache_s *cache, uint8_t *owed) {
   uint32_t act;
   uint64_t cur, next;
   *owed = 0u;
   do {
     cur = atomic_load_explicit(&cache->cache_state, memory_order_acquire);
-    next = cache_compute_next(cur, CACHE_OP_CREATE_HOLD, &act);
+    next = cache_compute_next(cur, CACHE_OP_CREATE_HOLD, 0u, &act);
     if (act == CACHE_ACT_LATE) {
+      if (CACHE_RW_CNT(cur) != (uint32_t)CACHE_RW_CNT_MASK) {
+        ARTS_ERROR("lock: guid %lu has readers counted on no read request "
+                   "at its create's hold (word=%llx)",
+                   (unsigned long)cache->db_guid, (unsigned long long)cur);
+      }
       ARTS_ERROR("lock: guid %lu has more write acquires counted on one rank "
                  "than its cache word can hold (word=%llx)",
                  (unsigned long)cache->db_guid, (unsigned long long)cur);
@@ -1054,26 +972,20 @@ bool arts_db_create_take_hold(struct arts_db_cache_s *cache, uint8_t *owed) {
   } while (!atomic_compare_exchange_weak_explicit(&cache->cache_state, &cur,
                                                   next, memory_order_acq_rel,
                                                   memory_order_acquire));
-  /* What the claimed first touch had already asked for, read from the word
-   * this claim replaced: its requests are the home's to absorb. */
-  if (CACHE_RO_ST(cur) == CACHE_ST_REQ) {
-    *owed |= ARTS_CREATE_OWED_RO;
-    if (CACHE_RO_PAR(cur)) {
-      *owed |= ARTS_CREATE_OWED_RO_PAR;
-    }
-  }
+  /* The write request the claimed first touch had already sent, read from
+   * the word this claim replaced: it is the home's to absorb. */
   if (CACHE_RW_ST(cur) == CACHE_ST_REQ) {
     *owed |= ARTS_CREATE_OWED_RW;
   }
-  if (act == CACHE_ACT_DRAIN_BOTH) {
-    /* The counts are the pre-image's: the population this transition owes,
-     * exactly as a GRANT_RW landing drains it (the creator's own +1 is not
-     * parked). */
+  if (act == CACHE_ACT_DRAIN_RW) {
+    /* The writer count is the pre-image's: the population this transition
+     * owes, exactly as a GRANT_RW landing drains it (the creator's own +1 is
+     * not parked). */
+    lock_set_readers_aside(cache, cur);
     lock_drain_pending(&cache->rw_pending, CACHE_RW_CNT(cur));
-    lock_drain_pending(&cache->ro_pending, CACHE_RO_CNT(cur));
   }
-  /* The claim closed the requests the cache had out: their counts go, under
-   * the create's own. */
+  /* The claim closed the write request the cache had out: its count goes,
+   * under the create's own. */
   arts_db_axis_drop(arts_db_of_cache(cache), arts_db_claim_closed_axes(*owed));
   return true;
 }
@@ -1238,17 +1150,17 @@ static void cxl_purge_body(struct arts_db_cache_s *cache,
  * Single-atom acquire: ONE CAS carries {count++, decision} together (see
  * cache_compute_next in arbiters.c for why the atomicity is load-bearing).
  * The action decides where this acquire is served:
- *   SELF_SERVE  a covering grant is held — serve the dep directly.  It never
- *               touches the pend stacks, which keeps the parked population
- *               equal to the counts a later grant CAS reads, and allocates no
- *               node.
- *   SEND_*      this acquire opened the round's request: park the waiter
+ *   SELF_SERVE  a grant is held (the write grant serves readers too) — serve
+ *               the dep directly.  It never touches the pend stacks, which
+ *               keeps the parked population equal to the counts a later
+ *               grant CAS reads, and allocates no node.
+ *   SEND_*      this acquire opened its axis's request: park the waiter
  *               FIRST, then send — by the time any grant for the request can
  *               exist, the opener's node is already drainable.
- *   PARK        covered by the in-flight request: park.  The transition that
- *               serves it (a grant's commit or a create's hold) serves exactly
- *               the population its CAS counted, so a node whose push trails
- *               that CAS is awaited, never lost. */
+ *   PARK        its axis's request is out: park on it.  The transition that
+ *               serves it (the request's grant; for a writer also a create's
+ *               hold) serves exactly the population it counted, so a node
+ *               whose push trails that CAS is awaited, never lost. */
 void arts_handler_db_acquire(void *item, void *args) {
   struct arts_db_s *db = (struct arts_db_s *)item;
   struct arts_ooo_args_db_acquire_s *a =
@@ -1283,7 +1195,7 @@ void arts_handler_db_acquire(void *item, void *args) {
   uint64_t cur, next;
   do {
     cur = atomic_load_explicit(&cache->cache_state, memory_order_acquire);
-    next = cache_compute_next(cur, op, &act);
+    next = cache_compute_next(cur, op, 0u, &act);
     if (act == CACHE_ACT_LATE) {
       ARTS_ERROR("lock: guid %lu has more %s acquires counted on one rank "
                  "than its cache word can hold (word=%llx)",
@@ -1321,18 +1233,19 @@ void arts_handler_db_acquire(void *item, void *args) {
 
   /* The node is the drainer's now, yet the slot's pin, borrowed here, still
    * holds `cache` across the request's count and the send below, a self-sent
-   * request body that can tear the home down included: every EXCL dependence
-   * is serialized, so this runs in the EDT's walk, which owes the EDT an
-   * account until it returns, and no resolution of the slot can schedule the
-   * EDT (whose release drops the pin) before then.  A non-serialized EXCL
-   * dependence would break it. */
+   * request body included: every EXCL dependence is serialized, so this runs
+   * in the EDT's walk, which owes the EDT an account until it returns, and
+   * no resolution of the slot can schedule the EDT (whose release drops the
+   * pin) before then.  A non-serialized EXCL dependence would break it. */
   if (act == CACHE_ACT_SEND_RW || act == CACHE_ACT_SEND_RO) {
     arts_db_axis_take(db);
   }
   if (act == CACHE_ACT_SEND_RW) {
-    arts_send_db_excl_request(cache, DB_MODE_RW, excl_rw_cover(cur));
+    /* PRECLAIM while the cache is a first touch no create has claimed. */
+    arts_send_db_excl_request(cache, DB_MODE_RW,
+                              CACHE_STUB(cur) ? EXCL_COVER_PRECLAIM : 0u);
   } else if (act == CACHE_ACT_SEND_RO) {
-    arts_send_db_excl_request(cache, DB_MODE_RO, excl_ro_cover(next));
+    arts_send_db_excl_request(cache, DB_MODE_RO, /*cover=*/0u);
   }
 }
 
@@ -1345,17 +1258,66 @@ void arts_handler_db_acquire(void *item, void *args) {
  *       any bytes in flight have landed.
  *   (2) A payload sent one-sided must land BEFORE the CAS so drained waiters
  *       observe it: the commit waits for the write completion.
- *   (3) CAS the single word: RW grant Q→GRANT (action DRAIN_BOTH); RO grant
- *       Q→GRANT (DRAIN_RO).
+ *   (3) CAS the single word: RW grant Q→GRANT (action DRAIN_RW); RO grant
+ *       Q→GRANT (DRAIN_RO), which first takes the readers set aside back.
  *   (4) Run the action after the CAS commits (mirrors the home grant path:
  *       compute decides, the pop/drain/send runs after).
  *
- * The grant committer is the SOLE drainer of its round's pend stacks (a
- * create's hold drains only a round that no grant serves): the counts its
- * CAS observed are exactly the parked population (arrivals under the held
- * grant self-serve and never park), and lock_drain_pending consumes exactly
- * that many nodes — serving is exactly-once with no other drain path that
- * could run against a later round. */
+ * A grant's committer is the SOLE drainer of its own axis's pend stack (a
+ * create's hold drains only writers no grant serves): a write grant serves
+ * the writers its CAS counted and no reader, a read grant the readers its
+ * CAS counted, the ones set aside included.  Those are exactly the parked
+ * population (arrivals under a held grant self-serve and never park), and
+ * lock_drain_pending consumes exactly that many nodes — serving is
+ * exactly-once with no other drain path that could run against a later
+ * round. */
+
+/* What a committed grant transition owes, in order, and the request's count
+ * last: the CAS closed the granted axis.  `cur` and `next` are the CAS's
+ * words, `taken` what a read grant took from ro_aside before it.  A write
+ * grant sets the readers parked on the read request aside before it resumes
+ * a writer, so the release that ends the turn follows the add. */
+static void lock_grant_apply(struct arts_db_s *db, arts_guid_t db_guid,
+                             arts_db_access_mode_t mode, uint64_t cur,
+                             uint64_t next, uint32_t taken, uint32_t act) {
+  struct arts_db_cache_s *cache = &db->cache;
+  switch (act) {
+  case CACHE_ACT_DRAIN_RW:
+    lock_set_readers_aside(cache, cur);
+    lock_drain_pending(&cache->rw_pending, CACHE_RW_CNT(cur));
+    break;
+  case CACHE_ACT_DRAIN_RO:
+    /* The next add needs this rank's next write turn, which the home grants
+     * only after the read turn this drain owes readers to has returned. */
+    assert(atomic_load_explicit(&cache->ro_aside, memory_order_relaxed) ==
+           0u);
+    lock_drain_pending(&cache->ro_pending, CACHE_RO_CNT(next));
+    break;
+  case CACHE_ACT_LATE:
+    if (mode == DB_MODE_RO && CACHE_RO_ST(cur) == CACHE_ST_REQ &&
+        CACHE_RW_ST(cur) != CACHE_ST_GRANT &&
+        (uint64_t)CACHE_RO_CNT(cur) + taken > CACHE_CNT_MASK) {
+      ARTS_ERROR("lock: guid %lu has more read acquires counted on one rank "
+                 "than its cache word can hold (word=%llx, set aside %u)",
+                 (unsigned long)db_guid, (unsigned long long)cur, taken);
+    }
+    if (taken != 0u) {
+      ARTS_ERROR("lock: guid %lu got a read grant that cannot return the %u "
+                 "readers set aside to its word: no read request is out, or "
+                 "the write grant is held (word=%llx)",
+                 (unsigned long)db_guid, taken, (unsigned long long)cur);
+    }
+    ARTS_ERROR("lock: guid %lu got a %s grant it has no request out for "
+               "(word=%llx)",
+               (unsigned long)db_guid, mode == DB_MODE_RW ? "write" : "read",
+               (unsigned long long)cur);
+    break;
+  default:
+    break;
+  }
+  arts_db_axis_drop(db, 1u);
+}
+
 #ifdef ARTS_USE_CXL
 /* Apply a grant: fetch, then the one CAS that admits the cohort.  The fetch
  * must precede that CAS — once the axis reads GRANT an arriving acquire
@@ -1366,19 +1328,21 @@ void arts_handler_db_acquire(void *item, void *args) {
  * admits a holder of the copy in between.  Only a reused label breaks it,
  * its generations not being told apart: a create hold of the label racing a
  * grant meant for its previous block may write the copy before a CAS that
- * then re-decides.  The CAS closes the granted axis: its count goes last. */
+ * then re-decides.  A read grant takes the readers set aside once, before
+ * the loop, so every decision of the loop, a refusal included, counts
+ * them. */
 static void lock_grant_commit(struct arts_db_s *db, arts_guid_t db_guid,
                               arts_db_access_mode_t mode) {
   struct arts_db_cache_s *cache = &db->cache;
   int op = (mode == DB_MODE_RW) ? CACHE_OP_GRANT_RW : CACHE_OP_GRANT_RO;
+  uint32_t taken = (mode == DB_MODE_RO) ? lock_take_readers_aside(cache) : 0u;
   bool fetched = false;
   uint32_t act;
   uint64_t cur = atomic_load_explicit(&cache->cache_state, memory_order_acquire);
   uint64_t next;
   for (;;) {
-    next = cache_compute_next(cur, op, &act);
-    if (!fetched &&
-        (act == CACHE_ACT_DRAIN_BOTH || act == CACHE_ACT_DRAIN_RO)) {
+    next = cache_compute_next(cur, op, taken, &act);
+    if (!fetched && (act == CACHE_ACT_DRAIN_RW || act == CACHE_ACT_DRAIN_RO)) {
       cxl_fetch_working_copy(cache);
       fetched = true;
       cur = atomic_load_explicit(&cache->cache_state, memory_order_acquire);
@@ -1390,29 +1354,12 @@ static void lock_grant_commit(struct arts_db_s *db, arts_guid_t db_guid,
       break;
     }
   }
-  switch (act) {
-  case CACHE_ACT_DRAIN_BOTH: /* an RW turn serves this rank's RW + RO cohort */
-    lock_drain_pending(&cache->rw_pending, CACHE_RW_CNT(cur));
-    lock_drain_pending(&cache->ro_pending, CACHE_RO_CNT(cur));
-    break;
-  case CACHE_ACT_DRAIN_RO:
-    lock_drain_pending(&cache->ro_pending, CACHE_RO_CNT(cur));
-    break;
-  case CACHE_ACT_LATE:
-    ARTS_ERROR("lock: guid %lu got a %s grant it has no request out for "
-               "(word=%llx)",
-               (unsigned long)db_guid, mode == DB_MODE_RW ? "write" : "read",
-               (unsigned long long)cur);
-    break;
-  default:
-    break;
-  }
-  arts_db_axis_drop(db, 1u);
+  lock_grant_apply(db, db_guid, mode, cur, next, taken, act);
 }
 #else
-/* Steps (3)+(4) of the grant: the cache_state transition + resulting drain.
+/* Steps (3)+(4) of the grant: the cache_state transition + what it owes.
  * Factored out so the rendezvous continuation (grant bytes landed) runs the
- * identical commit.  The CAS closes the granted axis: its count goes last. */
+ * identical commit. */
 static void lock_grant_commit(struct arts_db_s *db, arts_guid_t db_guid,
                               arts_db_access_mode_t mode,
                               const struct arts_rdzv_landing_s *pub) {
@@ -1426,41 +1373,23 @@ static void lock_grant_commit(struct arts_db_s *db, arts_guid_t db_guid,
   }
 
   int op = (mode == DB_MODE_RW) ? CACHE_OP_GRANT_RW : CACHE_OP_GRANT_RO;
+  uint32_t taken = (mode == DB_MODE_RO) ? lock_take_readers_aside(cache) : 0u;
   uint32_t act;
   uint64_t cur, next;
   do {
     cur = atomic_load_explicit(&cache->cache_state, memory_order_acquire);
-    next = cache_compute_next(cur, op, &act);
+    next = cache_compute_next(cur, op, taken, &act);
   } while (!atomic_compare_exchange_weak_explicit(&cache->cache_state, &cur,
                                                   next, memory_order_acq_rel,
                                                   memory_order_acquire));
-
-  switch (act) {
-  case CACHE_ACT_DRAIN_BOTH: /* RW grant serves this rank's RW + RO cohort */
-    lock_drain_pending(&cache->rw_pending, CACHE_RW_CNT(cur));
-    lock_drain_pending(&cache->ro_pending, CACHE_RO_CNT(cur));
-    break;
-  case CACHE_ACT_DRAIN_RO:
-    lock_drain_pending(&cache->ro_pending, CACHE_RO_CNT(cur));
-    break;
-  case CACHE_ACT_LATE:
-    ARTS_ERROR("lock: guid %lu got a %s grant it has no request out for "
-               "(word=%llx)",
-               (unsigned long)db_guid, mode == DB_MODE_RW ? "write" : "read",
-               (unsigned long long)cur);
-    break;
-  default:
-    break;
-  }
-
-  arts_db_axis_drop(db, 1u);
+  lock_grant_apply(db, db_guid, mode, cur, next, taken, act);
 }
 #endif /* ARTS_USE_CXL */
 
 #ifndef ARTS_USE_CXL
 /* Rendezvous continuation: the grant bytes have fully landed IN PLACE in this
- * rank's stable buffer (EXCL's fixed-address install; no local holder exists
- * while a grant is in flight — the global lock excluded us).  Nothing to
+ * rank's stable buffer (EXCL's fixed-address install; this rank holds no
+ * grant while one is in flight to it — see lock_stable_landing).  Nothing to
  * install; run the commit.  The context borrows the request's count: the
  * axis stays open until the commit this callback runs. */
 struct lock_grant_landed_ctx_s {
@@ -1783,7 +1712,7 @@ void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload) {
     if (CACHE_RW_CNT(cur) == 0u) {
       return; /* nothing held */
     }
-    next = cache_compute_next(cur, CACHE_OP_REL_RW, &act);
+    next = cache_compute_next(cur, CACHE_OP_REL_RW, 0u, &act);
   } while (!atomic_compare_exchange_weak_explicit(&cache->cache_state, &cur,
                                                   next, memory_order_acq_rel,
                                                   memory_order_acquire));
@@ -1800,7 +1729,7 @@ void arts_db_release_ro(struct arts_db_cache_s *cache) {
     if (CACHE_RO_CNT(cur) == 0u) {
       return; /* nothing held */
     }
-    next = cache_compute_next(cur, CACHE_OP_REL_RO, &act);
+    next = cache_compute_next(cur, CACHE_OP_REL_RO, 0u, &act);
   } while (!atomic_compare_exchange_weak_explicit(&cache->cache_state, &cur,
                                                   next, memory_order_acq_rel,
                                                   memory_order_acquire));
@@ -1821,7 +1750,7 @@ void arts_db_join_read(struct arts_db_cache_s *cache) {
   uint64_t cur, next;
   do {
     cur = atomic_load_explicit(&cache->cache_state, memory_order_acquire);
-    next = cache_compute_next(cur, CACHE_OP_ACQ_RO, &act);
+    next = cache_compute_next(cur, CACHE_OP_ACQ_RO, 0u, &act);
     if (act == CACHE_ACT_LATE) {
       ARTS_ERROR("lock: guid %lu has more read acquires counted on one rank "
                  "than its cache word can hold (word=%llx)",

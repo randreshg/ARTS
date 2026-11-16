@@ -620,21 +620,24 @@ void arts_handler_db_excl_grant(void *payload, size_t size);
  * advertises none: the home's own grant moves no payload, and a payload a
  * remote owner owes it lands in a landing the home draws when it forwards.
  * Where grants carry no payload (the CXL store), no request advertises one. */
-/* cover: the request's EXCL_COVER_* word (its parity, or a write request's
- * declaration), read from the cache-word transition that opened it. */
+/* cover: the request's EXCL_COVER_* word, read from the cache-word
+ * transition that opened it: under RETAIN its parity, or a write request's
+ * declaration; under PURGE a write request's PRECLAIM and nothing else. */
 void arts_send_db_excl_request(struct arts_db_cache_s *cache,
                                arts_db_access_mode_t mode, uint32_t cover);
-/* EXCL_CTS at the requester, an answer (the wire and a self-send alike): acts
- * on the descriptor the token names, and on a retired one only drops the
- * request's count.  A size round learns db_size and re-issues the request
- * (echoed mode) with a landing, the axis open; a read request's dismiss
- * re-sends for readers that ride no write request, or closes the axis and
- * drops its count. */
+/* EXCL_CTS at the requester, an answer: acts on the descriptor the token
+ * names, and on a retired one only drops the request's count.  A size round
+ * learns db_size and re-issues the request (echoed mode) with a landing, the
+ * axis open.  Under RETAIN it is also a read request's dismiss (the wire and
+ * a self-send alike), which re-sends for readers that ride no write request,
+ * or closes the axis and drops its count.  Where grants carry no payload
+ * (the CXL store) no size round exists and the message is refused. */
 void arts_handler_db_excl_cts(const struct arts_msg_excl_cts_packet_s *p);
-/* EXCL_CTS sender: a size round or a read request's dismiss (db_size, the
- * echoed mode, cover word and token), from the home or, under RETAIN, from
- * an owner a read FORWARD found without the block; to a requester that is
- * this rank the answer runs inline. */
+/* EXCL_CTS sender: a size round (db_size, the echoed mode and token) from
+ * the home, never to this rank itself.  Under RETAIN also a read request's
+ * dismiss, with the request's cover word, from the home or from an owner a
+ * read FORWARD found without the block; to a requester that is this rank
+ * that answer runs inline.  Not defined where grants carry no payload. */
 void arts_send_db_excl_cts(arts_guid_t db_guid, unsigned int requester_rank,
                            uint64_t db_size, uint32_t mode, uint32_t cover,
                            uint64_t token);

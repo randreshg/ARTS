@@ -26,7 +26,9 @@
  * *out_grant to one of the LOCK_GRANT_* codes.
  *
  * op codes: EXCL_OP_RW_ACQ / EXCL_OP_RO_ACQ / EXCL_OP_RW_REL / EXCL_OP_RO_REL
- * grant codes: LOCK_GRANT_NONE / LOCK_GRANT_ONE_RW / LOCK_GRANT_ALL_RO
+ *           / EXCL_OP_TEARDOWN / EXCL_OP_RWO_ARRIVE
+ * grant codes: LOCK_GRANT_NONE / LOCK_GRANT_ONE_RW / LOCK_GRANT_ALL_RO /
+ *              LOCK_GRANT_DESTROY
  */
 static uint64_t excl_compute_next(uint64_t cur, int op, uint32_t *out_grant) {
   uint32_t w = EXCL_STATE_W(cur);
@@ -34,18 +36,14 @@ static uint64_t excl_compute_next(uint64_t cur, int op, uint32_t *out_grant) {
   uint32_t bit = EXCL_STATE_BIT(cur);
   uint32_t td = EXCL_STATE_TEARDOWN(cur);
   uint32_t rwo = EXCL_STATE_RWO(cur);
-  uint32_t roo = EXCL_STATE_ROO(cur);
-  uint32_t owed = EXCL_STATE_OWED(cur);
   uint32_t grant = LOCK_GRANT_NONE;
-  /* Torn down (marked, nothing counted, nothing owed): an acquire arriving now
-   * was either still pending at the destroy, which the contract leaves
-   * unserved, or a read request its rank's write turn covered that was still
-   * inside its handler when that turn ended and the destroy tore the block
-   * down; neither is owed a grant, and a grant would hand out a block whose
-   * teardown has run.  It is neither counted nor granted: a refused write
-   * request's queued node goes with the descriptor, and the caller dismisses
-   * a refused read request its rank's write turn covered. */
-  if (td && w == 0 && r == 0 && owed == 0 &&
+  /* Torn down (marked, nothing counted, nothing awaited): an acquire arriving
+   * now was still pending at the destroy, which the contract leaves
+   * unserved; a grant would hand out a block whose teardown has run.  It is
+   * neither counted nor granted, and the caller answers nothing: a refused
+   * write request's queued node goes with the descriptor, a refused read
+   * request's is freed by its handler. */
+  if (td && w == 0 && r == 0 && rwo == 0 &&
       (op == EXCL_OP_RW_ACQ || op == EXCL_OP_RO_ACQ)) {
     *out_grant = LOCK_GRANT_NONE;
     return cur;
@@ -107,32 +105,15 @@ static uint64_t excl_compute_next(uint64_t cur, int op, uint32_t *out_grant) {
      * duplicate destroys are designed into the protocol. */
     if (td == 0u) {
       td = 1u;
-      if (w == 0 && r == 0 && owed == 0) {
+      if (w == 0 && r == 0 && rwo == 0) {
         grant = LOCK_GRANT_DESTROY; /* lock already free — tear down now */
       }
     }
     break;
-  case EXCL_OP_OWE:
-    /* A declaration: one more request is coming.  Precedes the parity step of
-     * the declaration, so an arrival that reads that step finds this count. */
-    if (owed == (uint32_t)EXCL_STATE_OWED_MASK) {
-      *out_grant = LOCK_GRANT_FULL;
-      return cur;
-    }
-    owed += 1;
-    break;
-  case EXCL_OP_ARRIVE:
   case EXCL_OP_RWO_ARRIVE:
-  case EXCL_OP_ROO_ARRIVE:
-    /* Precondition (caller-checked): owed > 0, and rwo / roo for the
-     * pre-claim arrivals. */
-    owed -= 1;
-    if (op == EXCL_OP_RWO_ARRIVE) {
-      rwo = 0u;
-    } else if (op == EXCL_OP_ROO_ARRIVE) {
-      roo = 0u;
-    }
-    if (td && w == 0 && r == 0 && owed == 0) {
+    /* Precondition (caller-checked): rwo is set. */
+    rwo = 0u;
+    if (td && w == 0 && r == 0) {
       grant = LOCK_GRANT_DESTROY;
     }
     break;
@@ -145,7 +126,7 @@ static uint64_t excl_compute_next(uint64_t cur, int op, uint32_t *out_grant) {
    * zero.  No grant can be owed at that instant, so setting `grant` here
    * discards nothing. */
   if (td && (op == EXCL_OP_RW_REL || op == EXCL_OP_RO_REL) && w == 0 &&
-      r == 0 && owed == 0) {
+      r == 0 && rwo == 0) {
     grant = LOCK_GRANT_DESTROY;
   }
   /* Normalize state_bit when one counter hit 0 (state_bit only meaningful with
@@ -154,13 +135,15 @@ static uint64_t excl_compute_next(uint64_t cur, int op, uint32_t *out_grant) {
     bit = 0;
   }
   *out_grant = grant;
-  return LOCK_MAKE_STATE_FULL(td, bit, rwo, roo, owed, w, r);
+  return LOCK_MAKE_STATE_FULL(td, bit, rwo, w, r);
 }
 
 /* ===== cache_compute_next ==============================================
  * Cache-side analogue of excl_compute_next: pure function of the current
  * cache_state word, run inside a CAS-retry loop.  Returns the next word and
- * (via out_action) what the caller must do AFTER the CAS commits.
+ * (via out_action) what the caller must do AFTER the CAS commits.  `taken`
+ * is read by CACHE_OP_GRANT_RO alone: the count its committer took from the
+ * cache's ro_aside before the CAS.
  *
  * The ACQ_* ops carry the count++ INSIDE the CAS, together with the
  * request/join decision.  That single-atom shape is load-bearing twice over:
@@ -170,17 +153,26 @@ static uint64_t excl_compute_next(uint64_t cur, int op, uint32_t *out_grant) {
  *     after a separately-counted acquire was already served and released
  *     would read post-round IDLE and open a request for a dead acquire —
  *     whose grant no release edge would ever return.)
- *   - Exact grant populations: a phase's counts return to zero at every
- *     0-edge, and an arrival under a held grant joins WITHOUT parking
- *     (SELF_SERVE), so the counts a GRANT_* transition observes are exactly
- *     the parked-waiter population its committer must serve — making the
- *     grant committer the sole drainer, with nothing to serve stale.
+ *   - Exact grant populations: an arrival under a held grant joins WITHOUT
+ *     parking (SELF_SERVE), and a waiter parks only on its own axis's
+ *     request, which nothing but that request's grant (for a writer, also a
+ *     create's hold) answers.  So the writers a GRANT_RW or CREATE_HOLD
+ *     transition counts are exactly the parked writers its committer must
+ *     serve, and the readers a GRANT_RO transition counts, with the ones
+ *     earlier write permission set aside (ro_aside), are exactly the parked
+ *     readers: each committer is the sole drainer of its axis.
+ * The read count means one thing at a time: the readers parked on the read
+ * request while ro_state is REQ and no write grant is held, holders
+ * otherwise.  Write permission that arrives while the read request is out
+ * therefore takes the parked readers out of the count (the committer moves
+ * them to ro_aside), so the write turn's zero edge reads holders alone and
+ * ends without them; their request stays out and its grant returns them.
  * The REL_* ops carry the count-- inside the CAS, since the decrement and
  * the 0-edge state change must be atomic together. */
-static uint64_t cache_compute_next(uint64_t cur, int op, uint32_t *out_action) {
+static uint64_t cache_compute_next(uint64_t cur, int op, uint32_t taken,
+                                   uint32_t *out_action) {
   uint32_t rws = CACHE_RW_ST(cur);
   uint32_t ros = CACHE_RO_ST(cur);
-  uint32_t par = CACHE_RO_PAR(cur);
   uint32_t stub = CACHE_STUB(cur);
   uint32_t wc = CACHE_RW_CNT(cur);
   uint32_t rc = CACHE_RO_CNT(cur);
@@ -196,12 +188,11 @@ static uint64_t cache_compute_next(uint64_t cur, int op, uint32_t *out_action) {
       act = CACHE_ACT_SELF_SERVE; /* join the held RW phase directly */
     } else if (rws == CACHE_ST_IDLE) {
       /* First writer of the round: request home at once, whatever the read
-       * axis holds (a read request still out is declared by this one: the
-       * caller reads it from this transition's pre-image). */
+       * axis holds. */
       rws = CACHE_ST_REQ;
       act = CACHE_ACT_SEND_RW;
     } else {
-      act = CACHE_ACT_PARK; /* covered by the in-flight request */
+      act = CACHE_ACT_PARK; /* the write request is out: join it */
     }
     break;
   case CACHE_OP_ACQ_RO:
@@ -212,84 +203,86 @@ static uint64_t cache_compute_next(uint64_t cur, int op, uint32_t *out_action) {
     rc += 1;
     if (rws == CACHE_ST_GRANT || ros == CACHE_ST_GRANT) {
       act = CACHE_ACT_SELF_SERVE; /* RW⊇RO local join, or RO phase held */
-    } else if (rws == CACHE_ST_IDLE && ros == CACHE_ST_IDLE) {
+    } else if (ros == CACHE_ST_IDLE) {
+      /* First reader of the round: request home at once, whatever the write
+       * axis holds. */
       ros = CACHE_ST_REQ;
-      par ^= 1u; /* the request this transition opens */
       act = CACHE_ACT_SEND_RO;
     } else {
-      /* Covered by the in-flight request: the write request's grant serves
-       * readers too (RW ⊇ RO, so no read request is opened under one), and a
-       * read request's answer serves every reader parked on the block. */
-      act = CACHE_ACT_PARK;
+      act = CACHE_ACT_PARK; /* the read request is out: join it */
     }
     break;
   case CACHE_OP_GRANT_RW:
     /* One grant answers one request: the axis is at REQ with its opener
-     * counted (a write request covered by the create's hold is absorbed at
-     * the home, never answered).  Anything else is a grant for no request. */
-    if (rws != CACHE_ST_REQ || wc == 0u) {
+     * counted (a write request closed by the create's hold is absorbed at
+     * the home, never answered).  The home grants a write turn only once
+     * every read grant came back, so no read grant is held, and readers are
+     * counted only on a read request that is out.  Anything else is a grant
+     * for no request. */
+    if (rws != CACHE_ST_REQ || wc == 0u || ros == CACHE_ST_GRANT ||
+        (ros == CACHE_ST_IDLE && rc != 0u)) {
       act = CACHE_ACT_LATE;
       break;
     }
     rws = CACHE_ST_GRANT;
     stub = 0u; /* any reply: the home is installed and the claim elsewhere */
-    act = CACHE_ACT_DRAIN_BOTH; /* RW grant serves this rank's RW + RO cohort */
+    rc = 0u;   /* the readers parked on the read request: the caller's */
+    act = CACHE_ACT_DRAIN_RW;
     break;
-  case CACHE_OP_GRANT_RO:
-    /* The read request stays out until its own answer, so the axis is at
-     * REQ.  The home opens no read phase for this rank while its write turn
-     * is out, so a write grant is not held here.  The readers it counted are
-     * still parked: a write turn that covers them is this rank's own write
-     * request, which the home answers in place of this grant (it dismisses
-     * the queued read request), so a read grant always finds them. */
-    if (ros != CACHE_ST_REQ || rws == CACHE_ST_GRANT || rc == 0) {
+  case CACHE_OP_GRANT_RO: {
+    /* The read request stays out until this grant, so the axis is at REQ.
+     * The home opens no read phase while a write turn is out, this rank's
+     * included, so a write grant is not held here.  The request's readers
+     * are all parked: the ones counted in the word and the ones write
+     * permission set aside, which `taken` returns to the count.  A read
+     * grant always finds some. */
+    uint64_t sum = (uint64_t)rc + taken;
+    if (ros != CACHE_ST_REQ || rws == CACHE_ST_GRANT || sum == 0u ||
+        sum > CACHE_CNT_MASK) {
       act = CACHE_ACT_LATE;
       break;
     }
     ros = CACHE_ST_GRANT;
     stub = 0u;
+    rc = (uint32_t)sum;
     act = CACHE_ACT_DRAIN_RO;
     break;
+  }
   case CACHE_OP_CTS_RO:
-    /* A size round or a dismiss answers the read request.  Re-sent only for
-     * readers that still wait on it and ride no write request; otherwise the
-     * axis closes: a covered request needs no second leg, and readers under a
-     * write request are that request's to serve. */
+    /* A size round answers the read request, which stays out: its readers
+     * wait for its grant, whatever the write axis holds. */
     if (ros != CACHE_ST_REQ) {
       act = CACHE_ACT_LATE;
       break;
     }
     stub = 0u;
-    if (rc > 0 && rws == CACHE_ST_IDLE) {
-      par ^= 1u;
-      act = CACHE_ACT_RESEND_RO;
-    } else {
-      ros = CACHE_ST_IDLE;
-    }
+    act = CACHE_ACT_RESEND_RO;
     break;
   case CACHE_OP_CREATE_HOLD:
     /* A create records its own hold in a cache this rank made when it first
-     * touched the block.  The hold IS a local RW grant, so it serves the same
-     * cohorts a granted RW phase serves, readers included (RW ⊇ RO).  The
-     * requests this rank had sent are the claim's: the home discards them
-     * unanswered (the caller reads them from the pre-image for the announce),
-     * so both axes close here.  A grant on either axis is the one
-     * refusal — the block exists elsewhere, and nothing here may take a turn
-     * over it. */
+     * touched the block.  The hold IS a local RW grant, so it serves the
+     * writers a granted RW phase serves.  The write request this rank had
+     * sent is the claim's: the home discards it unanswered (the caller reads
+     * it from the pre-image for the announce), so the write axis closes
+     * here.  The read request is the home's to grant like any other: it
+     * stays out, and its parked readers leave the count as under a write
+     * grant.  A grant on either axis is the one refusal — the block exists
+     * elsewhere, and nothing here may take a turn over it. */
     if (rws == CACHE_ST_GRANT || ros == CACHE_ST_GRANT) {
       break; /* act stays NONE: this create records no hold */
     }
-    if (wc == (uint32_t)CACHE_RW_CNT_MASK) {
-      act = CACHE_ACT_LATE; /* the count field is full: the caller raises */
+    if (wc == (uint32_t)CACHE_RW_CNT_MASK ||
+        (ros == CACHE_ST_IDLE && rc != 0u)) {
+      /* The count field is full, or readers are counted on no request: the
+       * caller raises. */
+      act = CACHE_ACT_LATE;
       break;
     }
     rws = CACHE_ST_GRANT;
-    /* A read request still out is the claim's too: the home discards it
-     * unanswered (the announce owes it), and its readers are the hold's. */
-    ros = CACHE_ST_IDLE;
     stub = 0u;
     wc += 1;
-    act = CACHE_ACT_DRAIN_BOTH;
+    rc = 0u;
+    act = CACHE_ACT_DRAIN_RW;
     break;
   case CACHE_OP_DECLAIM:
     if (rws != CACHE_ST_REQ) {
@@ -322,7 +315,14 @@ static uint64_t cache_compute_next(uint64_t cur, int op, uint32_t *out_action) {
   if (act == CACHE_ACT_LATE) {
     return cur;
   }
-  return CACHE_MAKE_X(rws, ros, par, stub, wc, rc);
+  return CACHE_MAKE_X(rws, ros, stub, wc, rc);
+}
+
+/* The readers a write-permission transition (CACHE_ACT_DRAIN_RW) took out of
+ * the word's read count, read from its pre-image: its committer adds them to
+ * the cache's ro_aside. */
+static inline uint32_t cache_set_aside(uint64_t pre) {
+  return CACHE_RO_ST(pre) == CACHE_ST_REQ ? CACHE_RO_CNT(pre) : 0u;
 }
 #endif /* ARTS_RETENTION_PURGE */
 

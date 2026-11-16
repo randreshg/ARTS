@@ -1853,26 +1853,31 @@ if(_c)
     endif()
 
     # The claim program: rank 1's reader acquires the block before rank 1
-    # creates it; the create's hold is rank 1's write, a local hit.  On VAL
-    # and INV the create's claim of rank 1's first-touch cache serves no
-    # reader, and the reader is served by its own read request's answer: on
-    # the HOME cells the home, rank 0, answers once the creator's first
-    # publication has reached it, so the read is remote; on the OWNER cells
-    # the home redirects the request to the holder it names, rank 1 itself,
-    # which answers from its own copy, so the read is local.  On EXCL the
+    # creates it; the create's hold is rank 1's write, a local hit.  On VAL,
+    # INV and EXCL·PURGE the create's claim of rank 1's first-touch cache
+    # serves no reader, and the reader is served by its own read request's
+    # answer: on the HOME cells the home, rank 0, answers once the creator's
+    # first publication has reached it (under exclusion, once the creator's
+    # hold has come back), so the read is remote; on the OWNER cells the home
+    # redirects the request to the holder it names, rank 1 itself, which
+    # answers from its own copy, so the read is local.  On EXCL·RETAIN the
     # claim serves the reader, a local hit; under FLUSH every acquisition
     # fetches from the home, so the read is remote.
     set(_claim 0:NUM_DB_ACQUIRE_READ=0 0:NUM_DB_ACQUIRE_WRITE=0
                0:NUM_DB_ACQUIRE_LOCAL_HIT=0 0:NUM_DB_ACQUIRE_REMOTE=0
                1:NUM_DB_ACQUIRE_READ=1 1:NUM_DB_ACQUIRE_WRITE=1)
-    if(_cell STREQUAL "FLUSH" OR _cell MATCHES "^(VAL|INV)_.*_HOME$")
+    if(_cell STREQUAL "FLUSH" OR _cell MATCHES "_HOME$")
         list(APPEND _claim 1:NUM_DB_ACQUIRE_LOCAL_HIT=1
                            1:NUM_DB_ACQUIRE_REMOTE=1)
     else()
         list(APPEND _claim 1:NUM_DB_ACQUIRE_LOCAL_HIT=2
                            1:NUM_DB_ACQUIRE_REMOTE=0)
     endif()
-    if(_purge AND _cell MATCHES "_PURGE_")
+    # Rank 1 hands back the create's hold and, under exclusion, the reader's
+    # read turn too.
+    if(_purge AND _cell STREQUAL "EXCL_PURGE_HOME")
+        list(APPEND _claim 0:NUM_PURGE_RETURN=0 1:NUM_PURGE_RETURN=2)
+    elseif(_purge AND _cell MATCHES "_PURGE_")
         list(APPEND _claim 0:NUM_PURGE_RETURN=0 1:NUM_PURGE_RETURN=1)
     endif()
 

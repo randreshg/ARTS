@@ -617,7 +617,9 @@ struct ARTS_PACKED arts_msg_excl_request_packet_s {
   struct arts_msg_header_s header;
   arts_guid_t db_guid;
   uint32_t mode; /* arts_db_access_mode_t: DB_MODE_RO or DB_MODE_RW */
-  uint32_t cover; /* EXCL_COVER_*: parity, or a write request's declaration */
+  uint32_t cover; /* EXCL_COVER_*: under RETAIN its parity, or a write
+                   * request's declaration; under PURGE a write request's
+                   * PRECLAIM alone */
   /* requester rank = header.rank; no edt_guid/slot (rank-granular). */
   /* Requester's landing for the grant/deliver payload.  txid==0 = requester
    * does not yet know db_size (first touch): home answers EXCL_CTS and the
@@ -628,13 +630,14 @@ struct ARTS_PACKED arts_msg_excl_request_packet_s {
 
 /* EXCL_CTS — to the requester: an answer without data.  A size round, from the
  * home: the request carried no landing, so it was not queued; it echoes the
- * mode, and the requester re-issues the same request with a landing (a read
- * one only for readers that still wait on it, ride no write request or turn of
- * the requester's own and, under RETAIN, find no bytes resident there).  Or,
- * for a read request, a dismiss: from the home, when a write turn of the
- * requester's rank covers it, or (RETAIN) from an owner a read FORWARD finds
- * without the block.  cover echoes the answered request's cover word, whose
- * parity the requester checks against its open read request. */
+ * mode, and the requester re-issues the same request with a landing (under
+ * RETAIN a read one only for readers that still wait on it, ride no write
+ * request or turn of the requester's own and find no bytes resident there).
+ * Under RETAIN also, for a read request, a dismiss: from the home, when a
+ * write turn of the requester's rank covers it, or from an owner a read
+ * FORWARD finds without the block; cover then echoes the answered request's
+ * cover word, whose parity the requester checks against its open read
+ * request.  Under PURGE cover is zero. */
 struct ARTS_PACKED arts_msg_excl_cts_packet_s {
   struct arts_msg_header_s header;
   arts_guid_t db_guid;

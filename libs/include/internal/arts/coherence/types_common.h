@@ -200,8 +200,8 @@ unsigned int arts_grant_purge_release_next(unsigned int cur, bool purgeable,
 
 /* A create announce's owed byte: the requests of the first-touch cache a
  * create claimed that the claim closed while they were still out -- its write
- * request and, on EXCL, its read request (with its parity).  The home tears
- * the block down only once each has arrived. */
+ * request and, on EXCL·RETAIN, its read request (with its parity).  The home
+ * tears the block down only once each has arrived. */
 #define ARTS_CREATE_OWED_RO 0x1u
 #define ARTS_CREATE_OWED_RO_PAR 0x2u
 #define ARTS_CREATE_OWED_RW 0x4u
