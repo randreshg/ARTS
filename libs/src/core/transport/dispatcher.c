@@ -859,10 +859,11 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
    * packet.  FORWARD, RORET and RECALL resolve the block once where they
    * arrive (a FORWARD is a hop, a RORET a release at the home, a RECALL
    * unsolicited); a RORET can arrive after the block's destroy has torn the
-   * home down, and is then dropped.  DELIVER and CONFIRM are answers and act
-   * on the descriptor their token names: DELIVER the requester's, CONFIRM the
-   * home's, which the home's count, held while w is above zero, keeps however
-   * late the CONFIRM lands. */
+   * home down, and is then dropped.  DELIVER, CONFIRM and the FORWARD that
+   * serves this rank its own read request are answers and act on the
+   * descriptor their token names: the requester's, or for CONFIRM the
+   * home's, which the home's count, held while w is above zero, keeps
+   * however late the CONFIRM lands. */
   case MSG_DB_EXCL_FORWARD: {
     ARTS_DEBUG("Coh EXCL_FORWARD Received");
     arts_handler_db_excl_forward((void *)packet);

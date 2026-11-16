@@ -343,12 +343,16 @@ static inline bool cache_owner_serves_ro(uint64_t s) {
 }
 
 /* The waiters parked on rw_pending / ro_pending, read from a word.  A writer
- * parks only while the write request is out, and a reader only while nothing
- * here serves it; each axis leaves its serving states only at a zero count
- * (a migration, the serve's relinquish and a read grant's return all wait for
- * it).  So a count is either all parked waiters or all live holders, and a
- * transition that starts serving owes exactly the parked count its pre-image
- * shows, counted waiters whose push has not landed included. */
+ * parks only while the write request is out, and a reader only while
+ * nothing here serves it; the write axis leaves GRANT only at a zero count
+ * (a migration and the serve's relinquish wait for it), and a read grant
+ * returns only at one.  A transition that starts serving writes drains the
+ * parked writers; one that starts serving reads while the read request is
+ * out (a migration's DELIVER, a create's hold) takes the parked readers out
+ * of the count, which ro_aside keeps until the request's answer.  So a count
+ * is either all parked waiters or all live holders, and a transition that
+ * starts serving owes the parked count its pre-image shows, counted waiters
+ * whose push has not landed included. */
 static inline uint32_t cache_owner_parked_rw(uint64_t s) {
   return (CACHE_RW_ST(s) == CACHE_ST_REQ) ? CACHE_RW_CNT(s) : 0u;
 }
@@ -358,11 +362,12 @@ static inline uint32_t cache_owner_parked_ro(uint64_t s) {
 }
 
 /* ===== cache_owner_compute_next =========================================
- * Cache arbiter — pure function of the single cache_state word, run inside a
- * CAS-retry loop.  The cache_state packs owner-bit + rw_st/ro_st +
- * migrate_target + wc + rc into one word, so every transition (the acquire's
- * count++ and the RW-release 0-edge migration decision included) is a single
- * CAS.
+ * Cache arbiter — pure function of the single cache_state word (and, for a
+ * read request's answer, of the count its committer took from the cache's
+ * ro_aside before the CAS), run inside a CAS-retry loop.  The cache_state
+ * packs owner-bit + rw_st/ro_st + migrate_target + wc + rc into one word, so
+ * every transition (the acquire's count++ and the RW-release 0-edge migration
+ * decision included) is a single CAS.
  *
  * The word keeps two facts apart:
  *   owner-bit  = the canonical bytes are RESIDENT here.  Gates serving and
@@ -380,23 +385,23 @@ static inline uint32_t cache_owner_parked_ro(uint64_t s) {
  * resident bytes is safe, since rw_st==GRANT implies the owner-bit and
  * ownership is unique, so no other rank can be writing.
  *
- * FORWARD-migrate and FORWARD-serve do NOT pass through this arbiter — their
- * target rank is not derivable from the word, so the FORWARD handler installs
- * migrate_target / pushes ro_serve itself.
+ * The forwards that serve another rank or migrate the block do NOT pass
+ * through this arbiter — their target rank is not derivable from the word, so
+ * the FORWARD handler installs migrate_target / pushes ro_serve itself.
  *
  * The ACQ_* ops carry the count++ and the request/join decision in one CAS,
  * as under PURGE.  A decision made in a later atom than the count could read
  * a word from after the acquire had been drained by another thread's grant,
  * run, released and seen its grant migrate away, and open a request no EDT
  * waits for.  An arrival that a grant or the resident copy serves joins
- * without parking (SELF_SERVE), and every transition that starts serving an
- * axis drains its waiters, so a writer parks only while the write request is
- * out and a reader only while nothing here serves it: the waiters a
- * transition owes are a function of its pre-image (cache_owner_parked_rw/_ro
- * above).  The REL_* ops carry the count-- inside the CAS, because the
- * decrement and the 0-edge transition must be atomic together.
+ * without parking (SELF_SERVE), and a waiter parks only on its own axis's
+ * request, which only that request's answer serves (for a writer, also a
+ * create's hold): the waiters a transition owes are a function of its
+ * pre-image (cache_owner_parked_rw/_ro above, with the readers the cache set
+ * aside for a read answer).  The REL_* ops carry the count-- inside the CAS,
+ * because the decrement and the 0-edge transition must be atomic together.
  */
-static uint64_t cache_owner_compute_next(uint64_t cur, int op,
+static uint64_t cache_owner_compute_next(uint64_t cur, int op, uint32_t taken,
                                          uint32_t *out_action) {
   uint32_t own = CACHE_OWNER(cur);
   uint32_t rws = CACHE_RW_ST(cur);
@@ -404,7 +409,8 @@ static uint64_t cache_owner_compute_next(uint64_t cur, int op,
   uint32_t mt = CACHE_MIGRATE_TARGET(cur);
   uint32_t wc = CACHE_RW_CNT(cur);
   uint32_t rc = CACHE_RO_CNT(cur);
-  uint64_t sticky = cur & CACHE_OWNER_STICKY_MASK;
+  uint64_t stub_bit = cur & CACHE_OWNER_STUB_BIT;
+  uint64_t granted = cur & CACHE_OWNER_LEASED_MASK;
   uint32_t act = CACHE_ACT_NONE;
   switch (op) {
   case CACHE_OP_ACQ_RW:
@@ -416,7 +422,7 @@ static uint64_t cache_owner_compute_next(uint64_t cur, int op,
     if (rws == CACHE_ST_GRANT) {
       act = CACHE_ACT_SELF_SERVE; /* join the held RW grant */
     } else if (rws == CACHE_ST_REQ) {
-      act = CACHE_ACT_PARK; /* covered by the in-flight RW request */
+      act = CACHE_ACT_PARK; /* the write request is out: join it */
     } else {
       /* WRITE PERMISSION lives in rw_st, not in the owner bit: own==1 means
        * only "the canonical bytes are resident here", which
@@ -425,8 +431,8 @@ static uint64_t cache_owner_compute_next(uint64_t cur, int op,
        * been relinquished — and conflating them lets this rank write while a
        * remote rank still holds a readable copy.  A rank that relinquished is
        * an ordinary requester and takes the same path as any node holding only
-       * a read grant.  A read request still out is declared by this one: the
-       * caller reads it from this transition's pre-image. */
+       * a read grant.  The request leaves at once, whatever the read axis
+       * holds. */
       rws = CACHE_ST_REQ;
       act = CACHE_ACT_SEND_RW; /* request migration from home */
     }
@@ -437,12 +443,7 @@ static uint64_t cache_owner_compute_next(uint64_t cur, int op,
       break;
     }
     rc += 1;
-    /* A write grant covers reads (RW⊇RO), so an in-flight RW request already
-     * covers this reader and it must NOT send an RO request of its own: the home
-     * would count an r that is later served through the RW grant and therefore
-     * never RO_RETURNed, stranding r above zero and deadlocking the RO phase.
-     *
-     * GRANT_PURGE is a grant — it merely owes a return at the zero edge.
+    /* GRANT_PURGE is a grant — it merely owes a return at the zero edge.
      * Leaving it out of the serving test drops the acquire into the park arm
      * with no request in flight to ever wake it, and its count then never
      * falls, so the home's r sticks and the waiting writer hangs too.
@@ -456,57 +457,119 @@ static uint64_t cache_owner_compute_next(uint64_t cur, int op,
      * test would then read stale local bytes. */
     if (cache_owner_serves_ro(cur)) {
       act = CACHE_ACT_SELF_SERVE; /* RW⊇RO join, a read grant, or resident */
-    } else if (rws == CACHE_ST_IDLE && ros == CACHE_ST_IDLE) {
+    } else if (ros == CACHE_ST_IDLE) {
+      /* The first reader nothing serves opens the read request at once,
+       * whatever the write axis holds. */
       ros = CACHE_ST_REQ;
-      sticky ^= CACHE_OWNER_RO_PAR_BIT; /* the request this transition opens */
-      act = CACHE_ACT_SEND_RO; /* fresh RO REQUEST to home */
+      act = CACHE_ACT_SEND_RO;
     } else {
-      /* rw_st==REQ (covered by the in-flight RW request, served via RW⊇RO) or
-       * ro_st==REQ (coalesce onto the in-flight RO request) → park. */
-      act = CACHE_ACT_PARK;
+      act = CACHE_ACT_PARK; /* the read request is out: join it */
     }
     break;
-  case CACHE_OP_CREATE_HOLD:
-    /* A create records its own hold in a cache this rank made when it first
-     * touched the block.  The hold IS a local RW grant, so it serves the same
-     * cohorts a granted RW phase serves, readers included (RW ⊇ RO); the
-     * requests this rank had already sent are the home's to discard (both
-     * axes close).  Refused where the block is already here or on its way: the
-     * bytes resident, a grant on either axis (a read grant marked for return
-     * is still a grant), or a migration pending. */
-    if (own != 0u || rws == CACHE_ST_GRANT || ros == CACHE_ST_GRANT ||
-        ros == CACHE_ST_GRANT_PURGE || mt != ARTS_EXCL_NO_TARGET) {
-      break; /* act stays NONE: this create records no hold */
-    }
-    if (wc == (uint32_t)CACHE_OWNER_WC_MASK) {
-      act = CACHE_ACT_LATE; /* the count field is full: the caller raises */
+  case CACHE_OP_GRANT_RW:
+    /* A migration answers this rank's write request, its writers counted; the
+     * bytes come from the owner, which is another rank, and the home migrates
+     * nothing while a read grant of this rank is out.  The readers parked on
+     * a read request still out stay parked on it until its own answer, and
+     * leave the count for ro_aside (the caller adds them), so that at a
+     * resident rank the count is holders alone. */
+    if (rws != CACHE_ST_REQ || wc == 0u || own != 0u ||
+        ros == CACHE_ST_GRANT || ros == CACHE_ST_GRANT_PURGE ||
+        (ros == CACHE_ST_IDLE && rc != 0u)) {
+      act = CACHE_ACT_LATE;
       break;
     }
     own = 1u;
     rws = CACHE_ST_GRANT;
-    /* A read request still out is the claim's too: the home discards it
-     * unanswered (the announce owes it), and its readers are the hold's. */
+    stub_bit &= ~CACHE_OWNER_STUB_BIT; /* any reply: the home is installed */
+    rc = 0u;
+    act = CACHE_ACT_DRAIN_RW;
+    break;
+  case CACHE_OP_GRANT_RO:
+  case CACHE_OP_GRANT_RO_MARKED: {
+    /* A read grant answers the read request, which stays out until it: its
+     * readers are the ones counted in the word and the ones a migration or a
+     * create's hold set aside, which `taken` returns.  The home counts this
+     * grant in its read phase until its RO_RETURN, so no migration to this
+     * rank can start while it is out, and a rank that is the owner answers
+     * its own read request itself: the grant never meets the write grant or
+     * the resident bytes.  It is marked for return when the home marked it or
+     * a recall overtook it (the early token in ro_granted), and it always
+     * owes the home its return. */
+    uint64_t sum = (uint64_t)rc + taken;
+    if (ros != CACHE_ST_REQ || rws == CACHE_ST_GRANT || own != 0u ||
+        sum == 0u || sum > CACHE_OWNER_RC_MASK) {
+      act = CACHE_ACT_LATE;
+      break;
+    }
+    ros = (op == CACHE_OP_GRANT_RO_MARKED || granted != 0u)
+              ? CACHE_ST_GRANT_PURGE
+              : CACHE_ST_GRANT;
+    granted = CACHE_OWNER_LEASED_MASK;
+    stub_bit &= ~CACHE_OWNER_STUB_BIT;
+    rc = (uint32_t)sum;
+    act = CACHE_ACT_DRAIN_RO;
+    break;
+  }
+  case CACHE_OP_OWN_RO: {
+    /* The home forwarded this rank's own read request to the owner it names,
+     * this rank: the request is answered here.  Its readers are all set
+     * aside (at a resident rank the count is holders alone), `taken` returns
+     * them to the count as holders under the owner bit, and the read axis
+     * closes; the caller returns the home's count of the request.  The write
+     * permission is untouched. */
+    uint64_t sum = (uint64_t)rc + taken;
+    if (ros != CACHE_ST_REQ || own != 1u || taken == 0u ||
+        sum > CACHE_OWNER_RC_MASK) {
+      act = CACHE_ACT_LATE;
+      break;
+    }
     ros = CACHE_ST_IDLE;
-    sticky &= ~CACHE_OWNER_STUB_BIT;
+    stub_bit &= ~CACHE_OWNER_STUB_BIT;
+    rc = (uint32_t)sum;
+    act = CACHE_ACT_DRAIN_RO;
+    break;
+  }
+  case CACHE_OP_CREATE_HOLD:
+    /* A create records its own hold in a cache this rank made when it first
+     * touched the block.  The hold IS a local RW grant and makes the bytes
+     * resident, so it serves the writers a migration serves; the write
+     * request this rank had sent is the claim's, which the home discards
+     * unanswered (the caller reads it from the pre-image for the announce),
+     * so the write axis closes here.  The read request is the home's to
+     * answer like any other: it stays out, and its parked readers leave the
+     * count as at a migration.  Refused where the block is already here or on
+     * its way: the bytes resident, a grant on either axis (a read grant
+     * marked for return is still a grant), or a migration pending. */
+    if (own != 0u || rws == CACHE_ST_GRANT || ros == CACHE_ST_GRANT ||
+        ros == CACHE_ST_GRANT_PURGE || mt != ARTS_EXCL_NO_TARGET) {
+      break; /* act stays NONE: this create records no hold */
+    }
+    if (wc == (uint32_t)CACHE_OWNER_WC_MASK ||
+        (ros == CACHE_ST_IDLE && rc != 0u)) {
+      /* The count field is full, or readers are counted on no request: the
+       * caller raises. */
+      act = CACHE_ACT_LATE;
+      break;
+    }
+    own = 1u;
+    rws = CACHE_ST_GRANT;
+    stub_bit &= ~CACHE_OWNER_STUB_BIT;
     wc += 1;
-    act = CACHE_ACT_DRAIN_BOTH;
+    rc = 0u;
+    act = CACHE_ACT_DRAIN_RW;
     break;
   case CACHE_OP_CTS_RO:
-    /* A size round or a dismiss answers the read request: re-sent only for
-     * readers that still wait on it and ride no write request, else the axis
-     * closes.  Any reply clears the stub bit (the home is installed and the
-     * claim elsewhere). */
+    /* A size round answers the read request, which stays out: it is re-sent
+     * with a landing for its readers, whatever else this rank holds.  Any
+     * reply clears the stub bit (the home is installed and the claim
+     * elsewhere). */
     if (ros != CACHE_ST_REQ) {
       act = CACHE_ACT_LATE;
       break;
     }
-    sticky &= ~CACHE_OWNER_STUB_BIT;
-    if (rc > 0u && rws == CACHE_ST_IDLE && own == 0u) {
-      sticky ^= CACHE_OWNER_RO_PAR_BIT;
-      act = CACHE_ACT_RESEND_RO;
-    } else {
-      ros = CACHE_ST_IDLE;
-    }
+    stub_bit &= ~CACHE_OWNER_STUB_BIT;
+    act = CACHE_ACT_RESEND_RO;
     break;
   case CACHE_OP_REL_RW: /* precond: rws==GRANT, own==1 */
     wc -= 1;
@@ -555,28 +618,29 @@ static uint64_t cache_owner_compute_next(uint64_t cur, int op,
     break;
   }
   *out_action = act;
-  /* Preserve the ro_granted flag (spare bit 63 — see CACHE_GRANTED) across every
-   * transition EXCEPT the RO release 0-edge, which fully relinquishes the RO
-   * grant and clears it.  The flag is SET by the DELIVER(RO) handler when a
-   * lent RO copy is actually received (a borrower owes exactly one RO_RETURN) —
-   * NOT at request time, and NEVER for an owner serving its own readers locally
-   * (RW⊇RO / fast-path: the owner holds the data, it borrowed nothing).
-   * CACHE_MAKE_FULL produces bit63==0, so clearing is the default; we OR the
-   * bit back only while the grant is still (partially) held. */
   if (act == CACHE_ACT_LATE) {
-    *out_action = act;
     return cur;
   }
-  uint64_t next = CACHE_MAKE_FULL(own, rws, ros, mt, wc, rc) | sticky;
-  /* ro_granted = "this rank owes the home exactly one RO_RETURN".  It is
-   * cleared by the ro_st -> IDLE TRANSITION, not by the rc zero edge: under
-   * RETAIN rc oscillates 0<->1 while the grant is retained, so clearing on the
-   * edge would drop the token on the first release and the eventual
-   * recall-driven return would never be sent — the home's r would stick. */
-  if (!(CACHE_RO_ST(cur) != CACHE_ST_IDLE && ros == CACHE_ST_IDLE)) {
-    next |= (cur & CACHE_OWNER_LEASED_MASK);
+  /* ro_granted = "this rank owes the home exactly one RO_RETURN" (and, while
+   * the read request is out, the early-recall token).  A read grant sets it;
+   * the ro_st -> IDLE TRANSITION clears it, not the rc zero edge: under
+   * RETAIN rc oscillates 0<->1 while the grant is retained, so clearing on
+   * the edge would drop the token on the first release and the eventual
+   * recall-driven return would never be sent — the home's r would stick.
+   * An owner serving its own readers (RW⊇RO, the resident copy) borrowed
+   * nothing and never sets it. */
+  if (CACHE_RO_ST(cur) != CACHE_ST_IDLE && ros == CACHE_ST_IDLE) {
+    granted = 0u;
   }
-  return next;
+  return CACHE_MAKE_FULL(own, rws, ros, mt, wc, rc) | stub_bit | granted;
+}
+
+/* The readers a transition that makes this rank serve reads with its read
+ * request out (CACHE_ACT_DRAIN_RW: a migration's DELIVER, a create's hold)
+ * took out of the word's read count, read from its pre-image: its committer
+ * adds them to the cache's ro_aside. */
+static inline uint32_t cache_set_aside(uint64_t pre) {
+  return CACHE_RO_ST(pre) == CACHE_ST_REQ ? CACHE_RO_CNT(pre) : 0u;
 }
 
 /* ===== lock_owner_compute_next ==========================================

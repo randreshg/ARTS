@@ -1057,23 +1057,20 @@ static unsigned int excl_axis_row(const struct arts_db_cache_s *c, uint64_t cw,
  * under it is a lost zero edge (the edge returns the grant in the same CAS).
  * RETAIN: a resting grant with nothing counted is the retention's normal
  * state.
- * Read axis, RETAIN: at REQ with no reader is a covered read request whose
- * answer was in flight (legal); IDLE with readers counted is legal only
- * under the write axis's cover or a resident owner's (quiescent only), else
- * lost; non-idle with readers is unfinished (quiescent only).
- * Read axis, PURGE: the read request's readers are parked, in the word's
- * count while no write grant is held or in ro_aside, so a request out with
+ * Read axis: the read request's readers are parked, in the word's count
+ * while nothing here serves a read or in ro_aside, so a request out with
  * none parked, readers set aside with no request out, and readers counted
- * with neither a request out nor a grant held are lost; readers parked on
- * the request, or holding under either grant, are unfinished (quiescent
- * only). */
+ * with neither a request out nor anything serving them are lost; readers
+ * parked on the request, or holding under a grant or (RETAIN) the resident
+ * copy, are unfinished (quiescent only).  What serves a read is a held grant
+ * on either axis or (RETAIN) the owner bit.  PURGE: a read grant with no
+ * reader counted is a lost zero edge; RETAIN: a resting read grant is the
+ * retention's normal state. */
 static unsigned int excl_cache_word_rows(const struct arts_db_cache_s *c,
                                          uint64_t cw, bool quiescent) {
   uint32_t rws = CACHE_RW_ST(cw), ros = CACHE_RO_ST(cw);
   uint32_t wcn = CACHE_RW_CNT(cw), rcn = CACHE_RO_CNT(cw);
 #ifdef ARTS_RETENTION_RETAIN
-  bool read_cover =
-      rws == CACHE_ST_REQ || rws == CACHE_ST_GRANT || CACHE_OWNER(cw) == 1u;
   bool purge = false;
 #else
   bool purge = true;
@@ -1094,26 +1091,38 @@ static unsigned int excl_cache_word_rows(const struct arts_db_cache_s *c,
                        "rw axis rests non-idle with writers still counted",
                        true, quiescent);
   }
+  /* Relaxed: the walk runs once every other thread has stopped. */
+  uint32_t aside = atomic_load_explicit(&c->ro_aside, memory_order_relaxed);
 #ifdef ARTS_RETENTION_RETAIN
-  if (ros == CACHE_ST_IDLE && rcn != 0u) {
+  bool write_held = rws == CACHE_ST_GRANT || CACHE_OWNER(cw) == 1u;
+  if (aside != 0u && ros != CACHE_ST_REQ) {
     v += excl_axis_row(c, cw,
-                       read_cover ? "ro readers rest under the write axis"
-                                  : "ro axis rests idle with readers counted",
-                       read_cover, quiescent);
-  } else if (purge && ros == CACHE_ST_GRANT && rcn == 0u) {
-    v += excl_axis_row(c, cw, "ro axis rests granted with no reader counted",
+                       "ro readers are set aside with no read request out",
                        false, quiescent);
-  } else if (ros != CACHE_ST_IDLE && ros != CACHE_ST_REQ && rcn != 0u) {
+  }
+  if (ros == CACHE_ST_REQ) {
+    bool parked = aside != 0u || (!write_held && rcn != 0u);
+    v += excl_axis_row(c, cw,
+                       parked ? "ro readers rest on an open read request"
+                              : "ro axis rests at its request with no reader "
+                                "parked on it",
+                       parked, quiescent);
+  } else if ((ros == CACHE_ST_GRANT || ros == CACHE_ST_GRANT_PURGE) &&
+             rcn != 0u) {
     v += excl_axis_row(c, cw,
                        "ro axis rests non-idle with readers still counted",
                        true, quiescent);
-  } else if (ros == CACHE_ST_REQ && rcn != 0u) {
-    v += excl_axis_row(c, cw, "ro readers rest on an open read request", true,
+  } else if (ros == CACHE_ST_IDLE && rcn != 0u && !write_held) {
+    v += excl_axis_row(c, cw, "ro axis rests idle with readers counted", false,
                        quiescent);
   }
+  if (rcn != 0u && write_held) {
+    v += excl_axis_row(c, cw,
+                       "ro readers rest under the write grant or the resident "
+                       "copy",
+                       true, quiescent);
+  }
 #else
-  /* Relaxed: the walk runs once every other thread has stopped. */
-  uint32_t aside = atomic_load_explicit(&c->ro_aside, memory_order_relaxed);
   bool write_held = rws == CACHE_ST_GRANT;
   if (aside != 0u && ros != CACHE_ST_REQ) {
     v += excl_axis_row(c, cw,
@@ -1341,55 +1350,25 @@ void arts_db_debug_quiescence_check(const struct arts_teardown_exempt_s *ex,
             }
           }
 #else
-          /* The cover gate: marked with nothing owed means the teardown was
-           * skipped; a pre-claim request owed with nothing owed is a broken
-           * count.  Something owed is legal and only counted. */
-          uint32_t gw =
+          /* The gate owes the claiming creator's pre-claim write request or
+           * nothing: rwo with a count of one, or neither.  Marked with
+           * nothing owed means the teardown was skipped; any other word no
+           * step leaves.  The request owed is legal at any shutdown (it may
+           * be undelivered) and only counted. */
+          uint32_t gate =
               atomic_load_explicit(&db->cover_gate, memory_order_relaxed);
-          bool gtd = (gw & ARTS_COVER_GATE_TD) != 0u;
-          uint32_t gowed = gw & ARTS_COVER_GATE_OWED;
-          bool gskip = gtd && gowed == 0u;
-          bool grwo =
-              (gw & (ARTS_COVER_GATE_RWO | ARTS_COVER_GATE_ROO)) != 0u &&
-              gowed == 0u;
-          if (gskip || grwo) {
+          bool gtd = (gate & ARTS_COVER_GATE_TD) != 0u;
+          bool grwo = (gate & ARTS_COVER_GATE_RWO) != 0u;
+          if ((gate & ARTS_COVER_GATE_ROO) != 0u ||
+              (gate & ARTS_COVER_GATE_OWED) != (grwo ? 1u : 0u) ||
+              (gtd && !grwo)) {
             ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu cover gate rests where no "
-                       "step leaves it (skipped teardown=%d rwo=%d)",
-                       (unsigned long)c->db_guid, (int)gskip, (int)grwo);
+                       "step leaves it (gate=%x)",
+                       (unsigned long)c->db_guid, gate);
             viol++;
           }
-          if (gtd && gowed != 0u) {
+          if (gtd && grwo) {
             marked_owed++;
-          }
-          /* ro_queued: a set bit names a read request waiting on ro_waiters
-           * to be served as a read.  The request sets it before queueing its
-           * node, and the drain that pops the node or the same rank's write
-           * request takes it, so once every handler has stopped a set bit
-           * with no node of its rank queued is a lost take; reported after a
-           * quiescent shutdown. */
-          if (quiescent) {
-            /* The cursor's acquire loads order nothing here: every handler
-             * has stopped. */
-            struct arts_rank_bitset_cursor_s qc =
-                arts_rank_bitset_cursor(&db->ro_queued);
-            unsigned int qr;
-            while (arts_rank_bitset_next(&qc, &qr)) {
-              bool node = false;
-              for (arts_lf_link_t *n = atomic_load_explicit(
-                       &db->ro_waiters.head, memory_order_relaxed);
-                   n != NULL && !node;
-                   n = atomic_load_explicit(&n->next, memory_order_relaxed)) {
-                node = ARTS_CONTAINER_OF(n, struct arts_lock_ro_node_s, link)
-                           ->rank == qr;
-              }
-              if (!node) {
-                ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu marks rank %u's read "
-                           "request queued with none of its nodes on the "
-                           "read queue",
-                           (unsigned long)c->db_guid, qr);
-                viol++;
-              }
-            }
           }
 #endif /* ARTS_RETENTION_PURGE */
         }

@@ -447,7 +447,7 @@ struct arts_ooo_args_db_excl_request_s {
   unsigned int requester; /* rank that sent MSG_DB_EXCL_REQUEST */
   arts_guid_t db_guid;
   arts_db_access_mode_t mode; /* DB_MODE_RO or DB_MODE_RW */
-  uint32_t cover;                  /* EXCL_COVER_* */
+  uint32_t cover;                  /* EXCL_COVER_PRECLAIM or 0 */
   struct arts_rdzv_landing_s rdzv; /* requester's grant/deliver landing */
   uint64_t token;                  /* the requester's answer token */
 };

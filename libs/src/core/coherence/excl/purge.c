@@ -359,7 +359,7 @@ void arts_handler_db_excl_request(void *item_v, void *args_v) {
     arts_send_db_excl_cts(
         db->cache.db_guid, requester,
         atomic_load_explicit(&cache->db_size, memory_order_relaxed),
-        (uint32_t)mode, /*cover=*/0u, a->token);
+        (uint32_t)mode, a->token);
     return;
   }
 #else
@@ -811,8 +811,7 @@ void arts_handler_db_excl_cts(const struct arts_msg_excl_cts_packet_s *p) {
 #else
 /* EXCL_CTS sender (a size round) + requester-side body. */
 void arts_send_db_excl_cts(arts_guid_t db_guid, unsigned int requester_rank,
-                           uint64_t db_size, uint32_t mode, uint32_t cover,
-                           uint64_t token) {
+                           uint64_t db_size, uint32_t mode, uint64_t token) {
   /* A size round answers a landing-less request, which the home's own never
    * is. */
   assert(requester_rank != arts_global_rank_id);
@@ -822,7 +821,7 @@ void arts_send_db_excl_cts(arts_guid_t db_guid, unsigned int requester_rank,
   p.db_guid = db_guid;
   p.db_size = db_size;
   p.mode = mode;
-  p.cover = cover;
+  p.pad = 0u;
   p.token = token;
   arts_transport_send_async((int)requester_rank, (char *)&p, sizeof(p));
 }
@@ -833,7 +832,6 @@ void arts_handler_db_excl_cts(const struct arts_msg_excl_cts_packet_s *p) {
     arts_db_axis_drop(db, 1u);
     return;
   }
-  assert(p->cover == 0u);
   struct arts_db_cache_s *cache = &db->cache;
   arts_db_cache_learn_size(cache, p->db_size);
   bool write = (arts_db_access_mode_t)p->mode == DB_MODE_RW;
@@ -905,43 +903,6 @@ static void lock_drain_pending(arts_lf_stack_t *q, uint32_t expected) {
   }
 }
 
-/* Move the readers a write-permission transition took out of the word's
- * read count (its pre-image's, cache_set_aside) to ro_aside, before the
- * transition's committer resumes any writer. */
-static void lock_set_readers_aside(struct arts_db_cache_s *cache,
-                                   uint64_t pre) {
-  uint32_t n = cache_set_aside(pre);
-  if (n == 0u) {
-    return;
-  }
-  arts_sched_fuzz_point();
-  uint32_t had =
-      atomic_fetch_add_explicit(&cache->ro_aside, n, memory_order_acq_rel);
-  if ((uint64_t)had + n > CACHE_CNT_MASK) {
-    ARTS_ERROR("lock: guid %lu has more read acquires parked on one rank "
-               "than its cache word can hold (aside=%u, word=%llx)",
-               (unsigned long)cache->db_guid, had, (unsigned long long)pre);
-  }
-#ifndef NDEBUG
-  /* The turn this transition opened still holds the writers it counted,
-   * none resumed yet, so the read grant that will take this count cannot
-   * have come; the word this thread wrote is the latest it can read. */
-  uint64_t now =
-      atomic_load_explicit(&cache->cache_state, memory_order_relaxed);
-  assert(CACHE_RW_ST(now) == CACHE_ST_GRANT &&
-         CACHE_RO_ST(now) == CACHE_ST_REQ);
-#endif
-}
-
-/* A read grant's committer takes the readers set aside, once, before the CAS
- * that returns them to the word's read count. */
-static uint32_t lock_take_readers_aside(struct arts_db_cache_s *cache) {
-  uint32_t taken =
-      atomic_exchange_explicit(&cache->ro_aside, 0u, memory_order_acq_rel);
-  arts_sched_fuzz_point();
-  return taken;
-}
-
 /* The hold is this arm's own: one CAS of the cache word, through the arbiter
  * like every other transition of it, and then the actions that transition
  * owes.  It is a write acquire: it serves the writers parked on the write
@@ -981,7 +942,7 @@ bool arts_db_create_take_hold(struct arts_db_cache_s *cache, uint8_t *owed) {
     /* The writer count is the pre-image's: the population this transition
      * owes, exactly as a GRANT_RW landing drains it (the creator's own +1 is
      * not parked). */
-    lock_set_readers_aside(cache, cur);
+    arts_excl_set_readers_aside(cache, cache_set_aside(cur));
     lock_drain_pending(&cache->rw_pending, CACHE_RW_CNT(cur));
   }
   /* The claim closed the write request the cache had out: its count goes,
@@ -1283,7 +1244,7 @@ static void lock_grant_apply(struct arts_db_s *db, arts_guid_t db_guid,
   struct arts_db_cache_s *cache = &db->cache;
   switch (act) {
   case CACHE_ACT_DRAIN_RW:
-    lock_set_readers_aside(cache, cur);
+    arts_excl_set_readers_aside(cache, cache_set_aside(cur));
     lock_drain_pending(&cache->rw_pending, CACHE_RW_CNT(cur));
     break;
   case CACHE_ACT_DRAIN_RO:
@@ -1335,7 +1296,8 @@ static void lock_grant_commit(struct arts_db_s *db, arts_guid_t db_guid,
                               arts_db_access_mode_t mode) {
   struct arts_db_cache_s *cache = &db->cache;
   int op = (mode == DB_MODE_RW) ? CACHE_OP_GRANT_RW : CACHE_OP_GRANT_RO;
-  uint32_t taken = (mode == DB_MODE_RO) ? lock_take_readers_aside(cache) : 0u;
+  uint32_t taken =
+      (mode == DB_MODE_RO) ? arts_excl_take_readers_aside(cache) : 0u;
   bool fetched = false;
   uint32_t act;
   uint64_t cur = atomic_load_explicit(&cache->cache_state, memory_order_acquire);
@@ -1373,7 +1335,8 @@ static void lock_grant_commit(struct arts_db_s *db, arts_guid_t db_guid,
   }
 
   int op = (mode == DB_MODE_RW) ? CACHE_OP_GRANT_RW : CACHE_OP_GRANT_RO;
-  uint32_t taken = (mode == DB_MODE_RO) ? lock_take_readers_aside(cache) : 0u;
+  uint32_t taken =
+      (mode == DB_MODE_RO) ? arts_excl_take_readers_aside(cache) : 0u;
   uint32_t act;
   uint64_t cur, next;
   do {

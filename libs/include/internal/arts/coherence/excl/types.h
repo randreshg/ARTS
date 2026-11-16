@@ -80,7 +80,7 @@ extern "C" {
  * Per-rank (owner) single 64-bit coherence word (RETAIN only).
  * Layout (MSB→LSB):
  *   [ ro_granted:1 (63) | owner:1 (62) | rw_st:2 (61..60) | ro_st:2 (59..58) |
- *     migrate_target:14 (57..44) | ro_parity:1 (43) | stub:1 (42) |
+ *     migrate_target:14 (57..44) | spare:1 (43) | stub:1 (42) |
  *     wc:20 (41..22) | rc:22 (21..0) ]
  *
  *   ro_granted = the read grant this rank holds came from the home (below);
@@ -90,16 +90,22 @@ extern "C" {
  *                local RW/RO protocol state.
  *   migrate_target = 14-bit rank of the next RW owner (set by home FORWARD);
  *                    ARTS_EXCL_NO_TARGET (0x3FFF) = no pending migration.
- *   ro_parity  = the parity of the last read request this rank sent,
- *                flipped by the CAS that opens one; a write request declares
- *                it.
  *   stub       = a dependence's first touch made this cache and nothing has
  *                shown the home installed yet: the create's claim
  *                (CACHE_OP_CREATE_HOLD) and every reply from the home clear
- *                it.  A request sent while it is set carries PRECLAIM.
- *   wc/rc      = #RW/#RO EDTs on this rank acquired-not-released (local EDT
- *                counts; 20 and 22 bits → ≥1 M / ≥4 M concurrent EDTs, well
- *                above any limit).
+ *                it.  A write request sent while it is set carries PRECLAIM.
+ *   wc         = #RW EDTs on this rank acquired-not-released: parked on the
+ *                write request while rw_st is REQ, holders under GRANT.
+ *   rc         = #RO EDTs on this rank counted in the word: the readers
+ *                parked on the read request while nothing here serves a read
+ *                (no write grant, no read grant, not resident), holders
+ *                otherwise.  The readers parked on the read request when this
+ *                rank starts serving reads with it still out (a migration
+ *                makes it the owner, or a create's hold) leave this count for
+ *                the cache's ro_aside until the request's answer, so at a
+ *                resident rank the count is holders alone.  The two counts
+ *                (20 and 22 bits) are far above any number of concurrent
+ *                EDTs.
  *
  * Single-word CAS discipline: every transition — the acquire's count++
  * included — is one CAS (see arbiters.c for why the acquire's atomicity is
@@ -132,15 +138,11 @@ extern "C" {
 #define CACHE_OWNER_WC_SHIFT                                                    \
   (CACHE_OWNER_RC_SHIFT + CACHE_OWNER_RC_BITS) /* 22                             \
                                               */
-/* ro_parity (43) and stub (42) ride every transition: a site that rebuilds
- * the word from cur carries them with CACHE_OWNER_STICKY_MASK. */
+/* stub (42) rides every transition: a site that rebuilds the word from cur
+ * carries CACHE_OWNER_STUB_BIT from it. */
 #define CACHE_OWNER_STUB_SHIFT 42
-#define CACHE_OWNER_RO_PAR_SHIFT 43
 #define CACHE_OWNER_STUB_BIT ((uint64_t)1ULL << CACHE_OWNER_STUB_SHIFT)
-#define CACHE_OWNER_RO_PAR_BIT ((uint64_t)1ULL << CACHE_OWNER_RO_PAR_SHIFT)
-#define CACHE_OWNER_STICKY_MASK (CACHE_OWNER_STUB_BIT | CACHE_OWNER_RO_PAR_BIT)
 #define CACHE_STUB(s) ((uint32_t)(((s) >> CACHE_OWNER_STUB_SHIFT) & 0x1ULL))
-#define CACHE_RO_PAR(s) ((uint32_t)(((s) >> CACHE_OWNER_RO_PAR_SHIFT) & 0x1ULL))
 #define CACHE_OWNER_MT_SHIFT 44
 #define CACHE_OWNER_RO_ST_SHIFT                                                 \
   (CACHE_OWNER_MT_SHIFT + CACHE_OWNER_MT_BITS) /* 58 */
@@ -169,19 +171,18 @@ extern "C" {
 #define CACHE_OWNER(s)                                                         \
   ((uint32_t)(((s) >> CACHE_OWNER_OW_SHIFT) & CACHE_OWNER_OW_MASK))
 
-/* ro_granted flag — bit 63.  Set when this rank's current RO
- * grant arrived from the home via DELIVER(RO) (a home-COUNTED grant), as
- * opposed to an owner-fast-path local RO (never counted at home).  The
- * owner-local RO release path takes owner_try_execute and sends NO RO_RETURN;
- * without this flag a rank that requested an RO and THEN became the owner (a
- * held reader promoted to owner at the RW→RO flip) would self-serve and
- * self-release its granted RO without ever returning the home's r count → the
- * RO→RW flip deadlocks.  With the flag, the RO release sends a RO_RETURN
- * whenever the released RO was granted, regardless of owner-bit, keeping the
- * home's r balanced.  ro_st records only a read request sent to the home and
- * the grant that answered it (a read served from the resident copy leaves it
- * alone), and a rank has one such request out at a time, so a single flag
- * suffices. */
+/* ro_granted flag — bit 63.  The home counts each read request it takes in
+ * until one RO_RETURN gives the count back.  While ro_st holds a read grant
+ * (GRANT or GRANT_PURGE) the bit says the grant came by DELIVER(RO), so this
+ * rank owes that one RO_RETURN, which the transition that takes ro_st back
+ * to IDLE pays: the zero edge of a grant marked for return, or a recall that
+ * retires a resting grant.  While ro_st is REQ it is a recall that overtook
+ * the request's answer: a read DELIVER consumes it by committing the grant
+ * marked for return, and the answer this rank gives its own request as the
+ * owner, which sends the RO_RETURN itself, clears it.  A read served by the
+ * write grant or the resident copy is counted nowhere but rc and touches
+ * neither ro_st nor this bit.  A rank has one read request out at a time,
+ * so a single bit suffices. */
 #define CACHE_OWNER_GRANTED_SHIFT 63
 #define CACHE_OWNER_LEASED_MASK ((uint64_t)1ULL << CACHE_OWNER_GRANTED_SHIFT)
 #define CACHE_GRANTED(s) (((s) & CACHE_OWNER_LEASED_MASK) != 0u)
@@ -417,21 +418,31 @@ extern "C" {
 #endif /* ARTS_RETENTION_PURGE */
 
 /* ── cache_state transition ops + actions (RETAIN) ─────────────────────────
- * cache_owner_compute_next(cur, op, &action) is the RETAIN owner-cache
- * arbiter (arbiters.c). */
+ * cache_owner_compute_next(cur, op, taken, &action) is the RETAIN owner-cache
+ * arbiter (arbiters.c); `taken` is the count a read answer's committer took
+ * from ro_aside before the CAS, and every other op passes 0. */
 #ifdef ARTS_RETENTION_RETAIN
 #define CACHE_OP_ACQ_RW 0
 #define CACHE_OP_ACQ_RO 1
-/* No FORWARD ops: FORWARD-migrate / FORWARD-serve do not transit
- * cache_owner_compute_next — arts_handler_db_excl_forward CASes
- * migrate_target / pushes ro_serve directly (the target/reader is not a
- * pure-function output). */
+/* A migration's DELIVER answered this rank's write request: the bytes are
+ * resident here with the write permission. */
+#define CACHE_OP_GRANT_RW 2
+/* A read DELIVER answered this rank's read request; MARKED when the home
+ * issued the grant marked for return. */
+#define CACHE_OP_GRANT_RO 3
 #define CACHE_OP_REL_RW 4 /* local RW release: wc-- + 0-edge → migrate/noop */
 #define CACHE_OP_REL_RO 5 /* local RO release: rc-- */
 /* A create recording its own hold in a cache this rank already made for the
  * block (see the arbiter for the word it admits). */
 #define CACHE_OP_CREATE_HOLD 6
 #define CACHE_OP_CTS_RO 7
+#define CACHE_OP_GRANT_RO_MARKED 9
+/* The home forwarded this rank, the owner, its own read request: the
+ * request's answer, given here from the resident bytes. */
+#define CACHE_OP_OWN_RO 10
+/* The forwards that serve another rank or migrate the block do not transit
+ * the arbiter: arts_handler_db_excl_forward installs migrate_target or pushes
+ * ro_serve itself (the target is not a pure-function output). */
 
 /* Values are aligned with the PURGE block above so that a name shared by both
  * retentions also shares its number, and the acquire actions carry PURGE's
@@ -441,10 +452,19 @@ extern "C" {
 #define CACHE_ACT_SELF_SERVE 1 /* a grant or the resident copy serves the dep */
 #define CACHE_ACT_SEND_RW 2    /* opened the RW request: park, then send */
 #define CACHE_ACT_SEND_RO 3    /* opened the RO request: park, then send */
-#define CACHE_ACT_PARK 4       /* covered by the in-flight request: park */
-#define CACHE_ACT_DRAIN_BOTH 5 /* serve rw_pending + ro_pending */
+#define CACHE_ACT_PARK 4       /* its axis's request is out: park on it */
+/* The transition makes this rank serve writes and reads (a migration's
+ * DELIVER, a create's hold): set the readers parked on the read request
+ * aside, then serve rw_pending. */
+#define CACHE_ACT_DRAIN_RW 5
+/* The read request's answer: serve the readers parked on it, the ones set
+ * aside included. */
+#define CACHE_ACT_DRAIN_RO 6
 #define CACHE_ACT_REL_RO 8     /* the rc zero edge was reached */
 #define CACHE_ACT_MIGRATE 9  /* wc 0-edge + migrate_target set: send DELIVER */
+/* A transition for no request this rank has out, or a count that would pass
+ * its field: the commit site raises it.  The arbiter leaves the word
+ * unchanged. */
 #define CACHE_ACT_LATE 10
 #define CACHE_ACT_RESEND_RO 11
 
@@ -456,16 +476,8 @@ extern "C" {
  * (GRANT_PURGE) or retain (GRANT); the engine must be driven either way. */
 #endif /* ARTS_RETENTION_RETAIN */
 
-/* The request packet's cover word.  PRECLAIM: a write request opened before
- * a create claimed its first-touch cache.  Under RETAIN a read request also
- * carries its parity and PRECLAIM, and a write request declares the read
- * request its rank has out (open + parity); under PURGE a read request's
- * word is zero and a write request's carries nothing but PRECLAIM. */
-#ifdef ARTS_RETENTION_RETAIN
-#define EXCL_COVER_PAR 0x1u
-#define EXCL_COVER_RO_OPEN 0x2u
-#define EXCL_COVER_RO_PAR 0x4u
-#endif
+/* The request packet's cover word: PRECLAIM on a write request a first-touch
+ * cache opened before a create claimed it, zero on every other request. */
 #define EXCL_COVER_PRECLAIM 0x8u
 
 /* Pending waiter (parked EDT dep slot) used in both ro_pending and rw_pending.
@@ -488,9 +500,6 @@ ARTS_DEP_WAITER_LAYOUT(struct arts_db_excl_waiter_s);
 struct arts_lock_ro_node_s {
   arts_lf_link_t link; /* FIRST */
   unsigned int rank;
-#ifdef ARTS_RETENTION_RETAIN
-  uint32_t cover; /* the request's cover word (its parity) */
-#endif
   struct arts_rdzv_landing_s rdzv; /* the requester's grant/serve landing */
   uint64_t token;                  /* the requester's answer token */
 };
@@ -553,23 +562,28 @@ struct arts_db_cache_s {
    * orders. */
   _Atomic(uint64_t) cxl_addr;
 #endif
-#ifdef ARTS_RETENTION_PURGE
   /* The readers parked on this rank's read request whose count left
-   * cache_state when write permission reached the rank.  The committer of a
-   * write grant or of a create's hold adds its CAS's pre-image read count,
-   * after that CAS and before it resumes any writer; the committer of the
-   * read request's grant takes the whole count (an exchange with 0) before
-   * its CAS, which returns it to the word.  Non-zero only while the read
-   * request is out.  The add happens-before the take: the home grants a
-   * read request held through this rank's write turn only after the release
-   * that ended the turn, which a holder of the turn sent, and every holder
-   * the turn began with was resumed after the add (a create's own hold is
-   * released after the add returned); a read grant issued earlier is
-   * committed, and its turn returned, before the home can grant this rank's
-   * write request.  Each RMW is acq_rel and decides nothing against another
-   * word. */
+   * cache_state when the rank began serving reads with that request still
+   * out: under PURGE a write grant, under RETAIN a migration that makes the
+   * rank the owner, on both a create's hold.  That transition's committer
+   * adds its CAS's pre-image read count after the CAS and before it resumes
+   * any writer or sends anything; the committer of the request's answer (a
+   * read grant, or under RETAIN the owner's answer to its own forwarded
+   * request) takes the whole count, an exchange with 0, before its CAS,
+   * which returns it to the word.  Non-zero only while the request is out.
+   * The add happens-before the take through the home, and an earlier
+   * answer's take happens-before the add:
+   * PURGE: the home grants the read request only after the release that
+   *   ended this rank's write turn, which a holder sent after the add (one
+   *   the transition resumed, or the create that took the hold); an earlier
+   *   read grant is returned before the home grants this rank's write
+   *   request.
+   * RETAIN: the home forwards the request, and starts a migration away from
+   *   this rank, only after the EXCL_CONFIRM or the create's announce this
+   *   rank sends after the add; an earlier answer's RO_RETURN reaches the
+   *   home before it starts a migration here.
+   * Each RMW is acq_rel and decides nothing against another word. */
   _Atomic(uint32_t) ro_aside;
-#endif
   /* 1 until a buffer has been installed, 0 after: stored 0 with release
    * after the slot's install and read with acquire at the fast exit (see the
    * VAL layout). */
@@ -628,28 +642,14 @@ struct arts_db_s {
   /* destroy fan-out roster; the creator's bit is set at home init, every
    * other by arts_rank_bitset_note */
   struct arts_rank_bitset_s cached_ranks;
-#ifdef ARTS_RETENTION_RETAIN
-  /* Per requester rank, the parity of its last read request this home has
-   * accounted for, by its arrival or by a declaration of it, whichever came
-   * first: the one that finds the bit already at the request's parity is the
-   * second of the pair.  Each update is one acq_rel RMW of the rank's word. */
-  struct arts_rank_bitset_s ro_parity;
-  /* Per requester rank, whether its read request waits here to be served as
-   * a read.  Set by the request before its parity step; taken (one acq_rel
-   * RMW returning the old bit) by whichever comes first of the drain that
-   * pops its node and the same rank's write request whose parity step found
-   * the read request already arrived.  The drain serves the node only if it
-   * took the bit; otherwise that write turn covers the readers and the node
-   * is dismissed, its read count released here. */
-  struct arts_rank_bitset_s ro_queued;
-#endif
   /* The rank whose create claimed a first-touch cache, written before the
    * descriptor is published (ordered by the route slot's install). */
   unsigned int claim_rank;
 #ifdef ARTS_RETENTION_RETAIN
-  /* [td:1 (31) | rwo:1 (30) | roo:1 (29) | owed:29]: the destroy's mark and
-   * what the home was told is still coming, one word so that marking and
-   * settling read each other.  Every write after init is an acq_rel RMW. */
+  /* The destroy's gate (cover_gate.h): the destroy's mark and the claiming
+   * creator's pre-claim write request the create's announce said is still
+   * coming, one word so that marking and settling read each other.  Every
+   * write after init is an acq_rel RMW. */
   _Atomic(uint32_t) cover_gate;
 #endif
 #ifdef ARTS_RETENTION_RETAIN
@@ -686,5 +686,12 @@ struct arts_db_s {
  * the teardown mark; RETAIN calls it directly on destroy. */
 struct arts_db_s;
 void arts_excl_home_teardown(struct arts_db_s *db, arts_guid_t db_guid);
+
+/* Shared by both retentions, the two steps of ro_aside (above): the add of
+ * the n readers a serving transition took out of the cache word, by its
+ * committer before it resumes any writer, and the take by the committer of
+ * the read request's answer before its CAS, which returns the count. */
+void arts_excl_set_readers_aside(struct arts_db_cache_s *cache, uint32_t n);
+uint32_t arts_excl_take_readers_aside(struct arts_db_cache_s *cache);
 
 #endif /* ARTS_COHERENCE_EXCL_TYPES_H */

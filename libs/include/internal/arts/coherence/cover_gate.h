@@ -6,17 +6,15 @@
  *
  *   cover_gate = [ td:1 (31) | rwo:1 (30) | roo:1 (29) | owed:29 ]
  *
- * owed counts those requests, rwo and roo mark the claiming creator's
- * pre-claim write and read requests among them, and td says the destroy
- * marked the gate.  The teardown runs at the one step that leaves a marked
- * gate with nothing owed.  After its init every write is an acq_rel RMW, so
- * the step that reaches the edge follows every earlier step.
+ * owed counts those requests, rwo marks the claiming creator's pre-claim
+ * write request among them, and td says the destroy marked the gate.  The
+ * teardown runs at the one step that leaves a marked gate with nothing owed.
+ * After its init every write is an acq_rel RMW, so the step that reaches the
+ * edge follows every earlier step.
  *
- * VAL and INV are told of one request only, the claiming creator's pre-claim
- * write request: their gate takes MARK and RWO_ARRIVE, roo stays clear and
- * owed never passes one.  EXCL·RETAIN's home is also told of that creator's
- * pre-claim read request and of each read request a write request of the
- * same rank declares, and takes every step.
+ * Each of those homes is told of one request only, the claiming creator's
+ * pre-claim write request: its gate takes MARK and RWO_ARRIVE, roo stays
+ * clear and owed never passes one.
  */
 #ifndef ARTS_COHERENCE_COVER_GATE_H
 #define ARTS_COHERENCE_COVER_GATE_H

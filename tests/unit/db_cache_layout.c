@@ -260,7 +260,7 @@ static void print_fingerprint(void) {
 #endif
   MEMBER(cache_t, db_guid);
   MEMBER(cache_t, db_size);
-#if defined(ARTS_VALIDITY_EXCL) && defined(ARTS_RETENTION_PURGE)
+#ifdef ARTS_VALIDITY_EXCL
   MEMBER(cache_t, ro_aside);
 #endif
   MEMBER(cache_t, payload_pending);
@@ -306,9 +306,6 @@ static void print_fingerprint(void) {
   MEMBER(db_t, rw_waiters);
   MEMBER(db_t, ro_waiters);
   MEMBER(db_t, cached_ranks);
-#ifdef ARTS_RETENTION_RETAIN
-  MEMBER(db_t, ro_parity);
-#endif
   MEMBER(db_t, claim_rank);
 #ifdef ARTS_RETENTION_RETAIN
   MEMBER(db_t, cover_gate);
@@ -449,6 +446,24 @@ int main(void) {
                           "hold every rank\n");
     rc = 1;
   }
+#endif
+#if defined(ARTS_VALIDITY_EXCL) && defined(ARTS_RETENTION_RETAIN)
+  /* The exclusion arm's cache word under RETAIN: [ro_granted:1 (63) |
+   * owner:1 (62) | rw_st:2 (61..60) | ro_st:2 (59..58) | migrate_target:14
+   * (57..44) | spare:1 (43) | stub:1 (42) | wc:20 (41..22) | rc:22 (21..0)]. */
+  if ((CACHE_MAKE_FULL(1u, 3u, 3u, CACHE_OWNER_MT_MASK, CACHE_OWNER_WC_MASK,
+                       CACHE_OWNER_RC_MASK) |
+       CACHE_OWNER_LEASED_MASK | CACHE_OWNER_STUB_BIT) !=
+          ~((uint64_t)1 << 43) ||
+      CACHE_OWNER_STUB_BIT != (uint64_t)1 << 42 ||
+      CACHE_MAKE_FULL(0u, 0u, 0u, 0u, CACHE_OWNER_WC_MASK, 0u) !=
+          (uint64_t)0xfffffULL << 22) {
+    (void)fprintf(stderr, "FAIL db_cache_layout: the RETAIN cache word's "
+                          "fields do not fill bits 63..44 and 42..0\n");
+    rc = 1;
+  }
+#endif
+#ifdef ARTS_VALIDITY_EXCL
   if (sizeof(db.cache.ro_aside) != sizeof(uint32_t)) {
     (void)fprintf(stderr, "FAIL db_cache_layout: ro_aside is not 32 bits\n");
     rc = 1;

@@ -39,7 +39,10 @@
  * RC and RD read S's fill alone.
  *
  * Needs four ranks: the home, the readers' rank and the writer's rank are
- * distinct, so no acquire of rank C or D is the home's own.  The verdict:
+ * distinct, so no acquire of rank C or D is the home's own.  Under a
+ * retention that leaves the block with its last writer, S on rank H keeps
+ * it, so B's owner is rank H too, neither the readers' rank nor the
+ * writer's.  The verdict:
  * exit status, PASS line, no FAIL line and no QUIESCENCE-DEBUG marker; a
  * runtime that leaves RC behind rank C's write request never ends the run.
  */

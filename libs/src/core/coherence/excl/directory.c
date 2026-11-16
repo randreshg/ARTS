@@ -1,16 +1,17 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * EXCL protocol shared home-side infrastructure.
+ * EXCL protocol shared infrastructure.
  *
  * Defines: arts_db_home_init, arts_db_home_teardown, arts_db_home_seed_owed,
- *          arts_excl_home_teardown.
+ *          arts_excl_home_teardown, arts_excl_set_readers_aside,
+ *          arts_excl_take_readers_aside.
  *
  * This TU contains only the shared pieces that both the PURGE and RETAIN
- * retention variants need: the home-directory lifecycle and the
- * DB-destroy fan-out.  Timing-specific arbiters (excl_compute_next,
- * cache_compute_next) and all acquire/release handler/sender bodies live in
- * the per-retention TU (purge.c or retain.c).  The home request FIFO is
- * grantreq_queue.c.
+ * retention variants need: the home-directory lifecycle, the DB-destroy
+ * fan-out and the cache's two ro_aside steps.  Timing-specific arbiters
+ * (excl_compute_next, cache_compute_next) and all acquire/release
+ * handler/sender bodies live in the per-retention TU (purge.c or retain.c).
+ * The home request FIFO is grantreq_queue.c.
  *
  * Compiled only for ARTS_VALIDITY=EXCL.
  */
@@ -30,6 +31,8 @@
 #include "arts/gas/route_table.h"
 #include "arts/ooo.h"
 #include "arts/system/identity.h"
+#include "arts/system/print.h"
+#include "arts/system/schedfuzz.h"
 #include "arts/transport/net.h"
 #include "arts/utils/malloc.h"
 
@@ -61,10 +64,6 @@ void arts_db_home_init(struct arts_db_s *db, unsigned int rw_holder,
   arts_home_grantreq_queue_init(&db->rw_waiters);
   arts_lf_stack_init(&db->ro_waiters);
   arts_rank_bitset_init(&db->cached_ranks, nranks);
-#ifdef ARTS_RETENTION_RETAIN
-  arts_rank_bitset_init(&db->ro_parity, nranks);
-  arts_rank_bitset_init(&db->ro_queued, nranks);
-#endif
   db->claim_rank = (unsigned int)-1;
 #ifdef ARTS_RETENTION_RETAIN
   atomic_store_explicit(&db->cover_gate, 0u, memory_order_relaxed);
@@ -97,8 +96,6 @@ void arts_db_home_teardown(struct arts_db_s *db) {
   }
   arts_rank_bitset_destroy(&db->cached_ranks);
 #ifdef ARTS_RETENTION_RETAIN
-  arts_rank_bitset_destroy(&db->ro_parity);
-  arts_rank_bitset_destroy(&db->ro_queued);
   /* Retainers are legal at destroy — a retained grant has no live acquire — so
    * a non-empty roster here is a normal path, not an edge case. */
   arts_rank_bitset_destroy(&db->ro_retainers);
@@ -127,20 +124,10 @@ void arts_db_home_seed_owed(struct arts_db_s *db, unsigned int creator,
   if (owed == 0u) {
     return;
   }
+  /* The claim closes the write request alone. */
+  assert(owed == ARTS_CREATE_OWED_RW);
   db->claim_rank = creator;
-  uint32_t n = 0u;
-  uint32_t rwo = (owed & ARTS_CREATE_OWED_RW) ? 1u : 0u;
-  uint32_t roo = (owed & ARTS_CREATE_OWED_RO) ? 1u : 0u;
-  if (roo) {
-    /* As if the pre-claim read request had arrived: the creator's next read
-     * request (the opposite parity) pairs as any. */
-    (void)arts_rank_bitset_put(&db->ro_parity, creator,
-                               (owed & ARTS_CREATE_OWED_RO_PAR) != 0u);
-  }
-  n = rwo + roo;
-  atomic_store_explicit(&db->cover_gate,
-                        (rwo != 0u ? ARTS_COVER_GATE_RWO : 0u) |
-                            (roo != 0u ? ARTS_COVER_GATE_ROO : 0u) | n,
+  atomic_store_explicit(&db->cover_gate, ARTS_COVER_GATE_RWO | 1u,
                         memory_order_relaxed);
 }
 #endif
@@ -177,3 +164,40 @@ void arts_excl_home_teardown(struct arts_db_s *db, arts_guid_t db_guid) {
    * single-consumer queue — a use-after-free against a concurrent pop. */
 }
 
+/* ===== The cache's ro_aside steps (excl/types.h) ======================= */
+
+void arts_excl_set_readers_aside(struct arts_db_cache_s *cache, uint32_t n) {
+  if (n == 0u) {
+    return;
+  }
+  arts_sched_fuzz_point();
+  uint32_t had =
+      atomic_fetch_add_explicit(&cache->ro_aside, n, memory_order_acq_rel);
+#ifdef ARTS_RETENTION_PURGE
+  uint64_t limit = CACHE_CNT_MASK;
+#else
+  uint64_t limit = CACHE_OWNER_RC_MASK;
+#endif
+  if ((uint64_t)had + n > limit) {
+    ARTS_ERROR("lock: guid %lu has more read acquires parked on one rank "
+               "than its cache word can hold (aside=%u, set aside %u)",
+               (unsigned long)cache->db_guid, had, n);
+  }
+#ifndef NDEBUG
+  /* The transition that set these readers aside still holds the writers it
+   * counted, none resumed yet, so its write grant stands, and the answer that
+   * will take this count cannot have come; the word this thread wrote is the
+   * latest it can read. */
+  uint64_t now =
+      atomic_load_explicit(&cache->cache_state, memory_order_relaxed);
+  assert(CACHE_RW_ST(now) == CACHE_ST_GRANT &&
+         CACHE_RO_ST(now) == CACHE_ST_REQ);
+#endif
+}
+
+uint32_t arts_excl_take_readers_aside(struct arts_db_cache_s *cache) {
+  uint32_t taken =
+      atomic_exchange_explicit(&cache->ro_aside, 0u, memory_order_acq_rel);
+  arts_sched_fuzz_point();
+  return taken;
+}

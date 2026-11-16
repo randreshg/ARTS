@@ -1853,16 +1853,16 @@ if(_c)
     endif()
 
     # The claim program: rank 1's reader acquires the block before rank 1
-    # creates it; the create's hold is rank 1's write, a local hit.  On VAL,
-    # INV and EXCL·PURGE the create's claim of rank 1's first-touch cache
-    # serves no reader, and the reader is served by its own read request's
-    # answer: on the HOME cells the home, rank 0, answers once the creator's
-    # first publication has reached it (under exclusion, once the creator's
-    # hold has come back), so the read is remote; on the OWNER cells the home
-    # redirects the request to the holder it names, rank 1 itself, which
-    # answers from its own copy, so the read is local.  On EXCL·RETAIN the
-    # claim serves the reader, a local hit; under FLUSH every acquisition
-    # fetches from the home, so the read is remote.
+    # creates it; the create's hold is rank 1's write, a local hit.  The
+    # create's claim of rank 1's first-touch cache serves no reader, and the
+    # reader is served by its own read request's answer: on the HOME cells the
+    # home, rank 0, answers once the creator's first publication has reached
+    # it (under exclusion, once the creator's hold has come back), so the
+    # read is remote; on the OWNER cells the home sends the request to the
+    # holder it names, rank 1 itself (VAL's and INV's redirect, EXCL·RETAIN's
+    # forward to the owner), which answers from its own copy, so the read is
+    # local; under FLUSH every acquisition fetches from the home, so the read
+    # is remote.
     set(_claim 0:NUM_DB_ACQUIRE_READ=0 0:NUM_DB_ACQUIRE_WRITE=0
                0:NUM_DB_ACQUIRE_LOCAL_HIT=0 0:NUM_DB_ACQUIRE_REMOTE=0
                1:NUM_DB_ACQUIRE_READ=1 1:NUM_DB_ACQUIRE_WRITE=1)
@@ -1921,36 +1921,21 @@ if(_c)
         list(APPEND _join 0:NUM_PURGE_RETURN=0 1:NUM_PURGE_RETURN=0)
     endif()
 
-    # The gate program, where the write right stays with the rank it moved
-    # to: rank 1's writer and the two readers its request serves are remote,
-    # and the write the first reader makes once it runs is local, the home's
-    # confirmation of rank 1's right still out or not.
-    set(_gate 0:NUM_DB_ACQUIRE_READ=0 0:NUM_DB_ACQUIRE_WRITE=1
-              0:NUM_DB_ACQUIRE_LOCAL_HIT=1 0:NUM_DB_ACQUIRE_REMOTE=0
-              1:NUM_DB_ACQUIRE_READ=2 1:NUM_DB_ACQUIRE_WRITE=2
-              1:NUM_DB_ACQUIRE_LOCAL_HIT=1 1:NUM_DB_ACQUIRE_REMOTE=3)
     arts_counters_captured(_c NUM_RO_COMBINE_WINDOW NUM_RO_COMBINE_JOINED)
     if(_c AND _cell MATCHES "^VAL_")
         list(APPEND _join 1:NUM_RO_COMBINE_WINDOW=3 1:NUM_RO_COMBINE_JOINED=2)
     endif()
 
-    # join and gate hold every read request.  join's leaves once the EDT
-    # bodies runnable at its hold have returned: the one that sent it, after
-    # the next reader parked on it, and on VAL the first reader's, after the
-    # third parked on the next window; so each later reader parks on the
-    # request out whatever the timing.  gate's are held past the run, so a
-    # write turn must serve them: gate registers where a write turn serves
-    # its rank's readers and the write right stays with the rank it moved
-    # to, EXCL·RETAIN.
+    # join holds every read request until the EDT bodies runnable at its
+    # hold have returned: the one that sent it, after the next reader parked
+    # on it, and on VAL the first reader's, after the third parked on the
+    # next window; so each later reader parks on the request out whatever
+    # the timing.
     set(_shapes two home recall claim pub)
     if(ARTS_DEBUG_INJECTION)
         list(APPEND _shapes join)
-        if(_cell STREQUAL "EXCL_RETAIN_OWNER")
-            list(APPEND _shapes gate)
-        endif()
     endif()
     set(_hook_join "ARTS_REQUEST_DELAY_MS=60000:drain")
-    set(_hook_gate "ARTS_REQUEST_DELAY_MS=60000:ro")
     foreach(_v 2n_9w_1p 2n_8w_2p)
         arts_test_cfg(_cfg ${_v})
         foreach(_shape IN LISTS _shapes)

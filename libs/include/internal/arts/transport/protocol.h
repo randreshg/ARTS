@@ -118,11 +118,9 @@ enum arts_msg_type {
                            a landing-less EXCL·PURGE release; the releaser PUTs
                            then sends the final PUBLISH (EXCL_RELEASE)
                            carrying the txid. */
-  MSG_DB_EXCL_CTS,    /* EXCL home (or, under RETAIN, an owner a read
-                         FORWARD finds without the block) → requester: a
-                         size round (db_size for a first-touch EXCL_REQUEST
-                         that carried no landing) or a read request's
-                         dismiss. */
+  MSG_DB_EXCL_CTS,    /* EXCL home → requester: a size round (db_size for a
+                         first-touch EXCL_REQUEST that carried no
+                         landing). */
 
   /* INV-protocol coherence messages.  Only sent/received in
    * ARTS_VALIDITY=INV builds; the dispatcher's INV cases are
@@ -617,9 +615,8 @@ struct ARTS_PACKED arts_msg_excl_request_packet_s {
   struct arts_msg_header_s header;
   arts_guid_t db_guid;
   uint32_t mode; /* arts_db_access_mode_t: DB_MODE_RO or DB_MODE_RW */
-  uint32_t cover; /* EXCL_COVER_*: under RETAIN its parity, or a write
-                   * request's declaration; under PURGE a write request's
-                   * PRECLAIM alone */
+  uint32_t cover; /* EXCL_COVER_PRECLAIM on a write request a first-touch
+                   * cache opened before a create claimed it, else 0 */
   /* requester rank = header.rank; no edt_guid/slot (rank-granular). */
   /* Requester's landing for the grant/deliver payload.  txid==0 = requester
    * does not yet know db_size (first touch): home answers EXCL_CTS and the
@@ -628,22 +625,15 @@ struct ARTS_PACKED arts_msg_excl_request_packet_s {
   uint64_t token; /* the requester's answer token */
 };
 
-/* EXCL_CTS — to the requester: an answer without data.  A size round, from the
- * home: the request carried no landing, so it was not queued; it echoes the
- * mode, and the requester re-issues the same request with a landing (under
- * RETAIN a read one only for readers that still wait on it, ride no write
- * request or turn of the requester's own and find no bytes resident there).
- * Under RETAIN also, for a read request, a dismiss: from the home, when a
- * write turn of the requester's rank covers it, or from an owner a read
- * FORWARD finds without the block; cover then echoes the answered request's
- * cover word, whose parity the requester checks against its open read
- * request.  Under PURGE cover is zero. */
+/* EXCL_CTS — to the requester: a size round, from the home.  The request
+ * carried no landing, so it was not queued; the answer echoes the mode, and
+ * the requester re-issues the same request with a landing. */
 struct ARTS_PACKED arts_msg_excl_cts_packet_s {
   struct arts_msg_header_s header;
   arts_guid_t db_guid;
   uint64_t db_size;
   uint32_t mode;
-  uint32_t cover;
+  uint32_t pad;   /* keeps the token 8-aligned; written 0 */
   uint64_t token; /* the request's, echoed */
 };
 
@@ -707,9 +697,7 @@ struct ARTS_PACKED arts_msg_excl_forward_packet_s {
    * today, so a stuffed bit would land in the serve arm by accident rather than
    * by contract, and `target` is copied unmasked into the serve node's rank. */
   uint32_t tag;
-  /* serve: the read request's cover word, which a dismiss echoes when the
-   * owner no longer has the block; migrate: 0. */
-  uint32_t cover;
+  uint32_t pad; /* keeps the fields below 8-aligned; written 0 */
   struct arts_msg_rdzv_landing_s rdzv; /* target's landing, forwarded */
   uint64_t token;      /* the target's request's, for the DELIVER */
   uint64_t home_token; /* migrate: the home's, for the DELIVER; serve: 0 */

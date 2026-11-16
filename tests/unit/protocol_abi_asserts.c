@@ -377,15 +377,25 @@ _Static_assert(offsetof(struct arts_msg_excl_grant_packet_s, token) == 96,
                "lock_grant token drifted");
 _Static_assert(sizeof(struct arts_msg_excl_release_packet_s) == 72,
                "lock_release sizeof drifted");
+_Static_assert(offsetof(struct arts_msg_excl_request_packet_s, cover) == 28,
+               "lock_request cover drifted");
 _Static_assert(sizeof(struct arts_msg_excl_cts_packet_s) == 48,
                "lock_cts sizeof drifted");
+_Static_assert(offsetof(struct arts_msg_excl_cts_packet_s, mode) == 32,
+               "lock_cts mode drifted");
+_Static_assert(offsetof(struct arts_msg_excl_cts_packet_s, pad) == 36,
+               "lock_cts pad drifted");
 _Static_assert(offsetof(struct arts_msg_excl_cts_packet_s, token) == 40,
                "lock_cts token drifted");
 #ifdef ARTS_RETENTION_RETAIN
 _Static_assert(sizeof(struct arts_msg_excl_forward_packet_s) == 88,
                "lock_forward sizeof drifted");
-_Static_assert(offsetof(struct arts_msg_excl_forward_packet_s, cover) == 36,
-               "lock_forward cover drifted");
+_Static_assert(offsetof(struct arts_msg_excl_forward_packet_s, tag) == 32,
+               "lock_forward tag drifted");
+_Static_assert(offsetof(struct arts_msg_excl_forward_packet_s, pad) == 36,
+               "lock_forward pad drifted");
+_Static_assert(offsetof(struct arts_msg_excl_forward_packet_s, rdzv) == 40,
+               "lock_forward rdzv drifted");
 _Static_assert(offsetof(struct arts_msg_excl_forward_packet_s, token) == 72,
                "lock_forward token drifted");
 _Static_assert(offsetof(struct arts_msg_excl_forward_packet_s, home_token) ==

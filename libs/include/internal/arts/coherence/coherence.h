@@ -51,8 +51,9 @@ extern "C" {
  * axis owns one count on the requester's descriptor.  The CAS that opens the
  * axis takes it, after it commits and before the request leaves; whichever
  * frame commits a transition that closes the axis drops it at its own end,
- * after its last access: the answer, on EXCL·RETAIN a size round or dismiss
- * that closes, a create's claim, or, for an axis a cut shutdown left open on a
+ * after its last access: the answer (on EXCL·RETAIN the owner's answer to its
+ * own forwarded read request included), a create's claim, or, for an axis a
+ * cut shutdown left open on a
  * descriptor still installed at teardown, the teardown sweep
  * (arts_db_sweep_open_items, in a sanitizer build, once the other runtime
  * threads have stopped); a
@@ -87,10 +88,8 @@ extern "C" {
  * whose CAS returns w to zero).  An answer to a round that finds the home
  * retired still takes the round's counting step on the descriptor (an ack's
  * decrement, a CONFIRM's put-down, an EXCL_CONFIRM's w decrement) and nothing
- * else: it finishes, serves, sends and resumes nothing (but the dismiss an
- * EXCL_CONFIRM sends to a held read request its rank's write turn covered,
- * whose count closes only with an answer), and the step that ends the round
- * drops its count.  As for a request axis, the teardown sweep drops the count
+ * else: it finishes, serves, sends and resumes nothing, and the step that ends
+ * the round drops its count.  As for a request axis, the teardown sweep drops the count
  * of a round a cut shutdown left open only on a home still installed at
  * teardown; a retired home keeps it to the process exit, as when the shutdown
  * cuts a CONFIRM under HOME that legally trails the home's teardown.
@@ -106,9 +105,9 @@ extern "C" {
  * descriptor's control block while it is live (arts_route_table_copy_live).  A
  * dispatch onto a descriptor that is not live takes the engine's GUID path,
  * which may defer the body to the install's drain, whose handle holds it.
- * EXCL's request to its own home is one (under RETAIN a CTS's re-send runs
- * under the read request's count, which the body's grant or dismiss can
- * close).  The home's
+ * EXCL's request to its own home is one (its body can answer the request
+ * inline: PURGE's grant, RETAIN's self-grant or the owner's answer to its own
+ * read request).  The home's
  * INVALIDATE to its own rank is such a request (its holder body can ship a
  * whole transfer to this rank inline, whose CONFIRM may end the tenure the
  * caller runs under), and so is the EXCL·RETAIN home's FORWARD to itself as
@@ -122,10 +121,11 @@ extern "C" {
  * request its committing caller runs under, so that caller sends the CONFIRM as
  * its last access.  An EXCL_CONFIRM to its own home takes none: its body never
  * drops the write request's count its callers run under (it drops the home's
- * count, and its read drain can dismiss this rank's own covered read, dropping
- * that request's count), and they drop it after it returns.  A self-sent answer
- * (on EXCL also the PURGE home's grant and, under RETAIN, a CTS to its own
- * rank) takes none:
+ * count, and its read drain can forward this rank's own read request back to
+ * it, whose answer drops that request's count), and they drop it after it
+ * returns.  A self-sent answer (on EXCL also the PURGE home's grant, and the
+ * RETAIN home's FORWARD that serves its own read request, which acts on the
+ * request's token as its wire entry does) takes none:
  * it drops its count as its last access, and its caller runs under another
  * count: a request's body under such a count, a lookup's or a drain's; an
  * answer frame that reaches it (an INV deliver whose copy a round killed)
@@ -193,7 +193,7 @@ static inline void arts_db_axis_drop(struct arts_db_s *db, unsigned int n) {
   }
 }
 /* The axes a create's claim closed, as its owed byte names them: the write
- * request still out and, on EXCL·RETAIN, the read request still out. */
+ * request still out. */
 static inline unsigned int arts_db_claim_closed_axes(uint8_t owed) {
   return ((owed & ARTS_CREATE_OWED_RO) != 0u ? 1u : 0u) +
          ((owed & ARTS_CREATE_OWED_RW) != 0u ? 1u : 0u);

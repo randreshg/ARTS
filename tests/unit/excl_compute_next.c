@@ -27,10 +27,14 @@
  * drive them (ro_aside beside the word), and every reachable (word,
  * ro_aside) with ghost counts of the parked and holding acquires.
  *
- * RETAIN: cache_owner_compute_next, the cache word's arbiter (the acquire's
- * count and decision in one transition, the parked populations a serving
- * transition owes, the sticky owner's migration), and the home directory's
- * lock_owner_compute_next.
+ * RETAIN: cache_owner_compute_next, the cache word's arbiter: every row, the
+ * parked populations a serving transition owes, sequences driven as
+ * retain.c's commit sites drive them (ro_aside beside the word), and every
+ * (word, ro_aside) reachable from an idle cache, a sticky owner, a resident
+ * rank without the write permission and a claimable first touch, with ghost
+ * counts of the parked and holding acquires and the direct transitions of
+ * owner_try_execute, owner_serve_readers and the recall modelled on the word
+ * they commit; and the home directory's lock_owner_compute_next.
  *
  * The arbiters are static to the unit that includes them; this file reaches
  * them the same way, by #including coherence/excl/arbiters.c.  Built and
@@ -835,14 +839,17 @@ int main(void) {
 
 #ifdef ARTS_RETENTION_RETAIN
 /* RETAIN's cache arbiter cache_owner_compute_next, its parked-population
- * reading, and the home arbiter lock_owner_compute_next. */
-static uint64_t cache_owner_compute_next(uint64_t cur, int op,
+ * reading, the readers a serving transition sets aside, and the home arbiter
+ * lock_owner_compute_next. */
+static uint64_t cache_owner_compute_next(uint64_t cur, int op, uint32_t taken,
                                          uint32_t *out_action);
 static uint64_t lock_owner_compute_next(uint64_t cur, int op,
                                         unsigned int new_owner,
                                         uint32_t *out_action);
+static inline bool cache_owner_serves_ro(uint64_t s);
 static inline uint32_t cache_owner_parked_rw(uint64_t s);
 static inline uint32_t cache_owner_parked_ro(uint64_t s);
+static inline uint32_t cache_set_aside(uint64_t pre);
 
 static int g_rc = 0;
 static int g_checks = 0;
@@ -850,27 +857,72 @@ static int g_checks = 0;
 #define NT ARTS_EXCL_NO_TARGET
 #define W(own, rws, ros, mt, wc, rc) CACHE_MAKE_FULL(own, rws, ros, mt, wc, rc)
 
-/* One step of a cache-word sequence: apply `op`, check the whole word (the
- * sticky and spare bits included) and the action, carry the word on. */
-static void step_owner(const char *name, uint64_t *cur, int op, uint64_t want,
-                       uint32_t ex_act) {
+/* What a transition owes besides its word, as its commit site computes it:
+ * the writers and readers it drains and the readers it sets aside. */
+static uint32_t owed_rw(uint64_t pre, uint32_t act) {
+  return act == CACHE_ACT_DRAIN_RW ? cache_owner_parked_rw(pre) : 0u;
+}
+static uint32_t owed_ro(uint64_t pre, uint32_t taken, uint32_t act) {
+  return act == CACHE_ACT_DRAIN_RO ? cache_owner_parked_ro(pre) + taken : 0u;
+}
+static uint32_t owed_aside(uint64_t pre, uint32_t act) {
+  return act == CACHE_ACT_DRAIN_RW ? cache_set_aside(pre) : 0u;
+}
+
+/* One step of a cache-word sequence: apply `op` (with `taken` readers
+ * returned from ro_aside), check the whole word (the stub, ro_granted and
+ * spare bits included), the action and the readers it sets aside, carry
+ * the word on. */
+static void step_owner_x(const char *name, uint64_t *cur, int op,
+                         uint32_t taken, uint64_t want, uint32_t ex_act,
+                         uint32_t ex_aside) {
   uint32_t act = 0xffffffff;
-  uint64_t next = cache_owner_compute_next(*cur, op, &act);
+  uint64_t next = cache_owner_compute_next(*cur, op, taken, &act);
+  uint32_t aside = owed_aside(*cur, act);
   g_checks++;
-  if (next != want || act != ex_act) {
+  if (next != want || act != ex_act || aside != ex_aside) {
     (void)fprintf(stderr,
-                  "FAIL [%s]: in %llx op=%d => out %llx act=%u, expected %llx "
-                  "act=%u\n",
-                  name, (unsigned long long)*cur, op, (unsigned long long)next,
-                  act, (unsigned long long)want, ex_act);
+                  "FAIL [%s]: in %llx op=%d taken=%u => out %llx act=%u "
+                  "aside=%u, expected %llx act=%u aside=%u\n",
+                  name, (unsigned long long)*cur, op, taken,
+                  (unsigned long long)next, act, aside,
+                  (unsigned long long)want, ex_act, ex_aside);
     g_rc = 1;
   }
   *cur = next;
 }
 
+static void step_owner(const char *name, uint64_t *cur, int op, uint64_t want,
+                       uint32_t ex_act) {
+  step_owner_x(name, cur, op, 0u, want, ex_act, 0u);
+}
+
 static void chk_owner(const char *name, uint64_t cur, int op, uint64_t want,
                       uint32_t ex_act) {
   step_owner(name, &cur, op, want, ex_act);
+}
+
+static void chk_owner_x(const char *name, uint64_t cur, int op, uint32_t taken,
+                        uint64_t want, uint32_t ex_act, uint32_t ex_aside) {
+  step_owner_x(name, &cur, op, taken, want, ex_act, ex_aside);
+}
+
+/* A read answer (op), checked with the readers it resumes. */
+static void chk_answer(const char *name, uint64_t cur, int op, uint32_t taken,
+                       uint64_t want, uint32_t ex_act, uint32_t ex_resumed) {
+  uint32_t act = 0xffffffff;
+  uint64_t next = cache_owner_compute_next(cur, op, taken, &act);
+  uint32_t resumed = owed_ro(cur, taken, act);
+  g_checks++;
+  if (next != want || act != ex_act || resumed != ex_resumed) {
+    (void)fprintf(stderr,
+                  "FAIL [%s]: in %llx op=%d taken=%u => out %llx act=%u "
+                  "resumed=%u, expected %llx act=%u resumed=%u\n",
+                  name, (unsigned long long)cur, op, taken,
+                  (unsigned long long)next, act, resumed,
+                  (unsigned long long)want, ex_act, ex_resumed);
+    g_rc = 1;
+  }
 }
 
 static void chk_parked(const char *name, uint64_t s, uint32_t ex_rw,
@@ -900,12 +952,284 @@ static void chk_lock(const char *name, uint64_t cur, int op,
   }
 }
 
+/* A cache as the commit sites of retain.c drive it: the word and ro_aside,
+ * which the committer of a transition that makes the rank serve reads (a
+ * migration's DELIVER, a create's hold) adds to and the committer of the
+ * read request's answer (a read DELIVER, or the answer the owner gives its
+ * own forwarded request) takes whole before its CAS.  The ship, the serve's
+ * demote, the self-grant and the recall are the direct CASes of
+ * owner_try_execute, owner_serve_readers and excl_recall_on, modelled here
+ * on the word they commit. */
+#define CW_MAX 3u
+struct cw_node {
+  uint64_t word;
+  uint32_t aside;
+  uint8_t parked_r, live_r, parked_w, live_w;
+};
+
+enum {
+  M_SHIP = 100, /* a migration away: own 1 -> 0, the write grant leaves */
+  M_DEMOTE,     /* the serve relinquishes the write grant, the bytes stay */
+  M_SELF_GRANT, /* the home forwards this resident rank its own write turn */
+  M_RECALL,     /* the home recalls a read grant (or overtakes its answer) */
+};
+
+static bool cw_serves(uint64_t w) { return cache_owner_serves_ro(w); }
+
+/* Invariant J of the RETAIN word, the parked and live acquires the ghost
+ * counts follow, and the facts the commit sites lean on. */
+static bool cw_invariant(const struct cw_node *s) {
+  uint64_t w = s->word;
+  uint32_t own = CACHE_OWNER(w), rws = CACHE_RW_ST(w), ros = CACHE_RO_ST(w);
+  uint32_t wc = CACHE_RW_CNT(w), rc = CACHE_RO_CNT(w);
+  bool serves = cw_serves(w);
+  bool read_grant = ros == CACHE_ST_GRANT || ros == CACHE_ST_GRANT_PURGE;
+  return s->parked_r == (serves ? 0u : rc) + s->aside &&
+         s->live_r == (serves ? rc : 0u) &&
+         s->parked_w == (rws == CACHE_ST_REQ ? wc : 0u) &&
+         s->live_w == (rws == CACHE_ST_GRANT ? wc : 0u) &&
+         (s->aside == 0u || ros == CACHE_ST_REQ) &&
+         (ros == CACHE_ST_REQ) == (s->parked_r != 0u) &&
+         (rws == CACHE_ST_REQ) == (s->parked_w != 0u) &&
+         (rws != CACHE_ST_IDLE || wc == 0u) &&
+         /* at a resident rank the read count is live readers only */
+         (own == 0u || s->parked_r == s->aside) &&
+         (rws != CACHE_ST_GRANT || own == 1u) &&
+         !(read_grant && (own == 1u || rws == CACHE_ST_GRANT)) &&
+         !(read_grant && !CACHE_GRANTED(w)) &&
+         !(ros == CACHE_ST_IDLE && CACHE_GRANTED(w)) &&
+         (CACHE_STUB(w) == 0u ||
+          (own == 0u && rws != CACHE_ST_GRANT && !read_grant)) &&
+         CACHE_MIGRATE_TARGET(w) == NT &&
+         (w & ((uint64_t)1 << 43)) == 0u && rws != 3u;
+}
+
+static void cache_walk(void) {
+  enum { CAP = 16384 };
+  static struct cw_node seen[CAP];
+  int n = 0, head = 0;
+  bool hit_with_readers_aside = false;
+  bool sticky_edge_with_readers_aside = false;
+  bool ship_with_readers_aside = false;
+  bool own_answer_under_live_writer = false;
+  bool aside_summed = false;
+  bool read_grant_returns_aside = false;
+  bool read_request_under_write_request = false;
+  memset(seen, 0, sizeof(seen));
+  /* an idle stub, the creator's sticky owner after its release, and a
+   * resident rank without the write permission */
+  seen[n++].word = W(0, CACHE_ST_IDLE, CACHE_ST_IDLE, NT, 0, 0);
+  seen[n++].word = W(1, CACHE_ST_GRANT, CACHE_ST_IDLE, NT, 0, 0);
+  seen[n++].word = W(1, CACHE_ST_IDLE, CACHE_ST_IDLE, NT, 0, 0);
+  /* and a claimable first touch, which a create's hold alone may claim */
+  seen[n++].word = W(0, CACHE_ST_IDLE, CACHE_ST_IDLE, NT, 0, 0) |
+                   CACHE_OWNER_STUB_BIT;
+  static const int ops[] = {
+      CACHE_OP_ACQ_RW,       CACHE_OP_ACQ_RO,       CACHE_OP_GRANT_RW,
+      CACHE_OP_GRANT_RO,     CACHE_OP_GRANT_RO_MARKED, CACHE_OP_OWN_RO,
+      CACHE_OP_CREATE_HOLD,  CACHE_OP_CTS_RO,       CACHE_OP_REL_RW,
+      CACHE_OP_REL_RO,
+      M_SHIP,                M_DEMOTE,              M_SELF_GRANT,
+      M_RECALL};
+  while (head < n) {
+    const struct cw_node cur = seen[head++];
+    uint64_t w = cur.word;
+    uint32_t own = CACHE_OWNER(w), rws = CACHE_RW_ST(w), ros = CACHE_RO_ST(w);
+    uint32_t wc = CACHE_RW_CNT(w), rc = CACHE_RO_CNT(w);
+    for (size_t k = 0; k < sizeof(ops) / sizeof(ops[0]); k++) {
+      int op = ops[k];
+      if ((op == CACHE_OP_ACQ_RW && cur.parked_w + cur.live_w >= CW_MAX) ||
+          (op == CACHE_OP_ACQ_RO && cur.parked_r + cur.live_r >= CW_MAX) ||
+          (op == CACHE_OP_REL_RW && cur.live_w == 0u) ||
+          (op == CACHE_OP_REL_RO && cur.live_r == 0u) ||
+          (op == CACHE_OP_CREATE_HOLD && CACHE_STUB(w) == 0u)) {
+        continue;
+      }
+      struct cw_node nx = cur;
+      uint32_t act = CACHE_ACT_NONE;
+      bool ok = true;
+      bool moved = true;
+      g_checks++;
+      if (op == M_SHIP) {
+        /* owner_try_execute's real migration: no live granted writer, no
+         * reader counted. */
+        if (own != 1u || (rws == CACHE_ST_GRANT && wc != 0u) || rc != 0u) {
+          continue;
+        }
+        ship_with_readers_aside |= cur.aside != 0u;
+        nx.word = W(0, rws == CACHE_ST_GRANT ? CACHE_ST_IDLE : rws, ros, NT,
+                    wc, rc) |
+                  (w & CACHE_OWNER_LEASED_MASK);
+      } else if (op == M_DEMOTE) {
+        /* owner_serve_readers: resident, the write grant with no writer. */
+        if (own != 1u || rws != CACHE_ST_GRANT || wc != 0u) {
+          continue;
+        }
+        nx.word = W(1, CACHE_ST_IDLE, ros, NT, wc, rc) |
+                  (w & CACHE_OWNER_LEASED_MASK);
+      } else if (op == M_SELF_GRANT) {
+        /* owner_try_execute's self-migration: it drains rw_pending only. */
+        if (own != 1u || rws != CACHE_ST_REQ ||
+            (ros == CACHE_ST_GRANT && rc != 0u)) {
+          continue;
+        }
+        nx.word = W(1, CACHE_ST_GRANT, ros, NT, wc, rc) |
+                  (w & CACHE_OWNER_LEASED_MASK);
+        nx.live_w += nx.parked_w;
+        nx.parked_w = 0u;
+      } else if (op == M_RECALL) {
+        uint64_t lm = CACHE_OWNER_LEASED_MASK;
+        if (ros == CACHE_ST_GRANT && rc == 0u) {
+          nx.word = W(own, rws, CACHE_ST_IDLE, NT, wc, rc);
+        } else if (ros == CACHE_ST_GRANT) {
+          nx.word = W(own, rws, CACHE_ST_GRANT_PURGE, NT, wc, rc) | (w & lm);
+        } else if (ros == CACHE_ST_REQ && !CACHE_GRANTED(w)) {
+          nx.word = w | lm;
+        } else {
+          continue;
+        }
+      } else {
+        uint32_t taken = (op == CACHE_OP_GRANT_RO ||
+                          op == CACHE_OP_GRANT_RO_MARKED ||
+                          op == CACHE_OP_OWN_RO)
+                             ? cur.aside
+                             : 0u;
+        act = 0xffffffff;
+        nx.word = cache_owner_compute_next(w, op, taken, &act);
+        bool acquire = op == CACHE_OP_ACQ_RW || op == CACHE_OP_ACQ_RO;
+        bool release = op == CACHE_OP_REL_RW || op == CACHE_OP_REL_RO;
+        if (act == CACHE_ACT_LATE) {
+          /* Refused, the word unchanged: never an acquire inside the bound
+           * or a holder's release; a message the home never sends. */
+          ok = nx.word == w && !acquire && !release;
+          moved = false;
+        } else if (act == CACHE_ACT_SELF_SERVE) {
+          ok = acquire;
+          if (op == CACHE_OP_ACQ_RW) {
+            nx.live_w++;
+          } else {
+            nx.live_r++;
+            hit_with_readers_aside |= own == 1u && cur.aside != 0u;
+          }
+        } else if (act == CACHE_ACT_SEND_RW || act == CACHE_ACT_SEND_RO ||
+                   act == CACHE_ACT_PARK) {
+          if (op == CACHE_OP_ACQ_RW) {
+            ok = act ==
+                 (rws == CACHE_ST_IDLE ? CACHE_ACT_SEND_RW : CACHE_ACT_PARK);
+            nx.parked_w++;
+          } else {
+            /* A reader nothing here serves opens the read request exactly
+             * when that axis is idle, whatever the write axis holds. */
+            ok = op == CACHE_OP_ACQ_RO && !cw_serves(w) &&
+                 act == (ros == CACHE_ST_IDLE ? CACHE_ACT_SEND_RO
+                                              : CACHE_ACT_PARK);
+            read_request_under_write_request |=
+                act == CACHE_ACT_SEND_RO && rws == CACHE_ST_REQ;
+            nx.parked_r++;
+          }
+        } else if (act == CACHE_ACT_DRAIN_RW) {
+          ok = (op == CACHE_OP_GRANT_RW || op == CACHE_OP_CREATE_HOLD) &&
+               owed_rw(w, act) == cur.parked_w &&
+               owed_aside(w, act) == cur.parked_r - cur.aside;
+          nx.aside += owed_aside(w, act);
+          nx.live_w += nx.parked_w;
+          nx.parked_w = 0u;
+          if (op == CACHE_OP_CREATE_HOLD) {
+            nx.live_w++;
+          }
+        } else if (act == CACHE_ACT_DRAIN_RO) {
+          ok = (op == CACHE_OP_GRANT_RO || op == CACHE_OP_GRANT_RO_MARKED ||
+                op == CACHE_OP_OWN_RO) &&
+               owed_ro(w, taken, act) == cur.parked_r &&
+               (op != CACHE_OP_OWN_RO || taken == cur.parked_r);
+          if (op == CACHE_OP_OWN_RO) {
+            own_answer_under_live_writer |= cur.live_w != 0u;
+          } else {
+            read_grant_returns_aside |= taken != 0u;
+          }
+          nx.aside = 0u;
+          nx.live_r += nx.parked_r;
+          nx.parked_r = 0u;
+        } else if (act == CACHE_ACT_RESEND_RO) {
+          ok = op == CACHE_OP_CTS_RO && ros == CACHE_ST_REQ;
+        } else if (release) {
+          ok = act == CACHE_ACT_NONE || act == CACHE_ACT_REL_RO;
+          if (op == CACHE_OP_REL_RW) {
+            nx.live_w--;
+            sticky_edge_with_readers_aside |=
+                nx.live_w == 0u && cur.aside != 0u && own == 1u;
+          } else {
+            nx.live_r--;
+          }
+        } else {
+          ok = false;
+        }
+        if (!moved) {
+          continue;
+        }
+        if (ok && op == CACHE_OP_GRANT_RW) {
+          /* a second migration in adds to the readers set aside before */
+          aside_summed |= cur.aside != 0u && cache_set_aside(w) != 0u;
+        }
+      }
+      if (!ok || !cw_invariant(&nx)) {
+        (void)fprintf(stderr,
+                      "FAIL [cache walk]: %llx aside=%u op=%d => %llx "
+                      "aside=%u act=%u (parked r=%u w=%u, live r=%u w=%u)\n",
+                      (unsigned long long)w, cur.aside, op,
+                      (unsigned long long)nx.word, nx.aside, act, nx.parked_r,
+                      nx.parked_w, nx.live_r, nx.live_w);
+        g_rc = 1;
+        return;
+      }
+      int i = 0;
+      while (i < n && !(seen[i].word == nx.word && seen[i].aside == nx.aside &&
+                        seen[i].parked_r == nx.parked_r &&
+                        seen[i].live_r == nx.live_r &&
+                        seen[i].parked_w == nx.parked_w &&
+                        seen[i].live_w == nx.live_w)) {
+        i++;
+      }
+      if (i == n) {
+        if (n == CAP) {
+          (void)fprintf(stderr, "FAIL [cache walk]: too many states\n");
+          g_rc = 1;
+          return;
+        }
+        seen[n++] = nx;
+      }
+    }
+  }
+  if (!hit_with_readers_aside || !sticky_edge_with_readers_aside ||
+      !ship_with_readers_aside || !own_answer_under_live_writer ||
+      !aside_summed || !read_grant_returns_aside ||
+      !read_request_under_write_request) {
+    (void)fprintf(stderr,
+                  "FAIL [cache walk]: not reached: a local hit at an owner "
+                  "with readers set aside (%d), a sticky zero edge with "
+                  "readers set aside (%d), a migration away with readers set "
+                  "aside (%d), the owner's answer to its own read under a "
+                  "live writer (%d), a second migration adding to the "
+                  "readers set aside (%d), a read grant returning readers "
+                  "set aside (%d), a read request opened while the write "
+                  "request is out (%d)\n",
+                  (int)hit_with_readers_aside,
+                  (int)sticky_edge_with_readers_aside,
+                  (int)ship_with_readers_aside,
+                  (int)own_answer_under_live_writer, (int)aside_summed,
+                  (int)read_grant_returns_aside,
+                  (int)read_request_under_write_request);
+    g_rc = 1;
+  }
+  printf("cache walk: %d states\n", n);
+}
+
 int main(void) {
   const uint32_t I = CACHE_ST_IDLE, Q = CACHE_ST_REQ, G = CACHE_ST_GRANT,
                  GP = CACHE_ST_GRANT_PURGE;
-  const uint64_t PAR = CACHE_OWNER_RO_PAR_BIT, STUB = CACHE_OWNER_STUB_BIT,
-                 LEASED = CACHE_OWNER_LEASED_MASK;
+  const uint64_t STUB = CACHE_OWNER_STUB_BIT, LEASED = CACHE_OWNER_LEASED_MASK;
   const uint32_t D = 5u; /* a migrate target */
+  const uint32_t RCMAX = (uint32_t)CACHE_OWNER_RC_MASK;
 
   /* ===== ACQ_RW: the count and the decision in one transition ===== */
   chk_owner("rwacq joins the held grant", W(1, G, I, NT, 0, 0), CACHE_OP_ACQ_RW,
@@ -915,8 +1239,9 @@ int main(void) {
   chk_owner("rwacq: a resident rank without the permission requests",
             W(1, I, I, NT, 0, 0), CACHE_OP_ACQ_RW, W(1, Q, I, NT, 1, 0),
             CACHE_ACT_SEND_RW);
-  chk_owner("rwacq: a non-owner requests", W(0, I, Q, NT, 0, 1) | PAR,
-            CACHE_OP_ACQ_RW, W(0, Q, Q, NT, 1, 1) | PAR, CACHE_ACT_SEND_RW);
+  chk_owner("rwacq: a non-owner requests, its read request out",
+            W(0, I, Q, NT, 0, 1), CACHE_OP_ACQ_RW, W(0, Q, Q, NT, 1, 1),
+            CACHE_ACT_SEND_RW);
   chk_owner("rwacq: a full count is refused",
             W(1, G, I, NT, CACHE_OWNER_WC_MASK, 0), CACHE_OP_ACQ_RW,
             W(1, G, I, NT, CACHE_OWNER_WC_MASK, 0), CACHE_ACT_LATE);
@@ -927,31 +1252,41 @@ int main(void) {
   chk_owner("roacq: resident with a write request out, ro_st untouched",
             W(1, Q, I, NT, 1, 0), CACHE_OP_ACQ_RO, W(1, Q, I, NT, 1, 1),
             CACHE_ACT_SELF_SERVE);
+  chk_owner("roacq: resident with its read request out, a local hit",
+            W(1, G, Q, NT, 1, 0), CACHE_OP_ACQ_RO, W(1, G, Q, NT, 1, 1),
+            CACHE_ACT_SELF_SERVE);
   chk_owner("roacq: the write grant serves", W(1, G, I, NT, 1, 0),
             CACHE_OP_ACQ_RO, W(1, G, I, NT, 1, 1), CACHE_ACT_SELF_SERVE);
-  chk_owner("roacq: a retained read grant serves", W(0, I, G, NT, 0, 0) | LEASED,
-            CACHE_OP_ACQ_RO, W(0, I, G, NT, 0, 1) | LEASED,
-            CACHE_ACT_SELF_SERVE);
+  chk_owner("roacq: a retained read grant serves",
+            W(0, I, G, NT, 0, 0) | LEASED, CACHE_OP_ACQ_RO,
+            W(0, I, G, NT, 0, 1) | LEASED, CACHE_ACT_SELF_SERVE);
   chk_owner("roacq: a grant marked for return serves",
             W(0, I, GP, NT, 0, 1) | LEASED, CACHE_OP_ACQ_RO,
             W(0, I, GP, NT, 0, 2) | LEASED, CACHE_ACT_SELF_SERVE);
-  chk_owner("roacq: a non-owner opens a read request, parity flipped",
-            W(0, I, I, NT, 0, 0), CACHE_OP_ACQ_RO, W(0, I, Q, NT, 0, 1) | PAR,
+  chk_owner("roacq: a non-owner opens a read request", W(0, I, I, NT, 0, 0),
+            CACHE_OP_ACQ_RO, W(0, I, Q, NT, 0, 1), CACHE_ACT_SEND_RO);
+  chk_owner("roacq: a non-owner opens its own read request beside its write "
+            "request",
+            W(0, Q, I, NT, 1, 0), CACHE_OP_ACQ_RO, W(0, Q, Q, NT, 1, 1),
             CACHE_ACT_SEND_RO);
-  chk_owner("roacq rides the write request out", W(0, Q, I, NT, 1, 0),
-            CACHE_OP_ACQ_RO, W(0, Q, I, NT, 1, 1), CACHE_ACT_PARK);
-  chk_owner("roacq coalesces on the read request out", W(0, I, Q, NT, 0, 1) | PAR,
-            CACHE_OP_ACQ_RO, W(0, I, Q, NT, 0, 2) | PAR, CACHE_ACT_PARK);
+  chk_owner("roacq: a first touch's read request keeps the stub",
+            W(0, Q, I, NT, 1, 0) | STUB, CACHE_OP_ACQ_RO,
+            W(0, Q, Q, NT, 1, 1) | STUB, CACHE_ACT_SEND_RO);
+  chk_owner("roacq coalesces on the read request out", W(0, I, Q, NT, 0, 1),
+            CACHE_OP_ACQ_RO, W(0, I, Q, NT, 0, 2), CACHE_ACT_PARK);
+  chk_owner("roacq coalesces on the read request out, the write request out",
+            W(0, Q, Q, NT, 1, 1), CACHE_OP_ACQ_RO, W(0, Q, Q, NT, 1, 2),
+            CACHE_ACT_PARK);
   chk_owner("roacq: a full count is refused",
             W(1, I, I, NT, 0, CACHE_OWNER_RC_MASK), CACHE_OP_ACQ_RO,
             W(1, I, I, NT, 0, CACHE_OWNER_RC_MASK), CACHE_ACT_LATE);
 
   /* ===== the parked populations a serving transition owes ===== */
   chk_parked("parked: both requests out", W(0, Q, Q, NT, 2, 3), 2, 3);
-  chk_parked("parked: readers ride the write request", W(0, Q, I, NT, 1, 2), 1,
-             2);
   chk_parked("parked: resident, writers wait for the self-grant",
              W(1, Q, I, NT, 2, 1), 2, 0);
+  chk_parked("parked: resident with its read request out, the count live",
+             W(1, G, Q, NT, 1, 2), 0, 0);
   chk_parked("parked: under the write grant every count is live",
              W(1, G, I, NT, 2, 1), 0, 0);
   chk_parked("parked: under a read grant the readers are live",
@@ -960,7 +1295,128 @@ int main(void) {
              W(0, Q, GP, NT, 1, 2) | LEASED, 1, 0);
   chk_parked("parked: idle", W(0, I, I, NT, 0, 0), 0, 0);
 
-  /* ===== a sticky owner's writers race a migration ===== */
+  /* ===== a migration's DELIVER (write permission and the bytes) ===== */
+  chk_owner_x("grant rw: the writers, no reader request out",
+              W(0, Q, I, NT, 2, 0) | STUB, CACHE_OP_GRANT_RW, 0u,
+              W(1, G, I, NT, 2, 0), CACHE_ACT_DRAIN_RW, 0u);
+  chk_owner_x("grant rw: the readers parked on the read request go aside",
+              W(0, Q, Q, NT, 1, 3), CACHE_OP_GRANT_RW, 0u,
+              W(1, G, Q, NT, 1, 0), CACHE_ACT_DRAIN_RW, 3u);
+  chk_owner_x("grant rw: an early recall's token stays with the read request",
+              W(0, Q, Q, NT, 1, 1) | LEASED, CACHE_OP_GRANT_RW, 0u,
+              W(1, G, Q, NT, 1, 0) | LEASED, CACHE_ACT_DRAIN_RW, 1u);
+  chk_owner("grant rw: no write request out is late", W(0, I, Q, NT, 0, 1),
+            CACHE_OP_GRANT_RW, W(0, I, Q, NT, 0, 1), CACHE_ACT_LATE);
+  chk_owner("grant rw: at an owner is late", W(1, Q, I, NT, 1, 0),
+            CACHE_OP_GRANT_RW, W(1, Q, I, NT, 1, 0), CACHE_ACT_LATE);
+  chk_owner("grant rw: under a read grant is late",
+            W(0, Q, G, NT, 1, 0) | LEASED, CACHE_OP_GRANT_RW,
+            W(0, Q, G, NT, 1, 0) | LEASED, CACHE_ACT_LATE);
+  chk_owner("grant rw: under a marked read grant is late",
+            W(0, Q, GP, NT, 1, 1) | LEASED, CACHE_OP_GRANT_RW,
+            W(0, Q, GP, NT, 1, 1) | LEASED, CACHE_ACT_LATE);
+  chk_owner("grant rw: readers counted on no read request is late",
+            W(0, Q, I, NT, 1, 1), CACHE_OP_GRANT_RW, W(0, Q, I, NT, 1, 1),
+            CACHE_ACT_LATE);
+
+  /* ===== a create's hold ===== */
+  {
+    uint64_t w = W(0, Q, Q, NT, 1, 1) | STUB;
+    chk_parked("hold: the claimed first touch's waiters", w, 1, 1);
+    step_owner_x("hold: closes the write axis, sets the reader aside", &w,
+                 CACHE_OP_CREATE_HOLD, 0u, W(1, G, Q, NT, 2, 0),
+                 CACHE_ACT_DRAIN_RW, 1u);
+    step_owner("hold: refused on a resident block", &w, CACHE_OP_CREATE_HOLD,
+               W(1, G, Q, NT, 2, 0), CACHE_ACT_NONE);
+  }
+  chk_owner_x("hold: a read request alone", W(0, I, Q, NT, 0, 2) | STUB,
+              CACHE_OP_CREATE_HOLD, 0u, W(1, G, Q, NT, 1, 0),
+              CACHE_ACT_DRAIN_RW, 2u);
+  chk_owner_x("hold: a write request alone", W(0, Q, I, NT, 1, 0) | STUB,
+              CACHE_OP_CREATE_HOLD, 0u, W(1, G, I, NT, 2, 0),
+              CACHE_ACT_DRAIN_RW, 0u);
+  chk_owner("hold: refused under a read grant", W(0, I, G, NT, 0, 0) | LEASED,
+            CACHE_OP_CREATE_HOLD, W(0, I, G, NT, 0, 0) | LEASED,
+            CACHE_ACT_NONE);
+  chk_owner("hold: refused with a migration pending", W(0, I, I, D, 0, 0),
+            CACHE_OP_CREATE_HOLD, W(0, I, I, D, 0, 0), CACHE_ACT_NONE);
+  chk_owner("hold: a full count is refused",
+            W(0, Q, I, NT, CACHE_OWNER_WC_MASK, 0) | STUB, CACHE_OP_CREATE_HOLD,
+            W(0, Q, I, NT, CACHE_OWNER_WC_MASK, 0) | STUB, CACHE_ACT_LATE);
+  chk_owner("hold: readers counted on no read request is late",
+            W(0, Q, I, NT, 1, 1) | STUB, CACHE_OP_CREATE_HOLD,
+            W(0, Q, I, NT, 1, 1) | STUB, CACHE_ACT_LATE);
+
+  /* ===== a read DELIVER: the readers parked since and the ones set aside
+   * ===== */
+  chk_answer("grant ro: the parked readers", W(0, I, Q, NT, 0, 2) | STUB,
+             CACHE_OP_GRANT_RO, 0u, W(0, I, G, NT, 0, 2) | LEASED,
+             CACHE_ACT_DRAIN_RO, 2u);
+  chk_answer("grant ro: the readers set aside and the one parked since",
+             W(0, I, Q, NT, 0, 1), CACHE_OP_GRANT_RO, 3u,
+             W(0, I, G, NT, 0, 4) | LEASED, CACHE_ACT_DRAIN_RO, 4u);
+  chk_answer("grant ro: the readers set aside alone", W(0, I, Q, NT, 0, 0),
+             CACHE_OP_GRANT_RO, 2u, W(0, I, G, NT, 0, 2) | LEASED,
+             CACHE_ACT_DRAIN_RO, 2u);
+  chk_answer("grant ro: the write request out", W(0, Q, Q, NT, 1, 1),
+             CACHE_OP_GRANT_RO, 0u, W(0, Q, G, NT, 1, 1) | LEASED,
+             CACHE_ACT_DRAIN_RO, 1u);
+  chk_answer("grant ro: an early recall marks the grant for return",
+             W(0, I, Q, NT, 0, 1) | LEASED, CACHE_OP_GRANT_RO, 0u,
+             W(0, I, GP, NT, 0, 1) | LEASED, CACHE_ACT_DRAIN_RO, 1u);
+  chk_answer("grant ro: the home marked it for return", W(0, I, Q, NT, 0, 1),
+             CACHE_OP_GRANT_RO_MARKED, 2u, W(0, I, GP, NT, 0, 3) | LEASED,
+             CACHE_ACT_DRAIN_RO, 3u);
+  chk_answer("grant ro: no read request out is late", W(0, I, I, NT, 0, 0),
+             CACHE_OP_GRANT_RO, 0u, W(0, I, I, NT, 0, 0), CACHE_ACT_LATE, 0u);
+  chk_answer("grant ro: at an owner is late", W(1, I, Q, NT, 0, 0),
+             CACHE_OP_GRANT_RO, 1u, W(1, I, Q, NT, 0, 0), CACHE_ACT_LATE, 0u);
+  chk_answer("grant ro: under the write grant is late", W(1, G, Q, NT, 1, 0),
+             CACHE_OP_GRANT_RO, 1u, W(1, G, Q, NT, 1, 0), CACHE_ACT_LATE, 0u);
+  chk_answer("grant ro: no reader to serve is late", W(0, I, Q, NT, 0, 0),
+             CACHE_OP_GRANT_RO, 0u, W(0, I, Q, NT, 0, 0), CACHE_ACT_LATE, 0u);
+  chk_answer("grant ro: a count past the field is late",
+             W(0, I, Q, NT, 0, RCMAX), CACHE_OP_GRANT_RO, 1u,
+             W(0, I, Q, NT, 0, RCMAX), CACHE_ACT_LATE, 0u);
+
+  /* ===== the answer the owner gives its own forwarded read request ===== */
+  chk_answer("own ro: under a live writer, the write grant untouched",
+             W(1, G, Q, NT, 1, 0), CACHE_OP_OWN_RO, 2u, W(1, G, I, NT, 1, 2),
+             CACHE_ACT_DRAIN_RO, 2u);
+  chk_answer("own ro: beside a live reader, the early token cleared",
+             W(1, G, Q, NT, 0, 1) | LEASED, CACHE_OP_OWN_RO, 1u,
+             W(1, G, I, NT, 0, 2), CACHE_ACT_DRAIN_RO, 1u);
+  chk_answer("own ro: at a demoted owner", W(1, I, Q, NT, 0, 0),
+             CACHE_OP_OWN_RO, 3u, W(1, I, I, NT, 0, 3), CACHE_ACT_DRAIN_RO,
+             3u);
+  chk_answer("own ro: its write request out", W(1, Q, Q, NT, 1, 0),
+             CACHE_OP_OWN_RO, 1u, W(1, Q, I, NT, 1, 1), CACHE_ACT_DRAIN_RO,
+             1u);
+  chk_answer("own ro: not the owner is late", W(0, I, Q, NT, 0, 1),
+             CACHE_OP_OWN_RO, 1u, W(0, I, Q, NT, 0, 1), CACHE_ACT_LATE, 0u);
+  chk_answer("own ro: no read request out is late", W(1, G, I, NT, 0, 0),
+             CACHE_OP_OWN_RO, 0u, W(1, G, I, NT, 0, 0), CACHE_ACT_LATE, 0u);
+  chk_answer("own ro: no reader set aside is late", W(1, G, Q, NT, 0, 0),
+             CACHE_OP_OWN_RO, 0u, W(1, G, Q, NT, 0, 0), CACHE_ACT_LATE, 0u);
+  chk_answer("own ro: a count past the field is late",
+             W(1, G, Q, NT, 0, RCMAX), CACHE_OP_OWN_RO, 1u,
+             W(1, G, Q, NT, 0, RCMAX), CACHE_ACT_LATE, 0u);
+
+  /* ===== a size round ===== */
+  chk_owner("cts re-sends, the stub cleared", W(0, I, Q, NT, 0, 1) | STUB,
+            CACHE_OP_CTS_RO, W(0, I, Q, NT, 0, 1), CACHE_ACT_RESEND_RO);
+  chk_owner("cts re-sends beside a write request", W(0, Q, Q, NT, 1, 1),
+            CACHE_OP_CTS_RO, W(0, Q, Q, NT, 1, 1), CACHE_ACT_RESEND_RO);
+  chk_owner("cts re-sends at an owner whose readers are set aside",
+            W(1, G, Q, NT, 1, 0), CACHE_OP_CTS_RO, W(1, G, Q, NT, 1, 0),
+            CACHE_ACT_RESEND_RO);
+  chk_owner("cts keeps an early recall's token", W(0, I, Q, NT, 0, 1) | LEASED,
+            CACHE_OP_CTS_RO, W(0, I, Q, NT, 0, 1) | LEASED,
+            CACHE_ACT_RESEND_RO);
+  chk_owner("cts with no read request out is late", W(0, I, I, NT, 0, 0),
+            CACHE_OP_CTS_RO, W(0, I, I, NT, 0, 0), CACHE_ACT_LATE);
+
+  /* ===== releases ===== */
   {
     /* Two writers join the retained grant, a migration is forwarded in, the
      * last release ships the bytes; a writer arriving after that opens a
@@ -992,34 +1448,104 @@ int main(void) {
   chk_owner("sticky: with no target the last release keeps the grant",
             W(1, G, I, NT, 1, 0), CACHE_OP_REL_RW, W(1, G, I, NT, 0, 0),
             CACHE_ACT_NONE);
-
-  /* ===== the create's hold, the read reply, the read release ===== */
-  {
-    uint64_t w = W(0, Q, Q, NT, 1, 1) | PAR | STUB;
-    chk_parked("hold: the claimed first touch's waiters", w, 1, 1);
-    step_owner("hold: closes both axes, clears stub", &w, CACHE_OP_CREATE_HOLD,
-               W(1, G, I, NT, 2, 1) | PAR, CACHE_ACT_DRAIN_BOTH);
-    step_owner("hold: refused on a resident block", &w, CACHE_OP_CREATE_HOLD,
-               W(1, G, I, NT, 2, 1) | PAR, CACHE_ACT_NONE);
-  }
-  chk_owner("hold: a full count is refused",
-            W(0, Q, I, NT, CACHE_OWNER_WC_MASK, 0) | STUB, CACHE_OP_CREATE_HOLD,
-            W(0, Q, I, NT, CACHE_OWNER_WC_MASK, 0) | STUB, CACHE_ACT_LATE);
-  chk_owner("cts re-sends for waiting readers, parity flipped",
-            W(0, I, Q, NT, 0, 1) | PAR | STUB, CACHE_OP_CTS_RO,
-            W(0, I, Q, NT, 0, 1), CACHE_ACT_RESEND_RO);
-  chk_owner("cts closes under a write request", W(0, Q, Q, NT, 1, 1) | PAR,
-            CACHE_OP_CTS_RO, W(0, Q, I, NT, 1, 1) | PAR, CACHE_ACT_NONE);
-  chk_owner("cts closes on a resident rank", W(1, G, Q, NT, 1, 1) | PAR,
-            CACHE_OP_CTS_RO, W(1, G, I, NT, 1, 1) | PAR, CACHE_ACT_NONE);
-  chk_owner("cts with no read request out is late", W(0, I, I, NT, 0, 0),
-            CACHE_OP_CTS_RO, W(0, I, I, NT, 0, 0), CACHE_ACT_LATE);
   chk_owner("rorel: a marked grant returns at its zero edge",
             W(0, I, GP, NT, 0, 1) | LEASED, CACHE_OP_REL_RO,
             W(0, I, I, NT, 0, 0), CACHE_ACT_REL_RO);
   chk_owner("rorel: an unmarked grant is retained",
             W(0, I, G, NT, 0, 1) | LEASED, CACHE_OP_REL_RO,
             W(0, I, G, NT, 0, 0) | LEASED, CACHE_ACT_REL_RO);
+  chk_owner("rorel: a local reader at an owner whose request is out",
+            W(1, G, Q, NT, 0, 1) | LEASED, CACHE_OP_REL_RO,
+            W(1, G, Q, NT, 0, 0) | LEASED, CACHE_ACT_REL_RO);
+
+  /* ===== sequences, as retain.c's commit sites drive the word ===== */
+  {
+    /* A request held through the rank's own migration: the two readers
+     * parked on it go aside at the DELIVER, a third reader is a local hit,
+     * the writer's release keeps the sticky grant with them still aside, and
+     * the home forwards the request to this rank, the owner it names: the
+     * answer resumes exactly the two. */
+    uint64_t w = W(0, I, I, NT, 0, 0);
+    uint32_t aside = 0u;
+    step_owner("held: R1 opens the read request", &w, CACHE_OP_ACQ_RO,
+               W(0, I, Q, NT, 0, 1), CACHE_ACT_SEND_RO);
+    step_owner("held: W opens the write request", &w, CACHE_OP_ACQ_RW,
+               W(0, Q, Q, NT, 1, 1), CACHE_ACT_SEND_RW);
+    step_owner("held: R2 joins the read request", &w, CACHE_OP_ACQ_RO,
+               W(0, Q, Q, NT, 1, 2), CACHE_ACT_PARK);
+    w |= LEASED; /* a recall overtook the request's answer */
+    step_owner_x("held: the migration lands", &w, CACHE_OP_GRANT_RW, 0u,
+                 W(1, G, Q, NT, 1, 0) | LEASED, CACHE_ACT_DRAIN_RW, 2u);
+    aside += 2u;
+    step_owner("held: R3 is a local hit", &w, CACHE_OP_ACQ_RO,
+               W(1, G, Q, NT, 1, 1) | LEASED, CACHE_ACT_SELF_SERVE);
+    step_owner("held: W releases, the grant sticks", &w, CACHE_OP_REL_RW,
+               W(1, G, Q, NT, 0, 1) | LEASED, CACHE_ACT_NONE);
+    step_owner_x("held: the owner answers its own request", &w,
+                 CACHE_OP_OWN_RO, aside, W(1, G, I, NT, 0, 3),
+                 CACHE_ACT_DRAIN_RO, 0u);
+    aside = 0u;
+    step_owner("held: a reader after the answer is a local hit", &w,
+               CACHE_OP_ACQ_RO, W(1, G, I, NT, 0, 4), CACHE_ACT_SELF_SERVE);
+  }
+  {
+    /* A claimable first touch with both requests out: the hold serves the
+     * writer and sets the reader aside, the size round re-sends the read
+     * request, and the home installed with this rank as owner forwards it
+     * back: the answer resumes the reader. */
+    uint64_t w = W(0, I, I, NT, 0, 0) | STUB;
+    step_owner("claim: R opens the read request", &w, CACHE_OP_ACQ_RO,
+               W(0, I, Q, NT, 0, 1) | STUB, CACHE_ACT_SEND_RO);
+    step_owner("claim: W opens the write request", &w, CACHE_OP_ACQ_RW,
+               W(0, Q, Q, NT, 1, 1) | STUB, CACHE_ACT_SEND_RW);
+    step_owner_x("claim: the hold", &w, CACHE_OP_CREATE_HOLD, 0u,
+                 W(1, G, Q, NT, 2, 0), CACHE_ACT_DRAIN_RW, 1u);
+    step_owner("claim: the size round re-sends the read request", &w,
+               CACHE_OP_CTS_RO, W(1, G, Q, NT, 2, 0), CACHE_ACT_RESEND_RO);
+    step_owner("claim: the creator releases", &w, CACHE_OP_REL_RW,
+               W(1, G, Q, NT, 1, 0), CACHE_ACT_NONE);
+    step_owner_x("claim: the owner answers its own request", &w,
+                 CACHE_OP_OWN_RO, 1u, W(1, G, I, NT, 1, 1), CACHE_ACT_DRAIN_RO,
+                 0u);
+  }
+  {
+    /* The bytes leave with the readers still aside (their request was not
+     * yet counted at the home); readers that arrive after park on the
+     * request, and the next owner's read DELIVER returns all of them. */
+    uint64_t w = W(0, Q, Q, NT, 1, 2);
+    step_owner_x("away: the migration lands", &w, CACHE_OP_GRANT_RW, 0u,
+                 W(1, G, Q, NT, 1, 0), CACHE_ACT_DRAIN_RW, 2u);
+    step_owner("away: the writer releases", &w, CACHE_OP_REL_RW,
+               W(1, G, Q, NT, 0, 0), CACHE_ACT_NONE);
+    w = W(0, I, Q, NT, 0, 0); /* owner_try_execute ships */
+    step_owner("away: a reader parks again", &w, CACHE_OP_ACQ_RO,
+               W(0, I, Q, NT, 0, 1), CACHE_ACT_PARK);
+    step_owner_x("away: the read DELIVER returns three", &w, CACHE_OP_GRANT_RO,
+                 2u, W(0, I, G, NT, 0, 3) | LEASED, CACHE_ACT_DRAIN_RO, 0u);
+  }
+  {
+    /* Two migrations in while one read request stays out: each sets its
+     * cohort aside and ro_aside sums them. */
+    uint64_t w = W(0, Q, Q, NT, 1, 1);
+    uint32_t aside = 0u;
+    step_owner_x("twice: the first migration", &w, CACHE_OP_GRANT_RW, 0u,
+                 W(1, G, Q, NT, 1, 0), CACHE_ACT_DRAIN_RW, 1u);
+    aside += 1u;
+    step_owner("twice: its writer releases", &w, CACHE_OP_REL_RW,
+               W(1, G, Q, NT, 0, 0), CACHE_ACT_NONE);
+    w = W(0, I, Q, NT, 0, 0); /* shipped away */
+    step_owner("twice: a reader parks", &w, CACHE_OP_ACQ_RO,
+               W(0, I, Q, NT, 0, 1), CACHE_ACT_PARK);
+    step_owner("twice: a writer requests", &w, CACHE_OP_ACQ_RW,
+               W(0, Q, Q, NT, 1, 1), CACHE_ACT_SEND_RW);
+    step_owner_x("twice: the second migration", &w, CACHE_OP_GRANT_RW, 0u,
+                 W(1, G, Q, NT, 1, 0), CACHE_ACT_DRAIN_RW, 1u);
+    aside += 1u;
+    chk_answer("twice: the answer resumes both", w, CACHE_OP_OWN_RO, aside,
+               W(1, G, I, NT, 1, 2), CACHE_ACT_DRAIN_RO, 2u);
+  }
+
+  cache_walk();
 
   /* ===== the home directory ===== */
   chk_lock("home: a writer at idle migrates", LOCK_MAKE(EXCL_PHASE_IDLE, 0, 0, 0),
@@ -1028,6 +1554,9 @@ int main(void) {
   chk_lock("home: a reader at idle is served", LOCK_MAKE(EXCL_PHASE_IDLE, 0, 0, 0),
            EXCL_OP_RO_ACQ, 0, LOCK_MAKE(EXCL_PHASE_RO, 0, 0, 1),
            EXCL_ACTION_FORWARD_SERVE_ONE);
+  chk_lock("home: a reader in the read phase is served, a writer waiting",
+           LOCK_MAKE(EXCL_PHASE_RO, 0, 1, 1), EXCL_OP_RO_ACQ, 0,
+           LOCK_MAKE(EXCL_PHASE_RO, 0, 1, 2), EXCL_ACTION_FORWARD_SERVE_ONE);
   chk_lock("home: a reader in the write phase is held",
            LOCK_MAKE(EXCL_PHASE_RW, 0, 1, 0), EXCL_OP_RO_ACQ, 0,
            LOCK_MAKE(EXCL_PHASE_RW, 0, 1, 1), EXCL_ACTION_NONE);
@@ -1048,9 +1577,12 @@ int main(void) {
     return 1;
   }
   printf("PASS excl_compute_next: %d transitions (RETAIN cache word: the "
-         "acquire's count and decision in one transition, the parked "
-         "populations, the sticky owner's migration, the create's hold, read "
-         "replies and returns; the home directory) all correct\n",
+         "acquire's count and decision in one transition, a reader's own "
+         "request beside the write request, the readers a migration or a "
+         "create's hold sets aside, the read answers that return them, the "
+         "owner's answer to its own forwarded request, the parked "
+         "populations, the sticky owner's migration, size rounds and "
+         "releases, every reachable word; the home directory) all correct\n",
          g_checks);
   return 0;
 }

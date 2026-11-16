@@ -311,7 +311,7 @@ INV.*.*                          inv_deliver_commit                   load  cach
 INV.*.*                          inv_req_step_tok                     load  cache_state   -/1  -
 EXCL.*.*                         arts_handler_db_acquire              load  cache_state   -/1  -
 EXCL.PURGE.*                     lock_grant_commit                    load  cache_state   -/1  -
-EXCL.PURGE.*                     lock_set_readers_aside               load  cache_state   -/1  -
+EXCL.*.*                         arts_excl_set_readers_aside          load  cache_state   -/1  -
 EXCL.RETAIN.*                    lock_deliver_commit                  load  cache_state   -/2  -
 EXCL.PURGE.*                     lock_release_commit                  load  lock_state    -/1  -
 VAL.*.*                          val_req_step                         load  req_state     -/1  -
@@ -383,8 +383,10 @@ EXCL.RETAIN.*                      excl_forward_on                      load  ca
 EXCL.RETAIN.*                      excl_forward_on                      rmw   cache_state   -/2  -
 EXCL.RETAIN.*                      excl_recall_on                       load  cache_state   -/1  -
 EXCL.RETAIN.*                      excl_recall_on                       rmw   cache_state   -/1  -
-EXCL.RETAIN.*                      owner_serve_readers                  load  cache_state   -/1  -
-EXCL.RETAIN.*                      owner_serve_readers                  rmw   cache_state   -/1  -
+EXCL.RETAIN.*                      owner_serve_readers                  load  cache_state   -/2  -
+EXCL.RETAIN.*                      owner_serve_readers                  rmw   cache_state   -/3  -
+EXCL.RETAIN.*                      lock_answer_own_read                 load  cache_state   -/1  -
+EXCL.RETAIN.*                      lock_answer_own_read                 rmw   cache_state   -/1  -
 EXCL.RETAIN.*                      owner_try_execute                    rmw   cache_state   -/2  -
 EXCL.PURGE.*                       lock_home_serve_ro                   load  lock_state    -/2  -
 INV.*.OWNER                        arts_send_db_inv_deliver             load  version       -/1  -

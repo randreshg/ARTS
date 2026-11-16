@@ -135,8 +135,7 @@ extern "C" {
    * saved; a size round (data_present 2, never a dismiss) negotiates a        \
    * landing for a request that could not size one.  A window is a read       \
    * request that is not a re-send; a reader that sends none of its own waits  \
-   * for the next window or rides the rank's write request.  Inert unless the  \
-   * build compiles VAL in. */                                                 \
+   * for the next window.  Inert unless the build compiles VAL in. */          \
   X(NUM_SNAPSHOT_REQUEST)                                                      \
   X(NUM_SNAPSHOT_HEADER_ONLY)                                                  \
   X(NUM_SNAPSHOT_SIZE_CTS)                                                     \

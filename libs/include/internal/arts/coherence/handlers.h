@@ -22,13 +22,14 @@
  *     the wire dispatcher does a ref-pinned lookup via
  *     arts_route_table_lookup_db; on HIT it calls the pure (item, args)
  *     body, on MISS it applies the handler's exact miss-action (a silent
- *     drop, EXCL·RETAIN's dismiss of a read FORWARD, or the reply its round
- *     still needs, such as an ACK — see each body).
+ *     drop, or the reply its round still needs, such as an ACK — see each
+ *     body).
  *   Either way an (item, args) body is handed its block already acquired
  *   and ref-pinned and does not look it up to operate on it.  A message
  *   handed over as the whole packet (the EXCL·RETAIN FORWARD, RO_RETURN and
  *   RECALL) has a wire entry that looks its block up once and a body on the
- *   object.  A self-send acts on the descriptor its caller holds (a
+ *   object (a FORWARD that serves this rank its own read request is an
+ *   answer, below).  A self-send acts on the descriptor its caller holds (a
  *   Cat-B kind through arts_ooo_dispatch_on, a Cat-C body through
  *   arts_route_table_borrow_or_lookup, or under a copy of its own,
  *   arts_route_table_copy_live, where the body can drop the count its caller
@@ -45,14 +46,16 @@
  *     which ends a migration) take the home's descriptor from the home token
  *     the same way, under the round's count (on EXCL the home's count, held
  *     while w is above zero), and on a retired one take only the round's
- *     counting step (an EXCL_CONFIRM also dismisses a held read request its
- *     rank's write turn covered).  The wire and a self-send call the same
+ *     counting step.  The wire and a self-send call the same
  *     entry, except that a self-transfer runs the GRANT_RESPONSE body
  *     (arts_db_grant_response_on) directly on the descriptor it holds, an INV
  *     self-serve checks the token's descriptor for a retire itself and runs the
  *     INV_DELIVER body (inv_deliver_on), and a GRANT_CTS is never self-sent; an
  *     EXCL_CONFIRM self-send calls excl_confirm_answer, the body its wire entry
- *     unpacks the packet into.  FLUSH's answers resolve nothing either: a fetch
+ *     unpacks the packet into.  Under EXCL·RETAIN the FORWARD that serves the
+ *     owner its own read request is such an answer, on the requester's token:
+ *     its wire entry and the home's self-send call one answer body.
+ *     FLUSH's answers resolve nothing either: a fetch
  *     response reaches the block through the parked EDT it names, and an ACK or
  *     a CTS wakes the releaser, which holds its own pin. */
 
@@ -75,8 +78,7 @@ struct arts_db_cache_s;
  * while it is live, or takes a copy of its own where the body can drop the
  * count its caller runs under); on a HIT it calls the pure (item, args) body,
  * and on a MISS it applies that handler's exact miss-action (a silent drop,
- * EXCL·RETAIN's dismiss of a read FORWARD, or the reply its round still
- * needs — see each handler's contract).
+ * or the reply its round still needs — see each handler's contract).
  * An answer's args carry the token and GUID its entry acts on.  These args
  * structs are stack-built by the dispatcher (or a self-send) from the decoded
  * wire packet and passed by pointer to the body; unlike the OoO Cat-B args they
@@ -620,27 +622,22 @@ void arts_handler_db_excl_grant(void *payload, size_t size);
  * advertises none: the home's own grant moves no payload, and a payload a
  * remote owner owes it lands in a landing the home draws when it forwards.
  * Where grants carry no payload (the CXL store), no request advertises one. */
-/* cover: the request's EXCL_COVER_* word, read from the cache-word
- * transition that opened it: under RETAIN its parity, or a write request's
- * declaration; under PURGE a write request's PRECLAIM and nothing else. */
+/* cover: EXCL_COVER_PRECLAIM on a write request opened while the cache was
+ * a claimable first touch (read from the cache-word transition that opened
+ * it), 0 on every other request. */
 void arts_send_db_excl_request(struct arts_db_cache_s *cache,
                                arts_db_access_mode_t mode, uint32_t cover);
 /* EXCL_CTS at the requester, an answer: acts on the descriptor the token
  * names, and on a retired one only drops the request's count.  A size round
  * learns db_size and re-issues the request (echoed mode) with a landing, the
- * axis open.  Under RETAIN it is also a read request's dismiss (the wire and
- * a self-send alike), which re-sends for readers that ride no write request,
- * or closes the axis and drops its count.  Where grants carry no payload
- * (the CXL store) no size round exists and the message is refused. */
+ * axis open.  Where grants carry no payload (the CXL store) no size round
+ * exists and the message is refused. */
 void arts_handler_db_excl_cts(const struct arts_msg_excl_cts_packet_s *p);
 /* EXCL_CTS sender: a size round (db_size, the echoed mode and token) from
- * the home, never to this rank itself.  Under RETAIN also a read request's
- * dismiss, with the request's cover word, from the home or from an owner a
- * read FORWARD found without the block; to a requester that is this rank
- * that answer runs inline.  Not defined where grants carry no payload. */
+ * the home, never to this rank itself.  Not defined where grants carry no
+ * payload. */
 void arts_send_db_excl_cts(arts_guid_t db_guid, unsigned int requester_rank,
-                           uint64_t db_size, uint32_t mode, uint32_t cover,
-                           uint64_t token);
+                           uint64_t db_size, uint32_t mode, uint64_t token);
 /* arts_send_db_excl_grant: db is the home's descriptor, which the caller
  * holds.  version is always 0, and no grant handler reads it.  The grant
  * payload PUTs into
@@ -673,9 +670,11 @@ void arts_send_db_excl_release(unsigned int home_rank, arts_guid_t db_guid,
 /* arts_handler_db_excl_forward: Cat-C @owner.  item_v is the full wire packet
  * (arts_msg_excl_forward_packet_s *); the wire entry resolves the db_s by
  * ->db_guid once.  Handles home→owner forward: either migrate RW to a new
- * owner or serve one RO reader directly from the owner's buffer.  A read
- * FORWARD that finds no block is answered with a dismiss; a write one is
- * dropped. */
+ * owner or serve one RO reader directly from the owner's buffer.  A FORWARD
+ * that finds no block is dropped.  A reader that is this rank itself makes
+ * it the answer to its own read request, given in place on the descriptor
+ * the token names, with no lookup; on a retired one it commits nothing and
+ * drops the request's count. */
 void arts_handler_db_excl_forward(void *item_v);
 
 /* arts_handler_db_excl_deliver: an answer @target.  payload is the full wire
@@ -691,8 +690,7 @@ void arts_handler_db_excl_deliver(void *payload, size_t size);
  * packet (arts_msg_excl_confirm_packet_s *).  New owner → home: migration
  * complete; on the descriptor the home token names, the home transitions
  * lock_state and serves the next waiter if any (a retired home takes the
- * w-- and dismisses the covered reads held behind the ended write phase,
- * serving nothing).  packet->rank = new owner. */
+ * w-- and serves nothing).  packet->rank = new owner. */
 void arts_handler_db_excl_confirm(void *item_v);
 
 /* arts_handler_db_excl_roret: Cat-C @home.  item_v is the full wire packet
@@ -718,12 +716,10 @@ void arts_handler_db_excl_roret(void *item_v);
 void arts_send_db_excl_recall(struct arts_db_s *db, unsigned int target_rank);
 void arts_handler_db_excl_recall(void *item_v);
 
-/* cover: a serve's read request cover word (0 for a migrate); token: the
- * target's request's; home_token: a migrate's home descriptor (0 for a
- * serve). */
+/* token: the target's request's; home_token: a migrate's home descriptor (0
+ * for a serve). */
 void arts_send_db_excl_forward(struct arts_db_s *db, unsigned int owner_rank,
                                uint32_t mode, uint32_t target, uint32_t tag,
-                               uint32_t cover,
                                const struct arts_rdzv_landing_s *target_rdzv,
                                uint64_t token, uint64_t home_token);
 

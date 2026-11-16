@@ -12,15 +12,12 @@
  *     writer).  So even when an RO REQUEST is already in flight on this rank,
  *     a concurrent same-rank RW acquire must still drive a writer GRANT and
  *     the writer's store must be observable.
- *   - RO not-held, PURGE: open an RO request unless one is already in flight,
+ *   - RO not-held: open an RO request unless one is already in flight,
  *     whatever the write axis holds.  The readers parked on it are served by
- *     its own grant; a write grant that arrives first serves the writers
- *     alone, and a reader that arrives while that grant is held is served
+ *     its own answer; write permission that arrives first (a write grant, or
+ *     under RETAIN the migration that makes this rank the owner) serves the
+ *     writers alone, and a reader that arrives while it is held is served
  *     from it.
- *   - RO not-held, RETAIN: open an RO request only if NEITHER axis has one in
- *     flight — an in-flight RW already covers RO locally, so a co-pending RO
- *     must coalesce and be served by the RW phase's drain (RW grant drains
- *     ro_pending too).
  *
  * Construction: many same-rank cohorts each hold a mix of RW and RO acquirers
  * on the SAME per-iteration DB, launched depc=0 so they all hit the not-held
