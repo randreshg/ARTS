@@ -641,7 +641,7 @@ bool arts_db_create_take_hold(struct arts_db_cache_s *cache, uint8_t *owed) {
   arts_db_grant_rearm(cache);
   /* The claim closed the write request the cache had out: its count goes,
    * under the create's own. */
-  arts_db_axis_drop(arts_db_of_cache(cache), arts_db_claim_closed_axes(*owed));
+  arts_db_axis_drop(arts_db_of_cache(cache), *owed != 0u ? 1u : 0u);
   return true;
 }
 

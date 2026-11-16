@@ -2,9 +2,11 @@
  *
  * EXCL protocol pure state-transition arbiters, one pair per retention:
  * PURGE's excl_compute_next (home lock_state) and cache_compute_next (cache
- * word), RETAIN's lock_owner_compute_next and cache_owner_compute_next.  The
- * two retentions' words have different layouts, so each pair is compiled
- * only under its own retention.
+ * word), RETAIN's lock_owner_compute_next and cache_owner_compute_next, and
+ * beside each cache arbiter the size round's transition of its word
+ * (cache_size_round_next, cache_owner_size_round_next).  The two retentions'
+ * words have different layouts, so each set is compiled only under its own
+ * retention.
  *
  * purge.c and retain.c #include this file to get their private copy of their
  * retention's arbiters.  The whitebox unit test
@@ -17,6 +19,7 @@
 
 #include "arts/coherence/excl/types.h"
 
+#include <stdbool.h>
 #include <stdint.h>
 
 /* ===== excl_compute_next ================================================
@@ -248,16 +251,6 @@ static uint64_t cache_compute_next(uint64_t cur, int op, uint32_t taken,
     act = CACHE_ACT_DRAIN_RO;
     break;
   }
-  case CACHE_OP_CTS_RO:
-    /* A size round answers the read request, which stays out: its readers
-     * wait for its grant, whatever the write axis holds. */
-    if (ros != CACHE_ST_REQ) {
-      act = CACHE_ACT_LATE;
-      break;
-    }
-    stub = 0u;
-    act = CACHE_ACT_RESEND_RO;
-    break;
   case CACHE_OP_CREATE_HOLD:
     /* A create records its own hold in a cache this rank made when it first
      * touched the block.  The hold IS a local RW grant, so it serves the
@@ -283,13 +276,6 @@ static uint64_t cache_compute_next(uint64_t cur, int op, uint32_t taken,
     wc += 1;
     rc = 0u;
     act = CACHE_ACT_DRAIN_RW;
-    break;
-  case CACHE_OP_DECLAIM:
-    if (rws != CACHE_ST_REQ) {
-      act = CACHE_ACT_LATE;
-      break;
-    }
-    stub = 0u;
     break;
   case CACHE_OP_REL_RW: /* precond: rws==GRANT */
     wc -= 1;
@@ -323,6 +309,17 @@ static uint64_t cache_compute_next(uint64_t cur, int op, uint32_t taken,
  * the cache's ro_aside. */
 static inline uint32_t cache_set_aside(uint64_t pre) {
   return CACHE_RO_ST(pre) == CACHE_ST_REQ ? CACHE_RO_CNT(pre) : 0u;
+}
+
+/* A size round's transition of the cache word.  It answers the request the
+ * `write` axis has out: *at_req says whether that axis is at REQ, and the
+ * caller raises when it is not.  The next word is the word with the stub bit
+ * clear, as after any reply; the request stays out, so neither its axis nor
+ * a count moves. */
+static inline uint64_t cache_size_round_next(uint64_t cur, bool write,
+                                             bool *at_req) {
+  *at_req = (write ? CACHE_RW_ST(cur) : CACHE_RO_ST(cur)) == CACHE_ST_REQ;
+  return cur & ~CACHE_STUB_BIT;
 }
 #endif /* ARTS_RETENTION_PURGE */
 
@@ -559,18 +556,6 @@ static uint64_t cache_owner_compute_next(uint64_t cur, int op, uint32_t taken,
     rc = 0u;
     act = CACHE_ACT_DRAIN_RW;
     break;
-  case CACHE_OP_CTS_RO:
-    /* A size round answers the read request, which stays out: it is re-sent
-     * with a landing for its readers, whatever else this rank holds.  Any
-     * reply clears the stub bit (the home is installed and the claim
-     * elsewhere). */
-    if (ros != CACHE_ST_REQ) {
-      act = CACHE_ACT_LATE;
-      break;
-    }
-    stub_bit &= ~CACHE_OWNER_STUB_BIT;
-    act = CACHE_ACT_RESEND_RO;
-    break;
   case CACHE_OP_REL_RW: /* precond: rws==GRANT, own==1 */
     wc -= 1;
     /* The grant ends only when BOTH counts reach zero: readers that joined
@@ -641,6 +626,17 @@ static uint64_t cache_owner_compute_next(uint64_t cur, int op, uint32_t taken,
  * adds them to the cache's ro_aside. */
 static inline uint32_t cache_set_aside(uint64_t pre) {
   return CACHE_RO_ST(pre) == CACHE_ST_REQ ? CACHE_RO_CNT(pre) : 0u;
+}
+
+/* A size round's transition of the cache word.  It answers the request the
+ * `write` axis has out, whatever else the rank holds: *at_req says whether
+ * that axis is at REQ, and the caller raises when it is not.  The next word
+ * is the word with the stub bit clear, as after any reply; the request stays
+ * out, so neither its axis nor a count moves. */
+static inline uint64_t cache_owner_size_round_next(uint64_t cur, bool write,
+                                                   bool *at_req) {
+  *at_req = (write ? CACHE_RW_ST(cur) : CACHE_RO_ST(cur)) == CACHE_ST_REQ;
+  return cur & ~CACHE_OWNER_STUB_BIT;
 }
 
 /* ===== lock_owner_compute_next ==========================================

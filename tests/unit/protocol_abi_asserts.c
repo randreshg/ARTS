@@ -18,16 +18,18 @@
  * sizeof(struct) bytes then the trailing payload, and the receiver reads the
  * payload at offset sizeof(struct); a sizeof skew tears every payload.
  *
- * The golden values below were frozen from the current tree and verified
- * IDENTICAL across every config (only the protocol-gated structs differ in
- * presence, never in the shared ordinals/offsets/sizes: the ARTS_VALIDITY_EXCL
- * block, the ARTS_RETENTION_RETAIN subset nested inside it, the
- * ARTS_VALIDITY_INV block and the ARTS_VALIDITY_FLUSH block, each frozen
- * inside its own guard).  The FLUSH block's two fetch packets also follow
- * ARTS_DEBUG_WAKE_GUID, which every rank of one run shares as it shares the
- * cell.  This TU is meant to be COMPILED ONCE PER -DARTS_VALIDITY_* config;
- * the `_Static_assert`s catch any config that drifts from the golden table at
- * compile time.
+ * The golden values below are frozen per config.  The ordinals and the
+ * header are identical across every config, and so is a packet's size, with
+ * two exceptions frozen per cell: the packets that carry an answer token (VAL
+ * and INV), and the packets that embed a landing, whose cookie no EXCL build
+ * carries.  The protocol-gated structs differ in presence: the
+ * ARTS_VALIDITY_EXCL block, the ARTS_RETENTION_RETAIN subset nested inside
+ * it, the ARTS_VALIDITY_INV block and the ARTS_VALIDITY_FLUSH block, each
+ * frozen inside its own guard.  The FLUSH block's two fetch packets also
+ * follow ARTS_DEBUG_WAKE_GUID, which every rank of one run shares as it
+ * shares the cell.  This TU is meant to be COMPILED ONCE PER
+ * -DARTS_VALIDITY_* config; the `_Static_assert`s catch any config that
+ * drifts from the golden table at compile time.
  *
  * Runtime portion — the 8-byte payload-alignment INVARIANT
  * ---------------------------------------------------------------------------
@@ -164,7 +166,9 @@ _Static_assert(sizeof(struct arts_msg_header_s) == 16, "header size drifted");
 
 /* ===== (3) per-packet sizeof — frozen golden table.  Each value verified
  * identical across every config, except the packets that carry an answer
- * token (VAL and INV only): those have one table per validity. */
+ * token (VAL and INV only), which have one table per validity, and the
+ * packets that embed a landing, which has no cookie in an EXCL build and is
+ * 8 bytes shorter there. */
 _Static_assert(sizeof(struct arts_msg_guid_only_packet_s) == 24,
                "guid_only sizeof drifted");
 _Static_assert(sizeof(struct arts_msg_object_blob_packet_s) == 24,
@@ -232,18 +236,27 @@ _Static_assert(offsetof(struct arts_msg_grant_confirm_packet_s, home_token) ==
                    32,
                "ownership_confirm home_token drifted");
 #else
+#ifdef ARTS_VALIDITY_EXCL
+_Static_assert(sizeof(struct arts_msg_grant_request_packet_s) == 56,
+               "ownership_request sizeof drifted");
+_Static_assert(sizeof(struct arts_msg_grant_invalidate_packet_s) == 64,
+               "ownership_invalidate sizeof drifted");
+_Static_assert(sizeof(struct arts_msg_grant_confirm_ack_packet_s) == 64,
+               "ownership_confirm_ack sizeof drifted");
+#else
 _Static_assert(sizeof(struct arts_msg_grant_request_packet_s) == 64,
                "ownership_request sizeof drifted");
+_Static_assert(sizeof(struct arts_msg_grant_invalidate_packet_s) == 72,
+               "ownership_invalidate sizeof drifted");
+_Static_assert(sizeof(struct arts_msg_grant_confirm_ack_packet_s) == 72,
+               "ownership_confirm_ack sizeof drifted");
+#endif
 _Static_assert(sizeof(struct arts_msg_grant_response_packet_s) == 64,
                "ownership_response sizeof drifted");
 _Static_assert(sizeof(struct arts_msg_publish_packet_s) == 72,
                "publish sizeof drifted");
 _Static_assert(sizeof(struct arts_msg_publish_ack_packet_s) == 64,
                "publish_ack sizeof drifted");
-_Static_assert(sizeof(struct arts_msg_grant_invalidate_packet_s) == 72,
-               "ownership_invalidate sizeof drifted");
-_Static_assert(sizeof(struct arts_msg_grant_confirm_ack_packet_s) == 72,
-               "ownership_confirm_ack sizeof drifted");
 _Static_assert(sizeof(struct arts_msg_grant_cts_packet_s) == 32,
                "ownership_cts sizeof drifted");
 _Static_assert(sizeof(struct arts_msg_grant_confirm_packet_s) == 24,
@@ -285,12 +298,19 @@ _Static_assert(offsetof(struct arts_msg_snapshot_redirect_packet_s, token) ==
                    64,
                "snapshot_redirect token drifted");
 #else
+#ifdef ARTS_VALIDITY_EXCL
+_Static_assert(sizeof(struct arts_msg_snapshot_request_packet_s) == 48,
+               "snapshot_request sizeof drifted");
+_Static_assert(sizeof(struct arts_msg_snapshot_redirect_packet_s) == 56,
+               "snapshot_redirect sizeof drifted");
+#else
 _Static_assert(sizeof(struct arts_msg_snapshot_request_packet_s) == 56,
                "snapshot_request sizeof drifted");
-_Static_assert(sizeof(struct arts_msg_snapshot_response_packet_s) == 64,
-               "snapshot_response sizeof drifted");
 _Static_assert(sizeof(struct arts_msg_snapshot_redirect_packet_s) == 64,
                "snapshot_redirect sizeof drifted");
+#endif
+_Static_assert(sizeof(struct arts_msg_snapshot_response_packet_s) == 64,
+               "snapshot_response sizeof drifted");
 #endif
 #ifdef ARTS_VALIDITY_INV
 /* A read request, its redirect and its size round carry no cover word: the
@@ -359,24 +379,49 @@ _Static_assert(sizeof(struct arts_msg_cache_destroy_packet_s) == 24,
                "cache_destroy sizeof drifted");
 _Static_assert(sizeof(struct arts_msg_rank_version_pair_s) == 16,
                "rank_version_pair sizeof drifted");
-_Static_assert(sizeof(struct arts_msg_rdzv_landing_s) == 32,
-               "rdzv_landing sizeof drifted");
 _Static_assert(sizeof(struct arts_msg_grant_return_packet_s) == 32,
                "grant_return sizeof drifted");
+_Static_assert(offsetof(struct arts_msg_publish_cts_packet_s, landing) == 24,
+               "publish_cts landing drifted");
+#ifndef ARTS_VALIDITY_EXCL
+_Static_assert(sizeof(struct arts_msg_rdzv_landing_s) == 32,
+               "rdzv_landing sizeof drifted");
 _Static_assert(sizeof(struct arts_msg_publish_cts_packet_s) == 64,
                "publish_cts sizeof drifted");
-#ifdef ARTS_VALIDITY_EXCL
+_Static_assert(offsetof(struct arts_msg_publish_cts_packet_s, cv) == 56,
+               "publish_cts cv drifted");
+#else
+/* An EXCL landing is {addr, key, txid}: its payloads land in place, and no
+ * packet carries a cookie.  Every 64-bit field stays 8-aligned. */
+_Static_assert(sizeof(struct arts_msg_rdzv_landing_s) == 24,
+               "rdzv_landing sizeof drifted");
+_Static_assert(sizeof(struct arts_msg_publish_cts_packet_s) == 56,
+               "publish_cts sizeof drifted");
+_Static_assert(offsetof(struct arts_msg_publish_cts_packet_s, cv) == 48,
+               "publish_cts cv drifted");
 /* The answer token follows the fields every EXCL cell has. */
-_Static_assert(sizeof(struct arts_msg_excl_request_packet_s) == 72,
+_Static_assert(sizeof(struct arts_msg_excl_request_packet_s) == 64,
                "lock_request sizeof drifted");
-_Static_assert(offsetof(struct arts_msg_excl_request_packet_s, token) == 64,
+_Static_assert(offsetof(struct arts_msg_excl_request_packet_s, rdzv) == 32,
+               "lock_request rdzv drifted");
+_Static_assert(offsetof(struct arts_msg_excl_request_packet_s, token) == 56,
                "lock_request token drifted");
-_Static_assert(sizeof(struct arts_msg_excl_grant_packet_s) == 104,
+_Static_assert(sizeof(struct arts_msg_excl_grant_packet_s) == 80,
                "lock_grant sizeof drifted");
-_Static_assert(offsetof(struct arts_msg_excl_grant_packet_s, token) == 96,
+_Static_assert(offsetof(struct arts_msg_excl_grant_packet_s, data_size) == 32,
+               "lock_grant data_size drifted");
+_Static_assert(offsetof(struct arts_msg_excl_grant_packet_s, rdzv_txid) == 40,
+               "lock_grant rdzv_txid drifted");
+_Static_assert(offsetof(struct arts_msg_excl_grant_packet_s, pub) == 48,
+               "lock_grant pub drifted");
+_Static_assert(offsetof(struct arts_msg_excl_grant_packet_s, token) == 72,
                "lock_grant token drifted");
-_Static_assert(sizeof(struct arts_msg_excl_release_packet_s) == 72,
+_Static_assert(sizeof(struct arts_msg_excl_release_packet_s) == 56,
                "lock_release sizeof drifted");
+_Static_assert(offsetof(struct arts_msg_excl_release_packet_s, cv) == 32,
+               "lock_release cv drifted");
+_Static_assert(offsetof(struct arts_msg_excl_release_packet_s, rdzv_txid) == 48,
+               "lock_release rdzv_txid drifted");
 _Static_assert(offsetof(struct arts_msg_excl_request_packet_s, cover) == 28,
                "lock_request cover drifted");
 _Static_assert(sizeof(struct arts_msg_excl_cts_packet_s) == 48,
@@ -388,7 +433,7 @@ _Static_assert(offsetof(struct arts_msg_excl_cts_packet_s, pad) == 36,
 _Static_assert(offsetof(struct arts_msg_excl_cts_packet_s, token) == 40,
                "lock_cts token drifted");
 #ifdef ARTS_RETENTION_RETAIN
-_Static_assert(sizeof(struct arts_msg_excl_forward_packet_s) == 88,
+_Static_assert(sizeof(struct arts_msg_excl_forward_packet_s) == 80,
                "lock_forward sizeof drifted");
 _Static_assert(offsetof(struct arts_msg_excl_forward_packet_s, tag) == 32,
                "lock_forward tag drifted");
@@ -396,17 +441,19 @@ _Static_assert(offsetof(struct arts_msg_excl_forward_packet_s, pad) == 36,
                "lock_forward pad drifted");
 _Static_assert(offsetof(struct arts_msg_excl_forward_packet_s, rdzv) == 40,
                "lock_forward rdzv drifted");
-_Static_assert(offsetof(struct arts_msg_excl_forward_packet_s, token) == 72,
+_Static_assert(offsetof(struct arts_msg_excl_forward_packet_s, token) == 64,
                "lock_forward token drifted");
 _Static_assert(offsetof(struct arts_msg_excl_forward_packet_s, home_token) ==
-                   80,
+                   72,
                "lock_forward home_token drifted");
-_Static_assert(sizeof(struct arts_msg_excl_deliver_packet_s) == 72,
+_Static_assert(sizeof(struct arts_msg_excl_deliver_packet_s) == 64,
                "lock_deliver sizeof drifted");
-_Static_assert(offsetof(struct arts_msg_excl_deliver_packet_s, token) == 56,
+_Static_assert(offsetof(struct arts_msg_excl_deliver_packet_s, data_size) == 32,
+               "lock_deliver data_size drifted");
+_Static_assert(offsetof(struct arts_msg_excl_deliver_packet_s, token) == 48,
                "lock_deliver token drifted");
 _Static_assert(offsetof(struct arts_msg_excl_deliver_packet_s, home_token) ==
-                   64,
+                   56,
                "lock_deliver home_token drifted");
 _Static_assert(sizeof(struct arts_msg_excl_confirm_packet_s) == 32,
                "lock_confirm sizeof drifted");

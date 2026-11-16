@@ -13,17 +13,15 @@
  * modes at once -- so their acquires find no copy on C and ask H for the
  * block; only then does it create g on C, whose hold serves the read-write
  * consumers while their write request is still on its way to H.  A read-only
- * consumer waits for its own read request's answer, except on an arm whose
- * write turn serves its rank's readers, where the hold serves it too.  The
- * setup EDT and every consumer count down a latch; a reader on H then
- * acquires g, and once it has released, a destroyer on H or on C
- * (alternating) destroys g.  With the argument `wave2` a second wave of
- * consumers acquires g on C after the first wave and the create have
- * released, so requests sent after the claim travel beside the ones sent
- * before it.  Sizes cycle through sized blocks and a zero-sized one.  A
- * consumer's read races the setup EDT's write, so no value is checked: the
- * verdict is the exit status, no FAIL line, and a quiescent shutdown (no
- * QUIESCENCE-DEBUG marker).
+ * consumer waits for its own read request's answer.  The setup EDT and every
+ * consumer count down a latch; a reader on H then acquires g, and once it has
+ * released, a destroyer on H or on C (alternating) destroys g.  With the
+ * argument `wave2` a second wave of consumers acquires g on C after the first
+ * wave and the create have released, so requests sent after the claim travel
+ * beside the ones sent before it.  Sizes cycle through sized blocks and a
+ * zero-sized one.  A consumer's read races the setup EDT's write, so no value
+ * is checked: the verdict is the exit status, no FAIL line, and a quiescent
+ * shutdown (no QUIESCENCE-DEBUG marker).
  *
  * The reader on H makes the block's install precede its destroy.  The create's
  * announce travels fire-and-forget beside C's requests, releases and destroy;
@@ -33,9 +31,9 @@
  * (and, where a write turn excludes readers, for that turn to come back, so on
  * those arms a claimed block is destroyed with its turn at home), so once the
  * reader has run, every message for g parked at H before the reader's acquire
- * has been replayed, and whatever is still travelling (a covered request,
- * which the home was told to expect, a release, the destroy) finds the block
- * installed or marked and waits behind nothing.
+ * has been replayed, and whatever is still travelling (the pre-claim write
+ * request, which the home was told to expect, a release, the destroy) finds
+ * the block installed or marked and waits behind nothing.
  *
  * Needs two ranks.  Its read-write consumers share one rank's turn with the
  * creator unordered, which CDAG does not admit.

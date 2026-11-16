@@ -65,6 +65,7 @@ extern "C" {
 #define CACHE_RW_CNT(s)                                                        \
   ((uint32_t)(((s) >> CACHE_CNT_BITS) & CACHE_RW_CNT_MASK))
 #define CACHE_STUB_SHIFT 58
+#define CACHE_STUB_BIT ((uint64_t)1ULL << CACHE_STUB_SHIFT)
 #define CACHE_STUB(s) ((uint32_t)(((s) >> CACHE_STUB_SHIFT) & 0x1ULL))
 #define CACHE_RO_ST(s) ((uint32_t)(((s) >> 60) & 0x3ULL))
 #define CACHE_RW_ST(s) ((uint32_t)(((s) >> 62) & 0x3ULL))
@@ -221,15 +222,14 @@ extern "C" {
  * state_bit is meaningful only when w>0 && r>0:
  *   EXCL_PHASE_BIT_RW (0) = RW phase held / RO waiters queued
  *   EXCL_PHASE_BIT_RO (1) = RO phase held / RW waiters queued
- * When w==0 || r==0 the state_bit is normalized to 0.
- * w = #RW participant ranks; r = #RO participant ranks. */
+ * When w==0 || r==0 the state_bit is normalized to 0. */
 #ifdef ARTS_RETENTION_PURGE
 /* Layout: [ teardown:1 (63) | state_bit:1 (62) | rwo:1 (61) |
  *           spare:17 (60..44) | w:22 (43..22) | r:22 (21..0) ]
  * rwo says the home still waits for the one request it was told is coming
  * and will not answer: the write request the claiming creator's first-touch
- * cache sent before the create claimed it, which the create's announce
- * declares.  It is discarded on arrival, and the teardown waits for it.  w
+ * cache sent before the create claimed it, which the create's announce says
+ * is coming.  It is discarded on arrival, and the teardown waits for it.  w
  * and r count the write and read requests the home has taken in whose turn
  * has not come back.  A rank has one request out per axis, and a count runs
  * ahead of the ranks only by releases still on their way, so 22 bits hold
@@ -281,10 +281,11 @@ extern "C" {
  *   w      = count of RW requests whose migration the home has not yet
  *            confirmed (the one migrating plus the queued ones); CONFIRM
  *            drops it, so an owner whose turn is confirmed is not counted.
- *   r      = count of outstanding RO grants (issued but not yet returned);
- *            the RO→RW flip fires at r==0. r may transiently exceed the number
- *            of distinct reader ranks under network reorder (commutative ±1
- *            accounting tolerates this). */
+ *   r      = the read requests the home has taken in whose RO_RETURN has not
+ *            come back (held through a write phase, forwarded, or answered by
+ *            the owner itself); the RO→RW flip fires at r==0.  r may
+ *            transiently exceed the number of distinct reader ranks under
+ *            network reorder (commutative ±1 accounting tolerates this). */
 #ifdef ARTS_RETENTION_RETAIN
 #define EXCL_STATE_R_BITS 24
 #define EXCL_STATE_W_BITS 24
@@ -391,12 +392,10 @@ extern "C" {
 /* A create recording its own hold in a cache this rank already made for the
  * block (see the arbiter for the word it admits). */
 #define CACHE_OP_CREATE_HOLD 6
-/* A size round answered this rank's read request, which is re-sent with a
- * landing; the home is installed, so the stub bit clears. */
-#define CACHE_OP_CTS_RO 7
-/* A size round answered this rank's write request: the home is installed and
- * the claim is elsewhere, so the stub bit clears before the re-send. */
-#define CACHE_OP_DECLAIM 8
+/* A size round does not transit the arbiter: its transition is
+ * cache_size_round_next (arbiters.c), which clears the stub bit of a word
+ * whose axis is at REQ and which its handler commits with a CAS only when the
+ * bit is set. */
 
 #define CACHE_ACT_NONE 0
 #define CACHE_ACT_SELF_SERVE 1 /* a grant is held: serve the dep directly */
@@ -410,11 +409,10 @@ extern "C" {
 /* Send RW RELEASE (with the payload, unless it rests in the CXL store). */
 #define CACHE_ACT_REL_RW 7
 #define CACHE_ACT_REL_RO 8 /* send RO RELEASE (notify) */
-/* A grant or size round that answers no request this rank has out, or a
- * count that would pass its field: the commit site raises it.  The arbiter
- * leaves the word unchanged. */
+/* A grant that answers no request this rank has out, or a count that would
+ * pass its field: the commit site raises it.  The arbiter leaves the word
+ * unchanged. */
 #define CACHE_ACT_LATE 10
-#define CACHE_ACT_RESEND_RO 11
 #endif /* ARTS_RETENTION_PURGE */
 
 /* ── cache_state transition ops + actions (RETAIN) ─────────────────────────
@@ -435,14 +433,16 @@ extern "C" {
 /* A create recording its own hold in a cache this rank already made for the
  * block (see the arbiter for the word it admits). */
 #define CACHE_OP_CREATE_HOLD 6
-#define CACHE_OP_CTS_RO 7
-#define CACHE_OP_GRANT_RO_MARKED 9
+#define CACHE_OP_GRANT_RO_MARKED 7
 /* The home forwarded this rank, the owner, its own read request: the
  * request's answer, given here from the resident bytes. */
-#define CACHE_OP_OWN_RO 10
+#define CACHE_OP_OWN_RO 8
 /* The forwards that serve another rank or migrate the block do not transit
  * the arbiter: arts_handler_db_excl_forward installs migrate_target or pushes
- * ro_serve itself (the target is not a pure-function output). */
+ * ro_serve itself (the target is not a pure-function output).  Nor does a
+ * size round: its transition is cache_owner_size_round_next (arbiters.c),
+ * which clears the stub bit of a word whose axis is at REQ and which its
+ * handler commits with a CAS only when the bit is set. */
 
 /* Values are aligned with the PURGE block above so that a name shared by both
  * retentions also shares its number, and the acquire actions carry PURGE's
@@ -466,7 +466,6 @@ extern "C" {
  * its field: the commit site raises it.  The arbiter leaves the word
  * unchanged. */
 #define CACHE_ACT_LATE 10
-#define CACHE_ACT_RESEND_RO 11
 
 /* CACHE_ACT_REL_RO marks the edge, NOT the wire send.  Whether a RO_RETURN goes
  * out is derived from the COMMITTED transition by the caller —
@@ -475,10 +474,6 @@ extern "C" {
  * make two sites send for one grant.  Under RETAIN the edge may relinquish
  * (GRANT_PURGE) or retain (GRANT); the engine must be driven either way. */
 #endif /* ARTS_RETENTION_RETAIN */
-
-/* The request packet's cover word: PRECLAIM on a write request a first-touch
- * cache opened before a create claimed it, zero on every other request. */
-#define EXCL_COVER_PRECLAIM 0x8u
 
 /* Pending waiter (parked EDT dep slot) used in both ro_pending and rw_pending.
  * Same shape as VAL's RW waiter for consistency. */
@@ -651,8 +646,6 @@ struct arts_db_s {
    * coming, one word so that marking and settling read each other.  Every
    * write after init is an acq_rel RMW. */
   _Atomic(uint32_t) cover_gate;
-#endif
-#ifdef ARTS_RETENTION_RETAIN
   /* Recall roster: ranks that have issued a RO request since the last drain.
    * Its OWN bitset — cached_ranks is the monotone destroy set and is written by
    * RW requesters too.  Set with fetch_or BEFORE the requester's lock_state CAS
@@ -676,15 +669,12 @@ struct arts_db_s {
 #endif
 } ARTS_ALIGNED_MAX;
 
-#ifdef __cplusplus
-}
-#endif
-
-/* Shared by both retentions: perform the home teardown (notify every
- * rank that ever cached the DB, then return the route slot).  PURGE reaches it
- * from whichever of the destroy and the last release hits the zero edge under
- * the teardown mark; RETAIN calls it directly on destroy. */
-struct arts_db_s;
+/* Shared by both retentions: perform the home teardown (notify every rank
+ * that ever cached the DB, then return the route slot).  Called by the
+ * transition that leaves the home marked with nothing owed: under PURGE the
+ * destroy, the last release or the pre-claim write request's arrival on
+ * lock_state; under RETAIN the destroy's mark or that arrival on
+ * cover_gate. */
 void arts_excl_home_teardown(struct arts_db_s *db, arts_guid_t db_guid);
 
 /* Shared by both retentions, the two steps of ro_aside (above): the add of
@@ -693,5 +683,9 @@ void arts_excl_home_teardown(struct arts_db_s *db, arts_guid_t db_guid);
  * the read request's answer before its CAS, which returns the count. */
 void arts_excl_set_readers_aside(struct arts_db_cache_s *cache, uint32_t n);
 uint32_t arts_excl_take_readers_aside(struct arts_db_cache_s *cache);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* ARTS_COHERENCE_EXCL_TYPES_H */

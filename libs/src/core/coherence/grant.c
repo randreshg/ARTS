@@ -172,7 +172,7 @@ arts_db_acquire_remote_rw(struct arts_db_cache_s *cache, struct arts_edt_s *edt,
         if (arts_db_rw_req_commit(cache, tok, &cover)) {
           INCREMENT_NUM_GRANT_MIGRATE_BY(1);
           /* The write axis's count; the take rests on the install and the
-           * cover gate (coherence.h, "Orders"). */
+           * destroy's gate (coherence.h, "Orders"). */
           arts_db_axis_take(arts_db_of_cache(cache));
           arts_send_db_grant_request(cache, cover);
         }
@@ -668,7 +668,7 @@ void arts_send_db_grant_request(struct arts_db_cache_s *cache,
     return;
   }
   if (!arts_net_send_held((int)home_rank, (char *)&p, sizeof(p),
-                          ARTS_HELD_WRITE, db_guid)) {
+                          ARTS_HELD_WRITE)) {
     arts_transport_send_async((int)home_rank, (char *)&p, sizeof(p));
   }
 }

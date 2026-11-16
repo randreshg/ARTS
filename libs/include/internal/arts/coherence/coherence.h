@@ -143,25 +143,25 @@ extern "C" {
  * a drain's account, the dispatcher's pin for a replay off the walk, a grant
  * frame's or a create's count for a rearm, the releasing EDT's pin for a
  * flight) and, beneath that count, by the install's hold (the control block's
- * in_slot bit) and the cover gate.  The install's only retire is the home's
- * teardown (on another rank, the CACHE_DESTROY that teardown sends).  The
- * request leaves only after the take; the cover gate holds the teardown for a
- * covered request until that request arrives, and the destroy contract keeps it
- * behind an uncovered one, whose waiters cannot complete before its answer, so
- * no legal destroy precedes the take.  A decrement that precedes the take (a
- * claim's, which holds a count of its own) therefore never reaches zero.  The
- * EXCL·RETAIN home's count is the exception: another frame can start the
- * migration a write request's CAS counted, and its EXCL_CONFIRM can legally
- * reach the home retired meanwhile and drop the count, so the take precedes the
- * CAS that lifts w; every write of that word is an acq_rel read-modify-write,
- * so the CAS that returns w to zero reads from the lifting CAS's release
- * sequence and the take happens before its drop.  A home round's take runs
- * under the frame that starts the round: the request body whose claim lifts the
- * baton or whose CAS lifts w, the release body that runs the round, or a
- * finisher, under the count of the round it ends, for a round it re-arms.  The
- * tag load is relaxed: the descriptor stays valid either way, and a body that
- * runs while a retire is under way copes with it as one a lookup pinned before
- * the retire does. */
+ * in_slot bit) and the destroy's gate.  The install's only retire is the
+ * home's teardown (on another rank, the CACHE_DESTROY that teardown sends).
+ * The request leaves only after the take; the destroy's gate holds the
+ * teardown for the claimer's pre-claim write request until it arrives, and
+ * the destroy contract keeps it behind every other request, whose waiters
+ * cannot complete before its answer, so no legal destroy precedes the take.  A
+ * decrement that precedes the take (a claim's, which holds a count of its own)
+ * therefore never reaches zero.  The EXCL·RETAIN home's count is the exception:
+ * another frame can start the migration a write request's CAS counted, and its
+ * EXCL_CONFIRM can legally reach the home retired meanwhile and drop the count,
+ * so the take precedes the CAS that lifts w; every write of that word is an
+ * acq_rel read-modify-write, so the CAS that returns w to zero reads from the
+ * lifting CAS's release sequence and the take happens before its drop.  A home
+ * round's take runs under the frame that starts the round: the request body
+ * whose claim lifts the baton or whose CAS lifts w, the release body that runs
+ * the round, or a finisher, under the count of the round it ends, for a round
+ * it re-arms.  The tag load is relaxed: the descriptor stays valid either way,
+ * and a body that runs while a retire is under way copes with it as one a
+ * lookup pinned before the retire does. */
 static inline uint64_t arts_db_token(struct arts_db_s *db) {
   return (uint64_t)(uintptr_t)db;
 }
@@ -191,12 +191,6 @@ static inline void arts_db_axis_drop(struct arts_db_s *db, unsigned int n) {
     arts_shared_ptr_t h = cb;
     arts_shared_release(&h);
   }
-}
-/* The axes a create's claim closed, as its owed byte names them: the write
- * request still out. */
-static inline unsigned int arts_db_claim_closed_axes(uint8_t owed) {
-  return ((owed & ARTS_CREATE_OWED_RO) != 0u ? 1u : 0u) +
-         ((owed & ARTS_CREATE_OWED_RW) != 0u ? 1u : 0u);
 }
 #endif /* VAL, INV, EXCL */
 

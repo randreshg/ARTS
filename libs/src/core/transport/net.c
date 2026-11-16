@@ -1709,20 +1709,12 @@ static void net_quiesce_held_writes(void) {
 /* ARTS_REQUEST_DELAY_MS=<n> holds each coherence request a rank sends to
  * another rank for a random 0..n ms, so two requests of one rank reach their
  * home in either order and a request can trail everything its rank sends
- * after it.  ARTS_REQUEST_DELAY_MS=<n>:ro holds only read requests, each for
- * exactly n ms, so a write turn always answers first; <n>:hop holds only
- * hops, each for exactly n ms, so a hop can cross the block's teardown;
- * <n>:trail holds each read request until its rank's write request for the
- * same block to the same rank leaves, and sends it right behind that one
- * from the same thread, so a target that dispatches with one progress thread
- * takes the write request in first whatever the timing, given the
- * send-after-send order the provider grants (a read request that no write
- * request follows leaves after n ms).  <n>:drain holds each read request
- * until as many EDT bodies have returned on its rank as EDTs had been made
- * runnable there when it was held (or n ms pass), so an acquire made after it
- * in the body that sent it, or in a body runnable by then, is decided before
- * it leaves whatever the timing.  The trigger is a count, not an identity:
- * it names those bodies only while nothing else runs on the rank.
+ * after it.  <n>:drain holds only read requests, each until as many EDT
+ * bodies have returned on its rank as EDTs had been made runnable there when
+ * it was held (or n ms pass), so an acquire made after it in the body that
+ * sent it, or in a body runnable by then, is decided before it leaves
+ * whatever the timing.  The trigger is a count, not an identity: it names
+ * those bodies only while nothing else runs on the rank.
  * Producers (any thread, a progress thread in dispatch included) only copy
  * and push; a progress thread that wins the try-lock moves the
  * pushed packets onto the not-yet-due list, detaches what is due, drops the
@@ -1736,9 +1728,7 @@ struct net_held_msg_s {
   struct net_held_msg_s *wnext; /* the wait and due lists: the lock's own */
   uint64_t due_ns;
   uint64_t runnable; /* the drain form: g_held_runnable at the hold */
-  arts_guid_t guid;
   int rank;
-  int kind;
   unsigned int len;
   char data[];
 };
@@ -1751,11 +1741,8 @@ static struct net_held_msg_s *g_held_wait;
 static _Atomic(unsigned int) g_held_lock;
 /* Set before any thread exists to send; 0 = off. */
 static int64_t g_req_delay_ns;
-/* Which kind is held: every request (randomly) or one kind exactly; or, with
- * the trail form, read requests until their write request leaves, or with the
- * drain form, read requests until the bodies counted at their hold returned. */
-static int g_req_delay_mode = -1;
-static bool g_req_delay_trail;
+/* The drain form: read requests only, until the bodies counted at their hold
+ * returned; otherwise every request, for a random time. */
 static bool g_req_delay_drain;
 static ARTS_THREAD_LOCAL uint64_t t_req_delay_rng;
 /* The drain form's counts, only while it is set.  runnable: EDTs this rank
@@ -1786,24 +1773,13 @@ static void net_req_delay_init(void) {
   if (env != NULL && env[0] != '\0') {
     char *end = NULL;
     ms = strtol(env, &end, 10);
-    if (end != env && strcmp(end, ":ro") == 0) {
-      g_req_delay_mode = ARTS_HELD_READ;
-      end += 3;
-    } else if (end != env && strcmp(end, ":hop") == 0) {
-      g_req_delay_mode = ARTS_HELD_HOP;
-      end += 4;
-    } else if (end != env && strcmp(end, ":trail") == 0) {
-      g_req_delay_trail = true;
-      end += 6;
-    } else if (end != env && strcmp(end, ":drain") == 0) {
-      g_req_delay_mode = ARTS_HELD_READ;
+    if (end != env && strcmp(end, ":drain") == 0) {
       g_req_delay_drain = true;
       end += 6;
     }
     if (end == env || *end != '\0' || ms < 0 || ms > 60000) {
       ARTS_ERROR("arts_net: ARTS_REQUEST_DELAY_MS=\"%s\" is not a delay of "
-                 "0-60000 ms, optionally followed by :ro, :hop, :trail or "
-                 ":drain",
+                 "0-60000 ms, optionally followed by :drain",
                  env);
     }
   }
@@ -1811,19 +1787,15 @@ static void net_req_delay_init(void) {
 }
 
 bool arts_net_send_held(int rank, const char *message, unsigned int length,
-                        int kind, arts_guid_t guid) {
-  bool trail = g_req_delay_trail;
-  bool exact = g_req_delay_mode >= 0;
-  if (g_req_delay_ns == 0 || (exact && kind != g_req_delay_mode) ||
-      (!exact && kind == ARTS_HELD_HOP)) {
+                        int kind) {
+  bool drain = g_req_delay_drain;
+  if (g_req_delay_ns == 0 || (drain && kind != ARTS_HELD_READ)) {
     return false;
   }
   struct net_held_msg_s *h =
       (struct net_held_msg_s *)arts_malloc(sizeof(*h) + length);
   memcpy(h->data, message, length);
-  h->guid = guid;
   h->rank = rank;
-  h->kind = kind;
   h->len = length;
   if (t_req_delay_rng == 0) {
     t_req_delay_rng = (net_now_ns() ^ ((uint64_t)(uintptr_t)&h)) | 1u;
@@ -1832,15 +1804,12 @@ bool arts_net_send_held(int rank, const char *message, unsigned int length,
   t_req_delay_rng ^= t_req_delay_rng >> 7;
   t_req_delay_rng ^= t_req_delay_rng << 17;
   uint64_t hold = (uint64_t)g_req_delay_ns;
-  if (trail) {
-    hold = kind == ARTS_HELD_WRITE ? 0u : hold;
-  } else if (!exact) {
+  if (!drain) {
     hold = t_req_delay_rng % (hold + 1u);
   }
   h->due_ns = net_now_ns() + hold;
-  h->runnable = g_req_delay_drain ? atomic_load_explicit(&g_held_runnable,
-                                                         memory_order_relaxed)
-                                  : 0u;
+  h->runnable =
+      drain ? atomic_load_explicit(&g_held_runnable, memory_order_relaxed) : 0u;
   struct net_held_msg_s *top =
       atomic_load_explicit(&g_held_push, memory_order_relaxed);
   do {
@@ -1885,27 +1854,6 @@ static void net_release_held(void) {
     *pp = h->wnext;
     h->wnext = due;
     due = h;
-  }
-  if (g_req_delay_trail) {
-    /* A read request was pushed before its rank's write request, so by the
-     * time the write request is taken the read request is on the wait list. */
-    for (struct net_held_msg_s *w = due; w != NULL; w = w->wnext) {
-      if (w->kind != ARTS_HELD_WRITE) {
-        continue;
-      }
-      for (struct net_held_msg_s **pp = &g_held_wait; *pp != NULL;) {
-        struct net_held_msg_s *h = *pp;
-        if (h->kind != ARTS_HELD_READ || h->guid != w->guid ||
-            h->rank != w->rank) {
-          pp = &h->wnext;
-          continue;
-        }
-        *pp = h->wnext;
-        h->wnext = w->wnext;
-        w->wnext = h;
-        w = h;
-      }
-    }
   }
   atomic_store_explicit(&g_held_lock, 0u, memory_order_release);
   while (due != NULL) {

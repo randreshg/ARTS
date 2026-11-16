@@ -78,8 +78,8 @@ static void rw_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
 }
 
-/* RO acquirer: read the per-iteration DB (must be non-NULL → it coalesced onto
- * a covering phase) and record the observation. */
+/* RO acquirer: read the per-iteration DB (must be non-NULL → its read request's
+ * answer or a local hit served it) and record the observation. */
 static void ro_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                    arts_edt_dep_t depv[]) {
   (void)paramc;

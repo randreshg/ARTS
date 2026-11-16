@@ -507,10 +507,27 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
                packet->rank);
     break;
   }
+#elif defined(ARTS_VALIDITY_EXCL)
+  /* PUBLISH_CTS: EXCL·PURGE's landing-less RW release (a creator-seeded hold
+   * that never received a grant).  The same pointer-identity wake as the HOME
+   * publish's case below: the landing is written before the post, and the
+   * rendezvous is not touched after it. */
+  case MSG_DB_PUBLISH_CTS: {
+    ARTS_DEBUG("Coh PUBLISH_CTS Received");
+    struct arts_msg_publish_cts_packet_s *pack =
+        (struct arts_msg_publish_cts_packet_s *)(packet);
+    struct arts_db_pub_rendezvous_s *wr =
+        (struct arts_db_pub_rendezvous_s *)(uintptr_t)pack->cv;
+    if (wr != NULL) {
+      wr->landing.addr = pack->landing.addr;
+      wr->landing.key = pack->landing.key;
+      wr->landing.txid = pack->landing.txid;
+      sem_post(&wr->sem);
+    }
+    break;
+  }
 #else
-  /* PUBLISH_CTS: the announce leg of a HOME payload publish (VAL, INV), and
-   * EXCL·PURGE's landing-less RW release (a creator-seeded hold that never
-   * received a grant). */
+  /* PUBLISH_CTS: the announce leg of a HOME payload publish (VAL, INV). */
   case MSG_DB_PUBLISH_CTS: {
     ARTS_DEBUG("Coh PUBLISH_CTS Received");
     struct arts_msg_publish_cts_packet_s *pack =
@@ -786,8 +803,7 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
         .cover = pack->cover,
         .rdzv = {.addr = pack->rdzv.addr,
                  .key = pack->rdzv.key,
-                 .txid = pack->rdzv.txid,
-                 .cookie = pack->rdzv.cookie},
+                 .txid = pack->rdzv.txid},
         .token = pack->token,
     };
     arts_ooo_dispatch_or_defer_guid(pack->db_guid, OOO_DB_EXCL_REQUEST, &args,
@@ -822,9 +838,7 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
         .mode = pack->mode,
         .data_size = pack->data_size,
         .cv = pack->cv,
-        .version = pack->version,
         .rdzv_txid = pack->rdzv_txid,
-        .rdzv_cookie = pack->rdzv_cookie,
     };
     /* An absent home slot means the create has not landed yet: a
      * creator-remote seeded RW hold releases via the announce leg, ordered

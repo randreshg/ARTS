@@ -32,18 +32,3 @@ bool arts_rank_bitset_set(struct arts_rank_bitset_s *r, unsigned int rank) {
       atomic_fetch_or_explicit(&r->words[word_idx], bit, memory_order_acq_rel);
   return (prev & bit) == 0;
 }
-
-bool arts_rank_bitset_put(struct arts_rank_bitset_s *r, unsigned int rank,
-                          bool value) {
-  if (rank >= r->nranks) {
-    return false;
-  }
-  unsigned int word_idx = rank / 64;
-  uint64_t bit = (uint64_t)1 << (rank % 64);
-  uint64_t prev =
-      value ? atomic_fetch_or_explicit(&r->words[word_idx], bit,
-                                       memory_order_acq_rel)
-            : atomic_fetch_and_explicit(&r->words[word_idx], ~bit,
-                                        memory_order_acq_rel);
-  return (prev & bit) != 0;
-}

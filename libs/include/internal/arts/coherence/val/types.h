@@ -347,10 +347,9 @@ struct arts_db_s {
   /* destroy fan-out roster: creator, readers, writers; the creator's bit is
    * set at home init, every other by arts_rank_bitset_note */
   struct arts_rank_bitset_s cached_ranks;
-  /* The destroy's gate [td:1 | rwo:1 | roo:1 | owed:29] (cover_gate.h):
-   * the destroy's mark and the claiming creator's pre-claim write request,
-   * which the announce says is still coming (rwo, owed 1); roo stays clear
-   * and owed never passes one.  Every write after init is an acq_rel RMW. */
+  /* The destroy's gate [td:1 | rwo:1] (cover_gate.h): the destroy's mark
+   * and the claiming creator's pre-claim write request, which the announce
+   * says is still coming.  Every write after init is an acq_rel RMW. */
   _Atomic(uint32_t) cover_gate;
   /* The rank whose create claimed a first-touch cache ((unsigned int)-1:
    * none): written before the descriptor is published, plain. */
@@ -375,10 +374,9 @@ struct arts_db_s {
   /* destroy fan-out roster; the creator's bit is set at home init, every
    * other by arts_rank_bitset_note */
   struct arts_rank_bitset_s cached_ranks;
-  /* The destroy's gate [td:1 | rwo:1 | roo:1 | owed:29] (cover_gate.h):
-   * the destroy's mark and the claiming creator's pre-claim write request,
-   * which the announce says is still coming (rwo, owed 1); roo stays clear
-   * and owed never passes one.  Every write after init is an acq_rel RMW. */
+  /* The destroy's gate [td:1 | rwo:1] (cover_gate.h): the destroy's mark
+   * and the claiming creator's pre-claim write request, which the announce
+   * says is still coming.  Every write after init is an acq_rel RMW. */
   _Atomic(uint32_t) cover_gate;
   /* The rank whose create claimed a first-touch cache ((unsigned int)-1:
    * none): written before the descriptor is published, plain. */

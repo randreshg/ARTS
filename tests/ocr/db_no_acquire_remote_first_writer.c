@@ -208,8 +208,8 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   for (unsigned i = 0; i < RACERS; i++) {
     arts_edt_hint_t rh = ARTS_EDT_HINT_DEFAULTS;
     /* Two ranks leave nothing eligible (the home and the writer are the whole
-     * machine); the read then rides with the writer, where the pointer check
-     * still holds even though the directory window cannot be reached. */
+     * machine); the read then runs on the writer's rank, where the pointer
+     * check still holds even though the directory window cannot be reached. */
     rh.rank = (n > 2u) ? ((home + 2u + (i % (n - 2u))) % n)
                        : ((home + 1u) % n);
     uint64_t rpv[1] = {(uint64_t)done};

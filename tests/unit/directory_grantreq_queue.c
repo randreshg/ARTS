@@ -263,7 +263,7 @@ static void *stalled_producer(void *arg) {
       (struct arts_home_grantreq_node_s *)malloc(sizeof(*n));
   n->rank = 41u;
   n->have_version = ARTS_GRANT_VERSION_NONE;
-  n->rdzv = (struct arts_rdzv_landing_s){0, 0, 0, 0};
+  n->rdzv = ARTS_RDZV_NO_LANDING;
   n->token = 0x410u;
   atomic_store_explicit(&n->next, (struct arts_home_grantreq_node_s *)NULL,
                         memory_order_relaxed);

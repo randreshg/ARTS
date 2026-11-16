@@ -400,7 +400,10 @@ static _Atomic(int64_t) landings_out;
 int64_t arts_db_landings_outstanding(void) {
   return atomic_load_explicit(&landings_out, memory_order_relaxed);
 }
+#endif
 
+#ifndef ARTS_VALIDITY_EXCL
+#ifdef ARTS_DEBUG_LANDING_BALANCE
 static inline void landing_count(int64_t d) {
   (void)atomic_fetch_add_explicit(&landings_out, d, memory_order_relaxed);
 }
@@ -410,13 +413,6 @@ static inline void landing_count(int64_t d) { (void)d; }
 
 struct arts_db_buffer_s *
 arts_db_buf_landing_alloc(uint64_t db_size, struct arts_rdzv_landing_s *out) {
-#ifdef ARTS_CXL_DIRECT
-  (void)db_size;
-  (void)out;
-  ARTS_ERROR("coherence: a landing has no meaning where the payload "
-             "is not this rank's");
-  return NULL;
-#else
   struct arts_db_buffer_s *b = buf_alloc(db_size);
   if (b == NULL) {
     ARTS_ERROR("coherence: rendezvous landing alloc failed (%llu bytes)",
@@ -433,34 +429,19 @@ arts_db_buf_landing_alloc(uint64_t db_size, struct arts_rdzv_landing_s *out) {
   out->cookie = (uint64_t)(uintptr_t)b;
   landing_count(1);
   return b;
-#endif
 }
 
 void arts_db_buf_landing_return(struct arts_db_buffer_s *b) {
   if (b == NULL) {
     return;
   }
-#ifdef ARTS_CXL_DIRECT
-  ARTS_ERROR("coherence: a landing has no meaning where the payload "
-             "is not this rank's");
-#else
   landing_count(-1);
   buffer_deleter(b);
-#endif
 }
 
 bool arts_db_buf_adopt_landing(struct arts_db_cache_s *cache, uint64_t version,
                                struct arts_db_buffer_s *landing,
                                uint64_t db_size) {
-#ifdef ARTS_CXL_DIRECT
-  (void)cache;
-  (void)version;
-  (void)landing;
-  (void)db_size;
-  ARTS_ERROR("coherence: a landing has no meaning where the payload "
-             "is not this rank's");
-  return false;
-#else
   if (landing == NULL) {
     return false;
   }
@@ -485,28 +466,18 @@ bool arts_db_buf_adopt_landing(struct arts_db_cache_s *cache, uint64_t version,
   arts_db_cache_learn_size(cache, db_size);
   buf_note_present(cache);
   return true;
-#endif
 }
 
 struct arts_db_buffer_s *
 arts_db_buf_install_landed(struct arts_db_cache_s *cache, uint64_t new_version,
                            struct arts_db_buffer_s *landing,
                            uint64_t db_size) {
-#ifdef ARTS_CXL_DIRECT
-  (void)cache;
-  (void)new_version;
-  (void)landing;
-  (void)db_size;
-  ARTS_ERROR("coherence: a landing has no meaning where the payload "
-             "is not this rank's");
-  return NULL;
-#else
   landing_count(-1);
   atomic_init(&landing->version, new_version);
   arts_db_cache_learn_size(cache, db_size);
   return buf_publish(cache, landing, new_version);
-#endif
 }
+#endif /* a fresh landing */
 
 void arts_db_buf_ref_release_cb(void *arg) {
   arts_shared_ptr_t h = (arts_shared_ptr_t)arg;

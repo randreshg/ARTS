@@ -950,11 +950,11 @@ void arts_db_join_read(struct arts_db_cache_s *cache) { (void)cache; }
  * block: the write request a first-touch cache sent before a create on its
  * rank claimed that cache.  The claim served the request's writers, so no
  * acquire waits for its answer, and the claim's announce tells the home that
- * it is still coming.  The gate (arts/coherence/cover_gate.h) holds it as rwo
- * with a count of one; the destroy marks the gate, and the teardown runs at
- * the step that leaves the gate marked with nothing owed: the destroy, or
- * that request's arrival.  The home absorbs the request, queueing and
- * answering nothing, since the claim closed the requester's write axis.
+ * it is still coming.  The gate (arts/coherence/cover_gate.h) holds it as
+ * rwo; the destroy marks the gate, and the teardown runs at the step that
+ * leaves the gate marked with rwo clear: the destroy, or that request's
+ * arrival.  The home absorbs the request, queueing and answering nothing,
+ * since the claim closed the requester's write axis.
  *
  * No read request passes the gate.  Its readers stay parked until its own
  * answer, and a destroy issued while an acquire is in progress is the
@@ -968,7 +968,7 @@ void arts_db_home_seed_owed(struct arts_db_s *db, unsigned int creator,
   assert(owed == ARTS_CREATE_OWED_RW &&
          "a claim closes its cache's write request and nothing else");
   db->claim_rank = creator;
-  atomic_store_explicit(&db->cover_gate, ARTS_COVER_GATE_RWO | 1u,
+  atomic_store_explicit(&db->cover_gate, ARTS_COVER_GATE_RWO,
                         memory_order_relaxed);
 }
 
@@ -1193,8 +1193,9 @@ void arts_db_debug_quiescence_check(const struct arts_teardown_exempt_s *ex,
   }
 #endif
   unsigned int viol = 0;
-  /* Homes a destroy marked that still wait for a request they were told is
-   * coming: legal at any shutdown, printed so a campaign can watch it. */
+  /* Homes a destroy marked that still wait for the claimer's pre-claim write
+   * request the create's announce said is coming: legal at any shutdown,
+   * printed so a campaign can watch it. */
   unsigned int marked_owed = 0;
   const unsigned int nt = (unsigned int)arts_guid_table_count;
   /* Whether this shutdown was quiescent, named by contributor so a log's
@@ -1350,25 +1351,20 @@ void arts_db_debug_quiescence_check(const struct arts_teardown_exempt_s *ex,
             }
           }
 #else
-          /* The gate owes the claiming creator's pre-claim write request or
-           * nothing: rwo with a count of one, or neither.  Marked with
-           * nothing owed means the teardown was skipped; any other word no
-           * step leaves.  The request owed is legal at any shutdown (it may
-           * be undelivered) and only counted. */
+          /* Marked with no pre-claim write request awaited means the
+           * teardown was skipped.  One still awaited is legal at any
+           * shutdown (it may be undelivered) and only counted. */
           uint32_t gate =
               atomic_load_explicit(&db->cover_gate, memory_order_relaxed);
-          bool gtd = (gate & ARTS_COVER_GATE_TD) != 0u;
-          bool grwo = (gate & ARTS_COVER_GATE_RWO) != 0u;
-          if ((gate & ARTS_COVER_GATE_ROO) != 0u ||
-              (gate & ARTS_COVER_GATE_OWED) != (grwo ? 1u : 0u) ||
-              (gtd && !grwo)) {
-            ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu cover gate rests where no "
-                       "step leaves it (gate=%x)",
-                       (unsigned long)c->db_guid, gate);
-            viol++;
-          }
-          if (gtd && grwo) {
-            marked_owed++;
+          if ((gate & ARTS_COVER_GATE_TD) != 0u) {
+            if ((gate & ARTS_COVER_GATE_RWO) != 0u) {
+              marked_owed++;
+            } else {
+              ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu home rests marked for "
+                         "teardown with nothing awaited (gate=%x)",
+                         (unsigned long)c->db_guid, gate);
+              viol++;
+            }
           }
 #endif /* ARTS_RETENTION_PURGE */
         }
@@ -1425,25 +1421,20 @@ void arts_db_debug_quiescence_check(const struct arts_teardown_exempt_s *ex,
           }
         }
         if (db->home_initialized) {
-          /* The gate owes the claiming creator's pre-claim write request or
-           * nothing: rwo with a count of one, or neither.  Marked with
-           * nothing owed means the teardown was skipped; any other word no
-           * step leaves.  The request owed is legal at any shutdown (it may
-           * be undelivered) and only counted. */
+          /* Marked with no pre-claim write request awaited means the
+           * teardown was skipped.  One still awaited is legal at any
+           * shutdown (it may be undelivered) and only counted. */
           uint32_t gate =
               atomic_load_explicit(&db->cover_gate, memory_order_relaxed);
-          bool gtd = (gate & ARTS_COVER_GATE_TD) != 0u;
-          bool grwo = (gate & ARTS_COVER_GATE_RWO) != 0u;
-          if ((gate & ARTS_COVER_GATE_ROO) != 0u ||
-              (gate & ARTS_COVER_GATE_OWED) != (grwo ? 1u : 0u) ||
-              (gtd && !grwo)) {
-            ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu cover gate rests where no "
-                       "step leaves it (gate=%x)",
-                       (unsigned long)c->db_guid, gate);
-            viol++;
-          }
-          if (gtd && grwo) {
-            marked_owed++;
+          if ((gate & ARTS_COVER_GATE_TD) != 0u) {
+            if ((gate & ARTS_COVER_GATE_RWO) != 0u) {
+              marked_owed++;
+            } else {
+              ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu home rests marked for "
+                         "teardown with nothing awaited (gate=%x)",
+                         (unsigned long)c->db_guid, gate);
+              viol++;
+            }
           }
         }
 #ifdef ARTS_VALIDITY_INV
@@ -1672,39 +1663,58 @@ void arts_db_debug_quiescence_check(const struct arts_teardown_exempt_s *ex,
             }
           }
 #endif
-          /* 5. No waiter is stranded at the home.  A count left on the word
-           * with nobody queued behind it is a hold whose fire-and-forget
-           * release was still in flight when the network stopped -- a program
-           * may shut down while holding -- and nothing can ever wait on it;
-           * a count WITH a waiter queued is a release that will never come
-           * for someone who asked. */
+          /* 5. The home's queues against its lock word.  A request queued
+           * with no count on its axis is a state no stopped rank rests in: a
+           * write request's node is counted by the transition that follows
+           * its push, a read request's node is pushed only once it is
+           * counted, and a count goes only with the release of a turn whose
+           * grant took its node.  After a quiescent shutdown no waiter is
+           * stranded either: a count left on the word with nobody queued
+           * behind it is a hold whose fire-and-forget release was still in
+           * flight when the network stopped -- a program may shut down while
+           * holding -- and nothing can ever wait on it; a count WITH a waiter
+           * queued is a release that will never come for someone who asked.
+           * A shutdown that left work undone may leave a requester queued
+           * behind a turn still held. */
           if (db->home_initialized) {
             uint64_t ls =
                 atomic_load_explicit(&db->lock_state, memory_order_relaxed);
             bool rwq = !arts_home_grantreq_queue_empty(&db->rw_waiters);
             bool roq = !arts_lf_stack_empty(&db->ro_waiters);
-            if ((EXCL_STATE_W(ls) != 0u || EXCL_STATE_R(ls) != 0u) &&
-                (rwq || roq)) {
-              ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu home lock_state not "
-                         "idle at teardown with a waiter queued "
-                         "(w=%u r=%u teardown=%u)",
-                         (unsigned long)c->db_guid, EXCL_STATE_W(ls),
-                         EXCL_STATE_R(ls), EXCL_STATE_TEARDOWN(ls));
+            if ((rwq && EXCL_STATE_W(ls) == 0u) ||
+                (roq && EXCL_STATE_R(ls) == 0u)) {
+              ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu has a request queued at "
+                         "its home that the lock word does not count "
+                         "(rw queued=%d ro queued=%d w=%u r=%u teardown=%u)",
+                         (unsigned long)c->db_guid, (int)rwq, (int)roq,
+                         EXCL_STATE_W(ls), EXCL_STATE_R(ls),
+                         EXCL_STATE_TEARDOWN(ls));
               viol++;
             }
-            if (rwq) {
-              ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu has queued RW waiters "
-                         "at teardown (w=%u r=%u teardown=%u)",
-                         (unsigned long)c->db_guid, EXCL_STATE_W(ls),
-                         EXCL_STATE_R(ls), EXCL_STATE_TEARDOWN(ls));
-              viol++;
-            }
-            if (roq) {
-              ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu has queued RO waiters "
-                         "at teardown (w=%u r=%u teardown=%u)",
-                         (unsigned long)c->db_guid, EXCL_STATE_W(ls),
-                         EXCL_STATE_R(ls), EXCL_STATE_TEARDOWN(ls));
-              viol++;
+            if (quiescent) {
+              if ((EXCL_STATE_W(ls) != 0u || EXCL_STATE_R(ls) != 0u) &&
+                  (rwq || roq)) {
+                ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu home lock_state not "
+                           "idle at teardown with a waiter queued "
+                           "(w=%u r=%u teardown=%u)",
+                           (unsigned long)c->db_guid, EXCL_STATE_W(ls),
+                           EXCL_STATE_R(ls), EXCL_STATE_TEARDOWN(ls));
+                viol++;
+              }
+              if (rwq) {
+                ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu has queued RW waiters "
+                           "at teardown (w=%u r=%u teardown=%u)",
+                           (unsigned long)c->db_guid, EXCL_STATE_W(ls),
+                           EXCL_STATE_R(ls), EXCL_STATE_TEARDOWN(ls));
+                viol++;
+              }
+              if (roq) {
+                ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu has queued RO waiters "
+                           "at teardown (w=%u r=%u teardown=%u)",
+                           (unsigned long)c->db_guid, EXCL_STATE_W(ls),
+                           EXCL_STATE_R(ls), EXCL_STATE_TEARDOWN(ls));
+                viol++;
+              }
             }
           }
         }
@@ -1721,7 +1731,7 @@ void arts_db_debug_quiescence_check(const struct arts_teardown_exempt_s *ex,
    * two look identical from the violation count alone. */
   if (marked_owed != 0) {
     ARTS_DEBUG("COVER-INFO: %u home(s) marked for teardown still wait for a "
-               "declared request (quiescent=%d)",
+               "claimer's pre-claim write request (quiescent=%d)",
                marked_owed, (int)walk_quiescent);
   }
   if (caller_held != 0) {

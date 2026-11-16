@@ -50,12 +50,6 @@
 ///          out.  The first, once it runs, makes a third reader acquire at
 ///          once while it still holds its own.  The last of them destroys
 ///          the block.
-///   gate   Two ranks.  As join, except that a writer on rank 1 acquires
-///          right after the two readers, so its request goes out while theirs
-///          waits and the write turn serves all three; and the third
-///          acquisition, made by the first reader once it runs, is a write:
-///          the write right is on rank 1 by then, confirmed by the home or
-///          not.  The last of them destroys the block.
 ///
 /// The registration's record check reads each rank's counter file once the
 /// run has ended: <rank>:<COUNTER>=<value> names the exact value a counter
@@ -86,8 +80,7 @@ enum {
   SHAPE_CLAIM,
   SHAPE_PING,
   SHAPE_PUB,
-  SHAPE_JOIN,
-  SHAPE_GATE
+  SHAPE_JOIN
 };
 static int g_shape = -1;
 
@@ -365,21 +358,7 @@ static void pub_main(void) {
   (void)edt_on(pub_create, 1u, 1, pv, 0, done);
 }
 
-/* ---- join, gate ---------------------------------------------------------- */
-
-static void gate_write(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
-                       arts_edt_dep_t depv[]) {
-  (void)paramc;
-  (void)paramv;
-  (void)depc;
-  /* The shape's two writers share their rank's write turn and run
-   * unordered, each beside the other's release, so neither writes: the shape
-   * counts acquisitions, not bytes. */
-  if (depv[0].ptr == NULL) {
-    arts_printf("FAIL: counter_exact got no storage\n");
-    arts_test_fail();
-  }
-}
+/* ---- join ---------------------------------------------------------------- */
 
 /* An EDT on this rank, ending into `done`, that acquires `g` in `mode` at
  * once: its only dependence is the block. */
@@ -400,15 +379,6 @@ static void join_first(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                DB_MODE_RO);
 }
 
-static void gate_first(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
-                       arts_edt_dep_t depv[]) {
-  (void)paramc;
-  (void)depc;
-  (void)depv;
-  acquire_here(gate_write, (arts_guid_t)paramv[0], (arts_guid_t)paramv[1],
-               DB_MODE_RW);
-}
-
 /* paramv: the block and the end event */
 static void join_start(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                        arts_edt_dep_t depv[]) {
@@ -417,16 +387,12 @@ static void join_start(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depv;
   arts_guid_t g = (arts_guid_t)paramv[0];
   arts_guid_t done = (arts_guid_t)paramv[1];
-  acquire_here(g_shape == SHAPE_GATE ? gate_first : join_first, g, done,
-               DB_MODE_RO);
+  acquire_here(join_first, g, done, DB_MODE_RO);
   acquire_here(one_reader, g, done, DB_MODE_RO);
-  if (g_shape == SHAPE_GATE) {
-    acquire_here(gate_write, g, done, DB_MODE_RW);
-  }
 }
 
-static void join_main(const char *shape, int32_t acquisitions) {
-  if (!two_ranks(shape)) {
+static void join_main(void) {
+  if (!two_ranks("join")) {
     return;
   }
   arts_db_hint_t home0 = {.rank = 0u};
@@ -435,7 +401,7 @@ static void join_main(const char *shape, int32_t acquisitions) {
       arts_db_create(&p, S_BYTES, ARTS_DB, ARTS_DB_PROP_NONE, &home0);
   memset(p, 0, S_BYTES);
   arts_db_release(b);
-  arts_guid_t done = latch(acquisitions);
+  arts_guid_t done = latch(3);
   uint64_t pv[2] = {(uint64_t)b, (uint64_t)done};
   arts_guid_t t = edt_on(claim_end, 0u, 1, pv, 1, NULL_GUID);
   arts_add_dependence(done, t, 0, DB_MODE_NULL);
@@ -494,9 +460,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   } else if (g_shape == SHAPE_PUB) {
     pub_main();
   } else if (g_shape == SHAPE_JOIN) {
-    join_main("join", 3);
-  } else if (g_shape == SHAPE_GATE) {
-    join_main("gate", 4);
+    join_main();
   } else {
     ping_main();
   }
@@ -523,8 +487,6 @@ int main(int argc, char **argv) {
     g_shape = SHAPE_PUB;
   } else if (strcmp(argv[1], "join") == 0) {
     g_shape = SHAPE_JOIN;
-  } else if (strcmp(argv[1], "gate") == 0) {
-    g_shape = SHAPE_GATE;
   } else {
     printf("FAIL: counter_exact: unknown shape %s\n", argv[1]);
     return 1;

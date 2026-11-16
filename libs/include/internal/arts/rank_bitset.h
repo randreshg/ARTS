@@ -67,12 +67,6 @@ static inline void arts_rank_bitset_note(struct arts_rank_bitset_s *r,
                                    memory_order_relaxed);
   }
 }
-/* Put `value` in `rank`'s bit with one acq_rel RMW of its word (a fetch_or
- * for 1, a fetch_and for 0) and return the bit's previous value; false, with
- * nothing written, when `rank` is out of range.  Of two puts of one value on
- * one bit, exactly one sees the other's. */
-bool arts_rank_bitset_put(struct arts_rank_bitset_s *r, unsigned int rank,
-                          bool value);
 /* A walk over the members of a set, each word read once:
  *
  *   struct arts_rank_bitset_cursor_s c = arts_rank_bitset_cursor(set);

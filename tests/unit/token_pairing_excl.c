@@ -34,8 +34,9 @@
  *               a size round on one (where requests carry a landing);
  *   write axis  closed by its grant (under RETAIN the migration's DELIVER,
  *               whose CONFIRM echoes the home's token), a size round leaving
- *               it open (where requests carry a landing), by a create's
- *               hold;
+ *               it open and re-sending a first touch's request unmarked, a
+ *               size round for an axis with no request out fatal (where
+ *               requests carry a landing), by a create's hold;
  *   a one-sided answer's pairing callback, live and retired, and a pairing
  *   the teardown discards (the count is then the sweep's), where answers
  *   carry bytes; bytes in flight to a requester already retired: the count
@@ -96,6 +97,13 @@
  *   claiming creator's pre-claim write request discarded and its read
  *   request granted; a read request refused by the torn-down home is
  *   answered nothing.
+ *
+ * Of the transitions a correct run reaches, one is driven here alone: the
+ * serve's second judgement of its gate, which needs a writer to go live while
+ * the serve stands between its gate and its drain, a stall only this
+ * harness's ensure hook makes.  A write turn's setting aside of the parked
+ * readers and an owner's answer to its own read request held through the
+ * write phase also run on a real run, in db_read_parked_under_write_turn.
  *
  * PURE test: no arts_rt, no ports, no threads.
  */
@@ -203,12 +211,11 @@ void arts_sched_fuzz_point(void) {
   }
 }
 bool arts_net_send_held(int rank, const char *message, unsigned int length,
-                        int kind, arts_guid_t guid) {
+                        int kind) {
   (void)rank;
   (void)message;
   (void)length;
   (void)kind;
-  (void)guid;
   return false;
 }
 #endif
@@ -254,10 +261,6 @@ UNREACHED(void arts_cxl_store_flush(const void *p, size_t bytes, bool producer))
 UNREACHED(void *arts_cxl_store_alloc(size_t bytes))
 UNREACHED(bool arts_cxl_store_contains(const void *p))
 UNREACHED(bool arts_db_buf_withdraw(struct arts_db_cache_s *c, const void *p))
-#elif defined(ARTS_RETENTION_PURGE)
-UNREACHED(void arts_send_db_publish_cts(unsigned int r, arts_guid_t g,
-                                        const struct arts_rdzv_landing_s *l,
-                                        uint64_t cv))
 #endif
 
 /* ---- the buffer plane: no block in these scenarios has bytes ---- */
@@ -300,11 +303,6 @@ bool arts_net_rdzv_local(const void *p, uint64_t len, uint64_t *a,
 #ifdef ARTS_DEBUG_LANDING_BALANCE
 int64_t arts_db_landings_outstanding(void) { return 0; }
 #endif
-
-/* An EXCL answer's landing is the requester's own stable buffer: a retired
- * one pairs any bytes in flight itself rather than handing them away. */
-UNREACHED(void arts_db_rdzv_discard_landing(uint64_t txid, uint64_t len,
-                                            uint64_t cookie))
 
 /* ---- the rendezvous plane: an expectation is held for the test to fire ----
  */
@@ -698,16 +696,21 @@ request_of(arts_db_access_mode_t mode) {
   }
 }
 
-/* The size round of a request. */
-static void cts(arts_db_access_mode_t mode) {
-  const struct arts_msg_excl_request_packet_s *r = request_of(mode);
+/* A size round in `mode`, naming the descriptor request `r` named. */
+static void cts_naming(arts_db_access_mode_t mode,
+                       const struct arts_msg_excl_request_packet_s *r) {
   struct arts_msg_excl_cts_packet_s p;
   memset(&p, 0, sizeof(p));
   p.header.rank = HOME;
   p.db_guid = r->db_guid;
-  p.mode = r->mode;
+  p.mode = (uint32_t)mode;
   p.token = r->token;
   arts_handler_db_excl_cts(&p);
+}
+
+/* The size round of a request. */
+static void cts(arts_db_access_mode_t mode) {
+  cts_naming(mode, request_of(mode));
 }
 
 #ifdef ARTS_RETENTION_RETAIN
@@ -733,8 +736,8 @@ static void grant(arts_db_access_mode_t mode, bool payload) {
 static void check_migrate_consumed(void) {
   const struct arts_db_cache_s *c = &g_db->cache;
   if (c->migrate_rdzv.addr != 0u || c->migrate_rdzv.key != 0u ||
-      c->migrate_rdzv.txid != 0u || c->migrate_rdzv.cookie != 0u ||
-      c->migrate_token != 0u || c->migrate_home_token != 0u) {
+      c->migrate_rdzv.txid != 0u || c->migrate_token != 0u ||
+      c->migrate_home_token != 0u) {
     fail("the self-grant left the migration's landing or tokens behind");
   }
 }
@@ -784,15 +787,35 @@ static void write_granted(void) {
 }
 
 #if defined(ARTS_RETENTION_RETAIN) || !defined(ARTS_USE_CXL)
+static void expect_abort(void (*body)(void), const char *what);
+static void read_size_round_now(void) { cts_naming(DB_MODE_RO, request(0)); }
+static void write_size_round_now(void) { cts(DB_MODE_RW); }
+
+/* A size round answers the request its axis has out and re-sends it, the
+ * axis and its count open; it clears the stub bit, so a first touch's write
+ * request goes out again without PRECLAIM.  One for an axis with no request
+ * out is fatal. */
 static void write_size_round(void) {
-  begin("write size round keeps the axis open", GUID_SIZED, false, HOME);
+  begin("write size round keeps the axis open", GUID_CLAIM, false, HOME);
   acquire(DB_MODE_RW);
+  if (request(0)->cover != ARTS_COVER_PRECLAIM) {
+    fail("the first touch's write request is not marked pre-claim");
+  }
+  expect_abort(read_size_round_now,
+               "a size round with no read request out did not abort");
   cts(DB_MODE_RW);
   if (count_sent(MSG_DB_EXCL_REQUEST) != 2 ||
-      request(1)->token != request(0)->token) {
-    fail("the size round did not re-send the same request");
+      request(1)->token != request(0)->token || request(1)->cover != 0u) {
+    fail("the size round did not re-send the same request, unmarked");
+  }
+  if (CACHE_STUB(atomic_load_explicit(&g_db->cache.cache_state,
+                                      memory_order_relaxed)) != 0u) {
+    fail("the size round left the stub bit set");
   }
   grant(DB_MODE_RW, false);
+  check_confirm();
+  expect_abort(write_size_round_now,
+               "a size round under the write grant did not abort");
   end(1);
 }
 #endif
@@ -1429,7 +1452,7 @@ static void own_read_after_claim(void) {
   acquire(DB_MODE_RO);
   acquire(DB_MODE_RW);
   if (request_of(DB_MODE_RO)->cover != 0u ||
-      request_of(DB_MODE_RW)->cover != EXCL_COVER_PRECLAIM) {
+      request_of(DB_MODE_RW)->cover != ARTS_COVER_PRECLAIM) {
     fail("the first touch's write request alone is not marked pre-claim");
   }
   uint8_t owed = claim();
@@ -1815,7 +1838,7 @@ static void read_held_through_own_write_turn(void) {
  * behind the creator's hold and granted when the hold comes back.  A second
  * pre-claim write request is one the home was never told of. */
 static void second_preclaim_write(void) {
-  far_request(REQ, DB_MODE_RW, EXCL_COVER_PRECLAIM);
+  far_request(REQ, DB_MODE_RW, ARTS_COVER_PRECLAIM);
 }
 
 static void preclaim_requests_at_home(void) {
@@ -1826,7 +1849,7 @@ static void preclaim_requests_at_home(void) {
   check_lock(1u, 1u, 0u, "the announce did not seed the awaited request");
   far_request(REQ, DB_MODE_RO, 0u);
   check_lock(1u, 1u, 1u, "the pre-claim read request was not counted");
-  far_request(REQ, DB_MODE_RW, EXCL_COVER_PRECLAIM);
+  far_request(REQ, DB_MODE_RW, ARTS_COVER_PRECLAIM);
   check_lock(0u, 1u, 1u,
              "the pre-claim write request was counted or left "
              "awaited");
@@ -2009,7 +2032,7 @@ static void claim_closes_write_axis(void) {
   acquire(DB_MODE_RO);
   acquire(DB_MODE_RW);
   if (request_of(DB_MODE_RO)->cover != 0u ||
-      request_of(DB_MODE_RW)->cover != EXCL_COVER_PRECLAIM) {
+      request_of(DB_MODE_RW)->cover != ARTS_COVER_PRECLAIM) {
     fail("the first touch's write request alone is not marked pre-claim");
   }
   uint8_t owed = claim();

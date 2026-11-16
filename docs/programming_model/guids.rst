@@ -236,9 +236,15 @@ of acquiring its blocks, and it keeps what it already acquired while it
 waits.  Under ``VAL``, ``INV`` and ``EXCL`` an EDT's write accesses, and
 under ``EXCL`` its read accesses too, are acquired one after another in
 GUID order, and each is kept until the EDT releases it.  A write access
-keeps the writers of every other node waiting for that block, and under
-``EXCL`` its readers as well; a read access under ``EXCL`` keeps the
-block's writers waiting.
+keeps the writers of every other node waiting for that block and, under
+``EXCL``, the readers of every other node.  Under ``EXCL`` with ``PURGE`` it
+also keeps waiting the readers of its own node whose read request was
+already out when the node took the write turn; under ``EXCL`` with
+``RETAIN`` it keeps those waiting only when another node's write request
+reached the home before the confirmation of the migration that brought the
+turn.  A read access under ``EXCL`` keeps the block's writers waiting and,
+under ``RETAIN`` on the owner's node, also the readers of other nodes that
+arrive once a writer is queued behind it.
 
 The program therefore has one duty towards a create that EDTs wait for:
 **nothing the creating EDT waits for may be held by an EDT that waits for

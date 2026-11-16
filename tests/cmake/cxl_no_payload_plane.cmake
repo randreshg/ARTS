@@ -31,8 +31,8 @@ endforeach()
 
 set(_forbidden
     arts_net_put_payload arts_net_rdzv_expect arts_net_rdzv_local
-    arts_net_rdzv_txid_next arts_db_rdzv_discard_landing
-    arts_db_buf_ref_release_cb arts_db_await_ack arts_send_db_publish_cts)
+    arts_net_rdzv_txid_next arts_db_buf_ref_release_cb arts_db_await_ack
+    arts_send_db_publish_cts)
 
 # GLOB_RECURSE matches the LAST path component only, so the target directory is
 # a filter over the result rather than part of the expression.

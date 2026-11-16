@@ -147,10 +147,10 @@ arts_tsan_residue(db_destroy_claimed_first_touch_wave2
 arts_tsan_residue(db_destroy_claimed_first_touch_wave2_delay
     CELLS VAL/RETAIN/HOME VAL/PURGE/HOME INV/RETAIN/HOME INV/PURGE/HOME
     SHAPES R2)
-arts_tsan_residue(db_destroy_cover_settles_t1
+arts_tsan_residue(db_destroy_claimed_write_settles
     CELLS VAL/RETAIN/HOME VAL/PURGE/HOME INV/RETAIN/HOME INV/PURGE/HOME
     SHAPES R2)
-arts_tsan_residue(db_destroy_cover_settles_t1_delay
+arts_tsan_residue(db_destroy_claimed_write_settles_delay
     CELLS VAL/RETAIN/HOME VAL/PURGE/HOME INV/RETAIN/HOME INV/PURGE/HOME
     SHAPES R2)
 arts_tsan_residue(db_create_races_acquire_writers

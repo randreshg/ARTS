@@ -15,6 +15,8 @@
  *   6. A landing that loses to the installed buffer, adopted over it or
  *      installed at a stale version, goes back to the registered pool at
  *      once.
+ * 5 and 6 are checked where a landing is a buffer of its own, every cell but
+ * EXCL, whose payloads land in the installed buffer.
  *
  * A destroyed descriptor is filled with a pattern and held back, not
  * released, until the property ends, so any write after the destroy changes
@@ -176,6 +178,7 @@ int main(void) {
     settle("late drops racing the destroy");
   }
 
+#ifndef ARTS_VALIDITY_EXCL
   /* 5 */
   struct arts_rdzv_landing_s rdzv;
   struct arts_db_buffer_s *l = arts_db_buf_landing_alloc(DB_SIZE, &rdzv);
@@ -197,6 +200,7 @@ int main(void) {
   check(pool_out() == 1, "a stale landing was kept");
   destroy(db);
   settle("a landing that loses to the installed buffer");
+#endif
 
   printf(fail ? "FAIL buffer_outlives_cache\n"
               : "PASS buffer_outlives_cache\n");

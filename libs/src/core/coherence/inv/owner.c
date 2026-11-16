@@ -319,10 +319,7 @@ void arts_send_db_inv_redirect(unsigned int holder_rank, arts_guid_t db_guid,
   p.token = token;
   /* The home serves the reader itself when it holds the grant. */
   assert(holder_rank != arts_global_rank_id);
-  if (!arts_net_send_held((int)holder_rank, (char *)&p, sizeof(p),
-                          ARTS_HELD_HOP, db_guid)) {
-    arts_transport_send_async((int)holder_rank, (char *)&p, sizeof(p));
-  }
+  arts_transport_send_async((int)holder_rank, (char *)&p, sizeof(p));
 }
 
 /* The bounce: a holder that no longer has the bytes re-sends the read request
@@ -347,8 +344,5 @@ void arts_send_db_inv_request_for(arts_guid_t db_guid, unsigned int requester,
   /* The holder a home redirects to is another rank (the home serves itself
    * when it holds the grant), so a bounce always leaves this rank. */
   assert(home_rank != arts_global_rank_id);
-  if (!arts_net_send_held((int)home_rank, (char *)&p, sizeof(p),
-                          ARTS_HELD_HOP, db_guid)) {
-    arts_transport_send_async((int)home_rank, (char *)&p, sizeof(p));
-  }
+  arts_transport_send_async((int)home_rank, (char *)&p, sizeof(p));
 }

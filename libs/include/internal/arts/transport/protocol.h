@@ -246,12 +246,16 @@ struct ARTS_PACKED arts_msg_time_sync_resp_packet_s {
  * packet (0 = no landing advertised / no payload moves); `cookie` is an opaque
  * advertiser-local handle (its landing-buffer pointer) echoed VERBATIM back in
  * the metadata packet — the same trust model as the publish `cv` semaphore
- * address, valid only on the advertiser rank. */
+ * address, valid only on the advertiser rank.  It travels in the cells whose
+ * requests advertise a fresh buffer (VAL, INV, FLUSH); an EXCL landing is the
+ * advertiser's stable buffer, which the answer's token names, and has none. */
 struct ARTS_PACKED arts_msg_rdzv_landing_s {
   uint64_t addr;
   uint64_t key;
   uint64_t txid;
+#ifndef ARTS_VALIDITY_EXCL
   uint64_t cookie;
+#endif
 };
 
 /* Answer token (VAL and INV): a request names the requester's descriptor in a
@@ -532,8 +536,8 @@ struct ARTS_PACKED arts_msg_db_create_coherent_packet_s {
 #endif
   uint16_t flags;
   uint16_t db_type;
-  uint8_t owed; /* ARTS_CREATE_OWED_*: the claimed first touch's requests the
-                   claim closed, which the home must still expect */
+  uint8_t owed; /* ARTS_CREATE_OWED_RW: the claim closed the claimed first
+                   touch's write request, which the home must still expect */
   uint8_t pad[3];
 };
 
@@ -615,7 +619,7 @@ struct ARTS_PACKED arts_msg_excl_request_packet_s {
   struct arts_msg_header_s header;
   arts_guid_t db_guid;
   uint32_t mode; /* arts_db_access_mode_t: DB_MODE_RO or DB_MODE_RW */
-  uint32_t cover; /* EXCL_COVER_PRECLAIM on a write request a first-touch
+  uint32_t cover; /* ARTS_COVER_PRECLAIM on a write request a first-touch
                    * cache opened before a create claimed it, else 0 */
   /* requester rank = header.rank; no edt_guid/slot (rank-granular). */
   /* Requester's landing for the grant/deliver payload.  txid==0 = requester
@@ -641,22 +645,19 @@ struct ARTS_PACKED arts_msg_excl_grant_packet_s {
   struct arts_msg_header_s header;
   arts_guid_t db_guid;
   uint32_t mode;
-  uint32_t pad;
-  uint64_t version; /* always 0, and no handler reads it */
-  /* Grant payload travels by PUT into the requester's landing:
-   * rdzv_txid != 0 pairs this packet with the write completion, rdzv_cookie
-   * echoes the requester's landing handle.  data_size is the DB's size
-   * (descriptor state, ALWAYS set — a hinted first touch skips the size CTS
-   * and learns the exact size from whichever reply completes it); payload
-   * presence is signaled by rdzv_txid, never by data_size, and no bytes
-   * trail the packet.  txid == 0 = data-less grant (sentinel / nothing
-   * published). */
+  uint32_t pad; /* keeps the fields below 8-aligned; written 0 */
+  /* Grant payload travels by PUT into the requester's landing, its stable
+   * buffer: rdzv_txid != 0 pairs this packet with the write completion.
+   * data_size is the DB's size (descriptor state, ALWAYS set — a hinted
+   * first touch skips the size CTS and learns the exact size from whichever
+   * reply completes it); payload presence is signaled by rdzv_txid, never by
+   * data_size, and no bytes trail the packet.  txid == 0 = data-less grant
+   * (sentinel / nothing published). */
   uint64_t data_size;
   uint64_t rdzv_txid;
-  uint64_t rdzv_cookie;
   /* Home's landing for THIS grant's eventual RW release publish (grants and
    * releases pair 1:1): the releaser PUTs its dirty bytes here and echoes
-   * {txid, cookie} in EXCL_RELEASE.  txid==0 for RO grants / sentinel DBs. */
+   * its txid in EXCL_RELEASE.  txid==0 for RO grants / sentinel DBs. */
   struct arts_msg_rdzv_landing_s pub;
   uint64_t token; /* the request's, echoed */
 };
@@ -665,17 +666,14 @@ struct ARTS_PACKED arts_msg_excl_release_packet_s {
   struct arts_msg_header_s header;
   arts_guid_t db_guid;
   uint32_t mode;
-  uint32_t pad;
-  uint64_t version; /* always 0, and no handler reads it: exclusion leaves
-                     * no stale release to reject */
+  uint32_t pad; /* keeps the fields below 8-aligned; written 0 */
   uint64_t cv; /* RW announce only: the releaser's rendezvous, echoed in
                 * the PUBLISH_CTS; nothing acknowledges a release */
-  /* RW dirty payload travels by PUT into the grant's `pub` landing; these echo
-   * that landing's {txid, cookie} and count the landed bytes.  txid==0 =
-   * data-less release (RO, or sentinel DB). */
+  /* RW dirty payload travels by PUT into the grant's `pub` landing, the
+   * home's stable buffer; these echo that landing's txid and count the landed
+   * bytes.  txid==0 = data-less release (RO, or sentinel DB). */
   uint64_t data_size;
   uint64_t rdzv_txid;
-  uint64_t rdzv_cookie;
 };
 
 
@@ -704,11 +702,10 @@ struct ARTS_PACKED arts_msg_excl_forward_packet_s {
 };
 
 /* EXCL_DELIVER: owner → target.  The DB data travels by PUT into the target's
- * landing; this packet pairs with the write completion by rdzv_txid
- * (rdzv_cookie echoes the target's landing handle, data_size counts the
- * landed bytes; txid==0 = data-less deliver).  NO version field — EXCL uses
- * versionless buffer-install (exclusive-lock serialization guarantees no
- * stale write can race). */
+ * landing, its stable buffer; this packet pairs with the write completion by
+ * rdzv_txid (data_size counts the landed bytes; txid==0 = data-less deliver).
+ * NO version field — EXCL uses versionless buffer-install (exclusive-lock
+ * serialization guarantees no stale write can race). */
 struct ARTS_PACKED arts_msg_excl_deliver_packet_s {
   struct arts_msg_header_s header;
   arts_guid_t db_guid;
@@ -716,7 +713,6 @@ struct ARTS_PACKED arts_msg_excl_deliver_packet_s {
   uint32_t tag;  /* RO: relinquish policy carried through from the FORWARD */
   uint64_t data_size;
   uint64_t rdzv_txid;
-  uint64_t rdzv_cookie;
   uint64_t token;      /* the target's request's, echoed */
   uint64_t home_token; /* RW: the home's, for the CONFIRM; RO: 0 */
 };

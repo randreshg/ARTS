@@ -275,13 +275,16 @@ void arts_db_grant_response_on(struct arts_db_s *db,
  * readers a teardown already freed). */
 void arts_handler_db_snapshot_response(
     struct arts_db_snapshot_response_args_s *a);
+#ifndef ARTS_VALIDITY_EXCL
 /* Consume an in-flight rendezvous whose receiver-side target is gone (the
  * metadata packet reached a destroyed object): registers a discard
  * continuation so the landing frees and the txid pairing table stays
  * leak-free.  `len` is the payload the metadata names.  No-op for txid == 0.
- */
+ * Only where a landing is a fresh buffer (buffer.h): an EXCL landing is the
+ * descriptor's stable buffer, which nothing returns. */
 void arts_db_rdzv_discard_landing(uint64_t txid, uint64_t len,
                                   uint64_t cookie);
+#endif
 /* Pure (cache, args) body: item_v is the db_s (cache is its first member);
  * args_v is an arts_ooo_args_db_grant_invalidate_s.  The wire dispatcher (a
  * lookup) and the self-send (the home's descriptor, or a lookup when it is
@@ -375,7 +378,9 @@ void arts_send_db_publish(struct arts_db_s *db, uint64_t version, uint64_t cv,
                           uint64_t rdzv_cookie, bool return_grant);
 /* PUBLISH_CTS: home → releaser, advertising the home's stable buffer, in
  * place, as the landing for an announced dirty publish or a landing-less
- * EXCL·PURGE release (cv echoed verbatim). */
+ * EXCL·PURGE release (cv echoed verbatim).  Each of the two fills the packet
+ * in its own landing's layout: senders.c for the HOME publish,
+ * excl/purge.c for EXCL·PURGE. */
 void arts_send_db_publish_cts(unsigned int releaser_rank, arts_guid_t db_guid,
                                 const struct arts_rdzv_landing_s *landing,
                                 uint64_t cv);
@@ -422,8 +427,8 @@ void arts_send_db_snapshot_response(unsigned int requester_rank, uint64_t token,
                                     uint32_t kind, uint64_t db_size,
                                     const struct arts_rdzv_landing_s *landing,
                                     arts_shared_ptr_t src_h);
-/* owed: the requests of the claimed first-touch cache that the claim closed
- * while they were still out (ARTS_CREATE_OWED_*), 0 for every other create. */
+/* owed: ARTS_CREATE_OWED_RW when the claim closed the write request the
+ * claimed first-touch cache still had out, 0 for every other create. */
 void arts_send_db_create_coherent(unsigned int home_rank, arts_guid_t db_guid,
                                   uint64_t db_size, uint16_t flags,
                                   uint16_t db_type, uint64_t cxl_addr,
@@ -622,7 +627,7 @@ void arts_handler_db_excl_grant(void *payload, size_t size);
  * advertises none: the home's own grant moves no payload, and a payload a
  * remote owner owes it lands in a landing the home draws when it forwards.
  * Where grants carry no payload (the CXL store), no request advertises one. */
-/* cover: EXCL_COVER_PRECLAIM on a write request opened while the cache was
+/* cover: ARTS_COVER_PRECLAIM on a write request opened while the cache was
  * a claimable first touch (read from the cache-word transition that opened
  * it), 0 on every other request. */
 void arts_send_db_excl_request(struct arts_db_cache_s *cache,
@@ -639,14 +644,12 @@ void arts_handler_db_excl_cts(const struct arts_msg_excl_cts_packet_s *p);
 void arts_send_db_excl_cts(arts_guid_t db_guid, unsigned int requester_rank,
                            uint64_t db_size, uint32_t mode, uint64_t token);
 /* arts_send_db_excl_grant: db is the home's descriptor, which the caller
- * holds.  version is always 0, and no grant handler reads it.  The grant
- * payload PUTs into
- * req_rdzv (the requester's advertised landing; src_h — a strong ref on the
- * home buffer — is CONSUMED); `pub`, for RW grants, is home's publish landing
- * for this grant's release (NULL/zero for RO); token is the request's, which
- * the grant echoes. */
+ * holds.  The grant payload PUTs into req_rdzv (the requester's advertised
+ * landing; src_h — a strong ref on the home buffer — is CONSUMED); `pub`,
+ * for RW grants, is home's publish landing for this grant's release
+ * (NULL/zero for RO); token is the request's, which the grant echoes. */
 void arts_send_db_excl_grant(struct arts_db_s *db, unsigned int requester_rank,
-                             arts_db_access_mode_t mode, uint64_t version,
+                             arts_db_access_mode_t mode,
                              const struct arts_rdzv_landing_s *req_rdzv,
                              const struct arts_rdzv_landing_s *pub,
                              arts_shared_ptr_t src_h, uint64_t data_size,
@@ -654,15 +657,13 @@ void arts_send_db_excl_grant(struct arts_db_s *db, unsigned int requester_rank,
 /* arts_send_db_excl_release: cv is nonzero only on an RW release's
  * landing-less announce — the address of the releaser's rendezvous,
  * which the home echoes in the PUBLISH_CTS to unblock the releaser; nothing
- * acknowledges a release.  version is always 0, and no handler reads it.  A
- * remote RW release PUTs the dirty bytes into its landing (the grant's `pub`,
- * or the one the PUBLISH_CTS named) first and echoes {rdzv_txid,
- * rdzv_cookie} here.  Never sent to this rank's own home, whose releases
- * commit in place. */
+ * acknowledges a release.  A remote RW release PUTs the dirty bytes into its
+ * landing (the grant's `pub`, or the one the PUBLISH_CTS named) first and
+ * echoes the landing's txid here.  Never sent to this rank's own home, whose
+ * releases commit in place. */
 void arts_send_db_excl_release(unsigned int home_rank, arts_guid_t db_guid,
-                               arts_db_access_mode_t mode, uint64_t version,
-                               uint64_t cv, uint64_t data_size,
-                               uint64_t rdzv_txid, uint64_t rdzv_cookie);
+                               arts_db_access_mode_t mode, uint64_t cv,
+                               uint64_t data_size, uint64_t rdzv_txid);
 
 #ifdef ARTS_RETENTION_RETAIN
 /* ===== EXCL·RETAIN handlers (Cat-C direct dispatch) = */

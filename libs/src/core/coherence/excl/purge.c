@@ -94,7 +94,7 @@ static void lock_home_serve_ro(struct arts_db_s *db,
                                struct arts_db_cache_s *cache,
                                arts_shared_ptr_t buf_h, uint64_t data_size) {
 #ifdef ARTS_USE_CXL
-  struct arts_rdzv_landing_s pub = {arts_db_cxl_slot_addr(cache), 0, 0, 0};
+  struct arts_rdzv_landing_s pub = {arts_db_cxl_slot_addr(cache), 0, 0};
   (void)buf_h;
 #else
   (void)cache;
@@ -114,13 +114,12 @@ static void lock_home_serve_ro(struct arts_db_s *db,
         struct arts_lock_ro_node_s *rn =
             ARTS_CONTAINER_OF(node, struct arts_lock_ro_node_s, link);
 #ifdef ARTS_USE_CXL
-        arts_send_db_excl_grant(db, rn->rank, DB_MODE_RO, /*version=*/0u,
-                                &rn->rdzv, &pub, /*src_h=*/NULL, data_size,
-                                rn->token);
+        arts_send_db_excl_grant(db, rn->rank, DB_MODE_RO, &rn->rdzv, &pub,
+                                /*src_h=*/NULL, data_size, rn->token);
 #else
         /* Each fan-out PUT pins the source with its own strong ref. */
         arts_send_db_excl_grant(
-            db, rn->rank, DB_MODE_RO, /*version=*/0u, &rn->rdzv, NULL,
+            db, rn->rank, DB_MODE_RO, &rn->rdzv, NULL,
             (arts_shared_get(buf_h) != NULL) ? arts_shared_copy(buf_h) : NULL,
             data_size, rn->token);
 #endif
@@ -162,7 +161,7 @@ static void lock_home_grant(struct arts_db_s *db, struct arts_db_cache_s *cache,
    * canonical copy on this arm, and every grantee reads the store itself.
    * The landing's address field names it — the only thing that travels — and
    * txid 0 says nothing is in flight. */
-  struct arts_rdzv_landing_s pub = {arts_db_cxl_slot_addr(cache), 0, 0, 0};
+  struct arts_rdzv_landing_s pub = {arts_db_cxl_slot_addr(cache), 0, 0};
   uint64_t data_size =
       atomic_load_explicit(&cache->db_size, memory_order_relaxed);
   if (grant == LOCK_GRANT_ONE_RW) {
@@ -171,7 +170,7 @@ static void lock_home_grant(struct arts_db_s *db, struct arts_db_cache_s *cache,
     uint64_t token;
     if (arts_home_grantreq_queue_pop(&db->rw_waiters, &rank, &rdzv, NULL,
                                      &token)) {
-      arts_send_db_excl_grant(db, rank, DB_MODE_RW, /*version=*/0u, &rdzv, &pub,
+      arts_send_db_excl_grant(db, rank, DB_MODE_RW, &rdzv, &pub,
                               /*src_h=*/NULL, data_size, token);
     }
   } else { /* LOCK_GRANT_ALL_RO */
@@ -202,14 +201,13 @@ static void lock_home_grant(struct arts_db_s *db, struct arts_db_cache_s *cache,
        * dirty bytes straight into it.  In-place is safe at home for the same
        * reason the install always was: the global RW lock excludes every
        * reader while the publish is in flight. */
-      struct arts_rdzv_landing_s pub = {0, 0, 0, 0};
+      struct arts_rdzv_landing_s pub = ARTS_RDZV_NO_LANDING;
       if (buf != NULL && rank != arts_global_rank_id &&
           arts_net_rdzv_local(buf->data, data_size, &pub.addr, &pub.key)) {
         pub.txid = arts_net_rdzv_txid_next();
-        pub.cookie = 0; /* in-place: home finds its buffer via the cache */
       }
-      arts_send_db_excl_grant(db, rank, DB_MODE_RW, /*version=*/0u, &rdzv, &pub,
-                              buf_h, data_size, token);
+      arts_send_db_excl_grant(db, rank, DB_MODE_RW, &rdzv, &pub, buf_h,
+                              data_size, token);
       buf_h = NULL; /* consumed by the grant sender */
     }
   } else { /* LOCK_GRANT_ALL_RO */
@@ -224,7 +222,7 @@ static void lock_home_grant(struct arts_db_s *db, struct arts_db_cache_s *cache,
 /* ===== arts_send_db_excl_grant ========================================= */
 
 void arts_send_db_excl_grant(struct arts_db_s *db, unsigned int requester_rank,
-                             arts_db_access_mode_t mode, uint64_t version,
+                             arts_db_access_mode_t mode,
                              const struct arts_rdzv_landing_s *req_rdzv,
                              const struct arts_rdzv_landing_s *pub,
                              arts_shared_ptr_t src_h, uint64_t data_size,
@@ -238,18 +236,15 @@ void arts_send_db_excl_grant(struct arts_db_s *db, unsigned int requester_rank,
   p.db_guid = db_guid;
   p.mode = (uint32_t)mode;
   p.pad = 0;
-  p.version = version;
   /* Always the DB's size; payload presence is rdzv_txid / trailing bytes. */
   p.data_size = data_size;
   p.rdzv_txid = 0;
-  p.rdzv_cookie = (req_rdzv != NULL) ? req_rdzv->cookie : 0;
   if (pub != NULL) {
     p.pub.addr = pub->addr;
     p.pub.key = pub->key;
     p.pub.txid = pub->txid;
-    p.pub.cookie = pub->cookie;
   } else {
-    p.pub = (struct arts_msg_rdzv_landing_s){0, 0, 0, 0};
+    p.pub = (struct arts_msg_rdzv_landing_s){0, 0, 0};
   }
   p.token = token;
   if (requester_rank == arts_global_rank_id) {
@@ -312,9 +307,9 @@ static bool lock_preclaim_write_absorb(struct arts_db_s *db,
                                        uint32_t cover) {
   /* A read request's word is zero and a write request's carries nothing but
    * PRECLAIM. */
-  assert((cover & ~EXCL_COVER_PRECLAIM) == 0u &&
+  assert((cover & ~ARTS_COVER_PRECLAIM) == 0u &&
          (cover == 0u || mode == DB_MODE_RW));
-  if (mode != DB_MODE_RW || (cover & EXCL_COVER_PRECLAIM) == 0u ||
+  if (mode != DB_MODE_RW || (cover & ARTS_COVER_PRECLAIM) == 0u ||
       requester != db->claim_rank) {
     return false;
   }
@@ -496,6 +491,22 @@ static void lock_release_landed_discard(void *arg) {
   arts_shared_release(&ctx->db_h);
   arts_free(ctx);
 }
+
+/* PUBLISH_CTS, to the releaser whose release carried no landing: the home's
+ * stable buffer, advertised in place, and the releaser's cv echoed.  Never a
+ * self-send: the home's own releases commit in place. */
+void arts_send_db_publish_cts(unsigned int releaser_rank, arts_guid_t db_guid,
+                              const struct arts_rdzv_landing_s *landing,
+                              uint64_t cv) {
+  struct arts_msg_publish_cts_packet_s p;
+  arts_fill_packet_header(&p.header, sizeof(p), MSG_DB_PUBLISH_CTS);
+  p.db_guid = db_guid;
+  p.landing.addr = landing->addr;
+  p.landing.key = landing->key;
+  p.landing.txid = landing->txid;
+  p.cv = cv;
+  arts_transport_send_async((int)releaser_rank, (char *)&p, sizeof(p));
+}
 #endif /* ARTS_USE_CXL */
 
 void arts_handler_db_excl_release(void *item_v, void *args_v) {
@@ -523,7 +534,7 @@ void arts_handler_db_excl_release(void *item_v, void *args_v) {
      * the same exclusion argument as the grant-advertised landing: the
      * releaser holds the global RW lock, so no reader anywhere touches the
      * buffer while the publish flies. */
-    struct arts_rdzv_landing_s landing = {0, 0, 0, 0};
+    struct arts_rdzv_landing_s landing = ARTS_RDZV_NO_LANDING;
     arts_shared_ptr_t buf_h = arts_db_buf_acquire(cache);
     struct arts_db_buffer_s *buf =
         (struct arts_db_buffer_s *)arts_shared_get(buf_h);
@@ -541,7 +552,6 @@ void arts_handler_db_excl_release(void *item_v, void *args_v) {
                  "one-sided publish requires the registered pool");
     }
     landing.txid = arts_net_rdzv_txid_next();
-    landing.cookie = 0; /* in-place: home finds its buffer via the cache */
     arts_db_buf_release(&buf_h);
     arts_send_db_publish_cts(a->releaser, a->db_guid, &landing, a->cv);
     return;
@@ -634,7 +644,7 @@ void arts_db_cache_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
   arts_lf_stack_init(&c->ro_pending);
   arts_lf_stack_init(&c->rw_pending);
 #ifndef ARTS_USE_CXL
-  c->home_pub_rdzv = (struct arts_rdzv_landing_s){0, 0, 0, 0};
+  c->home_pub_rdzv = ARTS_RDZV_NO_LANDING;
 #endif
   arts_db_cache_common_init(c, db_guid, db_size, kind, creator_rank);
 }
@@ -719,7 +729,7 @@ void arts_db_create_install_home_buffer(struct arts_db_cache_s *cache,
  * answered with a size round that would only repeat. */
 static bool lock_stable_landing(struct arts_db_cache_s *cache,
                                 struct arts_rdzv_landing_s *out) {
-  *out = (struct arts_rdzv_landing_s){0, 0, 0, 0};
+  *out = ARTS_RDZV_NO_LANDING;
   uint64_t fetch_size = arts_db_first_fetch_size(cache);
   if (fetch_size == 0 || arts_global_rank_count <= 1) {
     return false;
@@ -742,7 +752,6 @@ static bool lock_stable_landing(struct arts_db_cache_s *cache,
                "one-sided grant requires the registered pool");
   }
   out->txid = arts_net_rdzv_txid_next();
-  out->cookie = 0; /* in-place: this rank finds the buffer via its cache */
   arts_db_buf_release(&h);
   return true;
 }
@@ -767,7 +776,7 @@ void arts_send_db_excl_request(struct arts_db_cache_s *cache,
         .db_guid = db_guid,
         .mode = (uint32_t)mode,
         .cover = cover,
-        .rdzv = {0, 0, 0, 0},
+        .rdzv = ARTS_RDZV_NO_LANDING,
         .token = token,
     };
     arts_shared_ptr_t held =
@@ -779,7 +788,7 @@ void arts_send_db_excl_request(struct arts_db_cache_s *cache,
   }
   /* Zeroed outside every conditional: no arm may reach the send with stack
    * garbage where a landing would be. */
-  struct arts_rdzv_landing_s rdzv = {0, 0, 0, 0};
+  struct arts_rdzv_landing_s rdzv = ARTS_RDZV_NO_LANDING;
 #ifndef ARTS_USE_CXL
   (void)lock_stable_landing(cache, &rdzv);
 #endif
@@ -791,11 +800,10 @@ void arts_send_db_excl_request(struct arts_db_cache_s *cache,
   p.rdzv.addr = rdzv.addr;
   p.rdzv.key = rdzv.key;
   p.rdzv.txid = rdzv.txid;
-  p.rdzv.cookie = rdzv.cookie;
   p.token = token;
   if (!arts_net_send_held((int)home_rank, (char *)&p, sizeof(p),
-                          mode == DB_MODE_RO ? ARTS_HELD_READ : ARTS_HELD_WRITE,
-                          db_guid)) {
+                          mode == DB_MODE_RO ? ARTS_HELD_READ
+                                             : ARTS_HELD_WRITE)) {
     arts_transport_send_async((int)home_rank, (char *)&p, sizeof(p));
   }
 }
@@ -837,23 +845,23 @@ void arts_handler_db_excl_cts(const struct arts_msg_excl_cts_packet_s *p) {
   bool write = (arts_db_access_mode_t)p->mode == DB_MODE_RW;
   /* A request is answered by its grant alone (a write request whose writers
    * a create served is absorbed at the home), so its axis is at REQ.  The
-   * re-sent request is the same one: the axis and its count stay open, and
-   * with the stub bit cleared a write request carries no PRECLAIM. */
-  uint32_t act;
-  uint64_t cur, next;
+   * re-sent request is the same one: the axis and its count stay open.  Any
+   * reply clears the stub bit, so a re-sent write request carries no
+   * PRECLAIM. */
+  uint64_t s, n;
+  bool at_req;
   do {
-    cur = atomic_load_explicit(&cache->cache_state, memory_order_acquire);
-    next = cache_compute_next(cur, write ? CACHE_OP_DECLAIM : CACHE_OP_CTS_RO,
-                              0u, &act);
-    if (act == CACHE_ACT_LATE) {
+    s = atomic_load_explicit(&cache->cache_state, memory_order_acquire);
+    n = cache_size_round_next(s, write, &at_req);
+    if (!at_req) {
       ARTS_ERROR("lock: guid %lu got a size round for a %s request it does "
                  "not have out (word=%llx)",
                  (unsigned long)cache->db_guid, write ? "write" : "read",
-                 (unsigned long long)cur);
+                 (unsigned long long)s);
     }
-  } while (!atomic_compare_exchange_weak_explicit(&cache->cache_state, &cur,
-                                                  next, memory_order_acq_rel,
-                                                  memory_order_acquire));
+  } while (n != s && !atomic_compare_exchange_weak_explicit(
+                         &cache->cache_state, &s, n, memory_order_acq_rel,
+                         memory_order_acquire));
   arts_send_db_excl_request(cache, write ? DB_MODE_RW : DB_MODE_RO,
                             /*cover=*/0u);
 }
@@ -936,7 +944,7 @@ bool arts_db_create_take_hold(struct arts_db_cache_s *cache, uint8_t *owed) {
   /* The write request the claimed first touch had already sent, read from
    * the word this claim replaced: it is the home's to absorb. */
   if (CACHE_RW_ST(cur) == CACHE_ST_REQ) {
-    *owed |= ARTS_CREATE_OWED_RW;
+    *owed = ARTS_CREATE_OWED_RW;
   }
   if (act == CACHE_ACT_DRAIN_RW) {
     /* The writer count is the pre-image's: the population this transition
@@ -947,7 +955,7 @@ bool arts_db_create_take_hold(struct arts_db_cache_s *cache, uint8_t *owed) {
   }
   /* The claim closed the write request the cache had out: its count goes,
    * under the create's own. */
-  arts_db_axis_drop(arts_db_of_cache(cache), arts_db_claim_closed_axes(*owed));
+  arts_db_axis_drop(arts_db_of_cache(cache), *owed != 0u ? 1u : 0u);
   return true;
 }
 
@@ -1204,7 +1212,7 @@ void arts_handler_db_acquire(void *item, void *args) {
   if (act == CACHE_ACT_SEND_RW) {
     /* PRECLAIM while the cache is a first touch no create has claimed. */
     arts_send_db_excl_request(cache, DB_MODE_RW,
-                              CACHE_STUB(cur) ? EXCL_COVER_PRECLAIM : 0u);
+                              CACHE_STUB(cur) ? ARTS_COVER_PRECLAIM : 0u);
   } else if (act == CACHE_ACT_SEND_RO) {
     arts_send_db_excl_request(cache, DB_MODE_RO, /*cover=*/0u);
   }
@@ -1424,7 +1432,7 @@ static void excl_grant_on(struct arts_db_s *db,
    * needs it. */
   arts_db_cache_learn_size(cache, p->data_size);
   /* The grant names the block's slot in the landing's address field, and
-   * nothing else: the landing's key, txid and the version are unread here.
+   * nothing else: the landing's key and txid are unread here.
    * A rank that created the block, or learned it from an earlier grant,
    * already knows the slot and records nothing.  A zero address is legal for
    * a sentinel-sized block, which has none. */
@@ -1455,8 +1463,7 @@ static void excl_grant_on(struct arts_db_s *db,
     arts_db_cache_learn_size(cache, p->data_size);
   }
 
-  struct arts_rdzv_landing_s pub = {p->pub.addr, p->pub.key, p->pub.txid,
-                                   p->pub.cookie};
+  struct arts_rdzv_landing_s pub = {p->pub.addr, p->pub.key, p->pub.txid};
 
   if (p->rdzv_txid != 0) {
     /* The grant payload travels one-sided into our stable buffer; pair this
@@ -1488,34 +1495,30 @@ static void excl_grant_on(struct arts_db_s *db,
 
 /* ===== arts_send_db_excl_release ========================================
  * Send EXCL_RELEASE to the home.  An RW release's bytes travel by PUT ahead
- * of this packet, which carries their size and the landing's {txid, cookie};
- * cv is nonzero only on the landing-less announce, where it is the address of
- * the releaser's rendezvous and the home echoes it in the PUBLISH_CTS.
- * Nothing acknowledges a release, and version is always 0.  RO carries none
- * of these.  Never a self-send. */
+ * of this packet, which carries their size and the landing's txid; cv is
+ * nonzero only on the landing-less announce, where it is the address of the
+ * releaser's rendezvous and the home echoes it in the PUBLISH_CTS.  Nothing
+ * acknowledges a release.  RO carries none of these.  Never a self-send. */
 void arts_send_db_excl_release(unsigned int home_rank, arts_guid_t db_guid,
-                               arts_db_access_mode_t mode, uint64_t version,
-                               uint64_t cv, uint64_t data_size,
-                               uint64_t rdzv_txid, uint64_t rdzv_cookie) {
+                               arts_db_access_mode_t mode, uint64_t cv,
+                               uint64_t data_size, uint64_t rdzv_txid) {
   uint64_t ds = (mode == DB_MODE_RW) ? data_size : 0u;
   /* The home's own releases commit in place on the descriptor they hold
    * (lock_send_release_rw / _ro); only another rank's leave as a message. */
   assert(home_rank != arts_global_rank_id);
 
   /* Remote send: control-only — a dirty RW release PUT its bytes into the
-   * grant's home landing before this packet; {rdzv_txid, rdzv_cookie} echo it
-   * for pairing. */
+   * grant's home landing before this packet; rdzv_txid echoes it for
+   * pairing. */
   struct arts_msg_excl_release_packet_s p;
   arts_fill_packet_header(&p.header, sizeof(p), MSG_DB_EXCL_RELEASE);
   p.header.rank = arts_global_rank_id;
   p.db_guid = db_guid;
   p.mode = (uint32_t)mode;
   p.pad = 0;
-  p.version = version;
   p.cv = cv;
   p.data_size = ds;
   p.rdzv_txid = rdzv_txid;
-  p.rdzv_cookie = rdzv_cookie;
   arts_transport_send_async((int)home_rank, (char *)&p, sizeof(p));
 }
 
@@ -1553,9 +1556,8 @@ static void lock_send_release_rw(struct arts_db_cache_s *cache) {
     return;
   }
   INCREMENT_NUM_PURGE_RETURN_BY(1);
-  arts_send_db_excl_release(home, cache->db_guid, DB_MODE_RW, /*version=*/0u,
-                            /*cv=*/0u, /*data_size=*/0u,
-                            /*rdzv_txid=*/0u, /*rdzv_cookie=*/0u);
+  arts_send_db_excl_release(home, cache->db_guid, DB_MODE_RW, /*cv=*/0u,
+                            /*data_size=*/0u, /*rdzv_txid=*/0u);
   return;
 #else
   if (home == arts_global_rank_id) {
@@ -1580,7 +1582,7 @@ static void lock_send_release_rw(struct arts_db_cache_s *cache) {
                               : 0u;
   /* Consume this grant's home publish landing (1:1 grant:release). */
   struct arts_rdzv_landing_s pub = cache->home_pub_rdzv;
-  cache->home_pub_rdzv = (struct arts_rdzv_landing_s){0, 0, 0, 0};
+  cache->home_pub_rdzv = ARTS_RDZV_NO_LANDING;
   if (ds > 0u && pub.txid == 0) {
     /* Dirty release from a hold that never received a grant (the
      * creator-seeded RW grant): no cached landing — run the announce leg.
@@ -1589,10 +1591,9 @@ static void lock_send_release_rw(struct arts_db_cache_s *cache) {
      * frame. */
     struct arts_db_pub_rendezvous_s wr;
     sem_init(&wr.sem, 0, 0);
-    wr.landing = (struct arts_rdzv_landing_s){0, 0, 0, 0};
+    wr.landing = ARTS_RDZV_NO_LANDING;
     arts_send_db_excl_release(home, cache->db_guid, DB_MODE_RW,
-                              /*version=*/0u, (uint64_t)(uintptr_t)&wr, ds,
-                              /*rdzv_txid=*/0u, /*rdzv_cookie=*/0u);
+                              (uint64_t)(uintptr_t)&wr, ds, /*rdzv_txid=*/0u);
     arts_db_await_ack(&wr.sem);
     /* The post orders the reply's landing stores before these reads, and a
      * CTS reply always carries a landing. */
@@ -1605,9 +1606,8 @@ static void lock_send_release_rw(struct arts_db_cache_s *cache) {
     arts_net_put_payload((int)home, wr.landing.addr, wr.landing.key,
                          wr.landing.txid, data, ds, arts_db_buf_ref_release_cb,
                          (void *)buf_h);
-    arts_send_db_excl_release(home, cache->db_guid, DB_MODE_RW,
-                              /*version=*/0u, /*cv=*/0u, ds, wr.landing.txid,
-                              wr.landing.cookie);
+    arts_send_db_excl_release(home, cache->db_guid, DB_MODE_RW, /*cv=*/0u, ds,
+                              wr.landing.txid);
     sem_destroy(&wr.sem);
     return;
   }
@@ -1623,15 +1623,14 @@ static void lock_send_release_rw(struct arts_db_cache_s *cache) {
      * bytes until the fabric drains them. */
     arts_net_put_payload((int)home, pub.addr, pub.key, pub.txid, data, ds,
                          arts_db_buf_ref_release_cb, (void *)buf_h);
-    arts_send_db_excl_release(home, cache->db_guid, DB_MODE_RW, /*version=*/0u,
-                              /*cv=*/0u, ds, pub.txid, pub.cookie);
+    arts_send_db_excl_release(home, cache->db_guid, DB_MODE_RW, /*cv=*/0u, ds,
+                              pub.txid);
     return; /* buf_h transferred to the PUT */
   }
   /* Data-less release: nothing is in flight from this buffer, so the send
    * carries the whole release and the local ref drops here. */
-  arts_send_db_excl_release(home, cache->db_guid, DB_MODE_RW, /*version=*/0u,
-                            /*cv=*/0u, /*data_size=*/0u, /*rdzv_txid=*/0u,
-                            /*rdzv_cookie=*/0u);
+  arts_send_db_excl_release(home, cache->db_guid, DB_MODE_RW, /*cv=*/0u,
+                            /*data_size=*/0u, /*rdzv_txid=*/0u);
   arts_db_buf_release(&buf_h);
 #endif /* ARTS_USE_CXL */
 }
@@ -1645,9 +1644,8 @@ static void lock_send_release_ro(struct arts_db_cache_s *cache) {
     return;
   }
   INCREMENT_NUM_PURGE_RETURN_BY(1);
-  arts_send_db_excl_release(home, cache->db_guid, DB_MODE_RO, /*version=*/0u,
-                            /*cv=*/0u, /*data_size=*/0u, /*rdzv_txid=*/0u,
-                            /*rdzv_cookie=*/0u);
+  arts_send_db_excl_release(home, cache->db_guid, DB_MODE_RO, /*cv=*/0u,
+                            /*data_size=*/0u, /*rdzv_txid=*/0u);
 }
 
 /* ===== arts_db_release_rw / arts_db_release_ro =========================

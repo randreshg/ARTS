@@ -42,7 +42,7 @@ void arts_home_grantreq_queue_push(struct arts_home_grantreq_queue_s *q,
   if (rdzv != NULL) {
     n->rdzv = *rdzv;
   } else {
-    n->rdzv = (struct arts_rdzv_landing_s){0, 0, 0, 0};
+    n->rdzv = ARTS_RDZV_NO_LANDING;
   }
   atomic_store_explicit(&n->next, (struct arts_home_grantreq_node_s *)NULL,
                         memory_order_relaxed);

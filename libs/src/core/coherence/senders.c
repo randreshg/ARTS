@@ -105,12 +105,12 @@ void arts_send_db_publish(struct arts_db_s *db, uint64_t version, uint64_t cv,
 
 /* PUBLISH_CTS — home → releaser: the home's stable buffer, advertised in
  * place, as the landing for an announced dirty publish (a HOME payload publish
- * under VAL or INV) or for EXCL·PURGE's landing-less release.
- * Never a self-send (a same-rank publish is an ordering round alone).
- * Compiled for exactly the cells whose dispatcher accepts the message. */
-#if ((defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)) &&             \
-     defined(ARTS_READ_SOURCE_HOME)) ||                                        \
-    (defined(ARTS_VALIDITY_EXCL) && defined(ARTS_RETENTION_PURGE))
+ * under VAL or INV).  Never a self-send (a same-rank publish is an ordering
+ * round alone).  EXCL·PURGE, the other arm whose dispatcher accepts the
+ * message, sends it for a landing-less release from coherence/excl/purge.c,
+ * in its own landing's layout. */
+#if (defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)) &&              \
+    defined(ARTS_READ_SOURCE_HOME)
 void arts_send_db_publish_cts(unsigned int releaser_rank, arts_guid_t db_guid,
                                 const struct arts_rdzv_landing_s *landing,
                                 uint64_t cv) {
@@ -125,7 +125,7 @@ void arts_send_db_publish_cts(unsigned int releaser_rank, arts_guid_t db_guid,
   p.cv = cv;
   arts_transport_send_async((int)releaser_rank, (char *)&p, sizeof(p));
 }
-#endif /* cells that accept PUBLISH_CTS */
+#endif /* a HOME payload publish */
 
 /* PUBLISH_ACK answers a publish flight — the HOME read source's payload
  * publish, and INV·OWNER's control-only request for its invalidation round —
@@ -276,7 +276,7 @@ void arts_send_db_snapshot_request(struct arts_db_cache_s *cache) {
     return;
   }
   if (!arts_net_send_held((int)home_rank, (char *)&p, sizeof(p),
-                          ARTS_HELD_READ, db_guid)) {
+                          ARTS_HELD_READ)) {
     arts_transport_send_async((int)home_rank, (char *)&p, sizeof(p));
   }
 }

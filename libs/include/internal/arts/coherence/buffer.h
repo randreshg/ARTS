@@ -200,8 +200,15 @@ struct arts_db_buffer_s *arts_db_buf_install(struct arts_db_cache_s *cache,
  * arts_db_buf_landing_alloc becomes the installed buffer on {metadata,
  * write-completion} pairing via arts_db_buf_install_landed, so concurrent
  * readers of the old buffer keep a valid snapshot and neither end copies; a
- * publish instead lands in the home's stable buffer in place. */
+ * publish instead lands in the home's stable buffer in place.  EXCL has no
+ * fresh landing: each of its payloads lands in place, in a stable buffer. */
 
+#ifdef ARTS_DEBUG_LANDING_BALANCE
+/* This rank's landings drawn and not yet returned, adopted or installed. */
+int64_t arts_db_landings_outstanding(void);
+#endif
+
+#ifndef ARTS_VALIDITY_EXCL
 /* Allocate a fresh landing for `db_size` payload bytes and fill its wire
  * advertisement (addr per negotiated mr_mode, MR key, fresh txid, cookie =
  * the landing pointer).  Fails loudly if the buffer cannot be advertised
@@ -220,10 +227,6 @@ arts_db_buf_landing_alloc(uint64_t db_size, struct arts_rdzv_landing_s *out);
  * silence means "the sender had no bytes either", use
  * arts_db_buf_adopt_landing instead. */
 void arts_db_buf_landing_return(struct arts_db_buffer_s *b);
-#ifdef ARTS_DEBUG_LANDING_BALANCE
-/* This rank's landings drawn and not yet returned, adopted or installed. */
-int64_t arts_db_landings_outstanding(void);
-#endif
 
 /* Make an unused landing this cache's buffer IF the cache has none, its bytes
  * unspecified and stamped `version`; return it otherwise.  Returns whether it
@@ -248,6 +251,7 @@ bool arts_db_buf_adopt_landing(struct arts_db_cache_s *cache, uint64_t version,
 struct arts_db_buffer_s *
 arts_db_buf_install_landed(struct arts_db_cache_s *cache, uint64_t new_version,
                            struct arts_db_buffer_s *landing, uint64_t db_size);
+#endif /* a fresh landing */
 
 /* One-shot completion callback releasing the strong buffer ref passed as arg —
  * the PUT source-lifetime gate (the ref keeps the source buffer's bytes valid

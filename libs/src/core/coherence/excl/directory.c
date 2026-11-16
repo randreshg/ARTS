@@ -127,7 +127,7 @@ void arts_db_home_seed_owed(struct arts_db_s *db, unsigned int creator,
   /* The claim closes the write request alone. */
   assert(owed == ARTS_CREATE_OWED_RW);
   db->claim_rank = creator;
-  atomic_store_explicit(&db->cover_gate, ARTS_COVER_GATE_RWO | 1u,
+  atomic_store_explicit(&db->cover_gate, ARTS_COVER_GATE_RWO,
                         memory_order_relaxed);
 }
 #endif

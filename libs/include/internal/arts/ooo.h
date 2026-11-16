@@ -447,7 +447,7 @@ struct arts_ooo_args_db_excl_request_s {
   unsigned int requester; /* rank that sent MSG_DB_EXCL_REQUEST */
   arts_guid_t db_guid;
   arts_db_access_mode_t mode; /* DB_MODE_RO or DB_MODE_RW */
-  uint32_t cover;                  /* EXCL_COVER_PRECLAIM or 0 */
+  uint32_t cover;                  /* ARTS_COVER_PRECLAIM or 0 */
   struct arts_rdzv_landing_s rdzv; /* requester's grant/deliver landing */
   uint64_t token;                  /* the requester's answer token */
 };
@@ -455,22 +455,17 @@ struct arts_ooo_args_db_excl_request_s {
  * cv: nonzero only on an RW release's landing-less announce — the address of
  * the releaser's rendezvous, forwarded verbatim in the PUBLISH_CTS so
  * the releaser wakes by pointer identity.  No acknowledgement answers a
- * release.
- * version: every sender passes 0 and the handler reads none — exclusion
- * leaves at most one write turn of a block outstanding, so no stale release
- * can race a newer one. */
+ * release. */
 struct arts_ooo_args_db_excl_release_s {
   unsigned int releaser; /* rank that sent MSG_DB_EXCL_RELEASE */
   arts_guid_t db_guid;
   arts_db_access_mode_t mode; /* DB_MODE_RO or DB_MODE_RW */
   uint64_t data_size;         /* 0 for RO; >0 for RW publish */
   uint64_t cv;                /* RW announce: rendezvous address; else 0 */
-  uint64_t version;           /* always 0 */
   /* An RW release's payload was PUT into its landing (the grant's pub, or the
-   * one a PUBLISH_CTS named); {rdzv_txid, rdzv_cookie} echo it and the home
-   * pairs the packet with the write completion by txid. */
+   * one a PUBLISH_CTS named), the home's stable buffer; rdzv_txid echoes it
+   * and the home pairs the packet with the write completion by it. */
   uint64_t rdzv_txid;
-  uint64_t rdzv_cookie;
 };
 
 /* g_ooo_table handler, both polarities.  A non-create handler operates on an

@@ -132,19 +132,19 @@ extern "C" {
   X(NUM_ROUTE_PROBE)                                                           \
   X(NUM_ROUTE_PIN)                                                             \
   /* Num: validation arm.  A reply with no payload is one the version ledger   \
-   * saved; a size round (data_present 2, never a dismiss) negotiates a        \
-   * landing for a request that could not size one.  A window is a read       \
-   * request that is not a re-send; a reader that sends none of its own waits  \
-   * for the next window.  Inert unless the build compiles VAL in. */          \
+   * saved; a size round (data_present 2) negotiates a landing for a request   \
+   * that could not size one.  A window is a read request that is not a        \
+   * re-send; a reader that sends none of its own waits for the next window.   \
+   * Inert unless the build compiles VAL in. */                                \
   X(NUM_SNAPSHOT_REQUEST)                                                      \
   X(NUM_SNAPSHOT_HEADER_ONLY)                                                  \
   X(NUM_SNAPSHOT_SIZE_CTS)                                                     \
   X(NUM_RO_COMBINE_WINDOW)                                                     \
   X(NUM_RO_COMBINE_JOINED)                                                     \
-  /* Size rounds on the other planes, counted at the replying rank, a          \
-   * dismiss never among them: with the GUID size hint only a reserved or      \
-   * labeled GUID (or a size past the hint's range) takes one, so a nonzero    \
-   * steady rate is the hint NOT covering a workload. */                       \
+  /* Size rounds on the other planes, counted at the replying rank: with the   \
+   * GUID size hint only a reserved or labeled GUID (or a size past the        \
+   * hint's range) takes one, so a nonzero steady rate is the hint NOT         \
+   * covering a workload. */                                                   \
   X(NUM_GRANT_SIZE_CTS)                                                        \
   X(NUM_EXCL_SIZE_CTS)                                                         \
   X(NUM_INV_SIZE_CTS)                                                          \

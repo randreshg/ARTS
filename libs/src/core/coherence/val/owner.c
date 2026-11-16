@@ -305,7 +305,7 @@ bool arts_db_create_take_hold(struct arts_db_cache_s *cache, uint8_t *owed) {
   arts_db_grant_rearm(cache);
   /* The claim closed the write request the cache had out: its count goes,
    * under the create's own. */
-  arts_db_axis_drop(arts_db_of_cache(cache), arts_db_claim_closed_axes(*owed));
+  arts_db_axis_drop(arts_db_of_cache(cache), *owed != 0u ? 1u : 0u);
   return true;
 }
 
@@ -437,10 +437,7 @@ void arts_send_db_snapshot_redirect(struct arts_db_s *db,
     arts_shared_release(&looked);
     return;
   }
-  if (!arts_net_send_held((int)owner_rank, (char *)&p, sizeof(p),
-                          ARTS_HELD_HOP, db_guid)) {
-    arts_transport_send_async((int)owner_rank, (char *)&p, sizeof(p));
-  }
+  arts_transport_send_async((int)owner_rank, (char *)&p, sizeof(p));
 }
 
 /* Case-D leaf: the OWNER read source defers the home-buffer install to the

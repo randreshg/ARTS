@@ -198,12 +198,10 @@ unsigned int arts_grant_purge_release_next(unsigned int cur, bool purgeable,
 #define ARTS_GRANT_NO_RETURNER ((unsigned int)-1)
 #endif /* grant plane */
 
-/* A create announce's owed byte: the request of the first-touch cache a
- * create claimed that the claim closed while it was still out, its write
- * request.  The home tears the block down only once it has arrived. */
-#define ARTS_CREATE_OWED_RO 0x1u
-#define ARTS_CREATE_OWED_RO_PAR 0x2u
-#define ARTS_CREATE_OWED_RW 0x4u
+/* A create announce's owed byte: RW when the claim closed the write request
+ * the claimed first-touch cache still had out, 0 otherwise.  The home tears
+ * the block down only once that request has arrived. */
+#define ARTS_CREATE_OWED_RW 0x1u
 
 /* Whether a cache a dependence's first touch made can still be claimed by a
  * create: only a GUID the program named before its create can be touched
@@ -213,23 +211,33 @@ unsigned int arts_grant_purge_release_next(unsigned int cur, bool purgeable,
 #define ARTS_DB_STUB_CLAIMABLE(guid)                                           \
   (ARTS_GUID_DB_GET_SZHINT(guid) == ARTS_GUID_DB_SZHINT_NONE)
 
-/* A VAL or INV write request's cover word: whether a first-touch cache no
- * create had claimed yet opened it.  A create that then claims the cache
- * closes the request, and the block's home absorbs it. */
+/* A write request's cover word, on every combining arm: whether a first-touch
+ * cache no create had claimed yet opened it.  A create that then claims the
+ * cache closes the request, and the block's home absorbs it. */
 #define ARTS_COVER_PRECLAIM 0x1u
 
 /* In-memory rendezvous landing descriptor — the coherence-side mirror of the
  * packed wire struct arts_msg_rdzv_landing_s (protocol.h): where a payload
  * sender may fi_writedata, keyed for pairing.  txid == 0 means "no landing"
- * everywhere (data-less round / size not yet known).  cookie is the
- * advertiser-local landing-buffer pointer, only ever dereferenced back on the
- * advertiser rank. */
+ * everywhere (data-less round / size not yet known).  cookie exists in the
+ * cells whose requests advertise a fresh buffer, installed once the payload
+ * has landed in it (VAL, INV, FLUSH): the advertiser-local pointer of that
+ * buffer, only ever dereferenced back on the advertiser rank.  An EXCL
+ * landing is the descriptor's one stable buffer, which the answer reaches
+ * through its token, and carries none. */
 struct arts_rdzv_landing_s {
   uint64_t addr;
   uint64_t key;
   uint64_t txid;
+#ifndef ARTS_VALIDITY_EXCL
   uint64_t cookie;
+#endif
 };
+#ifdef ARTS_VALIDITY_EXCL
+#define ARTS_RDZV_NO_LANDING ((struct arts_rdzv_landing_s){0, 0, 0})
+#else
+#define ARTS_RDZV_NO_LANDING ((struct arts_rdzv_landing_s){0, 0, 0, 0})
+#endif
 
 /* The home's ownership-request FIFO: one queued requester per node.  Producers
  * are request handlers on any thread; the single consumer is the holder of the

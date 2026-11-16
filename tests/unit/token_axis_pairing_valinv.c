@@ -202,12 +202,11 @@ void arts_sched_fuzz_point(void) {
   }
 }
 bool arts_net_send_held(int rank, const char *message, unsigned int length,
-                        int kind, arts_guid_t guid) {
+                        int kind) {
   (void)rank;
   (void)message;
   (void)length;
   (void)kind;
-  (void)guid;
   return false;
 }
 #endif
@@ -1189,7 +1188,7 @@ static void home_gate(int how) {
     destroy_arrives();
     if (g_deleted != 0 || g_nsent != 0 ||
         atomic_load_explicit(&g_db->cover_gate, memory_order_acquire) !=
-            (ARTS_COVER_GATE_TD | ARTS_COVER_GATE_RWO | 1u)) {
+            (ARTS_COVER_GATE_TD | ARTS_COVER_GATE_RWO)) {
       fail("the destroy did not wait for the request the home is owed");
     }
   }
@@ -1220,7 +1219,7 @@ static void home_gate_unabsorbed(int how) {
   static const char *names[] = {
       "claimer's write request after its claim is not absorbed",
       "pre-claim write request of another rank leaves the claimer's owed"};
-  const uint32_t owed = ARTS_COVER_GATE_RWO | 1u;
+  const uint32_t owed = ARTS_COVER_GATE_RWO;
   begin(names[how], GUID_CLAIM, true);
   arts_db_home_seed_owed(g_db, REQ, ARTS_CREATE_OWED_RW);
   write_request_with(how == 0 ? REQ : REQ + 1u,

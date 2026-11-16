@@ -284,8 +284,8 @@ void arts_handler_db_create(void *item_v, void *args_v) {
   } else {
     arts_db_cache_init(&stub->cache, db_guid, db_size, ARTS_DB_INIT_HOME_RECV,
                        creator_rank);
-    /* Still unpublished: the requests the creator's claim closed while they
-     * were out are owed before anything can reach the descriptor. */
+    /* Still unpublished: the write request the creator's claim closed while
+     * it was out is owed before anything can reach the descriptor. */
     arts_db_home_seed_owed(stub, creator_rank, p->owed);
   }
 #ifdef ARTS_USE_CXL
@@ -347,6 +347,7 @@ void arts_handler_db_create(void *item_v, void *args_v) {
  * coherence/grant_home.c; OWNER's overload lives in
  * coherence/grant_owner.c. */
 
+#ifndef ARTS_VALIDITY_EXCL
 /* Consume an in-flight rendezvous whose receiver-side object is gone: the
  * metadata packet arrived for a destroyed target, so nobody will ever expect
  * the txid — register a discard continuation that returns the landing once
@@ -378,6 +379,7 @@ void arts_db_rdzv_discard_landing(uint64_t txid, uint64_t len,
   ctx->landing = (struct arts_db_buffer_s *)(uintptr_t)cookie;
   arts_net_rdzv_expect(txid, len, rdzv_discard_cb, rdzv_discard_cb, ctx);
 }
+#endif /* a fresh landing */
 
 #if defined(ARTS_VALIDITY_VAL)
 /* Rendezvous continuation for a data-bearing SNAPSHOT_RESPONSE: the snapshot

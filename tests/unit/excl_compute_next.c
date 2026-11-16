@@ -25,16 +25,19 @@
  * and walks every word reachable within a small bound.  cache_compute_next,
  * the cache word's arbiter: every row, sequences driven as the commit sites
  * drive them (ro_aside beside the word), and every reachable (word,
- * ro_aside) with ghost counts of the parked and holding acquires.
+ * ro_aside) with ghost counts of the parked and holding acquires and the
+ * size round's transition, cache_size_round_next, as its handler commits it.
  *
  * RETAIN: cache_owner_compute_next, the cache word's arbiter: every row, the
  * parked populations a serving transition owes, sequences driven as
  * retain.c's commit sites drive them (ro_aside beside the word), and every
  * (word, ro_aside) reachable from an idle cache, a sticky owner, a resident
  * rank without the write permission and a claimable first touch, with ghost
- * counts of the parked and holding acquires and the direct transitions of
+ * counts of the parked and holding acquires, the direct transitions of
  * owner_try_execute, owner_serve_readers and the recall modelled on the word
- * they commit; and the home directory's lock_owner_compute_next.
+ * they commit, and the size round's transition, cache_owner_size_round_next,
+ * as its handler commits it; and the home directory's
+ * lock_owner_compute_next.
  *
  * The arbiters are static to the unit that includes them; this file reaches
  * them the same way, by #including coherence/excl/arbiters.c.  Built and
@@ -71,6 +74,8 @@ static uint64_t excl_compute_next(uint64_t cur, int op, uint32_t *out_grant);
 static uint64_t cache_compute_next(uint64_t cur, int op, uint32_t taken,
                                    uint32_t *out_action);
 static inline uint32_t cache_set_aside(uint64_t pre);
+static inline uint64_t cache_size_round_next(uint64_t cur, bool write,
+                                             bool *at_req);
 
 static int g_rc = 0;
 static int g_checks = 0;
@@ -248,6 +253,35 @@ static void step_cache(const char *name, struct cache_sim *c, int op,
   c->aside = aside;
 }
 
+/* A size round does not transit the arbiter: its handler commits
+ * cache_size_round_next, refusing a word whose axis is not at REQ (fatal: a
+ * message the home never sends), and re-sends the request, the axis and its
+ * count open.  Whether the handler takes the round, and the word it
+ * commits. */
+enum { M_SIZE_RW = 100, M_SIZE_RO };
+static bool size_round(uint64_t cur, int op, uint64_t *next) {
+  bool at_req;
+  *next = cache_size_round_next(cur, op == M_SIZE_RW, &at_req);
+  return at_req;
+}
+
+static void step_size_round(const char *name, struct cache_sim *c, int op,
+                            uint64_t want) {
+  uint64_t next;
+  bool taken = size_round(c->word, op, &next);
+  g_checks++;
+  if (!taken || next != want) {
+    (void)fprintf(stderr,
+                  "FAIL [%s]: in %llx op=%d => out(%llx taken=%d) "
+                  "expected(%llx)\n",
+                  name, (unsigned long long)c->word, op,
+                  (unsigned long long)next, (int)taken,
+                  (unsigned long long)want);
+    g_rc = 1;
+  }
+  c->word = next;
+}
+
 /* Every (word, ro_aside) reachable from an idle cache and from a claimable
  * first touch, with at most CW_MAX acquires per axis outstanding, driven as
  * the commit sites drive it.  Ghost counts follow each acquire: parked on
@@ -261,8 +295,9 @@ static void step_cache(const char *name, struct cache_sim *c, int op,
  *     readers at IDLE without the write grant held;
  *   - each drain is owed exactly the waiters parked on its axis;
  *   - the two grants are never held together.
- * A grant, a size round or a release is applied only where the arbiter
- * takes it: one it calls LATE is a message the home never sends.  The walk
+ * A grant or a release is applied only where the arbiter takes it, and a
+ * size round only where its handler does: one they refuse is a message the
+ * home never sends.  The walk
  * must reach a write turn's zero edge with readers still parked on the read
  * request (set aside), and a local hit under the write grant while the read
  * request is out. */
@@ -304,7 +339,12 @@ static void cache_walk(void) {
   while (head < n) {
     const struct cw_node cur = seen[head++];
     uint32_t rws = CACHE_RW_ST(cur.word), ros = CACHE_RO_ST(cur.word);
-    for (int op = CACHE_OP_ACQ_RW; op <= CACHE_OP_DECLAIM; op++) {
+    static const int ops[] = {
+        CACHE_OP_ACQ_RW,      CACHE_OP_ACQ_RO, CACHE_OP_GRANT_RW,
+        CACHE_OP_GRANT_RO,    CACHE_OP_REL_RW, CACHE_OP_REL_RO,
+        CACHE_OP_CREATE_HOLD, M_SIZE_RW,       M_SIZE_RO};
+    for (size_t k = 0; k < sizeof(ops) / sizeof(ops[0]); k++) {
+      int op = ops[k];
       bool acquire = op == CACHE_OP_ACQ_RW || op == CACHE_OP_ACQ_RO;
       bool release = op == CACHE_OP_REL_RW || op == CACHE_OP_REL_RO;
       if (((op == CACHE_OP_ACQ_RW || op == CACHE_OP_CREATE_HOLD) &&
@@ -316,11 +356,20 @@ static void cache_walk(void) {
       }
       struct cw_node nx = cur;
       uint32_t act = 0xffffffff;
-      uint32_t taken = op == CACHE_OP_GRANT_RO ? cur.aside : 0u;
-      nx.word = cache_compute_next(cur.word, op, taken, &act);
-      g_checks++;
       bool ok = true;
-      if (act == CACHE_ACT_LATE) {
+      if (op == M_SIZE_RW || op == M_SIZE_RO) {
+        if (!size_round(cur.word, op, &nx.word)) {
+          continue;
+        }
+        act = CACHE_ACT_NONE;
+      } else {
+        uint32_t taken = op == CACHE_OP_GRANT_RO ? cur.aside : 0u;
+        nx.word = cache_compute_next(cur.word, op, taken, &act);
+      }
+      g_checks++;
+      if (op == M_SIZE_RW || op == M_SIZE_RO) {
+        /* Only the stub bit moved: judged by the invariant alone. */
+      } else if (act == CACHE_ACT_LATE) {
         /* Refused, the word unchanged: never an acquire inside the bound or
          * a holder's release. */
         ok = nx.word == cur.word && !acquire && !release;
@@ -362,8 +411,6 @@ static void cache_walk(void) {
         nx.live_r += nx.parked_r;
         nx.parked_r = 0u;
         read_grant_under_write_request |= rws == CACHE_ST_REQ;
-      } else if (act == CACHE_ACT_RESEND_RO) {
-        ok = op == CACHE_OP_CTS_RO && ros == CACHE_ST_REQ;
       } else if (release) {
         ok = act == CACHE_ACT_NONE || act == CACHE_ACT_REL_RW ||
              act == CACHE_ACT_REL_RO;
@@ -379,11 +426,10 @@ static void cache_walk(void) {
               act == CACHE_ACT_REL_RW && nx.aside != 0u;
         }
       } else {
-        /* A write size round, or a create's hold refused under a grant. */
-        ok = act == CACHE_ACT_NONE &&
-             (op == CACHE_OP_DECLAIM ||
-              (op == CACHE_OP_CREATE_HOLD && nx.word == cur.word &&
-               (rws == CACHE_ST_GRANT || ros == CACHE_ST_GRANT)));
+        /* A create's hold refused under a grant. */
+        ok = act == CACHE_ACT_NONE && op == CACHE_OP_CREATE_HOLD &&
+             nx.word == cur.word &&
+             (rws == CACHE_ST_GRANT || ros == CACHE_ST_GRANT);
       }
       if (!ok || !cw_invariant(&nx)) {
         (void)fprintf(stderr,
@@ -633,19 +679,6 @@ int main(void) {
   chk_cache("rogrant past the count's limit is late", I, Q, 0, RMAX,
             CACHE_OP_GRANT_RO, 1, I, Q, 0, RMAX, CACHE_ACT_LATE, 0);
 
-  chk_cache("cts re-sends for the parked readers", I, Q, 0, 1, CACHE_OP_CTS_RO,
-            0, I, Q, 0, 1, CACHE_ACT_RESEND_RO, 0);
-  chk_cache("cts re-sends with the readers set aside", I, Q, 0, 0,
-            CACHE_OP_CTS_RO, 0, I, Q, 0, 0, CACHE_ACT_RESEND_RO, 0);
-  chk_cache("cts re-sends with the write request out", Q, Q, 1, 1,
-            CACHE_OP_CTS_RO, 0, Q, Q, 1, 1, CACHE_ACT_RESEND_RO, 0);
-  chk_cache("cts re-sends under the write grant", G, Q, 1, 0, CACHE_OP_CTS_RO,
-            0, G, Q, 1, 0, CACHE_ACT_RESEND_RO, 0);
-  chk_cache("cts with no read request out is late", I, I, 0, 0, CACHE_OP_CTS_RO,
-            0, I, I, 0, 0, CACHE_ACT_LATE, 0);
-  chk_cache("cts under the read grant is late", I, G, 0, 1, CACHE_OP_CTS_RO, 0,
-            I, G, 0, 1, CACHE_ACT_LATE, 0);
-
   chk_cache("the create's hold on an idle cache", I, I, 0, 0,
             CACHE_OP_CREATE_HOLD, 0, G, I, 1, 0, CACHE_ACT_DRAIN_RW, 0);
   chk_cache("the create's hold closes the write request", Q, I, 1, 0,
@@ -662,11 +695,6 @@ int main(void) {
             CACHE_OP_CREATE_HOLD, 0, Q, I, WMAX, 0, CACHE_ACT_LATE, 0);
   chk_cache("the create's hold with readers on no request is late", Q, I, 1, 1,
             CACHE_OP_CREATE_HOLD, 0, Q, I, 1, 1, CACHE_ACT_LATE, 0);
-
-  chk_cache("declaim keeps the write request out", Q, Q, 1, 1, CACHE_OP_DECLAIM,
-            0, Q, Q, 1, 1, CACHE_ACT_NONE, 0);
-  chk_cache("declaim with no write request out is late", I, Q, 0, 1,
-            CACHE_OP_DECLAIM, 0, I, Q, 0, 1, CACHE_ACT_LATE, 0);
 
   chk_cache("rwrel with a writer left", G, I, 2, 0, CACHE_OP_REL_RW, 0, G, I, 1,
             0, CACHE_ACT_NONE, 0);
@@ -688,15 +716,14 @@ int main(void) {
             CACHE_OP_REL_RO, 0, Q, I, 1, 0, CACHE_ACT_REL_RO, 0);
 
   {
-    /* Every reply and the create's hold clear the stub bit: the home is
+    /* Every grant and the create's hold clear the stub bit: the home is
      * installed, or the claim is here.  An acquire keeps it. */
-    const int ops[5] = {CACHE_OP_GRANT_RW, CACHE_OP_GRANT_RO, CACHE_OP_CTS_RO,
-                        CACHE_OP_DECLAIM, CACHE_OP_CREATE_HOLD};
-    const uint64_t ins[5] = {
-        CACHE_MAKE_X(Q, I, 1u, 1, 0), CACHE_MAKE_X(I, Q, 1u, 0, 1),
-        CACHE_MAKE_X(I, Q, 1u, 0, 1), CACHE_MAKE_X(Q, I, 1u, 1, 0),
-        CACHE_MAKE_X(I, I, 1u, 0, 0)};
-    for (int i = 0; i < 5; i++) {
+    const int ops[3] = {CACHE_OP_GRANT_RW, CACHE_OP_GRANT_RO,
+                        CACHE_OP_CREATE_HOLD};
+    const uint64_t ins[3] = {CACHE_MAKE_X(Q, I, 1u, 1, 0),
+                             CACHE_MAKE_X(I, Q, 1u, 0, 1),
+                             CACHE_MAKE_X(I, I, 1u, 0, 0)};
+    for (int i = 0; i < 3; i++) {
       uint32_t act = 0xffffffff;
       uint64_t next = cache_compute_next(ins[i], ops[i], 0u, &act);
       g_checks++;
@@ -809,8 +836,8 @@ int main(void) {
                CACHE_MAKE(G, Q, 2, 0), 1, CACHE_ACT_DRAIN_RW);
     step_cache("claim: a grant under the hold is late", &c, CACHE_OP_GRANT_RW,
                CACHE_MAKE(G, Q, 2, 0), 1, CACHE_ACT_LATE);
-    step_cache("claim: the size round re-sends the read request", &c,
-               CACHE_OP_CTS_RO, CACHE_MAKE(G, Q, 2, 0), 1, CACHE_ACT_RESEND_RO);
+    step_size_round("claim: the size round re-sends the read request", &c,
+                    M_SIZE_RO, CACHE_MAKE(G, Q, 2, 0));
     step_cache("claim: a holder releases", &c, CACHE_OP_REL_RW,
                CACHE_MAKE(G, Q, 1, 0), 1, CACHE_ACT_NONE);
     step_cache("claim: the hold's zero edge", &c, CACHE_OP_REL_RW,
@@ -850,6 +877,8 @@ static inline bool cache_owner_serves_ro(uint64_t s);
 static inline uint32_t cache_owner_parked_rw(uint64_t s);
 static inline uint32_t cache_owner_parked_ro(uint64_t s);
 static inline uint32_t cache_set_aside(uint64_t pre);
+static inline uint64_t cache_owner_size_round_next(uint64_t cur, bool write,
+                                                   bool *at_req);
 
 static int g_rc = 0;
 static int g_checks = 0;
@@ -958,8 +987,9 @@ static void chk_lock(const char *name, uint64_t cur, int op,
  * read request's answer (a read DELIVER, or the answer the owner gives its
  * own forwarded request) takes whole before its CAS.  The ship, the serve's
  * demote, the self-grant and the recall are the direct CASes of
- * owner_try_execute, owner_serve_readers and excl_recall_on, modelled here
- * on the word they commit. */
+ * owner_try_execute, owner_serve_readers and excl_recall_on, modelled here on
+ * the word they commit; the size round is the transition
+ * arts_handler_db_excl_cts commits. */
 #define CW_MAX 3u
 struct cw_node {
   uint64_t word;
@@ -972,7 +1002,19 @@ enum {
   M_DEMOTE,     /* the serve relinquishes the write grant, the bytes stay */
   M_SELF_GRANT, /* the home forwards this resident rank its own write turn */
   M_RECALL,     /* the home recalls a read grant (or overtakes its answer) */
+  M_SIZE_RW,    /* a size round answers the write request: the stub clears */
+  M_SIZE_RO,    /* a size round answers the read request: the stub clears */
 };
+
+/* The size round's handler commits cache_owner_size_round_next: refused
+ * (fatal: a message the home never sends) unless its axis is at REQ, whatever
+ * else the rank holds.  Whether the handler takes the round, and the word it
+ * commits. */
+static bool size_round(uint64_t cur, int op, uint64_t *next) {
+  bool at_req;
+  *next = cache_owner_size_round_next(cur, op == M_SIZE_RW, &at_req);
+  return at_req;
+}
 
 static bool cw_serves(uint64_t w) { return cache_owner_serves_ro(w); }
 
@@ -1027,10 +1069,9 @@ static void cache_walk(void) {
   static const int ops[] = {
       CACHE_OP_ACQ_RW,       CACHE_OP_ACQ_RO,       CACHE_OP_GRANT_RW,
       CACHE_OP_GRANT_RO,     CACHE_OP_GRANT_RO_MARKED, CACHE_OP_OWN_RO,
-      CACHE_OP_CREATE_HOLD,  CACHE_OP_CTS_RO,       CACHE_OP_REL_RW,
-      CACHE_OP_REL_RO,
+      CACHE_OP_CREATE_HOLD,  CACHE_OP_REL_RW,       CACHE_OP_REL_RO,
       M_SHIP,                M_DEMOTE,              M_SELF_GRANT,
-      M_RECALL};
+      M_RECALL,              M_SIZE_RW,             M_SIZE_RO};
   while (head < n) {
     const struct cw_node cur = seen[head++];
     uint64_t w = cur.word;
@@ -1086,6 +1127,10 @@ static void cache_walk(void) {
         } else if (ros == CACHE_ST_REQ && !CACHE_GRANTED(w)) {
           nx.word = w | lm;
         } else {
+          continue;
+        }
+      } else if (op == M_SIZE_RW || op == M_SIZE_RO) {
+        if (!size_round(w, op, &nx.word)) {
           continue;
         }
       } else {
@@ -1150,8 +1195,6 @@ static void cache_walk(void) {
           nx.aside = 0u;
           nx.live_r += nx.parked_r;
           nx.parked_r = 0u;
-        } else if (act == CACHE_ACT_RESEND_RO) {
-          ok = op == CACHE_OP_CTS_RO && ros == CACHE_ST_REQ;
         } else if (release) {
           ok = act == CACHE_ACT_NONE || act == CACHE_ACT_REL_RO;
           if (op == CACHE_OP_REL_RW) {
@@ -1402,20 +1445,6 @@ int main(void) {
              W(1, G, Q, NT, 0, RCMAX), CACHE_OP_OWN_RO, 1u,
              W(1, G, Q, NT, 0, RCMAX), CACHE_ACT_LATE, 0u);
 
-  /* ===== a size round ===== */
-  chk_owner("cts re-sends, the stub cleared", W(0, I, Q, NT, 0, 1) | STUB,
-            CACHE_OP_CTS_RO, W(0, I, Q, NT, 0, 1), CACHE_ACT_RESEND_RO);
-  chk_owner("cts re-sends beside a write request", W(0, Q, Q, NT, 1, 1),
-            CACHE_OP_CTS_RO, W(0, Q, Q, NT, 1, 1), CACHE_ACT_RESEND_RO);
-  chk_owner("cts re-sends at an owner whose readers are set aside",
-            W(1, G, Q, NT, 1, 0), CACHE_OP_CTS_RO, W(1, G, Q, NT, 1, 0),
-            CACHE_ACT_RESEND_RO);
-  chk_owner("cts keeps an early recall's token", W(0, I, Q, NT, 0, 1) | LEASED,
-            CACHE_OP_CTS_RO, W(0, I, Q, NT, 0, 1) | LEASED,
-            CACHE_ACT_RESEND_RO);
-  chk_owner("cts with no read request out is late", W(0, I, I, NT, 0, 0),
-            CACHE_OP_CTS_RO, W(0, I, I, NT, 0, 0), CACHE_ACT_LATE);
-
   /* ===== releases ===== */
   {
     /* Two writers join the retained grant, a migration is forwarded in, the
@@ -1500,8 +1529,18 @@ int main(void) {
                W(0, Q, Q, NT, 1, 1) | STUB, CACHE_ACT_SEND_RW);
     step_owner_x("claim: the hold", &w, CACHE_OP_CREATE_HOLD, 0u,
                  W(1, G, Q, NT, 2, 0), CACHE_ACT_DRAIN_RW, 1u);
-    step_owner("claim: the size round re-sends the read request", &w,
-               CACHE_OP_CTS_RO, W(1, G, Q, NT, 2, 0), CACHE_ACT_RESEND_RO);
+    {
+      uint64_t next;
+      g_checks++;
+      if (!size_round(w, M_SIZE_RO, &next) || next != W(1, G, Q, NT, 2, 0)) {
+        (void)fprintf(stderr,
+                      "FAIL [claim: the size round re-sends the "
+                      "read request]: %llx\n",
+                      (unsigned long long)next);
+        g_rc = 1;
+      }
+      w = next;
+    }
     step_owner("claim: the creator releases", &w, CACHE_OP_REL_RW,
                W(1, G, Q, NT, 1, 0), CACHE_ACT_NONE);
     step_owner_x("claim: the owner answers its own request", &w,

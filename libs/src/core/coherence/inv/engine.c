@@ -208,7 +208,7 @@ bool arts_db_create_take_hold(struct arts_db_cache_s *cache, uint8_t *owed) {
   arts_db_grant_rearm(cache);
   /* The claim closed the write request the cache had out: its count goes,
    * under the create's own. */
-  arts_db_axis_drop(arts_db_of_cache(cache), arts_db_claim_closed_axes(*owed));
+  arts_db_axis_drop(arts_db_of_cache(cache), *owed != 0u ? 1u : 0u);
   return true;
 }
 
@@ -1066,8 +1066,8 @@ void arts_send_db_inv_request(struct arts_db_cache_s *cache,
   p.rdzv.cookie = rdzv.cookie;
   p.token = token;
   if (!arts_net_send_held((int)home_rank, (char *)&p, sizeof(p),
-                          mode == DB_MODE_RO ? ARTS_HELD_READ : ARTS_HELD_WRITE,
-                          db_guid)) {
+                          mode == DB_MODE_RO ? ARTS_HELD_READ
+                                             : ARTS_HELD_WRITE)) {
     arts_transport_send_async((int)home_rank, (char *)&p, sizeof(p));
   }
 }

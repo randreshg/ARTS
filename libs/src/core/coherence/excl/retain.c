@@ -132,7 +132,7 @@ void arts_db_cache_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
   arts_lf_stack_init(&c->ro_pending);
   arts_lf_stack_init(&c->rw_pending);
   arts_lf_stack_init(&c->ro_serve);
-  c->migrate_rdzv = (struct arts_rdzv_landing_s){0, 0, 0, 0};
+  c->migrate_rdzv = ARTS_RDZV_NO_LANDING;
   c->migrate_token = 0u;
   c->migrate_home_token = 0u;
   arts_db_cache_common_init(c, db_guid, db_size, kind, creator_rank);
@@ -271,7 +271,7 @@ bool arts_db_create_take_hold(struct arts_db_cache_s *cache, uint8_t *owed) {
   /* The write request the claimed first touch had already sent, read from
    * the word this claim replaced: it is the home's to absorb. */
   if (CACHE_RW_ST(cur) == CACHE_ST_REQ) {
-    *owed |= ARTS_CREATE_OWED_RW;
+    *owed = ARTS_CREATE_OWED_RW;
   }
   if (act == CACHE_ACT_DRAIN_RW) {
     /* Before the writers' drain, and before the caller's announce leaves:
@@ -281,7 +281,7 @@ bool arts_db_create_take_hold(struct arts_db_cache_s *cache, uint8_t *owed) {
   }
   /* The claim closed the write request the cache had out: its count goes,
    * under the create's own. */
-  arts_db_axis_drop(arts_db_of_cache(cache), arts_db_claim_closed_axes(*owed));
+  arts_db_axis_drop(arts_db_of_cache(cache), *owed != 0u ? 1u : 0u);
   return true;
 }
 
@@ -357,7 +357,7 @@ static void owner_try_execute(struct arts_db_cache_s *cache, uint64_t word) {
         /* Read before the CONFIRM leaves: the next FORWARD(migrate) to this
          * rank, which rewrites it, follows that CONFIRM. */
         uint64_t home_token = cache->migrate_home_token;
-        cache->migrate_rdzv = (struct arts_rdzv_landing_s){0, 0, 0, 0};
+        cache->migrate_rdzv = ARTS_RDZV_NO_LANDING;
         cache->migrate_token = 0u;
         cache->migrate_home_token = 0u;
         /* The CAS committed this rank as the resident holder of the write
@@ -446,7 +446,7 @@ static void owner_try_execute(struct arts_db_cache_s *cache, uint64_t word) {
       struct arts_rdzv_landing_s mt_rdzv = cache->migrate_rdzv;
       uint64_t mt_token = cache->migrate_token;
       uint64_t mt_home_token = cache->migrate_home_token;
-      cache->migrate_rdzv = (struct arts_rdzv_landing_s){0, 0, 0, 0};
+      cache->migrate_rdzv = ARTS_RDZV_NO_LANDING;
       cache->migrate_token = 0u;
       cache->migrate_home_token = 0u;
       arts_send_db_excl_deliver(mt, cache->db_guid, (uint32_t)DB_MODE_RW,
@@ -650,7 +650,7 @@ static void lock_stable_place(struct arts_db_cache_s *cache, uint64_t n) {
  * answered without its bytes. */
 static bool lock_stable_advertise(struct arts_db_cache_s *cache, uint64_t n,
                                   struct arts_rdzv_landing_s *out) {
-  *out = (struct arts_rdzv_landing_s){0, 0, 0, 0};
+  *out = ARTS_RDZV_NO_LANDING;
   if (n == 0u) {
     return false;
   }
@@ -662,7 +662,6 @@ static bool lock_stable_advertise(struct arts_db_cache_s *cache, uint64_t n,
                "one-sided deliver requires the registered pool");
   }
   out->txid = arts_net_rdzv_txid_next();
-  out->cookie = 0; /* in-place: this rank finds the buffer via its cache */
   arts_db_buf_release(&h);
   return true;
 }
@@ -687,7 +686,7 @@ void arts_send_db_excl_request(struct arts_db_cache_s *cache,
         .db_guid = db_guid,
         .mode = mode,
         .cover = cover,
-        .rdzv = {0, 0, 0, 0},
+        .rdzv = ARTS_RDZV_NO_LANDING,
         .token = token,
     };
     /* The requester's cache is the home's descriptor, installed (an acquire
@@ -715,11 +714,10 @@ void arts_send_db_excl_request(struct arts_db_cache_s *cache,
   p.rdzv.addr = rdzv.addr;
   p.rdzv.key = rdzv.key;
   p.rdzv.txid = rdzv.txid;
-  p.rdzv.cookie = rdzv.cookie;
   p.token = token;
   if (!arts_net_send_held((int)home_rank, (char *)&p, sizeof(p),
-                          mode == DB_MODE_RO ? ARTS_HELD_READ : ARTS_HELD_WRITE,
-                          db_guid)) {
+                          mode == DB_MODE_RO ? ARTS_HELD_READ
+                                             : ARTS_HELD_WRITE)) {
     arts_transport_send_async((int)home_rank, (char *)&p, sizeof(p));
   }
 }
@@ -749,40 +747,28 @@ void arts_handler_db_excl_cts(const struct arts_msg_excl_cts_packet_s *p) {
   }
   struct arts_db_cache_s *cache = &db->cache;
   arts_db_cache_learn_size(cache, p->db_size);
+  bool write = (arts_db_access_mode_t)p->mode == DB_MODE_RW;
   /* A request is answered by its own answer alone (a write request whose
-   * writers a create served is absorbed at the home), so its axis is at REQ.
-   * The re-sent request is the same one: the axis and its count stay open,
-   * and with the stub bit cleared a write request carries no PRECLAIM. */
-  if ((arts_db_access_mode_t)p->mode == DB_MODE_RW) {
-    uint64_t s, n;
-    do {
-      s = atomic_load_explicit(&cache->cache_state, memory_order_acquire);
-      if (CACHE_RW_ST(s) != CACHE_ST_REQ) {
-        ARTS_ERROR("lock: guid %lu got a size round for a write request it "
-                   "does not have out (word=%llx)",
-                   (unsigned long)cache->db_guid, (unsigned long long)s);
-      }
-      n = s & ~CACHE_OWNER_STUB_BIT;
-    } while (n != s && !atomic_compare_exchange_weak_explicit(
-                           &cache->cache_state, &s, n, memory_order_acq_rel,
-                           memory_order_acquire));
-    arts_send_db_excl_request(cache, DB_MODE_RW, /*cover=*/0u);
-    return;
-  }
-  uint32_t act;
-  uint64_t cur, next;
+   * writers a create served is absorbed at the home), so its axis is at REQ,
+   * whatever else this rank holds.  The re-sent request is the same one: the
+   * axis and its count stay open.  Any reply clears the stub bit, so a
+   * re-sent write request carries no PRECLAIM. */
+  uint64_t s, n;
+  bool at_req;
   do {
-    cur = atomic_load_explicit(&cache->cache_state, memory_order_acquire);
-    next = cache_owner_compute_next(cur, CACHE_OP_CTS_RO, 0u, &act);
-    if (act == CACHE_ACT_LATE) {
-      ARTS_ERROR("lock: guid %lu got a size round for a read request it does "
+    s = atomic_load_explicit(&cache->cache_state, memory_order_acquire);
+    n = cache_owner_size_round_next(s, write, &at_req);
+    if (!at_req) {
+      ARTS_ERROR("lock: guid %lu got a size round for a %s request it does "
                  "not have out (word=%llx)",
-                 (unsigned long)cache->db_guid, (unsigned long long)cur);
+                 (unsigned long)cache->db_guid, write ? "write" : "read",
+                 (unsigned long long)s);
     }
-  } while (!atomic_compare_exchange_weak_explicit(&cache->cache_state, &cur,
-                                                  next, memory_order_acq_rel,
-                                                  memory_order_acquire));
-  arts_send_db_excl_request(cache, DB_MODE_RO, /*cover=*/0u);
+  } while (n != s && !atomic_compare_exchange_weak_explicit(
+                         &cache->cache_state, &s, n, memory_order_acq_rel,
+                         memory_order_acquire));
+  arts_send_db_excl_request(cache, write ? DB_MODE_RW : DB_MODE_RO,
+                            /*cover=*/0u);
 }
 
 /* ===== arts_send_db_excl_forward ========================================
@@ -809,9 +795,8 @@ void arts_send_db_excl_forward(struct arts_db_s *db, unsigned int owner_rank,
     p.rdzv.addr = target_rdzv->addr;
     p.rdzv.key = target_rdzv->key;
     p.rdzv.txid = target_rdzv->txid;
-    p.rdzv.cookie = target_rdzv->cookie;
   } else {
-    p.rdzv = (struct arts_msg_rdzv_landing_s){0, 0, 0, 0};
+    p.rdzv = (struct arts_msg_rdzv_landing_s){0, 0, 0};
   }
   p.token = token;
   p.home_token = home_token;
@@ -842,10 +827,7 @@ void arts_send_db_excl_forward(struct arts_db_s *db, unsigned int owner_rank,
     arts_shared_release(&held);
     return;
   }
-  if (!arts_net_send_held((int)owner_rank, (char *)&p, sizeof(p),
-                          ARTS_HELD_HOP, db_guid)) {
-    arts_transport_send_async((int)owner_rank, (char *)&p, sizeof(p));
-  }
+  arts_transport_send_async((int)owner_rank, (char *)&p, sizeof(p));
 }
 
 /* ===== arts_send_db_excl_deliver ========================================
@@ -873,7 +855,6 @@ void arts_send_db_excl_deliver(unsigned int target_rank, arts_guid_t db_guid,
   /* Always the DB's size; payload presence is rdzv_txid / trailing bytes. */
   p.data_size = data_size;
   p.rdzv_txid = 0;
-  p.rdzv_cookie = (rdzv != NULL) ? rdzv->cookie : 0;
   p.token = token;
   p.home_token = home_token;
   if (target_rank == arts_global_rank_id) {
@@ -1152,7 +1133,7 @@ void arts_handler_db_acquire(void *item, void *args) {
   }
   if (act == CACHE_ACT_SEND_RW) {
     arts_send_db_excl_request(cache, DB_MODE_RW,
-                              CACHE_STUB(cur) ? EXCL_COVER_PRECLAIM : 0u);
+                              CACHE_STUB(cur) ? ARTS_COVER_PRECLAIM : 0u);
   } else if (act == CACHE_ACT_SEND_RO) {
     arts_send_db_excl_request(cache, DB_MODE_RO, /*cover=*/0u);
   }
@@ -1254,7 +1235,6 @@ static void excl_forward_on(struct arts_db_s *db,
     cache->migrate_rdzv.addr = p->rdzv.addr;
     cache->migrate_rdzv.key = p->rdzv.key;
     cache->migrate_rdzv.txid = p->rdzv.txid;
-    cache->migrate_rdzv.cookie = p->rdzv.cookie;
     cache->migrate_token = p->token;
     cache->migrate_home_token = p->home_token;
     /* Install the migrate target into the word (single CAS preserving the
@@ -1286,7 +1266,6 @@ static void excl_forward_on(struct arts_db_s *db,
     rn->rdzv.addr = p->rdzv.addr;
     rn->rdzv.key = p->rdzv.key;
     rn->rdzv.txid = p->rdzv.txid;
-    rn->rdzv.cookie = p->rdzv.cookie;
     rn->token = p->token;
     arts_lf_stack_push(&cache->ro_serve, &rn->link);
     /* Same-word pairing with every transition that opens the serve gate (the
@@ -1603,7 +1582,7 @@ void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload) {
     struct arts_rdzv_landing_s mt_rdzv = cache->migrate_rdzv;
     uint64_t mt_token = cache->migrate_token;
     uint64_t mt_home_token = cache->migrate_home_token;
-    cache->migrate_rdzv = (struct arts_rdzv_landing_s){0, 0, 0, 0};
+    cache->migrate_rdzv = ARTS_RDZV_NO_LANDING;
     cache->migrate_token = 0u;
     cache->migrate_home_token = 0u;
     arts_send_db_excl_deliver(target, cache->db_guid, (uint32_t)DB_MODE_RW,
@@ -1702,9 +1681,9 @@ static bool lock_preclaim_write_absorb(struct arts_db_s *db,
                                        uint32_t cover) {
   /* A read request's word is zero and a write request's carries nothing but
    * PRECLAIM. */
-  assert((cover & ~EXCL_COVER_PRECLAIM) == 0u &&
+  assert((cover & ~ARTS_COVER_PRECLAIM) == 0u &&
          (cover == 0u || mode == DB_MODE_RW));
-  if (mode != DB_MODE_RW || (cover & EXCL_COVER_PRECLAIM) == 0u ||
+  if (mode != DB_MODE_RW || (cover & ARTS_COVER_PRECLAIM) == 0u ||
       requester != db->claim_rank) {
     return false;
   }
@@ -1729,9 +1708,9 @@ void arts_db_destroy_arrived(struct arts_db_s *db) {
  * They run CONCURRENTLY across progress threads with no mutex; correctness
  * rests entirely on the single-word CAS plus the home's queues.  The
  * protocol tolerates message reorder because the transport guarantees no
- * per-peer FIFO: r counts OUTSTANDING RO grants, so it may transiently exceed
- * the rank count, and the write flip is gated on r reaching zero rather than on
- * any arrival order. */
+ * per-peer FIFO: r counts the read requests taken in whose RO_RETURN has not
+ * come back, so it may transiently exceed the rank count, and the write flip
+ * is gated on r reaching zero rather than on any arrival order. */
 
 /* The landing a FORWARD names for its target.  A target on another rank
  * advertised its own with its request.  A home target requested without one
@@ -2107,9 +2086,10 @@ static void excl_roret_on(struct arts_db_s *db) {
   arts_sched_fuzz_point();
   do {
     cur = atomic_load_explicit(&db->lock_state, memory_order_acquire);
-    /* r counts outstanding RO grants and a RO_RETURN follows its own grant,
-     * so it never finds r at zero; a zero r would wrap and open a spurious
-     * flip.  A reused label can reach it, as a CONFIRM can. */
+    /* r counts the read requests taken in whose RO_RETURN has not come back,
+     * and a RO_RETURN follows its request's answer, so it never finds r at
+     * zero; a zero r would wrap and open a spurious flip.  A reused label can
+     * reach it, as a CONFIRM can. */
     assert(LOCK_R(cur) != 0u);
     next =
         lock_owner_compute_next(cur, EXCL_OP_RO_RET, /*new_owner=*/0u, &action);

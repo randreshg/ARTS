@@ -172,9 +172,7 @@ void arts_regpool_free(void *p) {
   free(p);
 }
 
-/* Rendezvous-plane stubs: buffer.c's landing helpers reference the net core's
- * advertisement/txid primitives and the runtime's fatal-print externs; a pure
- * unit run never allocates a landing, so inert stubs satisfy the link. */
+/* The runtime's fatal-print externs, which buffer.c's errors reference. */
 #include "arts/runtime_state.h"
 #include "arts/system/shutdown.h"
 #include "arts/system/threads.h"
@@ -184,12 +182,3 @@ _Noreturn void arts_exit(int rc, enum arts_exit_origin origin) {
   (void)origin;
   exit(rc ? rc : 1);
 }
-bool arts_net_rdzv_local(const void *p, uint64_t len, uint64_t *raddr,
-                         uint64_t *rkey) {
-  (void)p;
-  (void)len;
-  (void)raddr;
-  (void)rkey;
-  return false;
-}
-uint64_t arts_net_rdzv_txid_next(void) { return 1; }

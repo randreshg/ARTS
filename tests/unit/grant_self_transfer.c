@@ -108,8 +108,7 @@ UNREACHED(void arts_transport_send_payload_async_free(
     int r, char *m, unsigned int n, char *p, unsigned int o, uint64_t s,
     void (*f)(void *)))
 #ifdef ARTS_DEBUG_INJECTION
-UNREACHED(bool arts_net_send_held(int r, const char *m, unsigned int n, int k,
-                                  arts_guid_t g))
+UNREACHED(bool arts_net_send_held(int r, const char *m, unsigned int n, int k))
 #endif
 UNREACHED(void arts_net_put_payload(int r, uint64_t a, uint64_t k, uint64_t t,
                                     const void *d, uint64_t s,

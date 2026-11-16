@@ -447,10 +447,9 @@ build's validity is VAL.
 Size Rounds on the Other Planes
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Counted at the replying rank; an EXCL dismiss is never among them.  With the
-GUID size hint only a reserved or labeled GUID (or a size past the hint's
-range) takes one, so a nonzero steady rate is the hint NOT covering a
-workload.
+Counted at the replying rank.  With the GUID size hint only a reserved or
+labeled GUID (or a size past the hint's range) takes one, so a nonzero steady
+rate is the hint NOT covering a workload.
 
 .. list-table::
    :header-rows: 1
