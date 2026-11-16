@@ -57,12 +57,13 @@
 
 /* ===== the request axes (shared grant plane hooks) ======================= */
 /* Commit `op` on the reader word; returns the pre-image, *post the image. */
-static uint64_t inv_req_step_tok(struct arts_db_cache_s *cache, int op,
-                                 uint32_t tok, uint64_t *post, uint32_t *act) {
+static ARTS_ALWAYS_INLINE uint64_t
+inv_req_step_tok(struct arts_db_cache_s *cache, int op, uint32_t tok,
+                 uint64_t *post, uint32_t *act) {
   uint64_t cur = atomic_load_explicit(&cache->cache_state, memory_order_acquire);
   uint64_t next;
   for (;;) {
-    next = arts_inv_cache_compute_next(cur, op, tok, act);
+    next = inv_cache_compute_next(cur, op, tok, act);
     if (next == cur ||
         atomic_compare_exchange_weak_explicit(&cache->cache_state, &cur, next,
                                               memory_order_acq_rel,
@@ -74,8 +75,9 @@ static uint64_t inv_req_step_tok(struct arts_db_cache_s *cache, int op,
   return cur;
 }
 
-static uint64_t inv_req_step(struct arts_db_cache_s *cache, int op,
-                             uint64_t *post, uint32_t *act) {
+static ARTS_ALWAYS_INLINE uint64_t inv_req_step(struct arts_db_cache_s *cache,
+                                                int op, uint64_t *post,
+                                                uint32_t *act) {
   return inv_req_step_tok(cache, op, 0u, post, act);
 }
 
@@ -160,7 +162,7 @@ void arts_db_cache_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
 
 #ifndef ARTS_RETENTION_PURGE
   c->incoming_new_owner = ARTS_NO_PENDING_OWNER;
-  c->incoming_new_owner_rdzv = (struct arts_rdzv_landing_s){0, 0, 0, 0};
+  c->incoming_new_owner_rdzv = ARTS_RDZV_NO_LANDING;
   c->incoming_new_owner_have = ARTS_GRANT_VERSION_NONE;
   c->incoming_new_owner_token = 0u;
   c->incoming_new_owner_home_token = 0u;
@@ -638,7 +640,7 @@ void arts_handler_db_publish(void *item_v, void *args_v) {
                  (unsigned long long)atomic_load_explicit(
                      &cache->db_size, memory_order_relaxed));
     }
-    struct arts_rdzv_landing_s landing = {0, 0, 0, 0};
+    struct arts_rdzv_landing_s landing = ARTS_RDZV_NO_LANDING;
     arts_shared_ptr_t mh = arts_db_buf_acquire(cache);
     struct arts_db_buffer_s *master =
         (struct arts_db_buffer_s *)arts_shared_get(mh);
@@ -735,7 +737,7 @@ static void inv_deliver_commit(struct arts_db_s *db, uint64_t version,
   uint64_t cur, next;
   do {
     cur = atomic_load_explicit(&cache->cache_state, memory_order_acquire);
-    next = arts_inv_cache_compute_next(cur, INV_CACHE_OP_DELIVER, 0u, &act);
+    next = inv_cache_compute_next(cur, INV_CACHE_OP_DELIVER, 0u, &act);
     if (act == INV_CACHE_ACT_LATE) {
       ARTS_ERROR("inv: guid %lu got a read reply it has no fetch out for "
                  "(word=%llx)",
@@ -757,8 +759,7 @@ static void inv_deliver_commit(struct arts_db_s *db, uint64_t version,
         ARTS_ERROR("inv: reserved purge found ro=%u (drifted)",
                    INV_CACHE_RO(cur));
       }
-      next =
-          arts_inv_cache_compute_next(cur, INV_CACHE_OP_KILL_PURGE, 0u, &pact);
+      next = inv_cache_compute_next(cur, INV_CACHE_OP_KILL_PURGE, 0u, &pact);
     } while (!atomic_compare_exchange_weak_explicit(
         &cache->cache_state, &cur, next, memory_order_acq_rel,
         memory_order_acquire));
@@ -889,7 +890,7 @@ void arts_handler_db_inv_invalidate(struct arts_db_s *db, uint64_t home_token) {
         0u) {
       ARTS_ERROR("inv: invalidate hit the grant holder");
     }
-    next = arts_inv_cache_compute_next(cur, INV_CACHE_OP_INVALIDATE, 0u, &act);
+    next = inv_cache_compute_next(cur, INV_CACHE_OP_INVALIDATE, 0u, &act);
     if (act == INV_CACHE_ACT_KILL_MARKED) {
       /* Published by the CAS that commits the mark. */
       cache->owed_ack_token = home_token;
@@ -1013,7 +1014,7 @@ void arts_send_db_inv_request(struct arts_db_cache_s *cache,
                               arts_db_access_mode_t mode) {
   arts_guid_t db_guid = cache->db_guid;
   unsigned int home_rank = arts_guid_get_rank(db_guid);
-  struct arts_rdzv_landing_s rdzv = {0, 0, 0, 0};
+  struct arts_rdzv_landing_s rdzv = ARTS_RDZV_NO_LANDING;
   /* A FRESH landing per fetch: reception isolation when a read reply and an
    * ownership transfer are in flight together (each PUT lands in its own
    * buffer, installed or returned at commit).  Sized by the exact size when

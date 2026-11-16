@@ -2174,6 +2174,13 @@ set_tests_properties(val_release_buffer_check PROPERTIES
     PASS_REGULAR_EXPRESSION "write turn's buffer is not the installed one")
 endif()
 
+# grant_purge_word_model: the PURGE retention's grant word decider
+# (arts/coherence/types_common.h), which only a {VAL,INV}·PURGE build has
+# (EXCL arbitrates a word of its own).
+if(ARTS_RETENTION STREQUAL "PURGE" AND NOT ARTS_VALIDITY STREQUAL "EXCL")
+add_pure_unit_src(grant_purge_word_model PASS_REGEX "PASS grant_purge_word_model" TIMEOUT 30)
+endif()
+
 # inv_compute_next: INV only.  One truth table covers both read sources —
 # the arbiters do not depend on the read source.
 if(ARTS_VALIDITY STREQUAL "INV")
@@ -2181,8 +2188,9 @@ add_pure_unit_src(inv_compute_next DEFINES ARTS_UNIT_STANDALONE_SHIMS PASS_REGEX
 endif()
 
 # db_reader_pool: the parked-reader pool on a cache of the cell, with no
-# runtime started (links libarts for the cell's arbiter and destructor).  The
-# arms that chain readers by index only; each cell's destructor is its own.
+# runtime started (it includes the cell's arbiter and links libarts for the
+# pool and the destructor).  The arms that chain readers by index only; each
+# cell's destructor is its own.
 if(ARTS_VALIDITY STREQUAL "VAL" OR ARTS_VALIDITY STREQUAL "INV")
 add_arts_test(db_reader_pool)
 register_pure_unit_test(db_reader_pool TIMEOUT 120)

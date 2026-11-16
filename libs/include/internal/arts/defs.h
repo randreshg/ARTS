@@ -77,6 +77,21 @@
  *  Enables additional compiler optimizations for idempotent functions. */
 #define ARTS_PURE ARTS_ATTRIBUTE(__pure__)
 
+/** Inlining at every call site, for a protocol word's state-transition
+ *  arbiter and the step that commits it.  The contract: every runtime call
+ *  passes the operation as a constant, so the inlined arbiter compiles to
+ *  that operation's case alone inside the site's CAS loop.  An optimized
+ *  build forces it, whatever a caller's size, since left to the inlining
+ *  heuristics a site could keep a call, a dispatch on the operation and a
+ *  decode of every field in each attempt.  Without optimization nothing
+ *  folds and forcing only grows every caller's frame and text, so such a
+ *  build calls the arbiter as an ordinary static function. */
+#ifdef __OPTIMIZE__
+#define ARTS_ALWAYS_INLINE inline ARTS_ATTRIBUTE(__always_inline__)
+#else
+#define ARTS_ALWAYS_INLINE inline
+#endif
+
 /** Custom alignment — wraps @c __attribute__((aligned(n))).
  *  @param n Required alignment in bytes (must be a power of two). */
 #define ARTS_ALIGNED(n) ARTS_ATTRIBUTE(__aligned__(n))

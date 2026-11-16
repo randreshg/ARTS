@@ -460,7 +460,7 @@ void arts_db_grant_ship_pending(struct arts_db_cache_s *cache) {
   uint64_t token = cache->incoming_new_owner_token;
   uint64_t home_token = cache->incoming_new_owner_home_token;
   cache->incoming_new_owner = ARTS_NO_PENDING_OWNER;
-  cache->incoming_new_owner_rdzv = (struct arts_rdzv_landing_s){0, 0, 0, 0};
+  cache->incoming_new_owner_rdzv = ARTS_RDZV_NO_LANDING;
   cache->incoming_new_owner_have = ARTS_GRANT_VERSION_NONE;
   cache->incoming_new_owner_token = 0u;
   cache->incoming_new_owner_home_token = 0u;
@@ -582,7 +582,7 @@ void arts_send_db_grant_request(struct arts_db_cache_s *cache,
    * could PUT (multi-rank run): a single-rank run has no fabric, every
    * transfer is a same-rank inline dispatch, and the registered pool
    * carries no MRs to advertise. */
-  struct arts_rdzv_landing_s rdzv = {0, 0, 0, 0};
+  struct arts_rdzv_landing_s rdzv = ARTS_RDZV_NO_LANDING;
   /* Under OWNER the landing is advertised unconditionally, even though a
    * transfer of a DB nobody has published yet carries no bytes: whether the
    * current owner HAS bytes is remote state, so the only way to know before
@@ -713,8 +713,7 @@ void arts_send_db_grant_invalidate(
     uint64_t new_owner_token) {
   arts_guid_t db_guid = db->cache.db_guid;
   struct arts_rdzv_landing_s rdzv =
-      (new_owner_rdzv != NULL) ? *new_owner_rdzv
-                               : (struct arts_rdzv_landing_s){0, 0, 0, 0};
+      (new_owner_rdzv != NULL) ? *new_owner_rdzv : ARTS_RDZV_NO_LANDING;
   struct arts_msg_grant_invalidate_packet_s p;
   arts_fill_packet_header(&p.header, sizeof(p), MSG_DB_GRANT_INVALIDATE);
   p.header.rank = arts_global_rank_id;

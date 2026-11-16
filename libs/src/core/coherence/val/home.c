@@ -243,7 +243,7 @@ void arts_db_cache_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
    * before it withdraws the sentinel.  Starts at the sentinel: no transfer
    * pending. */
   c->incoming_new_owner = ARTS_NO_PENDING_OWNER;
-  c->incoming_new_owner_rdzv = (struct arts_rdzv_landing_s){0, 0, 0, 0};
+  c->incoming_new_owner_rdzv = ARTS_RDZV_NO_LANDING;
   c->incoming_new_owner_have = ARTS_GRANT_VERSION_NONE;
   c->incoming_new_owner_token = 0u;
   c->incoming_new_owner_home_token = 0u;
@@ -556,7 +556,7 @@ void arts_handler_db_publish(void *item_v, void *args_v) {
                  "DB's %llu-byte stable buffer",
                  (unsigned long long)a->data_size, (unsigned long long)db_size);
     }
-    struct arts_rdzv_landing_s landing = {0, 0, 0, 0};
+    struct arts_rdzv_landing_s landing = ARTS_RDZV_NO_LANDING;
     arts_shared_ptr_t mh = arts_db_buf_acquire(cache);
     struct arts_db_buffer_s *master =
         (struct arts_db_buffer_s *)arts_shared_get(mh);

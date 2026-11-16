@@ -392,15 +392,16 @@ void *arts_db_acquire_local(struct arts_db_cache_s *cache) {
 #include "val/arbiters.c"
 
 /* Commit `op` on the word; returns the pre-image, *post the image. */
-static uint64_t val_req_step(struct arts_db_cache_s *cache, int op,
-                             uint32_t idx, uint64_t *post, uint32_t *act) {
+static ARTS_ALWAYS_INLINE uint64_t val_req_step(struct arts_db_cache_s *cache,
+                                                int op, uint32_t idx,
+                                                uint64_t *post, uint32_t *act) {
   struct arts_db_reader_node_s *node =
       op == VREQ_OP_ACQ_RO ? arts_db_reader_node(&cache->reader_pool, idx)
                            : NULL;
   uint64_t cur = atomic_load_explicit(&cache->req_state, memory_order_acquire);
   uint64_t next;
   for (;;) {
-    next = arts_val_req_compute_next(cur, op, idx, act);
+    next = val_req_compute_next(cur, op, idx, act);
     if (node != NULL) {
       atomic_store_explicit(&node->next,
                             *act == VREQ_ACT_PARK ? VREQ_NEXT(cur) : 0u,
@@ -763,7 +764,7 @@ static void pub_flight_drive(struct arts_db_cache_s *cache, bool may_block,
    * frame. */
   struct arts_db_pub_rendezvous_s wr;
   sem_init(&wr.sem, 0, 0);
-  wr.landing = (struct arts_rdzv_landing_s){0, 0, 0, 0};
+  wr.landing = ARTS_RDZV_NO_LANDING;
   arts_send_db_publish(arts_db_of_cache(cache), version,
                        (uint64_t)(uintptr_t)&wr, db_size, /*rdzv_txid=*/0,
                        /*rdzv_cookie=*/0, /*return_grant=*/false);

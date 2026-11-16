@@ -55,37 +55,6 @@
 #include "arts/transport/protocol.h"
 #include "arts/counter/Preamble.h"
 
-/* ===== The word's count-dropping edge ==================================== */
-
-unsigned int arts_grant_purge_release_next(unsigned int cur, bool purgeable,
-                                           unsigned int *out_act) {
-  if (!ARTS_GRANT_OWN_OF(cur)) {
-    /* Nothing is held, so nothing is owed: a double or spurious release. */
-    *out_act = ARTS_GRANT_ACT_NONE;
-    return cur;
-  }
-  unsigned int count = ARTS_GRANT_COUNT_OF(cur);
-  if (count == 0u) {
-    /* Possession with no hold under it.  A decrement here would borrow the
-     * possession bit and leave a count of 2^30-1 that nothing can ever drain,
-     * so the edge is refused rather than committed. */
-    *out_act = ARTS_GRANT_ACT_ILLEGAL;
-    return cur;
-  }
-  if (count > 1u) {
-    *out_act = ARTS_GRANT_ACT_NONE;
-    return ARTS_GRANT_OWN | (count - 1u);
-  }
-  if (purgeable) {
-    *out_act = ARTS_GRANT_ACT_RETURN;
-    return 0u;
-  }
-  /* The home's own idle edge: it keeps possession — there is nobody to hand
-   * it back to — and becomes the server for whatever queued while it wrote. */
-  *out_act = ARTS_GRANT_ACT_TAIL;
-  return ARTS_GRANT_OWN;
-}
-
 /* ===== The return wire =================================================== */
 
 /* Holder → home: "I am done; the right is yours again."  Data-less by

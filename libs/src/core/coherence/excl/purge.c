@@ -441,24 +441,25 @@ void arts_handler_db_excl_request(void *item_v, void *args_v) {
 static void lock_release_commit(struct arts_db_s *db,
                                 struct arts_db_cache_s *cache,
                                 arts_db_access_mode_t mode) {
-  int op = (mode == DB_MODE_RW) ? EXCL_OP_RW_REL : EXCL_OP_RO_REL;
+  bool write = mode == DB_MODE_RW;
   uint32_t grant;
   uint64_t cur, next;
   arts_sched_fuzz_point();
   do {
     cur = atomic_load_explicit(&db->lock_state, memory_order_acquire);
     /* A write release returns a turn this home granted, so it never finds
-     * the writer count at zero; a zero count would wrap, and the block would
-     * never be torn down, so a Debug build stops here instead of hanging.
-     * A reused label can reach it, since its generations are not told apart:
-     * a release meant for the next generation lands here while the marked
-     * previous one still waits for a release owed to it. */
-    assert(op != EXCL_OP_RW_REL || EXCL_STATE_W(cur) != 0u);
+     * the writer count at zero.  A reused label can reach it, since its
+     * generations are not told apart: a release meant for the next generation
+     * lands here while the marked previous one still waits for a release owed
+     * to it.  A Debug build stops here; the decrement would borrow from the
+     * bits above w, up to the teardown mark. */
+    assert(!write || EXCL_STATE_W(cur) != 0u);
     /* A read release returns a grant to a reader whose count committed before
-     * its node could be drained, so it never finds the reader count at zero.
-     * A wrapped r would park writers behind readers that do not exist. */
-    assert(op != EXCL_OP_RO_REL || EXCL_STATE_R(cur) != 0u);
-    next = excl_compute_next(cur, op, &grant);
+     * its node could be drained, so it never finds the reader count at zero; a
+     * reused label can, and the decrement would borrow from w. */
+    assert(write || EXCL_STATE_R(cur) != 0u);
+    next = write ? excl_compute_next(cur, EXCL_OP_RW_REL, &grant)
+                 : excl_compute_next(cur, EXCL_OP_RO_REL, &grant);
   } while (!atomic_compare_exchange_weak_explicit(
       &db->lock_state, &cur, next, memory_order_acq_rel, memory_order_acquire));
   lock_home_grant(db, cache, grant);
@@ -1157,19 +1158,18 @@ void arts_handler_db_acquire(void *item, void *args) {
    * single materialization point. */
 #endif /* ARTS_USE_CXL */
 
-  int op = (mode == DB_MODE_RW) ? CACHE_OP_ACQ_RW : CACHE_OP_ACQ_RO;
-  arts_lf_stack_t *q =
-      (mode == DB_MODE_RW) ? &cache->rw_pending : &cache->ro_pending;
+  bool write = mode == DB_MODE_RW;
+  arts_lf_stack_t *q = write ? &cache->rw_pending : &cache->ro_pending;
   uint32_t act;
   uint64_t cur, next;
   do {
     cur = atomic_load_explicit(&cache->cache_state, memory_order_acquire);
-    next = cache_compute_next(cur, op, 0u, &act);
+    next = write ? cache_compute_next(cur, CACHE_OP_ACQ_RW, 0u, &act)
+                 : cache_compute_next(cur, CACHE_OP_ACQ_RO, 0u, &act);
     if (act == CACHE_ACT_LATE) {
       ARTS_ERROR("lock: guid %lu has more %s acquires counted on one rank "
                  "than its cache word can hold (word=%llx)",
-                 (unsigned long)cache->db_guid,
-                 mode == DB_MODE_RW ? "write" : "read",
+                 (unsigned long)cache->db_guid, write ? "write" : "read",
                  (unsigned long long)cur);
     }
   } while (!atomic_compare_exchange_weak_explicit(&cache->cache_state, &cur,
@@ -1303,7 +1303,7 @@ static void lock_grant_apply(struct arts_db_s *db, arts_guid_t db_guid,
 static void lock_grant_commit(struct arts_db_s *db, arts_guid_t db_guid,
                               arts_db_access_mode_t mode) {
   struct arts_db_cache_s *cache = &db->cache;
-  int op = (mode == DB_MODE_RW) ? CACHE_OP_GRANT_RW : CACHE_OP_GRANT_RO;
+  bool write = mode == DB_MODE_RW;
   uint32_t taken =
       (mode == DB_MODE_RO) ? arts_excl_take_readers_aside(cache) : 0u;
   bool fetched = false;
@@ -1311,7 +1311,8 @@ static void lock_grant_commit(struct arts_db_s *db, arts_guid_t db_guid,
   uint64_t cur = atomic_load_explicit(&cache->cache_state, memory_order_acquire);
   uint64_t next;
   for (;;) {
-    next = cache_compute_next(cur, op, taken, &act);
+    next = write ? cache_compute_next(cur, CACHE_OP_GRANT_RW, taken, &act)
+                 : cache_compute_next(cur, CACHE_OP_GRANT_RO, taken, &act);
     if (!fetched && (act == CACHE_ACT_DRAIN_RW || act == CACHE_ACT_DRAIN_RO)) {
       cxl_fetch_working_copy(cache);
       fetched = true;
@@ -1342,14 +1343,15 @@ static void lock_grant_commit(struct arts_db_s *db, arts_guid_t db_guid,
     cache->home_pub_rdzv = *pub;
   }
 
-  int op = (mode == DB_MODE_RW) ? CACHE_OP_GRANT_RW : CACHE_OP_GRANT_RO;
+  bool write = mode == DB_MODE_RW;
   uint32_t taken =
       (mode == DB_MODE_RO) ? arts_excl_take_readers_aside(cache) : 0u;
   uint32_t act;
   uint64_t cur, next;
   do {
     cur = atomic_load_explicit(&cache->cache_state, memory_order_acquire);
-    next = cache_compute_next(cur, op, taken, &act);
+    next = write ? cache_compute_next(cur, CACHE_OP_GRANT_RW, taken, &act)
+                 : cache_compute_next(cur, CACHE_OP_GRANT_RO, taken, &act);
   } while (!atomic_compare_exchange_weak_explicit(&cache->cache_state, &cur,
                                                   next, memory_order_acq_rel,
                                                   memory_order_acquire));

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * Truth table of VAL's request word (arts_val_req_compute_next): both request
+ * Truth table of VAL's request word (val_req_compute_next): both request
  * axes, the first-touch stub bit and the two reader chains in one word.  The
  * axes are independent: a reader opens a window or joins the next one
  * whatever the write axis holds, an answer serves only its window's cohort
@@ -22,6 +22,11 @@
 
 #include <stdint.h>
 
+/* The arbiter is static to the unit that includes it; this file includes it
+ * at its end. */
+static uint64_t val_req_compute_next(uint64_t cur, int op, uint32_t idx,
+                                     uint32_t *out_act);
+
 static int g_fail = 0;
 
 /* The layout: [rw:2 (63..62) | ro:1 (61) | spare:2 (60..59) | stub:1 (58) |
@@ -38,7 +43,7 @@ static int g_fail = 0;
 static void expect(const char *what, uint64_t cur, int op, uint32_t idx,
                    uint64_t want, uint32_t want_act) {
   uint32_t act = 0xffffffffu;
-  uint64_t next = arts_val_req_compute_next(cur, op, idx, &act);
+  uint64_t next = val_req_compute_next(cur, op, idx, &act);
   if (next != want || act != want_act) {
     (void)fprintf(stderr,
                   "FAIL val_request_word: %s -- got word %016llx act %u, want "
@@ -135,7 +140,7 @@ static void walk(void) {
     for (size_t s = 0; s < sizeof(steps) / sizeof(steps[0]); s++) {
       uint32_t act = 0xffffffffu;
       uint64_t post =
-          arts_val_req_compute_next(pre, steps[s].op, steps[s].idx, &act);
+          val_req_compute_next(pre, steps[s].op, steps[s].idx, &act);
       judge(pre, steps[s].op, steps[s].idx, post, act);
       if (!seen(post)) {
         if (g_nseen == MAX_WORDS) {

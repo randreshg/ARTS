@@ -49,6 +49,9 @@
  * event.c #includes this file; the whitebox test
  * tests/unit/event_compute_next.c includes it directly to drive the table
  * without a live runtime.  NOT a standalone TU in CMakeLists.txt.
+ *
+ * The decider is ARTS_ALWAYS_INLINE; a case changes only the fields its
+ * transition moves, in place in the word.
  */
 
 #include "arts/event.h"
@@ -78,6 +81,13 @@
    (((uint64_t)(nb_deps) & (uint64_t)EV_NBDEPS_MAX) << EV_NBDEPS_SHIFT) |      \
    ((uint64_t)(uint32_t)(latch)))
 
+/* The fields in place, for the decider's transitions of the word. */
+#define EV_DESTROYED_BIT ((uint64_t)1ULL << EV_DESTROYED_SHIFT)
+#define EV_FIRE_AT(fire) ((uint64_t)(fire) << EV_FIRE_SHIFT)
+#define EV_FIRE_FIELD EV_FIRE_AT(0x3u)
+#define EV_NBDEPS_ONE ((uint64_t)1ULL << EV_NBDEPS_SHIFT)
+#define EV_LATCH_FIELD ((uint64_t)0xffffffffULL)
+
 /* fire_st */
 #define EV_FIRE_IDLE 0u
 #define EV_FIRE_FIRING 1u
@@ -103,67 +113,83 @@
  * satisfy.  That consumer would be dropped and its slot never satisfied. */
 #define EV_ACT_DESTROY 0x8u
 
-static uint64_t event_compute_next(uint64_t cur, int op, bool counted,
-                                   bool auto_destroy, uint32_t *out_action) {
-  int32_t latch = EV_LATCH(cur);
-  uint32_t nb = EV_NBDEPS(cur);
+/* The destroy edge, evaluated for every transition that could have completed
+ * it.  `auto_destroy` keeps its own meaning — destroy on fire, consumers
+ * ignored — and is the promise that every consumer had already bound;
+ * `counted` is the promise that exactly nb_deps of them will.  They are
+ * contradictory, which is why setting both is refused at creation. */
+static ARTS_ALWAYS_INLINE uint64_t event_destroy_edge(uint64_t next,
+                                                      bool counted,
+                                                      bool auto_destroy,
+                                                      uint32_t *act) {
+  if ((next & EV_DESTROYED_BIT) == 0u && EV_FIRE(next) == EV_FIRE_FIRED &&
+      (auto_destroy || (counted && EV_NBDEPS(next) == 0u))) {
+    next |= EV_DESTROYED_BIT;
+    *act |= EV_ACT_DESTROY;
+  }
+  return next;
+}
+
+/* A transition that leaves fire_st short of FIRED cannot complete the destroy
+ * edge, so only the ones that can evaluate it.  The latch moves in its own 32
+ * bits, wrapping, so a debt never borrows from the field above it. */
+static ARTS_ALWAYS_INLINE uint64_t event_compute_next(uint64_t cur, int op,
+                                                      bool counted,
+                                                      bool auto_destroy,
+                                                      uint32_t *out_action) {
   uint32_t fire = EV_FIRE(cur);
-  uint32_t destroyed = EV_DESTROYED(cur);
+  uint64_t next = cur;
   uint32_t act = EV_ACT_NONE;
 
   switch (op) {
   case EV_OP_SAT_DECR:
     if (fire == EV_FIRE_FIRED) {
-      break; /* absorbed: the debt cannot matter once the event has fired */
+      /* absorbed: the debt cannot matter once the event has fired */
+      next = event_destroy_edge(cur, counted, auto_destroy, &act);
+      break;
     }
-    latch -= 1;
-    if (latch == 0 && fire == EV_FIRE_IDLE) {
-      fire = EV_FIRE_FIRING; /* claim; the winner publishes the payload next */
+    next = (cur & ~EV_LATCH_FIELD) | (uint32_t)((uint32_t)cur - 1u);
+    if ((uint32_t)next == 0u && fire == EV_FIRE_IDLE) {
+      /* claim; the winner publishes the payload next */
+      next |= EV_FIRE_AT(EV_FIRE_FIRING);
       act = EV_ACT_FIRE;
     }
     break;
 
   case EV_OP_SAT_INCR:
     if (fire == EV_FIRE_FIRED) {
-      break; /* a fired event never re-arms: firing is once per event, which
-              * is what a group latch's successor asserts of itself */
+      /* a fired event never re-arms: firing is once per event, which is
+       * what a group latch's successor asserts of itself */
+      next = event_destroy_edge(cur, counted, auto_destroy, &act);
+      break;
     }
-    latch += 1;
+    next = (cur & ~EV_LATCH_FIELD) | (uint32_t)((uint32_t)cur + 1u);
     break;
 
   case EV_OP_PUBLISH:
-    if (fire != EV_FIRE_FIRING) {
-      break; /* not ours to publish */
-    }
-    fire = EV_FIRE_FIRED;
-    act = EV_ACT_DRAIN;
+    if (fire == EV_FIRE_FIRING) {
+      next = (cur & ~EV_FIRE_FIELD) | EV_FIRE_AT(EV_FIRE_FIRED);
+      act = EV_ACT_DRAIN;
+    } /* else not ours to publish */
+    next = event_destroy_edge(next, counted, auto_destroy, &act);
     break;
 
   case EV_OP_ADD_DEP:
-    if (counted && nb > 0u) {
-      nb -= 1u; /* saturating: an exhausted count never wraps or re-arms */
+    if (counted && EV_NBDEPS(cur) > 0u) {
+      next = cur - EV_NBDEPS_ONE; /* saturating: an exhausted count never
+                                   * wraps or re-arms */
     }
     /* FIRING is not FIRED: the payload GUID is not readable yet, so park and
      * let the publisher's drain collect this node. */
     act = (fire == EV_FIRE_FIRED) ? EV_ACT_DELIVER : EV_ACT_PARK;
+    next = event_destroy_edge(next, counted, auto_destroy, &act);
     break;
 
   default:
+    next = event_destroy_edge(cur, counted, auto_destroy, &act);
     break;
   }
 
-  /* The destroy edge, evaluated once for every transition that could have
-   * completed it.  `auto_destroy` keeps its own meaning — destroy on fire,
-   * consumers ignored — and is the promise that every consumer had already
-   * bound; `counted` is the promise that exactly nb_deps of them will.  They
-   * are contradictory, which is why setting both is refused at creation. */
-  if (destroyed == 0u && fire == EV_FIRE_FIRED) {
-    if (auto_destroy || (counted && nb == 0u)) {
-      destroyed = 1u;
-      act |= EV_ACT_DESTROY;
-    }
-  }
-
   *out_action = act;
-  return EV_MAKE(destroyed, fire, nb, latch);
+  return next;
 }

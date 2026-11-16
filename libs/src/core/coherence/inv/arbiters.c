@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * INV pure deciders: arts_inv_cache_compute_next (reader plane) and the
+ * INV pure deciders: inv_cache_compute_next (reader plane) and the
  * invalidation round's own three, inv_round_submit_next (a release's decision
  * on round_queue), inv_round_keep_word and inv_round_targets_word (one roster
  * word of the round's snapshot).
@@ -19,19 +19,26 @@
  * the write right or a writer count (the reader word's rw is the axis of
  * this rank's write request, not the right).
  *
- * engine.c #includes this file: the round's deciders are its own, and the
- * reader-plane decider is the one the read-source units call too.  The
- * whitebox unit tests also #include it directly.  NOT listed in
- * CMakeLists.txt as a standalone TU.
+ * engine.c #includes this file for the round's deciders, which are its own,
+ * and the reader-plane decider, which the read-source units (home.c,
+ * owner.c) #include it for too; a unit that compiles engine.c with its
+ * read-source unit includes it twice, hence the guard.  The whitebox unit
+ * tests also #include it directly.  NOT listed in CMakeLists.txt as a
+ * standalone TU.
+ *
+ * Every decider is ARTS_ALWAYS_INLINE; a case of the reader-plane decider
+ * changes only the fields its transition moves, in place in the word, and a
+ * refused transition (LATE) leaves the word as it is.
  */
-#ifdef ARTS_VALIDITY_INV
+#if defined(ARTS_VALIDITY_INV) && !defined(ARTS_COHERENCE_INV_ARBITERS_C)
+#define ARTS_COHERENCE_INV_ARBITERS_C
 
 #include "arts/coherence/inv/types.h"
 
 #include <stdbool.h>
 #include <stdint.h>
 
-/* ===== arts_inv_cache_compute_next ==========================================
+/* ===== inv_cache_compute_next ===============================================
  *
  * The reader plane.  A copy is durable: once ro reaches VALID it survives
  * reader release, so a covering acquire is a pure load — no message, no CAS,
@@ -48,13 +55,14 @@
  * self_idx is the caller's pre-written pool node, consumed only by the actions
  * that park it (SEND_RO / PARK), or the OPEN's token (RW_COMMIT / RW_GIVE).
  */
-uint64_t arts_inv_cache_compute_next(uint64_t cur, int op, uint32_t self_idx,
-                                     uint32_t *out_action) {
+static ARTS_ALWAYS_INLINE uint64_t inv_cache_compute_next(
+    uint64_t cur, int op, uint32_t self_idx, uint32_t *out_action) {
   uint32_t ro = INV_CACHE_RO(cur);
   uint32_t inflight = INV_CACHE_INFLIGHT(cur);
   uint32_t hro = INV_CACHE_HEAD_RO(cur);
   uint32_t rw = INV_CACHE_RW(cur);
   uint32_t stub = INV_CACHE_STUB(cur);
+  uint64_t next = cur;
   uint32_t act = INV_CACHE_ACT_NONE;
 
   switch (op) {
@@ -68,13 +76,16 @@ uint64_t arts_inv_cache_compute_next(uint64_t cur, int op, uint32_t self_idx,
      * its doomed reply still serves the chain once before the reserved purge
      * retires the copy. */
     if (inflight != 0u) {
-      hro = self_idx;
+      next = (cur & ~INV_CACHE_HEAD_FIELD) |
+             (((uint64_t)self_idx & INV_CACHE_HEAD_MASK)
+              << INV_CACHE_HEAD_RO_SHIFT);
       act = INV_CACHE_ACT_PARK;
       break;
     }
-    ro = INV_RO_REQ;
-    inflight = 1u;
-    hro = self_idx;
+    next =
+        (cur & ~(INV_CACHE_RO_FIELD | INV_CACHE_HEAD_FIELD)) |
+        INV_CACHE_RO_AT(INV_RO_REQ) | INV_CACHE_INFLIGHT_BIT |
+        (((uint64_t)self_idx & INV_CACHE_HEAD_MASK) << INV_CACHE_HEAD_RO_SHIFT);
     act = INV_CACHE_ACT_SEND_RO;
     break;
 
@@ -86,36 +97,35 @@ uint64_t arts_inv_cache_compute_next(uint64_t cur, int op, uint32_t self_idx,
       act = INV_CACHE_ACT_LATE;
       break;
     }
-    inflight = 0u;
-    hro = 0u; /* the committer takes the whole chain */
+    /* The committer takes the whole chain, and the copy turns VALID. */
+    next = (cur & ~(INV_CACHE_INFLIGHT_BIT | INV_CACHE_HEAD_FIELD)) |
+           INV_CACHE_RO_AT(INV_RO_VALID);
     /* An answer proves the home installed, so this cache can no longer be
      * claimed; the stub bit clears unless a writer holds an OPEN (whose
      * token is the bit). */
     if (rw != INV_RW_OPEN) {
-      stub = 0u;
+      next &= ~INV_CACHE_STUB_BIT;
     }
     if (ro == INV_RO_REQ_KILL) {
       /* An INVALIDATE marked this fetch mid-flight.  Serve the cohort that
        * joined it — they are entitled to these bytes — and only then run the
        * reserved purge and send the ack this rank owes the round. */
-      ro = INV_RO_VALID;
       act = INV_CACHE_ACT_PUBLISH_KILL;
       break;
     }
-    ro = INV_RO_VALID;
     act = INV_CACHE_ACT_PUBLISH;
     break;
 
   case INV_CACHE_OP_INVALIDATE:
     if (ro == INV_RO_VALID) {
-      ro = INV_RO_IDLE;
+      next = cur & ~INV_CACHE_RO_FIELD; /* ro = IDLE */
       act = INV_CACHE_ACT_PURGE_ACK;
       break;
     }
     if (ro == INV_RO_REQ) {
       /* Mark the in-flight fetch; its reply serves the cohort once, then
        * purges and fires the ack this transition owes the round. */
-      ro = INV_RO_REQ_KILL;
+      next = (cur & ~INV_CACHE_RO_FIELD) | INV_CACHE_RO_AT(INV_RO_REQ_KILL);
       act = INV_CACHE_ACT_KILL_MARKED;
       break;
     }
@@ -129,7 +139,7 @@ uint64_t arts_inv_cache_compute_next(uint64_t cur, int op, uint32_t self_idx,
     /* Precondition (caller-asserted): ro == VALID.  Between the kill-publish
      * and this purge nothing can retire the copy — the owed ack blocks the
      * round chain, and local activity never leaves VALID. */
-    ro = INV_RO_IDLE;
+    next = cur & ~INV_CACHE_RO_FIELD; /* ro = IDLE */
     act = INV_CACHE_ACT_NONE; /* the caller sends the owed ack LAST */
     break;
 
@@ -143,7 +153,7 @@ uint64_t arts_inv_cache_compute_next(uint64_t cur, int op, uint32_t self_idx,
       break;
     }
     if (rw != INV_RW_OPEN) {
-      stub = 0u;
+      next &= ~INV_CACHE_STUB_BIT;
     }
     act = INV_CACHE_ACT_RESEND;
     break;
@@ -158,8 +168,7 @@ uint64_t arts_inv_cache_compute_next(uint64_t cur, int op, uint32_t self_idx,
      * reply.  A grant, like the claim, proves the cache will never be
      * claimed: the home answered, so it is installed, and had this rank been
      * the creator its claim would have come first. */
-    rw = INV_RW_IDLE;
-    stub = 0u;
+    next &= ~(INV_CACHE_RW_FIELD | INV_CACHE_STUB_BIT);
     break;
 
   case INV_CACHE_OP_DECLAIM:
@@ -169,12 +178,12 @@ uint64_t arts_inv_cache_compute_next(uint64_t cur, int op, uint32_t self_idx,
       act = INV_CACHE_ACT_LATE;
       break;
     }
-    stub = 0u;
+    next &= ~INV_CACHE_STUB_BIT;
     break;
 
   case INV_CACHE_OP_RW_CLAIM:
     if (rw == INV_RW_IDLE) {
-      rw = INV_RW_OPEN;
+      next |= INV_CACHE_RW_AT(INV_RW_OPEN);
       act = INV_CACHE_ACT_WON;
     }
     break;
@@ -182,7 +191,7 @@ uint64_t arts_inv_cache_compute_next(uint64_t cur, int op, uint32_t self_idx,
   case INV_CACHE_OP_RW_COMMIT:
     /* self_idx carries the OPEN's token: the stub bit its claim read. */
     if (rw == INV_RW_OPEN && stub == self_idx) {
-      rw = INV_RW_SENT;
+      next = (cur & ~INV_CACHE_RW_FIELD) | INV_CACHE_RW_AT(INV_RW_SENT);
       act = INV_CACHE_ACT_WON;
     } else {
       act = INV_CACHE_ACT_LOST;
@@ -193,17 +202,14 @@ uint64_t arts_inv_cache_compute_next(uint64_t cur, int op, uint32_t self_idx,
     if (rw != INV_RW_OPEN || stub != self_idx) {
       break; /* a create's claim reset this OPEN */
     }
-    rw = INV_RW_IDLE;
+    next &= ~INV_CACHE_RW_FIELD;
     break;
 
   default:
     break;
   }
   *out_action = act;
-  if (act == INV_CACHE_ACT_LATE) {
-    return cur;
-  }
-  return INV_CACHE_WITH_REQ(INV_CACHE_MAKE(ro, inflight, hro), rw, stub);
+  return next;
 }
 
 /* ===== inv_round_submit_next ===========================================
@@ -215,7 +221,9 @@ uint64_t arts_inv_cache_compute_next(uint64_t cur, int op, uint32_t self_idx,
  * holder takes it).  A push never lands on 0, so only a claim enters an idle
  * word.  The caller links the entry and CASes the result.
  */
-static uintptr_t inv_round_submit_next(uintptr_t h, uintptr_t e, bool *claim) {
+static ARTS_ALWAYS_INLINE uintptr_t inv_round_submit_next(uintptr_t h,
+                                                          uintptr_t e,
+                                                          bool *claim) {
   if (h == 0u) {
     *claim = true;
     return INV_ROUND_OPEN;
@@ -240,10 +248,9 @@ static uintptr_t inv_round_submit_next(uintptr_t h, uintptr_t e, bool *claim) {
  * The keep depends on the batch alone, never on the word, which is why it
  * can be the value the exchange writes.
  */
-static uint64_t inv_round_keep_word(unsigned int base,
-                                    const unsigned int *writers,
-                                    unsigned int nwriters,
-                                    unsigned int exempt) {
+static ARTS_ALWAYS_INLINE uint64_t
+inv_round_keep_word(unsigned int base, const unsigned int *writers,
+                    unsigned int nwriters, unsigned int exempt) {
   uint64_t keep = 0u;
   for (unsigned int k = 0; k < nwriters; k++) {
     unsigned int w = writers[k];
@@ -254,12 +261,14 @@ static uint64_t inv_round_keep_word(unsigned int base,
   return keep;
 }
 
-static uint64_t inv_round_targets_word(uint64_t snap, uint64_t keep,
-                                       unsigned int base, unsigned int exempt) {
+static ARTS_ALWAYS_INLINE uint64_t inv_round_targets_word(uint64_t snap,
+                                                          uint64_t keep,
+                                                          unsigned int base,
+                                                          unsigned int exempt) {
   uint64_t targets = snap & ~keep;
   if (exempt >= base && exempt < base + 64u) {
     targets &= ~(1ull << (exempt - base));
   }
   return targets;
 }
-#endif /* ARTS_VALIDITY_INV */
+#endif /* ARTS_VALIDITY_INV && !ARTS_COHERENCE_INV_ARBITERS_C */

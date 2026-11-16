@@ -167,7 +167,7 @@ void arts_db_cache_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
    * a reader can only ever meet the live object. */
   c->cached_version = arts_rank_u64_map_create(arts_global_rank_count);
   c->incoming_new_owner = ARTS_NO_PENDING_OWNER;
-  c->incoming_new_owner_rdzv = (struct arts_rdzv_landing_s){0, 0, 0, 0};
+  c->incoming_new_owner_rdzv = ARTS_RDZV_NO_LANDING;
   c->incoming_new_owner_have = ARTS_GRANT_VERSION_NONE;
   c->incoming_new_owner_token = 0u;
   c->incoming_new_owner_home_token = 0u;
@@ -403,7 +403,7 @@ void arts_send_db_snapshot_redirect(struct arts_db_s *db,
                                     uint64_t token) {
   arts_guid_t db_guid = db->cache.db_guid;
   struct arts_rdzv_landing_s fwd =
-      (rdzv != NULL) ? *rdzv : (struct arts_rdzv_landing_s){0, 0, 0, 0};
+      (rdzv != NULL) ? *rdzv : ARTS_RDZV_NO_LANDING;
   struct arts_msg_snapshot_redirect_packet_s p;
   arts_fill_packet_header(&p.header, sizeof(p), MSG_DB_SNAPSHOT_REDIRECT);
   p.header.rank = arts_global_rank_id;

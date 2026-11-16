@@ -133,10 +133,11 @@ extern "C" {
 #define INV_CACHE_STUB_SHIFT 57
 #define INV_CACHE_RW(s) ((uint32_t)(((s) >> INV_CACHE_RW_SHIFT) & 0x3ULL))
 #define INV_CACHE_STUB(s) ((uint32_t)(((s) >> INV_CACHE_STUB_SHIFT) & 0x1ULL))
-#define INV_CACHE_REQ_MASK                                                     \
-  ((0x3ULL << INV_CACHE_RW_SHIFT) | (0x1ULL << INV_CACHE_STUB_SHIFT))
+#define INV_CACHE_RW_AT(rw) ((uint64_t)(rw) << INV_CACHE_RW_SHIFT)
+#define INV_CACHE_RW_FIELD INV_CACHE_RW_AT(0x3u)
+#define INV_CACHE_STUB_BIT ((uint64_t)1ULL << INV_CACHE_STUB_SHIFT)
 #define INV_CACHE_WITH_REQ(s, rw, stub)                                        \
-  (((s) & ~INV_CACHE_REQ_MASK) |                                               \
+  (((s) & ~(INV_CACHE_RW_FIELD | INV_CACHE_STUB_BIT)) |                        \
    (((uint64_t)(rw) & 0x3ULL) << INV_CACHE_RW_SHIFT) |                         \
    (((uint64_t)(stub) & 0x1ULL) << INV_CACHE_STUB_SHIFT))
 #define INV_RW_IDLE 0u
@@ -146,6 +147,11 @@ extern "C" {
   ((((uint64_t)(ro) & INV_CACHE_ST_MASK) << INV_CACHE_RO_SHIFT) |              \
    (((uint64_t)(inflight) & INV_CACHE_FLAG_MASK) << INV_CACHE_INFLIGHT_SHIFT) |\
    (((uint64_t)(hro) & INV_CACHE_HEAD_MASK) << INV_CACHE_HEAD_RO_SHIFT))
+/* The fields in place, for the arbiter's transitions of the word. */
+#define INV_CACHE_RO_AT(ro) ((uint64_t)(ro) << INV_CACHE_RO_SHIFT)
+#define INV_CACHE_RO_FIELD INV_CACHE_RO_AT(INV_CACHE_ST_MASK)
+#define INV_CACHE_INFLIGHT_BIT (INV_CACHE_FLAG_MASK << INV_CACHE_INFLIGHT_SHIFT)
+#define INV_CACHE_HEAD_FIELD (INV_CACHE_HEAD_MASK << INV_CACHE_HEAD_RO_SHIFT)
 
 /* ── round word: the invalidation round's hold and its queue ─────────────
  * Identical under both read sources.
@@ -469,13 +475,13 @@ struct arts_db_s {
 } ARTS_ALIGNED_MAX;
 
 /* ── pure arbiters (see arbiters.c) ─────────────────────────────────────── */
-/* Pure functions, identical under both read sources: the reader word's
- * decider (fetch / park / publish / invalidate, a CAS-retry loop body), and
- * the round's own deciders, which only engine.c runs (it includes
- * arbiters.c): a release's decision on round_queue (a CAS-retry loop body)
- * and the two per-word helpers of the roster snapshot.  None knows anything
- * about ownership — that is the grant plane's, and it does not live in a
- * word. */
+/* Pure functions, identical under both read sources, in arbiters.c, which
+ * engine.c and the read-source unit include: the reader word's decider
+ * (fetch / park / publish / invalidate, a CAS-retry loop body), and the
+ * round's own deciders, which only engine.c runs: a release's decision on
+ * round_queue (a CAS-retry loop body) and the two per-word helpers of the
+ * roster snapshot.  None knows anything about ownership — that is the grant
+ * plane's, and it does not live in a word. */
 
 /* arg: ACQ_RO takes the parking node's pool index, RW_COMMIT and RW_GIVE the
  * OPEN's token; the rest ignore it. */
@@ -511,9 +517,6 @@ struct arts_db_s {
 /* A reply for no request, or a state no transition reaches: the caller
  * raises. */
 #define INV_CACHE_ACT_LATE 15
-
-uint64_t arts_inv_cache_compute_next(uint64_t cur, int op, uint32_t self_idx,
-                                     uint32_t *out_action);
 
 #ifdef __cplusplus
 }

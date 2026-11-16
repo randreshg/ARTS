@@ -75,6 +75,15 @@ extern "C" {
    (((uint64_t)(wc) & CACHE_RW_CNT_MASK) << CACHE_CNT_BITS) |                  \
    ((uint64_t)(rc) & CACHE_CNT_MASK))
 #define CACHE_MAKE(rws, ros, wc, rc) CACHE_MAKE_X(rws, ros, 0u, wc, rc)
+/* The fields in place, for the arbiter's transitions of the word. */
+#define CACHE_RW_ST_AT(st) ((uint64_t)(st) << 62)
+#define CACHE_RO_ST_AT(st) ((uint64_t)(st) << 60)
+#define CACHE_RW_ST_FIELD CACHE_RW_ST_AT(0x3u)
+#define CACHE_RO_ST_FIELD CACHE_RO_ST_AT(0x3u)
+#define CACHE_RW_CNT_ONE ((uint64_t)1ULL << CACHE_CNT_BITS)
+#define CACHE_RW_CNT_FIELD (CACHE_RW_CNT_MASK << CACHE_CNT_BITS)
+#define CACHE_RO_CNT_ONE ((uint64_t)1ULL)
+#define CACHE_RO_CNT_FIELD CACHE_CNT_MASK
 #endif /* ARTS_RETENTION_PURGE */
 
 /* ── RETAIN cache_state ─────────────────────────────────────────────────────
@@ -204,6 +213,19 @@ extern "C" {
 /* Sentinel for "no pending migration target". */
 #define ARTS_EXCL_NO_TARGET                                                    \
   ((uint32_t)((1u << CACHE_OWNER_MT_BITS) - 1)) /* 0x3FFF */
+
+/* The fields in place, for the arbiter's transitions of the word.  The
+ * sentinel target is the field's every bit. */
+#define CACHE_OWNER_BIT (CACHE_OWNER_OW_MASK << CACHE_OWNER_OW_SHIFT)
+#define CACHE_RW_ST_AT(st) ((uint64_t)(st) << CACHE_OWNER_RW_ST_SHIFT)
+#define CACHE_RO_ST_AT(st) ((uint64_t)(st) << CACHE_OWNER_RO_ST_SHIFT)
+#define CACHE_RW_ST_FIELD CACHE_RW_ST_AT(CACHE_OWNER_ST_MASK)
+#define CACHE_RO_ST_FIELD CACHE_RO_ST_AT(CACHE_OWNER_ST_MASK)
+#define CACHE_MIGRATE_TARGET_FIELD (CACHE_OWNER_MT_MASK << CACHE_OWNER_MT_SHIFT)
+#define CACHE_RW_CNT_ONE ((uint64_t)1ULL << CACHE_OWNER_WC_SHIFT)
+#define CACHE_RW_CNT_FIELD (CACHE_OWNER_WC_MASK << CACHE_OWNER_WC_SHIFT)
+#define CACHE_RO_CNT_ONE ((uint64_t)1ULL << CACHE_OWNER_RC_SHIFT)
+#define CACHE_RO_CNT_FIELD (CACHE_OWNER_RC_MASK << CACHE_OWNER_RC_SHIFT)
 #endif                                         /* ARTS_RETENTION_RETAIN */
 
 /* ── PURGE home lock_state ───────────────────────────────────────────────
@@ -259,6 +281,14 @@ extern "C" {
 #define LOCK_MAKE_STATE(bit, w, r) LOCK_MAKE_STATE_TD(0u, bit, w, r)
 #define EXCL_PHASE_BIT_RW 0u
 #define EXCL_PHASE_BIT_RO 1u
+/* The fields in place, for the arbiter's transitions of the word. */
+#define EXCL_STATE_TEARDOWN_BIT ((uint64_t)1ULL << EXCL_STATE_TEARDOWN_SHIFT)
+#define EXCL_STATE_PHASE_BIT ((uint64_t)1ULL << EXCL_STATE_BIT_SHIFT)
+#define EXCL_STATE_RWO_BIT ((uint64_t)1ULL << EXCL_STATE_RWO_SHIFT)
+#define EXCL_STATE_W_ONE ((uint64_t)1ULL << EXCL_STATE_R_BITS)
+#define EXCL_STATE_W_FIELD (EXCL_STATE_W_MASK << EXCL_STATE_R_BITS)
+#define EXCL_STATE_R_ONE ((uint64_t)1ULL)
+#define EXCL_STATE_R_FIELD EXCL_STATE_R_MASK
 #endif /* ARTS_RETENTION_PURGE */
 
 /* ── RETAIN home lock_state ────────────────────────────────────────────────
@@ -322,6 +352,14 @@ extern "C" {
    ((uint64_t)((owner) & EXCL_STATE_OWNER_MASK) << EXCL_STATE_OWNER_SHIFT) |     \
    ((uint64_t)((w) & EXCL_STATE_W_MASK) << EXCL_STATE_W_SHIFT) |                 \
    ((uint64_t)((r) & EXCL_STATE_R_MASK) << EXCL_STATE_R_SHIFT))
+
+/* The fields in place, for the arbiter's transitions of the word. */
+#define EXCL_STATE_PHASE_AT(p) ((uint64_t)(p) << EXCL_STATE_PHASE_SHIFT)
+#define EXCL_STATE_PHASE_FIELD EXCL_STATE_PHASE_AT(EXCL_STATE_PHASE_MASK)
+#define EXCL_STATE_OWNER_FIELD (EXCL_STATE_OWNER_MASK << EXCL_STATE_OWNER_SHIFT)
+#define EXCL_STATE_W_ONE ((uint64_t)1ULL << EXCL_STATE_W_SHIFT)
+#define EXCL_STATE_R_ONE ((uint64_t)1ULL << EXCL_STATE_R_SHIFT)
+#define EXCL_STATE_R_FIELD (EXCL_STATE_R_MASK << EXCL_STATE_R_SHIFT)
 #endif /* ARTS_RETENTION_RETAIN */
 
 /* ── home lock_state transition ops + grant codes (PURGE) ────────────────

@@ -89,6 +89,13 @@ static_assert(2 * VREQ_HEAD_BITS == 58,
 #define VREQ_RW_IDLE 0u
 #define VREQ_RW_OPEN 1u
 #define VREQ_RW_SENT 2u
+/* The fields in place, for the arbiter's transitions of the word. */
+#define VREQ_RW_AT(rw) ((uint64_t)(rw) << 62)
+#define VREQ_RW_FIELD VREQ_RW_AT(3u)
+#define VREQ_RO_BIT ((uint64_t)1ULL << 61)
+#define VREQ_STUB_BIT ((uint64_t)1ULL << 58)
+#define VREQ_GROUP_FIELD (VREQ_HEAD_MASK << VREQ_HEAD_BITS)
+#define VREQ_NEXT_FIELD VREQ_HEAD_MASK
 
 /* The request word's operations and the actions its arbiter returns. */
 enum {
@@ -116,9 +123,6 @@ enum {
   VREQ_ACT_LOST,
   VREQ_ACT_LATE, /* an answer for no request out: the caller raises it */
 };
-
-uint64_t arts_val_req_compute_next(uint64_t cur, int op, uint32_t idx,
-                                   uint32_t *out_act);
 
 /*--- Per-rank DB cache ---------------------------------------------------
  * Every rank that has acquired or hosts a given DB has one of these.  The

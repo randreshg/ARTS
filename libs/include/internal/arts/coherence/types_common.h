@@ -190,8 +190,35 @@ extern "C" {
 #define ARTS_GRANT_ACT_RETURN 1
 #define ARTS_GRANT_ACT_TAIL 2
 #define ARTS_GRANT_ACT_ILLEGAL 3
-unsigned int arts_grant_purge_release_next(unsigned int cur, bool purgeable,
-                                           unsigned int *out_act);
+static ARTS_ALWAYS_INLINE unsigned int
+arts_grant_purge_release_next(unsigned int cur, bool purgeable,
+                              unsigned int *out_act) {
+  if (!ARTS_GRANT_OWN_OF(cur)) {
+    /* Nothing is held, so nothing is owed: a double or spurious release. */
+    *out_act = ARTS_GRANT_ACT_NONE;
+    return cur;
+  }
+  unsigned int count = ARTS_GRANT_COUNT_OF(cur);
+  if (count == 0u) {
+    /* Possession with no hold under it.  A decrement here would borrow the
+     * possession bit and leave a count of 2^30-1 that nothing can ever drain,
+     * so the edge is refused rather than committed. */
+    *out_act = ARTS_GRANT_ACT_ILLEGAL;
+    return cur;
+  }
+  if (count > 1u) {
+    *out_act = ARTS_GRANT_ACT_NONE;
+    return ARTS_GRANT_OWN | (count - 1u);
+  }
+  if (purgeable) {
+    *out_act = ARTS_GRANT_ACT_RETURN;
+    return 0u;
+  }
+  /* The home's own idle edge: it keeps possession — there is nobody to hand
+   * it back to — and becomes the server for whatever queued while it wrote. */
+  *out_act = ARTS_GRANT_ACT_TAIL;
+  return ARTS_GRANT_OWN;
+}
 #endif /* ARTS_RETENTION_PURGE */
 
 /* Home-side single-slot return latch: no returner parked. */
@@ -233,11 +260,7 @@ struct arts_rdzv_landing_s {
   uint64_t cookie;
 #endif
 };
-#ifdef ARTS_VALIDITY_EXCL
-#define ARTS_RDZV_NO_LANDING ((struct arts_rdzv_landing_s){0, 0, 0})
-#else
-#define ARTS_RDZV_NO_LANDING ((struct arts_rdzv_landing_s){0, 0, 0, 0})
-#endif
+#define ARTS_RDZV_NO_LANDING ((struct arts_rdzv_landing_s){0})
 
 /* The home's ownership-request FIFO: one queued requester per node.  Producers
  * are request handlers on any thread; the single consumer is the holder of the

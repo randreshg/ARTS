@@ -33,6 +33,9 @@
 #include "arts/utils/malloc.h"
 #include "arts/counter/Preamble.h"
 
+/* ===== pure arbiters (private copy — see arbiters.c) ==================== */
+#include "arbiters.c"
+
 /* ===== acquire ==========================================================
  * The two planes are answered independently: a write waits for the write
  * right, which other ranks' writers release, and a read waits for no EDT
@@ -108,7 +111,7 @@ void arts_handler_db_acquire(void *item, void *args) {
         w->slot = slot;
         w->serve = NULL; /* local waiter: the drain resumes the EDT */
         w->requester = arts_global_rank_id;
-        w->rdzv = (struct arts_rdzv_landing_s){0, 0, 0, 0};
+        w->rdzv = ARTS_RDZV_NO_LANDING;
         arts_lf_stack_push(&cache->publication_waiters, &w->link);
         /* Race recovery: a publication may have landed between the read and
          * the push — drain (our own node included) so nobody parks forever.
@@ -167,7 +170,7 @@ void arts_handler_db_acquire(void *item, void *args) {
     cur = atomic_load_explicit(&cache->cache_state, memory_order_acquire);
     atomic_store_explicit(&node->next, INV_CACHE_HEAD_RO(cur),
                           memory_order_relaxed);
-    next = arts_inv_cache_compute_next(cur, INV_CACHE_OP_ACQ_RO, idx, &act);
+    next = inv_cache_compute_next(cur, INV_CACHE_OP_ACQ_RO, idx, &act);
     if (next == cur) {
       break; /* copy turned valid mid-retry: no word write */
     }

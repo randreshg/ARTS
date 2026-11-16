@@ -704,7 +704,7 @@ static void sharer_owed_deliver(void) {
 #if REVOKES
 /* ===== the baton's tenure ============================================== */
 
-static const struct arts_rdzv_landing_s g_no_landing = {0, 0, 0, 0};
+static const struct arts_rdzv_landing_s g_no_landing = {0};
 
 static uint64_t requester_token(unsigned int rank) { return 0x9000u + rank; }
 

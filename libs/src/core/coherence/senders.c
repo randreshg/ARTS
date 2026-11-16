@@ -241,7 +241,7 @@ void arts_send_db_snapshot_request(struct arts_db_cache_s *cache) {
    * else by the GUID's szhint bound — so even a first touch usually carries
    * a landing and the size-only CTS round survives only as the sentinel
    * fallback (whose handler re-enters this sender). */
-  struct arts_rdzv_landing_s rdzv = {0, 0, 0, 0};
+  struct arts_rdzv_landing_s rdzv = ARTS_RDZV_NO_LANDING;
   uint64_t fetch_size = arts_db_first_fetch_size(cache);
   if (fetch_size > 0) {
     (void)arts_db_buf_landing_alloc(fetch_size, &rdzv);

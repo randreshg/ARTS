@@ -64,8 +64,9 @@
 
 #include "event_arbiter.c" /* event_compute_next — the simple-arm decider */
 
-static void event_simple_step(struct arts_event_s *e, arts_guid_t guid, int op,
-                              arts_guid_t data_guid);
+static ARTS_ALWAYS_INLINE void event_simple_step(struct arts_event_s *e,
+                                                 arts_guid_t guid, int op,
+                                                 arts_guid_t data_guid);
 
 #include "arts.h"
 #include "arts/edt.h"
@@ -403,16 +404,13 @@ void arts_handler_event_satisfy_slot(void *item, void *vargs) {
   }
 
   /* Non-CHANNEL path: ONCE / IDEM / STICKY / COUNTED / LATCH. */
-  int op;
   if (slot == ARTS_EVENT_LATCH_INCR_SLOT) {
-    op = EV_OP_SAT_INCR;
+    event_simple_step(event, event_guid, EV_OP_SAT_INCR, data_guid);
   } else if (slot == ARTS_EVENT_LATCH_DECR_SLOT) {
-    op = EV_OP_SAT_DECR;
+    event_simple_step(event, event_guid, EV_OP_SAT_DECR, data_guid);
   } else {
     ARTS_ERROR("Event latch invalid slot %u", slot);
-    return;
   }
-  event_simple_step(event, event_guid, op, data_guid);
 }
 
 /* Has the payload been published?  FIRING means a satisfier claimed the fire
@@ -421,6 +419,21 @@ void arts_handler_event_satisfy_slot(void *item, void *vargs) {
 static inline bool event_simple_published(struct arts_event_s *e) {
   return EV_FIRE(atomic_load_explicit(&e->simple.state,
                                       memory_order_acquire)) == EV_FIRE_FIRED;
+}
+
+/* One transition of the word, committed; returns what it awards. */
+static ARTS_ALWAYS_INLINE uint32_t event_simple_commit(struct arts_event_s *e,
+                                                       int op) {
+  uint64_t cur, next;
+  uint32_t act;
+  do {
+    cur = atomic_load_explicit(&e->simple.state, memory_order_acquire);
+    next = event_compute_next(cur, op, e->simple.counted != 0u,
+                              e->simple.auto_destroy != 0u, &act);
+  } while (!atomic_compare_exchange_weak_explicit(&e->simple.state, &cur, next,
+                                                  memory_order_acq_rel,
+                                                  memory_order_acquire));
+  return act;
 }
 
 /* Commit one transition and run what it awards.
@@ -437,31 +450,20 @@ static inline bool event_simple_published(struct arts_event_s *e) {
  * writes simple.data and only then commits FIRING->FIRED, whose own action is
  * the drain.  A binder that arrives between the two parks, and the publisher's
  * drain collects it. */
-static void event_simple_step(struct arts_event_s *e, arts_guid_t guid, int op,
-                              arts_guid_t data_guid) {
-  uint64_t cur, next;
-  uint32_t act;
-  do {
-    cur = atomic_load_explicit(&e->simple.state, memory_order_acquire);
-    next = event_compute_next(cur, op, e->simple.counted != 0u,
-                              e->simple.auto_destroy != 0u, &act);
-  } while (!atomic_compare_exchange_weak_explicit(
-      &e->simple.state, &cur, next, memory_order_acq_rel,
-      memory_order_acquire));
-
-  switch (act & EV_ACT_BASE_MASK) {
-  case EV_ACT_FIRE:
+static ARTS_ALWAYS_INLINE void event_simple_step(struct arts_event_s *e,
+                                                 arts_guid_t guid, int op,
+                                                 arts_guid_t data_guid) {
+  uint32_t act = event_simple_commit(e, op);
+  if ((act & EV_ACT_BASE_MASK) == EV_ACT_FIRE) {
     /* We claimed FIRING.  Publish the payload, then commit the second phase;
      * its DRAIN action serves everyone parked, including anyone who parked
-     * while we were between the two. */
+     * while we were between the two.  The claim itself awards no destroy:
+     * the drain and any destroy that follows are the second phase's. */
     e->simple.data = e->simple.discard_data ? NULL_GUID : data_guid;
-    event_simple_step(e, guid, EV_OP_PUBLISH, NULL_GUID);
-    return; /* the PUBLISH step owns the drain and any destroy that follows */
-  case EV_ACT_DRAIN:
+    act = event_simple_commit(e, EV_OP_PUBLISH);
+  }
+  if ((act & EV_ACT_BASE_MASK) == EV_ACT_DRAIN) {
     drain_simple_chain(e, guid);
-    break;
-  default:
-    break;
   }
   if (act & EV_ACT_DESTROY) {
     if (arts_ooo_retire(guid, e->self_cb)) {

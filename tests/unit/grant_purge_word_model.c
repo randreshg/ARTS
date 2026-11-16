@@ -2,7 +2,8 @@
  *
  * grant_purge_word_model — exhaustive model check of the PURGE retention's
  * grant word and its one pure decider, arts_grant_purge_release_next
- * (coherence/grant_purge.c, declared non-static for exactly this purpose).
+ * (arts/coherence/types_common.h, inlined into its CAS in grant_purge.c and
+ * into this test alike).
  *
  * The word packs two facts that are surrendered independently: an explicit
  * possession bit (own) and a pure activity count sharing the remaining bits.

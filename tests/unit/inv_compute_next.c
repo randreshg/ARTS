@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * INV arts_inv_cache_compute_next / inv_round_submit_next — the PURE
+ * INV inv_cache_compute_next / inv_round_submit_next — the PURE
  * decisions over the packed reader word and the round word [entries|OPEN].
  *
  * Both deciders are identical under either read source (the read source
@@ -88,7 +88,7 @@ static int g_fail;
 static void expect(const char *what, uint64_t cur, int op, uint32_t idx,
                    uint64_t want, uint32_t want_act) {
   uint32_t act = 0xFFFFFFFFu;
-  uint64_t next = arts_inv_cache_compute_next(cur, op, idx, &act);
+  uint64_t next = inv_cache_compute_next(cur, op, idx, &act);
   if (next != want || act != want_act) {
     (void)fprintf(stderr,
                   "FAIL inv_compute_next: %s -- got word %016llx act %u, "
@@ -218,7 +218,7 @@ static void walk(void) {
       }
       uint32_t act = 0xFFFFFFFFu;
       uint64_t post =
-          arts_inv_cache_compute_next(pre, steps[s].op, steps[s].idx, &act);
+          inv_cache_compute_next(pre, steps[s].op, steps[s].idx, &act);
       judge(pre, steps[s].op, steps[s].idx, post, act);
       if (!seen(post)) {
         if (g_nseen == MAX_WORDS) {

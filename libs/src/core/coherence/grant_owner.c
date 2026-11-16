@@ -284,7 +284,7 @@ void arts_handler_db_grant_confirm(
    * it reads the claim count before it looks. */
   uint64_t seen = atomic_load_explicit(&db->grant_baton, memory_order_acquire);
   unsigned int piggyback = ARTS_NO_PENDING_OWNER;
-  struct arts_rdzv_landing_s piggyback_rdzv = {0, 0, 0, 0};
+  struct arts_rdzv_landing_s piggyback_rdzv = ARTS_RDZV_NO_LANDING;
   uint64_t piggyback_have = ARTS_GRANT_VERSION_NONE;
   uint64_t piggyback_token = 0u;
   {

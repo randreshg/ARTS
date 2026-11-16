@@ -36,8 +36,8 @@ enum arts_cover_gate_op {
  * the gate marked with rwo clear, and the caller tears down).  An arrival the
  * gate does not await is fatal after its RMW has committed, so while the
  * abort prints another thread's step may read a corrupted gate. */
-static inline bool arts_cover_gate_step(struct arts_db_s *db,
-                                        enum arts_cover_gate_op op) {
+static ARTS_ALWAYS_INLINE bool
+arts_cover_gate_step(struct arts_db_s *db, enum arts_cover_gate_op op) {
   uint32_t pre;
   if (op == ARTS_COVER_GATE_MARK) {
     /* A duplicate destroy writes the word it found and reports no edge. */

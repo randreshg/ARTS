@@ -1072,19 +1072,18 @@ void arts_handler_db_acquire(void *item, void *args) {
   arts_edt_dep_t *depv = (arts_edt_dep_t *)arts_get_depv(edt);
   arts_db_access_mode_t mode = depv[slot].mode;
 
-  int op = (mode == DB_MODE_RW) ? CACHE_OP_ACQ_RW : CACHE_OP_ACQ_RO;
-  arts_lf_stack_t *q =
-      (mode == DB_MODE_RW) ? &cache->rw_pending : &cache->ro_pending;
+  bool write = mode == DB_MODE_RW;
+  arts_lf_stack_t *q = write ? &cache->rw_pending : &cache->ro_pending;
   uint32_t act;
   uint64_t cur, next;
   do {
     cur = atomic_load_explicit(&cache->cache_state, memory_order_acquire);
-    next = cache_owner_compute_next(cur, op, 0u, &act);
+    next = write ? cache_owner_compute_next(cur, CACHE_OP_ACQ_RW, 0u, &act)
+                 : cache_owner_compute_next(cur, CACHE_OP_ACQ_RO, 0u, &act);
     if (act == CACHE_ACT_LATE) {
       ARTS_ERROR("lock: guid %lu has more %s acquires counted on one rank "
                  "than its cache word can hold (word=%llx)",
-                 (unsigned long)cache->db_guid,
-                 mode == DB_MODE_RW ? "write" : "read",
+                 (unsigned long)cache->db_guid, write ? "write" : "read",
                  (unsigned long long)cur);
     }
   } while (!atomic_compare_exchange_weak_explicit(&cache->cache_state, &cur,
@@ -1473,13 +1472,16 @@ static void lock_deliver_commit(struct arts_db_s *db, arts_guid_t db_guid,
      * least one, and a grant marked for return is repaid at the count's zero
      * edge by the release that reaches it. */
     uint32_t taken = arts_excl_take_readers_aside(cache);
-    int op = tag != 0u ? CACHE_OP_GRANT_RO_MARKED : CACHE_OP_GRANT_RO;
+    bool marked = tag != 0u;
     uint32_t act;
     uint64_t cur, next;
     bool installed = false;
     do {
       cur = atomic_load_explicit(&cache->cache_state, memory_order_acquire);
-      next = cache_owner_compute_next(cur, op, taken, &act);
+      next = marked ? cache_owner_compute_next(cur, CACHE_OP_GRANT_RO_MARKED,
+                                               taken, &act)
+                    : cache_owner_compute_next(cur, CACHE_OP_GRANT_RO, taken,
+                                               &act);
       if (act == CACHE_ACT_LATE) {
         if (CACHE_RW_ST(cur) == CACHE_ST_GRANT || CACHE_OWNER(cur) == 1u) {
           ARTS_ERROR("lock: guid %lu got a read grant while it holds the "
@@ -2030,10 +2032,11 @@ static void excl_confirm_answer(uint64_t home_token, arts_guid_t db_guid,
      * target).  front must equal new_owner (the home FORWARDed migrate to
      * the queue front, and CONFIRM comes only from that owner).  The target
      * was pushed before the FORWARD that made it one, and only its own
-     * CONFIRM pops it, so the queue is never empty here; an empty one would
-     * wrap w below.  A reused label can reach it, since its generations are
-     * not told apart: a CONFIRM meant for the previous generation lands on
-     * the next one's home. */
+     * CONFIRM pops it, so the queue is never empty here; an empty one means
+     * w is zero, whose decrement below borrows from the fields above it.  A
+     * reused label can reach it, since its generations are not told apart: a
+     * CONFIRM meant for the previous generation lands on the next one's
+     * home. */
     unsigned int front;
     bool popped =
         arts_home_grantreq_queue_pop(&db->rw_waiters, &front, NULL, NULL, NULL);
@@ -2088,8 +2091,8 @@ static void excl_roret_on(struct arts_db_s *db) {
     cur = atomic_load_explicit(&db->lock_state, memory_order_acquire);
     /* r counts the read requests taken in whose RO_RETURN has not come back,
      * and a RO_RETURN follows its request's answer, so it never finds r at
-     * zero; a zero r would wrap and open a spurious flip.  A reused label can
-     * reach it, as a CONFIRM can. */
+     * zero; a reused label can, as a CONFIRM can, and the decrement would
+     * borrow from w. */
     assert(LOCK_R(cur) != 0u);
     next =
         lock_owner_compute_next(cur, EXCL_OP_RO_RET, /*new_owner=*/0u, &action);

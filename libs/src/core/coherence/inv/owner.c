@@ -41,6 +41,9 @@
 #include "arts/utils/malloc.h"
 #include "arts/counter/Preamble.h"
 
+/* ===== pure arbiters (private copy — see arbiters.c) ==================== */
+#include "arbiters.c"
+
 /* ===== acquire ==========================================================
  * The two planes are answered independently: a write waits for the write
  * right, which other ranks' writers release, and a read waits for no EDT
@@ -151,7 +154,7 @@ void arts_handler_db_acquire(void *item, void *args) {
     cur = atomic_load_explicit(&cache->cache_state, memory_order_acquire);
     atomic_store_explicit(&node->next, INV_CACHE_HEAD_RO(cur),
                           memory_order_relaxed);
-    next = arts_inv_cache_compute_next(cur, INV_CACHE_OP_ACQ_RO, idx, &act);
+    next = inv_cache_compute_next(cur, INV_CACHE_OP_ACQ_RO, idx, &act);
     if (next == cur) {
       break; /* copy turned valid mid-retry: no word write */
     }

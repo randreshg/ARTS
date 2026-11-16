@@ -950,10 +950,10 @@ static void write_claimed(void) {
 }
 
 static void write_retired(int how) {
-  static const char *names[] = {"write size round on a retired descriptor",
-                                "write grant on a retired descriptor",
-                                "write pairing callback on a retired "
-                                "descriptor"};
+  static const char *names[] = {
+      "write size round on a retired descriptor",
+      "write grant on a retired descriptor",
+      "write pairing callback on a retired descriptor"};
   begin(names[how], how == 0 ? GUID_CLAIM : GUID_SIZED, false);
   acquire(DB_MODE_RW);
   if (how == 0) {

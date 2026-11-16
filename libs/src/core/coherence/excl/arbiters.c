@@ -13,6 +13,9 @@
  * (tests/unit/excl_compute_next.c) also #includes this file directly for
  * standalone testing of the pure functions.
  *
+ * Every arbiter is ARTS_ALWAYS_INLINE; a case changes only the fields its
+ * transition moves, in place in the word.
+ *
  * NOT listed in CMakeLists.txt as a standalone TU.
  */
 #ifdef ARTS_RETENTION_PURGE
@@ -21,6 +24,13 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+
+/* A marked home with nothing counted and nothing awaited: torn down. */
+static ARTS_ALWAYS_INLINE bool excl_torn_down(uint64_t s) {
+  return (s & (EXCL_STATE_TEARDOWN_BIT | EXCL_STATE_RWO_BIT |
+               EXCL_STATE_W_FIELD | EXCL_STATE_R_FIELD)) ==
+         EXCL_STATE_TEARDOWN_BIT;
+}
 
 /* ===== excl_compute_next ================================================
  *
@@ -32,13 +42,18 @@
  *           / EXCL_OP_TEARDOWN / EXCL_OP_RWO_ARRIVE
  * grant codes: LOCK_GRANT_NONE / LOCK_GRANT_ONE_RW / LOCK_GRANT_ALL_RO /
  *              LOCK_GRANT_DESTROY
+ *
+ * state_bit is meaningful only with both counts above zero, so every
+ * transition leaves it clear when one of them is zero.  w and r never pass
+ * their fields, and a release finds its count above zero, the caller's
+ * precondition, which only a reused label breaks; a count moves by adding its
+ * unit to the word, so a release at zero borrows from the bits above it.
  */
-static uint64_t excl_compute_next(uint64_t cur, int op, uint32_t *out_grant) {
+static ARTS_ALWAYS_INLINE uint64_t excl_compute_next(uint64_t cur, int op,
+                                                     uint32_t *out_grant) {
   uint32_t w = EXCL_STATE_W(cur);
   uint32_t r = EXCL_STATE_R(cur);
-  uint32_t bit = EXCL_STATE_BIT(cur);
-  uint32_t td = EXCL_STATE_TEARDOWN(cur);
-  uint32_t rwo = EXCL_STATE_RWO(cur);
+  uint64_t next = cur;
   uint32_t grant = LOCK_GRANT_NONE;
   /* Torn down (marked, nothing counted, nothing awaited): an acquire arriving
    * now was still pending at the destroy, which the contract leaves
@@ -46,8 +61,7 @@ static uint64_t excl_compute_next(uint64_t cur, int op, uint32_t *out_grant) {
    * neither counted nor granted, and the caller answers nothing: a refused
    * write request's queued node goes with the descriptor, a refused read
    * request's is freed by its handler. */
-  if (td && w == 0 && r == 0 && rwo == 0 &&
-      (op == EXCL_OP_RW_ACQ || op == EXCL_OP_RO_ACQ)) {
+  if ((op == EXCL_OP_RW_ACQ || op == EXCL_OP_RO_ACQ) && excl_torn_down(cur)) {
     *out_grant = LOCK_GRANT_NONE;
     return cur;
   }
@@ -60,45 +74,57 @@ static uint64_t excl_compute_next(uint64_t cur, int op, uint32_t *out_grant) {
      * writer serves it: state_bit MUST be left unchanged — flipping it to RO
      * here would corrupt the live RW phase into an RO phase.  Hence the guard
      * is `w == 0 && r > 0`, NOT `r > 0`. */
+    next = cur + EXCL_STATE_W_ONE;
     if (w == 0 && r == 0) {
       grant = LOCK_GRANT_ONE_RW; /* none -> rw */
-    } else if (w == 0 && r > 0) {
-      bit = EXCL_PHASE_BIT_RO; /* RO held (w was 0), RW waits */
+    } else if (w == 0) {
+      next |= EXCL_STATE_PHASE_BIT; /* RO held (w was 0), RW waits */
     }
     /* else w>0 (rw->rw): bit unchanged, no grant — the held writer serves it.
      */
-    w += 1;
+    if (r == 0) {
+      next &= ~EXCL_STATE_PHASE_BIT;
+    }
     break;
   case EXCL_OP_RO_ACQ:
     /* r+1.  none->ro / ro->ro drains all RO (D7: new RO grants immediately even
      * with RW waiting); if w>0 (RW held) the RO parks (state_bit=RW). */
+    next = cur + EXCL_STATE_R_ONE;
     if (w == 0) {
       grant = LOCK_GRANT_ALL_RO; /* none->ro or ro->ro */
-      bit = EXCL_PHASE_BIT_RO;
-    } else if (bit == EXCL_PHASE_BIT_RO && r > 0) {
+      next &= ~EXCL_STATE_PHASE_BIT;
+    } else if ((cur & EXCL_STATE_PHASE_BIT) != 0u && r > 0) {
       grant = LOCK_GRANT_ALL_RO; /* RO phase extends (D7) */
     } else {
-      bit = EXCL_PHASE_BIT_RW; /* RW held, RO waits */
+      next &= ~EXCL_STATE_PHASE_BIT; /* RW held, RO waits */
     }
-    r += 1;
     break;
   case EXCL_OP_RW_REL:
     /* w-1.  w-1>0 grants next writer (D6); w-1==0 && r>0 flips to RO + drains;
      * w-1==0 && r==0 -> none. */
-    w -= 1;
-    if (w > 0) {
+    next = cur - EXCL_STATE_W_ONE;
+    if (w - 1u > 0u) {
       grant = LOCK_GRANT_ONE_RW; /* rw->rw */
-    } else if (r > 0) {
-      grant = LOCK_GRANT_ALL_RO; /* rw->ro */
-      bit = EXCL_PHASE_BIT_RO;
+      if (r == 0) {
+        next &= ~EXCL_STATE_PHASE_BIT;
+      }
+    } else {
+      if (r > 0) {
+        grant = LOCK_GRANT_ALL_RO; /* rw->ro */
+      }
+      next &= ~EXCL_STATE_PHASE_BIT;
     }
     break;
   case EXCL_OP_RO_REL:
     /* r-1.  r-1==0 && w>0 flips to RW + grants one; else nothing. */
-    r -= 1;
-    if (r == 0 && w > 0) {
-      grant = LOCK_GRANT_ONE_RW; /* ro->rw */
-      bit = EXCL_PHASE_BIT_RW;
+    next = cur - EXCL_STATE_R_ONE;
+    if (r - 1u == 0u) {
+      if (w > 0) {
+        grant = LOCK_GRANT_ONE_RW; /* ro->rw */
+      }
+      next &= ~EXCL_STATE_PHASE_BIT;
+    } else if (w == 0) {
+      next &= ~EXCL_STATE_PHASE_BIT;
     }
     break;
   case EXCL_OP_TEARDOWN:
@@ -106,21 +132,30 @@ static uint64_t excl_compute_next(uint64_t cur, int op, uint32_t *out_grant) {
      * concurrent last release cannot each conclude the other will tear down.
      * Only the op that FIRST sets the mark can claim the teardown here:
      * duplicate destroys are designed into the protocol. */
-    if (td == 0u) {
-      td = 1u;
-      if (w == 0 && r == 0 && rwo == 0) {
+    if ((cur & EXCL_STATE_TEARDOWN_BIT) == 0u) {
+      next |= EXCL_STATE_TEARDOWN_BIT;
+      if (excl_torn_down(next)) {
         grant = LOCK_GRANT_DESTROY; /* lock already free — tear down now */
       }
+    }
+    if (w == 0 || r == 0) {
+      next &= ~EXCL_STATE_PHASE_BIT;
     }
     break;
   case EXCL_OP_RWO_ARRIVE:
     /* Precondition (caller-checked): rwo is set. */
-    rwo = 0u;
-    if (td && w == 0 && r == 0) {
+    next = cur & ~EXCL_STATE_RWO_BIT;
+    if (excl_torn_down(next)) {
       grant = LOCK_GRANT_DESTROY;
+    }
+    if (w == 0 || r == 0) {
+      next &= ~EXCL_STATE_PHASE_BIT;
     }
     break;
   default:
+    if (w == 0 || r == 0) {
+      next &= ~EXCL_STATE_PHASE_BIT;
+    }
     break;
   }
   /* A release that LANDS on the zero edge under an existing mark is the other
@@ -128,17 +163,11 @@ static uint64_t excl_compute_next(uint64_t cur, int op, uint32_t *out_grant) {
    * when both counts are already zero, and only one CAS can carry a counter to
    * zero.  No grant can be owed at that instant, so setting `grant` here
    * discards nothing. */
-  if (td && (op == EXCL_OP_RW_REL || op == EXCL_OP_RO_REL) && w == 0 &&
-      r == 0 && rwo == 0) {
+  if ((op == EXCL_OP_RW_REL || op == EXCL_OP_RO_REL) && excl_torn_down(next)) {
     grant = LOCK_GRANT_DESTROY;
   }
-  /* Normalize state_bit when one counter hit 0 (state_bit only meaningful with
-   * both > 0). */
-  if (w == 0 || r == 0) {
-    bit = 0;
-  }
   *out_grant = grant;
-  return LOCK_MAKE_STATE_FULL(td, bit, rwo, w, r);
+  return next;
 }
 
 /* ===== cache_compute_next ==============================================
@@ -171,14 +200,17 @@ static uint64_t excl_compute_next(uint64_t cur, int op, uint32_t *out_grant) {
  * them to ro_aside), so the write turn's zero edge reads holders alone and
  * ends without them; their request stays out and its grant returns them.
  * The REL_* ops carry the count-- inside the CAS, since the decrement and
- * the 0-edge state change must be atomic together. */
-static uint64_t cache_compute_next(uint64_t cur, int op, uint32_t taken,
-                                   uint32_t *out_action) {
+ * the 0-edge state change must be atomic together; a release finds its count
+ * above zero (its caller checks), so the count moves by subtracting its unit.
+ * A refused transition (LATE) leaves the word as it is. */
+static ARTS_ALWAYS_INLINE uint64_t cache_compute_next(uint64_t cur, int op,
+                                                      uint32_t taken,
+                                                      uint32_t *out_action) {
   uint32_t rws = CACHE_RW_ST(cur);
   uint32_t ros = CACHE_RO_ST(cur);
-  uint32_t stub = CACHE_STUB(cur);
   uint32_t wc = CACHE_RW_CNT(cur);
   uint32_t rc = CACHE_RO_CNT(cur);
+  uint64_t next = cur;
   uint32_t act = CACHE_ACT_NONE;
   switch (op) {
   case CACHE_OP_ACQ_RW:
@@ -186,13 +218,13 @@ static uint64_t cache_compute_next(uint64_t cur, int op, uint32_t taken,
       act = CACHE_ACT_LATE; /* the count field is full: the caller raises */
       break;
     }
-    wc += 1;
+    next = cur + CACHE_RW_CNT_ONE;
     if (rws == CACHE_ST_GRANT) {
       act = CACHE_ACT_SELF_SERVE; /* join the held RW phase directly */
     } else if (rws == CACHE_ST_IDLE) {
       /* First writer of the round: request home at once, whatever the read
        * axis holds. */
-      rws = CACHE_ST_REQ;
+      next |= CACHE_RW_ST_AT(CACHE_ST_REQ);
       act = CACHE_ACT_SEND_RW;
     } else {
       act = CACHE_ACT_PARK; /* the write request is out: join it */
@@ -203,13 +235,13 @@ static uint64_t cache_compute_next(uint64_t cur, int op, uint32_t taken,
       act = CACHE_ACT_LATE;
       break;
     }
-    rc += 1;
+    next = cur + CACHE_RO_CNT_ONE;
     if (rws == CACHE_ST_GRANT || ros == CACHE_ST_GRANT) {
       act = CACHE_ACT_SELF_SERVE; /* RW⊇RO local join, or RO phase held */
     } else if (ros == CACHE_ST_IDLE) {
       /* First reader of the round: request home at once, whatever the write
        * axis holds. */
-      ros = CACHE_ST_REQ;
+      next |= CACHE_RO_ST_AT(CACHE_ST_REQ);
       act = CACHE_ACT_SEND_RO;
     } else {
       act = CACHE_ACT_PARK; /* the read request is out: join it */
@@ -221,15 +253,16 @@ static uint64_t cache_compute_next(uint64_t cur, int op, uint32_t taken,
      * the home, never answered).  The home grants a write turn only once
      * every read grant came back, so no read grant is held, and readers are
      * counted only on a read request that is out.  Anything else is a grant
-     * for no request. */
+     * for no request.  Any reply clears the stub bit (the home is installed
+     * and the claim elsewhere), and the readers parked on the read request
+     * leave the count for the caller. */
     if (rws != CACHE_ST_REQ || wc == 0u || ros == CACHE_ST_GRANT ||
         (ros == CACHE_ST_IDLE && rc != 0u)) {
       act = CACHE_ACT_LATE;
       break;
     }
-    rws = CACHE_ST_GRANT;
-    stub = 0u; /* any reply: the home is installed and the claim elsewhere */
-    rc = 0u;   /* the readers parked on the read request: the caller's */
+    next = (cur & ~(CACHE_RW_ST_FIELD | CACHE_STUB_BIT | CACHE_RO_CNT_FIELD)) |
+           CACHE_RW_ST_AT(CACHE_ST_GRANT);
     act = CACHE_ACT_DRAIN_RW;
     break;
   case CACHE_OP_GRANT_RO: {
@@ -245,9 +278,8 @@ static uint64_t cache_compute_next(uint64_t cur, int op, uint32_t taken,
       act = CACHE_ACT_LATE;
       break;
     }
-    ros = CACHE_ST_GRANT;
-    stub = 0u;
-    rc = (uint32_t)sum;
+    next = ((cur + taken) & ~(CACHE_RO_ST_FIELD | CACHE_STUB_BIT)) |
+           CACHE_RO_ST_AT(CACHE_ST_GRANT);
     act = CACHE_ACT_DRAIN_RO;
     break;
   }
@@ -271,26 +303,26 @@ static uint64_t cache_compute_next(uint64_t cur, int op, uint32_t taken,
       act = CACHE_ACT_LATE;
       break;
     }
-    rws = CACHE_ST_GRANT;
-    stub = 0u;
-    wc += 1;
-    rc = 0u;
+    next = ((cur + CACHE_RW_CNT_ONE) &
+            ~(CACHE_RW_ST_FIELD | CACHE_STUB_BIT | CACHE_RO_CNT_FIELD)) |
+           CACHE_RW_ST_AT(CACHE_ST_GRANT);
     act = CACHE_ACT_DRAIN_RW;
     break;
   case CACHE_OP_REL_RW: /* precond: rws==GRANT */
-    wc -= 1;
-    if (wc == 0 && rc == 0) {
-      rws = CACHE_ST_IDLE;
+    next = cur - CACHE_RW_CNT_ONE;
+    if ((next & (CACHE_RW_CNT_FIELD | CACHE_RO_CNT_FIELD)) == 0u) {
+      next &= ~CACHE_RW_ST_FIELD;
       act = CACHE_ACT_REL_RW; /* last holder of the RW grant → publish */
     }
     break;
   case CACHE_OP_REL_RO:
-    rc -= 1;
-    if (rws == CACHE_ST_GRANT && wc == 0 && rc == 0) {
-      rws = CACHE_ST_IDLE;
+    next = cur - CACHE_RO_CNT_ONE;
+    if (rws == CACHE_ST_GRANT &&
+        (next & (CACHE_RW_CNT_FIELD | CACHE_RO_CNT_FIELD)) == 0u) {
+      next &= ~CACHE_RW_ST_FIELD;
       act = CACHE_ACT_REL_RW; /* last RO joiner under an RW grant → publish */
-    } else if (ros == CACHE_ST_GRANT && rc == 0) {
-      ros = CACHE_ST_IDLE;
+    } else if (ros == CACHE_ST_GRANT && (next & CACHE_RO_CNT_FIELD) == 0u) {
+      next &= ~CACHE_RO_ST_FIELD;
       act = CACHE_ACT_REL_RO; /* last holder of the RO grant → notify */
     }
     break;
@@ -298,16 +330,13 @@ static uint64_t cache_compute_next(uint64_t cur, int op, uint32_t taken,
     break;
   }
   *out_action = act;
-  if (act == CACHE_ACT_LATE) {
-    return cur;
-  }
-  return CACHE_MAKE_X(rws, ros, stub, wc, rc);
+  return next;
 }
 
 /* The readers a write-permission transition (CACHE_ACT_DRAIN_RW) took out of
  * the word's read count, read from its pre-image: its committer adds them to
  * the cache's ro_aside. */
-static inline uint32_t cache_set_aside(uint64_t pre) {
+static ARTS_ALWAYS_INLINE uint32_t cache_set_aside(uint64_t pre) {
   return CACHE_RO_ST(pre) == CACHE_ST_REQ ? CACHE_RO_CNT(pre) : 0u;
 }
 
@@ -316,8 +345,9 @@ static inline uint32_t cache_set_aside(uint64_t pre) {
  * caller raises when it is not.  The next word is the word with the stub bit
  * clear, as after any reply; the request stays out, so neither its axis nor
  * a count moves. */
-static inline uint64_t cache_size_round_next(uint64_t cur, bool write,
-                                             bool *at_req) {
+static ARTS_ALWAYS_INLINE uint64_t cache_size_round_next(uint64_t cur,
+                                                         bool write,
+                                                         bool *at_req) {
   *at_req = (write ? CACHE_RW_ST(cur) : CACHE_RO_ST(cur)) == CACHE_ST_REQ;
   return cur & ~CACHE_STUB_BIT;
 }
@@ -333,7 +363,7 @@ static inline uint64_t cache_size_round_next(uint64_t cur, bool write,
 /* Whether a read acquire on this word is served here at once: a write grant
  * covers it (RW⊇RO), a read grant (marked for return or not) serves it, or
  * the canonical bytes are resident. */
-static inline bool cache_owner_serves_ro(uint64_t s) {
+static ARTS_ALWAYS_INLINE bool cache_owner_serves_ro(uint64_t s) {
   uint32_t ros = CACHE_RO_ST(s);
   return CACHE_RW_ST(s) == CACHE_ST_GRANT || ros == CACHE_ST_GRANT ||
          ros == CACHE_ST_GRANT_PURGE || CACHE_OWNER(s) == 1u;
@@ -350,11 +380,11 @@ static inline bool cache_owner_serves_ro(uint64_t s) {
  * is either all parked waiters or all live holders, and a transition that
  * starts serving owes the parked count its pre-image shows, counted waiters
  * whose push has not landed included. */
-static inline uint32_t cache_owner_parked_rw(uint64_t s) {
+static ARTS_ALWAYS_INLINE uint32_t cache_owner_parked_rw(uint64_t s) {
   return (CACHE_RW_ST(s) == CACHE_ST_REQ) ? CACHE_RW_CNT(s) : 0u;
 }
 
-static inline uint32_t cache_owner_parked_ro(uint64_t s) {
+static ARTS_ALWAYS_INLINE uint32_t cache_owner_parked_ro(uint64_t s) {
   return cache_owner_serves_ro(s) ? 0u : CACHE_RO_CNT(s);
 }
 
@@ -396,26 +426,36 @@ static inline uint32_t cache_owner_parked_ro(uint64_t s) {
  * create's hold): the waiters a transition owes are a function of its
  * pre-image (cache_owner_parked_rw/_ro above, with the readers the cache set
  * aside for a read answer).  The REL_* ops carry the count-- inside the CAS,
- * because the decrement and the 0-edge transition must be atomic together.
+ * because the decrement and the 0-edge transition must be atomic together; a
+ * release finds its count above zero (its caller checks), so the count moves
+ * by subtracting its unit.  A refused transition (LATE) leaves the word as it
+ * is.
  */
-static uint64_t cache_owner_compute_next(uint64_t cur, int op, uint32_t taken,
-                                         uint32_t *out_action) {
+static ARTS_ALWAYS_INLINE uint64_t cache_owner_compute_next(
+    uint64_t cur, int op, uint32_t taken, uint32_t *out_action) {
   uint32_t own = CACHE_OWNER(cur);
   uint32_t rws = CACHE_RW_ST(cur);
   uint32_t ros = CACHE_RO_ST(cur);
   uint32_t mt = CACHE_MIGRATE_TARGET(cur);
   uint32_t wc = CACHE_RW_CNT(cur);
   uint32_t rc = CACHE_RO_CNT(cur);
-  uint64_t stub_bit = cur & CACHE_OWNER_STUB_BIT;
-  uint64_t granted = cur & CACHE_OWNER_LEASED_MASK;
+  uint64_t next = cur;
   uint32_t act = CACHE_ACT_NONE;
+  /* ro_granted = "this rank owes the home exactly one RO_RETURN" (and, while
+   * the read request is out, the early-recall token).  A read grant sets it;
+   * the ro_st -> IDLE TRANSITION clears it (OWN_RO, and REL_RO on a grant
+   * marked for return), not the rc zero edge: under RETAIN rc oscillates
+   * 0<->1 while the grant is retained, so clearing on the edge would drop the
+   * token on the first release and the eventual recall-driven return would
+   * never be sent — the home's r would stick.  An owner serving its own
+   * readers (RW⊇RO, the resident copy) borrowed nothing and never sets it. */
   switch (op) {
   case CACHE_OP_ACQ_RW:
     if (wc == (uint32_t)CACHE_OWNER_WC_MASK) {
       act = CACHE_ACT_LATE; /* the count field is full: the caller raises */
       break;
     }
-    wc += 1;
+    next = cur + CACHE_RW_CNT_ONE;
     if (rws == CACHE_ST_GRANT) {
       act = CACHE_ACT_SELF_SERVE; /* join the held RW grant */
     } else if (rws == CACHE_ST_REQ) {
@@ -430,7 +470,7 @@ static uint64_t cache_owner_compute_next(uint64_t cur, int op, uint32_t taken,
        * an ordinary requester and takes the same path as any node holding only
        * a read grant.  The request leaves at once, whatever the read axis
        * holds. */
-      rws = CACHE_ST_REQ;
+      next |= CACHE_RW_ST_AT(CACHE_ST_REQ);
       act = CACHE_ACT_SEND_RW; /* request migration from home */
     }
     break;
@@ -439,7 +479,7 @@ static uint64_t cache_owner_compute_next(uint64_t cur, int op, uint32_t taken,
       act = CACHE_ACT_LATE;
       break;
     }
-    rc += 1;
+    next = cur + CACHE_RO_CNT_ONE;
     /* GRANT_PURGE is a grant — it merely owes a return at the zero edge.
      * Leaving it out of the serving test drops the acquire into the park arm
      * with no request in flight to ever wake it, and its count then never
@@ -457,7 +497,7 @@ static uint64_t cache_owner_compute_next(uint64_t cur, int op, uint32_t taken,
     } else if (ros == CACHE_ST_IDLE) {
       /* The first reader nothing serves opens the read request at once,
        * whatever the write axis holds. */
-      ros = CACHE_ST_REQ;
+      next |= CACHE_RO_ST_AT(CACHE_ST_REQ);
       act = CACHE_ACT_SEND_RO;
     } else {
       act = CACHE_ACT_PARK; /* the read request is out: join it */
@@ -469,17 +509,17 @@ static uint64_t cache_owner_compute_next(uint64_t cur, int op, uint32_t taken,
      * nothing while a read grant of this rank is out.  The readers parked on
      * a read request still out stay parked on it until its own answer, and
      * leave the count for ro_aside (the caller adds them), so that at a
-     * resident rank the count is holders alone. */
+     * resident rank the count is holders alone.  Any reply clears the stub
+     * bit: the home is installed. */
     if (rws != CACHE_ST_REQ || wc == 0u || own != 0u ||
         ros == CACHE_ST_GRANT || ros == CACHE_ST_GRANT_PURGE ||
         (ros == CACHE_ST_IDLE && rc != 0u)) {
       act = CACHE_ACT_LATE;
       break;
     }
-    own = 1u;
-    rws = CACHE_ST_GRANT;
-    stub_bit &= ~CACHE_OWNER_STUB_BIT; /* any reply: the home is installed */
-    rc = 0u;
+    next = (cur &
+            ~(CACHE_RW_ST_FIELD | CACHE_OWNER_STUB_BIT | CACHE_RO_CNT_FIELD)) |
+           CACHE_OWNER_BIT | CACHE_RW_ST_AT(CACHE_ST_GRANT);
     act = CACHE_ACT_DRAIN_RW;
     break;
   case CACHE_OP_GRANT_RO:
@@ -499,12 +539,11 @@ static uint64_t cache_owner_compute_next(uint64_t cur, int op, uint32_t taken,
       act = CACHE_ACT_LATE;
       break;
     }
-    ros = (op == CACHE_OP_GRANT_RO_MARKED || granted != 0u)
-              ? CACHE_ST_GRANT_PURGE
-              : CACHE_ST_GRANT;
-    granted = CACHE_OWNER_LEASED_MASK;
-    stub_bit &= ~CACHE_OWNER_STUB_BIT;
-    rc = (uint32_t)sum;
+    next = ((cur + taken) & ~(CACHE_RO_ST_FIELD | CACHE_OWNER_STUB_BIT)) |
+           CACHE_OWNER_LEASED_MASK |
+           CACHE_RO_ST_AT((op == CACHE_OP_GRANT_RO_MARKED || CACHE_GRANTED(cur))
+                              ? CACHE_ST_GRANT_PURGE
+                              : CACHE_ST_GRANT);
     act = CACHE_ACT_DRAIN_RO;
     break;
   }
@@ -521,9 +560,8 @@ static uint64_t cache_owner_compute_next(uint64_t cur, int op, uint32_t taken,
       act = CACHE_ACT_LATE;
       break;
     }
-    ros = CACHE_ST_IDLE;
-    stub_bit &= ~CACHE_OWNER_STUB_BIT;
-    rc = (uint32_t)sum;
+    next = (cur + taken) & ~(CACHE_RO_ST_FIELD | CACHE_OWNER_STUB_BIT |
+                             CACHE_OWNER_LEASED_MASK);
     act = CACHE_ACT_DRAIN_RO;
     break;
   }
@@ -549,40 +587,35 @@ static uint64_t cache_owner_compute_next(uint64_t cur, int op, uint32_t taken,
       act = CACHE_ACT_LATE;
       break;
     }
-    own = 1u;
-    rws = CACHE_ST_GRANT;
-    stub_bit &= ~CACHE_OWNER_STUB_BIT;
-    wc += 1;
-    rc = 0u;
+    next = ((cur + CACHE_RW_CNT_ONE) &
+            ~(CACHE_RW_ST_FIELD | CACHE_OWNER_STUB_BIT | CACHE_RO_CNT_FIELD)) |
+           CACHE_OWNER_BIT | CACHE_RW_ST_AT(CACHE_ST_GRANT);
     act = CACHE_ACT_DRAIN_RW;
     break;
-  case CACHE_OP_REL_RW: /* precond: rws==GRANT, own==1 */
-    wc -= 1;
+  case CACHE_OP_REL_RW: /* precond: rws==GRANT, own==1, wc>0 */
+    next = cur - CACHE_RW_CNT_ONE;
     /* The grant ends only when BOTH counts reach zero: readers that joined
      * under it (RW⊇RO) may outlive the last writer, so wc==0 with rc>0 keeps the
      * grant and the migration ships at the rc 0-edge instead. */
-    if (wc == 0u && rc == 0u) {
-      if (mt != ARTS_EXCL_NO_TARGET) {
-        rws = CACHE_ST_IDLE; /* the permission leaves with the bytes */
-        /* 0-edge with a pending migration: clear owner-bit + migrate_target in
-         * the SAME next-state (single CAS) and signal the ship.  This is the
-         * EXCL·RETAIN analogue of VAL's 0-edge transfer, but a single CAS — no
-         * split-decrement, no separate in-flight flag. */
-        own = 0u;
-        mt = ARTS_EXCL_NO_TARGET;
-        act = CACHE_ACT_MIGRATE;
-      } else {
-        /* Sticky: keep the data AND the write permission (rw_st stays GRANT).
-         * This is what RETAIN means on this axis — the permission is given up
-         * only when another node asks, never merely because the local writers
-         * finished.  Clearing rw_st here is PURGE's rule. */
-        act = CACHE_ACT_NONE;
-      }
+    if ((next & (CACHE_RW_CNT_FIELD | CACHE_RO_CNT_FIELD)) == 0u &&
+        mt != ARTS_EXCL_NO_TARGET) {
+      /* 0-edge with a pending migration: the permission leaves with the
+       * bytes, and the owner-bit and migrate_target clear in the SAME
+       * next-state (single CAS); signal the ship.  This is the EXCL·RETAIN
+       * analogue of VAL's 0-edge transfer, but a single CAS — no
+       * split-decrement, no separate in-flight flag. */
+      next = (next & ~(CACHE_RW_ST_FIELD | CACHE_OWNER_BIT)) |
+             CACHE_MIGRATE_TARGET_FIELD;
+      act = CACHE_ACT_MIGRATE;
     }
+    /* Otherwise sticky: keep the data AND the write permission (rw_st stays
+     * GRANT).  This is what RETAIN means on this axis — the permission is
+     * given up only when another node asks, never merely because the local
+     * writers finished.  Clearing rw_st here is PURGE's rule. */
     break;
-  case CACHE_OP_REL_RO:
-    rc -= 1;
-    if (rc == 0u) {
+  case CACHE_OP_REL_RO: /* precond: rc>0 */
+    next = cur - CACHE_RO_CNT_ONE;
+    if ((next & CACHE_RO_CNT_FIELD) == 0u) {
       /* The two axes are INDEPENDENT here.  Under RETAIN a rank can hold a
        * write permission (rw_st==GRANT, taken locally) and a read grant from
        * the home at the same time, so an if/else-if between them lets the RO
@@ -594,7 +627,7 @@ static uint64_t cache_owner_compute_next(uint64_t cur, int op, uint32_t taken,
        * (GRANT_PURGE, set when the home issued it pre-marked or when a recall
        * arrived while readers were live) gives itself back here. */
       if (ros == CACHE_ST_GRANT_PURGE) {
-        ros = CACHE_ST_IDLE;
+        next &= ~(CACHE_RO_ST_FIELD | CACHE_OWNER_LEASED_MASK);
       }
       act = CACHE_ACT_REL_RO; /* the edge; the caller derives any send */
     }
@@ -603,28 +636,14 @@ static uint64_t cache_owner_compute_next(uint64_t cur, int op, uint32_t taken,
     break;
   }
   *out_action = act;
-  if (act == CACHE_ACT_LATE) {
-    return cur;
-  }
-  /* ro_granted = "this rank owes the home exactly one RO_RETURN" (and, while
-   * the read request is out, the early-recall token).  A read grant sets it;
-   * the ro_st -> IDLE TRANSITION clears it, not the rc zero edge: under
-   * RETAIN rc oscillates 0<->1 while the grant is retained, so clearing on
-   * the edge would drop the token on the first release and the eventual
-   * recall-driven return would never be sent — the home's r would stick.
-   * An owner serving its own readers (RW⊇RO, the resident copy) borrowed
-   * nothing and never sets it. */
-  if (CACHE_RO_ST(cur) != CACHE_ST_IDLE && ros == CACHE_ST_IDLE) {
-    granted = 0u;
-  }
-  return CACHE_MAKE_FULL(own, rws, ros, mt, wc, rc) | stub_bit | granted;
+  return next;
 }
 
 /* The readers a transition that makes this rank serve reads with its read
  * request out (CACHE_ACT_DRAIN_RW: a migration's DELIVER, a create's hold)
  * took out of the word's read count, read from its pre-image: its committer
  * adds them to the cache's ro_aside. */
-static inline uint32_t cache_set_aside(uint64_t pre) {
+static ARTS_ALWAYS_INLINE uint32_t cache_set_aside(uint64_t pre) {
   return CACHE_RO_ST(pre) == CACHE_ST_REQ ? CACHE_RO_CNT(pre) : 0u;
 }
 
@@ -633,8 +652,9 @@ static inline uint32_t cache_set_aside(uint64_t pre) {
  * that axis is at REQ, and the caller raises when it is not.  The next word
  * is the word with the stub bit clear, as after any reply; the request stays
  * out, so neither its axis nor a count moves. */
-static inline uint64_t cache_owner_size_round_next(uint64_t cur, bool write,
-                                                   bool *at_req) {
+static ARTS_ALWAYS_INLINE uint64_t cache_owner_size_round_next(uint64_t cur,
+                                                               bool write,
+                                                               bool *at_req) {
   *at_req = (write ? CACHE_RW_ST(cur) : CACHE_RO_ST(cur)) == CACHE_ST_REQ;
   return cur & ~CACHE_OWNER_STUB_BIT;
 }
@@ -661,55 +681,62 @@ static inline uint64_t cache_owner_size_round_next(uint64_t cur, bool write,
  *
  * The FORWARD recipient is LOCK_OWNER() of the returned word.  The migrate
  * target / served reader(s) are resolved by the caller from
- * rw_waiters/ro_waiters. */
-static uint64_t lock_owner_compute_next(uint64_t cur, int op,
-                                        unsigned int new_owner,
-                                        uint32_t *out_action) {
+ * rw_waiters/ro_waiters.
+ *
+ * w and r never pass their fields, and a CONFIRM or RO_RET finds its count
+ * above zero, the caller's precondition, which only a reused label breaks; a
+ * count moves by adding its unit to the word, so one at zero borrows from the
+ * fields above it. */
+static ARTS_ALWAYS_INLINE uint64_t lock_owner_compute_next(
+    uint64_t cur, int op, unsigned int new_owner, uint32_t *out_action) {
   uint32_t phase = LOCK_PHASE(cur);
-  uint32_t owner = LOCK_OWNER(cur);
   uint32_t w = LOCK_W(cur);
   uint32_t r = LOCK_R(cur);
+  uint64_t next = cur;
   uint32_t action = EXCL_ACTION_NONE;
   switch (op) {
   case EXCL_OP_RW_ACQ:
-    w += 1;
+    next = cur + EXCL_STATE_W_ONE;
     if (phase == EXCL_PHASE_IDLE) {
-      phase = EXCL_PHASE_RW;
+      next |= EXCL_STATE_PHASE_AT(EXCL_PHASE_RW);
       action = EXCL_ACTION_FORWARD_MIGRATE;
     }
     /* phase==RW: queue only (next migrate at CONFIRM).
      * phase==RO: hold (r unaffected here — the RW parks in rw_waiters). */
     break;
   case EXCL_OP_RO_ACQ:
-    r += 1;
+    next = cur + EXCL_STATE_R_ONE;
     if (phase == EXCL_PHASE_RO) {
       action = EXCL_ACTION_FORWARD_SERVE_ONE;
     } else if (phase == EXCL_PHASE_IDLE) {
-      phase = EXCL_PHASE_RO;
+      next |= EXCL_STATE_PHASE_AT(EXCL_PHASE_RO);
       action = EXCL_ACTION_FORWARD_SERVE_ONE;
     }
     /* phase==RW: held in ro_waiters by the caller; no action. */
     break;
   case EXCL_OP_CONFIRM:
-    w -= 1;
-    owner = new_owner;
-    if (w > 0u) {
+    next = ((cur - EXCL_STATE_W_ONE) & ~EXCL_STATE_OWNER_FIELD) |
+           (((uint64_t)new_owner & EXCL_STATE_OWNER_MASK)
+            << EXCL_STATE_OWNER_SHIFT);
+    if (w - 1u > 0u) {
       action = EXCL_ACTION_FORWARD_MIGRATE; /* RW chain */
     } else if (r > 0u) {
-      phase = EXCL_PHASE_RO;
+      next =
+          (next & ~EXCL_STATE_PHASE_FIELD) | EXCL_STATE_PHASE_AT(EXCL_PHASE_RO);
       action = EXCL_ACTION_FORWARD_SERVE_ALL; /* RW → RO flip */
     } else {
-      phase = EXCL_PHASE_IDLE;
+      next &= ~EXCL_STATE_PHASE_FIELD; /* phase = IDLE */
     }
     break;
   case EXCL_OP_RO_RET:
-    r -= 1;
-    if (r == 0u) {
+    next = cur - EXCL_STATE_R_ONE;
+    if (r - 1u == 0u) {
       if (w > 0u) {
-        phase = EXCL_PHASE_RW;
+        next = (next & ~EXCL_STATE_PHASE_FIELD) |
+               EXCL_STATE_PHASE_AT(EXCL_PHASE_RW);
         action = EXCL_ACTION_FORWARD_MIGRATE; /* RO → RW flip */
       } else {
-        phase = EXCL_PHASE_IDLE;
+        next &= ~EXCL_STATE_PHASE_FIELD; /* phase = IDLE */
       }
     }
     break;
@@ -717,6 +744,6 @@ static uint64_t lock_owner_compute_next(uint64_t cur, int op,
     break;
   }
   *out_action = action;
-  return LOCK_MAKE(phase, owner, w, r);
+  return next;
 }
 #endif /* ARTS_RETENTION_RETAIN */

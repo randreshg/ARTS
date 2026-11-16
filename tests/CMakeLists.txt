@@ -92,12 +92,6 @@ set(TEST_PROGRAMS
     db_first_touch_matrix
 )
 
-# The PURGE retention's grant word, which only a {VAL,INV}·PURGE build
-# has (EXCL arbitrates a word of its own).
-if(ARTS_RETENTION STREQUAL "PURGE" AND NOT ARTS_VALIDITY STREQUAL "EXCL")
-    list(APPEND TEST_PROGRAMS grant_purge_word_model)
-endif()
-
 # Test programs registered in the reference tree only.
 set(ARTS_REFERENCE_TREE_PROGRAMS
     stress_edt
@@ -1321,13 +1315,6 @@ unset(_dir)
 endif()
 
 # --- Pure unit tests (no ARTS runtime) ---
-# Exhaustive model check of the PURGE retention's grant word decider
-# (coherence/grant_purge.c).
-if(TARGET grant_purge_word_model)
-register_pure_unit_test(grant_purge_word_model TIMEOUT 30)
-set_tests_properties(grant_purge_word_model PROPERTIES
-    PASS_REGULAR_EXPRESSION "PASS grant_purge_word_model")
-endif()
 # The grant plane's home logic driven through the real code: each test TU
 # #includes the coherence sources it exercises and stubs their other callees,
 # so it links no runtime.  Each registers in the cells whose compiled logic

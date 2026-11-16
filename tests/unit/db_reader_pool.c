@@ -19,7 +19,8 @@
  *      tree whose allocations LeakSanitizer sees, a storage the destructor
  *      missed fails the run.
  *
- * Links the tree's runtime for the cell's arbiter, pool and destructor.
+ * Includes the cell's arbiter and links the tree's runtime for its pool and
+ * destructor.
  */
 #include "arts/coherence/coherence.h"
 #include "arts/coherence/types.h"
@@ -66,12 +67,13 @@ static unsigned int slot_of(uint32_t idx) { return idx ^ 0x2B5u; }
 /* ---- the arm's request word -------------------------------------------- */
 
 #if defined(ARTS_VALIDITY_INV)
+#include "../../libs/src/core/coherence/inv/arbiters.c"
 #define WORD(c) (&(c)->cache_state)
 #define OP_ACQ_RO INV_CACHE_OP_ACQ_RO
 #define ACT_PARK INV_CACHE_ACT_PARK
 #define ACT_SEND INV_CACHE_ACT_SEND_RO
 static uint64_t arbiter(uint64_t cur, int op, uint32_t arg, uint32_t *act) {
-  return arts_inv_cache_compute_next(cur, op, arg, act);
+  return inv_cache_compute_next(cur, op, arg, act);
 }
 /* The newest parked index, wherever the arm keeps it. */
 static uint32_t newest(uint64_t w) { return INV_CACHE_HEAD_RO(w); }
@@ -80,12 +82,13 @@ static uint32_t link_of(uint64_t cur, uint32_t act) {
   return INV_CACHE_HEAD_RO(cur);
 }
 #else
+#include "../../libs/src/core/coherence/val/arbiters.c"
 #define WORD(c) (&(c)->req_state)
 #define OP_ACQ_RO VREQ_OP_ACQ_RO
 #define ACT_PARK VREQ_ACT_PARK
 #define ACT_SEND VREQ_ACT_SEND_RO
 static uint64_t arbiter(uint64_t cur, int op, uint32_t arg, uint32_t *act) {
-  return arts_val_req_compute_next(cur, op, arg, act);
+  return val_req_compute_next(cur, op, arg, act);
 }
 static uint32_t newest(uint64_t w) { return VREQ_NEXT(w); }
 static uint32_t link_of(uint64_t cur, uint32_t act) {

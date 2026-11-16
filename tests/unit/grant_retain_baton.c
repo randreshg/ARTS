@@ -281,7 +281,7 @@ static void push_stalled(unsigned int v) {
       (struct arts_home_grantreq_node_s *)malloc(sizeof(*n));
   n->rank = v;
   n->have_version = ARTS_GRANT_VERSION_NONE;
-  n->rdzv = (struct arts_rdzv_landing_s){0, 0, 0, 0};
+  n->rdzv = ARTS_RDZV_NO_LANDING;
   n->token = 0u;
   atomic_store_explicit(&n->next, (struct arts_home_grantreq_node_s *)NULL,
                         memory_order_relaxed);
