@@ -1994,14 +1994,15 @@ foreach(_t db_create_after_first_touch db_create_after_first_touch_2n_9w_1p)
     arts_test_properties(${_t} PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 endforeach()
 
-# arts_db_downgrade: a write hold becomes a read hold.  Every program ends
-# with a quiescent shutdown, so the teardown walk's markers fail it.  SINGLE
-# adds the one-rank run, VARIANTS replaces the default multinode set, and FUZZ
-# adds a 2n_8w_2p run under the scheduler fuzz where the hooks are compiled.
-function(arts_downgrade_test test program)
+# The calls that act on a hold mid-body, arts_db_downgrade and
+# arts_db_publish.  Every program ends with a quiescent shutdown, so the
+# teardown walk's markers fail it.  SINGLE adds the one-rank run, VARIANTS
+# replaces the default multinode set, and FUZZ adds a 2n_8w_2p run under the
+# scheduler fuzz where the hooks are compiled.
+function(arts_hold_test test program)
     cmake_parse_arguments(ARG "SINGLE;FUZZ" "" "ARGS;VARIANTS" ${ARGN})
     if(ARG_UNPARSED_ARGUMENTS)
-        message(FATAL_ERROR "arts_downgrade_test(${test}): unexpected "
+        message(FATAL_ERROR "arts_hold_test(${test}): unexpected "
                 "arguments '${ARG_UNPARSED_ARGUMENTS}'")
     endif()
     set(_names "")
@@ -2045,36 +2046,36 @@ function(arts_downgrade_test test program)
         FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
 endfunction()
 
-set(_downgrade_excl OFF)
+set(_hold_excl OFF)
 if(ARTS_VALIDITY STREQUAL "EXCL")
-    set(_downgrade_excl ON)
+    set(_hold_excl ON)
 endif()
-set(_downgrade_home OFF)
+set(_hold_home OFF)
 if((ARTS_VALIDITY STREQUAL "VAL" OR ARTS_VALIDITY STREQUAL "INV")
    AND ARTS_READ_SOURCE STREQUAL "HOME")
-    set(_downgrade_home ON)
+    set(_hold_home ON)
 endif()
 
-# Both kinds of write hold handed on, homes chosen by rank count; the alias
-# trio; the destroys ordered after the read hold; the calls that change
-# nothing.
+# arts_db_downgrade: a write hold becomes a read hold.  Both kinds of write
+# hold handed on, homes chosen by rank count; the alias trio; the destroys
+# ordered after the read hold; the calls that change nothing.
 add_arts_test(db_downgrade_handoff)
-arts_downgrade_test(db_downgrade_handoff db_downgrade_handoff SINGLE FUZZ)
+arts_hold_test(db_downgrade_handoff db_downgrade_handoff SINGLE FUZZ)
 add_arts_test(db_downgrade_alias)
-if(_downgrade_excl)
-    arts_downgrade_test(db_downgrade_alias db_downgrade_alias SINGLE FUZZ)
+if(_hold_excl)
+    arts_hold_test(db_downgrade_alias db_downgrade_alias SINGLE FUZZ)
 else()
-    arts_downgrade_test(db_downgrade_alias db_downgrade_alias SINGLE)
+    arts_hold_test(db_downgrade_alias db_downgrade_alias SINGLE)
 endif()
 add_arts_test(db_downgrade_destroy)
-if(_downgrade_excl)
-    arts_downgrade_test(db_downgrade_destroy db_downgrade_destroy SINGLE FUZZ)
+if(_hold_excl)
+    arts_hold_test(db_downgrade_destroy db_downgrade_destroy SINGLE FUZZ)
 else()
-    arts_downgrade_test(db_downgrade_destroy db_downgrade_destroy SINGLE)
+    arts_hold_test(db_downgrade_destroy db_downgrade_destroy SINGLE)
 endif()
 add_arts_test(db_downgrade_noop)
-arts_downgrade_test(db_downgrade_noop db_downgrade_noop SINGLE
-                    VARIANTS 2n_9w_1p 2n_8w_2p)
+arts_hold_test(db_downgrade_noop db_downgrade_noop SINGLE
+               VARIANTS 2n_9w_1p 2n_8w_2p)
 
 # Locations no concurrent writer writes keep the downgrader's view.  A writer
 # on D's rank reaches D's storage on every arm.  A remote writer's bytes land
@@ -2083,38 +2084,38 @@ arts_downgrade_test(db_downgrade_noop db_downgrade_noop SINGLE
 # admitted only after D's read hold, so there D reads for a bounded time.  The
 # serve-demote form is EXCL·RETAIN.
 add_arts_test(db_downgrade_disjoint)
-arts_downgrade_test(db_downgrade_disjoint_local db_downgrade_disjoint
-                    ARGS local wait VARIANTS 2n_9w_1p 2n_8w_2p FUZZ)
-if(_downgrade_home OR ARTS_VALIDITY STREQUAL "FLUSH")
-    arts_downgrade_test(db_downgrade_disjoint_remote db_downgrade_disjoint
-                        ARGS remote wait VARIANTS 2n_9w_1p 2n_8w_2p FUZZ)
+arts_hold_test(db_downgrade_disjoint_local db_downgrade_disjoint
+               ARGS local wait VARIANTS 2n_9w_1p 2n_8w_2p FUZZ)
+if(_hold_home OR ARTS_VALIDITY STREQUAL "FLUSH")
+    arts_hold_test(db_downgrade_disjoint_remote db_downgrade_disjoint
+                   ARGS remote wait VARIANTS 2n_9w_1p 2n_8w_2p FUZZ)
 else()
-    arts_downgrade_test(db_downgrade_disjoint_remote db_downgrade_disjoint
-                        ARGS remote nowait VARIANTS 2n_9w_1p 2n_8w_2p FUZZ)
+    arts_hold_test(db_downgrade_disjoint_remote db_downgrade_disjoint
+                   ARGS remote nowait VARIANTS 2n_9w_1p 2n_8w_2p FUZZ)
 endif()
-if(_downgrade_excl AND ARTS_RETENTION STREQUAL "RETAIN")
-    arts_downgrade_test(db_downgrade_disjoint_demote db_downgrade_disjoint
-                        ARGS demote wait VARIANTS 2n_9w_1p 2n_8w_2p FUZZ)
+if(_hold_excl AND ARTS_RETENTION STREQUAL "RETAIN")
+    arts_hold_test(db_downgrade_disjoint_demote db_downgrade_disjoint
+                   ARGS demote wait VARIANTS 2n_9w_1p 2n_8w_2p FUZZ)
 endif()
 
 # Two writers of one rank share the turn and one of them downgrades: two
 # overlapping write acquisitions, outside CDAG.
 if(NOT ARTS_VALIDITY STREQUAL "FLUSH")
     add_arts_test(db_downgrade_cowriter)
-    if(_downgrade_excl)
-        arts_downgrade_test(db_downgrade_cowriter db_downgrade_cowriter SINGLE
-                            VARIANTS 2n_9w_1p 2n_8w_2p FUZZ)
+    if(_hold_excl)
+        arts_hold_test(db_downgrade_cowriter db_downgrade_cowriter SINGLE
+                       VARIANTS 2n_9w_1p 2n_8w_2p FUZZ)
     else()
-        arts_downgrade_test(db_downgrade_cowriter db_downgrade_cowriter SINGLE
-                            VARIANTS 2n_9w_1p 2n_8w_2p)
+        arts_hold_test(db_downgrade_cowriter db_downgrade_cowriter SINGLE
+                       VARIANTS 2n_9w_1p 2n_8w_2p)
     endif()
 endif()
 
 # A create's hold on a cache its rank made by a first touch, downgraded; the
 # creator must not be the home.
 add_arts_test(db_downgrade_claimed)
-arts_downgrade_test(db_downgrade_claimed db_downgrade_claimed
-                    VARIANTS 2n_9w_1p 2n_8w_2p)
+arts_hold_test(db_downgrade_claimed db_downgrade_claimed
+               VARIANTS 2n_9w_1p 2n_8w_2p)
 
 # The state a downgrade leaves, read where it lives.  The creator's buffer
 # reference count is read through a function the runtime defines only where
@@ -2127,15 +2128,79 @@ if(NOT "${CMAKE_C_FLAGS} ${CMAKE_C_FLAGS_${_downgrade_bt}}" MATCHES "-DNDEBUG")
         ARTS_TEST_RUNTIME_NDEBUG_UNSET=1)
 endif()
 unset(_downgrade_bt)
-if(_downgrade_excl)
-    arts_downgrade_test(db_downgrade_word db_downgrade_word SINGLE
-                        VARIANTS 2n_9w_1p 2n_8w_2p FUZZ)
+if(_hold_excl)
+    arts_hold_test(db_downgrade_word db_downgrade_word SINGLE
+                   VARIANTS 2n_9w_1p 2n_8w_2p FUZZ)
 else()
-    arts_downgrade_test(db_downgrade_word db_downgrade_word SINGLE
-                        VARIANTS 2n_9w_1p 2n_8w_2p)
+    arts_hold_test(db_downgrade_word db_downgrade_word SINGLE
+                   VARIANTS 2n_9w_1p 2n_8w_2p)
 endif()
-unset(_downgrade_excl)
-unset(_downgrade_home)
+
+# arts_db_publish: a write hold's writes published and the hold kept.  Where
+# the block's home is changes what a publish sends (the payload goes to the
+# home only from another rank, under {VAL,INV}·HOME and FLUSH; INV's round
+# runs at the home; under OWNER a reader off the writer's rank is sent to
+# it), so each far shape runs with the home on the publisher's rank, on the
+# readers' rank and on a third rank.  A create's hold reaches the arm through
+# its own entry and, off the home under HOME and FLUSH, is the block's first
+# publication.  Under VAL, INV and FLUSH a reader on another rank is answered
+# while the publisher holds the block; under EXCL it is admitted only at the
+# hold's end, so there only the near shapes, whose readers share the
+# publisher's rank, can end, and no far shape registers.  Near on FLUSH is a
+# reader off the home, which shares no bytes with a writer of its own rank.
+# On one rank every reader shares the publisher's bytes, so a SINGLE run
+# shows only that the call works where nothing is sent.
+set(_pub_copy OFF)
+if(ARTS_VALIDITY STREQUAL "VAL" OR ARTS_VALIDITY STREQUAL "INV"
+   OR ARTS_VALIDITY STREQUAL "FLUSH")
+    set(_pub_copy ON)
+endif()
+add_arts_test(db_publish_handoff)
+if(_pub_copy)
+    arts_hold_test(db_publish_handoff_dep_self db_publish_handoff
+                   ARGS dep self far SINGLE VARIANTS 2n_9w_1p 2n_8w_2p FUZZ)
+    arts_hold_test(db_publish_handoff_dep_peer db_publish_handoff
+                   ARGS dep peer far VARIANTS 2n_9w_1p 2n_8w_2p FUZZ)
+    arts_hold_test(db_publish_handoff_dep_third db_publish_handoff
+                   ARGS dep third far VARIANTS 4n_4w_1p)
+    arts_hold_test(db_publish_handoff_created_self db_publish_handoff
+                   ARGS created self far VARIANTS 2n_9w_1p 2n_8w_2p)
+    arts_hold_test(db_publish_handoff_created_peer db_publish_handoff
+                   ARGS created peer far VARIANTS 2n_9w_1p 2n_8w_2p FUZZ)
+    arts_hold_test(db_publish_handoff_created_third db_publish_handoff
+                   ARGS created third far VARIANTS 4n_4w_1p)
+endif()
+if(_hold_excl)
+    arts_hold_test(db_publish_handoff_near_self db_publish_handoff
+                   ARGS dep self near SINGLE VARIANTS 2n_9w_1p 2n_8w_2p)
+endif()
+if(_hold_excl OR ARTS_VALIDITY STREQUAL "FLUSH")
+    arts_hold_test(db_publish_handoff_near_peer db_publish_handoff
+                   ARGS dep peer near VARIANTS 2n_9w_1p 2n_8w_2p)
+    arts_hold_test(db_publish_handoff_near_created db_publish_handoff
+                   ARGS created peer near VARIANTS 2n_9w_1p 2n_8w_2p)
+endif()
+
+# The calls of arts_db_publish that change nothing, and its sequences with
+# the other calls on a hold; every write acquisition of a block is ordered
+# after the previous one's release.
+add_arts_test(db_publish_noop)
+arts_hold_test(db_publish_noop db_publish_noop SINGLE
+               VARIANTS 2n_9w_1p 2n_8w_2p)
+
+# The state a publish leaves, read where it lives: VAL's and INV's grant
+# word and version, EXCL's cache word, FLUSH's PUT credit and slot.
+add_arts_test(db_publish_word)
+if(_hold_excl)
+    arts_hold_test(db_publish_word db_publish_word SINGLE
+                   VARIANTS 2n_9w_1p 2n_8w_2p FUZZ)
+else()
+    arts_hold_test(db_publish_word db_publish_word SINGLE
+                   VARIANTS 2n_9w_1p 2n_8w_2p)
+endif()
+unset(_pub_copy)
+unset(_hold_excl)
+unset(_hold_home)
 
 # Writers sharing their rank's write turn on one block release it, downgrade
 # and hand their bytes to readers, round after round, all on one rank.  On a

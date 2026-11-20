@@ -404,9 +404,10 @@ static void send_flush_commit(unsigned int home, arts_guid_t db_guid,
   arts_transport_send_async((int)home, (char *)&p, sizeof(p));
 }
 
-/* The write-back round every non-home RW release runs: the bytes at `payload`
- * into the home's line, then the wait for the home's ACK.  The credit is
- * consumed with one exchange; a release that finds none asks for one first.
+/* The write-back round every non-home RW release or publish runs: the bytes
+ * at `payload` into the home's line, then the wait for the home's ACK.  The
+ * credit is consumed with one exchange; a write-back that finds none asks for
+ * one first.
  *
  * The source must stay valid for the whole call — the caller's hold on the
  * bytes is what keeps it so, and the call returns only once the home has the
@@ -444,7 +445,10 @@ static void flush_write_back(struct arts_db_cache_s *cache, void *payload) {
   sem_destroy(&w.sem);
 }
 
-void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload) {
+/* A dependence's write release has no count edge on this arm, so its release
+ * and its publish are this write-back alone. */
+static ARTS_ALWAYS_INLINE void dep_write_back(struct arts_db_cache_s *cache,
+                                              void *payload) {
   if (payload == NULL) {
     return; /* a dependence that resolved NULL holds no bytes */
   }
@@ -453,6 +457,22 @@ void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload) {
     return; /* the line was written in place, or there are no bytes */
   }
   flush_write_back(cache, payload);
+}
+
+void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload) {
+  dep_write_back(cache, payload);
+}
+
+void arts_db_publish_rw(struct arts_db_cache_s *cache, void *payload) {
+  dep_write_back(cache, payload);
+}
+
+static ARTS_ALWAYS_INLINE void
+created_write_back(struct arts_db_cache_s *cache, struct arts_db_buffer_s *b) {
+  if (b != NULL &&
+      atomic_load_explicit(&cache->db_size, memory_order_relaxed) > 0) {
+    flush_write_back(cache, b->data);
+  }
 }
 
 /* The create's own hold.  Its bytes are the copy the create installed in this
@@ -464,13 +484,22 @@ void arts_db_release_created(struct arts_db_cache_s *cache) {
   }
   arts_shared_ptr_t slot_h = arts_db_buf_acquire(cache);
   struct arts_db_buffer_s *b = (struct arts_db_buffer_s *)arts_shared_get(slot_h);
-  if (b != NULL &&
-      atomic_load_explicit(&cache->db_size, memory_order_relaxed) > 0) {
-    flush_write_back(cache, b->data);
-  }
+  created_write_back(cache, b);
   arts_shared_slot_store(&cache->buffer, NULL);
   atomic_store_explicit(&cache->payload_pending, (uint8_t)1,
                         memory_order_release);
+  arts_db_buf_release(&slot_h);
+}
+
+/* The publish writes the slot's copy back and keeps it: the creator goes on
+ * holding it as its write copy. */
+void arts_db_publish_created(struct arts_db_cache_s *cache) {
+  if (is_home(cache)) {
+    return; /* the creator writes the line in place */
+  }
+  arts_shared_ptr_t slot_h = arts_db_buf_acquire(cache);
+  struct arts_db_buffer_s *b = (struct arts_db_buffer_s *)arts_shared_get(slot_h);
+  created_write_back(cache, b);
   arts_db_buf_release(&slot_h);
 }
 

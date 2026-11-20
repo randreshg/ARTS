@@ -609,29 +609,32 @@ void arts_db_await_ack(sem_t *cv) {
   }
 }
 
-/* arts_db_release_rw is protocol-specific (the version bump is shared, but the
- * pre-decrement buffer-ref drop and the post-decrement transfer/publish
- * decision differ per protocol), so its whole body lives in each arm's own
- * TU.  VAL·HOME and INV under either read source call
- * arts_db_publish_sync below for the synchronous-PUBLISH rendezvous (INV's
- * publish doubles as its invalidation-round request). */
+/* arts_db_release_rw and arts_db_publish_rw are protocol-specific (the
+ * version bump is shared, but a release's buffer-ref drop before its
+ * decrement and its transfer/publish decision after it differ per protocol),
+ * so their whole bodies live in each arm's own TU.  The write half of VAL·HOME and of
+ * INV under either read source calls arts_db_publish_sync below for the
+ * synchronous-PUBLISH rendezvous (INV's publish doubles as its
+ * invalidation-round request). */
 
 /* ===== publish flight machine (write-combining publish) ============
  *
- * Compiled by every arm that publishes at a release.  Under HOME that is the
- * payload write-through; under OWNER only INV publishes at all, and its
- * publish is control-only — the round request.
+ * Compiled by every arm that publishes at a release's write half, which a
+ * release and an arts_db_publish_rw both run.  Under HOME that is the payload
+ * write-through; under OWNER only INV publishes at all, and its publish is
+ * control-only — the round request.
  *
- * At most ONE publish is in flight per (DB, rank).  Every releaser registers
- * as a version-covered waiter, then either claims the flight (CAS 0->FLYING)
- * or joins it (CAS ->|DIRTY).  A flight ships the cache buffer's CURRENT
- * bytes stamped with the buffer's current version, so the covering ACK wakes
- * every waiter at or below that version and releases that landed mid-flight
- * coalesce into at most one trailing flight — the write-side twin of the RO
- * request-combining window.  The ACK doubles as the credit teacher: it
- * carries the home's next in-place credit {stable-buffer addr, rkey, txid},
- * consumed 1:1 by the next payload flight, so the steady state is one PUT +
- * one commit + one blocked wait, announce-free. */
+ * At most ONE publish is in flight per (DB, rank).  Every releaser (the
+ * caller of a write half) registers as a version-covered waiter, then either
+ * claims the flight (CAS 0->FLYING) or joins it (CAS ->|DIRTY).  A flight
+ * ships the cache buffer's CURRENT bytes stamped with the buffer's current
+ * version, so the covering ACK wakes every waiter at or below that version
+ * and write halves that landed mid-flight coalesce into at most one trailing
+ * flight — the write-side twin of the RO request-combining window.  The ACK
+ * doubles as the credit teacher: it carries the home's next in-place credit
+ * {stable-buffer addr, rkey, txid}, consumed 1:1 by the next payload flight,
+ * so the steady state is one PUT + one commit + one blocked wait,
+ * announce-free. */
 #if (defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)) &&             \
     (!defined(ARTS_READ_SOURCE_OWNER) || defined(ARTS_VALIDITY_INV))
 

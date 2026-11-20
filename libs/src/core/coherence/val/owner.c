@@ -102,20 +102,10 @@ bool arts_db_acquire_is_serialized(arts_db_access_mode_t mode) {
  * The bytes stay here: the release bumps the version of the buffer this
  * rank's writers wrote, under the releaser's own hold, and the count's edge
  * (arts_db_grant_release_commit) ships the grant on when a revocation named
- * a target.  The reference the bump takes is scoped to the bump. */
-/* A create's hold is this arm's ordinary write hold, taken when the block was
- * made; the bytes under it are the cache's own, so the release needs no
- * pointer to them. */
-void arts_db_release_created(struct arts_db_cache_s *cache) {
-  arts_db_release_rw(cache, NULL);
-}
-
-void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload) {
-  /* Defensive: no local hold to drop means our acquire never bumped ownership;
-   * decrementing would underflow. */
-  if (arts_db_grant_release_skip(cache)) {
-    return;
-  }
+ * a target.  A publish is the bump alone.  The reference the bump takes is
+ * scoped to the bump. */
+static ARTS_ALWAYS_INLINE void release_write_half(struct arts_db_cache_s *cache,
+                                                  void *payload) {
 #ifndef NDEBUG
   if (payload != NULL) {
     arts_shared_ptr_t chk = arts_db_buf_acquire(cache);
@@ -130,9 +120,9 @@ void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload) {
 #endif
   /* Version bump on the turn's buffer: while this rank holds a write turn the
    * installed buffer is the one the turn's payload names, and the EDT's ref
-   * keeps it alive.  Only a creator's release (or a block with no bytes)
-   * loads the slot, scoped to release_rw.  This rank's own entry in the
-   * dedup ledger is not advanced here: the ship credits it before the ledger
+   * keeps it alive.  Only a creator's hold (or a block with no bytes) loads
+   * the slot, scoped to this half.  This rank's own entry in the dedup
+   * ledger is not advanced here: the ship credits it before the ledger
    * migrates, and a redirect for this rank answers from its own cache. */
   arts_shared_ptr_t buf_h = NULL;
   struct arts_db_buffer_s *buf = arts_db_buf_from_data(payload);
@@ -144,11 +134,38 @@ void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload) {
     (void)atomic_fetch_add_explicit(&buf->version, 1u, memory_order_acq_rel);
   }
   arts_db_buf_release(&buf_h);
+}
+
+/* A create's hold is this arm's ordinary write hold, taken when the block was
+ * made; the bytes under it are the cache's own, so the release needs no
+ * pointer to them. */
+void arts_db_release_created(struct arts_db_cache_s *cache) {
+  arts_db_release_rw(cache, NULL);
+}
+
+void arts_db_publish_created(struct arts_db_cache_s *cache) {
+  arts_db_publish_rw(cache, NULL);
+}
+
+void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload) {
+  /* Defensive: no local hold to drop means our acquire never bumped ownership;
+   * decrementing would underflow. */
+  if (arts_db_grant_release_skip(cache)) {
+    return;
+  }
+  release_write_half(cache, payload);
 
   /* The count-dropping edge: the last releaser ships the grant onward when a
    * GRANT_INVALIDATE has already named a target; otherwise the home keeps
    * ownership until a GRANT_REQUEST and a non-home owner quiesces. */
   arts_db_grant_release_commit(cache);
+}
+
+void arts_db_publish_rw(struct arts_db_cache_s *cache, void *payload) {
+  if (arts_db_grant_release_skip(cache)) {
+    return;
+  }
+  release_write_half(cache, payload);
 }
 
 /* ===== cache_s lifecycle (OWNER) ======================================
@@ -360,9 +377,9 @@ void arts_handler_db_snapshot_redirect(void *item_v, void *args_v) {
                                    &a->rdzv, NULL);
     return;
   }
-  /* Acquire: the version names the bytes served below, so every write of
-   * the release that set it (its acq_rel bump in arts_db_release_rw) must be
-   * visible to the serve. */
+  /* Acquire: the version names the bytes served below, so every write made
+   * before the write half that set it (its acq_rel bump, in
+   * release_write_half) must be visible to the serve. */
   uint64_t cur_v = atomic_load_explicit(&buf->version, memory_order_acquire);
   /* A redirect for this rank itself answers from its own cache, which holds
    * the buffer just read; the ledger credits this rank only at a ship. */

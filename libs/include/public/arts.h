@@ -340,7 +340,8 @@ typedef struct {
  * @brief Describes a single dependency slot delivered to an EDT.
  *
  * Mode is set via @c arts_add_dependence(); @c arts_db_downgrade() turns
- * DB_MODE_RW into DB_MODE_RO and @c arts_db_release() clears the slot.
+ * DB_MODE_RW into DB_MODE_RO, @c arts_db_release() clears the slot and
+ * @c arts_db_publish() leaves it as it is.
  * User EDTs typically read @c guid / @c ptr and ignore @c mode.
  */
 typedef struct {
@@ -983,11 +984,14 @@ static inline void *arts_db_create_with_guid(arts_guid_t guid, uint64_t len,
  * release that access early — before the EDT function returns — so that
  * consumer EDTs waiting on the DB can proceed.
  *
- * This is required when the EDT, in its body, hands a DB it holds onward, or
- * starts work that leads to the DB's destroyer: a destroy is ordered after
- * the release of every hold on the block (see arts_db_destroy), so the
- * release comes right after the EDT's last access to the DB and before that
- * hand-off.
+ * An EDT that, in its body, hands a DB it wrote to work that may acquire the
+ * DB before the EDT's hold is released publishes its writes before the
+ * hand-off: by this call, by arts_db_downgrade() when it goes on reading, or
+ * by arts_db_publish() when it goes on writing.  A destroy is ordered after
+ * the release of every hold on the block (see arts_db_destroy): work that
+ * reaches the DB's destroyer other than through the EDT's completion is
+ * started only after this call, which then comes right after the EDT's last
+ * access to the DB.
  *
  * Releasing a dependence clears each @c depv slot that acquired the DB
  * (guid @c NULL_GUID, ptr @c NULL, mode @c DB_MODE_NULL), so a caller that
@@ -1038,12 +1042,54 @@ void arts_db_release(arts_guid_t guid);
 void arts_db_downgrade(arts_guid_t guid);
 
 /**
+ * @brief Publish the calling EDT's writes to a DataBlock and keep its write
+ *        access.
+ *
+ * For a DataBlock the calling EDT holds for writing (a dependence in
+ * DB_MODE_RW, or its own create's hold), the writes made so far are
+ * published exactly as arts_db_release() publishes them: an EDT ordered after
+ * the call sees them when it acquires the block.  The EDT keeps its write
+ * hold: each depv slot that acquired the block keeps its guid, ptr and mode,
+ * the pointer its create returned stays valid, and the EDT may write the
+ * block again.  A write made after the call is published by the EDT's next
+ * arts_db_publish(), by its arts_db_downgrade() or by the release of the
+ * hold.  For an EDT ordered after the call, a read of a location returns the
+ * last write to that location that happens-before the read, provided no
+ * write unordered with the read writes that location; otherwise the read
+ * races, and its value is unspecified.  A write the caller makes after the
+ * call is unordered with such a read until a later publication of the hold
+ * is ordered before the read's acquisition.  The call promises no isolation:
+ * a write made after it may become visible before its publication.
+ *
+ * The call gives nothing up: the hold ends when it would have, and whatever
+ * waits for that end waits for it as before: under a coherence protocol that
+ * orders write acquisitions at run time, an EDT on another node that acquires
+ * the block for writing, and, under one that admits a reader on another node
+ * only while no node holds the block for writing, such a reader too.  Under
+ * the CDAG model the call ends no write acquisition: the program still
+ * orders every other write acquisition of the block after the hold's
+ * release.  An EDT that acquired the block before the call is not promised
+ * the writes.  A destroy by another EDT is ordered after the hold's release,
+ * as for any hold, so a hand-off made after the call must not reach the
+ * block's destroyer before that release.
+ *
+ * The call acts on the holds of the EDT running on the calling thread,
+ * including from functions its body calls on that thread, and does nothing
+ * on a thread that runs no EDT.  It is the write half of a release: it may
+ * block the worker as arts_db_release() may.  On a block held only for
+ * reading, no longer held, or not held, it does nothing.
+ *
+ * @param guid GUID of the DataBlock.
+ */
+void arts_db_publish(arts_guid_t guid);
+
+/**
  * @brief Destroy all copies of a DataBlock system-wide, from any rank.
  *
  * The program orders the destroy after the release of every hold that any
  * other EDT has on the block: RO and RW dependence holds and creator holds
- * alike, a hold arts_db_downgrade() left included, under every coherence
- * protocol.  The calling EDT's own hold (its create's auto-acquire or a
+ * alike, a hold arts_db_downgrade() left or arts_db_publish() kept included,
+ * under every coherence protocol.  The calling EDT's own hold (its create's auto-acquire or a
  * dependence, downgraded or not) is the exception: it is released first, as
  * by arts_db_release, which also says which EDT's holds the call finds.  A
  * hold released after the destroy is a program error, and so is an acquire

@@ -1666,6 +1666,16 @@ void arts_db_release_created(struct arts_db_cache_s *cache) {
   arts_db_release_rw(cache, NULL);
 }
 
+/* Nothing to publish: a reader on another rank is admitted only once no rank
+ * holds the write turn, so it reads the hold's bytes whenever they were
+ * written, and a reader on this rank reads the buffer the writer writes. */
+void arts_db_publish_rw(struct arts_db_cache_s *cache, void *payload) {
+  (void)cache;
+  (void)payload;
+}
+
+void arts_db_publish_created(struct arts_db_cache_s *cache) { (void)cache; }
+
 void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload) {
   (void)payload;
   uint32_t act;

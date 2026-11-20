@@ -57,7 +57,8 @@ bool arts_db_acquire_is_serialized(arts_db_access_mode_t mode) {
    * an acquire; a fetch that reaches the home before the block's create
    * waits for the create, which the program orders; and a read that finds
    * the home's buffer unpublished, the home rank's own included, waits for
-   * the creating EDT's first publish, the release of an EDT already running. */
+   * the creating EDT's first publication (its release, downgrade or publish),
+   * which an EDT already running makes. */
   return mode == DB_MODE_RW;
 }
 
@@ -217,17 +218,11 @@ void arts_handler_db_acquire(void *item, void *args) {
  * transfer — is structurally ordered behind this release's round.  An
  * INVALIDATE arriving mid-round is harmless: it withdraws the sentinel and
  * names the next owner, but this releaser still holds its own count, so the
- * ship happens here, at its decrement.
+ * ship happens here, at its decrement.  A publish is everything before that
+ * decrement with no hand-back claim: the bump and the blocking call.
  */
-void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload) {
-  (void)payload;
-  /* Defensive: no local hold to drop means our acquire never bumped the grant;
-   * decrementing would underflow.  Which word states carry no hold is the
-   * retention's — possession alone is one of them under PURGE and not
-   * under RETAIN. */
-  if (arts_db_grant_release_skip(cache)) {
-    return;
-  }
+static ARTS_ALWAYS_INLINE uint64_t
+release_write_half(struct arts_db_cache_s *cache, bool releasing) {
   arts_shared_ptr_t buf_h = arts_db_buf_acquire(cache);
   struct arts_db_buffer_s *buf =
       (struct arts_db_buffer_s *)arts_shared_get(buf_h);
@@ -250,7 +245,8 @@ void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload) {
    * instead of behind it — and the round is also what orders it, since the
    * home may not hand the block on until every stale copy is retired.  A won
    * claim replaces the count-dropping edge. */
-  uint64_t hand_back = arts_db_grant_release_claim(cache, will_publish);
+  uint64_t hand_back =
+      releasing ? arts_db_grant_release_claim(cache, will_publish) : 0u;
   if (will_publish) {
     TIME_INVALIDATE_ROUND_START();
     arts_db_publish_sync(cache, new_version);
@@ -259,6 +255,19 @@ void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload) {
   if (buf != NULL) {
     arts_db_buf_release(&buf_h);
   }
+  return hand_back;
+}
+
+void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload) {
+  (void)payload;
+  /* Defensive: no local hold to drop means our acquire never bumped the grant;
+   * decrementing would underflow.  Which word states carry no hold is the
+   * retention's — possession alone is one of them under PURGE and not
+   * under RETAIN. */
+  if (arts_db_grant_release_skip(cache)) {
+    return;
+  }
+  uint64_t hand_back = release_write_half(cache, true);
 
   /* The count-dropping edge, and what this rank owes at it, belong to the
    * retention — a revoked grant ships onward to the target the round
@@ -271,6 +280,14 @@ void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload) {
   } else {
     arts_db_grant_release_commit(cache);
   }
+}
+
+void arts_db_publish_rw(struct arts_db_cache_s *cache, void *payload) {
+  (void)payload;
+  if (arts_db_grant_release_skip(cache)) {
+    return;
+  }
+  (void)release_write_half(cache, false);
 }
 
 /* The home's publication axis, advanced by each round's run before any of its

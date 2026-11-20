@@ -430,9 +430,9 @@ static void db_create_in_place(arts_guid_t guid, void *addr, uint64_t len,
      * (acquire_local / arts_db_resolve_slot_cached) find a non-NULL
      * cache->buffer.  The user pointer returned by arts_db_create
      * points into this buffer's payload, so writes by the creator
-     * EDT land in buf->data and are published when release_rw bumps
-     * the version.  No initial value: the payload an acquiring create
-     * hands out is uninitialized by contract.
+     * EDT land in buf->data and are published when the write half of its
+     * hold's release bumps the version.  No initial value: the payload an
+     * acquiring create hands out is uninitialized by contract.
      *
      * Only when the create acquires: then the creating thread IS the
      * payload's first user and allocating here places it on that thread's
@@ -2059,7 +2059,8 @@ static uint32_t db_dep_owner(const struct arts_edt_s *edt,
 /*
  * db_release_hold — Release the calling EDT's hold on a single DB mid-EDT.
  *
- * Two search paths, in this order (arts_db_downgrade searches the same way):
+ * Two search paths, in this order (db_hold_find, the search of
+ * arts_db_downgrade and arts_db_publish, takes the same two):
  *   1. created_db_list — DBs the current EDT created (held from the create).
  *   2. depv — DBs received as dependencies (RW or RO mode).
  *
@@ -2127,6 +2128,39 @@ void arts_db_release(arts_guid_t guid) {
   arts_shared_release(&held);
 }
 
+/* The calling EDT's hold on `guid` that a mid-body call acts on, searched as
+ * db_release_hold searches: the created-list entry when this EDT created the
+ * block (whatever that entry's state), else the owner slot of its dependence
+ * vector.  False when it holds none. */
+struct db_hold_ref_s {
+  struct arts_created_db_s *entry; /* a create's hold, else NULL */
+  struct arts_edt_s *edt;          /* a dependence's hold: its EDT ... */
+  arts_edt_dep_t *depv;
+  uint32_t owner;                  /* ... and owner slot */
+};
+static bool db_hold_find(arts_guid_t guid, struct db_hold_ref_s *h) {
+  arts_vector_t *list = arts_get_created_db_list();
+  uint64_t c = db_created_index(list, guid);
+  if (c < arts_vector_count(list)) {
+    h->entry = (struct arts_created_db_s *)arts_vector_at(list, c);
+    return true;
+  }
+  h->entry = NULL;
+  struct arts_edt_s *edt = arts_current_edt;
+  if (!edt) {
+    return false;
+  }
+  arts_edt_dep_t *depv = (arts_edt_dep_t *)arts_get_depv(edt);
+  uint32_t owner = db_dep_owner(edt, depv, guid);
+  if (owner == edt->depc) {
+    return false;
+  }
+  h->edt = edt;
+  h->depv = depv;
+  h->owner = owner;
+  return true;
+}
+
 /*
  * arts_db_downgrade — turn the calling EDT's write hold on one DB into a read
  * hold: the hold's write release runs exactly as arts_db_release would run
@@ -2152,11 +2186,12 @@ void arts_db_release(arts_guid_t guid) {
  * rewritten, and its created hold left as it is.
  */
 void arts_db_downgrade(arts_guid_t guid) {
-  arts_vector_t *list = arts_get_created_db_list();
-  uint64_t c = db_created_index(list, guid);
-  if (c < arts_vector_count(list)) {
-    struct arts_created_db_s *entry =
-        (struct arts_created_db_s *)arts_vector_at(list, c);
+  struct db_hold_ref_s h;
+  if (!db_hold_find(guid, &h)) {
+    return;
+  }
+  if (h.entry != NULL) {
+    struct arts_created_db_s *entry = h.entry;
     struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(entry->db);
     if (entry->read_only || db->db_type != ARTS_DB) {
       return;
@@ -2170,14 +2205,11 @@ void arts_db_downgrade(arts_guid_t guid) {
     return;
   }
 
-  struct arts_edt_s *edt = arts_current_edt;
-  if (!edt) {
-    return;
-  }
-  arts_edt_dep_t *depv = (arts_edt_dep_t *)arts_get_depv(edt);
+  struct arts_edt_s *edt = h.edt;
+  arts_edt_dep_t *depv = h.depv;
   uint32_t depc = edt->depc;
-  uint32_t owner = db_dep_owner(edt, depv, guid);
-  if (owner == depc || depv[owner].mode != DB_MODE_RW) {
+  uint32_t owner = h.owner;
+  if (depv[owner].mode != DB_MODE_RW) {
     return;
   }
   if (edt->dep_acq[owner].subtype == ARTS_DB) {
@@ -2190,6 +2222,34 @@ void arts_db_downgrade(arts_guid_t guid) {
     if (depv[i].guid == guid && depv[i].mode == DB_MODE_RW) {
       depv[i].mode = DB_MODE_RO;
     }
+  }
+}
+
+/*
+ * arts_db_publish — publish the calling EDT's writes to one DB and keep its
+ * write hold: the write half of the hold's release runs (arts_db_publish_rw /
+ * arts_db_publish_created) and nothing else.  The hold is found as
+ * arts_db_downgrade finds it.  No slot, entry or pin is written, so the hold
+ * ends as it would have.  A GPU kind carries no DB-level coherence and is
+ * left as it is.
+ */
+void arts_db_publish(arts_guid_t guid) {
+  struct db_hold_ref_s h;
+  if (!db_hold_find(guid, &h)) {
+    return;
+  }
+  if (h.entry != NULL) {
+    struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(h.entry->db);
+    if (!h.entry->read_only && db->db_type == ARTS_DB) {
+      arts_db_publish_created(&db->cache);
+    }
+    return;
+  }
+  if (h.depv[h.owner].mode == DB_MODE_RW &&
+      h.edt->dep_acq[h.owner].subtype == ARTS_DB) {
+    struct arts_db_s *db =
+        (struct arts_db_s *)arts_shared_get(dep_release_pin(h.edt, h.owner));
+    arts_db_publish_rw(&db->cache, h.depv[h.owner].ptr);
   }
 }
 

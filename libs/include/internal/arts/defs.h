@@ -78,14 +78,17 @@
 #define ARTS_PURE ARTS_ATTRIBUTE(__pure__)
 
 /** Inlining at every call site, for a protocol word's state-transition
- *  arbiter and the step that commits it.  The contract: every runtime call
- *  passes the operation as a constant, so the inlined arbiter compiles to
- *  that operation's case alone inside the site's CAS loop.  An optimized
- *  build forces it, whatever a caller's size, since left to the inlining
- *  heuristics a site could keep a call, a dispatch on the operation and a
- *  decode of every field in each attempt.  Without optimization nothing
- *  folds and forcing only grows every caller's frame and text, so such a
- *  build calls the arbiter as an ordinary static function. */
+ *  arbiter and the step that commits it, and for a release's write half that
+ *  two entry points share.  The contract: every runtime call passes the
+ *  operation as a constant, so the inlined arbiter compiles to that
+ *  operation's case alone inside the site's CAS loop; and a write half is
+ *  called with any release-only step as a constant, so each entry point
+ *  compiles to its own statements alone.  An optimized build forces it,
+ *  whatever a caller's size, since left to the inlining heuristics a site
+ *  could keep a call, a dispatch on the operation and a decode of every
+ *  field in each attempt.  Without optimization nothing folds and forcing
+ *  only grows every caller's frame and text, so such a build calls it as an
+ *  ordinary static function. */
 #ifdef __OPTIMIZE__
 #define ARTS_ALWAYS_INLINE inline ARTS_ATTRIBUTE(__always_inline__)
 #else

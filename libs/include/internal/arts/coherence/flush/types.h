@@ -57,13 +57,14 @@ struct arts_db_cache_s {
    * names it (a fetch response or the create's return), constant for the
    * block's life.  flush_txid is the pairing id the home minted for this
    * rank's next PUT into the line: 0 = none, take the announce round.  A
-   * release consumes it with one exchange; the ACK refills it.  Whoever
-   * learns the line (a fetch response, the create's return) stores addr and
-   * rkey relaxed and then txid with release; a release takes txid with an
-   * acquire exchange, which orders the address and rkey it then loads
-   * relaxed.  The ACK's refill of txid is a release store too.  The 0 the
-   * exchange leaves publishes nothing: no reader acquires it, and the refill
-   * follows the exchange through the round trip it answers. */
+   * write-back (a release's or a publish's) consumes it with one exchange;
+   * the ACK refills it.  Whoever learns the line (a fetch response, the
+   * create's return) stores addr and rkey relaxed and then txid with
+   * release; a write-back takes txid with an acquire exchange, which orders
+   * the address and rkey it then loads relaxed.  The ACK's refill of txid is
+   * a release store too.  The 0 the exchange leaves publishes nothing: no
+   * reader acquires it, and the refill follows the exchange through the
+   * round trip it answers. */
   _Atomic(uint64_t) home_line_addr;
   _Atomic(uint64_t) home_line_rkey;
   _Atomic(uint64_t) flush_txid;

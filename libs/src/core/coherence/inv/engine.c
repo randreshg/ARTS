@@ -1184,11 +1184,15 @@ void arts_db_grant_note_ex_holder(struct arts_db_s *db, unsigned int rank) {
 
 /* A create's hold is this arm's ordinary write hold, taken when the block was
  * made; the bytes under it are the cache's own, so the release needs no
- * pointer to them.  It is the same under both read sources, so it sits
- * here rather than in the read-source TU that defines arts_db_release_rw
- * itself. */
+ * pointer to them.  The release and the publish of that hold are the same
+ * under both read sources, so they sit here rather than in the read-source
+ * TU that defines arts_db_release_rw and arts_db_publish_rw. */
 void arts_db_release_created(struct arts_db_cache_s *cache) {
   arts_db_release_rw(cache, NULL);
+}
+
+void arts_db_publish_created(struct arts_db_cache_s *cache) {
+  arts_db_publish_rw(cache, NULL);
 }
 
 /* arts_handler_db_publish_ack — shared flight-completion body, defined once in

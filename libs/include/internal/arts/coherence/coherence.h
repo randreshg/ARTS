@@ -347,22 +347,25 @@ void arts_db_fill_aliases(struct arts_edt_s *edt, unsigned int owner_slot);
  * for such an EDT; the block's create, when the acquire came before it (the
  * program's duty: nothing the creating EDT waits for is held by an EDT that
  * waits for the block); and, where the home serves reads, the creating EDT's
- * first publish, the release of an EDT that is already running.
+ * first publication (its release, downgrade or publish), which an EDT that
+ * is already running makes.
  * DB_MODE_NULL acquires nothing and is never serialized.  Defined in each
  * arm's own read-source TU. */
 bool arts_db_acquire_is_serialized(arts_db_access_mode_t mode);
 
 /*--- Release path --------------------------------------------------------
  *
- * Each arm defines its own RW release.  Under VAL and INV it bumps the
- * buffer's version, publishes where the arm does and waits for that publish's
- * ACK — VAL·HOME ships the payload to the home from any other rank; INV, on a
- * run of several ranks, asks the home for the release's invalidation round,
- * carrying the payload under HOME from a rank other than the home (on a run of
- * one rank no round has a target, so none is asked for) — and then takes the
- * retention's count-dropping edge: the last writer of a revoked grant
- * ships it to the target the round named, and a voluntarily returned grant
- * goes back to the home, riding the publish where there is one. */
+ * Each arm defines its own RW release.  Under VAL and INV it is two steps in
+ * sequence.  The write half bumps the buffer's version, publishes where the
+ * arm does and waits for that publish's ACK — VAL·HOME ships the payload to
+ * the home from any other rank; INV, on a run of several ranks, asks the home
+ * for the release's invalidation round, carrying the payload under HOME from
+ * a rank other than the home (on a run of one rank no round has a target, so
+ * none is asked for).  Then the retention's count-dropping edge: the last
+ * writer of a revoked grant ships it to the target the round named, and a
+ * voluntarily returned grant goes back to the home, riding the publish where
+ * there is one.  arts_db_publish_rw and arts_db_publish_created run the write
+ * half alone, so the write right stays on the rank. */
 
 /* Release a RW acquire taken as a DEPENDENCE.  payload is the releasing EDT's
  * pointer into its hold; arms whose release does not move the EDT's own bytes
@@ -375,6 +378,19 @@ void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload);
  * dependence's are the ones the acquire resolved.  Defined once per protocol
  * TU beside arts_db_release_rw. */
 void arts_db_release_created(struct arts_db_cache_s *cache);
+
+/* The write half of arts_db_release_rw with the hold kept: what the arm's
+ * write release does before its count-dropping edge, and nothing else.  The
+ * caller holds the block for writing on this rank through a dependence;
+ * payload is its pointer into the hold, as for arts_db_release_rw.  Takes no
+ * hand-back claim and reaches no count edge, so the write right stays where
+ * it is and the caller's bytes and pointer stay valid.  May block as the
+ * release's write half may. */
+void arts_db_publish_rw(struct arts_db_cache_s *cache, void *payload);
+
+/* The same for the hold a create took.  An arm that would hand a creator's
+ * storage back at its release keeps it here. */
+void arts_db_publish_created(struct arts_db_cache_s *cache);
 
 /* Release a read hold: an RO acquire taken as a dependence, or a write hold
  * (a dependence's or a create's) that arts_db_downgrade turned into one after
@@ -755,12 +771,13 @@ arts_db_acquire_remote_rw(struct arts_db_cache_s *cache, struct arts_edt_s *edt,
  * end_tenure:   a CONFIRM's step on a home retired meanwhile (RETAIN only):
  *               the baton goes down with nothing popped, and the tenure's
  *               count goes last.
- * release_skip: release_rw's defensive entry guard (true = nothing to drop).
+ * release_skip: the defensive entry guard of release_rw and publish_rw
+ *               (true = nothing to drop).
  * release_commit: the count-dropping edge of a writer's own release; the
  *               install's own hold is closed by commit_drain / commit_finish
  *               below.
- * Every one of them is called with the arm's own state already settled: the
- * release's publish has been acknowledged. */
+ * Every one of them but release_skip is called with the arm's own state
+ * already settled: the release's publish has been acknowledged. */
 void arts_db_grant_request_arrived(struct arts_db_cache_s *cache,
                                    struct arts_db_s *db,
                                    unsigned int requester);

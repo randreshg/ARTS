@@ -189,14 +189,10 @@ void arts_handler_db_acquire(void *item, void *args) {
  * still returns only once every stale copy is dead, and the count is still
  * dropped only after the round acks, which is what orders any ownership
  * transfer behind it.  A run of one rank has no stale copy and no transfer.
+ * A publish is the bump and the round alone.
  */
-void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload) {
-  (void)payload;
-  /* Defensive: no local hold to drop means our acquire never bumped the grant;
-   * decrementing would underflow. */
-  if (arts_db_grant_release_skip(cache)) {
-    return;
-  }
+static ARTS_ALWAYS_INLINE void
+release_write_half(struct arts_db_cache_s *cache) {
   arts_shared_ptr_t buf_h = arts_db_buf_acquire(cache);
   struct arts_db_buffer_s *buf =
       (struct arts_db_buffer_s *)arts_shared_get(buf_h);
@@ -215,11 +211,29 @@ void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload) {
     arts_db_publish_sync(cache, new_version);
     TIME_INVALIDATE_ROUND_STOP();
   }
+}
+
+void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload) {
+  (void)payload;
+  /* Defensive: no local hold to drop means our acquire never bumped the grant;
+   * decrementing would underflow. */
+  if (arts_db_grant_release_skip(cache)) {
+    return;
+  }
+  release_write_half(cache);
 
   /* The count-dropping edge, sequenced after the round where one runs: the
    * last releaser ships the grant onward when an INVALIDATE has already named
    * a target. */
   arts_db_grant_release_commit(cache);
+}
+
+void arts_db_publish_rw(struct arts_db_cache_s *cache, void *payload) {
+  (void)payload;
+  if (arts_db_grant_release_skip(cache)) {
+    return;
+  }
+  release_write_half(cache);
 }
 
 /* ===== read request at the home =========================================

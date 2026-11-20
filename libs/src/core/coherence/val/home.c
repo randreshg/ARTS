@@ -140,34 +140,24 @@ bool arts_db_acquire_is_serialized(arts_db_access_mode_t mode) {
    * a request that reaches the home before the block's create waits for the
    * create, which the program orders; and a read that finds the home's
    * buffer unpublished, the home rank's own included, waits for the creating
-   * EDT's first publish, the release of an EDT that is already running. */
+   * EDT's first publication (its release, downgrade or publish), which an
+   * EDT that is already running makes. */
   return mode == DB_MODE_RW;
 }
 
 /* ===== release_rw (HOME arm) ========================================
  * The HOME read source keeps home's RO copy fresh with a pure synchronous
- * PUBLISH on every non-home release (home owners already hold the canonical
- * buffer).  Ownership moves on the grant plane: under RETAIN a separate
- * owner→owner ship (arts_db_send_grant_response), fired on the 0-edge when a
- * transfer target is pending, as in the OWNER arm; under PURGE the right goes
- * back to the home, on the publish's commit leg when it can.  The drain-now /
- * confirm-ack divergence lives only in the GRANT_RESPONSE / CONFIRM
- * handlers, not here. */
-/* A create's hold is this arm's ordinary write hold, taken when the block was
- * made; the bytes under it are the cache's own, so the release needs no
- * pointer to them. */
-void arts_db_release_created(struct arts_db_cache_s *cache) {
-  arts_db_release_rw(cache, NULL);
-}
-
-void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload) {
-  /* Defensive: no local hold to drop means our acquire never bumped ownership;
-   * decrementing would underflow.  Which word states carry no hold is the
-   * retention's — possession alone is one of them under PURGE and not
-   * under RETAIN. */
-  if (arts_db_grant_release_skip(cache)) {
-    return;
-  }
+ * PUBLISH in every non-home write half, a release's or a publish's (home
+ * owners already hold the canonical buffer).  Ownership moves on the grant
+ * plane: under RETAIN a separate owner→owner ship
+ * (arts_db_send_grant_response), fired on the 0-edge when a transfer target
+ * is pending, as in the OWNER arm; under PURGE the right goes back to the
+ * home, on the publish's commit leg when it can.  The drain-now / confirm-ack
+ * divergence lives only in the GRANT_RESPONSE / CONFIRM handlers, not here. */
+/* The write half: the bump and the publish.  Only a release (`releasing`)
+ * takes the hand-back claim, whose token it returns; a publish arms nothing. */
+static ARTS_ALWAYS_INLINE uint64_t release_write_half(
+    struct arts_db_cache_s *cache, void *payload, bool releasing) {
 #ifndef NDEBUG
   if (payload != NULL) {
     arts_shared_ptr_t chk = arts_db_buf_acquire(cache);
@@ -183,8 +173,8 @@ void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload) {
   /* The buffer for the version bump: while this rank holds a write turn the
    * installed buffer is the one the turn's payload names, and the EDT's ref
    * keeps it alive across the release (release_one_dep drops it after).  Only
-   * a creator's release (or a block with no bytes) passes no payload and
-   * loads the slot, scoped to release_rw. */
+   * a creator's hold (or a block with no bytes) passes no payload and loads
+   * the slot, scoped to this half. */
   arts_shared_ptr_t buf_h = NULL;
   struct arts_db_buffer_s *buf = arts_db_buf_from_data(payload);
   if (buf == NULL) {
@@ -197,17 +187,19 @@ void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload) {
         atomic_fetch_add_explicit(&buf->version, 1u, memory_order_acq_rel) + 1u;
   }
   bool is_home = (arts_guid_get_rank(cache->db_guid) == arts_global_rank_id);
-  /* HOME keeps home's RO copy fresh: pure synchronous publish every release
-   * (a non-home owner; home owners already hold the canonical buffer).  Under
-   * RETAIN the publish moves no ownership (that is the separate owner→owner
-   * ship); under PURGE its commit leg may carry the hand-back.  Derived ONCE:
+  /* HOME keeps home's RO copy fresh: pure synchronous publish in every write
+   * half (a non-home owner; home owners already hold the canonical buffer).
+   * Under RETAIN the publish moves no ownership (that is the separate
+   * owner→owner ship); under PURGE its commit leg may carry the hand-back.
+   * Derived ONCE:
    * the hand-back follows this decision, and deriving it twice is how the two
    * drift apart. */
   bool will_publish = (!is_home && buf != NULL);
   /* Where the write right goes back unasked it can travel with these bytes
    * instead of behind them, which is the whole saving — so the claim is taken
    * BEFORE the publish, and a won claim replaces the count-dropping edge. */
-  uint64_t hand_back = arts_db_grant_release_claim(cache, will_publish);
+  uint64_t hand_back =
+      releasing ? arts_db_grant_release_claim(cache, will_publish) : 0u;
   if (will_publish) {
     /* The flight pins its own source ref; this caller's ref only covers the
      * version bump above. */
@@ -215,6 +207,29 @@ void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload) {
   }
   /* HOME: release a slot load after the publish (which reads buf->data). */
   arts_db_buf_release(&buf_h);
+  return hand_back;
+}
+
+/* A create's hold is this arm's ordinary write hold, taken when the block was
+ * made; the bytes under it are the cache's own, so the release needs no
+ * pointer to them. */
+void arts_db_release_created(struct arts_db_cache_s *cache) {
+  arts_db_release_rw(cache, NULL);
+}
+
+void arts_db_publish_created(struct arts_db_cache_s *cache) {
+  arts_db_publish_rw(cache, NULL);
+}
+
+void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload) {
+  /* Defensive: no local hold to drop means our acquire never bumped ownership;
+   * decrementing would underflow.  Which word states carry no hold is the
+   * retention's — possession alone is one of them under PURGE and not
+   * under RETAIN. */
+  if (arts_db_grant_release_skip(cache)) {
+    return;
+  }
+  uint64_t hand_back = release_write_half(cache, payload, true);
 
   /* The count-dropping edge, and what this rank owes at it, belong to the
    * retention — a revoked grant ships onward to the target the round
@@ -227,6 +242,13 @@ void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload) {
   } else {
     arts_db_grant_release_commit(cache);
   }
+}
+
+void arts_db_publish_rw(struct arts_db_cache_s *cache, void *payload) {
+  if (arts_db_grant_release_skip(cache)) {
+    return;
+  }
+  (void)release_write_half(cache, payload, false);
 }
 
 /* ===== cache_s lifecycle (HOME) ======================================

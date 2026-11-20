@@ -287,8 +287,9 @@ struct arts_home_grantreq_queue_s {
  * IS the "cache-hold + per-acquirer" count, and the cb deleter ends the
  * buffer once the last holder releases — so a destroy concurrent with an
  * in-flight acquire can never free the bytes out from under a reader.
- *   version  monotonic per-buffer version stamp.  A release bumps it with an
- *            acq_rel fetch_add after writing the bytes, and the in-place
+ *   version  monotonic per-buffer version stamp.  A write release's write
+ *            half, which a publish runs alone, bumps it with an acq_rel
+ *            fetch_add after the bytes were written, and the in-place
  *            publish commit stores it with release after the bytes landed;
  *            a load that names or serves those bytes is acquire, and a load
  *            whose bytes another edge already orders is relaxed.  A buffer

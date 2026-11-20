@@ -228,7 +228,8 @@ struct arts_db_inv_pub_s {
  * means the home has published the directory flip; the negative value it
  * produces is why the signed test is the predicate and not a convenience.
  *
- * The version axis is the buffer's own version field, bumped by each release.
+ * The version axis is the buffer's own version field, bumped by each write
+ * half: a release's or a publish's.
  * A second, publication-numbering counter would be redundant: no home-issued
  * grant sequence exists for a local install count to race against. */
 struct arts_db_cache_s {

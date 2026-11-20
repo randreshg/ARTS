@@ -326,9 +326,9 @@ reference                        arts_shared_slot_load                load  slot
 reference                        arts_db_buf_bump_inplace             load  version       -/1  -
 reference                        buf_publish                          load  version       -/1  -
 
-# Transitions of other events: releases, a downgrade's join of the read
-# side, the request axes, invalidation, the size round, destroy and the owed
-# releases.
+# Transitions of other events: releases and their write halves, a
+# downgrade's join of the read side, the request axes, invalidation, the size
+# round, destroy and the owed releases.
 EXCL.PURGE.*                   arts_db_release_ro                   load  cache_state   -/1  -
 EXCL.RETAIN.*                  arts_db_release_ro                   load  cache_state   -/2  -
 EXCL.*.*                       arts_db_release_ro                   rmw   cache_state   -/1  -
@@ -346,7 +346,7 @@ EXCL.PURGE.*                   arts_db_destroy_arrived              load  lock_s
 EXCL.PURGE.*                   arts_db_destroy_arrived              rmw   lock_state    -/1  -
 EXCL.PURGE.*                   lock_preclaim_write_absorb           load  lock_state    -/1  -
 EXCL.PURGE.*                   lock_preclaim_write_absorb           rmw   lock_state    -/1  -
-INV.*.*,VAL.*.*                arts_db_release_rw                   rmw   version       -/1  -
+INV.*.*,VAL.*.*                release_write_half                   rmw   version       -/1  -
 INV.*.*,VAL.*.HOME             pub_flight_drive                     load  version       -/1  -
 INV.*.*,VAL.*.*                arts_send_db_grant_request           load  version       -/1  -
 

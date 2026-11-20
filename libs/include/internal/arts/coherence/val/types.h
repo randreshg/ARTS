@@ -260,9 +260,10 @@ struct arts_db_cache_s {
    * is an exchange, so a join is either read by that reset (and its node
    * re-drained) or lands after it (and fails the owner's landing CAS).
    * pub_waiters holds a {sem, version} node, in its releaser's frame, for
-   * every releaser blocked until a covering publish is ACKed; a drain pops a
-   * node before it posts it and touches it no more, and the releaser leaves
-   * its wait only after that post. */
+   * every releaser (the caller of a write half: a release's or a publish's)
+   * blocked until a covering publish is ACKed; a drain pops a node before it
+   * posts it and touches it no more, and the releaser leaves its wait only
+   * after that post. */
   _Atomic(unsigned int) pub_flight;
   arts_lf_stack_t pub_waiters;
   /* Waiters a completing flight drained but its version did not cover, held
