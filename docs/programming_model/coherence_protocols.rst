@@ -30,8 +30,8 @@ from:
 
 * ``ARTS_VALIDITY`` selects how a copy stays valid after a write. Under the
   ``OCR`` model, who keeps reader copies valid: ``INV`` (default;
-  *invalidation* — reader copies stay valid until a writer's release
-  retires every standing copy in an acknowledged invalidation round),
+  *invalidation* — reader copies stay valid until a writer's release or
+  publish retires every standing copy in an acknowledged invalidation round),
   ``VAL`` (*validation* — each read acquire checks its cached copy's version
   at the serving side and refetches only when stale; readers are never
   blocked, tracked, or invalidated), or ``EXCL`` (*exclusion* — queue-fair
@@ -45,9 +45,10 @@ from:
   and permission back to the home, unasked, at the node's own idle edge) or
   ``RETAIN`` (default; keep both until another node asks, and let the home
   recall them). FLUSH has no retention — there is no grant to retain, only a
-  per-release round trip.
+  round trip per release or publish.
 * ``ARTS_READ_SOURCE`` selects where a reader's copy comes from: ``HOME``
-  (every release ships the payload to the DB's home, which then serves reads)
+  (every release and every publish ships the payload to the DB's home, which
+  then serves reads)
   or ``OWNER`` (default; the payload stays with the last writer and moves
   only on demand, through directory forwarding). Under EXCL the retention
   fixes it: ``HOME`` with ``PURGE``, ``OWNER`` with ``RETAIN``. FLUSH has no
@@ -108,6 +109,19 @@ the call completes before the call does, and whatever acquires the DB
 ordered after the call sees those stores.  The EDT keeps reading the DB
 until the read hold is released; a location no EDT concurrent with it
 writes keeps the EDT's view meanwhile.
+
+ARTS adds a second such entry, ``arts_db_publish``: the write half of a
+release with the hold kept.  Rule (1) applies to it as to a downgrade's write
+half, and the write-back of rule (3) is done by the call: every store the EDT
+made to the DB before the call completes before the call does, and a DB so
+published may be exposed by a later satisfaction while the EDT still holds it
+for writing.  A read by an EDT ordered after the call returns, at every
+location that no write unordered with the read writes, the last write that
+happens-before it.  The EDT may store to the DB again; such a store is
+unordered with that read until a later publication of the hold (the EDT's next
+publish, its downgrade or its release) is ordered before the read's
+acquisition, and until then the read of that location is a racing read
+(below).
 
 Data races are **legal** under this contract. Racing writes have defined
 semantics; a racing read does not:
@@ -194,7 +208,13 @@ with a write returns unspecified bytes. ``FLUSH`` requires it:
   by a downgrade, or by its EDT's completion) before the other begins.
   Read acquisitions (RO, CONST) are unconstrained: they may overlap writes
   and each other, and a read unordered with a write returns unspecified
-  bytes.
+  bytes. A publish (``arts_db_publish``) ends no write acquisition and orders
+  no other write acquisition after it; it publishes what that acquisition
+  wrote so far. A read acquisition ordered after a publication of a write
+  acquisition — its publish, its downgrade or its release — reads, at every
+  location that no write unordered with it writes, the last write that
+  happens-before it; a write that acquisition makes after the last of its
+  publications ordered before the read is unordered with the read.
   Granularity is the whole DataBlock; writers to disjoint byte ranges of one
   block are still two write acquisitions. The property is
   placement-independent: where the EDTs run, and where the block is homed,
@@ -329,13 +349,14 @@ On VAL and INV a parked reader therefore waits only for messages in flight;
 for the answer of the home, or of the node the home redirects the request to,
 neither of which waits for an EDT that can itself be waiting for an acquire;
 for the DB's create, when the request reached the home before it; and, under
-``HOME``, for the creating EDT's first release, while the home's copy is not
-yet published (a reader on the home node waits for that release too, with no
-request).  A read waits for no release of an EDT that can itself be waiting
-for an acquire; the one release it can wait for is the creating EDT's first,
-and a running EDT waits for nothing.  That is why on those arms an EDT's read
-dependences are acquired in parallel, while its write dependences are
-acquired one after another in one global GUID order.
+``HOME``, for the creating EDT's first publication (its release, its downgrade
+or its publish), while the home's copy is not yet published (a reader on the
+home node waits for that publication too, with no request).  A read waits for
+no publication of an EDT that can itself be waiting for an acquire; the one
+publication it can wait for is the creating EDT's first, and a running EDT
+waits for nothing.  That is why on those arms an EDT's read dependences are
+acquired in parallel, while its write dependences are acquired one after
+another in one global GUID order.
 
 On EXCL a read request is granted only in a read phase, which the home opens
 once it counts no write turn, so there every dependence, read or write, is
@@ -400,16 +421,19 @@ selected by ``-DARTS_VALIDITY=VAL``, read source by
 
 The name is used in McKenney's sense: **readers are never blocked and never
 invalidated**. A reader acquires a versioned snapshot and proceeds on it;
-updates install new versions without disturbing readers in flight. The
-update side's ordering comes from *outside* the read path: write access is
-granted to at most one node at a time via a single-owner grant. Within the
-owning node, multiple RW acquirers share a local buffer, so intra-node
-writes are multi-writer (hardware cache coherence keeps them consistent). A
-remote RW acquire requests ownership from the current owner; the owner
-completes its release, ships the payload and transfers the grant. This
-serializes inter-node writes — the OCR non-overlapping rule holds because
-intra-node concurrent writes are hardware-coherent and inter-node ones never
-overlap in time.
+updates install new versions without disturbing readers in flight. The update
+side's ordering comes from *outside* the read path: write access is granted to
+at most one node at a time via a single-owner grant. Within the owning node,
+multiple RW acquirers share a local buffer, so intra-node writes are
+multi-writer (hardware cache coherence keeps them consistent). A remote RW
+acquire requests ownership from the current owner; the owner completes its
+release, ships the payload and transfers the grant. This serializes inter-node
+writes — the OCR non-overlapping rule holds because intra-node concurrent
+writes are hardware-coherent and inter-node ones never overlap in time. A
+release bumps the version of the buffer its node's writers wrote and, under
+``HOME``, sends the payload to the home from any other node.
+``arts_db_publish`` does exactly that and keeps the hold, so a reader's next
+validation finds the newer version; nothing is sent under ``OWNER``.
 
 The correspondence to canonical RCU is the read-side regime: updaters
 serialized outside the read path, readers proceeding on possibly-stale
@@ -453,22 +477,23 @@ grant plane ``coherence/grant.c``); selected by ``-DARTS_VALIDITY=INV`` (the
 default), read source by ``ARTS_READ_SOURCE={HOME,OWNER}`` (default
 ``OWNER``).
 
-The mirror of VAL: there a reader checks its copy's validity, here the *writer*
-keeps reader copies valid. A reader's copy is durable — holding the copy is the
-permission to read it, so a repeated read on that node is a pure local load
-with no message, no atomic update, and no version comparison; a copy dies
-exactly one way, when an invalidation arrives. In exchange, every RW release
-returns only after an *invalidation round* covering it has closed: the home
-snapshots its sharer roster (one bit per node, set before a copy is served, so
-it safely over-approximates who might hold one), multicasts an invalidation,
-and collects an acknowledgment from every target; concurrent releases may be
-covered by one round. On a run of one rank no other node can hold a copy, so a
-release runs no round. Write ownership is the same migrating grant VAL uses,
-and the sharer plane is deliberately **version-free** — a versioned sharer
-plane would already be halfway to VAL. Under ``HOME`` the release additionally
-publishes the payload to the home, which then serves reads; under ``OWNER`` the
-publish is control-only and the home is a pure directory that registers readers
-and redirects them to the owner.
+The mirror of VAL: there a reader checks its copy's validity, here the
+*writer* keeps reader copies valid. A reader's copy is durable — holding the
+copy is the permission to read it, so a repeated read on that node is a pure
+local load with no message, no atomic update, and no version comparison; a
+copy dies exactly one way, when an invalidation arrives. In exchange, every RW
+release, and every ``arts_db_publish``, returns only after an *invalidation
+round* covering it has closed: the home snapshots its sharer roster (one bit
+per node, set before a copy is served, so it safely over-approximates who
+might hold one), multicasts an invalidation, and collects an acknowledgment
+from every target; concurrent releases may be covered by one round. On a run
+of one rank no other node can hold a copy, so neither runs a round. Write
+ownership is the same migrating grant VAL uses, and the sharer plane is
+deliberately **version-free** — a versioned sharer plane would already be
+halfway to VAL. Under ``HOME`` each of them additionally sends the payload to
+the home from any other node, which then serves reads; under ``OWNER`` the
+round request is control-only and the home is a pure directory that registers
+readers and redirects them to the owner.
 
 EXCL — queue-fair distributed reader–writer lock
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -528,6 +553,11 @@ write permission, after which a writer of the node takes the turn back
 through the home while the read hold lasts, and the bytes stay resident,
 holding any migration, until the node holds nothing.
 
+``arts_db_publish`` does nothing on this validity: a reader on another node is
+admitted only once no node holds the write turn, so it reads the hold's
+stores whenever they were made, and a reader on the holder's node reads the
+buffer the writer writes.
+
 .. _flush_protocol:
 
 FLUSH — fetch at acquire, flush at release (requires CDAG)
@@ -536,8 +566,8 @@ FLUSH — fetch at acquire, flush at release (requires CDAG)
 *Status:* implemented (``libs/src/core/coherence/flush/flush.c``); selected
 by ``-DARTS_VALIDITY=FLUSH``, whose programs must satisfy the
 CDAG model (see :ref:`cdag_contract`). No retention and no read source:
-every remote acquire fetches and every remote RW release writes back,
-unconditionally.
+every remote acquire fetches and every remote RW release or publish writes
+back, unconditionally.
 
 .. list-table::
    :header-rows: 1
@@ -558,6 +588,10 @@ unconditionally.
      - Nothing (writes were already in place)
      - PUT the copy into the home line, send the commit, block until the
        home's ACK, then drop the copy
+   * - Publish
+     - Nothing (writes are already in place)
+     - Write the copy back as a Release RW does, and keep it as the EDT's
+       write copy
    * - Downgrade
      - Nothing; the EDT goes on reading the line
      - Write the copy back as a Release RW does, then keep it as the EDT's
@@ -565,8 +599,8 @@ unconditionally.
 
 No versions, no per-rank ledger, no header-only replies, no request
 combining, no write combining, no grant, and no counters that gate anything:
-every remote acquire moves the payload and every remote RW release moves it
-back, one round trip each.
+every remote acquire moves the payload and every remote RW release or publish
+moves it back, one round trip each.
 
 A private copy per EDT, rather than one shared line per rank, closes a
 lost-update window: with a single shared line, an RO fetch issued before a
@@ -616,13 +650,13 @@ Where does a reader's copy come from — where does the canonical payload rest
 between write turns? Live under INV/VAL (``ARTS_READ_SOURCE``):
 
 * **HOME** (write-through at release) — the payload returns to the DB's home
-  at every RW release, synchronously acknowledged; the home always holds a
-  current copy and serves reads. Trades release-side flush bandwidth for
-  one-hop reads.
-* **OWNER** (default) — no payload moves at release: the canonical payload
-  stays with the last writer, and the home directory forwards requesters to
-  the owner. Trades a forwarding hop on first access for zero flush traffic
-  while ownership is reused.
+  at every RW release and every publish, synchronously acknowledged; the home
+  always holds a current copy and serves reads. Trades release-side flush
+  bandwidth for one-hop reads.
+* **OWNER** (default) — no payload moves at a release or a publish: the
+  canonical payload stays with the last writer, and the home directory
+  forwards requesters to the owner. Trades a forwarding hop on first access
+  for zero flush traffic while ownership is reused.
 
 Under EXCL the retention fixes this axis: no reader copy outlives a write
 turn, so a per-release flush would have nobody to serve, and the payload
@@ -725,7 +759,8 @@ What version of the DB's contents does a reader observe?
   installed-version snapshot copy. Both are legal under both contracts.
 * **Durable-copy** (current INV) — a reader's copy stays legal until an
   invalidation retires it, so every re-read between two writes is
-  message-free and observes the last completed release.
+  message-free and observes the last completed publication (a release, a
+  downgrade's write half or a publish).
 * **Lock-isolated** (current EXCL) — a reader on another node is admitted
   only when no node holds the write grant, so it observes a quiescent DB; a
   reader on the node that holds it joins that node's write turn and reads

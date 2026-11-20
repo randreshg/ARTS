@@ -238,7 +238,7 @@ counters:
   NUM_INVALIDATE_ROUND:
     group: 'Invalidation arm'
     unit: count
-    help: 'INV invalidation rounds at the home that retired at least one release (a round batches every release queued when it starts)'
+    help: 'INV invalidation rounds at the home that retired at least one release or publish (a round batches every release and publish queued when it starts)'
 
   NUM_INVALIDATE_ACK:
     group: 'Invalidation arm'
@@ -248,7 +248,7 @@ counters:
   TIME_INVALIDATE_ROUND:
     group: 'Invalidation arm'
     unit: ns
-    help: 'Time an INV RW release blocks on its round (under HOME the payload write-through included; a joined release waits for the flight it joined)'
+    help: 'Time an INV RW release or publish blocks on its round (under HOME the payload write-through included; one that joined a flight waits for that flight)'
 
   NUM_GRANT_MIGRATE:
     group: 'Write grant'
@@ -283,7 +283,7 @@ counters:
   NUM_PUB_FLIGHT_JOIN:
     group: 'Publish flight'
     unit: count
-    help: 'Releases coalesced into an already-open flight'
+    help: 'Releases and publishes coalesced into an already-open flight'
 
   NUM_PUB_FLIGHT_TRAILING:
     group: 'Publish flight'

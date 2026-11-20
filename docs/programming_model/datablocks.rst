@@ -108,17 +108,19 @@ for the non-coherent storage kinds).
 The runtime moves and replicates a DataBlock's payload with plain copies, and
 it may take such a copy while an EDT that is not ordered with the copy's
 reader is writing the block — a read served from a node where an unordered
-writer is still running, or a release's payload landing in the copy that an
-unordered reader on the block's home is reading.  A plain copy is atomic at
-no granularity, so a word written while it is copied may be observed partly
-old and partly new, as a value no EDT wrote.  A read of a word is stable when
-every write to the word is ordered with the read by happens-before; another
-EDT's write is ordered with it only through acquisitions and releases, by
-happening before the acquisition that reads or after that acquisition's
-release.  Any other read is a data race, whose value the memory model leaves
-unspecified.  A correct program makes only stable reads, or does not depend
-on the values its other reads return.  Ordered accesses are unaffected: an
-acquisition ordered after a write never receives a copy that raced that write.
+writer is still running, or a release's or a publish's payload landing in the
+copy that an unordered reader on the block's home is reading.  A plain copy is
+atomic at no granularity, so a word written while it is copied may be observed
+partly old and partly new, as a value no EDT wrote.  A read of a word is
+stable when every write to the word is ordered with the read by
+happens-before; another EDT's write is ordered with it only through
+acquisitions and publications, by happening before a publication (a release, a
+downgrade's write half or a publish) that happens before the acquisition that
+reads, or after that acquisition's release.  Any other read is a data race,
+whose value the memory model leaves unspecified.  A correct program makes only
+stable reads, or does not depend on the values its other reads return.
+Ordered accesses are unaffected: an acquisition ordered after a write never
+receives a copy that raced that write.
 
 Creating a DataBlock
 --------------------
@@ -188,9 +190,11 @@ completion.
 Release and Lifetime
 --------------------
 
-A creating EDT holds RW access until it returns.  To publish writes
-before then — required when the body hands the block onward or starts work
-leading to its destroyer (below) — release explicitly:
+A creating EDT holds RW access until it returns, and its writes are published
+when that hold is released.  A body that hands the block to work that may
+acquire it before then publishes first: by an explicit release, or by a
+downgrade or a publish (below).  A body that starts work reaching the block's
+destroyer other than through its own completion releases first:
 
 .. code-block:: c
 
@@ -222,10 +226,38 @@ being a release, may block the worker as a release may:
    arts_event_satisfy(ready, depv[0].guid); /* wake a reader */
    use(p);                                  /* keep reading until the end */
 
-A downgraded hold is a hold like any other for the destroy rule below: a
-destroyer reached through the hand-off is ordered after the read hold's
-release, through the EDT's completion or an explicit release made before
-the satisfy that leads to it.
+An EDT that holds a block for writing, hands it onward and goes on writing
+other locations of it publishes its writes and keeps the hold:
+:c:func:`arts_db_publish` runs the write half of the hold's release exactly as
+:c:func:`arts_db_release` would, and gives nothing up.  Each ``depv`` slot
+that acquired the block keeps its guid, ptr and mode, and the pointer a create
+returned stays valid.  An EDT ordered after the call sees the writes made
+before it when it acquires the block; a write the EDT makes afterwards is
+published by its next publish, its downgrade or its release.  For an EDT
+ordered after the call, a read of a location returns the last write to it that
+happens-before the read, provided no write unordered with the read writes that
+location; otherwise the read races, and its value is unspecified.  A write the
+publishing EDT makes after the call is unordered with such a read until a
+later publication of the hold is ordered before the read's acquisition, so a
+program that depends on what such a reader reads has the EDT write, after the
+call, only locations that reader does not read.  The three entries differ in
+what the EDT keeps: a release keeps nothing, a downgrade keeps the read half,
+a publish keeps both.  The call acts on the holds of the EDT running on the
+calling thread (from functions its body calls on that thread too) and may
+block the worker as a release may:
+
+.. code-block:: c
+
+   uint64_t *p = (uint64_t *)depv[0].ptr; /* acquired DB_MODE_RW */
+   fill(p, 0, n);                         /* the part to hand on */
+   arts_db_publish(depv[0].guid);         /* publish; slot stays DB_MODE_RW */
+   arts_add_dependence(depv[0].guid, reader, 0, DB_MODE_RO);
+   fill(p, n, 2 * n);                     /* published at the release */
+
+A downgraded hold, and a hold whose writes were published, is a hold like any
+other for the destroy rule below: a destroyer reached through the hand-off is
+ordered after that hold's release, through the EDT's completion or an explicit
+release made before the satisfy that leads to it.
 
 :c:func:`arts_db_destroy` destroys all copies of a DB system-wide, from any
 rank, whether or not it holds a copy.  The program orders the destroy after
@@ -233,16 +265,19 @@ the release of every hold that any other EDT has on the block: every ``RO``
 and ``RW`` dependence hold and every creator hold, under every coherence
 protocol.  The destroying EDT's own hold is the one exception:
 :c:func:`arts_db_destroy` releases it first.  An EDT releases what it still
-holds before its completion event fires and before it leaves its group,
-so a destroy ordered after an EDT's completion is ordered after its
-releases.  An EDT that, in its body, hands the block onward or starts work
-that leads to its destroyer (by satisfying an event, creating an EDT or
-adding a dependence) calls :c:func:`arts_db_release` right after its last
-access to the block and before that hand-off.  A hold released after the
-destroy is a program error, and so is an acquisition still pending when the
-destroy is issued: the runtime need not serve it, and it may never complete.
-A block is destroyed once: a second destroy of it waits for a block of that
-GUID, which never comes, and is a program error too.
+holds before its completion event fires and before it leaves its group, so a
+destroy ordered after an EDT's completion is ordered after its releases.  An
+EDT that, in its body, starts work that reaches the block's destroyer other
+than through the EDT's own completion (by satisfying an event, creating an EDT
+or adding a dependence) calls :c:func:`arts_db_release` right after its last
+access to the block and before that work starts.  An EDT that keeps a hold
+past a hand-off, the read hold of a downgrade or the write hold of a publish,
+hands the block only to work whose destroyer is ordered after that hold's
+release, for instance through the EDT's completion event.  A hold released
+after the destroy is a program error, and so is an acquisition still pending
+when the destroy is issued: the runtime need not serve it, and it may never
+complete.  A block is destroyed once: a second destroy of it waits for a block
+of that GUID, which never comes, and is a program error too.
 
 The destroy is not acknowledged: the home tears the block down and notifies
 every rank that caches it, and a rank's copy is retired when that notice

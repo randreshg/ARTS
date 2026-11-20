@@ -469,9 +469,9 @@ rate is the hint NOT covering a workload.
 Invalidation Arm (INV)
 ~~~~~~~~~~~~~~~~~~~~~~
 
-A round batches every release queued at the home when it starts, and
-retires them with one multicast; the release blocks until its round's
-acks are in.
+A round batches every release and publish queued at the home when it starts,
+and retires them with one multicast; each blocks until its round's acks are
+in.
 
 .. list-table::
    :header-rows: 1
@@ -480,14 +480,15 @@ acks are in.
    * - Counter
      - Description
    * - ``NUM_INVALIDATE_ROUND``
-     - Invalidation rounds at the home that retired at least one release.
+     - Invalidation rounds at the home that retired at least one release or
+       publish.
    * - ``NUM_INVALIDATE_ACK``
      - Sharer copies the rounds targeted, one ack each (a target that held
        no valid copy and, under ``OWNER``, the home's own copy included).
    * - ``TIME_INVALIDATE_ROUND``
-     - Time an RW release blocks on its round; under ``HOME`` it includes
-       the payload's write-through, and a release that joined another's flight
-       waits for that flight.
+     - Time an RW release or a publish blocks on its round; under ``HOME`` it
+       includes the payload's write-through, and one that joined another's
+       flight waits for that flight.
 
 Migrating Write Permission
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -547,7 +548,8 @@ healthy path.
    * - ``NUM_PUB_FLIGHT``
      - Payload/control flights launched.
    * - ``NUM_PUB_FLIGHT_JOIN``
-     - Releases coalesced into an open flight (the write-combining win).
+     - Releases and publishes coalesced into an open flight (the
+       write-combining win).
    * - ``NUM_PUB_FLIGHT_TRAILING``
      - Relaunches for waiters the ACK left uncovered.
    * - ``NUM_PUB_CTS_FALLBACK``

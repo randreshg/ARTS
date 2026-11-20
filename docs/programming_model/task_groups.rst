@@ -96,9 +96,10 @@ the opener is still creating members:
 The latch fires when the count drains to zero: the opener's DECR and every
 member's completion.  A group with no member fires at the opener's DECR.  The
 DECR is an ordinary satisfy, and nothing more is promised for it: writes
-become visible at their release, so a successor that must see the opener's
-updates to a block, or destroy the block, finds it released before the DECR
-(the release and destroy contract of :doc:`datablocks`, "Release and
+become visible at their publication (a release, a downgrade or a publish), so
+a successor that must see the opener's updates to a block finds them published
+before the DECR, and one that destroys the block finds it released before the
+DECR (the release and destroy contract of :doc:`datablocks`, "Release and
 Lifetime").
 
 An EDT body never blocks on a group.  Work that must follow the group goes

@@ -263,11 +263,13 @@ Reuse and generations
 
 ARTS's own model gives every object a fresh GUID and never reuses one.
 Create, destroy, dependence, satisfy and acquire are fire-and-forget, and a
-release is the only point where a coherence protocol may wait, so no task's
-time includes a round trip it does not need; a message that arrives before
-its object exists waits on the home's out-of-order queue until the object is
-installed.  Labeled GUIDs, and destroying and creating one GUID again, are
-there to run OCR programs that use them.
+release (an explicit one, the one a destroy runs on its caller's own hold, or
+the EDT's end), a downgrade and a publish are the only points where a
+coherence protocol may wait, so no task's time includes a round trip it does
+not need; a message that arrives before its object exists waits on the home's
+out-of-order queue until the object is installed.  Labeled GUIDs, and
+destroying and creating one GUID again, are there to run OCR programs that use
+them.
 
 A GUID carries no generation.  Telling one generation of a label from the
 next would need every message that names the GUID — satisfies, dependences,
