@@ -207,19 +207,15 @@ All options are set with ``-D<NAME>=<VALUE>`` on the cmake line.
      - 5000000000
      - Bytes per arena the runtime creates from the CXL library (one
        data-block arena per device).  Validation trees pass 268435456.
-   * - ``ARTS_NOHINT_EDT_PLACEMENT``
-     - ROUNDROBIN
-     - Where an EDT created with no placement preference (NULL hint, or
-       hint rank ``ARTS_HINT_ANY_RANK``) lands — ``ROUNDROBIN`` (default)
-       or ``CREATOR``.  The OCR shim's ``ocrEdtCreate`` with no affinity
-       hint follows it.
    * - ``ARTS_NOHINT_DB_HOME``
      - CREATOR
      - Where a DB created with no placement preference (NULL hint) is
        homed — ``CREATOR`` (default; first-touch, home stays on the
        creating rank) or ``ROUNDROBIN``.  An explicit hint rank or
        pre-reserved GUID always wins.  The OCR shim's ``ocrDbCreate`` with
-       no affinity hint follows it.
+       no affinity hint follows it.  The placement of an EDT
+       with no preference is the configuration key
+       ``nohint_edt_spread_depth``.
    * - ``ARTS_LOG_LEVEL``
      - 3 / 1
      - Log verbosity (3 in Debug, 1 in Release; empty = the build type's):

@@ -261,8 +261,9 @@ hints to the operators and to the control spine.)  The base program:
 - **`smooth_edt`, `residual_edt`, `restrict_edt`, `interpolate_edt`** get EDT
   affinity from `ocrAffinityQuery(box)`, i.e. the box's home — these four *are*
   co-located with the box they write, in both tiers.
-- **Everything else is hint-less** → runtime round-robin (the shim's no-hint EDT
-  policy is ROUNDROBIN, not self-rank): `exchange_edt`, `init_ur_edt`,
+- **Everything else is hint-less** → the runtime's rotation over the ranks (a
+  hint-less EDT takes it at every depth unless a run sets
+  `nohint_edt_spread_depth`; it is not the creating rank): `exchange_edt`, `init_ur_edt`,
   `zero_vector_edt`, `mulv_edt`, `norm_edt`, every per-box *initialization* task,
   and all 993 solve level EDTs plus the `4L−1` initialization phase tasks.
 - Level, `mg` and per-level constant-box DBs are created in `mainEdt` with

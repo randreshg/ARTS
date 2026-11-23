@@ -3526,10 +3526,12 @@ apps:
     # four kernels of every sweep, the per-chain check, the initial array and
     # every array a kernel creates.  Before, it pinned only the kernels to the
     # rank they were created on, left the chain root and every datablock
-    # unhinted, and therefore borrowed its coverage from two CMake defaults
-    # (ARTS_NOHINT_EDT_PLACEMENT=ROUNDROBIN, ARTS_NOHINT_DB_HOME=CREATOR);
-    # under the equally supported CREATOR/ROUNDROBIN settings the same guard
-    # would have funnelled every chain onto one rank.  Per-place chain counts
+    # unhinted, and therefore borrowed its coverage from two defaults (the
+    # no-hint EDT placement, configuration key nohint_edt_spread_depth: unset
+    # is the rotation at every depth; and the DB-home build option
+    # ARTS_NOHINT_DB_HOME=CREATOR); with the key at 0, which places every
+    # such EDT on its creating rank, the same guard would have funnelled every
+    # chain onto one rank.  Per-place chain counts
     # are now exactly 3456/N at every rank count that divides 3456 (1728 at 2,
     # 432 at 8, 108 at 32 for 3456=3456), by the program.
     #

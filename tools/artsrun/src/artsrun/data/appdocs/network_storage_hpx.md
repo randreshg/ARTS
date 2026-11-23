@@ -388,7 +388,7 @@ that owns the slot, where `CopyFromStorage` runs, and its reply block moves
 back to the landing task at the asker. Completion, turn, relay, tally and driver tasks run
 at their rank; the barrier tasks and the final task run on rank 0, the
 barrier's root. Every task and block carries an explicit hint; nothing is
-left to the build's no-hint policy. Points are homed at their consumers
+left to the runtime's no-hint placement. Points are homed at their consumers
 wherever a labeled range is homed by index (ARTS, ocr-vx); on a runtime that
 homes a whole reserved range at the PD that reserved it (xsocr) they all live
 at that one PD, and each satisfy costs a message there and a forward.

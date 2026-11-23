@@ -90,6 +90,19 @@ Scheduling
        table, then move to the next, so one source's large set spreads over
        every table and one thread's long stream of short-lived objects can
        leave all T first segments resident.
+   * - ``nohint_edt_spread_depth``
+     - 4294967295
+     - Bound on the depth of the creating EDT below which an EDT that
+       ``arts_edt_create`` creates with no placement preference (a ``NULL``
+       hint or ``ARTS_HINT_ANY_RANK``) is placed by its creating node's
+       rotation over the ranks; from that depth on it stays on its creating
+       rank.  An EDT's depth is its level in the creation tree: the main EDT's
+       is 0 and every other EDT's is its creator's plus one, whatever its
+       hint.  ``0`` keeps every such EDT on its creating rank; the default is
+       above every depth, so every such EDT takes the rotation.  The OCR
+       shim's ``ocrEdtCreate`` with no affinity hint is such a creation, and
+       an OCR program's main EDT is one level below the runtime's, so a bound
+       acts one level shallower on an OCR program than on a native one.
 
 GPU Support
 -----------

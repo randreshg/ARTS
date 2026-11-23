@@ -53,12 +53,19 @@ Creating an EDT
 
 The returned GUID identifies the EDT.  The ``hint`` parameter carries
 all optional creation features in :c:type:`arts_edt_hint_t`.  Pass
-``NULL`` for no preference: the build's no-hint placement policy
-(``ARTS_NOHINT_EDT_PLACEMENT``: round-robin by default, or the creating
-node) picks the node, the GUID is auto-allocated, and the EDT inherits
-the creator's current group.  Set ``.rank`` to place the EDT on a given
-node.  If ``depc > 0``, the EDT will not run until all slots are
-signaled.
+``NULL`` for no preference: the EDT is placed by its creating node's
+rotation over the ranks while its creator's depth is below
+``nohint_edt_spread_depth`` (see :doc:`../configuration/arts_cfg`), and on
+the creating rank otherwise; the GUID is auto-allocated, and the EDT
+inherits the creator's current group.  An EDT's depth is its level in the
+creation tree: the main EDT's is 0 and every other EDT's is its creator's
+plus one, whatever its hint.  With the key set, a program whose EDTs form
+a tree spreads the few large subtrees at the top over the ranks and keeps
+the many small ones below with their creators.  Every creation is a level,
+so a chain of EDTs is as deep as it is long: from the bound on, everything
+it creates with no preference stays on its rank.  Set ``.rank`` to place
+the EDT on a given node.  If ``depc > 0``, the EDT will not run until all
+slots are signaled.
 
 Signaling Dependencies
 ----------------------
@@ -100,8 +107,8 @@ Creation Hint Fields
 in :c:type:`arts_edt_hint_t`:
 
 - ``rank`` — home node (``ARTS_HINT_CURRENT_RANK`` = current node,
-  ``ARTS_HINT_ANY_RANK`` = the no-hint placement policy, as a ``NULL``
-  hint).
+  ``ARTS_HINT_ANY_RANK`` = no preference, placed as a ``NULL`` hint
+  is).
 - ``guid`` — create at a pre-reserved GUID (``NULL_GUID`` =
   auto-allocate; when set, the GUID's rank overrides ``rank``).  A
   create of a GUID whose EDT is live waits, parked at the home, until

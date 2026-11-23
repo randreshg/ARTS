@@ -475,7 +475,7 @@ transpose, reap and finish task carries an explicit
 buffer, transposed-rows buffer, chunk and rank share an explicit DB hint.
 **A chunk is homed at its source**, which is where the origin's
 `values_prep_[j]` sits before the collective sends it. Nothing is left to
-the build's no-hint policy.
+the runtime's no-hint placement.
 
 The application defines `2·nl²` logical chunk deliveries per run, of which
 `2·nl(nl−1)` cross ranks, each carrying `2·cx·cy·8/nl²` bytes. Their logical

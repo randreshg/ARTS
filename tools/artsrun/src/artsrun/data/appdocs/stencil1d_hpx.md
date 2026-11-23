@@ -397,7 +397,7 @@ predecessor). The mirror states that placement on every object: every step,
 spawner and gather task carries an explicit
 `ocrAffinityGetAt(AFFINITY_PD, ...)` EDT hint for its rank, and every block
 an explicit DB hint for the rank that writes it. Nothing is left to the
-build's no-hint policy.
+runtime's no-hint placement.
 
 The point layer carries the placement too, and in the other direction: where a
 labeled range is homed by index (ARTS, ocr-vx) a
