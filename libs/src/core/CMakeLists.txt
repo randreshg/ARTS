@@ -59,7 +59,6 @@ if(HWLOC_INCLUDE_DIRS)
     target_include_directories(arts_compute PRIVATE ${HWLOC_INCLUDE_DIRS})
 endif()
 arts_apply_protocol(arts_compute ${ARTS_VALIDITY} ${ARTS_RETENTION} ${ARTS_READ_SOURCE})
-target_compile_definitions(arts_compute PRIVATE ARTS_NOHINT_EDT_ROUNDROBIN=${_ARTS_NOHINT_EDT_RR})
 
 # DB coherence TU selection: each arm compiles the TU of the axis that changes
 # it (home.c/owner.c, the read source; purge.c/retain.c, EXCL's retention) plus
@@ -141,7 +140,6 @@ if(BUILD_CUDA_LIBRARY)
     endif()
     target_compile_definitions(arts_compute_gpu PRIVATE ARTS_USE_GPU)
     arts_apply_protocol(arts_compute_gpu ${ARTS_VALIDITY} ${ARTS_RETENTION} ${ARTS_READ_SOURCE})
-    target_compile_definitions(arts_compute_gpu PRIVATE ARTS_NOHINT_EDT_ROUNDROBIN=${_ARTS_NOHINT_EDT_RR})
 
     # GPU variant of memory: recompile db.c as .cu, coherence TUs as .c, all with
     # ARTS_USE_GPU.

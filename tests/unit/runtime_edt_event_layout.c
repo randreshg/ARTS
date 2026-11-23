@@ -220,6 +220,7 @@ static void print_fingerprint(void) {
   MEMBER(edt_t, edt_type);
   MEMBER(edt_t, depc_needed);
   MEMBER(edt_t, rw_cursor);
+  MEMBER(edt_t, depth);
   MEMBER(edt_t, rw_sorted);
   MEMBER(edt_t, dep_acq);
   MEMBER(edt_t, acquire_remaining);
@@ -269,6 +270,7 @@ static void print_fingerprint(void) {
   MEMBER(runtime_shared_t, e2e_marker_enabled);
   MEMBER(runtime_shared_t, db_rr_route);
   MEMBER(runtime_shared_t, edt_rr_route);
+  MEMBER(runtime_shared_t, nohint_edt_spread_depth);
   MEMBER(runtime_shared_t, keys);
   MEMBER(runtime_shared_t, counter_capture_interval);
   TYPE(runtime_private_t);

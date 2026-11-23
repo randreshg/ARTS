@@ -188,8 +188,7 @@ typedef enum {
  *  distributed across ranks. */
 #define ARTS_HINT_ROUND_ROBIN ((unsigned int)-2)
 
-/** Sentinel: no placement preference — let the runtime's compile-time
- *  no-hint placement policy pick the rank (ROUNDROBIN or CREATOR; see
+/** Sentinel: no placement preference — let the runtime pick the rank (see
  *  arts_edt_create's hint==NULL behavior, which this is equivalent to).
  *  Distinct from @c ARTS_HINT_CURRENT_RANK (explicit self) and from passing
  *  a NULL hint pointer: usable by callers that must still populate other
@@ -687,9 +686,12 @@ int64_t arts_guid_index_from(arts_guid_t range_guid, arts_guid_t guid);
  * been satisfied via arts_add_dependence().  All optional fields (target
  * rank, pre-reserved GUID, group, profiling id) are carried in the
  * hint struct.  Pass @c NULL, or a hint with @c rank == ARTS_HINT_ANY_RANK,
- * for "no placement preference": the runtime's compile-time no-hint EDT
- * placement policy (ARTS_NOHINT_EDT_PLACEMENT: ROUNDROBIN default, or
- * CREATOR, which keeps the EDT on its creating rank) picks the execution rank.
+ * for "no placement preference": the EDT is placed by its creating node's
+ * rotation over the ranks while its creator's depth is below the
+ * configuration key nohint_edt_spread_depth, and on the creating rank
+ * otherwise.  An EDT's depth is its level in the creation tree: 0 for the main
+ * EDT, its creator's plus one for every other, whatever its hint.  The key's
+ * default is above every depth.
  * A NULL hint also inherits the caller's current group.
  *
  * @param func_ptr Function to execute.

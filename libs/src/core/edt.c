@@ -59,17 +59,6 @@
 #include "arts/transport/protocol.h" /* wire packet structs */
 #include "arts/utils/shared.h" /* arts_shared_ptr_t, get/release */
 
-/* No-hint EDT placement policy: ROUNDROBIN (default) distributes execution
- * rank across all nodes when the caller expresses no placement preference
- * (NULL hint or ARTS_HINT_ANY_RANK), with a per-node counter, the scheme
- * arts_db_create uses under ARTS_NOHINT_DB_HOME=ROUNDROBIN.  CREATOR pins to
- * the calling rank.
- * CMake sets this for every libarts compile; the fallback covers any TU
- * that pulls in edt.c outside the normal build (e.g. direct inclusion). */
-#ifndef ARTS_NOHINT_EDT_ROUNDROBIN
-#define ARTS_NOHINT_EDT_ROUNDROBIN 1
-#endif
-
 #ifdef ARTS_USE_GPU
 #include "arts/gpu/gpu_internal.h"
 #endif
@@ -169,6 +158,10 @@ bool arts_edt_create_core(struct arts_edt_s *edt, arts_guid_kind_t guid_kind,
     *guid = arts_guid_create_for_rank(rank, guid_kind);
   }
   edt->guid = *guid;
+
+  const struct arts_edt_s *creator = arts_current_edt;
+  edt->depth = creator == NULL ? 0u
+               : creator->depth + (creator->depth < UINT32_MAX - 1u ? 1u : 0u);
 
   edt->func_ptr = func_ptr;
   edt->depc = depc;
@@ -312,8 +305,7 @@ arts_guid_t arts_edt_create(arts_edt_t func_ptr, uint32_t paramc,
    * fields are well-defined and follow the documented precedence:
    *   - if .guid != NULL_GUID, the GUID's rank field overrides .rank
    *   - if .rank == ARTS_HINT_ANY_RANK (or hint itself is NULL), the rank is
-   *     policy-selected below (ARTS_NOHINT_EDT_ROUNDROBIN) rather than taken
-   *     from .rank
+   *     selected below by the creator's depth rather than taken from .rank
    *   - if .group == NULL_GUID, the EDT inherits the caller's current
    *     group (handled inside arts_edt_create_core). */
   arts_edt_hint_t snap = hint
@@ -326,21 +318,19 @@ arts_guid_t arts_edt_create(arts_edt_t func_ptr, uint32_t paramc,
   if (guid != NULL_GUID) {
     rank = arts_guid_get_rank(guid);
   } else if (hint == NULL || snap.rank == ARTS_HINT_ANY_RANK) {
-    /* No placement preference (NULL hint, or an explicit hint that still
-     * needs other fields populated but leaves rank unpinned via
-     * ARTS_HINT_ANY_RANK — e.g. the OCR shim's hint that carries a group or a
-     * completion event).  ROUNDROBIN distributes execution rank across all
-     * nodes with a per-node counter (the scheme arts_db_create uses under
-     * ARTS_NOHINT_DB_HOME=ROUNDROBIN); CREATOR pins the EDT to its creating
-     * rank.  Both arms resolve to a concrete rank — the sentinel never
-     * reaches guid encoding. */
-#if ARTS_NOHINT_EDT_ROUNDROBIN
-    rank = atomic_fetch_add_explicit(&arts_node_info.edt_rr_route, 1U,
-                                     memory_order_relaxed) %
-           arts_global_rank_count;
-#else
-    rank = arts_global_rank_id;
-#endif
+    /* No placement preference: the node's rotation while the creator's depth
+     * is below nohint_edt_spread_depth, the creating rank otherwise (the
+     * rotation is untouched then).  Either way a concrete rank results; the
+     * sentinel never reaches guid encoding. */
+    const struct arts_edt_s *creator = arts_current_edt;
+    if ((creator ? creator->depth : 0u) <
+        arts_node_info.nohint_edt_spread_depth) {
+      rank = atomic_fetch_add_explicit(&arts_node_info.edt_rr_route, 1U,
+                                       memory_order_relaxed) %
+             arts_global_rank_count;
+    } else {
+      rank = arts_global_rank_id;
+    }
   } else if (snap.rank != ARTS_HINT_CURRENT_RANK) {
     rank = snap.rank;
   } else {

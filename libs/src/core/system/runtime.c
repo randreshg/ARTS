@@ -244,6 +244,7 @@ void arts_runtime_node_init(struct arts_config_s *config) {
   arts_node_info.worker_thread_count = config->worker_thread_count;
   arts_node_info.progress_thread_count = config->progress_thread_count;
   arts_node_info.total_thread_count = tc;
+  arts_node_info.nohint_edt_spread_depth = config->nohint_edt_spread_depth;
 
   /* Synchronization barriers.  No runtime thread exists yet. */
   atomic_init(&arts_node_info.ready_to_push, tc);

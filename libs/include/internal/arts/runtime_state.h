@@ -103,10 +103,10 @@ struct arts_runtime_shared_s {
    * NULL hint (no node preference) — distributes home rank across all
    * nodes so DBs aren't all pinned to the creator.  Only its own value. */
   _Atomic(unsigned int) db_rr_route;
-  /* Round-robin counter used by arts_edt_create when the caller passes
-   * NULL hint (no node preference) — distributes execution rank across
-   * all nodes so hint-less work isn't all pinned to the creator.  Only its
-   * own value. */
+  /* Rotation over the ranks for an EDT created with no placement preference
+   * (NULL hint or ARTS_HINT_ANY_RANK) while its creator's depth is below
+   * nohint_edt_spread_depth; moved by those creations alone.  Only its own
+   * value. */
   _Atomic(unsigned int) edt_rr_route;
   unsigned int gpu;
   unsigned int gpu_locality;
@@ -116,6 +116,11 @@ struct arts_runtime_shared_s {
   unsigned int gpu_p2p;
   unsigned int gpu_route_table_size;
   unsigned int gpu_route_table_entries;
+  /* The level down to which the no-hint EDT placement spreads: a creation with
+   * no placement preference takes the rotation while its creator's depth is
+   * below it.  Written at node init, before any runtime thread exists;
+   * read-only afterwards. */
+  unsigned int nohint_edt_spread_depth;
   uint64_t gpu_max_memory;
   bool free_db_after_gpu_run;
   bool run_gpu_gc_idle;

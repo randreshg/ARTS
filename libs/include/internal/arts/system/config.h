@@ -99,6 +99,7 @@ struct arts_config_s {
   unsigned int nodes;
   unsigned int master_rank;
   unsigned int route_table_size;
+  unsigned int nohint_edt_spread_depth;
   unsigned int route_table_entries;
   unsigned int deque_size;
   char *counter_folder;

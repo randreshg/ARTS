@@ -375,27 +375,12 @@ if(NOT ARTS_CXL_DB_ARENA_SIZE_BYTES MATCHES "^[1-9][0-9]*$")
     message(FATAL_ERROR "ARTS_CXL_DB_ARENA_SIZE_BYTES must be a positive integer, got '${ARTS_CXL_DB_ARENA_SIZE_BYTES}'")
 endif()
 
-# ── No-hint placement policies (runtime-wide) ───────────────────────────────
+# ── No-hint DB home policy (runtime-wide) ───────────────────────────────────
 # Select what the runtime does when the caller expresses no placement
-# preference; an explicit hint always wins.  The defaults differ on purpose:
-# an EDT chain seeded on one rank can never bootstrap distribution by staying
-# with its creator, so no-hint EDTs round-robin; a DB created by an
-# already-placed EDT inherits that distribution, so no-hint DB homes stay
-# with the creator (first-touch).
-set(ARTS_NOHINT_EDT_PLACEMENT "ROUNDROBIN" CACHE STRING
-    "No-hint EDT placement policy (NULL hint or rank == ARTS_HINT_ANY_RANK): \
-ROUNDROBIN (default) or CREATOR")
-set_property(CACHE ARTS_NOHINT_EDT_PLACEMENT PROPERTY STRINGS ROUNDROBIN CREATOR)
-if(NOT ARTS_NOHINT_EDT_PLACEMENT MATCHES "^(ROUNDROBIN|CREATOR)$")
-  message(FATAL_ERROR
-          "ARTS_NOHINT_EDT_PLACEMENT must be ROUNDROBIN or CREATOR, got: ${ARTS_NOHINT_EDT_PLACEMENT}")
-endif()
-if(ARTS_NOHINT_EDT_PLACEMENT STREQUAL "CREATOR")
-  set(_ARTS_NOHINT_EDT_RR 0)
-else()
-  set(_ARTS_NOHINT_EDT_RR 1)
-endif()
-
+# preference for a data block; an explicit hint always wins.  A DB created by
+# an already-placed EDT inherits that distribution, so no-hint DB homes stay
+# with the creator (first-touch).  No-hint EDT placement is the configuration
+# key nohint_edt_spread_depth's.
 set(ARTS_NOHINT_DB_HOME "CREATOR" CACHE STRING
     "No-hint DB home policy (NULL hint; explicit hint rank or pre-reserved \
 GUID always wins): CREATOR (default; first-touch — home stays on the \

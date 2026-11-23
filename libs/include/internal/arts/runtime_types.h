@@ -122,6 +122,13 @@ struct arts_edt_s {
                             locally, or woken by the grant or reply that
                             resolves them once the slot's bytes are published
                             to the EDT. */
+  /** This EDT's level in the creation tree: 0 for an EDT created while none
+   *  runs on the creating thread, its creator's plus one otherwise, stopping
+   *  at UINT32_MAX - 1.  Written by the creating thread before the install
+   *  publishes the EDT, or carried in the image a remote creation ships; read
+   *  only by the thread that runs the EDT's body, at its own creations, and
+   *  copied with the image. */
+  uint32_t depth;
   uint32_t *rw_sorted; /**< Dep visit order: by GUID, then by DESCENDING mode
                             strength within one GUID, ties keeping slot order.
                             The first slot of a GUID's group owns that block's

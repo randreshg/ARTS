@@ -852,6 +852,8 @@ static const struct arts_config_entry_s config_entries[] = {
     {"scheduler", CONFIG_UINT, OFF(scheduler), "0", NULL},
     {"worker_init_deque_size", CONFIG_UINT, OFF(deque_size), "4096", NULL},
     {"route_table_size", CONFIG_UINT, OFF(route_table_size), "16", NULL},
+    {"nohint_edt_spread_depth", CONFIG_UINT, OFF(nohint_edt_spread_depth),
+     "4294967295", NULL},
     /* --- GPU --- */
     {"gpu", CONFIG_UINT, OFF(gpu), "0", NULL},
     {"gpu_locality", CONFIG_UINT, OFF(gpu_locality), "0", NULL},

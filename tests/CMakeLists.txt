@@ -95,6 +95,7 @@ set(TEST_PROGRAMS
 # Test programs registered in the reference tree only.
 set(ARTS_REFERENCE_TREE_PROGRAMS
     stress_edt
+    edt_spread_depth
     event_scalar_return
     event_payload_policy
     event_chain
@@ -1070,6 +1071,52 @@ foreach(_t edt_null_guid_db_mode edt_null_guid_db_mode_2n_9w_1p
     arts_test_properties(${_t} PROPERTIES
         PASS_REGULAR_EXPRESSION "PASS: edt_null_guid_db_mode"
         FAIL_REGULAR_EXPRESSION "FAIL:")
+endforeach()
+endif()
+
+# The no-hint EDT placement by creation depth: judged creations of N EDTs at
+# every kind of level (a spread one, a CURRENT_RANK chain, an explicit rank, a
+# reserved GUID) under each bound, judged by the set of ranks they ran on.  No
+# cell compiles the create path or the descriptor differently.  A variant sets
+# the key through its environment and passes the same value as the program's
+# argument; the unset variant removes it, so a value exported in the shell
+# cannot reach it.
+if(ARTS_TEST_REFERENCE_TREE)
+arts_test_cfg(_cfg 1n_20w)
+arts_add_test(edt_spread_depth_1n_20w COMMAND edt_spread_depth unbounded)
+arts_test_properties(edt_spread_depth_1n_20w PROPERTIES
+    LABELS "single_node"
+    TIMEOUT 30
+    RESOURCE_LOCK "arts_runtime"
+    ENVIRONMENT "ARTS_CONFIG=${_cfg}"
+    ENVIRONMENT_MODIFICATION "nohint_edt_spread_depth=unset:"
+    PASS_REGULAR_EXPRESSION "PASS: edt_spread_depth"
+    FAIL_REGULAR_EXPRESSION "FAIL")
+foreach(_v 2n_9w_1p 4n_4w_1p)
+    arts_test_cfg(_cfg ${_v})
+    foreach(_d unset 0 1 2 3)
+        set(_name edt_spread_depth_${_d}_${_v})
+        if(_d STREQUAL "unset")
+            set(_arg unbounded)
+        else()
+            set(_arg ${_d})
+        endif()
+        arts_add_multinode_test(${_name} COMMAND edt_spread_depth ${_arg})
+        arts_test_properties(${_name} PROPERTIES
+            LABELS "multinode"
+            TIMEOUT 60
+            RESOURCE_LOCK "arts_runtime"
+            ENVIRONMENT "ARTS_CONFIG=${_cfg}"
+            PASS_REGULAR_EXPRESSION "PASS: edt_spread_depth"
+            FAIL_REGULAR_EXPRESSION "FAIL")
+        if(_d STREQUAL "unset")
+            arts_test_properties(${_name} PROPERTIES
+                ENVIRONMENT_MODIFICATION "nohint_edt_spread_depth=unset:")
+        else()
+            arts_test_properties(${_name} APPEND PROPERTIES
+                ENVIRONMENT "nohint_edt_spread_depth=${_d}")
+        endif()
+    endforeach()
 endforeach()
 endif()
 

@@ -267,12 +267,10 @@ function(arts_embed_vendored_archives target)
         "LINKER:--version-script=${OFI_VERSION_NODES_MAP}")
 endfunction()
 
-# No-hint placement policies, visible to every libarts compile in this
-# directory and its subdirectories (edt.c / db.c gate their no-hint branches
-# on these; see ARTS_NOHINT_EDT_PLACEMENT / ARTS_NOHINT_DB_HOME at top level).
-add_compile_definitions(
-    ARTS_NOHINT_EDT_ROUNDROBIN=${_ARTS_NOHINT_EDT_RR}
-    ARTS_NOHINT_DB_ROUNDROBIN=${_ARTS_NOHINT_DB_RR})
+# No-hint DB home policy, visible to every libarts compile in this directory
+# and its subdirectories (db.c gates its no-hint branch on it; see
+# ARTS_NOHINT_DB_HOME at top level).
+add_compile_definitions(ARTS_NOHINT_DB_ROUNDROBIN=${_ARTS_NOHINT_DB_RR})
 
 # Module subdirectories — each defines OBJECT library targets
 add_subdirectory(core)
