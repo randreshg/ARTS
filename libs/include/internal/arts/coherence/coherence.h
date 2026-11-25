@@ -393,9 +393,9 @@ void arts_db_publish_rw(struct arts_db_cache_s *cache, void *payload);
 void arts_db_publish_created(struct arts_db_cache_s *cache);
 
 /* Release a read hold: an RO acquire taken as a dependence, or a write hold
- * (a dependence's or a create's) that arts_db_downgrade turned into one after
- * arts_db_join_read counted it.  An arm whose read hold keeps protocol state
- * (EXCL's read count) drops it here; on the others it does nothing.  Any
+ * (a dependence's or a create's) that arts_db_downgrade_release turned into one
+ * after arts_db_join_read counted it.  An arm whose read hold keeps protocol
+ * state (EXCL's read count) drops it here; on the others it does nothing.  Any
  * buffer ref is the caller's to drop. */
 void arts_db_release_ro(struct arts_db_cache_s *cache);
 

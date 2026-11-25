@@ -73,8 +73,8 @@ void arts_cleanup_edt_tls(void);
  * worker created (one strong ref), through which the creator's release goes.
  * A creator's operations on its own block name the descriptor it made,
  * because the route slot may hold another generation of the GUID until that
- * descriptor installs.  After arts_db_downgrade the hold is a read hold:
- * `read_only` is set and `read` is the buffer reference that keeps the
+ * descriptor installs.  After arts_db_downgrade_release the hold is a read
+ * hold: `read_only` is set and `read` is the buffer reference that keeps the
  * creator's bytes (NULL for a block with no bytes); both are written and read
  * only by the running EDT's thread. */
 struct arts_created_db_s {

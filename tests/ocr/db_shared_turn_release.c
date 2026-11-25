@@ -128,7 +128,7 @@ static void writer_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     }
   }
   if (downgrades(i)) {
-    arts_db_downgrade(db);
+    arts_db_downgrade_release(db);
     (void)check_stripe(b, r, i, "a writer after its downgrade");
     arts_guid_t reader = arts_edt_create(
         handoff_reader_edt, P_COUNT, paramv, 1,
@@ -222,7 +222,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       b[i * STRIPE + j] = word(0u, i, j);
     }
   }
-  arts_db_downgrade(db);
+  arts_db_downgrade_release(db);
   for (unsigned int i = 0; i < WRITERS; i++) {
     (void)check_stripe(b, 0u, i, "main_edt after its downgrade");
   }

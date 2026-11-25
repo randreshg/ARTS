@@ -190,7 +190,7 @@ static void publisher_edt(uint32_t paramc, const uint64_t *paramv,
   expect_slot(&depv[S_DG], slot[S_DG].guid, dg, DB_MODE_RW,
               "an RW slot after a publish");
   fill(dg, g_base[B_DG] + SECOND);
-  arts_db_downgrade(slot[S_DG].guid);
+  arts_db_downgrade_release(slot[S_DG].guid);
   expect_slot(&depv[S_DG], slot[S_DG].guid, dg, DB_MODE_RO,
               "a published slot after a downgrade");
   check(dg, g_base[B_DG] + SECOND, "D's downgraded slot");
@@ -269,7 +269,7 @@ static void publisher_edt(uint32_t paramc, const uint64_t *paramv,
   arts_db_publish(cre);
   check(cp, g_base[B_CRE], "D's created block after a publish");
   fill(cp, g_base[B_CRE] + SECOND);
-  arts_db_downgrade(cre);
+  arts_db_downgrade_release(cre);
   arts_db_publish(cre);
   check(cp, g_base[B_CRE] + SECOND, "D's downgraded created block");
   arts_db_release(cre);

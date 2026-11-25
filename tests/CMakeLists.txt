@@ -2106,7 +2106,7 @@ foreach(_t db_create_after_first_touch db_create_after_first_touch_2n_9w_1p)
     arts_test_properties(${_t} PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 endforeach()
 
-# The calls that act on a hold mid-body, arts_db_downgrade and
+# The calls that act on a hold mid-body, arts_db_downgrade_release and
 # arts_db_publish.  Every program ends with a quiescent shutdown, so the
 # teardown walk's markers fail it.  SINGLE adds the one-rank run, VARIANTS
 # replaces the default multinode set, and FUZZ adds a 2n_8w_2p run under the
@@ -2168,9 +2168,9 @@ if((ARTS_VALIDITY STREQUAL "VAL" OR ARTS_VALIDITY STREQUAL "INV")
     set(_hold_home ON)
 endif()
 
-# arts_db_downgrade: a write hold becomes a read hold.  Both kinds of write
-# hold handed on, homes chosen by rank count; the alias trio; the destroys
-# ordered after the read hold; the calls that change nothing.
+# arts_db_downgrade_release: a write hold becomes a read hold.  Both kinds of
+# write hold handed on, homes chosen by rank count; the alias trio; the
+# destroys ordered after the read hold; the calls that change nothing.
 add_arts_test(db_downgrade_handoff)
 arts_hold_test(db_downgrade_handoff db_downgrade_handoff SINGLE FUZZ)
 add_arts_test(db_downgrade_alias)

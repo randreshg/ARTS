@@ -140,7 +140,7 @@ static void downgrader_edt(uint32_t paramc, const uint64_t *paramv,
   for (unsigned int j = WA; j < WORDS; j++) {
     atomic_init(&v[j], 0u);
   }
-  arts_db_downgrade(db);
+  arts_db_downgrade_release(db);
   arts_edt_satisfy_slot(finale, 1, db, DB_MODE_NULL);
 
   uint64_t last = 0;

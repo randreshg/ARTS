@@ -154,7 +154,7 @@ static void d_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     atomic_store_explicit(&g_d_flag, 1u, memory_order_release);
     return;
   }
-  arts_db_downgrade(db);
+  arts_db_downgrade_release(db);
   atomic_store_explicit(&g_d_flag, 1u, memory_order_release);
   arts_guid_t r = arts_edt_create(handoff_reader_edt, 0, NULL, 1,
                                   &(arts_edt_hint_t){.rank = here});

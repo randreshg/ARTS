@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * A hold arts_db_downgrade leaves is a hold, and every destroy is ordered
- * after its release.
+ * A hold arts_db_downgrade_release leaves is a hold, and every destroy is
+ * ordered after its release.
  *
  *   (a) D downgrades a block it created and an RW dependence and wakes two
  *       readers of both, R1 on another rank and R2 on D's rank; a destroyer
@@ -84,8 +84,8 @@ static void d_a_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     return;
   }
   fill(d, 0xA100u);
-  arts_db_downgrade(cre);
-  arts_db_downgrade(depv[0].guid);
+  arts_db_downgrade_release(cre);
+  arts_db_downgrade_release(depv[0].guid);
   arts_edt_satisfy_slot((arts_guid_t)paramv[0], 1, cre, DB_MODE_NULL);
   for (unsigned int r = 0; r < 2u; r++) {
     arts_event_satisfy((arts_guid_t)paramv[1 + 2 * r], cre);
@@ -123,8 +123,8 @@ static void d_b_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     return;
   }
   fill(d, 0xB100u);
-  arts_db_downgrade(cre);
-  arts_db_downgrade(dg);
+  arts_db_downgrade_release(cre);
+  arts_db_downgrade_release(dg);
   if (c != NULL) {
     check(c, 0xB000u, "(b) D2");
   }
@@ -145,7 +145,7 @@ static void d_c_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depv;
   uint64_t *c = NULL;
   arts_guid_t cre = create_filled((unsigned int)paramv[0], 0xC000u, &c);
-  arts_db_downgrade(cre);
+  arts_db_downgrade_release(cre);
   if (c != NULL) {
     check(c, 0xC000u, "(c) D3");
   }

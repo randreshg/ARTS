@@ -102,7 +102,7 @@ Its skeleton:
 * *happens-before* is the transitive closure of the two, and defines when a
   write must be visible to a read of the same DB.
 
-``arts_db_downgrade`` is OCR 1.2.0's downgrade release
+``arts_db_downgrade_release`` is OCR 1.2.0's downgrade release
 (``ocrDbDowngradeRelease``, Section 2.6.4 of the specification): it turns
 an EDT's write hold on a DB into a read hold.  Its write half is a release,
 to which rules (1) and (3) apply: every store the EDT made to the DB before

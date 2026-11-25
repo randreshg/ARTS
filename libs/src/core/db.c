@@ -2060,7 +2060,7 @@ static uint32_t db_dep_owner(const struct arts_edt_s *edt,
  * db_release_hold — Release the calling EDT's hold on a single DB mid-EDT.
  *
  * Two search paths, in this order (db_hold_find, the search of
- * arts_db_downgrade and arts_db_publish, takes the same two):
+ * arts_db_downgrade_release and arts_db_publish, takes the same two):
  *   1. created_db_list — DBs the current EDT created (held from the create).
  *   2. depv — DBs received as dependencies (RW or RO mode).
  *
@@ -2162,10 +2162,11 @@ static bool db_hold_find(arts_guid_t guid, struct db_hold_ref_s *h) {
 }
 
 /*
- * arts_db_downgrade — turn the calling EDT's write hold on one DB into a read
- * hold: the hold's write release runs exactly as arts_db_release would run
- * it, and what remains is the read hold an RO acquisition on this rank would
- * have.  The hold is found as db_release_hold finds it.  Per hold, in order:
+ * arts_db_downgrade_release — turn the calling EDT's write hold on one DB into
+ * a read hold: the hold's write release runs exactly as arts_db_release would
+ * run it, and what remains is the read hold an RO acquisition on this rank
+ * would have.  The hold is found as db_release_hold finds it.  Per hold, in
+ * order:
  *
  *   1. The read hold's storage.  A dependence slot already holds a buffer ref
  *      and a descriptor pin, which it keeps.  A creator hold has no buffer
@@ -2185,7 +2186,7 @@ static bool db_hold_find(arts_guid_t guid, struct db_hold_ref_s *h) {
  * does nothing.  A GPU kind carries no DB-level coherence: its slot is only
  * rewritten, and its created hold left as it is.
  */
-void arts_db_downgrade(arts_guid_t guid) {
+void arts_db_downgrade_release(arts_guid_t guid) {
   struct db_hold_ref_s h;
   if (!db_hold_find(guid, &h)) {
     return;
@@ -2229,8 +2230,8 @@ void arts_db_downgrade(arts_guid_t guid) {
  * arts_db_publish — publish the calling EDT's writes to one DB and keep its
  * write hold: the write half of the hold's release runs (arts_db_publish_rw /
  * arts_db_publish_created) and nothing else.  The hold is found as
- * arts_db_downgrade finds it.  No slot, entry or pin is written, so the hold
- * ends as it would have.  A GPU kind carries no DB-level coherence and is
+ * arts_db_downgrade_release finds it.  No slot, entry or pin is written, so the
+ * hold ends as it would have.  A GPU kind carries no DB-level coherence and is
  * left as it is.
  */
 void arts_db_publish(arts_guid_t guid) {

@@ -338,8 +338,8 @@ typedef struct {
 /**
  * @brief Describes a single dependency slot delivered to an EDT.
  *
- * Mode is set via @c arts_add_dependence(); @c arts_db_downgrade() turns
- * DB_MODE_RW into DB_MODE_RO, @c arts_db_release() clears the slot and
+ * Mode is set via @c arts_add_dependence(); @c arts_db_downgrade_release()
+ * turns DB_MODE_RW into DB_MODE_RO, @c arts_db_release() clears the slot and
  * @c arts_db_publish() leaves it as it is.
  * User EDTs typically read @c guid / @c ptr and ignore @c mode.
  */
@@ -1024,11 +1024,11 @@ static inline void *arts_db_create_with_guid(arts_guid_t guid, uint64_t len,
  *
  * An EDT that, in its body, hands a DB it wrote to work that may acquire the
  * DB before the EDT's hold is released publishes its writes before the
- * hand-off: by this call, by arts_db_downgrade() when it goes on reading, or
- * by arts_db_publish() when it goes on writing.  A destroy is ordered after
- * the release of every hold on the block (see arts_db_destroy): work that
- * reaches the DB's destroyer other than through the EDT's completion is
- * started only after this call, which then comes right after the EDT's last
+ * hand-off: by this call, by arts_db_downgrade_release() when it goes on
+ * reading, or by arts_db_publish() when it goes on writing.  A destroy is
+ * ordered after the release of every hold on the block (see arts_db_destroy):
+ * work that reaches the DB's destroyer other than through the EDT's completion
+ * is started only after this call, which then comes right after the EDT's last
  * access to the DB.
  *
  * Releasing a dependence clears each @c depv slot that acquired the DB
@@ -1039,9 +1039,9 @@ static inline void *arts_db_create_with_guid(arts_guid_t guid, uint64_t len,
  * released) is a no-op.
  *
  * The call releases the calling EDT's hold on the block, whatever mode the
- * hold was acquired in; a hold arts_db_downgrade() turned into a read hold is
- * released like any other.  It acts on the holds of the EDT running on the
- * calling thread, including from functions its body calls on that thread,
+ * hold was acquired in; a hold arts_db_downgrade_release() turned into a read
+ * hold is released like any other.  It acts on the holds of the EDT running on
+ * the calling thread, including from functions its body calls on that thread,
  * and does nothing on a thread that runs no EDT.
  *
  * @param guid GUID of the DataBlock to release.
@@ -1077,7 +1077,7 @@ void arts_db_release(arts_guid_t guid);
  *
  * @param guid GUID of the DataBlock.
  */
-void arts_db_downgrade(arts_guid_t guid);
+void arts_db_downgrade_release(arts_guid_t guid);
 
 /**
  * @brief Publish the calling EDT's writes to a DataBlock and keep its write
@@ -1090,9 +1090,9 @@ void arts_db_downgrade(arts_guid_t guid);
  * hold: each depv slot that acquired the block keeps its guid, ptr and mode,
  * the pointer its create returned stays valid, and the EDT may write the
  * block again.  A write made after the call is published by the EDT's next
- * arts_db_publish(), by its arts_db_downgrade() or by the release of the
- * hold.  For an EDT ordered after the call, a read of a location returns the
- * last write to that location that happens-before the read, provided no
+ * arts_db_publish(), by its arts_db_downgrade_release() or by the release of
+ * the hold.  For an EDT ordered after the call, a read of a location returns
+ * the last write to that location that happens-before the read, provided no
  * write unordered with the read writes that location; otherwise the read
  * races, and its value is unspecified.  A write the caller makes after the
  * call is unordered with such a read until a later publication of the hold
@@ -1126,15 +1126,15 @@ void arts_db_publish(arts_guid_t guid);
  *
  * The program orders the destroy after the release of every hold that any
  * other EDT has on the block: RO and RW dependence holds and creator holds
- * alike, a hold arts_db_downgrade() left or arts_db_publish() kept included,
- * under every coherence protocol.  The calling EDT's own hold (its create's auto-acquire or a
- * dependence, downgraded or not) is the exception: it is released first, as
- * by arts_db_release, which also says which EDT's holds the call finds.  A
- * hold released after the destroy is a program error, and so is an acquire
- * still pending when the destroy is issued: the runtime need not serve it,
- * and it may never complete.  A block is destroyed once: a second destroy of
- * it waits for a block of that GUID, which never comes, and is a program
- * error too.
+ * alike, a hold arts_db_downgrade_release() left or arts_db_publish() kept
+ * included, under every coherence protocol.  The calling EDT's own hold (its
+ * create's auto-acquire or a dependence, downgraded or not) is the exception:
+ * it is released first, as by arts_db_release, which also says which EDT's
+ * holds the call finds.  A hold released after the destroy is a program error,
+ * and so is an acquire still pending when the destroy is issued: the runtime
+ * need not serve it, and it may never complete.  A block is destroyed once: a
+ * second destroy of it waits for a block of that GUID, which never comes, and
+ * is a program error too.
  *
  * The destroy is not acknowledged.  The block's home tears the block down and
  * tells every rank that caches it.  A release message sent before the destroy

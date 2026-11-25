@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * The state arts_db_downgrade leaves, read where it lives (whitebox).  One
- * shape at a time, each ordered after the previous one's EDTs:
+ * The state arts_db_downgrade_release leaves, read where it lives (whitebox).
+ * One shape at a time, each ordered after the previous one's EDTs:
  *
  *   creator reference (every arm): after a create's hold is downgraded, its
  *     created record is read-only and its buffer ref names the buffer the
@@ -157,7 +157,7 @@ static void cref_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     return;
   }
   fill((uint64_t *)p, 0xCEF0000u, 0, WORDS);
-  arts_db_downgrade(g);
+  arts_db_downgrade_release(g);
   struct arts_created_db_s *e = created_record(g);
   if (e == NULL || !e->read_only || e->read == NULL) {
     fail(shape, "the created record is not a read hold with a buffer ref");
@@ -257,7 +257,7 @@ static void excl_word_edt(uint32_t paramc, const uint64_t *paramv,
   }
   fill(p, 0xA0A0000u, 0, WORDS);
   expect_word(db, CACHE_ST_GRANT, 1, 0, shape, "under the write hold");
-  arts_db_downgrade(g);
+  arts_db_downgrade_release(g);
   expect_word(db, CACHE_ST_GRANT, 0, 1, shape, "after the downgrade");
   if (!holds(p, 0xA0A0000u, 0, WORDS)) {
     fail(shape, "the bytes changed under the read hold");
@@ -300,7 +300,7 @@ static void excl_cowrite_edt(uint32_t paramc, const uint64_t *paramv,
     return;
   }
   expect_word(db, CACHE_ST_GRANT, 2, 0, shape, "with two writers");
-  arts_db_downgrade(g);
+  arts_db_downgrade_release(g);
   expect_word(db, CACHE_ST_GRANT, 1, 1, shape, "after D's downgrade");
   atomic_store_explicit(&g_peer_go, 1u, memory_order_release);
   long start = now_ms();
@@ -346,7 +346,7 @@ static void excl_remote_edt(uint32_t paramc, const uint64_t *paramv,
   arts_shared_ptr_t h = NULL;
   struct arts_db_s *db = local_db(g, &h);
   fill(p, 0xD0D0000u, 0, WORDS);
-  arts_db_downgrade(g);
+  arts_db_downgrade_release(g);
   uint64_t base = 0xD0D0000u;
   arts_guid_t w =
       arts_edt_create(remote_writer_edt, 1, &base, 1,
@@ -410,7 +410,7 @@ static void excl_demote_edt(uint32_t paramc, const uint64_t *paramv,
   arts_shared_ptr_t h = NULL;
   struct arts_db_s *db = local_db(g, &h);
   fill(p, 0xF0F0000u, 0, WORDS);
-  arts_db_downgrade(g);
+  arts_db_downgrade_release(g);
   arts_guid_t r =
       arts_edt_create(demote_reader_edt, 0, NULL, 1,
                       &(arts_edt_hint_t){.rank = (unsigned int)paramv[0]});
@@ -504,7 +504,7 @@ static void valinv_word_edt(uint32_t paramc, const uint64_t *paramv,
            (int)own, count);
     arts_test_fail();
   }
-  arts_db_downgrade(g);
+  arts_db_downgrade_release(g);
   bool want_own = true;
 #ifdef ARTS_RETENTION_PURGE
   /* Off the home the right went back; the home keeps it, nobody waiting. */
@@ -573,7 +573,7 @@ static void refresh_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     return;
   }
   fill(p, 0xAAAA0000u, 0, WORDS);
-  arts_db_downgrade(g);
+  arts_db_downgrade_release(g);
   arts_event_hint_t eh = ARTS_EVENT_HINT_LATCH(1);
   arts_guid_t written = arts_event_create(&eh);
   arts_guid_t w =

@@ -202,7 +202,7 @@ destroyer other than through its own completion releases first:
 
 An EDT that holds a block for writing (an ``RW`` dependence or its create's
 hold) and only reads it from some point on can publish its writes there and
-keep reading: :c:func:`arts_db_downgrade` runs the hold's write release
+keep reading: :c:func:`arts_db_downgrade_release` runs the hold's write release
 exactly as :c:func:`arts_db_release` would, and leaves the EDT a read hold.
 Each ``depv`` slot that acquired the block keeps its guid and ptr and reads
 ``DB_MODE_RO``, and the pointer a create returned stays valid; the EDT does
@@ -222,7 +222,7 @@ being a release, may block the worker as a release may:
 
    int *p = (int *)depv[0].ptr;             /* acquired DB_MODE_RW */
    fill(p);
-   arts_db_downgrade(depv[0].guid);         /* publish; slot now DB_MODE_RO */
+   arts_db_downgrade_release(depv[0].guid); /* publish; slot now DB_MODE_RO */
    arts_event_satisfy(ready, depv[0].guid); /* wake a reader */
    use(p);                                  /* keep reading until the end */
 

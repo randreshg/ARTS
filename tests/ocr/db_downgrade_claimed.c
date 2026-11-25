@@ -86,7 +86,7 @@ static void d_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   for (unsigned int j = 0; j < WORDS; j++) {
     d[j] = word(j);
   }
-  arts_db_downgrade(g);
+  arts_db_downgrade_release(g);
   arts_event_satisfy(wake, g);
   check(d, "D after its downgrade");
 }

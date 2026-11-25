@@ -1,13 +1,13 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * The calls of arts_db_downgrade that change nothing: on a hold already read
- * only (an RO dependence, or a second downgrade), on a hold released before
- * the call, and on GUIDs the EDT does not hold (NULL_GUID, an event's GUID, a
- * block it never held, a block it created with ARTS_DB_PROP_NO_ACQUIRE).  A
- * slot that carries an event's GUID in DB_MODE_RW holds nothing either: a
- * downgrade or a release of that GUID leaves the slot as it is.  One
- * downgrade is made from a function the body calls back through qsort, which
- * acts on the running EDT's hold like a call from the body itself.
+ * The calls of arts_db_downgrade_release that change nothing: on a hold already
+ * read only (an RO dependence, or a second downgrade), on a hold released
+ * before the call, and on GUIDs the EDT does not hold (NULL_GUID, an event's
+ * GUID, a block it never held, a block it created with
+ * ARTS_DB_PROP_NO_ACQUIRE).  A slot that carries an event's GUID in DB_MODE_RW
+ * holds nothing either: a downgrade or a release of that GUID leaves the slot
+ * as it is.  One downgrade is made from a function the body calls back through
+ * qsort, which acts on the running EDT's hold like a call from the body itself.
  *
  * The oracle for the holds is the later writer: an RW acquisition on another
  * rank, ordered after D, of each block D held.  A write release run twice
@@ -67,7 +67,7 @@ static unsigned int g_cmp_calls;
  * EDT's hold. */
 static int downgrading_compare(const void *a, const void *b) {
   if (g_cmp_calls++ == 0u) {
-    arts_db_downgrade(g_cmp_guid);
+    arts_db_downgrade_release(g_cmp_guid);
   }
   uint64_t x = *(const uint64_t *)a, y = *(const uint64_t *)b;
   return (x > y) - (x < y);
@@ -96,23 +96,23 @@ static void downgrader_edt(uint32_t paramc, const uint64_t *paramv,
   fill((uint64_t *)slot[B_CMP].ptr, g_base[B_CMP]);
 
   /* An RO hold is already a read hold. */
-  arts_db_downgrade(slot[B_RO].guid);
+  arts_db_downgrade_release(slot[B_RO].guid);
   expect_slot(&depv[B_RO], slot[B_RO].guid, slot[B_RO].ptr, DB_MODE_RO,
               "an RO slot after a downgrade");
   check((const uint64_t *)depv[B_RO].ptr, g_base[B_RO], "D's RO slot");
 
   /* An RW hold: twice, released, once more. */
-  arts_db_downgrade(slot[B_RW].guid);
+  arts_db_downgrade_release(slot[B_RW].guid);
   expect_slot(&depv[B_RW], slot[B_RW].guid, slot[B_RW].ptr, DB_MODE_RO,
               "an RW slot after a downgrade");
-  arts_db_downgrade(slot[B_RW].guid);
+  arts_db_downgrade_release(slot[B_RW].guid);
   expect_slot(&depv[B_RW], slot[B_RW].guid, slot[B_RW].ptr, DB_MODE_RO,
               "an RW slot after a second downgrade");
   check((const uint64_t *)slot[B_RW].ptr, g_base[B_RW], "D's downgraded slot");
   arts_db_release(slot[B_RW].guid);
   expect_slot(&depv[B_RW], NULL_GUID, NULL, DB_MODE_NULL,
               "a downgraded slot after its release");
-  arts_db_downgrade(slot[B_RW].guid);
+  arts_db_downgrade_release(slot[B_RW].guid);
   expect_slot(&depv[B_RW], NULL_GUID, NULL, DB_MODE_NULL,
               "a released slot after a downgrade");
 
@@ -125,27 +125,27 @@ static void downgrader_edt(uint32_t paramc, const uint64_t *paramv,
     return;
   }
   fill((uint64_t *)cp, g_base[B_CRE]);
-  arts_db_downgrade(cre);
-  arts_db_downgrade(cre);
+  arts_db_downgrade_release(cre);
+  arts_db_downgrade_release(cre);
   check((const uint64_t *)cp, g_base[B_CRE], "D's downgraded created block");
   arts_db_release(cre);
-  arts_db_downgrade(cre);
+  arts_db_downgrade_release(cre);
 
   /* Nothing held. */
-  arts_db_downgrade(NULL_GUID);
+  arts_db_downgrade_release(NULL_GUID);
   expect_slot(&depv[S_EVT], event, NULL, DB_MODE_RW,
               "an event's GUID in an RW slot");
-  arts_db_downgrade(event);
+  arts_db_downgrade_release(event);
   expect_slot(&depv[S_EVT], event, NULL, DB_MODE_RW,
               "an event's GUID in an RW slot after a downgrade");
   arts_db_release(event);
   expect_slot(&depv[S_EVT], event, NULL, DB_MODE_RW,
               "an event's GUID in an RW slot after a release");
-  arts_db_downgrade(never);
+  arts_db_downgrade_release(never);
   void *none = NULL;
   arts_guid_t lazy =
       arts_db_create(&none, SZ, ARTS_DB, ARTS_DB_PROP_NO_ACQUIRE, NULL);
-  arts_db_downgrade(lazy);
+  arts_db_downgrade_release(lazy);
 
   /* From a function the body calls back. */
   uint64_t keys[8] = {7, 3, 5, 1, 8, 2, 6, 4};

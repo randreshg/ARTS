@@ -1,12 +1,12 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * arts_db_downgrade of a block three slots of one EDT name: slots 0 and 1 in
- * DB_MODE_RW and slot 2 in DB_MODE_RO share the EDT's one acquisition of it.
- * After the call every slot reads DB_MODE_RO with its pointer unchanged (all
- * three the same), and D still reads what it wrote.  D then hands the block
- * to a reader on another rank, and a writer on D's rank, ordered after both,
- * acquires it RW and writes it.  A count the downgrade left behind keeps the
- * turn open: another rank's reader waits for it under exclusion with
+ * arts_db_downgrade_release of a block three slots of one EDT name: slots 0 and
+ * 1 in DB_MODE_RW and slot 2 in DB_MODE_RO share the EDT's one acquisition of
+ * it. After the call every slot reads DB_MODE_RO with its pointer unchanged
+ * (all three the same), and D still reads what it wrote.  D then hands the
+ * block to a reader on another rank, and a writer on D's rank, ordered after
+ * both, acquires it RW and writes it.  A count the downgrade left behind keeps
+ * the turn open: another rank's reader waits for it under exclusion with
  * hand-back, and the teardown's quiescence check reports it.
  */
 #include "arts.h"
@@ -50,7 +50,7 @@ static void downgrader_edt(uint32_t paramc, const uint64_t *paramv,
   for (unsigned int j = 0; j < WORDS; j++) {
     p[j] = pattern(0xA11A5000u, j);
   }
-  arts_db_downgrade(g);
+  arts_db_downgrade_release(g);
   for (unsigned int i = 0; i < 3u; i++) {
     if (depv[i].mode != DB_MODE_RO || depv[i].ptr != ptr || depv[i].guid != g) {
       printf("FAIL: " NAME " slot %u reads mode %d ptr %p after the "

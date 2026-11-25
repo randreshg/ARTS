@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * arts_db_downgrade hands a block on and keeps reading it, for both kinds of
- * write hold: a block its EDT created and a block it acquired as an RW
+ * arts_db_downgrade_release hands a block on and keeps reading it, for both
+ * kinds of write hold: a block its EDT created and a block it acquired as an RW
  * dependence.
  *
  * D runs on the last rank.  It creates one block per home, takes one RW
@@ -103,8 +103,8 @@ static void downgrader_edt(uint32_t paramc, const uint64_t *paramv,
   }
 
   for (unsigned int i = 0; i < nh; i++) {
-    arts_db_downgrade(cre[i]);
-    arts_db_downgrade(dep_guid[i]);
+    arts_db_downgrade_release(cre[i]);
+    arts_db_downgrade_release(dep_guid[i]);
   }
 
   /* As many blocks again, of the same size, filled with another pattern. */
