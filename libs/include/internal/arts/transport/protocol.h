@@ -133,8 +133,9 @@ enum arts_msg_type {
                          version it carries arbitrates the two asynchronous
                          install lanes and nothing else — the sharer plane is
                          versionless: only an INVALIDATE retires a copy. */
-  MSG_DB_INV_INVALIDATE,     /* home → sharer: retire the copy ({guid} only) */
-  MSG_DB_INV_INVALIDATE_ACK, /* sharer → home: round ack ({guid} only) */
+  MSG_DB_INV_INVALIDATE,     /* home → sharer: retire the copy (the guid and
+                                the home's token, no data) */
+  MSG_DB_INV_INVALIDATE_ACK, /* sharer → home: round ack (the same two) */
   MSG_DB_INV_REDIRECT, /* home → current grant holder (OWNER read source only):
                           serve this reader from your bytes, or bounce the
                           request back if you no longer have them */

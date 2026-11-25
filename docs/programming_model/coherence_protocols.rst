@@ -102,7 +102,8 @@ Its skeleton:
 * *happens-before* is the transitive closure of the two, and defines when a
   write must be visible to a read of the same DB.
 
-ARTS adds an entry OCR 1.2.0 does not have, ``arts_db_downgrade``: it turns
+``arts_db_downgrade`` is OCR 1.2.0's downgrade release
+(``ocrDbDowngradeRelease``, Section 2.6.4 of the specification): it turns
 an EDT's write hold on a DB into a read hold.  Its write half is a release,
 to which rules (1) and (3) apply: every store the EDT made to the DB before
 the call completes before the call does, and whatever acquires the DB
@@ -110,17 +111,17 @@ ordered after the call sees those stores.  The EDT keeps reading the DB
 until the read hold is released; a location no EDT concurrent with it
 writes keeps the EDT's view meanwhile.
 
-ARTS adds a second such entry, ``arts_db_publish``: the write half of a
-release with the hold kept.  Rule (1) applies to it as to a downgrade's write
-half, and the write-back of rule (3) is done by the call: every store the EDT
-made to the DB before the call completes before the call does, and a DB so
-published may be exposed by a later satisfaction while the EDT still holds it
-for writing.  A read by an EDT ordered after the call returns, at every
-location that no write unordered with the read writes, the last write that
-happens-before it.  The EDT may store to the DB again; such a store is
-unordered with that read until a later publication of the hold (the EDT's next
-publish, its downgrade or its release) is ordered before the read's
-acquisition, and until then the read of that location is a racing read
+ARTS adds an entry OCR 1.2.0 does not have, ``arts_db_publish``: the write
+half of a release with the hold kept.  Rule (1) applies to it as to a
+downgrade's write half, and the write-back of rule (3) is done by the call:
+every store the EDT made to the DB before the call completes before the call
+does, and a DB so published may be exposed by a later satisfaction while the
+EDT still holds it for writing.  A read by an EDT ordered after the call
+returns, at every location that no write unordered with the read writes, the
+last write that happens-before it.  The EDT may store to the DB again; such a
+store is unordered with that read until a later publication of the hold (the
+EDT's next publish, its downgrade or its release) is ordered before the
+read's acquisition, and until then the read of that location is a racing read
 (below).
 
 Data races are **legal** under this contract. Racing writes have defined

@@ -279,8 +279,9 @@ void arts_db_destroy_arrived(struct arts_db_s *db) {
  * pre-claim write request, where the home was told one is coming, reaches the
  * gate's edge: roster fan-out, then the slot return; a waiter left parked at
  * the destroy (outside the destroy contract) is never woken.  The roster is
- * the cached-ranks bit-set: the creator joins it at create and every requester
- * when its request arrives, so it names rw_holder and, during a transfer,
+ * the cached-ranks bit-set: a creator on another rank that holds the block
+ * joins it at home init and every requester when its request arrives, so it
+ * names every other rank rw_holder can be and, during a transfer,
  * pending_install_owner too.  The request FIFO is not read: its one consumer
  * is the baton holder, and every queued requester is already on the bit-set.
  * Nothing else is waited for: no release on this arm sends the home anything,

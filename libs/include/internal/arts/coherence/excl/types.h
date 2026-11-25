@@ -672,8 +672,8 @@ struct arts_db_s {
   _Atomic(uint64_t) lock_state;
   struct arts_home_grantreq_queue_s rw_waiters; /* Vyukov MPSC, pop-one */
   arts_lf_stack_t ro_waiters;                  /* Treiber, XCHG drain */
-  /* destroy fan-out roster; the creator's bit is set at home init, every
-   * other by arts_rank_bitset_note */
+  /* destroy fan-out roster; the bit of a creator on another rank that holds
+   * the block is set at home init, every other by arts_rank_bitset_note */
   struct arts_rank_bitset_s cached_ranks;
   /* The rank whose create claimed a first-touch cache, written before the
    * descriptor is published (ordered by the route slot's install). */

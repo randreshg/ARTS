@@ -349,8 +349,9 @@ struct arts_db_s {
   struct arts_home_grantreq_queue_s pending_rw; /* embedded Vyukov MPSC */
   /* The serving baton, a claim counter (directory.h). */
   _Atomic(uint64_t) grant_baton;
-  /* destroy fan-out roster: creator, readers, writers; the creator's bit is
-   * set at home init, every other by arts_rank_bitset_note */
+  /* destroy fan-out roster: creator, readers, writers; the bit of a creator
+   * on another rank that holds the block is set at home init, every other by
+   * arts_rank_bitset_note */
   struct arts_rank_bitset_s cached_ranks;
   /* The destroy's gate [td:1 | rwo:1] (cover_gate.h): the destroy's mark
    * and the claiming creator's pre-claim write request, which the announce
@@ -376,8 +377,8 @@ struct arts_db_s {
    * roster: a rank can hold a cache the ledger never credits (a version-0
    * reply, a holder with no buffer). */
   struct arts_rank_to_u64_map_s *cached_version;
-  /* destroy fan-out roster; the creator's bit is set at home init, every
-   * other by arts_rank_bitset_note */
+  /* destroy fan-out roster; the bit of a creator on another rank that holds
+   * the block is set at home init, every other by arts_rank_bitset_note */
   struct arts_rank_bitset_s cached_ranks;
   /* The destroy's gate [td:1 | rwo:1] (cover_gate.h): the destroy's mark
    * and the claiming creator's pre-claim write request, which the announce

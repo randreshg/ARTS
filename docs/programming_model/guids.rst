@@ -279,10 +279,12 @@ or destroy that waits for a reply.  Neither is provided, so in a program
 that reuses a label a message meant for one generation can be applied to
 another: a satisfy, dependence, acquire or release that reaches the home
 before the previous generation's destroy, a teardown notice that reaches a
-rank caching the block after that rank's use of the next generation, or,
-on {VAL,INV}·HOME and FLUSH, the home's answer to a create that
-reaches the next generation's creator, whose first publish then writes into
-the previous block's released buffer.  A program written to ARTS's model,
+rank caching the block after that rank's use of the next generation, the
+home's answer to a create, on {VAL,INV}·HOME and FLUSH, that reaches the next
+generation's creator, whose first publish then writes into the previous
+block's released buffer, or, on EXCL·RETAIN, a read return or a recall sent
+for the previous generation, which lowers the next generation's count of read
+grants or takes back one of its grants.  A program written to ARTS's model,
 with a fresh GUID for every object, never meets this.  Where an OCR program
 reuses a label, or creates one label from two tasks (undefined, above), the
 fix belongs in the program: one creator per label, and a fresh label for

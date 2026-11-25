@@ -2043,10 +2043,7 @@ static void excl_confirm_answer(uint64_t home_token, arts_guid_t db_guid,
      * the queue front, and CONFIRM comes only from that owner).  The target
      * was pushed before the FORWARD that made it one, and only its own
      * CONFIRM pops it, so the queue is never empty here; an empty one means
-     * w is zero, whose decrement below borrows from the fields above it.  A
-     * reused label can reach it, since its generations are not told apart: a
-     * CONFIRM meant for the previous generation lands on the next one's
-     * home. */
+     * w is zero, whose decrement below borrows from the fields above it. */
     unsigned int front;
     bool popped =
         arts_home_grantreq_queue_pop(&db->rw_waiters, &front, NULL, NULL, NULL);
@@ -2101,8 +2098,7 @@ static void excl_roret_on(struct arts_db_s *db) {
     cur = atomic_load_explicit(&db->lock_state, memory_order_acquire);
     /* r counts the read requests taken in whose RO_RETURN has not come back,
      * and a RO_RETURN follows its request's answer, so it never finds r at
-     * zero; a reused label can, as a CONFIRM can, and the decrement would
-     * borrow from w. */
+     * zero; a reused label can, and the decrement would borrow from w. */
     assert(LOCK_R(cur) != 0u);
     next =
         lock_owner_compute_next(cur, EXCL_OP_RO_RET, /*new_owner=*/0u, &action);

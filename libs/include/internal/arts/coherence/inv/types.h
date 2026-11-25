@@ -222,11 +222,13 @@ struct arts_db_inv_pub_s {
  * one parked chain).  The writer plane is the migrating sentinel grant, held in
  * the fields shared with every other grant-bearing arm: writer_count carries
  * local writers plus a +1 sentinel while this rank holds the grant, so
- * writer_count > 0 IS "this rank may write".  Nothing withdraws the sentinel
- * except an INVALIDATE, which is what makes the grant sticky.  Under OWNER the
- * same word also carries ARTS_GRANT_UNCONFIRMED, so "may write" additionally
- * means the home has published the directory flip; the negative value it
- * produces is why the signed test is the predicate and not a convenience.
+ * writer_count > 0 IS "this rank may write".  Under RETAIN nothing withdraws
+ * the sentinel except a GRANT_INVALIDATE, which is what makes the grant
+ * sticky; under PURGE the holder gives it back at its own idle edge.  Under
+ * OWNER the same word also carries ARTS_GRANT_UNCONFIRMED, so "may write"
+ * additionally means the home has published the directory flip; the negative
+ * value it produces is why the signed test is the predicate and not a
+ * convenience.
  *
  * The version axis is the buffer's own version field, bumped by each write
  * half: a release's or a publish's.
@@ -451,8 +453,9 @@ struct arts_db_s {
    * writes the batch's releasers back in: they are sharers from their
    * release on. */
   struct arts_rank_bitset_s roster;
-  /* destroy fan-out roster; the creator's bit is set at home init, every
-   * other by arts_rank_bitset_note */
+  /* destroy fan-out roster; the first holder's bit is set at home init (it
+   * names a rank to tell only for a creator on another rank that holds the
+   * block), every other by arts_rank_bitset_note */
   struct arts_rank_bitset_s cached_ranks;
   /* The destroy's gate [td:1 | rwo:1] (cover_gate.h): the destroy's mark
    * and the claiming creator's pre-claim write request, which the announce

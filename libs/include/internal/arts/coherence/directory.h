@@ -163,15 +163,14 @@ bool arts_rank_u64_map_advance(struct arts_rank_to_u64_map_s *m,
  *     sweep) carry only its value.
  *   rw_holder  the write holder a revocation targets.  Stored with release
  *     under the baton, by the confirm that flips it; loaded with acquire
- *     under the baton.  Loads outside it (a read redirect, the destroy, the
- *     quiescence walk) carry only its value.
+ *     under the baton.  Loads outside it (a read redirect, the quiescence
+ *     walk) carry only its value.
  *   pending_install_owner  the requester the round in flight transfers the
  *     grant to.  Stored by the baton holder when it pops that requester,
  *     loaded by the confirm that ends the round.  Both relaxed, ordered by
  *     the baton: within a round its messages carry the store to the
  *     confirm, and the baton's put-down and the next winning claim order one
- *     hold's accesses before the next hold's.  The destroy's load outside the
- *     baton carries only its value: it names one more rank to tell. */
+ *     hold's accesses before the next hold's. */
 
 /* Initialize the home-directory fields inlined in struct arts_db_s (no separate
  * allocation).  rw_holder is the block's initial holder, chosen by the caller

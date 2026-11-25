@@ -684,9 +684,9 @@ static ARTS_ALWAYS_INLINE uint64_t cache_owner_size_round_next(uint64_t cur,
  * rw_waiters/ro_waiters.
  *
  * w and r never pass their fields, and a CONFIRM or RO_RET finds its count
- * above zero, the caller's precondition, which only a reused label breaks; a
- * count moves by adding its unit to the word, so one at zero borrows from the
- * fields above it. */
+ * above zero, the caller's precondition, which only a RO_RET for a reused
+ * label breaks; a count moves by adding its unit to the word, so one at zero
+ * borrows from the fields above it. */
 static ARTS_ALWAYS_INLINE uint64_t lock_owner_compute_next(
     uint64_t cur, int op, unsigned int new_owner, uint32_t *out_action) {
   uint32_t phase = LOCK_PHASE(cur);

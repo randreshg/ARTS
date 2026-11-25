@@ -128,9 +128,10 @@ extern "C" {
  *   all-ones : sentinel "no information" — outside the valid encode range,
  *              so no real size can alias it.
  * The bound lets any holder of the GUID allocate a transfer landing for its
- * first fetch without asking the home for the size; sentinel GUIDs
- * (pre-reserved/labeled ranges, sizes beyond the encodable range) take the
- * size-CTS round instead.  Encoding rounds UP, so bound >= exact always.
+ * first fetch without asking the home for the size; sentinel GUIDs, which
+ * are the pre-reserved and labeled ones (a create's own length always
+ * encodes), take the size-CTS round instead.  Encoding rounds UP, so
+ * bound >= exact always.
  *
  * **seq** is unique per (home rank, creating rank) without communication:
  * the seq space of every home is statically partitioned by creating rank
