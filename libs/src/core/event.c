@@ -113,15 +113,25 @@ static uint64_t event_free_chain(arts_lf_link_t *chain) {
   return n;
 }
 
+/* Deliver `data` to one dependent.  `kind` is what the registration said the
+ * dependent is, ARTS_GUID_EDT or ARTS_GUID_EVENT: it is never read from
+ * `target`. */
+static void event_deliver(arts_guid_kind_t kind, arts_guid_t target,
+                          uint32_t slot, arts_db_access_mode_t mode,
+                          arts_guid_t data) {
+  if (kind == ARTS_GUID_EDT) {
+    arts_edt_satisfy_slot(target, slot, data, mode);
+  } else {
+    assert(kind == ARTS_GUID_EVENT);
+    arts_event_satisfy_slot(target, data, slot);
+  }
+}
+
 /* ── Signal one queued dep ─────────────────────────────────────────────
  * For CHANNEL the data argument comes from the matching data_queue pop;
  * for non-CHANNEL it is e->simple.data. */
 static void event_signal_one(struct arts_event_dep_s *d, arts_guid_t data) {
-  if (d->kind == ARTS_GUID_EDT) {
-    arts_edt_satisfy_slot(d->target, d->slot, data, d->mode);
-  } else if (d->kind == ARTS_GUID_EVENT) {
-    arts_event_satisfy_slot(d->target, data, d->slot);
-  }
+  event_deliver(d->kind, d->target, d->slot, d->mode, data);
 }
 
 /* The channel gate's hooks.  Its fuzz sites are scheduling-fuzz points, inert
@@ -504,12 +514,13 @@ void arts_event_satisfy(arts_guid_t event_guid, arts_guid_t data_guid) {
   arts_event_satisfy_slot(event_guid, data_guid, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
-/* ── arts_event_add_dependence ─────────────────────────────────────── */
+/* ── A dependent's registration on an event ────────────────────────── */
 
 /* Home-routed handler (OOO_EVENT_ADD_DEPENDENCE): item is the installed source
  * event, held by its dispatch.  Pure core — register the dependent on
  * the event (CHANNEL queue / fire-and-linger immediate deliver / Treiber
- * waiter).  No lookup / acquire / release. */
+ * waiter).  No lookup / acquire / release.  What the dependent is comes with
+ * the args, from the registration's caller. */
 void arts_handler_event_add_dependence(void *item, void *vargs) {
   struct arts_event_s *event = (struct arts_event_s *)item;
   struct arts_ooo_args_event_add_dep_s *a =
@@ -518,11 +529,11 @@ void arts_handler_event_add_dependence(void *item, void *vargs) {
   arts_guid_t destination = a->destination;
   uint32_t slot = a->slot;
   arts_db_access_mode_t access_mode = a->mode;
-  arts_guid_kind_t dest_type = arts_guid_get_kind(destination);
+  arts_guid_kind_t dest_kind = a->kind;
 
   if (event->is_channel) {
     struct arts_event_dep_s *node =
-        event_node_alloc(dest_type, destination, slot, access_mode);
+        event_node_alloc(dest_kind, destination, slot, access_mode);
     channel_produce(event, &event->channel.dep_queue, node, CH_DEP_ONE);
     return;
   }
@@ -558,19 +569,15 @@ void arts_handler_event_add_dependence(void *item, void *vargs) {
   }
 
   if ((act & EV_ACT_BASE_MASK) == EV_ACT_DELIVER) {
-    arts_guid_t data = event->simple.data;
-    if (dest_type == ARTS_GUID_EDT) {
-      arts_edt_satisfy_slot(destination, slot, data, access_mode);
-    } else if (dest_type == ARTS_GUID_EVENT) {
-      arts_event_satisfy_slot(destination, data, slot);
-    }
+    event_deliver(dest_kind, destination, slot, access_mode,
+                  event->simple.data);
   } else {
     /* Not yet published: park on the Treiber stack.  The event may reach
      * FIRED between our decision and our push; re-check and drain so our dep
      * is not stranded.  addDep never advances fire_st — only the FIRING
      * claimer, who wrote simple.data, may publish. */
     struct arts_event_dep_s *dep =
-        event_node_alloc(dest_type, destination, slot, access_mode);
+        event_node_alloc(dest_kind, destination, slot, access_mode);
     /* Push then re-check, against the publisher's PUBLISH CAS then drain
      * (event_simple_step, drain_simple_chain): both sides RMW deps_stack
      * with acq_rel, so whichever is later on the stack's head sees the other
@@ -591,27 +598,63 @@ void arts_handler_event_add_dependence(void *item, void *vargs) {
   }
 }
 
-/* arts_event_add_dependence — entity-specific API: register a dependent on an
- * event source.  home==self → arts_ooo_dispatch_on: inline on a live handle
- * the caller holds, otherwise the GUID path (acquire → handler, or defer until
- * the event installs); home!=self → MSG_EVENT_ADD_DEPENDENCE wire. */
+/* Register `destination`, an object of `kind`, as a dependent of the event
+ * `source`.  home==self → arts_ooo_dispatch_on: inline on a live handle the
+ * caller holds, otherwise the GUID path (acquire → handler, or defer until the
+ * event installs); home!=self → MSG_EVENT_ADD_DEPENDENCE wire. */
 void arts_event_add_dependence_on(arts_shared_ptr_t h, arts_guid_t source,
-                                  arts_guid_t destination, uint32_t slot,
+                                  arts_guid_t destination,
+                                  arts_guid_kind_t kind, uint32_t slot,
                                   arts_db_access_mode_t mode) {
+  assert(kind == ARTS_GUID_EDT || kind == ARTS_GUID_EVENT);
   unsigned int rank = arts_guid_get_rank(source);
   if (rank != arts_global_rank_id) {
     assert(h == NULL);
-    arts_send_event_add_dependence(source, destination, slot, rank, mode);
+    arts_send_event_add_dependence(source, destination, kind, slot, rank, mode);
     return;
   }
-  struct arts_ooo_args_event_add_dep_s a = {
-      .source = source, .destination = destination, .slot = slot, .mode = mode};
+  struct arts_ooo_args_event_add_dep_s a = {.source = source,
+                                            .destination = destination,
+                                            .slot = slot,
+                                            .mode = mode,
+                                            .kind = kind};
   arts_ooo_dispatch_on(h, OOO_EVENT_ADD_DEPENDENCE, source, &a, sizeof(a));
 }
 
-void arts_event_add_dependence(arts_guid_t source, arts_guid_t destination,
-                               uint32_t slot, arts_db_access_mode_t mode) {
-  arts_event_add_dependence_on(NULL, source, destination, slot, mode);
+/* A typed entry's source: only the calling rank can tell the program that it
+ * named no event, so the entry ends the run there, before anything is sent. */
+static void event_dependence_source_check(arts_guid_t event,
+                                          arts_guid_t dependent,
+                                          uint32_t slot) {
+  if (arts_guid_get_kind(event) != ARTS_GUID_EVENT) {
+    ARTS_ERROR("dependence from %lu to %lu (slot %u): the source is not an "
+               "event",
+               (unsigned long)event, (unsigned long)dependent, slot);
+  }
+}
+
+void arts_event_add_dependence_to_edt(arts_guid_t event, arts_guid_t edt,
+                                      uint32_t slot,
+                                      arts_db_access_mode_t mode) {
+  event_dependence_source_check(event, edt, slot);
+  if (arts_guid_get_kind(edt) != ARTS_GUID_EDT) {
+    ARTS_ERROR("dependence from %lu to %lu (slot %u): the destination is not "
+               "an EDT",
+               (unsigned long)event, (unsigned long)edt, slot);
+  }
+  arts_event_add_dependence_on(NULL, event, edt, ARTS_GUID_EDT, slot, mode);
+}
+
+void arts_event_add_dependence_to_event(arts_guid_t event,
+                                        arts_guid_t dest_event, uint32_t slot) {
+  event_dependence_source_check(event, dest_event, slot);
+  if (arts_guid_get_kind(dest_event) != ARTS_GUID_EVENT) {
+    ARTS_ERROR("dependence from %lu to %lu (slot %u): the destination is not "
+               "an event",
+               (unsigned long)event, (unsigned long)dest_event, slot);
+  }
+  arts_event_add_dependence_on(NULL, event, dest_event, ARTS_GUID_EVENT, slot,
+                               DB_MODE_NULL);
 }
 
 /* ── arts_add_dependence ──────────────────────────────────────────── */
@@ -621,56 +664,53 @@ void arts_add_dependence(arts_guid_t source, arts_guid_t destination,
   ARTS_INFO("Add Dependence from %lu to %lu at %u mode=%u", source, destination,
             slot, access_mode);
 
-  /* NULL source: signal immediately with no data. */
-  if (source == NULL_GUID) {
-    arts_guid_kind_t dest_type = arts_guid_get_kind(destination);
-    if (dest_type == ARTS_GUID_EDT) {
-      arts_edt_satisfy_slot(destination, slot, NULL_GUID, access_mode);
-    } else if (dest_type == ARTS_GUID_EVENT) {
-      arts_event_satisfy_slot(destination, NULL_GUID, slot);
-    }
-    return;
+  arts_guid_kind_t dest_kind = arts_guid_get_kind(destination);
+  if (dest_kind != ARTS_GUID_EDT && dest_kind != ARTS_GUID_EVENT) {
+    ARTS_ERROR("dependence from %lu to %lu (slot %u): the destination is "
+               "neither an EDT nor an event",
+               (unsigned long)source, (unsigned long)destination, slot);
   }
+  arts_guid_kind_t source_kind = arts_guid_get_kind(source);
 
-  arts_guid_kind_t source_type = arts_guid_get_kind(source);
-
-  /* DB source: immediate satisfy. */
-  if (source_type == ARTS_GUID_DB) {
-    arts_guid_kind_t dest_type = arts_guid_get_kind(destination);
-    if (dest_type == ARTS_GUID_EDT) {
+  /* A NULL or data-block source satisfies the destination at once, with no
+   * data or with the block. */
+  if (source == NULL_GUID || source_kind == ARTS_GUID_DB) {
+    if (dest_kind == ARTS_GUID_EDT) {
       arts_edt_satisfy_slot(destination, slot, source, access_mode);
-    } else if (dest_type == ARTS_GUID_EVENT) {
+    } else {
       arts_event_satisfy_slot(destination, source, slot);
     }
     return;
   }
+  if (source_kind != ARTS_GUID_EVENT) {
+    ARTS_ERROR("dependence from %lu to %lu (slot %u): the source is neither "
+               "NULL_GUID, a data block nor an event",
+               (unsigned long)source, (unsigned long)destination, slot);
+  }
 
-  /* Event source — delegate to the entity-specific API.  The dep mode rides
-   * on the satisfy at fire time (stored in the waiter node, replayed through
-   * arts_edt_satisfy_slot), so no up-front mode-set to the destination. */
-  arts_event_add_dependence(source, destination, slot, access_mode);
+  /* Both kinds are checked above, so this is the typed registration for the
+   * destination's kind; an event destination takes no mode.  The mode rides
+   * on the satisfy at fire time (stored in the waiter node), so nothing is
+   * sent to the destination up front. */
+  arts_event_add_dependence_on(NULL, source, destination, dest_kind, slot,
+                               dest_kind == ARTS_GUID_EDT ? access_mode
+                                                          : DB_MODE_NULL);
 }
 
-static void send_remote_add_dependence_packet(unsigned int message_type,
-                                              arts_guid_t source,
-                                              arts_guid_t destination,
-                                              uint32_t slot, unsigned int rank,
-                                              arts_db_access_mode_t mode) {
+void arts_send_event_add_dependence(arts_guid_t source, arts_guid_t destination,
+                                    arts_guid_kind_t kind, uint32_t slot,
+                                    unsigned int rank,
+                                    arts_db_access_mode_t mode) {
+  ARTS_DEBUG("Remote Add dependence sent %d", rank);
   struct arts_msg_add_dependence_packet_s packet;
   packet.source = source;
   packet.destination = destination;
   packet.slot = slot;
   packet.mode = mode;
-  arts_fill_packet_header(&packet.header, sizeof(packet), message_type);
+  packet.kind = kind;
+  arts_fill_packet_header(&packet.header, sizeof(packet),
+                          MSG_EVENT_ADD_DEPENDENCE);
   arts_transport_send_async((int)rank, (char *)&packet, sizeof(packet));
-}
-
-void arts_send_event_add_dependence(arts_guid_t source, arts_guid_t destination,
-                                    uint32_t slot, unsigned int rank,
-                                    arts_db_access_mode_t mode) {
-  ARTS_DEBUG("Remote Add dependence sent %d", rank);
-  send_remote_add_dependence_packet(MSG_EVENT_ADD_DEPENDENCE, source,
-                                    destination, slot, rank, mode);
 }
 
 /* g_ooo_table[OOO_EVENT_CREATE]: the engine runs it while the GUID's slot is

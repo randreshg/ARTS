@@ -38,6 +38,7 @@
  ******************************************************************************/
 #include "arts/transport/dispatcher.h"
 
+#include <assert.h>
 #include <semaphore.h> /* sem_post (PUBLISH_CTS inline wake) */
 #include <unistd.h>
 
@@ -93,15 +94,17 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
     ARTS_DEBUG("Dependence Received");
     struct arts_msg_add_dependence_packet_s *pack =
         (struct arts_msg_add_dependence_packet_s *)(packet);
-    /* The wire message means source == event (an EDT/DB source satisfies
-     * immediately and is never shipped as ADD_DEPENDENCE), and RX is at the
-     * source event's home — route straight into the OoO engine, same as
-     * arts_event_add_dependence's home==self branch.  No generic src-kind
-     * re-derivation. */
+    /* The source is an event homed here (a NULL or data-block source
+     * satisfies at once and is never shipped), and the packet states what the
+     * destination is — route straight into the OoO engine, same as
+     * arts_event_add_dependence_on's home==self branch.  No kind is derived
+     * from either GUID. */
+    assert(pack->kind == ARTS_GUID_EDT || pack->kind == ARTS_GUID_EVENT);
     struct arts_ooo_args_event_add_dep_s a = {.source = pack->source,
                                               .destination = pack->destination,
                                               .slot = pack->slot,
-                                              .mode = pack->mode};
+                                              .mode = pack->mode,
+                                              .kind = pack->kind};
     arts_ooo_dispatch_or_defer_guid(pack->source, OOO_EVENT_ADD_DEPENDENCE, &a,
                                     sizeof(a));
     break;

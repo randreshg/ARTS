@@ -301,6 +301,7 @@ struct arts_ooo_args_event_add_dep_s {
   arts_guid_t destination;
   uint32_t slot;
   arts_db_access_mode_t mode;
+  arts_guid_kind_t kind; /* what `destination` is: an EDT or an event */
 };
 
 struct arts_ooo_args_db_acquire_s {

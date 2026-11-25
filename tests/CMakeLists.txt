@@ -99,6 +99,8 @@ set(ARTS_REFERENCE_TREE_PROGRAMS
     event_scalar_return
     event_payload_policy
     event_chain
+    event_typed_dependence
+    add_dependence_refused
     edt_null_guid_db_mode
     event_channel_lifetime
     multinode_edt
@@ -1072,6 +1074,69 @@ foreach(_t edt_null_guid_db_mode edt_null_guid_db_mode_2n_9w_1p
         PASS_REGULAR_EXPRESSION "PASS: edt_null_guid_db_mode"
         FAIL_REGULAR_EXPRESSION "FAIL:")
 endforeach()
+endif()
+
+# The typed registrations on an event, where the entry called states what the
+# dependent is and that statement travels to the event's home: every pairing
+# of a home for the event (the calling rank or another), a dependent (an EDT
+# in each access mode, an event) and a time of registration.  No cell compiles
+# an event or an EDT's dependence slots differently, so the reference tree
+# runs it; two progress threads take a registration and its event's satisfy in
+# either order.  Its shutdown is quiescent, and a second delivery to a
+# checker that has completed stays parked, so a marker of the teardown's walk
+# fails it.
+if(ARTS_TEST_REFERENCE_TREE)
+register_single_node_test(event_typed_dependence TIMEOUT 30)
+register_multinode_test(event_typed_dependence TIMEOUT 60)
+foreach(_t event_typed_dependence event_typed_dependence_2n_9w_1p
+        event_typed_dependence_4n_4w_1p event_typed_dependence_2n_8w_2p)
+    arts_test_properties(${_t} PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS: event_typed_dependence"
+        FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
+endforeach()
+
+# The dependence entries end the run on a pair they cannot serve, each with
+# its own line: the polymorphic entry on a destination that is neither an EDT
+# nor an event, under each kind of source, and on a source that is an EDT; a
+# typed entry on a source that is no event and on a destination that is not
+# what the entry names.  The check runs in the caller, before anything is
+# satisfied or sent, so one rank states it.
+# arts_add_dependence_refusals(<entry> <error clause> <source>-<destination>...)
+function(arts_add_dependence_refusals entry clause)
+    arts_test_cfg(_cfg 1n_20w)
+    if(entry STREQUAL "polymorphic")
+        set(_prefix add_dependence_refused)
+    else()
+        set(_prefix add_dependence_${entry}_refused)
+    endif()
+    foreach(_pair IN LISTS ARGN)
+        string(REPLACE "-" "_to_" _name ${_prefix}_${_pair})
+        arts_add_test(${_name} STATUS 1
+                      COMMAND add_dependence_refused ${entry} ${_pair})
+        set_tests_properties(${_name} PROPERTIES
+            LABELS "single_node"
+            TIMEOUT 30
+            RESOURCE_LOCK "arts_runtime"
+            ENVIRONMENT "ARTS_CONFIG=${_cfg}"
+            PASS_REGULAR_EXPRESSION
+            "dependence from [0-9]+ to [0-9]+ \\(slot 3\\): ${clause}"
+            FAIL_REGULAR_EXPRESSION "FAIL:")
+    endforeach()
+endfunction()
+arts_add_dependence_refusals(polymorphic
+    "the destination is neither an EDT nor an event"
+    null-null null-db db-null db-db event-null event-db)
+arts_add_dependence_refusals(polymorphic
+    "the source is neither NULL_GUID, a data block nor an event"
+    edt-edt edt-event)
+arts_add_dependence_refusals(to_edt "the source is not an event"
+    null-edt db-edt edt-edt)
+arts_add_dependence_refusals(to_edt "the destination is not an EDT"
+    event-null event-db event-event)
+arts_add_dependence_refusals(to_event "the source is not an event"
+    null-event db-event edt-event)
+arts_add_dependence_refusals(to_event "the destination is not an event"
+    event-null event-db event-edt)
 endif()
 
 # The no-hint EDT placement by creation depth: judged creations of N EDTs at

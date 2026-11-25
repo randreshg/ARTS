@@ -868,9 +868,9 @@ u8 ocrAddDependence(ocrGuid_t source, ocrGuid_t destination, u32 slot,
                               ARTS_EVENT_LATCH_DECR_SLOT);
     }
   } else if (srcType == ARTS_GUID_EVENT) {
-    /* ARTS channels (latch=1) do INCR internally in add_dependence_with_mode.
-     * Non-channel events use direct dependent registration. Both paths
-     * are handled by arts_add_dependence. Cross-node: handled natively.
+    /* An event source registers the destination as its dependent:
+     * arts_add_dependence calls the typed registration for the destination's
+     * kind, on this rank or by message.
      *
      * Pass the user's access mode through ocr_to_arts_mode so the EDT slot
      * is registered with the correct ARTS mode (RO/RW). */

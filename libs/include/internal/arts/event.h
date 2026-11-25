@@ -46,21 +46,20 @@ extern "C" {
 #include <assert.h>                   /* static_assert */
 #include <stddef.h>                   /* offsetof */
 
-/** Dep node — one per registered EDT or chained event waiting on this
- *  source event.  Allocated via arts_malloc / freed via arts_free. */
+/** Dep node — one per registered dependent or, on a channel's data_queue,
+ *  one per unpaired satisfy (`target` its data GUID).  Allocated via
+ *  arts_malloc / freed via arts_free. */
 struct arts_event_dep_s {
-  arts_lf_link_t link;        /* MUST be first (link = node addr) */
-  arts_guid_kind_t kind;      /* ARTS_GUID_EDT or ARTS_GUID_EVENT */
+  arts_lf_link_t link; /* MUST be first (link = node addr) */
+  /* What `target` is, as its registration stated it: ARTS_GUID_EDT or
+   * ARTS_GUID_EVENT.  A channel's data node carries ARTS_GUID_LAST. */
+  arts_guid_kind_t kind;
   arts_guid_t target;         /* destination GUID */
   uint32_t slot;              /* destination slot */
   arts_db_access_mode_t mode; /* dep mode (preserved across signal) */
 };
 static_assert(offsetof(struct arts_event_dep_s, link) == 0,
               "link must be first for arts_lf_link_t round-tripping");
-
-/* arts_event_add_dependence (event-source branch of arts_add_dependence) is
- * declared once in the public header (arts.h); callers include that.  Not
- * re-declared here to avoid a redundant declaration. */
 
 /* OoO replay handlers (g_ooo_table) — operate on the acquired event. */
 void arts_handler_event_satisfy_slot(void *item, void *args);
@@ -80,21 +79,28 @@ void arts_handler_event_create(void *item, void *args);
 arts_shared_ptr_t arts_event_create_held(const arts_event_hint_t *hint,
                                          arts_guid_t *guid);
 
-/* arts_event_satisfy_slot and arts_event_add_dependence (whose source is an
- * event) acting through `h`, a counted handle the caller holds on the event
- * (the source) and keeps across the call: it runs inline while `h` is live
- * and takes the GUID path otherwise, NULL included.  A non-NULL `h` names an
- * event homed on this rank.  The satisfy is held back on the GPU wrapper's
- * slot first, as the GUID entry holds it back. */
+/* arts_event_satisfy_slot and a dependent's registration on an event (the
+ * body of arts_event_add_dependence_to_edt and _to_event) acting through `h`,
+ * a counted handle the caller holds on the event (the source) and keeps
+ * across the call: it runs inline while `h` is live and takes the GUID path
+ * otherwise, NULL included.  A non-NULL `h` names an event homed on this
+ * rank.  The satisfy is held back on the GPU wrapper's slot first, as the
+ * GUID entry holds it back.  `kind` states what `destination` is,
+ * ARTS_GUID_EDT or ARTS_GUID_EVENT, and travels with the registration to the
+ * event's home, which never reads it from the GUID; the public entries check
+ * both GUIDs' kinds before they call this, which checks neither.  An event
+ * destination takes no mode (DB_MODE_NULL). */
 void arts_event_satisfy_slot_on(arts_shared_ptr_t h, arts_guid_t event_guid,
                                 arts_guid_t data_guid, uint32_t slot);
 void arts_event_add_dependence_on(arts_shared_ptr_t h, arts_guid_t source,
-                                  arts_guid_t destination, uint32_t slot,
+                                  arts_guid_t destination,
+                                  arts_guid_kind_t kind, uint32_t slot,
                                   arts_db_access_mode_t mode);
 
 /* Cross-rank wire TX/RX for event ops. */
 void arts_send_event_add_dependence(arts_guid_t source, arts_guid_t destination,
-                                    uint32_t slot, unsigned int rank,
+                                    arts_guid_kind_t kind, uint32_t slot,
+                                    unsigned int rank,
                                     arts_db_access_mode_t mode);
 void arts_send_event_satisfy_slot(arts_guid_t event_guid, arts_guid_t data_guid,
                                   uint32_t slot);

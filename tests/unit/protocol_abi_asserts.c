@@ -173,8 +173,10 @@ _Static_assert(sizeof(struct arts_msg_guid_only_packet_s) == 24,
                "guid_only sizeof drifted");
 _Static_assert(sizeof(struct arts_msg_object_blob_packet_s) == 24,
                "object_blob sizeof drifted");
-_Static_assert(sizeof(struct arts_msg_add_dependence_packet_s) == 40,
+_Static_assert(sizeof(struct arts_msg_add_dependence_packet_s) == 44,
                "add_dependence sizeof drifted");
+_Static_assert(offsetof(struct arts_msg_add_dependence_packet_s, kind) == 40,
+               "add_dependence kind drifted");
 _Static_assert(sizeof(struct arts_msg_edt_satisfy_slot_packet_s) == 40,
                "edt_satisfy_slot sizeof drifted");
 _Static_assert(sizeof(struct arts_msg_event_satisfy_slot_packet_s) == 36,

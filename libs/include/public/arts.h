@@ -763,11 +763,12 @@ void arts_edt_set_result(arts_guid_t result_guid);
  * the route-slot detach cannot free it mid-flight).  The EDT's run state is
  * therefore NOT the constraint.
  *
- * The caller MUST NOT access the EDT's GUID via arts_add_dependence (as source
- * or destination) or arts_edt_satisfy* concurrently with, or after, the
- * destroy: using a destroyed GUID is undefined, and a satisfy racing the
- * destroy is the one genuinely unsafe interleaving.  In practice the safe
- * pattern is to cancel a just-created EDT before wiring any dependence into it.
+ * The caller MUST NOT access the EDT's GUID via arts_add_dependence or
+ * arts_event_add_dependence_to_edt (as destination) or arts_edt_satisfy*
+ * concurrently with, or after, the destroy: using a destroyed GUID is
+ * undefined, and a satisfy racing the destroy is the one genuinely unsafe
+ * interleaving.  In practice the safe pattern is to cancel a just-created EDT
+ * before wiring any dependence into it.
  *
  * A completed EDT needs no destroy: its completion retires its GUID, and a
  * destroy that reaches the home after that waits for the GUID's next install.
@@ -852,15 +853,41 @@ void arts_edt_satisfy_slot(arts_guid_t edt_guid, uint32_t slot,
                            arts_guid_t data_guid, arts_db_access_mode_t mode);
 
 /**
- * @brief Register a dependent on an event source (OCR-standard).
+ * @brief Register an EDT as a dependent of an event.
  *
- * Entity-specific counterpart of @c arts_event_satisfy_slot: when @p source
- * (an event) fires, its data is delivered to @p destination's @p slot with
- * @p mode.  Home-routed (forwarded via MSG_EVENT_ADD_DEPENDENCE when @p source
- * is remote).  @c arts_add_dependence dispatches here for an event source.
+ * When @p event fires, its data is delivered to @p edt's @p slot with
+ * @p mode, as by @c arts_edt_satisfy_slot.  A dependent registered after the
+ * fire is served at once from the data the event keeps while it lingers:
+ * until @c arts_event_destroy, and not on an @c auto_destroy event, which is
+ * reclaimed at its fire, nor on a counted event whose declared dependents
+ * have all registered.  A @c channel event has no such state: it pairs each
+ * registration with one satisfy, in FIFO order.  Home-routed: the event's
+ * home rank does the work (forwarded via MSG_EVENT_ADD_DEPENDENCE when
+ * @p event is remote).
+ *
+ * The entry, not the GUID, tells the event's home what its dependent is, so
+ * the calling rank checks both names first: an @p event that is not an event
+ * or an @p edt that is not an EDT ends the run with a fatal error naming
+ * both GUIDs.  A reserved GUID of the right kind passes before its object is
+ * created.
  */
-void arts_event_add_dependence(arts_guid_t source, arts_guid_t destination,
-                               uint32_t slot, arts_db_access_mode_t mode);
+void arts_event_add_dependence_to_edt(arts_guid_t event, arts_guid_t edt,
+                                      uint32_t slot,
+                                      arts_db_access_mode_t mode);
+
+/**
+ * @brief Register an event as a dependent of an event.
+ *
+ * When @p event fires, its data satisfies @p dest_event's @p slot
+ * (ARTS_EVENT_LATCH_DECR_SLOT or ARTS_EVENT_LATCH_INCR_SLOT), as by
+ * @c arts_event_satisfy_slot, which takes no access mode.  A dependent
+ * registered after the fire, or on a @c channel event, is served as
+ * @c arts_event_add_dependence_to_edt describes, and the call is home-routed
+ * the same way.  An @p event or a @p dest_event that is not an event ends the
+ * run with a fatal error naming both GUIDs, on the calling rank.
+ */
+void arts_event_add_dependence_to_event(arts_guid_t event,
+                                        arts_guid_t dest_event, uint32_t slot);
 
 /**
  * @brief Release a generic event.
@@ -887,13 +914,22 @@ arts_guid_t arts_current_group(void);
 /**
  * @brief Wire a source (event or DB) to a destination (EDT or event).
  *
- * OCR-standard convenience: a pure dispatcher over the entity-specific APIs,
- * branching on source/destination kind — no own wire or handler:
- *   - @c source is an event  → @c arts_event_add_dependence;
+ * OCR's polymorphic entry: it reads the kinds of @p source and
+ * @p destination from their GUIDs and acts as one of the four typed entries —
+ * no own wire or handler:
+ *   - @c source is an event, @c destination is an EDT
+ *                            → as @c arts_event_add_dependence_to_edt;
+ *   - @c source is an event, @c destination is an event
+ *                            → as @c arts_event_add_dependence_to_event
+ *                              (@p mode is not used);
  *   - @c source is NULL / DB, @c destination is an EDT
  *                            → @c arts_edt_satisfy_slot;
  *   - @c source is NULL / DB, @c destination is an event
- *                            → @c arts_event_satisfy_slot.
+ *                            → @c arts_event_satisfy_slot
+ *                              (@p mode is not used).
+ * Any other pair is a program error: a @p destination that is neither an EDT
+ * nor an event, or a @p source that is neither @c NULL_GUID, a DataBlock nor
+ * an event, ends the run with a fatal error naming both GUIDs.
  * The dep mode rides on the satisfy at fire time (stored in the event's
  * waiter metadata), so there is no separate up-front mode-set message.
  * To deliver a raw value directly, use arts_edt_satisfy_slot or

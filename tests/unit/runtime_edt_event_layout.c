@@ -243,8 +243,10 @@ static void print_fingerprint(void) {
   MEMBER(event_t, channel.dep_queue);
   TYPE(event_dep_t);
   MEMBER(event_dep_t, link);
+  MEMBER(event_dep_t, kind);
   MEMBER(event_dep_t, target);
   MEMBER(event_dep_t, slot);
+  MEMBER(event_dep_t, mode);
 
   TYPE(arts_route_item_t);
   MEMBER(arts_route_item_t, key);

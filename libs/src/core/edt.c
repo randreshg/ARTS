@@ -668,7 +668,7 @@ void arts_handler_edt_create(void *item_v, void *args_v) {
     proxy_hint.auto_destroy = true;
     arts_guid_t proxy = NULL_GUID;
     arts_shared_ptr_t proxy_ref = arts_event_create_held(&proxy_hint, &proxy);
-    arts_event_add_dependence_on(proxy_ref, proxy, edt->group,
+    arts_event_add_dependence_on(proxy_ref, proxy, edt->group, ARTS_GUID_EVENT,
                                  ARTS_EVENT_LATCH_DECR_SLOT, DB_MODE_NULL);
     edt->group = proxy;
     assert(edt->group_ref == NULL);

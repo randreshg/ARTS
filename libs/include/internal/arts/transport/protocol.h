@@ -193,12 +193,16 @@ struct ARTS_PACKED arts_msg_object_blob_packet_s {
   arts_guid_t guid;
 };
 
+/* A dependent's registration on the event `source`.  `kind` states what
+ * `destination` is, ARTS_GUID_EDT or ARTS_GUID_EVENT: the event's home takes
+ * it from here, never from the GUID. */
 struct ARTS_PACKED arts_msg_add_dependence_packet_s {
   struct arts_msg_header_s header;
   arts_guid_t source;
   arts_guid_t destination;
   uint32_t slot;
   arts_db_access_mode_t mode;
+  arts_guid_kind_t kind;
 };
 
 /* A satisfy carries a GUID/value reference only — fixed size, no trailing

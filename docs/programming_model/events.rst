@@ -106,16 +106,43 @@ Wiring Dependencies
 
 .. code-block:: c
 
+   /* The dependent is an EDT: the event's data lands in its slot. */
+   void arts_event_add_dependence_to_edt(arts_guid_t event, arts_guid_t edt,
+                                         uint32_t slot,
+                                         arts_db_access_mode_t mode);
+
+   /* The dependent is an event: the fire satisfies its slot. */
+   void arts_event_add_dependence_to_event(arts_guid_t event,
+                                           arts_guid_t dest_event,
+                                           uint32_t slot);
+
+   /* OCR's polymorphic entry over the typed ones. */
    void arts_add_dependence(arts_guid_t source, arts_guid_t destination,
                             uint32_t slot, arts_db_access_mode_t mode);
 
-:c:func:`arts_add_dependence` is the OCR-standard dispatcher: with an
-event as ``source``, it registers ``destination`` (an EDT or another
-event) as a dependent; when the event fires, its data lands in
-``destination``'s ``slot`` with the given access mode (``DB_MODE_RO``,
-``DB_MODE_RW``, or ``DB_MODE_NULL`` for opaque values and control dependencies).
-The entity-specific form :c:func:`arts_event_add_dependence` takes the
-same arguments and is what the dispatcher calls for an event source.
+A dependent is registered on an event by one of two typed entries, and the
+call states what the dependent is.
+:c:func:`arts_event_add_dependence_to_edt` registers an EDT: when the event
+fires, its data lands in the EDT's ``slot`` with the given access mode
+(``DB_MODE_RO``, ``DB_MODE_RW``, or ``DB_MODE_NULL`` for opaque values and
+control dependencies), as by :c:func:`arts_edt_satisfy_slot`.
+:c:func:`arts_event_add_dependence_to_event` registers another event: the
+fire satisfies that event's ``slot`` (``ARTS_EVENT_LATCH_DECR_SLOT`` or
+``ARTS_EVENT_LATCH_INCR_SLOT``) with the data, as by
+:c:func:`arts_event_satisfy_slot`, which takes no access mode.
+The calling rank checks both names first: an ``event`` that is not an event,
+or a dependent that is not what the entry names, is a program error that ends
+the run with a fatal error naming both GUIDs (a reserved GUID of the right
+kind passes before its object exists).
+
+:c:func:`arts_add_dependence` is OCR's polymorphic entry over the four typed
+ones.  It reads what ``source`` and ``destination`` are from their GUIDs: an
+event source is registered as by the typed entry that matches the
+destination, and a ``NULL_GUID`` or DataBlock source satisfies the destination
+at once through :c:func:`arts_edt_satisfy_slot` or
+:c:func:`arts_event_satisfy_slot`.  A destination that is neither an EDT nor
+an event, or a source that is neither ``NULL_GUID``, a DataBlock nor an event,
+is a program error that ends the run with a fatal error naming both GUIDs.
 
 Channel Events
 --------------

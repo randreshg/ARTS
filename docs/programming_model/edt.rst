@@ -97,7 +97,8 @@ error naming the EDT and its dependence count.
 
 For a value computed after the consumer is created, connect an event to its
 slot with ``DB_MODE_NULL`` and later satisfy that event with the value.
-``arts_add_dependence`` interprets its source as an object; direct value
+``arts_add_dependence`` interprets its source as an object and ends the run on
+a source that is none of ``NULL_GUID``, a DataBlock or an event; direct value
 delivery uses ``arts_edt_satisfy_slot`` or ``arts_event_satisfy``.
 
 Creation Hint Fields
