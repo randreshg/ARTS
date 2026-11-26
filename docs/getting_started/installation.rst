@@ -246,10 +246,10 @@ All options are set with ``-D<NAME>=<VALUE>`` on the cmake line.
        local completion for a random 0..n ms),
        ``ARTS_NET_MAX_MSG=<bytes>`` (lower the provider's one-sided ceiling),
        ``ARTS_REGPOOL_FORCE_FULL_NODES=<n,...>`` (treat NUMA nodes as full),
-       ``ARTS_REQUEST_DELAY_MS=<n>[:drain]`` (hold each coherence request a
-       rank sends another rank for a random 0..n ms; ``:drain`` holds only
-       read requests, each until as many EDT bodies have returned on its rank
-       as EDTs had been made runnable there when it was held, or n ms),
+       ``ARTS_REQUEST_DELAY_MS=<n>:drain`` (hold each coherence read request a
+       rank sends another rank until as many EDT bodies have returned on its
+       rank as EDTs had been made runnable there when it was held, or n ms; any
+       other non-empty value is refused),
        ``ARTS_NET_RDZV_CUT=<n>`` (raise no one-sided payload's arrival on any
        rank, so no pairing completes; the rank that has taken in n arrivals
        and registered n expectations ends its run, and the teardown of a tree

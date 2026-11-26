@@ -132,12 +132,11 @@ unsigned int arts_guid_get_rank(arts_guid_t g) {
 }
 #ifdef ARTS_DEBUG_INJECTION
 void arts_sched_fuzz_point(void) {}
-bool arts_net_send_held(int rank, const char *message, unsigned int length,
-                        int kind) {
+bool arts_net_send_held_read(int rank, const char *message,
+                             unsigned int length) {
   (void)rank;
   (void)message;
   (void)length;
-  (void)kind;
   return false;
 }
 #endif

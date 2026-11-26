@@ -180,7 +180,7 @@ static void fetch_send(struct arts_db_cache_s *cache, struct fetch_waiter_s w) {
   /* A fetch answers one EDT's acquire, of either mode, before the EDT runs;
    * the hook holds it as a read (no write request exists on this arm). */
   unsigned int home = arts_guid_get_rank(cache->db_guid);
-  if (!arts_net_send_held((int)home, (char *)&p, sizeof(p), ARTS_HELD_READ)) {
+  if (!arts_net_send_held_read((int)home, (char *)&p, sizeof(p))) {
     arts_transport_send_async((int)home, (char *)&p, sizeof(p));
   }
 }

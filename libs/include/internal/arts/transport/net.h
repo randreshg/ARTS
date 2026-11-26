@@ -108,23 +108,21 @@ extern "C" {
  * ========================================================================== */
 void arts_transport_send_async(int rank, char *message, unsigned int length);
 
-/* ARTS_REQUEST_DELAY_MS (an ARTS_DEBUG_INJECTION hook): a coherence request
- * bound for another rank is handed here instead of to the transport; it is
- * copied, held and then sent by a progress thread.  `kind` is what it is: a
- * write request or a read request.  Returns false (and takes nothing) when
- * the hook holds nothing of its kind. */
-#define ARTS_HELD_WRITE 0
-#define ARTS_HELD_READ 1
+/* ARTS_REQUEST_DELAY_MS (an ARTS_DEBUG_INJECTION hook): a coherence read
+ * request bound for another rank is handed here instead of to the transport;
+ * it is copied, held and then sent by a progress thread.  Returns false (and
+ * takes nothing) when the hook is off: the variable unset or empty, or a
+ * delay of 0. */
 #ifdef ARTS_DEBUG_INJECTION
-bool arts_net_send_held(int rank, const char *message, unsigned int length,
-                        int kind);
-/* The hook's drain form counts the EDTs this rank makes runnable (called
- * before the scheduling push) and the bodies that return (called right after
- * the body, before its releases); both do nothing unless the form is set. */
+bool arts_net_send_held_read(int rank, const char *message,
+                             unsigned int length);
+/* The hook counts the EDTs this rank makes runnable (called before the
+ * scheduling push) and the bodies that return (called right after the body,
+ * before its releases); both do nothing while the hook is off. */
 void arts_net_held_edt_runnable(void);
 void arts_net_held_edt_returned(void);
 #else
-#define arts_net_send_held(rank, message, length, kind) false
+#define arts_net_send_held_read(rank, message, length) false
 #define arts_net_held_edt_runnable() ((void)0)
 #define arts_net_held_edt_returned() ((void)0)
 #endif

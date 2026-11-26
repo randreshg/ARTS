@@ -210,12 +210,11 @@ void arts_sched_fuzz_point(void) {
     g_fuzz_hook = NULL;
   }
 }
-bool arts_net_send_held(int rank, const char *message, unsigned int length,
-                        int kind) {
+bool arts_net_send_held_read(int rank, const char *message,
+                             unsigned int length) {
   (void)rank;
   (void)message;
   (void)length;
-  (void)kind;
   return false;
 }
 #endif

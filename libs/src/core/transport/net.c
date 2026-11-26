@@ -1706,15 +1706,13 @@ static void net_quiesce_held_writes(void) {
 #endif
 
 #ifdef ARTS_DEBUG_INJECTION
-/* ARTS_REQUEST_DELAY_MS=<n> holds each coherence request a rank sends to
- * another rank for a random 0..n ms, so two requests of one rank reach their
- * home in either order and a request can trail everything its rank sends
- * after it.  <n>:drain holds only read requests, each until as many EDT
- * bodies have returned on its rank as EDTs had been made runnable there when
- * it was held (or n ms pass), so an acquire made after it in the body that
- * sent it, or in a body runnable by then, is decided before it leaves
- * whatever the timing.  The trigger is a count, not an identity: it names
- * those bodies only while nothing else runs on the rank.
+/* ARTS_REQUEST_DELAY_MS=<n>:drain holds each coherence read request a rank
+ * sends to another rank until as many EDT bodies have returned on its rank as
+ * EDTs had been made runnable there when it was held (or n ms pass), so an
+ * acquire made after it in the body that sent it, or in a body runnable by
+ * then, is decided before it leaves whatever the timing.  The trigger is a
+ * count, not an identity: it names those bodies only while nothing else runs
+ * on the rank.
  * Producers (any thread, a progress thread in dispatch included) only copy
  * and push; a progress thread that wins the try-lock moves the
  * pushed packets onto the not-yet-due list, detaches what is due, drops the
@@ -1727,7 +1725,7 @@ struct net_held_msg_s {
   _Atomic(struct net_held_msg_s *) next; /* the producers' stack */
   struct net_held_msg_s *wnext; /* the wait and due lists: the lock's own */
   uint64_t due_ns;
-  uint64_t runnable; /* the drain form: g_held_runnable at the hold */
+  uint64_t runnable; /* g_held_runnable at the hold */
   int rank;
   unsigned int len;
   char data[];
@@ -1741,11 +1739,7 @@ static struct net_held_msg_s *g_held_wait;
 static _Atomic(unsigned int) g_held_lock;
 /* Set before any thread exists to send; 0 = off. */
 static int64_t g_req_delay_ns;
-/* The drain form: read requests only, until the bodies counted at their hold
- * returned; otherwise every request, for a random time. */
-static bool g_req_delay_drain;
-static ARTS_THREAD_LOCAL uint64_t t_req_delay_rng;
-/* The drain form's counts, only while it is set.  runnable: EDTs this rank
+/* The counts of the hold, only while it is set.  runnable: EDTs this rank
  * made runnable, bumped relaxed by the thread that schedules one (before the
  * push that hands it on, so the body that sends a held request is counted)
  * and read relaxed at the hold, a value only.  returned: bodies that
@@ -1756,13 +1750,13 @@ static _Atomic(uint64_t) g_held_runnable;
 static _Atomic(uint64_t) g_held_returned;
 
 void arts_net_held_edt_runnable(void) {
-  if (g_req_delay_drain) {
+  if (g_req_delay_ns != 0) {
     atomic_fetch_add_explicit(&g_held_runnable, 1u, memory_order_relaxed);
   }
 }
 
 void arts_net_held_edt_returned(void) {
-  if (g_req_delay_drain) {
+  if (g_req_delay_ns != 0) {
     atomic_fetch_add_explicit(&g_held_returned, 1u, memory_order_release);
   }
 }
@@ -1773,23 +1767,18 @@ static void net_req_delay_init(void) {
   if (env != NULL && env[0] != '\0') {
     char *end = NULL;
     ms = strtol(env, &end, 10);
-    if (end != env && strcmp(end, ":drain") == 0) {
-      g_req_delay_drain = true;
-      end += 6;
-    }
-    if (end == env || *end != '\0' || ms < 0 || ms > 60000) {
-      ARTS_ERROR("arts_net: ARTS_REQUEST_DELAY_MS=\"%s\" is not a delay of "
-                 "0-60000 ms, optionally followed by :drain",
+    if (end == env || strcmp(end, ":drain") != 0 || ms < 0 || ms > 60000) {
+      ARTS_ERROR("arts_net: ARTS_REQUEST_DELAY_MS=\"%s\" is not <n>:drain "
+                 "with a delay of 0-60000 ms",
                  env);
     }
   }
   g_req_delay_ns = (int64_t)ms * 1000000;
 }
 
-bool arts_net_send_held(int rank, const char *message, unsigned int length,
-                        int kind) {
-  bool drain = g_req_delay_drain;
-  if (g_req_delay_ns == 0 || (drain && kind != ARTS_HELD_READ)) {
+bool arts_net_send_held_read(int rank, const char *message,
+                             unsigned int length) {
+  if (g_req_delay_ns == 0) {
     return false;
   }
   struct net_held_msg_s *h =
@@ -1797,19 +1786,8 @@ bool arts_net_send_held(int rank, const char *message, unsigned int length,
   memcpy(h->data, message, length);
   h->rank = rank;
   h->len = length;
-  if (t_req_delay_rng == 0) {
-    t_req_delay_rng = (net_now_ns() ^ ((uint64_t)(uintptr_t)&h)) | 1u;
-  }
-  t_req_delay_rng ^= t_req_delay_rng << 13;
-  t_req_delay_rng ^= t_req_delay_rng >> 7;
-  t_req_delay_rng ^= t_req_delay_rng << 17;
-  uint64_t hold = (uint64_t)g_req_delay_ns;
-  if (!drain) {
-    hold = t_req_delay_rng % (hold + 1u);
-  }
-  h->due_ns = net_now_ns() + hold;
-  h->runnable =
-      drain ? atomic_load_explicit(&g_held_runnable, memory_order_relaxed) : 0u;
+  h->due_ns = net_now_ns() + (uint64_t)g_req_delay_ns;
+  h->runnable = atomic_load_explicit(&g_held_runnable, memory_order_relaxed);
   struct net_held_msg_s *top =
       atomic_load_explicit(&g_held_push, memory_order_relaxed);
   do {
@@ -1841,13 +1819,11 @@ static void net_release_held(void) {
   }
   uint64_t now = net_now_ns();
   uint64_t returned =
-      g_req_delay_drain
-          ? atomic_load_explicit(&g_held_returned, memory_order_acquire)
-          : 0u;
+      atomic_load_explicit(&g_held_returned, memory_order_acquire);
   struct net_held_msg_s *due = NULL;
   for (struct net_held_msg_s **pp = &g_held_wait; *pp != NULL;) {
     struct net_held_msg_s *h = *pp;
-    if (h->due_ns > now && !(g_req_delay_drain && returned >= h->runnable)) {
+    if (h->due_ns > now && returned < h->runnable) {
       pp = &h->wnext;
       continue;
     }

@@ -275,8 +275,7 @@ void arts_send_db_snapshot_request(struct arts_db_cache_s *cache) {
     arts_shared_release(&held);
     return;
   }
-  if (!arts_net_send_held((int)home_rank, (char *)&p, sizeof(p),
-                          ARTS_HELD_READ)) {
+  if (!arts_net_send_held_read((int)home_rank, (char *)&p, sizeof(p))) {
     arts_transport_send_async((int)home_rank, (char *)&p, sizeof(p));
   }
 }
