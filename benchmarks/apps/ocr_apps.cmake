@@ -1193,10 +1193,10 @@ add_bespoke_app(NAME release_sync_stress SOURCES release_sync_stress.c)
 # ==========================================================================
 # dbcreate_matrix  (bespoke: source lives in this repo, not in ocr-apps)
 # Probes the DB-create capability matrix -- (creator-acquisition) x (home-
-# determination: affinity / labeled / no-hint) x (locality) -- through the
+# determination: affinity / no-hint) x (locality) -- through the
 # portable OCR API, so the SAME source builds for every runtime and the
 # correctness harness can compare their create-path capability.  Prints
-# CELLS_OK=<k>/12.
+# CELLS_OK=<k>/8.
 # ==========================================================================
 add_bespoke_app(NAME dbcreate_matrix SOURCES dbcreate_matrix.c)
 

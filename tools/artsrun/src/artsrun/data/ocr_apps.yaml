@@ -451,11 +451,11 @@ apps:
     provenance: 'Datablock-creation probe written for this driver'
     kind: toy
     marker: 'CELLS_OK='
-    scalar_re: 'CELLS_OK=(\d+)/12'
+    scalar_re: 'CELLS_OK=(\d+)/8'
     scalar_kind: int
     args: []
     default_enabled: false
-    unordered_writes: 'the results block is read-modify-written under N concurrent RW acquires (dbcreate_matrix.c:109, :168, :180)'
+    unordered_writes: 'the results block is read-modify-written under N concurrent RW acquires (dbcreate_matrix.c:89, :130)'
 
   dbctrl:
     binary: dbctrl
