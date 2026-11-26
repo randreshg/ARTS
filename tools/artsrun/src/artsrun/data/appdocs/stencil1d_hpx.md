@@ -30,7 +30,7 @@ HPX primitives used: two component types with actions
 do_work`), `hpx::dataflow`, `hpx::post`, `hpx::find_from_basename`,
 `hpx::lcos::local::receive_buffer`, `hpx::sliding_semaphore`, and
 `hpx::collectives::gather_here/gather_there`. The mirror's mapping: a
-per-partition ring of `K = min(nd + 2, nt + 1)` labeled blocks homed at
+per-partition ring of `K = min(nd + 2, nt + 1)` blocks homed at
 that partition's rank — the first `K` generations each create their ring
 slot, every later generation reuses the slot a retirement frees for it —
 one task pair per partition per generation hinted there, every produced
@@ -110,7 +110,7 @@ boundary elements each `heat_part` materialises. The block itself follows
 the origin's own free list instead of the origin's per-`dataflow` allocation:
 the first `K` generations of a slot each allocate their block where the
 origin's `heat_part` allocates `partition_data next(size)` inside the
-`middle_data` continuation — a labeled create, so the runtime's registered
+`middle_data` continuation — a create, so the runtime's registered
 pool places the block's pages once, at its first user — and every later
 generation of that slot is handed the same block by the retirement that
 frees it, exactly as the origin's `partition_allocator` pops an array off
@@ -251,7 +251,7 @@ block's own guid as payload, so the task licensed to reuse it
 `DB_MODE_RW` dependence and writes into it directly — no `pool_push`, no
 `allocate_partition`, and no second create. A slot no later generation
 reaches — the last `K` generations of each partition — publishes nothing,
-and its block simply persists, still labeled, until the runtime's own
+and its block simply persists until the runtime's own
 teardown. **The ring is never destroyed**, because the origin never returns
 an array: its `partition_allocator` keeps every array it ever handed out on
 its free list for the life of the process. `drain_edt`, behind the rank's

@@ -3,7 +3,7 @@
 #include "extensions/ocr-runtime-itf.h"
 
 enum { P_NX, P_NT, P_NP, P_ND, P_NL, P_RANK, P_COEF, P_RANGE,
-       P_DB_RANGE, P_STEP_TPL, P_SIGNAL_TPL, P_SPAWN_TPL, P_GATHER_TPL,
+       P_BLOCK, P_STEP_TPL, P_SIGNAL_TPL, P_SPAWN_TPL, P_GATHER_TPL,
        P_COLLECT_EDT, P_SUM, P_READ_TPL, P_GATHER_EDT, P_SEM, P_T, P_I, P_REQUEST_NP, P_RESULTS, P_PRINT, P_HEADER, P_SOLVE_START, P_ELAPSED,
        P_KERNEL_TPL, P_RETIRE_TPL, P_DRAIN_TPL, P_RETIRED, P_SHUTDOWN_EDT,
        P_SHUTDOWN_TPL, P_COLLECT_TPL, P_DRIVER_TPL, P_COUNT };
@@ -48,26 +48,6 @@ static inline u64 ring_slots(u64 *pv) {
   return ring_depth(pv[P_NT], pv[P_ND]);
 }
 
-/* The block generation g of partition i writes: slot g mod K of that
- * partition's ring, derived by every task that needs it rather than passed
- * around.  A ring is named out of its own rank's reservation and by the
- * partition's index within that rank, because every task that creates,
- * writes or destroys a slot runs on the rank that owns the partition and no
- * other rank ever has to derive the name: a runtime that homes a reserved
- * range at the PD that reserved it then agrees with one that homes each name
- * by its index (the rank is encoded in the index either way), and the
- * object's name and its metadata are on the same rank on both. */
-static inline ocrGuid_t slot_block(u64 *pv, u64 i, u64 g) {
-  u64 k = ring_slots(pv), per = pv[P_NP] / pv[P_NL];
-  return mirror_point(mirror_u64_guid(pv[P_DB_RANGE]),
-                     (i - pv[P_RANK] * per) * k + g % k, pv[P_RANK], pv[P_NL]);
-}
-
-/* How many names one rank's rings take. */
-static inline u64 ring_names(u64 *pv) {
-  return ring_slots(pv) * (pv[P_NP] / pv[P_NL]) * pv[P_NL];
-}
-
 /* The point reservation: one name per kind per partition per generation per
  * rank.  A range count and every index derived from it are narrowed to 32
  * bits, so the whole space has to fit there.  The factors are folded one at
@@ -82,17 +62,6 @@ static int point_space(u64 nt, u64 np, u64 nl, u64 *out) {
     if (f[i] == 0 || n > 0xffffffffu / f[i]) return 0;
     n *= f[i];
   }
-  *out = n;
-  return 1;
-}
-
-/* The block reservation: one name per ring slot per partition per rank,
- * folded against the same ceiling and for the same reason as the points. */
-static int block_space(u64 slots, u64 np, u64 nl, u64 *out) {
-  u64 n = 1;
-  if (!mirror_fits(&n, slots, 0xffffffffu) || !mirror_fits(&n, np, 0xffffffffu)
-      || !mirror_fits(&n, nl, 0xffffffffu))
-    return 0;
   *out = n;
   return 1;
 }
@@ -178,10 +147,13 @@ static void open_crossing_inputs(u64 *pv, u64 g, u64 i) {
 
 /* A generation's block is freed once every reader has acknowledged it and the
  * slot that held its identity has been overwritten; what follows is that the
- * slot may be written again, so the generation waiting for it is told. */
-static void retire_generation(u64 *pv, u64 g, u64 i) {
+ * slot may be written again, so the generation waiting for it is told.  The
+ * block's name travels in the retirement's own parameters: P_BLOCK is written
+ * for a retirement and read only by it, and every other task's copy of that
+ * word is meaningless. */
+static void retire_generation(u64 *pv, u64 g, u64 i, ocrGuid_t db) {
   u64 params[P_COUNT]; memcpy(params, pv, sizeof params);
-  params[P_T] = g; params[P_I] = i;
+  params[P_T] = g; params[P_I] = i; params[P_BLOCK] = mirror_guid_u64(db);
   u64 per = pv[P_NP] / pv[P_NL];
   int signalled = checkpoint(pv, g, i);
   u32 controls = (g < pv[P_NT] ? 3 : 0) + 1 + signalled;
@@ -213,7 +185,7 @@ static ocrGuid_t retire_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
    * now; a slot no later generation reaches tells nobody and its block lives
    * until its rank's teardown. */
   if (g + ring_slots(pv) <= pv[P_NT])
-    publish(pv, g, i, KIND_RETIRED, owner_of(pv, i), slot_block(pv, i, g));
+    publish(pv, g, i, KIND_RETIRED, owner_of(pv, i), mirror_u64_guid(pv[P_BLOCK]));
   return NULL_GUID;
 }
 
@@ -234,13 +206,12 @@ static ocrGuid_t kernel_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
     next = depv[1].ptr;
   } else {
     ocrHint_t h; mirror_rank_hint(&h, pv[P_RANK], OCR_HINT_DB_T);
-    db = slot_block(pv, i, g);
     ocrDbCreate(&db, (void **)&next, pv[P_NX] * sizeof(double),
-                GUID_PROP_IS_LABELED | DB_PROP_NONE, &h, NO_ALLOC);
+                DB_PROP_NONE, &h, NO_ALLOC);
   }
   for (u64 j = 1; j + 1 < pv[P_NX]; ++j)
     next[j] = heat(coef, m[j - 1], m[j], m[j + 1]);
-  retire_generation(pv, g, i);
+  retire_generation(pv, g, i, db);
   ocrDbRelease(db);
   return db;
 }
@@ -503,13 +474,6 @@ static ocrGuid_t collect_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) 
 static ocrGuid_t driver_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
   (void)paramc; (void)depc; (void)depv;
   u64 rank = pv[P_RANK], per = pv[P_NP] / pv[P_NL], nx = pv[P_NX];
-  ocrGuid_t db_range;
-  if (ocrGuidRangeCreate(&db_range, ring_names(pv), GUID_USER_DB) != 0) {
-    PRINTF("stencil1d_hpx: the rank's ring names could not be reserved\n");
-    ocrShutdown();
-    return NULL_GUID;
-  }
-  pv[P_DB_RANGE] = mirror_guid_u64(db_range);
   /* The rank's teardown points.  Every retirement of the last generation
    * waits on FINAL, and so does every retirement of the one before on rank
    * 0, whose stepper outlives the gather; on another rank those wait on
@@ -540,10 +504,10 @@ static ocrGuid_t driver_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
     if (!pv[P_NT])
       ocrAddDependence(point(pv, 0, rank * per + i, KIND_PARTITION, rank), gather, (u32)i, DB_MODE_RO);
     double *p;
-    ocrGuid_t db = slot_block(pv, rank * per + i, 0);
+    ocrGuid_t db;
     ocrDbCreate(&db, (void **)&p, nx * sizeof(double),
-                GUID_PROP_IS_LABELED | DB_PROP_NONE, &h, NO_ALLOC);
-    retire_generation(pv, 0, rank * per + i);
+                DB_PROP_NONE, &h, NO_ALLOC);
+    retire_generation(pv, 0, rank * per + i, db);
     for (u64 j = 0; j < nx; ++j) p[j] = (double)i * (double)nx + (double)j;
     double left = 0.0, right = 0.0;
     if (pv[P_NT]) { left = p[0]; right = p[nx - 1]; }
@@ -604,10 +568,9 @@ ocrGuid_t mainEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
   ocrAffinityCount(AFFINITY_PD, &nl);
   u64 requested_np = np;
   np = (np / nl) * nl;
-  u64 points = 0, blocks = 0;
+  u64 points = 0;
   int reject = bad || np < nl || (nt && (nx < 2 || nd == 0))
-            || !point_space(nt, np, nl, &points)
-            || !block_space(ring_depth(nt, nd), np / nl, nl, &blocks);
+            || !point_space(nt, np, nl, &points);
   ocrGuid_t range = NULL_GUID;
   if (!reject && ocrGuidRangeCreate(&range, points, GUID_USER_EVENT_COUNTED) != 0)
     reject = 1;
