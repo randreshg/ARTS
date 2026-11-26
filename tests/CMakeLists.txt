@@ -87,8 +87,6 @@ set(TEST_PROGRAMS
     db_null_control
     db_no_acquire_lazy
     db_no_acquire_remote_first_writer
-    db_create_after_dep_asked
-    db_create_after_first_touch
     db_first_touch_matrix
 )
 
@@ -183,7 +181,6 @@ set(ARTS_FLUSH_EXCLUDED
     coherence_writer_ro_overlap
     edt_create_basic
     event_channel_fifo
-    db_create_after_dep_asked
     grant_purge_churn
     grant_purge_handback_regrant
     quiescent_shutdown_no_residue)
@@ -211,7 +208,6 @@ endif()
 #   ------------------------------------ | ----------- | ------------------------ | ---
 #   the names in ARTS_CXL_DIRECT_EXCLUDED | registered | excluded at registration | they assert the inline representation
 #   buffer_external_payload              | no          | runs                     | the external descriptor's own contract
-#   cxl_slot_discard_unadopt             | no          | 1n_20w                   | the withdrawal it asserts exists only where a descriptor adopts the slot
 #   cxl_direct_payload_identity          | no          | 1n_20w/2n_9w_1p/4n_4w_1p | false by construction under STAGED
 #   buffer_outlives_cache                | runs        | no                       | the late drop it asserts is a buffer's, and the slot is not one
 #   everything else                      | registered  | registered               | one behaviour, two representations
@@ -226,7 +222,6 @@ if(ARTS_CXL_TREE_RESIDENCY STREQUAL "DIRECT")
     set(ARTS_CXL_DIRECT_EXCLUDED ${ARTS_TESTS_INLINE_PAYLOAD_WHITEBOX})
     list(REMOVE_ITEM TEST_PROGRAMS ${ARTS_CXL_DIRECT_EXCLUDED})
     message(STATUS "ARTS: excluding ${ARTS_CXL_DIRECT_EXCLUDED} — whitebox tests of the inline payload layout")
-    list(APPEND TEST_PROGRAMS cxl_slot_discard_unadopt)
     list(APPEND TEST_PROGRAMS cxl_direct_payload_identity)
 endif()
 
@@ -246,7 +241,6 @@ if(ARTS_CXL_TREE_RESIDENCY)
         list(APPEND TEST_PROGRAMS cxl_quiescence_marker)
     endif()
     list(APPEND TEST_PROGRAMS cxl_no_acquire_first_use)
-    list(APPEND TEST_PROGRAMS cxl_labeled_create)
     list(APPEND TEST_PROGRAMS cxl_home_turn_costs)
 endif()
 
@@ -1484,6 +1478,16 @@ endif()
 if(ARTS_VALIDITY STREQUAL "VAL" OR ARTS_VALIDITY STREQUAL "INV")
     arts_grant_home_unit(token_axis_pairing_valinv 30)
 endif()
+# A block a remote creator made has its home descriptor installed unpublished,
+# and a read acquire by an EDT of the home's own rank parks on the descriptor's
+# publication waiters with no request of its own; the creator's first
+# publication, the commit leg of its publish, wakes it once with the published
+# bytes and the census counts the wake.  Only the cells whose home holds the
+# canonical bytes have those waiters: VAL and INV under the HOME read source.
+if((ARTS_VALIDITY STREQUAL "VAL" OR ARTS_VALIDITY STREQUAL "INV")
+   AND ARTS_READ_SOURCE STREQUAL "HOME")
+    arts_grant_home_unit(db_publication_waiter_census 30)
+endif()
 # The same accounting on EXCL, whose two axes share the cache word: the
 # retentions close them at different sites (PURGE's grant, RETAIN's
 # DELIVER and the resident owner's grant to itself), the CXL store changes
@@ -2098,14 +2102,6 @@ register_pure_unit_test(diag_timestamp TIMEOUT 60)
 endif()
 
 
-# A create racing a first touch of its label: the race is the creator rank's
-# against the home, which two ranks already separate.
-register_single_node_test(db_create_after_first_touch TIMEOUT 60)
-register_multinode_test(db_create_after_first_touch TIMEOUT 120 VARIANTS 2n_9w_1p)
-foreach(_t db_create_after_first_touch db_create_after_first_touch_2n_9w_1p)
-    arts_test_properties(${_t} PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-endforeach()
-
 # The calls that act on a hold mid-body, arts_db_downgrade_release and
 # arts_db_publish.  Every program ends with a quiescent shutdown, so the
 # teardown walk's markers fail it.  SINGLE adds the one-rank run, VARIANTS
@@ -2222,12 +2218,6 @@ if(NOT ARTS_VALIDITY STREQUAL "FLUSH")
                        VARIANTS 2n_9w_1p 2n_8w_2p)
     endif()
 endif()
-
-# A create's hold on a cache its rank made by a first touch, downgraded; the
-# creator must not be the home.
-add_arts_test(db_downgrade_claimed)
-arts_hold_test(db_downgrade_claimed db_downgrade_claimed
-               VARIANTS 2n_9w_1p 2n_8w_2p)
 
 # The state a downgrade leaves, read where it lives.  The creator's buffer
 # reference count is read through a function the runtime defines only where
@@ -2432,23 +2422,6 @@ if(ARTS_DEBUG_INJECTION)
         RESOURCE_LOCK "arts_runtime"
         FAIL_REGULAR_EXPRESSION "FAIL"
         ENVIRONMENT "ARTS_CONFIG=${_cfg};ARTS_SCHED_FUZZ=25")
-endif()
-# A create that lands where a dependence on the same label has already asked
-# the block's home about it: the create may install the block, but it may not
-# take the write right out from under a request already in flight.  Both
-# request kinds get a lane (RW opens an ownership request, RO a fetch or a
-# snapshot), so this needs a rank that is not the home; the two progress
-# threads let the home take the create and the request in either order.  The
-# create's hold is a write acquisition the program orders against neither the
-# early RW dependence nor the ordered writer, so the program is outside CDAG
-# and the FLUSH tree does not register it.
-if(NOT ARTS_VALIDITY STREQUAL "FLUSH")
-    register_multinode_test(db_create_after_dep_asked TIMEOUT 60
-                            VARIANTS 2n_9w_1p 2n_8w_2p)
-    foreach(_v 2n_9w_1p 2n_8w_2p)
-        arts_test_properties(db_create_after_dep_asked_${_v} PROPERTIES
-            FAIL_REGULAR_EXPRESSION "FAIL")
-    endforeach()
 endif()
 # Every case of the matrix that two ranks can form is also formed on four.
 register_multinode_test(db_first_touch_matrix TIMEOUT 120 VARIANTS 4n_4w_1p)
@@ -3306,20 +3279,6 @@ foreach(_t label_reuse_ring_edt label_reuse_ring_edt_2n_9w_1p
         FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
 endforeach()
 
-# db_destroy_roster: a block written in turn by two remote ranks is destroyed,
-# and each writer rank then creates the label again; a writer's cache the
-# destroy did not reach and that kept a right to the block would hold its slot
-# against that create (one that kept no right is claimed, unseen).  Four ranks
-# give the two writers (its first writer's turn is the whole two-rank case).
-# Not on 2n_8w_2p: there a writer rank's two progress threads can run the next
-# generation's create before the destroy's notice, which then retires that
-# create's descriptor, since generations of a reused label are not told apart.
-add_arts_test(db_destroy_roster)
-register_multinode_test(db_destroy_roster TIMEOUT 60 VARIANTS 4n_4w_1p)
-arts_test_properties(db_destroy_roster_4n_4w_1p PROPERTIES
-    PASS_REGULAR_EXPRESSION "PASS: db_destroy_roster"
-    FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
-
 # db_destroy_reaches_cachers: every rank that held a block's descriptor, the
 # write right, a read copy or nothing, has it retired by the block's destroy;
 # each rank polls its own route table for the blocks it held, so a missed
@@ -3333,19 +3292,19 @@ foreach(_v IN LISTS ARTS_TEST_MULTINODE_VARIANTS)
 endforeach()
 
 # db_destroy_untouched_rank: a block homed on the first rank is destroyed by a
-# task on the last rank that never acquired it, and the home then creates the
-# label again; a destroy that never left the last rank would leave the second
-# create parked behind a live first generation.  On one rank the destroying
-# task runs on the home and the path is never taken.  Not on 2n_8w_2p: there
-# the home's two progress threads can dispatch the destroying task's group
-# DECR before its destroy, so the second create is issued while the first
-# generation is live and, under invalidation, the creator's release meets the
-# first generation.
+# task on the last rank that never acquired it; the home polls its route table
+# until the block is no longer installed, so a destroy that never left the
+# last rank, or that no arm's home teardown acted on, fails the run.  Both
+# two-rank variants, since the poll makes the verdict independent of the order
+# the home dispatches the messages in.
 add_arts_test(db_destroy_untouched_rank)
-register_multinode_test(db_destroy_untouched_rank TIMEOUT 60 VARIANTS 2n_9w_1p)
-arts_test_properties(db_destroy_untouched_rank_2n_9w_1p PROPERTIES
-    PASS_REGULAR_EXPRESSION "PASS: db_destroy_untouched_rank"
-    FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
+register_multinode_test(db_destroy_untouched_rank TIMEOUT 60
+                        VARIANTS 2n_9w_1p 2n_8w_2p)
+foreach(_v 2n_9w_1p 2n_8w_2p)
+    arts_test_properties(db_destroy_untouched_rank_${_v} PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS: db_destroy_untouched_rank"
+        FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
+endforeach()
 
 # db_destroy_gpu_kind_remote: a GPU-kind block is destroyed by a task on a rank
 # other than its home, and the home polls until the block is no longer
@@ -3365,13 +3324,9 @@ endif()
 
 # Destroys with a message still in flight: each program destroys blocks while
 # something about them can still reach or run at the home after the destroy
-# was legally issued.  The claim tests' subject is the write request a
-# first-touch cache sent before a create on its rank claimed that cache: the
-# create's hold served its writers, so it can still be travelling, and the
-# home, told of it by the create's announce, tears the block down only once
-# it has arrived.  A variant that sets an injection hook
-# (ARTS_REQUEST_DELAY_MS reorders requests on the wire; ARTS_SCHED_FUZZ widens
-# the decision windows) registers only where the hooks are compiled.
+# was legally issued.  A variant that sets an injection hook
+# (ARTS_SCHED_FUZZ widens the decision windows) registers only where the hooks
+# are compiled.
 # Each name_<variant> runs PROGRAM with ARGS on that variant's cfg, the HOOK
 # variable added to its environment.
 function(arts_destroy_inflight_test name program)
@@ -3403,58 +3358,31 @@ function(arts_destroy_inflight_test name program)
     endforeach()
 endfunction()
 
-# A FLUSH fetch belongs to one EDT and is answered before that EDT runs, so
-# nothing a create claims can still be coming there, and the claim tests are
-# neither built nor registered in that tree.
+# db_first_touch_settles: its writers of the first touching rank share that
+# rank's turn unordered, which CDAG excludes, so the FLUSH tree does not
+# register it.
 if(NOT ARTS_VALIDITY STREQUAL "FLUSH")
-    # db_destroy_claimed_first_touch: a create claims the cache its rank's
-    # consumers made by a first touch -- read-only, read-write and both --
-    # while their requests are on their way; wave2 adds consumers after the
-    # claim, whose requests travel beside the earlier ones.
-    add_arts_test(db_destroy_claimed_first_touch)
-    arts_destroy_inflight_test(db_destroy_claimed_first_touch
-                               db_destroy_claimed_first_touch
-                               PASS "PASS: db_destroy_claimed_first_touch 64 blocks")
-    arts_destroy_inflight_test(db_destroy_claimed_first_touch_wave2
-                               db_destroy_claimed_first_touch ARGS wave2
-                               PASS "PASS: db_destroy_claimed_first_touch 64 blocks \\(second wave\\)")
-    # db_destroy_claimed_write_settles and db_create_races_acquire wait after
-    # their last destroy for every home of their blocks to be torn down and,
-    # where the build counts rendezvous landings, for every landing to end: a
-    # home that waits for a request that never comes is a liveness failure no
-    # shutdown check sees.
-    add_arts_test(db_destroy_claimed_write_settles)
-    arts_destroy_inflight_test(db_destroy_claimed_write_settles
-                               db_destroy_claimed_write_settles
-                               PASS "PASS: db_destroy_claimed_write_settles 8 rounds x 32 blocks")
-    add_arts_test(db_create_races_acquire)
-    arts_destroy_inflight_test(db_create_races_acquire_writers db_create_races_acquire
+    # A request nobody answers stops the dataflow before any destroy, and the
+    # run ends at the test's TIMEOUT.  After its last destroy it waits for
+    # every block it homed or cached to be uninstalled and, where the build
+    # counts rendezvous landings, for every landing to end: a home or a cache
+    # still installed, or a landing still out, fails the run.
+    add_arts_test(db_first_touch_settles)
+    arts_destroy_inflight_test(db_first_touch_settles_writers db_first_touch_settles
                                ARGS 0 6 VARIANTS 2n_9w_1p 2n_8w_2p
-                               PASS "PASS: db_create_races_acquire 32 blocks")
-    arts_destroy_inflight_test(db_create_races_acquire_mixed db_create_races_acquire
+                               PASS "PASS: db_first_touch_settles 32 blocks")
+    arts_destroy_inflight_test(db_first_touch_settles_mixed db_first_touch_settles
                                ARGS 3 3 VARIANTS 2n_9w_1p 2n_8w_2p
-                               PASS "PASS: db_create_races_acquire 32 blocks")
+                               PASS "PASS: db_first_touch_settles 32 blocks")
     if(ARTS_DEBUG_INJECTION)
-        arts_destroy_inflight_test(db_destroy_claimed_first_touch_delay
-                                   db_destroy_claimed_first_touch
-                                   HOOK "ARTS_REQUEST_DELAY_MS=5"
-                                   PASS "PASS: db_destroy_claimed_first_touch 64 blocks")
-        arts_destroy_inflight_test(db_destroy_claimed_first_touch_wave2_delay
-                                   db_destroy_claimed_first_touch ARGS wave2
-                                   HOOK "ARTS_REQUEST_DELAY_MS=5"
-                                   PASS "PASS: db_destroy_claimed_first_touch 64 blocks \\(second wave\\)")
-        arts_destroy_inflight_test(db_destroy_claimed_write_settles_delay
-                                   db_destroy_claimed_write_settles
-                                   HOOK "ARTS_REQUEST_DELAY_MS=5"
-                                   PASS "PASS: db_destroy_claimed_write_settles 8 rounds x 32 blocks")
-        arts_destroy_inflight_test(db_create_races_acquire_writers_fuzz
-                                   db_create_races_acquire ARGS 0 6
+        arts_destroy_inflight_test(db_first_touch_settles_writers_fuzz
+                                   db_first_touch_settles ARGS 0 6
                                    VARIANTS 2n_9w_1p 2n_8w_2p HOOK "ARTS_SCHED_FUZZ=40"
-                                   PASS "PASS: db_create_races_acquire 32 blocks")
-        arts_destroy_inflight_test(db_create_races_acquire_mixed_fuzz
-                                   db_create_races_acquire ARGS 3 3
+                                   PASS "PASS: db_first_touch_settles 32 blocks")
+        arts_destroy_inflight_test(db_first_touch_settles_mixed_fuzz
+                                   db_first_touch_settles ARGS 3 3
                                    VARIANTS 2n_9w_1p 2n_8w_2p HOOK "ARTS_SCHED_FUZZ=40"
-                                   PASS "PASS: db_create_races_acquire 32 blocks")
+                                   PASS "PASS: db_first_touch_settles 32 blocks")
     endif()
 endif()
 
@@ -3479,64 +3407,68 @@ if(ARTS_DEBUG_INJECTION)
                                PASS "PASS: grant_home_reclaim_destroy 8 rounds x 32 blocks")
 endif()
 
-# db_size_round_once's record check reads the size rounds the home sent back
-# from the counter file, which carries them only where the tree's counter
-# config captures the arm's counters; elsewhere it is built and not
-# registered.  A store whose grants carry no payload sends no size round.
-# Each counter counts the size rounds of one plane: a write request's
-# (GRANT), a read request's (SNAPSHOT, INV), or either's (EXCL, FLUSH).  Only
-# the second rank's first request of a block pays one, a write under
-# `writes` and a read under `reads`, so for `reserved` the counter of that
-# plane holds one per block (8) and every other holds 0.
-add_arts_test(db_size_round_once)
-if(ARTS_VALIDITY STREQUAL "EXCL")
-    set(_size_counters NUM_EXCL_SIZE_CTS)
-elseif(ARTS_VALIDITY STREQUAL "VAL")
-    set(_size_counters NUM_GRANT_SIZE_CTS NUM_SNAPSHOT_SIZE_CTS)
-elseif(ARTS_VALIDITY STREQUAL "FLUSH")
-    set(_size_counters NUM_FLUSH_SIZE_CTS)
-else()
-    set(_size_counters NUM_GRANT_SIZE_CTS NUM_INV_SIZE_CTS)
-endif()
-set(_size_plane_NUM_GRANT_SIZE_CTS writes)
-set(_size_plane_NUM_SNAPSHOT_SIZE_CTS reads)
-set(_size_plane_NUM_INV_SIZE_CTS reads)
-set(_size_plane_NUM_EXCL_SIZE_CTS writes reads)
-set(_size_plane_NUM_FLUSH_SIZE_CTS writes reads)
-arts_counters_captured(_size_captured ${_size_counters})
-if(_size_captured AND NOT ARTS_CXL_TREE_RESIDENCY)
-    arts_test_cfg(_cfg 2n_9w_1p)
-    foreach(_g reserved minted)
-        foreach(_m writes reads)
-            set(_rounds "")
-            foreach(_c IN LISTS _size_counters)
-                if(_g STREQUAL "reserved" AND _m IN_LIST _size_plane_${_c})
-                    list(APPEND _rounds 0:${_c}=8)
-                else()
-                    list(APPEND _rounds 0:${_c}=0)
-                endif()
-            endforeach()
-            arts_add_multinode_test(db_size_round_once_${_g}_${_m} RECORDS 2
-                RECORD_CHECK record_values.cmake ${_rounds}
-                COMMAND db_size_round_once ${_g} ${_m})
-            arts_test_properties(db_size_round_once_${_g}_${_m} PROPERTIES
-                LABELS "multinode"
-                TIMEOUT 60
-                RESOURCE_LOCK "arts_runtime"
-                ENVIRONMENT "ARTS_CONFIG=${_cfg}"
-                FAIL_REGULAR_EXPRESSION "FAIL:")
-        endforeach()
+# guid_reserve_refused: a GUID is reserved, and a range is read, for EDTs and
+# events only. Every entry refuses every value it cannot take (a data-block
+# kind, ARTS_GUID_RESERVED and a value that is no kind at the reserve entries;
+# a data block's name and NULL_GUID as the range at the index entries), the run
+# ends with the refusal's message and status 1, and a call let through prints a
+# FAIL line and ends 0.
+if(ARTS_TEST_REFERENCE_TREE)
+    add_arts_test(guid_reserve_refused)
+    arts_test_cfg(_cfg 1n_20w)
+    set(_refused
+        "db_one|arts_guid_reserve: kind 1 cannot be reserved: only EDT and event GUIDs are, and a data block's GUID is issued by its create"
+        "reserved_one|arts_guid_reserve: kind 0 cannot be reserved: only EDT and event GUIDs are, and a data block's GUID is issued by its create"
+        "nokind_one|arts_guid_reserve: kind 4 cannot be reserved: only EDT and event GUIDs are, and a data block's GUID is issued by its create"
+        "db_range|arts_guid_reserve_range: kind 1 cannot be reserved: only EDT and event GUIDs are, and a data block's GUID is issued by its create"
+        "reserved_range|arts_guid_reserve_range: kind 0 cannot be reserved: only EDT and event GUIDs are, and a data block's GUID is issued by its create"
+        "nokind_range|arts_guid_reserve_range: kind 4 cannot be reserved: only EDT and event GUIDs are, and a data block's GUID is issued by its create"
+        "db_index|arts_guid_from_index: GUID [0-9]+ is no range of EDTs or events"
+        "null_index|arts_guid_from_index: GUID 0 is no range of EDTs or events"
+        "db_index_from|arts_guid_index_from: GUID [0-9]+ is no range of EDTs or events"
+        "null_index_from|arts_guid_index_from: GUID 0 is no range of EDTs or events")
+    foreach(_row IN LISTS _refused)
+        string(REPLACE "|" ";" _parts "${_row}")
+        list(GET _parts 0 _case)
+        list(GET _parts 1 _pass)
+        arts_add_test(guid_reserve_refused_${_case} STATUS 1
+                      COMMAND guid_reserve_refused ${_case})
+        set_tests_properties(guid_reserve_refused_${_case} PROPERTIES
+            LABELS "single_node"
+            TIMEOUT 30
+            RESOURCE_LOCK "arts_runtime"
+            ENVIRONMENT "ARTS_CONFIG=${_cfg}"
+            PASS_REGULAR_EXPRESSION "${_pass}"
+            FAIL_REGULAR_EXPRESSION "FAIL:")
     endforeach()
+    unset(_refused)
 endif()
 
-# db_create_minted_guid_refused: a create handed a GUID an earlier create
-# minted refuses it and the run ends with the refusal.  The check precedes
-# every cell's create path.
+# create_guid_kind_refused: an event or an EDT is created under a caller-given
+# GUID of its own kind only.  An event created under an EDT GUID and an EDT
+# created under an event GUID each end the run with the refusal's message and
+# status 1, and a create let through prints a FAIL line and ends 0.
 if(ARTS_TEST_REFERENCE_TREE)
-    add_arts_test(db_create_minted_guid_refused)
-    register_single_node_test(db_create_minted_guid_refused TIMEOUT 30 STATUS 1)
-    set_tests_properties(db_create_minted_guid_refused PROPERTIES
-        PASS_REGULAR_EXPRESSION "was minted by a create")
+    add_arts_test(create_guid_kind_refused)
+    arts_test_cfg(_cfg 1n_20w)
+    set(_refused
+        "event_under_edt|arts_event_create: GUID [0-9]+ cannot name an event: its kind is 3, and an event is created under an event GUID or NULL_GUID"
+        "edt_under_event|arts_edt_create: GUID [0-9]+ cannot name an EDT: its kind is 2, and an EDT is created under an EDT GUID or NULL_GUID")
+    foreach(_row IN LISTS _refused)
+        string(REPLACE "|" ";" _parts "${_row}")
+        list(GET _parts 0 _case)
+        list(GET _parts 1 _pass)
+        arts_add_test(create_guid_kind_refused_${_case} STATUS 1
+                      COMMAND create_guid_kind_refused ${_case})
+        set_tests_properties(create_guid_kind_refused_${_case} PROPERTIES
+            LABELS "single_node"
+            TIMEOUT 30
+            RESOURCE_LOCK "arts_runtime"
+            ENVIRONMENT "ARTS_CONFIG=${_cfg}"
+            PASS_REGULAR_EXPRESSION "${_pass}"
+            FAIL_REGULAR_EXPRESSION "FAIL:")
+    endforeach()
+    unset(_refused)
 endif()
 
 # quiescent_shutdown_no_residue: a shutdown that leaves no work undone -- every
@@ -3816,11 +3748,11 @@ endif()
 # blocks homed on every rank at once, a creator away from the home fetches
 # rather than reuses its create's bytes, a zero-size block resolves in both
 # modes, a read inside a live write on the same rank leaves the writer's bytes
-# alone, a size-less name is answered size-only and re-asked, a write-back
-# with no credit asks for one, and reads racing write-backs are all served
-# without disturbing them.  Whitebox (the spent credit is reached through the
-# route table), and only this arm has those paths, so it is built and
-# registered in the FLUSH tree alone.  Four ranks put the size-only asker and
+# alone, a write-back with no credit asks for one, reads racing write-backs
+# are all served without disturbing them, and a block whose length is below its
+# landing's capacity moves exactly its bytes in both directions.  Whitebox (the
+# spent credit is reached through the route table), and only this arm has those
+# paths, so it is built and registered in the FLUSH tree alone.  Four ranks put
 # the racing readers on a rank that is neither the home nor the writer; two
 # progress threads reorder the credit-less write-back's announce, landing, put
 # and commit.
@@ -3869,13 +3801,6 @@ if(ARTS_CXL_TREE_RESIDENCY)
     register_cxl_single_node_test(cxl_slot_rule TIMEOUT 30)
     register_cxl_multinode_test(cxl_slot_rule TIMEOUT 60)
     if(ARTS_CXL_TREE_RESIDENCY STREQUAL "DIRECT")
-        # A discarded slot leaves nothing naming it.  Where a descriptor
-        # carries its payload it names no slot that can be discarded, so the
-        # assertions hold there by address disjointness rather than by the
-        # withdrawal they are written for -- a residency this test cannot
-        # fail.  One rank: the cache it asserts on is private to the rank that
-        # makes it, so peers add nothing.
-        register_cxl_single_node_test(cxl_slot_discard_unadopt TIMEOUT 30)
         # A holder's working bytes ARE the block's slot: one address from the
         # create through every turn, and the bytes a turn writes are the bytes
         # the next turn reads.  Where each turn works in its own copy the
@@ -3894,9 +3819,6 @@ if(ARTS_CXL_TREE_RESIDENCY)
     # A block nobody has written is acquirable by a first user on every rank,
     # and one write turn then defines what all of them see.
     register_cxl_multinode_test(cxl_no_acquire_first_use TIMEOUT 60)
-    # One label names one block and therefore one slot.  The timeout covers
-    # eighty create/destroy cycles with the creator rotating over the ranks.
-    register_cxl_multinode_test(cxl_labeled_create TIMEOUT 180)
     # One fetch and one purge per turn, on either residency.  One rank,
     # because that is where every turn is home-local.
     register_cxl_single_node_test(cxl_home_turn_costs TIMEOUT 30)
@@ -4092,7 +4014,7 @@ endif()
 set(_arts_fail_token_tests
     cat_c_ref_balance coherence_rwro_phase
     csr_graph ctx_created_db_release_order db_acquire_all_bias
-    db_create_claims_first_touch_stub db_create_with_data_bytes
+    db_create_with_data_bytes
     dbcreate_matrix dep_slot_resolved_once edt_create_basic
     edt_create_single_fire event_chain
     event_channel_fifo event_channel_lifetime event_channel_transient_null

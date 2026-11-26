@@ -44,6 +44,7 @@
 #include "arts/system/threads.h"
 #include "arts/utils/malloc.h"
 #include "arts/utils/stdatomic_compat.h"
+#include <assert.h>
 
 /* Written once by arts_guid_node_geometry_init, before the runtime threads
  * are created; thread creation publishes them. */
@@ -151,12 +152,9 @@ arts_guid_t arts_guid_create_for_rank_internal(unsigned int rank,
   }
   uint64_t key = 0;
   if (type == ARTS_GUID_DB) {
-    /* Chunked fast path for single mints; a multi-GUID reservation needs
-     * CONSECUTIVE seqs, which no chunk cursor can promise — it claims its
-     * span straight from the shared counter instead. */
-    uint64_t seq = (guid_count == 1) ? db_seq_mint_one(rank)
-                                     : db_seq_claim(rank, guid_count);
-    key = ARTS_GUID_DB_KEY(ARTS_GUID_DB_SZHINT_NONE, seq);
+    /* A data-block GUID is minted one at a time, by its create. */
+    assert(guid_count == 1);
+    key = ARTS_GUID_DB_KEY(ARTS_GUID_DB_SZHINT_NONE, db_seq_mint_one(rank));
   } else {
     uint64_t *key_ptr = arts_guid_generator_get_key(rank, type);
     uint64_t value = *key_ptr;
@@ -242,23 +240,27 @@ bool arts_guid_is_local(arts_guid_t guid) {
 uint64_t arts_guid_get_key(arts_guid_t guid) { return ARTS_GUID_GET_KEY(guid); }
 
 arts_guid_t arts_guid_reserve(arts_guid_kind_t kind, unsigned int rank) {
-  arts_guid_t guid = NULL_GUID;
+  if (kind != ARTS_GUID_EDT && kind != ARTS_GUID_EVENT) {
+    ARTS_ERROR("arts_guid_reserve: kind %u cannot be reserved: only EDT and "
+               "event GUIDs are, and a data block's GUID is issued by its "
+               "create",
+               (unsigned int)kind);
+  }
   if (rank == ARTS_HINT_CURRENT_RANK) {
     rank = arts_global_rank_id;
   }
-  if ((unsigned int)kind < ARTS_GUID_LAST) {
-    guid = arts_guid_create_for_rank_internal(rank, (unsigned int)kind, 1);
-    // ARTS_INFO("Allocation Guid %u", guid);
-  } else {
-    ARTS_WARN("arts_guid_reserve: %u is not a GUID kind; no GUID reserved",
-              (unsigned int)kind);
-  }
-  return guid;
+  return arts_guid_create_for_rank_internal(rank, (unsigned int)kind, 1);
 }
 
 arts_guid_t arts_guid_reserve_range(arts_guid_kind_t kind, unsigned int size,
                                     unsigned int rank) {
-  if (!size || kind >= ARTS_GUID_LAST) {
+  if (kind != ARTS_GUID_EDT && kind != ARTS_GUID_EVENT) {
+    ARTS_ERROR("arts_guid_reserve_range: kind %u cannot be reserved: only "
+               "EDT and event GUIDs are, and a data block's GUID is issued by "
+               "its create",
+               (unsigned int)kind);
+  }
+  if (!size) {
     return NULL_GUID;
   }
   if (rank == ARTS_HINT_ROUND_ROBIN) {
@@ -268,56 +270,8 @@ arts_guid_t arts_guid_reserve_range(arts_guid_kind_t kind, unsigned int size,
     unsigned int nrank = arts_global_rank_count ? arts_global_rank_count : 1;
     /* ceil(size / nrank), with no sum that can wrap. */
     unsigned int stride = size / nrank + (size % nrank != 0);
-    if (kind == ARTS_GUID_DB) {
-      if (db_seq_next == NULL) {
-        /* The shared counters do not exist yet: fail loudly, never fall into
-         * a NULL counter array. */
-        ARTS_ERROR("GUID range reservation failed: DB ranges require the "
-                   "node geometry's counters");
-      }
-      /* The counters are SHARED with the wait-free mint fast path, so the
-       * base must be claimed, never observed-then-stored: a plain store
-       * computed from a stale read would rewind a counter below a chunk
-       * another thread already leased, and two live cursors would mint the
-       * same seq.  CAS-claim with global restart: a successful CAS is the
-       * statement "no allocation landed between the observed value and
-       * base+stride on this counter"; any interleaving fails the CAS and
-       * restarts with base raised past the intruder.  Lock-free by
-       * construction — a restart happens only because ANOTHER claimant
-       * (a lease or a competing reserve) completed progress on that
-       * counter, and counters are monotone, so some claimant always
-       * finishes.  Stranded seqs below a raised base stay unused; each
-       * restart strands at most stride per counter. */
-      uint64_t base = 0;
-      for (unsigned int r = 0; r < nrank; r++) {
-        uint64_t v =
-            atomic_load_explicit(&db_seq_next[r], memory_order_relaxed);
-        if (v > base) {
-          base = v;
-        }
-      }
-      for (unsigned int r = 0; r < nrank;) {
-        uint64_t v =
-            atomic_load_explicit(&db_seq_next[r], memory_order_relaxed);
-        if (v > base) {
-          base = v; /* someone claimed under us — re-raise every counter */
-          r = 0;
-          continue;
-        }
-        if (atomic_compare_exchange_strong_explicit(
-                &db_seq_next[r], &v, base + stride, memory_order_relaxed,
-                memory_order_relaxed)) {
-          r++;
-        }
-      }
-      if (base + stride > db_seq_creator_base + arts_db_seq_budget) {
-        ARTS_ERROR("GUID range reservation failed: DB seq slice exhausted");
-      }
-      uint64_t key = ARTS_GUID_DB_KEY(ARTS_GUID_DB_SZHINT_NONE, base);
-      return ARTS_GUID_MAKE((unsigned int)kind, ARTS_DISTRIBUTED_RANK, key);
-    }
-    /* Non-DB kinds: per-thread counters, no concurrent writer on this row —
-     * the read-max-store sequence is single-threaded by construction. */
+    /* Per-thread counters, no concurrent writer on this row — the
+     * read-max-store sequence is single-threaded by construction. */
     uint64_t base_value = 1;
     for (unsigned int r = 0; r < nrank; r++) {
       uint64_t v = *arts_guid_generator_get_key(r, (unsigned int)kind);
@@ -341,51 +295,32 @@ arts_guid_t arts_guid_reserve_range(arts_guid_kind_t kind, unsigned int size,
   return arts_guid_create_for_rank_internal(rank, (unsigned int)kind, size);
 }
 
-/* A DB key is [szhint | seq]: range arithmetic must stay INSIDE the seq
- * field.  A carry out of seq would flow through the szhint bits into the
- * rank field (a labeled range's sentinel szhint is all-ones, so a single
- * overflowing index silently names a DIFFERENT home rank).  The guard fails
- * loudly instead; every member of a guarded range then inherits the range's
- * exact szhint bits, which is also what keeps arts_guid_index_from's
- * key-difference arithmetic valid for DB ranges. */
-static inline void db_range_index_check(uint64_t base_key, uint64_t offset) {
-  if ((base_key & ARTS_GUID_DB_SEQ_MASK) + offset > ARTS_GUID_DB_SEQ_MASK) {
-    ARTS_ERROR("GUID range index overflows the DB seq field "
-               "(base seq %lu + offset %lu)",
-               (unsigned long)(base_key & ARTS_GUID_DB_SEQ_MASK),
-               (unsigned long)offset);
+/* A range is a range of EDTs or of events; any other kind, a data block's
+ * GUID or NULL_GUID among them, names no range. */
+static inline void range_kind_check(const char *entry, arts_guid_t range_guid) {
+  unsigned int kind = (unsigned int)ARTS_GUID_GET_TYPE(range_guid);
+  if (kind != ARTS_GUID_EDT && kind != ARTS_GUID_EVENT) {
+    ARTS_ERROR("%s: GUID %lu is no range of EDTs or events", entry,
+               (unsigned long)range_guid);
   }
 }
 
 arts_guid_t arts_guid_from_index(arts_guid_t range_guid, unsigned int idx) {
+  range_kind_check("arts_guid_from_index", range_guid);
   if (ARTS_GUID_GET_RANK(range_guid) == ARTS_DISTRIBUTED_RANK) {
     /* Round-robin distribution: home = idx % nrank, key offset = idx / nrank.
      * Same (range, idx) on every rank yields the same GUID. */
     unsigned int nrank = arts_global_rank_count ? arts_global_rank_count : 1;
     unsigned int home = idx % nrank;
-    uint64_t base_key = ARTS_GUID_GET_KEY(range_guid);
-    if (ARTS_GUID_GET_TYPE(range_guid) == ARTS_GUID_DB) {
-      db_range_index_check(base_key, idx / nrank);
-    }
-    uint64_t key = base_key + (idx / nrank);
+    uint64_t key = ARTS_GUID_GET_KEY(range_guid) + (idx / nrank);
     return ARTS_GUID_MAKE(ARTS_GUID_GET_TYPE(range_guid), home, key);
-  }
-  if (ARTS_GUID_GET_TYPE(range_guid) == ARTS_GUID_DB) {
-    db_range_index_check(ARTS_GUID_GET_KEY(range_guid), idx);
   }
   return range_guid + idx;
 }
 
 int64_t arts_guid_index_from(arts_guid_t range_guid, arts_guid_t guid) {
+  range_kind_check("arts_guid_index_from", range_guid);
   if (ARTS_GUID_GET_TYPE(range_guid) != ARTS_GUID_GET_TYPE(guid)) {
-    return -1;
-  }
-  /* For DB kinds a member carries the range's exact szhint bits (see
-   * db_range_index_check); differing szhint therefore means "not from this
-   * range", and the subtraction below must only ever see seq deltas. */
-  bool db_kind = (ARTS_GUID_GET_TYPE(range_guid) == ARTS_GUID_DB);
-  if (db_kind && (ARTS_GUID_DB_GET_SZHINT(ARTS_GUID_GET_KEY(range_guid)) !=
-                  ARTS_GUID_DB_GET_SZHINT(ARTS_GUID_GET_KEY(guid)))) {
     return -1;
   }
   if (ARTS_GUID_GET_RANK(range_guid) == ARTS_DISTRIBUTED_RANK) {

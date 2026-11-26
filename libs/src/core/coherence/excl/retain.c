@@ -2098,7 +2098,7 @@ static void excl_roret_on(struct arts_db_s *db) {
     cur = atomic_load_explicit(&db->lock_state, memory_order_acquire);
     /* r counts the read requests taken in whose RO_RETURN has not come back,
      * and a RO_RETURN follows its request's answer, so it never finds r at
-     * zero; a reused label can, and the decrement would borrow from w. */
+     * zero. */
     assert(LOCK_R(cur) != 0u);
     next =
         lock_owner_compute_next(cur, EXCL_OP_RO_RET, /*new_owner=*/0u, &action);

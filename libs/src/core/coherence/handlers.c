@@ -180,21 +180,6 @@ static inline void db_create_no_acquire_idle(struct arts_db_s *db,
 #endif
 }
 
-/* There is deliberately no arrival-time check that the creator's claim
- * agrees with the directory.  The claim is about the moment the create ran on
- * its own rank, and the home cannot reconstruct that moment: DB_CREATE and
- * GRANT_RETURN carry no ordering against each other, so a first creator's
- * legitimate claim can arrive after its own hand-back has been accepted and
- * after a later create of the label has installed the block — leaving
- * exactly the directory state an illegitimate claim leaves.  Any test here
- * would therefore abort correct programs.  What does hold the word is
- * checked where it is committed: a grant installs only on a rank that holds
- * nothing, a hand-back is accepted only onto a home that holds nothing, and
- * one write right yields one outstanding hand-back.  A rank that took a right
- * the home never issued reaches one of those, and those states are reachable
- * no other way. */
-
-
 /* The OOO_DB_CREATE body.  The engine runs it only while the GUID's slot on
  * this rank is empty, and hands it that slot (`item_v`); a create that finds
  * the slot occupied is parked there and dispatched by the occupant's destroy.
@@ -205,19 +190,21 @@ static inline void db_create_no_acquire_idle(struct arts_db_s *db,
  *   - a creator's own descriptor (arts_ooo_args_create_local_s), built
  *     privately on this rank: it is installed as is, and a creator that is
  *     not the block's home announces the block once its descriptor is
- *     installed.
- * A lost install (the slot left the empty state the engine saw: another
- * create filled it, or a retire in flight took it) re-enters the engine by
- * GUID with the same args. */
+ *     installed.  Its slot is that of a GUID the create minted and named to
+ *     no one, so the install cannot lose, and a loss ends the run.
+ * The announce's lost install (the slot left the empty state the engine saw:
+ * another create filled it, or a retire in flight took it) re-enters the
+ * engine by GUID with the same args. */
 void arts_handler_db_create(void *item_v, void *args_v) {
   arts_route_item_t *slot = (arts_route_item_t *)item_v;
   if (((const struct arts_ooo_args_create_local_s *)args_v)->size ==
       ARTS_OOO_CREATE_ADOPT) {
     const struct arts_ooo_args_create_local_s *l =
         (const struct arts_ooo_args_create_local_s *)args_v;
-    if (!arts_db_create_install_local((arts_shared_ptr_t)l->descriptor, slot,
-                                      /*fresh=*/false)) {
-      arts_ooo_dispatch_or_defer_guid(l->guid, OOO_DB_CREATE, l, sizeof(*l));
+    if (!arts_db_create_install_local((arts_shared_ptr_t)l->descriptor, slot)) {
+      ARTS_ERROR("arts_db_create: data block %lu: a freshly minted GUID found "
+                 "its route slot taken",
+                 (unsigned long)l->guid);
     }
     return;
   }

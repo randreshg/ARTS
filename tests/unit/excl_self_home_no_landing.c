@@ -56,8 +56,7 @@ static void check_value(uint64_t seen, uint64_t expected, const char *what) {
 static arts_guid_t make_db(unsigned int home) {
   return arts_db_create(
       &(void *){NULL}, sizeof(uint64_t), ARTS_DB, ARTS_DB_PROP_NO_ACQUIRE,
-      &(arts_db_hint_t){
-          .rank = home, .access_size = UINT64_MAX, .guid = NULL_GUID});
+      &(arts_db_hint_t){.rank = home, .access_size = UINT64_MAX});
 }
 
 static void touch_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,

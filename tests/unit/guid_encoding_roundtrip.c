@@ -18,12 +18,12 @@
  *      get_kind / get_rank / get_key for the full field ranges (2-bit type,
  *      14-bit rank, large key) with no cross-field bleed.
  *   2. is_local matches arts_global_rank_id.
- *   3. A contiguous reserve_range mints `size` distinct GUIDs; from_index /
- *      index_from are exact inverses over [0,size); index_from returns -1 on a
- *      foreign-type GUID, on a foreign rank and on a key below the range
- *      start.  A round-robin range homes index i on rank i % nrank and
- *      inverts the same way, and index_from returns -1 below its base key and
- *      for a home past the last rank.
+ *   3. A contiguous reserve_range of events mints `size` distinct GUIDs;
+ *      from_index / index_from are exact inverses over [0,size); index_from
+ *      returns -1 on a foreign-type GUID, on a foreign rank and on a key
+ *      below the range start.  A round-robin range homes index i on rank
+ *      i % nrank and inverts the same way, and index_from returns -1 below
+ *      its base key and for a home past the last rank.
  *   4. Per-(rank,type) counters are disjoint: two reserves of the SAME rank
  *      advance, two reserves of DIFFERENT types never alias keys.
  *   5. Exhaustion of a thread's block or of a rank's DB seq slice is a HARD
@@ -35,11 +35,12 @@
  *      every thread block lies in its rank's slice [r*S, (r+1)*S),
  *      S = 2^48 / N, no two blocks overlap, each thread's mints stay in its
  *      block and each rank's DB seqs in its creator slice.
- *   8. Two ranks that run the same reserve sequence (arts_guid_reserve and
- *      an explicit-rank arts_guid_reserve_range, of every kind) get pairwise
- *      distinct GUIDs, each in its minter's slice.  The encoder's rank guards
- *      fail loudly (forked children): ARTS_HINT_ANY_RANK reaching it, and a
- *      home >= N of every kind.
+ *   8. Two ranks that run the same sequence (arts_guid_reserve and an
+ *      explicit-rank arts_guid_reserve_range for EDTs and events, creates'
+ *      mints for data blocks) get pairwise distinct GUIDs, each in its
+ *      minter's slice.  The encoder's rank guards fail loudly (forked
+ *      children): ARTS_HINT_ANY_RANK reaching it, a home >= N of every kind,
+ *      and a reservation of a data-block kind.
  */
 
 #include "arts/system/shutdown.h"
@@ -187,8 +188,12 @@ static void encode_db_home_past_n(void) {
   (void)arts_guid_create_for_rank(arts_global_rank_count, ARTS_GUID_DB);
 }
 
-static void reserve_db_home_past_n(void) {
-  (void)arts_guid_reserve_range(ARTS_GUID_DB, 2, arts_global_rank_count);
+static void reserve_db_kind(void) {
+  (void)arts_guid_reserve(ARTS_GUID_DB, 0);
+}
+
+static void reserve_range_db_kind(void) {
+  (void)arts_guid_reserve_range(ARTS_GUID_DB, 2, 0);
 }
 
 static void encode_event_home_past_n(void) {
@@ -253,14 +258,14 @@ int main(void) {
   /* ---- Test 3: contiguous range round-trip. ---- */
   node_init(0, 1, 1);
   const unsigned SIZE = 64;
-  arts_guid_t start = arts_guid_reserve_range(ARTS_GUID_DB, SIZE, 0);
+  arts_guid_t start = arts_guid_reserve_range(ARTS_GUID_EVENT, SIZE, 0);
   if (start == NULL_GUID) {
     FAIL("reserve_range returned NULL_GUID\n");
   }
   arts_guid_t prev = NULL_GUID;
   for (unsigned i = 0; i < SIZE; i++) {
     arts_guid_t g = arts_guid_from_index(start, i);
-    if (arts_guid_get_kind(g) != ARTS_GUID_DB) {
+    if (arts_guid_get_kind(g) != ARTS_GUID_EVENT) {
       FAIL("range[%u] kind mismatch\n", i);
     }
     if (arts_guid_get_rank(g) != 0) {
@@ -282,20 +287,20 @@ int main(void) {
   }
   /* key below range start → -1 (same type, smaller key) */
   arts_guid_t below =
-      ARTS_GUID_MAKE(ARTS_GUID_DB, 0, ARTS_GUID_GET_KEY(start) - 1);
+      ARTS_GUID_MAKE(ARTS_GUID_EVENT, 0, ARTS_GUID_GET_KEY(start) - 1);
   if (arts_guid_index_from(start, below) != -1) {
     FAIL("index_from did not reject key below start\n");
   }
   /* same type and key, another rank → -1 */
-  if (arts_guid_index_from(
-          start, ARTS_GUID_MAKE(ARTS_GUID_DB, 1, ARTS_GUID_GET_KEY(start))) !=
-      -1) {
+  if (arts_guid_index_from(start,
+                           ARTS_GUID_MAKE(ARTS_GUID_EVENT, 1,
+                                          ARTS_GUID_GET_KEY(start))) != -1) {
     FAIL("index_from did not reject a foreign rank\n");
   }
   /* A round-robin range, over three ranks so a wrong home shows. */
   node_init(0, 3, 1);
   arts_guid_t dist =
-      arts_guid_reserve_range(ARTS_GUID_DB, 8, ARTS_HINT_ROUND_ROBIN);
+      arts_guid_reserve_range(ARTS_GUID_EVENT, 8, ARTS_HINT_ROUND_ROBIN);
   if (dist == NULL_GUID) {
     FAIL("round-robin reserve_range returned NULL_GUID\n");
   }
@@ -311,12 +316,12 @@ int main(void) {
     FAIL("round-robin range has base key 0\n");
   }
   if (arts_guid_index_from(
-          dist, ARTS_GUID_MAKE(ARTS_GUID_DB, 0, base_key - 1)) != -1) {
+          dist, ARTS_GUID_MAKE(ARTS_GUID_EVENT, 0, base_key - 1)) != -1) {
     FAIL("index_from did not reject a key below the round-robin base\n");
   }
-  if (arts_guid_index_from(dist,
-                           ARTS_GUID_MAKE(ARTS_GUID_DB, arts_global_rank_count,
-                                          base_key)) != -1) {
+  if (arts_guid_index_from(
+          dist, ARTS_GUID_MAKE(ARTS_GUID_EVENT, arts_global_rank_count,
+                               base_key)) != -1) {
     FAIL("index_from did not reject a home past the last rank\n");
   }
 
@@ -511,11 +516,17 @@ int main(void) {
       for (unsigned int ki = 0; ki < NKINDS; ki++) {
         for (unsigned int h = 0; h < NRANK; h++) {
           arts_guid_t seq[PER_HOME];
-          seq[0] = arts_guid_reserve(kinds[ki], h);
-          seq[1] = arts_guid_reserve(kinds[ki], h);
-          arts_guid_t range = arts_guid_reserve_range(kinds[ki], 3, h);
-          for (unsigned int i = 0; i < 3; i++) {
-            seq[2 + i] = arts_guid_from_index(range, i);
+          if (kinds[ki] == ARTS_GUID_DB) {
+            for (unsigned int i = 0; i < PER_HOME; i++) {
+              seq[i] = arts_guid_create_for_rank(h, ARTS_GUID_DB);
+            }
+          } else {
+            seq[0] = arts_guid_reserve(kinds[ki], h);
+            seq[1] = arts_guid_reserve(kinds[ki], h);
+            arts_guid_t range = arts_guid_reserve_range(kinds[ki], 3, h);
+            for (unsigned int i = 0; i < 3; i++) {
+              seq[2 + i] = arts_guid_from_index(range, i);
+            }
           }
           for (unsigned int i = 0; i < PER_HOME; i++) {
             uint64_t key = ARTS_GUID_GET_KEY(seq[i]);
@@ -545,8 +556,11 @@ int main(void) {
     if (!dies(encode_any_rank_flat) || !dies(encode_any_rank_db)) {
       FAIL("ARTS_HINT_ANY_RANK reached the encoder without a hard error\n");
     }
-    if (!dies(encode_db_home_past_n) || !dies(reserve_db_home_past_n)) {
+    if (!dies(encode_db_home_past_n)) {
       FAIL("a DB home >= N did not hard-error\n");
+    }
+    if (!dies(reserve_db_kind) || !dies(reserve_range_db_kind)) {
+      FAIL("a reservation of a data-block kind did not hard-error\n");
     }
     if (!dies(encode_event_home_past_n) || !dies(reserve_edt_home_past_n)) {
       FAIL("an EVENT or EDT home >= N did not hard-error\n");
@@ -556,7 +570,7 @@ int main(void) {
   node_fini();
   printf("PASS guid_encoding_roundtrip: field round-trip, range inverse, "
          "counter disjoint, exhaustion hard-errors, szhint bound-covers, "
-         "rank-sliced thread blocks, same reserve sequence distinct per "
-         "rank, rank guards\n");
+         "rank-sliced thread blocks, same sequence distinct per rank, rank "
+         "guards, data-block reservation refused\n");
   return 0;
 }

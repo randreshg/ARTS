@@ -16,15 +16,10 @@
  *   3. A NULL payload installs nothing and reports false.
  *   4. buf_for_payload recovers that descriptor from the payload pointer and
  *      the cache, and NULL for a payload the cache does not hold.
- *   5. The deleter does not free or write the external bytes: the last drop
- *      returns the installed descriptor itself -- exactly one allocation, that
+ *   5. The deleter does not free or write the external bytes: when the slot
+ *      is emptied as the cache's destructor empties it, the last drop returns
+ *      the installed descriptor itself -- exactly one allocation, that
  *      descriptor -- and a sentinel written before the drop is still there.
- *   6. A withdraw empties the slot, and the block can be materialized again
- *      afterwards EVEN IF the cache's presence hint still says there is
- *      nothing to do.  The hint is written after the transition it reports,
- *      so a thread whose install was undone in between can leave it saying
- *      "present" over an empty slot; the gate is the slot itself, so that
- *      cannot stop the block from ever being materialized again.
  *
  * Standalone: links buffer.c + shared.c with libc-backed alloc shims.  The
  * representation exists only where the store is DIRECT, the one tree that
@@ -100,38 +95,8 @@ int main(void) {
     printf("FAIL: buf_for_payload does not discriminate\n");
     fail = 1;
   }
-  /* The slot is emptied, and the descriptor that named the store comes back
-   * through its own deleter -- the external bytes are not its to free. */
-  mark = g_nfreed;
-  if (!arts_db_buf_withdraw(&g_cache, g_external)) {
-    printf("FAIL: the installed descriptor was not withdrawn\n");
-    fail = 1;
-  }
-  if (arts_db_buf_for_payload(&g_cache, g_external) != NULL) {
-    printf("FAIL: a withdrawn descriptor is still handed out\n");
-    fail = 1;
-  }
-  if (!freed_since(mark, b)) {
-    printf("FAIL: the withdraw did not free the descriptor it removed\n");
-    fail = 1;
-  }
-  /* The hint at its worst: "nothing to do" over an empty slot.  Both entries
-   * must still materialize the block. */
-  atomic_store_explicit(&g_cache.payload_pending, (uint8_t)0u,
-                        memory_order_relaxed);
-  atomic_store_explicit(&g_cache.cxl_addr, (uint64_t)(uintptr_t)g_external,
-                        memory_order_relaxed);
-  if (!arts_db_buf_ensure(&g_cache, DB_SIZE)) {
-    printf("FAIL: an emptied slot was not materialized again\n");
-    fail = 1;
-  }
-  b = arts_db_buf_for_payload(&g_cache, g_external);
-  if (b == NULL || (void *)b->data != (void *)g_external) {
-    printf("FAIL: the re-adopted descriptor does not name the store\n");
-    fail = 1;
-  }
-  /* Drop the cache-hold ref: the deleter ends the installed descriptor.  The
-   * external bytes are not its to touch. */
+  /* Empty the slot as the cache's destructor does: the deleter ends the
+   * installed descriptor.  The external bytes are not its to touch. */
   mark = g_nfreed;
   arts_shared_slot_store(&g_cache.buffer, NULL);
   if (!freed_since(mark, b)) {

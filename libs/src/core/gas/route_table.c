@@ -806,18 +806,6 @@ arts_shared_ptr_t arts_route_table_make_handle(void *obj, arts_guid_t key) {
   return cb;
 }
 
-bool arts_route_table_install_handle_if_absent(arts_shared_ptr_t cb,
-                                               arts_guid_t key) {
-  for (;;) {
-    arts_route_item_t *item;
-    arts_route_table_reserve_or_lookup(key, &item);
-    route_install_t r = route_install_empty(item, cb, key);
-    if (r != ROUTE_INSTALL_AGAIN) {
-      return r == ROUTE_INSTALL_WON;
-    }
-  }
-}
-
 bool arts_route_table_install_handle_into(arts_route_item_t *slot,
                                           arts_shared_ptr_t cb,
                                           arts_guid_t key) {

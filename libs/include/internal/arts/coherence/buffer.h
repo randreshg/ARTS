@@ -96,29 +96,6 @@ void arts_db_buf_release(arts_shared_ptr_t *h);
  * site may read that as normal. */
 bool arts_db_buf_ensure(struct arts_db_cache_s *cache, uint64_t db_size);
 
-#ifdef ARTS_USE_CXL
-/* Withdraw the cache's descriptor when it names `payload`, leaving the block
- * with no payload and needing materialization again, and say whether this
- * call withdrew it.  The bytes are not this call's: the descriptor ends
- * through its own deleter and the storage is untouched.
- *
- * The caller's obligation, and the one thing that makes this call sound: the
- * cache is one NOTHING ELSE CAN REACH.  Every caller is a create whose route
- * install failed, so the object is private and about to be freed; no other
- * thread can be holding the descriptor, installing one, or about to adopt the
- * storage.  Without that, emptying the slot races every materialization of
- * the block — a claimer that decided there was nothing to do finds none
- * afterwards, and a claimer that installed one has it taken away between its
- * install and whatever it does next.
- *
- * The match is by ADDRESS, and that is what makes the call safe where a
- * descriptor carries its payload inside itself: storage that can be handed
- * back never lies inside a descriptor, so the compare fails and a live buffer
- * is never withdrawn.  That is an assumption about where the two kinds of
- * storage come from, not a property of the layout. */
-bool arts_db_buf_withdraw(struct arts_db_cache_s *cache, const void *payload);
-#endif
-
 #ifdef ARTS_CXL_DIRECT
 /* Make `payload` this cache's payload if the cache has none, stamped
  * `version`.  The descriptor does not own the bytes: its deleter ends the
@@ -144,9 +121,9 @@ bool arts_db_buf_adopt_external(struct arts_db_cache_s *cache, void *payload,
  * payload is inline.
  *
  * The match is by ADDRESS, so it answers for the caller's descriptor only
- * because no other descriptor can have taken that address in the meantime: a
- * descriptor is withdrawn only from storage the block has no holder for, and
- * this caller is a holder. */
+ * because no other descriptor can have taken that address in the meantime:
+ * where the store is external, a live cache's slot keeps its one descriptor
+ * until the cache's destructor, and this caller is a holder. */
 struct arts_db_buffer_s *arts_db_buf_for_payload(struct arts_db_cache_s *cache,
                                                  void *payload);
 #endif

@@ -467,8 +467,7 @@ arts_test_properties(excl_req_before_create_4n_4w_1p PROPERTIES
     PASS_REGULAR_EXPRESSION "PASS: [0-9]+ iterations completed")
 endif()
 
-# --- self-send vs dispatch, first-touch claim, Cat-C references, publish-ack
-# escape ---
+# --- self-send vs dispatch, Cat-C references, publish-ack escape ---
 # A message a rank sends itself and the same message from a peer must have one
 # effect: every message family on one rank and across ranks, with one oracle.
 add_arts_test(self_send_vs_dispatcher_parity)
@@ -478,13 +477,6 @@ foreach(_v "" _2n_9w_1p _4n_4w_1p _2n_8w_2p)
     arts_test_properties(self_send_vs_dispatcher_parity${_v} PROPERTIES
         PASS_REGULAR_EXPRESSION "PASS: self_send_vs_dispatcher_parity")
 endforeach()
-
-# A dependence's first touch installs a stub that the later create claims.
-# Ranks 0 and 1 are the whole case; the two progress threads reorder the
-# create against the first touch.
-add_arts_test(db_create_claims_first_touch_stub)
-register_multinode_test(db_create_claims_first_touch_stub TIMEOUT 120
-                        VARIANTS 2n_9w_1p 2n_8w_2p)
 
 # Every coherence handler that pins a block's descriptor releases it on every
 # path, so a create-touch-destroy churn on every rank leaves no descriptor
@@ -558,14 +550,14 @@ endif()
 
 # --- route-table / GUID determinism ---
 if(ARTS_TEST_REFERENCE_TREE)
-# Reservations minted on workers concurrently, for every home: no two of all
-# the ranks' GUIDs collide.  Its reservers record into one block with no order
-# among them.
+# Event and EDT reservations minted on workers concurrently, for every home:
+# no two of all the ranks' GUIDs collide.  Its reservers record into one block
+# with no order among them.
 add_arts_test(guid_keygen_table_coupling)
 register_multinode_test(guid_keygen_table_coupling TIMEOUT 120
                         VARIANTS 2n_9w_1p 4n_4w_1p)
 
-# Every rank derives the same members of a round-robin range, DBs and events
+# Every rank derives the same members of a round-robin range, EDTs and events
 # alike, and each is created and lives at the home its GUID encodes; four ranks
 # are where the rotation shows.
 add_arts_test(round_robin_home_distribution)
@@ -1852,54 +1844,6 @@ if(_c)
         list(APPEND _recall 0:NUM_PURGE_RETURN=0 1:NUM_PURGE_RETURN=0)
     endif()
 
-    # The claim program: rank 1's reader acquires the block before rank 1
-    # creates it; the create's hold is rank 1's write, a local hit.  The
-    # create's claim of rank 1's first-touch cache serves no reader, and the
-    # reader is served by its own read request's answer: on the HOME cells the
-    # home, rank 0, answers once the creator's first publication has reached
-    # it (under exclusion, once the creator's hold has come back), so the
-    # read is remote; on the OWNER cells the home sends the request to the
-    # holder it names, rank 1 itself (VAL's and INV's redirect, EXCL·RETAIN's
-    # forward to the owner), which answers from its own copy, so the read is
-    # local; under FLUSH every acquisition fetches from the home, so the read
-    # is remote.
-    set(_claim 0:NUM_DB_ACQUIRE_READ=0 0:NUM_DB_ACQUIRE_WRITE=0
-               0:NUM_DB_ACQUIRE_LOCAL_HIT=0 0:NUM_DB_ACQUIRE_REMOTE=0
-               1:NUM_DB_ACQUIRE_READ=1 1:NUM_DB_ACQUIRE_WRITE=1)
-    if(_cell STREQUAL "FLUSH" OR _cell MATCHES "_HOME$")
-        list(APPEND _claim 1:NUM_DB_ACQUIRE_LOCAL_HIT=1
-                           1:NUM_DB_ACQUIRE_REMOTE=1)
-    else()
-        list(APPEND _claim 1:NUM_DB_ACQUIRE_LOCAL_HIT=2
-                           1:NUM_DB_ACQUIRE_REMOTE=0)
-    endif()
-    # Rank 1 hands back the create's hold and, under exclusion, the reader's
-    # read turn too.
-    if(_purge AND _cell STREQUAL "EXCL_PURGE_HOME")
-        list(APPEND _claim 0:NUM_PURGE_RETURN=0 1:NUM_PURGE_RETURN=2)
-    elseif(_purge AND _cell MATCHES "_PURGE_")
-        list(APPEND _claim 0:NUM_PURGE_RETURN=0 1:NUM_PURGE_RETURN=1)
-    endif()
-
-    # The pub program: rank 0's reader acquires at the home before rank 1
-    # creates the block, so it waits for rank 1's create and first
-    # publication, whichever drain then wakes it.  It is remote wherever the
-    # copy comes from rank 1, and local where the home holds the write right
-    # (under PURGE) or every home acquisition is local.
-    set(_pub 0:NUM_DB_ACQUIRE_READ=1 0:NUM_DB_ACQUIRE_WRITE=0
-             1:NUM_DB_ACQUIRE_READ=0 1:NUM_DB_ACQUIRE_WRITE=1
-             1:NUM_DB_ACQUIRE_LOCAL_HIT=1 1:NUM_DB_ACQUIRE_REMOTE=0)
-    if(_cell MATCHES "_PURGE_" OR _cell STREQUAL "FLUSH")
-        list(APPEND _pub 0:NUM_DB_ACQUIRE_LOCAL_HIT=1
-                         0:NUM_DB_ACQUIRE_REMOTE=0)
-    else()
-        list(APPEND _pub 0:NUM_DB_ACQUIRE_LOCAL_HIT=0
-                         0:NUM_DB_ACQUIRE_REMOTE=1)
-    endif()
-    if(_purge AND _cell MATCHES "_PURGE_")
-        list(APPEND _pub 0:NUM_PURGE_RETURN=0 1:NUM_PURGE_RETURN=1)
-    endif()
-
     # The join program, its read requests held so the second reader parks
     # while the first's is out: both wait on another rank, and the third
     # reader, made by the first while it holds its own, reads the copy or
@@ -1931,7 +1875,7 @@ if(_c)
     # on it, and on VAL the first reader's, after the third parked on the
     # next window; so each later reader parks on the request out whatever
     # the timing.
-    set(_shapes two home recall claim pub)
+    set(_shapes two home recall)
     if(ARTS_DEBUG_INJECTION)
         list(APPEND _shapes join)
     endif()

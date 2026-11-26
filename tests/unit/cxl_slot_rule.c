@@ -1,25 +1,15 @@
 /// @file cxl_slot_rule.c
 /// @brief One block, one slot: the rank that MADE the block minted its slot in
 /// the CXL store before the create left it, whether or not the create
-/// acquires, and every rank that knows the block names that same address.  A
-/// block that replaces a destroyed one is a new block and names a new slot.
+/// acquires, and every rank that knows the block names that same address.
 ///
 /// Whitebox, because a slot is cache state with no public reader: the checks
 /// resolve the block through the route table and read the cache the runtime
 /// keeps there.
 ///
-/// Five legs: a create that acquires nothing at the block's home; the same
-/// from a non-home rank, whose slot the home records; an acquiring create made
-/// off-home, whose announce the home must record unchanged; a create of a
-/// label a dependence on this rank has already touched; and a create of a
-/// label whose block is live, which waits at the home and replaces nothing,
-/// then installs with its creator's store.
-///
-/// A destroy is fire-and-forget, and a create's announce from another rank is
-/// not ordered against anything else that rank sends.  So the block that
-/// replaces a destroyed one is read only by a task whose dependence on the
-/// label is added at the home after the destroy: that acquisition is served
-/// by whichever create installs next, whenever its announce lands.
+/// Three legs: a create that acquires nothing at the block's home; the same
+/// from a non-home rank, whose slot the home records; and an acquiring create
+/// made off-home, whose announce the home must record unchanged.
 
 #include "arts.h"
 
@@ -84,71 +74,18 @@ static void check_slot(uint64_t addr, const char *what) {
   }
 }
 
-/* The reader whose dependence makes the first touch; it only has to run. */
-static void mark_reader_edt(uint32_t paramc, const uint64_t *paramv,
-                            uint32_t depc, arts_edt_dep_t depv[]) {
-  (void)paramc;
-  (void)paramv;
-  (void)depc;
-  (void)depv;
-}
-
-/* Holds the block that replaced a destroyed generation of its label (slot
- * 0), and runs at the home.  paramv = {what the check asserts, the destroyed
- * generation's slot}. */
-static void next_generation_check_edt(uint32_t paramc, const uint64_t *paramv,
-                                      uint32_t depc, arts_edt_dep_t depv[]) {
-  (void)paramc;
-  (void)depc;
-  arts_guid_t g = depv[0].guid;
-  uint64_t addr = slot_of(g);
-  check_slot(addr, (const char *)(uintptr_t)paramv[0]);
-  if (addr != 0 && addr == paramv[1]) {
-    fail("a label's next generation names the destroyed block's slot");
-  }
-  arts_db_destroy(g);
-}
-
-/* Destroys the generation of g installed at this rank, g's home, whose slot is
- * `replaced`, and hands the next one to a check that waits for it to
- * install. */
-static void destroy_then_check_next(arts_guid_t g, const char *what,
-                                    uint64_t replaced, arts_guid_t group) {
-  arts_db_destroy(g);
-  uint64_t pv[2] = {(uint64_t)(uintptr_t)what, replaced};
-  arts_guid_t c = arts_edt_create(
-      next_generation_check_edt, 2, pv, 1,
-      &(arts_edt_hint_t){.rank = arts_get_current_rank(), .group = group});
-  arts_add_dependence(g, c, 0, DB_MODE_RO);
-}
-
 static void pass_and_shut_down(void) {
   atomic_store_explicit(&g_check_ran, 1, memory_order_release);
   (void)fprintf(stderr, "PASS cxl_slot_rule: home checks ran\n");
   arts_shutdown();
 }
 
-static void shutdown_edt(uint32_t paramc, const uint64_t *paramv,
-                         uint32_t depc, arts_edt_dep_t depv[]) {
-  (void)paramc;
-  (void)paramv;
-  (void)depc;
-  (void)depv;
-  pass_and_shut_down();
-}
-
 /* The run's checks at the home.  paramv = {the creator's slot, the acquiring
- * create's guid, the guid of the create that acquired nothing, the
- * first-touched label, its slot}.  The two read dependences are
- * the checks' ordering against the creates: the home serves them only once
- * each block's announce has installed the object here.  Slots 2 and 3 are the
- * completions of the tasks that read the first-touched label (the
- * waiting-create leg's, where that leg runs, and the first touch's reader),
- * and slot 4 takes that label for writing once they are done: the home grants
- * it only after their releases have landed, so no leg is still outstanding
- * when the run shuts down and none of them can be skipped by losing a race to
- * the shutdown.  The home's status fails a run in which this check never
- * ran, so a run that never reached these checks cannot pass. */
+ * create's guid, the guid of the create that acquired nothing}.  The two read
+ * dependences are the checks' ordering against the creates: the home serves
+ * them only once each block's announce has installed the object here.  The
+ * home's status fails a run in which this check never ran, so a run that
+ * never reached it cannot pass. */
 static void home_check_edt(uint32_t paramc, const uint64_t *paramv,
                            uint32_t depc, arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -164,57 +101,7 @@ static void home_check_edt(uint32_t paramc, const uint64_t *paramv,
   check_slot(slot_of((arts_guid_t)paramv[2]),
              "a create that acquires nothing off-home left its home with no "
              "slot");
-  if (arts_get_total_ranks() >= 3u) {
-    /* The waiting create of the first-touched label replaced nothing: the
-     * live block still names the slot its creator allocated.  Once that block
-     * is destroyed the waiting create installs, with the store its own
-     * creator, rank 2, minted and named on the announce. */
-    arts_guid_t lg = (arts_guid_t)paramv[3];
-    if (slot_of(lg) != paramv[4]) {
-      fail("a create waiting behind a live block changed that block's slot");
-    }
-    arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
-    gh.auto_destroy = true;
-    arts_guid_t checked = arts_event_create(&gh);
-    arts_guid_t last = arts_edt_create(
-        shutdown_edt, 0, NULL, 1,
-        &(arts_edt_hint_t){.rank = arts_get_current_rank()});
-    arts_add_dependence(checked, last, 0, DB_MODE_NULL);
-    destroy_then_check_next(lg,
-                            "a create that waited for its label's destroy "
-                            "installed no block with a slot at its home",
-                            paramv[4], checked);
-    /* The group's successor shuts the run down: release the blocks this
-     * check still holds (the destroy released lg's). */
-    arts_db_release((arts_guid_t)paramv[1]);
-    arts_db_release((arts_guid_t)paramv[2]);
-    arts_event_satisfy_slot(checked, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
-    return;
-  }
   pass_and_shut_down();
-}
-
-/* A create of a label whose block is live waits for that block's destroy.
- * Made from a rank that already knows the block's store (slot 0 is the block,
- * acquired read only and released before the create runs), acquiring
- * nothing, so the announce is the whole of the create and it waits at the
- * home. */
-static void recreate_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
-                         arts_edt_dep_t depv[]) {
-  (void)paramc;
-  (void)depc;
-  (void)depv;
-  arts_guid_t dg = (arts_guid_t)paramv[0];
-  arts_db_release(dg);
-  uint64_t before = slot_of(dg);
-  void *dp = arts_db_create_with_guid(dg, N * sizeof(unsigned int), ARTS_DB,
-                                      ARTS_DB_PROP_NO_ACQUIRE, NULL);
-  if (dp != NULL) {
-    fail("a create that acquires nothing handed out a pointer");
-  }
-  if (slot_of(dg) != before) {
-    fail("a create of a live label changed the block's slot here");
-  }
 }
 
 static void creator_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
@@ -237,66 +124,22 @@ static void creator_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   check_slot(addr, "an acquiring create off-home allocated no slot");
   arts_db_release(g);
 
-  /* First touch, then a create of the same label, on ONE rank.  The dependence
-   * is asked for FIRST, so a first touch may install the cache here and park;
-   * the create then either wins its own install or finds that cache and
-   * claims it.  Which one is a race this test does not control, and need
-   * not: on both paths this create MAKES the block -- the label's home has no
-   * object for the GUID until this create's announce installs one, so no grant
-   * can precede it -- and the invariant asserted is the one an admitted
-   * waiter's pointer depends on: a non-NULL pointer and a slot in the
-   * store.  The cache a first touch leaves behind declares no size,
-   * so a create that failed to declare one before allocating would be handed
-   * nothing. */
-  arts_guid_t lg = arts_guid_reserve(ARTS_GUID_DB, 0u);
-  arts_guid_t read = arts_event_create(&ARTS_EVENT_HINT_LATCH(1));
-  arts_guid_t consumer =
-      arts_edt_create(mark_reader_edt, 0, NULL, 1,
-                      &(arts_edt_hint_t){.rank = arts_get_current_rank(),
-                                         .completion_event = read});
-  arts_add_dependence(lg, consumer, 0, DB_MODE_RO);
-  void *lp = arts_db_create_with_guid(lg, N * sizeof(unsigned int), ARTS_DB,
-                                      ARTS_DB_PROP_NONE, NULL);
-  uint64_t laddr = slot_of(lg);
-  if (lp == NULL) {
-    fail("a create after a first touch of the same label made nothing");
-  }
-  check_slot(laddr, "a create after a first touch allocated no slot");
-  arts_db_release(lg);
-
   /* A create that acquires nothing, made away from the block's home: this rank
    * keeps no cache for it, but it mints the block's slot and names it on the
    * announce.  Checked at the home. */
-  arts_guid_t ng = arts_guid_reserve(ARTS_GUID_DB, 0u);
-  void *np = arts_db_create_with_guid(ng, N * sizeof(unsigned int), ARTS_DB,
-                                      ARTS_DB_PROP_NO_ACQUIRE, NULL);
+  void *np = NULL;
+  arts_guid_t ng = arts_db_create(&np, N * sizeof(unsigned int), ARTS_DB,
+                                  ARTS_DB_PROP_NO_ACQUIRE,
+                                  &(arts_db_hint_t){.rank = 0u});
   if (np != NULL) {
     fail("a create that acquires nothing handed out a pointer");
   }
 
-  uint64_t pv[5] = {addr, (uint64_t)g, (uint64_t)ng, (uint64_t)lg, laddr};
-  arts_guid_t check = arts_edt_create(home_check_edt, 5, pv, 5,
+  uint64_t pv[3] = {addr, (uint64_t)g, (uint64_t)ng};
+  arts_guid_t check = arts_edt_create(home_check_edt, 3, pv, 2,
                                       &(arts_edt_hint_t){.rank = 0u});
   arts_add_dependence(g, check, 0, DB_MODE_RO);
   arts_add_dependence(ng, check, 1, DB_MODE_RO);
-  arts_add_dependence(read, check, 3, DB_MODE_NULL);
-  arts_add_dependence(lg, check, 4, DB_MODE_RW);
-
-  /* The waiting-create leg needs a third rank: a home, this creator, and a
-   * rank the block is granted to.  Its completion event fires only after it has
-   * run, and that is what the home's check waits on; with fewer ranks there
-   * is no such leg and nothing to wait for. */
-  if (arts_get_total_ranks() >= 3u) {
-    arts_guid_t done = arts_event_create(&ARTS_EVENT_HINT_LATCH(1));
-    uint64_t dpv[1] = {(uint64_t)lg};
-    arts_guid_t again = arts_edt_create(
-        recreate_edt, 1, dpv, 1,
-        &(arts_edt_hint_t){.rank = 2u, .completion_event = done});
-    arts_add_dependence(done, check, 2, DB_MODE_NULL);
-    arts_add_dependence(lg, again, 0, DB_MODE_RO);
-  } else {
-    arts_edt_satisfy_slot(check, 2, NULL_GUID, DB_MODE_NULL);
-  }
 }
 
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,

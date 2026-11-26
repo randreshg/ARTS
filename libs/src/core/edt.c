@@ -153,6 +153,11 @@ bool arts_edt_create_core(struct arts_edt_s *edt, arts_guid_kind_t guid_kind,
    * arts_edt_total_size(paramc/depc) — no per-object header stores them. */
   (void)edt_space;
 
+  if (*guid != NULL_GUID && arts_guid_get_kind(*guid) != guid_kind) {
+    ARTS_ERROR("arts_edt_create: GUID %lu cannot name an EDT: its kind is %u, "
+               "and an EDT is created under an EDT GUID or NULL_GUID",
+               (unsigned long)*guid, (unsigned int)arts_guid_get_kind(*guid));
+  }
   bool minted = *guid == NULL_GUID;
   if (minted) {
     *guid = arts_guid_create_for_rank(rank, guid_kind);

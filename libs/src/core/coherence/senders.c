@@ -392,9 +392,9 @@ void arts_send_db_destroy(arts_guid_t db_guid, arts_shared_ptr_t held) {
   if (home_rank == arts_global_rank_id) {
     /* The home is this rank: the destroy body runs on the descriptor `held`
      * names while it is live, and takes the engine by GUID otherwise (no
-     * handle, or a descriptor not yet installed or retired), deferred until
-     * the home installs and drains.  No count of its own: `held` is the
-     * caller's own reference, which the body never drops. */
+     * handle, or a descriptor already retired), deferred until the home
+     * installs and drains.  No count of its own: `held` is the caller's own
+     * reference, which the body never drops. */
     struct arts_ooo_args_db_destroy_s args = {
         .requester = arts_global_rank_id,
         .db_guid = db_guid,

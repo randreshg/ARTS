@@ -577,17 +577,6 @@ uint64_t arts_db_cxl_slot_mint(uint64_t db_size);
  * The slot is not written: a fresh slot's contents are unspecified until a
  * holder writes them. */
 bool arts_db_cxl_slot_create(struct arts_db_cache_s *cache);
-/* Drop a slot this rank minted for a create that turned out to create
- * nothing.  The cache is left naming neither the slot nor a payload in it, so
- * nothing behind it could hand the slot out again; the bytes stay in the
- * arena.
- *
- * The cache must be one NOTHING ELSE CAN NAME — a create whose route install
- * failed, whose object is private and about to be freed.  A published cache
- * may have a holder, a fetch in flight or a first user about to adopt the
- * slot; so a create that published its object keeps the slot for the block's
- * whole life. */
-void arts_db_cxl_slot_discard(struct arts_db_cache_s *cache);
 /* The slot this rank knows for the block, 0 when it knows none. */
 static inline uint64_t
 arts_db_cxl_slot_addr(const struct arts_db_cache_s *cache) {

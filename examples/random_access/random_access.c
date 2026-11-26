@@ -97,7 +97,6 @@ arts_guid_t *tile_guids = NULL;
 uint64_t **tile = NULL;
 #define get_local_index(v) ((v & (table_size - 1)) % tile_size)
 #define get_owner_index(v) ((v & (table_size - 1)) / tile_size)
-#define get_tile_guid(v)   arts_guid_from_index(tile_guids, get_owner_index(v))
 
 uint64_t start = 0;
 arts_guid_t done_guid = NULL_GUID;

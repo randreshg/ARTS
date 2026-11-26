@@ -2,9 +2,8 @@
  *
  * Zero-size DB buffer install.
  *
- * A DB may legitimately carry db_size == 0 (e.g. an empty / placeholder DB,
- * driven across ranks by db_destroy_roster).  arts_db_buf_install with
- * db_size == 0 must:
+ * A DB may legitimately carry db_size == 0 (e.g. an empty / placeholder DB).
+ * arts_db_buf_install with db_size == 0 must:
  *   - return a NON-NULL buffer (the header is always allocated even with no
  *     payload),
  *   - stamp the requested version,

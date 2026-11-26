@@ -3,33 +3,31 @@
 ** Licensed under the Apache License, Version 2.0 (the "License").           **
 ******************************************************************************/
 
-/* db_create_races_acquire — acquires that race a create's claim of the
- * first-touch cache their own rank made leave no request behind that nobody
- * waits on, and every destroyed block's home goes.
+/* db_first_touch_settles — a rank's first touches of a block homed elsewhere,
+ * readers and writers of both axes at once, leave no request without its
+ * answer, and every destroyed block's home and caches go.
  *
- * Per block g (reserved, home H): on rank C != H a setup EDT makes readers
- * and writers ready on g through a trigger EDT that runs on another worker of
- * C, spins a little (a different length per block), then creates g on C.
- * The acquires run beside the create's claim: a writer is served by the
- * claim's hold or by a write request of its own, and a write request the
- * claim found already sent is discarded by the home, which the create's
- * announce told it to expect.  A reader is served by its own read request's
- * answer.
- * A reader on H acquires each block once its acquirers and the create have
- * released, and the destroy follows the reader's release.  After every block
- * is destroyed, each rank polls the route table for its own homes of the
- * blocks until none is installed and, where the build counts rendezvous
+ * Per block g (home H): an EDT on H creates it (hint H), writes it, releases
+ * it and creates, with the name as a parameter, a setup EDT on rank C != H.
+ * The setup EDT makes readers and writers ready on g through a trigger EDT
+ * that runs on another worker of C, so C's first touch races its own cache
+ * install and both axes' requests are out together; a spin (a different
+ * length per block) lets the setup's remaining work run beside the first
+ * touches.  Each acquirer is closed by its own answer: a writer by the write
+ * grant of C's shared turn, a reader by its read request's answer.
+ * A reader on H acquires each block once C's holds are released, and the
+ * destroy, by H or by C, follows the reader's release.  After every block is
+ * destroyed, each rank polls the route table for the blocks it homed or
+ * cached until none is installed and, where the build counts rendezvous
  * landings (ARTS_DEBUG_LANDING_BALANCE), until it has none outstanding: a
- * request no acquire waits on, or any count too many, keeps a home
- * installed, and a rank still holding one after 20 s fails the run.  Run with
- * ARTS_SCHED_FUZZ, the acquires and the claim interleave at every decision
+ * home or a cache still installed, or a landing still out, after 20 s fails
+ * the run.  An acquire that is never answered stops the dataflow before the
+ * poll, and the run then ends at the test's TIMEOUT.  Run with
+ * ARTS_SCHED_FUZZ, the acquires and the requests interleave at every decision
  * point.
  *
- * A home that is not installed reads the same before the create's announce
- * lands as after its teardown, and nothing else orders the announce before
- * the destroy: it travels fire-and-forget beside the requests that reached H
- * ahead of it.  The reader on H is that order (an acquire at the home waits
- * for the install), so the poll's "not installed" means torn down.
+ * The reader on H orders the destroy after every hold, so the poll's "not
+ * installed" means torn down.
  *
  * Arguments: [readers writers [blocks]] (0, 6, 32); with `wfirst` before them
  * the writers are made ready first.  Needs two ranks.
@@ -56,9 +54,20 @@
 #define SETTLE_MS 20000L
 #define SPIN_US 200L
 
-#define MAX_HOMED 65536u
-static arts_guid_t g_homed[MAX_HOMED];
-static _Atomic(unsigned int) g_nhomed;
+#define MAX_SEEN 65536u
+static arts_guid_t g_seen[MAX_SEEN];
+static _Atomic(unsigned int) g_nseen;
+
+static void note_seen(arts_guid_t g) {
+  unsigned int i =
+      atomic_fetch_add_explicit(&g_nseen, 1u, memory_order_relaxed);
+  if (i >= MAX_SEEN) {
+    arts_printf("FAIL: db_first_touch_settles registry full\n");
+    arts_test_fail();
+    return;
+  }
+  g_seen[i] = g;
+}
 
 static unsigned int g_blocks = 32;
 
@@ -98,12 +107,12 @@ static void user(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)paramc;
   (void)depc;
   if (depv[0].guid != (arts_guid_t)paramv[0]) {
-    arts_printf("FAIL: db_create_races_acquire slot guid mismatch\n");
+    arts_printf("FAIL: db_first_touch_settles slot guid mismatch\n");
     arts_test_fail();
     return;
   }
   if (depv[0].ptr == NULL) {
-    arts_printf("FAIL: db_create_races_acquire acquirer got no storage\n");
+    arts_printf("FAIL: db_first_touch_settles acquirer got no storage\n");
     arts_test_fail();
     return;
   }
@@ -144,8 +153,8 @@ static void home_reader(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depv;
 }
 
-/* paramv: g, latch, destroyer rank, all, spin_us, readers, writers, wfirst,
- *         home */
+/* Runs on C. paramv: g, latch, destroyer rank, all, spin_us, readers,
+ * writers, wfirst, home */
 static void setup(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                   arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -157,6 +166,7 @@ static void setup(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   unsigned int nw = (unsigned int)paramv[6];
   bool wfirst = paramv[7] != 0u;
   unsigned int here = arts_get_current_rank();
+  note_seen(g);
   arts_event_hint_t eh = ARTS_EVENT_HINT_LATCH(1);
   eh.rank = here;
   arts_guid_t e = arts_event_create(&eh);
@@ -170,13 +180,6 @@ static void setup(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   uint64_t tpv[1] = {(uint64_t)e};
   (void)edt_on(trigger, here, 1, tpv, 0, latch);
   spin_us((long)paramv[4]);
-  void *p = arts_db_create_with_guid(g, 64u, ARTS_DB, ARTS_DB_PROP_NONE, NULL);
-  if (p == NULL) {
-    arts_printf("FAIL: db_create_races_acquire create gave no storage\n");
-    arts_test_fail();
-    return;
-  }
-  atomic_store_explicit((_Atomic(uint32_t) *)p, 0u, memory_order_relaxed);
   unsigned int where = (unsigned int)paramv[2];
   arts_guid_t read = latch_on(where, 1);
   arts_guid_t hr =
@@ -188,20 +191,30 @@ static void setup(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_add_dependence(read, d, 0, DB_MODE_NULL);
 }
 
-/* runs on the block's home. paramv: g */
-static void note_homed(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
-                       arts_edt_dep_t depv[]) {
+/* Runs on the block's home. paramv: latch, destroyer rank, all, spin_us,
+ * readers, writers, wfirst, home, C */
+static void maker(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                  arts_edt_dep_t depv[]) {
   (void)paramc;
   (void)depc;
   (void)depv;
-  unsigned int i =
-      atomic_fetch_add_explicit(&g_nhomed, 1u, memory_order_relaxed);
-  if (i >= MAX_HOMED) {
-    arts_printf("FAIL: db_create_races_acquire registry full\n");
+  unsigned int here = arts_get_current_rank();
+  arts_db_hint_t dh = ARTS_DB_HINT_DEFAULTS;
+  dh.rank = here;
+  void *p = NULL;
+  arts_guid_t g = arts_db_create(&p, 64u, ARTS_DB, ARTS_DB_PROP_NONE, &dh);
+  if (g == NULL_GUID || p == NULL) {
+    arts_printf("FAIL: db_first_touch_settles create gave no storage\n");
     arts_test_fail();
     return;
   }
-  g_homed[i] = (arts_guid_t)paramv[0];
+  atomic_store_explicit((_Atomic(uint32_t) *)p, 0u, memory_order_relaxed);
+  note_seen(g);
+  arts_db_release(g);
+  uint64_t pv[9] = {(uint64_t)g, paramv[0], paramv[1], paramv[2], paramv[3],
+                    paramv[4],   paramv[5], paramv[6], paramv[7]};
+  (void)edt_on(setup, (unsigned int)paramv[8], 9, pv, 0,
+               (arts_guid_t)paramv[0]);
 }
 
 static void finish(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
@@ -211,7 +224,7 @@ static void finish(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depc;
   (void)depv;
   if (arts_test_status() == 0) {
-    arts_printf("PASS: db_create_races_acquire %u blocks\n", g_blocks);
+    arts_printf("PASS: db_first_touch_settles %u blocks\n", g_blocks);
   }
   arts_shutdown();
 }
@@ -222,10 +235,10 @@ static void poller(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)paramc;
   (void)depc;
   (void)depv;
-  unsigned int n = atomic_load_explicit(&g_nhomed, memory_order_relaxed);
+  unsigned int n = atomic_load_explicit(&g_nseen, memory_order_relaxed);
   unsigned int live = 0;
-  for (unsigned int i = 0; i < n && i < MAX_HOMED; i++) {
-    arts_shared_ptr_t h = arts_route_table_lookup_db(g_homed[i]);
+  for (unsigned int i = 0; i < n && i < MAX_SEEN; i++) {
+    arts_shared_ptr_t h = arts_route_table_lookup_db(g_seen[i]);
     if (arts_shared_get(h) != NULL) {
       live++;
     }
@@ -237,8 +250,8 @@ static void poller(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     return;
   }
   if (now_ms() - (long)paramv[0] > SETTLE_MS) {
-    arts_printf("FAIL: db_create_races_acquire rank %u: %u destroyed block(s) "
-                "never torn down at their home, %lld landing(s) never ended\n",
+    arts_printf("FAIL: db_first_touch_settles rank %u: %u destroyed block(s) "
+                "never torn down on this rank, %lld landing(s) never ended\n",
                 arts_get_current_rank(), live, (long long)out);
     arts_test_fail();
     arts_event_satisfy((arts_guid_t)paramv[1], NULL_GUID);
@@ -287,7 +300,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
   unsigned int n = arts_get_total_ranks();
   if (n < 2u) {
-    arts_printf("FAIL: db_create_races_acquire needs two ranks\n");
+    arts_printf("FAIL: db_first_touch_settles needs two ranks\n");
     arts_test_fail();
     arts_shutdown();
     return;
@@ -299,23 +312,18 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     unsigned int h = b % n;
     unsigned int c = (h + 1u) % n;
     unsigned int where = (b & 1u) ? c : h;
-    arts_guid_t g = arts_guid_reserve(ARTS_GUID_DB, h);
     /* The acquirers, the trigger and the setup. */
     arts_guid_t latch = latch_on(where, (int32_t)(readers + writers + 2u));
-    uint64_t pv[9] = {(uint64_t)g,
-                      (uint64_t)latch,
+    uint64_t pv[9] = {(uint64_t)latch,
                       where,
                       (uint64_t)all,
                       (uint64_t)(SPIN_US + (long)(b % 4u) * SPIN_US / 2),
                       readers,
                       writers,
                       wfirst,
-                      h};
-    arts_guid_t noted = latch_on(c, 1);
-    uint64_t npv[1] = {(uint64_t)g};
-    (void)edt_on(note_homed, h, 1, npv, 0, noted);
-    arts_guid_t su = edt_on(setup, c, 9, pv, 1, latch);
-    arts_add_dependence(noted, su, 0, DB_MODE_NULL);
+                      h,
+                      c};
+    (void)edt_on(maker, h, 9, pv, 0, NULL_GUID);
   }
 }
 

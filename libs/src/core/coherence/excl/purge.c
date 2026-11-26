@@ -448,15 +448,11 @@ static void lock_release_commit(struct arts_db_s *db,
   do {
     cur = atomic_load_explicit(&db->lock_state, memory_order_acquire);
     /* A write release returns a turn this home granted, so it never finds
-     * the writer count at zero.  A reused label can reach it, since its
-     * generations are not told apart: a release meant for the next generation
-     * lands here while the marked previous one still waits for a release owed
-     * to it.  A Debug build stops here; the decrement would borrow from the
-     * bits above w, up to the teardown mark. */
+     * the writer count at zero. */
     assert(!write || EXCL_STATE_W(cur) != 0u);
     /* A read release returns a grant to a reader whose count committed before
-     * its node could be drained, so it never finds the reader count at zero; a
-     * reused label can, and the decrement would borrow from w. */
+     * its node could be drained, so it never finds the reader count at
+     * zero. */
     assert(write || EXCL_STATE_R(cur) != 0u);
     next = write ? excl_compute_next(cur, EXCL_OP_RW_REL, &grant)
                  : excl_compute_next(cur, EXCL_OP_RO_REL, &grant);
@@ -588,12 +584,8 @@ void arts_handler_db_excl_release(void *item_v, void *args_v) {
  * performs the teardown; marking and reading the counts commit in one CAS, so
  * neither can conclude the other will do it.
  *
- * The mark delays the slot's return.  An ordinary GUID is minted from a
- * monotonic sequence and never comes back, so only a reused label meets the
- * delay: its next generation's create parks behind the marked generation as
- * any create does, but the next generation's other messages that arrive
- * meanwhile run against the marked one, the creator's release of its own
- * hold included: a reused label's generations are not told apart. */
+ * The mark delays the slot's return.  A data-block GUID is minted once, so
+ * nothing but the block's own trailing releases meets the mark. */
 void arts_db_destroy_arrived(struct arts_db_s *db) {
   uint32_t grant;
   uint64_t cur, next;

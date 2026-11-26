@@ -4,7 +4,7 @@
  *
  * A parker pushes its node onto the slot's ooo_list and then re-reads the
  * slot's value and key; an installer
- * (arts_route_table_install_handle_if_absent, or a create body's
+ * (install_or_get on an empty slot, or a create body's
  * arts_route_table_install_handle_into on the slot the engine handed it) stores
  * the value and then drains the list on its own handle, and a retirer
  * (arts_route_table_set_destroyed_if) clears the value and returns the key and
@@ -116,6 +116,7 @@ static void after_park(void) {
 ARTS_THREAD_LOCAL_IE struct arts_edt_s *arts_current_edt;
 
 #include "counter_stubs.h"
+#include "route_install_test.h"
 
 struct arts_runtime_shared_s arts_node_info;
 ARTS_THREAD_LOCAL_IE struct arts_runtime_private_s arts_thread_info;
@@ -316,7 +317,7 @@ static void *worker(void *vp) {
         t_role = ROLE_INSTALLER;
         arts_shared_ptr_t cb = arts_route_table_make_handle(g_gen2, g_guid);
         arts_shared_ptr_t pin = arts_shared_copy(cb);
-        if (!arts_route_table_install_handle_if_absent(cb, g_guid)) {
+        if (!install_if_absent(cb, g_guid)) {
           arts_shared_release(&pin);
           arts_shared_abandon(&cb);
           error("the install found the empty GUID occupied");
@@ -390,7 +391,7 @@ static int run(enum scenario sc, int rounds, const char *name, tally_t *t) {
       *g_gen1 = 1;
       arts_shared_ptr_t cb = arts_route_table_make_handle(g_gen1, g_guid);
       arts_shared_ptr_t pin = arts_shared_copy(cb);
-      if (!arts_route_table_install_handle_if_absent(cb, g_guid)) {
+      if (!install_if_absent(cb, g_guid)) {
         arts_shared_release(&pin);
         arts_shared_abandon(&cb);
         (void)fprintf(stderr, "FAIL %s: setup install\n", name);

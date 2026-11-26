@@ -60,8 +60,7 @@ extern "C" {
  *
  * Key occupies the least-significant bits so that GUID-range arithmetic
  * reduces to plain integer addition: @c start_guid+i yields the i-th GUID
- * (for DB ranges the addition must stay inside the seq field — the
- * range/index helpers enforce that).
+ * of an EDT or event range.
  *
  * All field access uses portable shift/mask macros — no C bitfield structs,
  * no endianness dependence.

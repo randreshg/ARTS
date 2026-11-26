@@ -29,14 +29,16 @@
 /// teardown) and gets a pinned handle to the established db_s.
 ///
 /// HOW THIS TEST DRIVES THE WINDOW.  Per round a fresh remote-owned DB is
-/// seeded on a remote rank (so consumer ranks have NO local cache yet); then a
-/// WAVE of RO-acquiring EDTs is fanned out across every consumer rank
-/// simultaneously.  Each rank's first acquirer triggers a stub install; the
-/// concurrent acquirers on one rank race the stub install.  The DB is destroyed
-/// only AFTER the wave's group fires (every reader has acquired AND
-/// released) — destroying a DB with RO acquires still in flight is undefined in
-/// the OCR memory model (a coherence request that reaches the home after the
-/// destroy is deferred forever), so the destroy is ordered after the readers.
+/// created on a remote rank (so consumer ranks have NO local cache yet); its
+/// seeder hands the name, as a parameter, to the wave it creates on rank 0
+/// after releasing the block; then a WAVE of RO-acquiring EDTs is fanned out
+/// across every consumer rank simultaneously.  Each rank's first acquirer
+/// triggers a stub install; the concurrent acquirers on one rank race the
+/// stub install.  The DB is destroyed only AFTER the wave's group fires
+/// (every reader has acquired AND released) — destroying a DB with RO
+/// acquires still in flight is undefined in the OCR memory model (a coherence
+/// request that reaches the home after the destroy is deferred forever), so
+/// the destroy is ordered after the readers.
 ///
 /// WHAT IT ASSERTS: (1) no crash / no SIGSEGV on the stub destructor or the
 /// lost-race free; (2) every reader observes the installed value (a leaked /
@@ -56,21 +58,34 @@
 #define ROUNDS 50u
 #define ACQUIRERS_PER_RANK 4u
 
-/// Owner-side seeder: create the DB with its reserved GUID, fill it, release.
-/// paramv[0] = db guid, paramv[1] = value.
+/// paramv of the round continuations: the round, the DB GUID, the value.
+enum { P_ROUND, P_DB, P_VAL, P_COUNT };
+
+static void wave_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                     arts_edt_dep_t depv[]);
+
+/// Owner-side seeder: create the DB homed on this rank, fill it, release it,
+/// and create the round's wave on rank 0 with the name in its parameters.
+/// paramv[0] = round, paramv[1] = value.
 static void seeder_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                        arts_edt_dep_t depv[]) {
   (void)paramc;
   (void)depc;
   (void)depv;
-  arts_guid_t g = (arts_guid_t)paramv[0];
-  uint64_t val = paramv[1];
-  uint64_t *p = (uint64_t *)arts_db_create_with_guid(
-      g, sizeof(uint64_t), ARTS_DB, ARTS_DB_PROP_NONE, NULL);
-  if (p != NULL) {
-    p[0] = val;
+  arts_db_hint_t dh = ARTS_DB_HINT_DEFAULTS;
+  dh.rank = arts_get_current_rank();
+  void *ptr = NULL;
+  arts_guid_t g = arts_db_create(&ptr, sizeof(uint64_t), ARTS_DB,
+                                 ARTS_DB_PROP_NONE, &dh);
+  if (g == NULL_GUID || ptr == NULL) {
+    (void)fprintf(stderr, "FAIL: seeder create gave no block\n");
+    arts_abort(1);
   }
+  *(uint64_t *)ptr = paramv[1];
   arts_db_release(g);
+  uint64_t pv[P_COUNT] = {paramv[0], (uint64_t)g, paramv[1]};
+  (void)arts_edt_create(wave_edt, P_COUNT, pv, 0,
+                        &(arts_edt_hint_t){.rank = 0});
 }
 
 /// RO reader: must observe the writer's value (the wave races only the stub
@@ -88,13 +103,7 @@ static void reader_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
 }
 
-/// paramv of the round continuations: the round, the DB GUID, the value.
-enum { P_ROUND, P_DB, P_VAL, P_COUNT };
-
-static void wave_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
-                     arts_edt_dep_t depv[]);
-
-/// Seeds round `rnd`'s DB in a group; its wave is gated on that group.
+/// Starts round `rnd`: the seeder on the owner creates its DB and the wave.
 static void start_round(uint64_t rnd) {
   unsigned int nranks = arts_get_total_ranks();
   uint64_t val = 0x1A2B0000u + rnd;
@@ -102,21 +111,9 @@ static void start_round(uint64_t rnd) {
   unsigned int owner =
       (nranks > 1) ? (1u + ((unsigned int)rnd % (nranks - 1u))) : 0u;
 
-  /* Seed the DB on the owner rank so the value is installed at the owner
-   * before any consumer acquires it. */
-  arts_guid_t g = arts_guid_reserve(ARTS_GUID_DB, owner);
-
-  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
-  gh.auto_destroy = true;
-  arts_guid_t e_seed = arts_event_create(&gh);
-  uint64_t seed_pv[2] = {(uint64_t)g, val};
-  arts_edt_create(seeder_edt, 2, seed_pv, 0,
-                  &(arts_edt_hint_t){.rank = owner, .group = e_seed});
-  uint64_t pv[P_COUNT] = {rnd, (uint64_t)g, val};
-  arts_guid_t w =
-      arts_edt_create(wave_edt, P_COUNT, pv, 1, &(arts_edt_hint_t){.rank = 0});
-  arts_add_dependence(e_seed, w, 0, DB_MODE_NULL);
-  arts_event_satisfy_slot(e_seed, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
+  uint64_t seed_pv[2] = {rnd, val};
+  (void)arts_edt_create(seeder_edt, 2, seed_pv, 0,
+                        &(arts_edt_hint_t){.rank = owner});
 }
 
 /// Gated on the wave's group: every reader has acquired AND released.
@@ -139,7 +136,7 @@ static void round_end_edt(uint32_t paramc, const uint64_t *paramv,
   arts_shutdown();
 }
 
-/// Gated on the seed's group.
+/// Created by the seeder once the block is released.
 static void wave_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                      arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -150,7 +147,7 @@ static void wave_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   uint64_t val = paramv[P_VAL];
 
   /* Concurrent acquire wave: each consumer rank's first acquirer
-   * stub-installs the stub; the per-rank acquirers race it. */
+   * installs the stub; the per-rank acquirers race it. */
   arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
   gh.auto_destroy = true;
   arts_guid_t e_acq = arts_event_create(&gh);

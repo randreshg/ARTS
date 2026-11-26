@@ -44,25 +44,27 @@
 ///
 /// reserve_range(ARTS_HINT_ROUND_ROBIN) returns a DISTRIBUTED range whose
 /// from_index plants GUID i at home = idx % nrank.  Two ranges are reserved
-/// once on rank 0, one of DBs and one of events, and their GUIDs handed to a
+/// once on rank 0, one of EDTs and one of events, and their GUIDs handed to a
 /// checker on every rank, which recomputes every member: from_index is a pure
 /// function of the range GUID and the rank count, so every rank must get the
 /// same GUIDs.  The checker
 ///   (a) asserts the decoded rank of every member is idx % nrank, its kind is
 ///       the range's, and index_from maps it back to its index;
 ///   (b) asserts arts_guid_is_local agrees with that home;
-///   (c) creates each member it homes: a DB holding its home's rank and its
-///       index, and a latch event counting one satisfy per rank;
-///   (d) satisfies every event member once, wherever it is homed;
+///   (c) creates each member it homes: an EDT with one control dependence per
+///       rank, and a latch event counting one satisfy per rank;
+///   (d) satisfies every EDT member's slot for this rank and every event
+///       member once, wherever each is homed;
 ///   (e) sends the members it derived, in a block, to a judge on rank 0, which
 ///       requires every rank's list to equal rank 0's.
-/// Once every checker has finished, a collector acquires every DB member RO
-/// through the derived GUIDs and checks the value its home wrote.  An EDT
-/// depending on every event member runs only once each latch has counted a
-/// satisfy from every rank; a member created or satisfied under another GUID
-/// leaves its latch short and the run times out.  The event range holds one
-/// member more than a multiple of the rank count, so rank 0 homes one more
-/// member than the others.
+/// A member EDT runs only once every rank has satisfied its slot, and checks
+/// that it runs on its home; each reports to a latch, and an EDT depending on
+/// that latch runs once all of them have.  An EDT depending on every event
+/// member runs only once each latch has counted a satisfy from every rank; a
+/// member created or satisfied under another GUID leaves its dependence short
+/// and the run times out.  The event range holds one member more than a
+/// multiple of the rank count, so rank 0 homes one more member than the
+/// others.
 ///
 /// Requires multi-node (rank_count >= 2).  Fails single-node.
 
@@ -73,7 +75,9 @@
 
 #define RR_PER_RANK 3
 
-static unsigned int db_count(unsigned int nrank) { return RR_PER_RANK * nrank; }
+static unsigned int edt_count(unsigned int nrank) {
+  return RR_PER_RANK * nrank;
+}
 
 static unsigned int event_count(unsigned int nrank) {
   return RR_PER_RANK * nrank + 1;
@@ -110,53 +114,68 @@ static bool check_member(arts_guid_t range, unsigned int i, unsigned int nrank,
   return true;
 }
 
-/// Per-rank checker.  paramv: the DB range, the event range, nrank and the
-/// judge.
+/// A member EDT.  paramv: its index, nrank and the latch every member reports
+/// to.  Slot r: rank r's satisfy.
+static void member_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                       arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)depc;
+  (void)depv;
+  unsigned int i = (unsigned int)paramv[0];
+  unsigned int nrank = (unsigned int)paramv[1];
+  if (arts_get_current_rank() != i % nrank) {
+    arts_printf("  FAIL: EDT member %u ran on rank %u, its home is %u\n", i,
+                arts_get_current_rank(), i % nrank);
+    arts_test_fail();
+  }
+  arts_event_satisfy((arts_guid_t)paramv[2], NULL_GUID);
+}
+
+/// Per-rank checker.  paramv: the EDT range, the event range, nrank, the judge
+/// and the latch the member EDTs report to.
 static void checker_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                         arts_edt_dep_t depv[]) {
   (void)paramc;
   (void)depc;
   (void)depv;
-  arts_guid_t db_range = (arts_guid_t)paramv[0];
+  arts_guid_t edt_range = (arts_guid_t)paramv[0];
   arts_guid_t ev_range = (arts_guid_t)paramv[1];
   unsigned int nrank = (unsigned int)paramv[2];
   arts_guid_t judge = (arts_guid_t)paramv[3];
+  uint64_t member_params[3] = {0, nrank, paramv[4]};
   unsigned int me = arts_get_current_rank();
-  unsigned int ndb = db_count(nrank);
+  unsigned int nedt = edt_count(nrank);
   unsigned int nev = event_count(nrank);
   bool ok = true;
 
   uint64_t *list = NULL;
   arts_guid_t list_db =
-      arts_db_create((void **)&list, (ndb + nev) * sizeof(uint64_t), ARTS_DB,
+      arts_db_create((void **)&list, (nedt + nev) * sizeof(uint64_t), ARTS_DB,
                      ARTS_DB_PROP_NONE, &(arts_db_hint_t){.rank = me});
 
-  for (unsigned int i = 0; i < ndb; i++) {
-    arts_guid_t g = arts_guid_from_index(db_range, i);
+  for (unsigned int i = 0; i < nedt; i++) {
+    arts_guid_t g = arts_guid_from_index(edt_range, i);
     list[i] = (uint64_t)g;
-    if (!check_member(db_range, i, nrank, ARTS_GUID_DB)) {
+    if (!check_member(edt_range, i, nrank, ARTS_GUID_EDT)) {
       ok = false;
       continue;
     }
     if (i % nrank == me) {
-      uint64_t *ptr = (uint64_t *)arts_db_create_with_guid(
-          g, 2 * sizeof(uint64_t), ARTS_DB, ARTS_DB_PROP_NONE, NULL);
-      if (ptr == NULL) {
-        arts_printf("  FAIL: rank %u idx %u local DB create returned NULL\n",
+      member_params[0] = i;
+      if (arts_edt_create(member_edt, 3, member_params, nrank,
+                          &(arts_edt_hint_t){.guid = g}) != g) {
+        arts_printf("  FAIL: rank %u idx %u EDT create returned another "
+                    "GUID\n",
                     me, i);
         arts_test_fail();
         ok = false;
-      } else {
-        ptr[0] = (uint64_t)me;
-        ptr[1] = (uint64_t)i;
-        arts_db_release(g);
       }
     }
   }
 
   for (unsigned int i = 0; i < nev; i++) {
     arts_guid_t e = arts_guid_from_index(ev_range, i);
-    list[ndb + i] = (uint64_t)e;
+    list[nedt + i] = (uint64_t)e;
     if (!check_member(ev_range, i, nrank, ARTS_GUID_EVENT)) {
       ok = false;
       continue;
@@ -173,6 +192,10 @@ static void checker_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       }
     }
   }
+  for (unsigned int i = 0; i < nedt; i++) {
+    arts_edt_satisfy_slot(arts_guid_from_index(edt_range, i), me, NULL_GUID,
+                          DB_MODE_NULL);
+  }
   for (unsigned int i = 0; i < nev; i++) {
     arts_event_satisfy(arts_guid_from_index(ev_range, i), NULL_GUID);
   }
@@ -182,8 +205,8 @@ static void checker_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   if (ok) {
     arts_printf("  PASS: rank %u home == idx %% nrank and home placement "
-                "agrees for all %u DB and %u event members\n",
-                me, ndb, nev);
+                "agrees for all %u EDT and %u event members\n",
+                me, nedt, nev);
   }
 }
 
@@ -218,48 +241,15 @@ static void judge_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
 }
 
-/// paramv: the DB range and nrank.  Slot i: DB member i, RO.
-static void collector_edt(uint32_t paramc, const uint64_t *paramv,
-                          uint32_t depc, arts_edt_dep_t depv[]) {
+/// Runs once every member EDT has run.
+static void edts_ran_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                         arts_edt_dep_t depv[]) {
   (void)paramc;
-  arts_guid_t db_range = (arts_guid_t)paramv[0];
-  unsigned int nrank = (unsigned int)paramv[1];
-  bool ok = true;
-  for (uint32_t i = 0; i < depc; i++) {
-    const uint64_t *p = (const uint64_t *)depv[i].ptr;
-    if (depv[i].guid != arts_guid_from_index(db_range, i) || p == NULL) {
-      arts_printf("  FAIL: collector slot %u holds no member %u\n", i, i);
-      arts_test_fail();
-      ok = false;
-    } else if (p[0] != i % nrank || p[1] != i) {
-      arts_printf("  FAIL: member %u holds home %lu index %lu, expected home "
-                  "%u\n",
-                  i, (unsigned long)p[0], (unsigned long)p[1], i % nrank);
-      arts_test_fail();
-      ok = false;
-    }
-  }
-  if (ok) {
-    arts_printf("  PASS: every DB member read through its derived GUID holds "
-                "its home's rank (%u members)\n",
-                depc);
-  }
-}
-
-/// Runs once every checker has finished.  paramv: the DB range and nrank.
-static void collect_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
-                        arts_edt_dep_t depv[]) {
-  (void)paramc;
+  (void)paramv;
   (void)depc;
   (void)depv;
-  arts_guid_t db_range = (arts_guid_t)paramv[0];
-  unsigned int ndb = db_count((unsigned int)paramv[1]);
-  arts_guid_t collector =
-      arts_edt_create(collector_edt, 2, paramv, ndb, &ARTS_EDT_HINT_DEFAULTS);
-  for (unsigned int i = 0; i < ndb; i++) {
-    arts_add_dependence(arts_guid_from_index(db_range, i), collector, i,
-                        DB_MODE_RO);
-  }
+  arts_printf("  PASS: every EDT member ran on its home once every rank "
+              "satisfied it\n");
 }
 
 /// Runs once every event member has fired.  paramv[0]: the event range.
@@ -303,13 +293,13 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   arts_printf("=== round_robin_home_distribution (%u ranks) ===\n", nrank);
 
-  unsigned int ndb = db_count(nrank);
+  unsigned int nedt = edt_count(nrank);
   unsigned int nev = event_count(nrank);
-  arts_guid_t db_range =
-      arts_guid_reserve_range(ARTS_GUID_DB, ndb, ARTS_HINT_ROUND_ROBIN);
+  arts_guid_t edt_range =
+      arts_guid_reserve_range(ARTS_GUID_EDT, nedt, ARTS_HINT_ROUND_ROBIN);
   arts_guid_t ev_range =
       arts_guid_reserve_range(ARTS_GUID_EVENT, nev, ARTS_HINT_ROUND_ROBIN);
-  if (db_range == NULL_GUID || ev_range == NULL_GUID) {
+  if (edt_range == NULL_GUID || ev_range == NULL_GUID) {
     arts_printf("  FAIL: round_robin reserve_range returned NULL_GUID\n");
     arts_test_fail();
     arts_shutdown();
@@ -324,7 +314,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_edt_hint_t in_group = ARTS_EDT_HINT_DEFAULTS;
   in_group.group = group;
 
-  uint64_t nlist = ndb + nev;
+  uint64_t nlist = nedt + nev;
   arts_guid_t judge = arts_edt_create(judge_edt, 1, &nlist, nrank, &in_group);
 
   uint64_t ev_param = (uint64_t)ev_range;
@@ -335,20 +325,20 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                         DB_MODE_NULL);
   }
 
-  arts_guid_t creators = arts_event_create(&gh);
-  uint64_t collect_params[2] = {(uint64_t)db_range, (uint64_t)nrank};
-  arts_guid_t collect =
-      arts_edt_create(collect_edt, 2, collect_params, 1, &in_group);
-  arts_add_dependence(creators, collect, 0, DB_MODE_NULL);
+  arts_event_hint_t lh = ARTS_EVENT_HINT_LATCH((int32_t)nedt);
+  lh.auto_destroy = true;
+  arts_guid_t members_ran = arts_event_create(&lh);
+  arts_guid_t ran = arts_edt_create(edts_ran_edt, 0, NULL, 1, &in_group);
+  arts_add_dependence(members_ran, ran, 0, DB_MODE_NULL);
 
-  uint64_t params[4] = {(uint64_t)db_range, (uint64_t)ev_range, (uint64_t)nrank,
-                        (uint64_t)judge};
+  uint64_t params[5] = {(uint64_t)edt_range, (uint64_t)ev_range,
+                        (uint64_t)nrank, (uint64_t)judge,
+                        (uint64_t)members_ran};
   for (unsigned int r = 0; r < nrank; r++) {
-    arts_edt_create(checker_edt, 4, params, 0,
-                    &(arts_edt_hint_t){.rank = r, .group = creators});
+    arts_edt_create(checker_edt, 5, params, 0,
+                    &(arts_edt_hint_t){.rank = r, .group = in_group.group});
   }
   arts_event_satisfy_slot(group, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
-  arts_event_satisfy_slot(creators, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 int main(int argc, char **argv) {

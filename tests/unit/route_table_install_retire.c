@@ -3,12 +3,13 @@
  * route_table_install_retire — the install primitive's promise and the
  * retire forms' single flight.
  *
- * arts_route_table_install_handle_if_absent installs a control block made by
+ * arts_route_table_install_or_get installs a control block made by
  * arts_route_table_make_handle into an empty slot only, the caller holding a
  * ref of its own across it (install_obj): of concurrent installs of one key
- * exactly ONE wins; a loser abandons its cb (the abandon must NOT run the
- * deleter — the loser keeps owning its object).  What a losing create does
- * next (the engine parks it) is not this primitive's.
+ * exactly ONE wins; a loser gets the occupant pinned and keeps its own cb
+ * unpublished, abandoning it (the abandon must NOT run the deleter — the
+ * loser keeps owning its object).  What a losing create does next (the
+ * engine parks it) is not this primitive's.
  * Every retire form is single-flight (of concurrent retires of one object
  * exactly one returns true) and RETURNS the slot: the key is zeroed after
  * the cb is released, so the slot is claimable again.
@@ -126,6 +127,7 @@ static void hook_after_claim(void) {
 #include "../../libs/src/core/utils/shared.c"
 
 #include "counter_stubs.h"
+#include "route_install_test.h"
 
 /* Installs `obj` under `key` as the runtime's creates do: wrapped in its
  * control block, with a reference of the caller's own held across the
@@ -134,7 +136,7 @@ static void hook_after_claim(void) {
 static arts_shared_ptr_t install_obj(void *obj, arts_guid_t key) {
   arts_shared_ptr_t cb = arts_route_table_make_handle(obj, key);
   arts_shared_ptr_t mine = arts_shared_copy(cb);
-  if (arts_route_table_install_handle_if_absent(cb, key)) {
+  if (install_if_absent(cb, key)) {
     return mine;
   }
   arts_shared_release(&mine);
@@ -219,7 +221,7 @@ static bool h_install(void *obj, arts_guid_t key, arts_shared_ptr_t *held) {
   arts_shared_ptr_t cb = arts_shared_make(obj, NULL);
   arts_shared_set_tag(cb, (uint64_t)key);
   arts_shared_ptr_t pin = arts_shared_copy(cb);
-  bool won = arts_route_table_install_handle_if_absent(cb, key);
+  bool won = install_if_absent(cb, key);
   if (won && held != NULL) {
     *held = pin;
   } else {

@@ -9,11 +9,11 @@
  * general-purpose user code. It deliberately accesses ARTS internal headers
  * (route table, runtime types) to implement features like artsDbDataFromGuid().
  *
- * Labeled GUIDs: one rule for every labeled create (data block, event or EDT),
- * whatever properties it carries.  A create whose label names a live object
- * parks where the label's object lives (for a data block, the creating
- * rank's cache or the home) until that object's life ends (a destroy, or an
- * EDT's completion), then installs as the label's next generation; nothing is
+ * Labeled GUIDs: one rule for every labeled create (event or EDT), whatever
+ * properties it carries; a data block takes no label: its GUID is issued by
+ * its create.  A create whose label names a live object parks where the
+ * label's object lives until that object's life ends (a destroy, or an EDT's
+ * completion), then installs as the label's next generation; nothing is
  * replaced and no creator is told anything.  GUID_PROP_CHECK and
  * GUID_PROP_BLOCK are accepted and ignored.  Only the create waits: every
  * other message for the next generation (a satisfy, a dependence, including
@@ -708,23 +708,13 @@ u8 ocrDbCreate(ocrGuid_t *db, void **addr, u64 len, u16 flags, ocrHint_t *hint,
   if (db == NULL) {
     return OCR_EINVAL;
   }
-  int aff = extract_db_affinity(hint);
-
   if (flags & GUID_PROP_IS_LABELED) {
-    arts_guid_t labeledGuid = db->guid;
-
-    /* DB_PROP_NO_ACQUIRE: same translation as the non-labeled branch below --
-     * the creator does not acquire; home stays the sole idle owner and no
-     * pointer is handed back.  Otherwise the pointer is this create's image
-     * of the block, whether the create installs now or waits for the
-     * label's previous block to be destroyed. */
-    unsigned int arts_flags = (flags & DB_PROP_NO_ACQUIRE)
-                                  ? ARTS_DB_PROP_NO_ACQUIRE
-                                  : ARTS_DB_PROP_NONE;
-    *addr = arts_db_create_with_guid(labeledGuid, len, ARTS_DB,
-                                      arts_flags, NULL);
-    return 0;
+    (void)fprintf(stderr, "[ARTS] unsupported OCR data block property "
+                          "GUID_PROP_IS_LABELED (a data block is named by its "
+                          "create)\n");
+    abort();
   }
+  int aff = extract_db_affinity(hint);
 
   /* No affinity hint: a NULL hint defers to arts_db_create's own no-hint
    * home policy. */
@@ -995,8 +985,6 @@ void ocrElsUserSet(u8 offset, ocrGuid_t data) {
 
 static arts_guid_kind_t kindToArtsType(ocrGuidUserKind kind) {
   switch (kind) {
-  case GUID_USER_DB:
-    return ARTS_GUID_DB;
   case GUID_USER_EDT:
   case GUID_USER_EDT_TEMPLATE:
     return ARTS_GUID_EDT;
@@ -1007,10 +995,9 @@ static arts_guid_kind_t kindToArtsType(ocrGuidUserKind kind) {
   case GUID_USER_EVENT_LATCH:
     return ARTS_GUID_EVENT;
   default:
-    /* Unknown OCR GUID kind.  Return ARTS_GUID_LAST (out-of-range
-     * sentinel) so the downstream arts_guid_reserve_range() rejects it
-     * via its `type >= ARTS_GUID_LAST` validation rather than silently
-     * producing a range with type bits 0 (ARTS_GUID_RESERVED). */
+    /* An OCR kind with no ARTS range kind.  ocrGuidRangeCreate answers
+     * ARTS_GUID_LAST with its error return and never hands it to the
+     * runtime, whose reserve would end the run. */
     return ARTS_GUID_LAST;
   }
 }
@@ -1021,18 +1008,23 @@ u8 ocrGuidRangeCreate(ocrGuid_t *rangeGuid, u64 numberGuid,
   if (!rangeGuid || numberGuid == 0 || numberGuid > UINT_MAX) {
     return 1;
   }
+  if (kind == GUID_USER_DB) {
+    (void)fprintf(stderr, "[ARTS] unsupported OCR GUID range kind "
+                          "GUID_USER_DB (a data block is named by its "
+                          "create)\n");
+    abort();
+  }
   arts_guid_kind_t artsType = kindToArtsType(kind);
+  if (artsType == ARTS_GUID_LAST) {
+    return 1;
+  }
 
   /* Every call reserves a fresh range: a program that names one range on
    * several ranks creates it once and passes the range GUID on.  The
    * distributed-range mode spreads the homes over the ranks (idx % nrank), and
    * ocrGuidFromIndex(range, idx) gives the same GUID on every rank. */
-  arts_guid_t range = arts_guid_reserve_range(
-      artsType, (unsigned int)numberGuid, ARTS_HINT_ROUND_ROBIN);
-  if (range == NULL_GUID) {
-    return 1;
-  }
-  rangeGuid->guid = range;
+  rangeGuid->guid = arts_guid_reserve_range(artsType, (unsigned int)numberGuid,
+                                            ARTS_HINT_ROUND_ROBIN);
   return 0;
 }
 
@@ -1051,10 +1043,11 @@ u8 ocrGuidFromIndex(ocrGuid_t *outGuid, ocrGuid_t rangeGuid, u64 idx) {
   if (!outGuid || idx > UINT_MAX) {
     return 1;
   }
-  outGuid->guid = arts_guid_from_index(rangeGuid.guid, (unsigned int)idx);
-  if (ocrGuidIsNull(*outGuid)) {
-    return 1;
+  arts_guid_kind_t kind = arts_guid_get_kind(rangeGuid.guid);
+  if (kind != ARTS_GUID_EDT && kind != ARTS_GUID_EVENT) {
+    return 1; /* rangeGuid names no range of EDTs or events */
   }
+  outGuid->guid = arts_guid_from_index(rangeGuid.guid, (unsigned int)idx);
   return 0;
 }
 

@@ -17,8 +17,8 @@
  *   - fresh: EDTs, events and data blocks (acquiring and NO_ACQUIRE) created
  *     for this rank with minted GUIDs, and the creator's own descriptor of a
  *     data block homed on another rank;
- *   - general: creates of reserved GUIDs, and each EDT, event and data block
- *     a create on another rank homed here.
+ *   - general: creates of reserved EDT and event GUIDs, and each EDT, event
+ *     and data block a create on another rank homed here.
  * Only GUIDs the program made are judged, so the runtime's own creates do
  * not enter the oracle.
  */
@@ -153,7 +153,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     check_later(arts_event_create(&lh), GENERAL, 1u, here, group, true);
   }
 
-  /* Data blocks: minted (acquiring and NO_ACQUIRE), and reserved. */
+  /* Data blocks: minted, acquiring and NO_ACQUIRE. */
   void *p = NULL;
   arts_db_hint_t dh = ARTS_DB_HINT_DEFAULTS;
   dh.rank = here;
@@ -163,11 +163,6 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_guid_t d2 =
       arts_db_create(&p, 64, ARTS_DB, ARTS_DB_PROP_NO_ACQUIRE, &dh);
   check_later(d2, FRESH, 2u, here, group, true);
-  arts_db_hint_t rh = ARTS_DB_HINT_DEFAULTS;
-  rh.guid = arts_guid_reserve(ARTS_GUID_DB, here);
-  arts_guid_t d3 = arts_db_create(&p, 64, ARTS_DB, ARTS_DB_PROP_NONE, &rh);
-  arts_db_release(d3);
-  check_later(d3, GENERAL, 2u, here, group, true);
 
   /* Every other rank: a minted EDT, event and data block homed there. */
   for (unsigned int r = 0; r < n; r++) {

@@ -74,6 +74,7 @@ static void test_after_claim(arts_guid_t key);
 #include "../../libs/src/core/utils/shared.c"
 
 #include "counter_stubs.h"
+#include "route_install_test.h"
 
 /* Installs `obj` under `key` as the runtime's creates do: wrapped in its
  * control block, with a reference of the caller's own held across the
@@ -82,7 +83,7 @@ static void test_after_claim(arts_guid_t key);
 static arts_shared_ptr_t install_obj(void *obj, arts_guid_t key) {
   arts_shared_ptr_t cb = arts_route_table_make_handle(obj, key);
   arts_shared_ptr_t mine = arts_shared_copy(cb);
-  if (arts_route_table_install_handle_if_absent(cb, key)) {
+  if (install_if_absent(cb, key)) {
     return mine;
   }
   arts_shared_release(&mine);

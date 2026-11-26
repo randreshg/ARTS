@@ -228,8 +228,7 @@ bool arts_net_send_held(int rank, const char *message, unsigned int length,
     _exit(1);                                                                  \
   }
 UNREACHED(bool arts_db_create_install_local(arts_shared_ptr_t cb,
-                                            struct arts_route_item_s *s,
-                                            bool f))
+                                            struct arts_route_item_s *s))
 UNREACHED(void arts_db_free(void *ptr))
 UNREACHED(void arts_db_buf_ref_release_cb(void *arg))
 UNREACHED(void arts_net_put_payload(int r, uint64_t a, uint64_t k, uint64_t t,
@@ -260,7 +259,6 @@ UNREACHED(void arts_db_buf_write_inplace(struct arts_db_cache_s *c,
 UNREACHED(void arts_cxl_store_flush(const void *p, size_t bytes, bool producer))
 UNREACHED(void *arts_cxl_store_alloc(size_t bytes))
 UNREACHED(bool arts_cxl_store_contains(const void *p))
-UNREACHED(bool arts_db_buf_withdraw(struct arts_db_cache_s *c, const void *p))
 #endif
 
 /* ---- the buffer plane: no block in these scenarios has bytes ---- */

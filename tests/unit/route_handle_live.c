@@ -21,9 +21,8 @@
  *      hands the caller the counted result; a miss returns NULL.  The handle
  *      passed in is never released.
  *   E. Every install of the global table records the home:
- *      install_handle_into, install_handle_if_absent and install_handle_fresh;
- *      a lost install records none, and neither does a mirror slot's
- *      install_data.
+ *      install_handle_into and install_handle_fresh; a mirror slot's
+ *      install_data records none.
  *   F. An identity retire of a handle with a home reaches its slot with no
  *      search, a stale handle (retired, home kept) takes nothing from the
  *      key's next generation, and a handle with no home falls back to the
@@ -118,6 +117,8 @@ static void run_armed(void (**armed)(void)) {
 #include "../../libs/src/core/gas/route_table.c"
 #include "../../libs/src/core/utils/shared.c"
 
+#include "route_install_test.h"
+
 struct arts_runtime_shared_s arts_node_info;
 ARTS_THREAD_LOCAL_IE struct arts_runtime_private_s arts_thread_info;
 
@@ -151,7 +152,7 @@ void arts_ooo_drain_on(struct arts_route_item_s *s,
 static arts_shared_ptr_t install_obj(void *obj, arts_guid_t key) {
   arts_shared_ptr_t cb = arts_route_table_make_handle(obj, key);
   arts_shared_ptr_t mine = arts_shared_copy(cb);
-  if (arts_route_table_install_handle_if_absent(cb, key)) {
+  if (install_if_absent(cb, key)) {
     return mine;
   }
   arts_shared_release(&mine);
@@ -547,24 +548,6 @@ static int run_e(void) {
     FAIL("E: install_handle_into did not record its slot\n");
   }
 
-  arts_guid_t g2 = arts_guid_reserve(ARTS_GUID_EVENT, 0);
-  arts_shared_ptr_t cb2 = arts_route_table_make_handle(new_obj(13), g2);
-  arts_shared_ptr_t h2 = arts_shared_copy(cb2);
-  if (!arts_route_table_install_handle_if_absent(cb2, g2) ||
-      arts_shared_home(h2) != (void *)slot_of(g2) ||
-      !arts_route_table_live(h2, g2)) {
-    FAIL("E: install_handle_if_absent did not record its slot\n");
-  }
-
-  int *lost = new_obj(14);
-  arts_shared_ptr_t cl = arts_route_table_make_handle(lost, g2);
-  if (arts_route_table_install_handle_if_absent(cl, g2) ||
-      arts_shared_home(cl) != NULL) {
-    FAIL("E: a lost install_handle_if_absent recorded a home\n");
-  }
-  arts_shared_abandon(&cl);
-  free(lost);
-
   arts_guid_t g3 = arts_guid_reserve(ARTS_GUID_EVENT, 0);
   arts_shared_ptr_t cb3 = arts_route_table_make_handle(new_obj(15), g3);
   arts_shared_ptr_t h3 = arts_shared_copy(cb3);
@@ -589,18 +572,16 @@ static int run_e(void) {
   arts_route_table_delete(mirror);
 
   if (!arts_route_table_set_destroyed_if(g1, h1) ||
-      !arts_route_table_set_destroyed_if(g2, h2) ||
       !arts_route_table_set_destroyed_if(g3, h3)) {
     FAIL("E: a retire through the recorded home failed\n");
   }
   arts_shared_release(&h1);
-  arts_shared_release(&h2);
   arts_shared_release(&h3);
-  if (deletes() != 3) {
-    FAIL("E: %d frees for three installed objects\n", deletes());
+  if (deletes() != 2) {
+    FAIL("E: %d frees for two installed objects\n", deletes());
   }
-  if (g_drains != 3) {
-    FAIL("E: %d drains saw their install, want 3\n", g_drains);
+  if (g_drains != 2) {
+    FAIL("E: %d drains saw their install, want 2\n", g_drains);
   }
   return 0;
 }

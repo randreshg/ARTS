@@ -153,6 +153,55 @@ if(ARTS_BUILD_TESTS AND ARTS_TEST_REFERENCE_TREE)
         FAIL_REGULAR_EXPRESSION "FAIL")
 endif()
 
+# A data-block GUID range and a labeled data-block create are refused with an
+# abort, as an EW dependence is, through the same wrapper.  ocrGuidFromIndex
+# answers a GUID that names no range of EDTs or events with OCR's error return
+# and the program goes on.  No cell changes them, so they are built and
+# registered in the reference tree only.
+foreach(_name db_range_refused db_label_refused index_range_refused)
+    add_executable(ocr_shim_${_name} EXCLUDE_FROM_ALL
+        ${CMAKE_SOURCE_DIR}/tests/shim/${_name}.c
+        $<TARGET_OBJECTS:ocr_arts_objects>)
+    target_include_directories(ocr_shim_${_name} PRIVATE
+        ${OCR_ROOT}/inc ${SHIM_OCR_OPTIONS_DIR})
+    target_compile_definitions(ocr_shim_${_name} PRIVATE
+        ENABLE_EXTENSION_LABELING ${SHIM_OCR_TYPE_DEFINE})
+    set_property(TARGET ocr_shim_${_name} PROPERTY
+        POSITION_INDEPENDENT_CODE OFF)
+    target_compile_options(ocr_shim_${_name} PRIVATE
+        ${ARTS_NON_PIE_COMPILE_OPTIONS})
+    target_link_options(ocr_shim_${_name} PRIVATE ${ARTS_NON_PIE_LINK_OPTIONS})
+    target_link_libraries(ocr_shim_${_name} PRIVATE arts_static)
+endforeach()
+if(ARTS_BUILD_TESTS AND ARTS_TEST_REFERENCE_TREE)
+    arts_test_cfg(_cfg 1n_20w)
+    foreach(_t db_range_refused db_label_refused)
+        set_target_properties(ocr_shim_${_t} PROPERTIES EXCLUDE_FROM_ALL FALSE)
+        arts_add_test(ocr_shim_${_t} COMMAND bash -c
+            "$<TARGET_FILE:ocr_shim_${_t}> 2>&1\ntest $? -eq 134")
+    endforeach()
+    set_tests_properties(ocr_shim_db_range_refused ocr_shim_db_label_refused
+        PROPERTIES
+        LABELS "single_node"
+        TIMEOUT 15
+        RESOURCE_LOCK "arts_runtime"
+        ENVIRONMENT "ARTS_CONFIG=${_cfg}"
+        FAIL_REGULAR_EXPRESSION "FAIL")
+    set_tests_properties(ocr_shim_db_range_refused PROPERTIES
+        PASS_REGULAR_EXPRESSION
+        "\\[ARTS\\] unsupported OCR GUID range kind GUID_USER_DB")
+    set_tests_properties(ocr_shim_db_label_refused PROPERTIES
+        PASS_REGULAR_EXPRESSION
+        "\\[ARTS\\] unsupported OCR data block property GUID_PROP_IS_LABELED")
+    set_target_properties(ocr_shim_index_range_refused PROPERTIES
+        EXCLUDE_FROM_ALL FALSE)
+    register_single_node_test(ocr_shim_index_range_refused TIMEOUT 30)
+    set_tests_properties(ocr_shim_index_range_refused PROPERTIES
+        PASS_REGULAR_EXPRESSION
+        "PASS: a GUID that names no range is answered with an error"
+        FAIL_REGULAR_EXPRESSION "FAIL")
+endif()
+
 # A dependence that carries NULL_GUID in the default (read-write) mode: an
 # event satisfied with NULL_GUID on a create-time slot, and a completion event
 # satisfied with no result.  Neither slot names a data block, so the consumer

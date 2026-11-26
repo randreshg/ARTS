@@ -382,9 +382,9 @@ endif()
 # with the creator (first-touch).  No-hint EDT placement is the configuration
 # key nohint_edt_spread_depth's.
 set(ARTS_NOHINT_DB_HOME "CREATOR" CACHE STRING
-    "No-hint DB home policy (NULL hint; explicit hint rank or pre-reserved \
-GUID always wins): CREATOR (default; first-touch — home stays on the \
-creating rank) or ROUNDROBIN (distribute homes across ranks)")
+    "No-hint DB home policy (NULL hint; an explicit hint rank always wins): \
+CREATOR (default; first-touch — home stays on the creating rank) or \
+ROUNDROBIN (distribute homes across ranks)")
 set_property(CACHE ARTS_NOHINT_DB_HOME PROPERTY STRINGS CREATOR ROUNDROBIN)
 if(NOT ARTS_NOHINT_DB_HOME MATCHES "^(CREATOR|ROUNDROBIN)$")
   message(FATAL_ERROR

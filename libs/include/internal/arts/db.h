@@ -282,12 +282,11 @@ uint64_t arts_db_descriptors_ended(void);
  * not the block's home, the block is announced to its home.  On a loss
  * nothing changes: the ref is still the caller's.  `slot`: the GUID's slot
  * the engine found empty (the OOO_DB_CREATE body's local shape), installed
- * into once; NULL resolves the GUID here.  `fresh`: the create minted the
- * GUID and has named it to no one, so it reserves by
- * arts_route_table_reserve_fresh and was never registered as parked. */
+ * into once; NULL: the create minted the GUID and has named it to no one, so
+ * it reserves by arts_route_table_reserve_fresh. */
 struct arts_route_item_s;
 bool arts_db_create_install_local(arts_shared_ptr_t cb,
-                                  struct arts_route_item_s *slot, bool fresh);
+                                  struct arts_route_item_s *slot);
 
 /* User-visible payload pointer for a DB: a coherent DB's installed coherence
  * buffer, and the inline payload after the wrapping struct for every other

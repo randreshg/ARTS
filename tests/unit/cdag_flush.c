@@ -27,12 +27,13 @@
  *     exact;
  *   - zero size: a block with no bytes resolves both access modes to a NULL
  *     pointer and lets the EDTs run;
- *   - size discovery: a label carries no size, so the first fetch on a rank is
- *     answered with the size alone and asked again with a landing, in both
- *     modes, and the whole block arrives and returns;
  *   - spent credit: a write-back whose landing credit is gone asks the home for
  *     one and still delivers the bytes; the credit is spent by hand from inside
- *     the write acquisition, through the block's descriptor (whitebox).
+ *     the write acquisition, through the block's descriptor (whitebox);
+ *   - odd size: a block of 6000 bytes, below the capacity of the landing that
+ *     carries it, read on one rank, rewritten on another and read again, each
+ *     byte checked: the fetch and the write-back of a block whose length is
+ *     below its landing's capacity carry exactly the block's bytes.
  * The last four need a rank that is not the block's home.  A racing reader
  * reads a word a writer writes, so every counter word is accessed only
  * atomically, in the ordered cases too.
@@ -369,104 +370,6 @@ static void case_zero_size(unsigned int away, arts_guid_t group) {
   arts_add_dependence(db, r, 0, DB_MODE_RO);
 }
 
-/* --- size discovery ------------------------------------------------------ */
-
-/* Not a power of two, so a landing sized from anything but the answer shows
- * as a wrong byte index. */
-#define DISCOVERY_BYTES 6000u
-
-static uint8_t first_byte(unsigned int i) { return (uint8_t)(i * 7u + 1u); }
-static uint8_t second_byte(unsigned int i) { return (uint8_t)(i * 13u + 5u); }
-
-static bool holds(const uint8_t *buf, uint8_t (*want)(unsigned int),
-                  const char *who) {
-  if (buf == NULL) {
-    arts_test_fail();
-    arts_printf("FAIL: cdag_flush size discovery %s got NULL storage\n", who);
-    return false;
-  }
-  for (unsigned int i = 0; i < DISCOVERY_BYTES; i++) {
-    if (buf[i] != want(i)) {
-      arts_test_fail();
-      arts_printf("FAIL: cdag_flush size discovery %s byte %u got=%u "
-                  "expected=%u\n",
-                  who, i, (unsigned)buf[i], (unsigned)want(i));
-      return false;
-    }
-  }
-  return true;
-}
-
-static void discovery_reader_edt(uint32_t paramc, const uint64_t *paramv,
-                                 uint32_t depc, arts_edt_dep_t depv[]) {
-  (void)paramc;
-  (void)depc;
-  (void)holds((const uint8_t *)depv[0].ptr,
-              paramv[0] ? second_byte : first_byte,
-              paramv[0] ? "final reader" : "reader");
-}
-
-static void discovery_writer_edt(uint32_t paramc, const uint64_t *paramv,
-                                 uint32_t depc, arts_edt_dep_t depv[]) {
-  (void)paramc;
-  (void)paramv;
-  (void)depc;
-  uint8_t *buf = (uint8_t *)depv[0].ptr;
-  if (!holds(buf, first_byte, "writer")) {
-    return;
-  }
-  for (unsigned int i = 0; i < DISCOVERY_BYTES; i++) {
-    buf[i] = second_byte(i);
-  }
-}
-
-static void case_size_discovery(arts_guid_t group) {
-  unsigned int ranks = arts_get_total_ranks();
-  unsigned int reader_rank = 1u;
-  unsigned int writer_rank = (ranks > 2) ? 2u : reader_rank;
-
-  /* Reserved at this rank, so the create is local and the block's home is
-   * the rank that fills it. */
-  arts_guid_t label = arts_guid_reserve(ARTS_GUID_DB, arts_get_current_rank());
-  arts_db_hint_t hint = ARTS_DB_HINT_DEFAULTS;
-  hint.guid = label;
-  void *addr = NULL;
-  arts_db_create(&addr, DISCOVERY_BYTES, ARTS_DB, ARTS_DB_PROP_NONE, &hint);
-  if (addr == NULL) {
-    arts_test_fail();
-    arts_printf("FAIL: cdag_flush labeled create handed no storage\n");
-    return;
-  }
-  for (unsigned int i = 0; i < DISCOVERY_BYTES; i++) {
-    ((uint8_t *)addr)[i] = first_byte(i);
-  }
-  arts_db_release(label);
-
-  arts_guid_t read_done = arts_event_create(&ARTS_EVENT_HINT_DEFAULTS);
-  arts_guid_t write_done = arts_event_create(&ARTS_EVENT_HINT_DEFAULTS);
-
-  uint64_t final_pv[1] = {1};
-  arts_guid_t fin =
-      arts_edt_create(discovery_reader_edt, 1, final_pv, 2,
-                      &(arts_edt_hint_t){.rank = 0, .group = group});
-  arts_add_dependence(label, fin, 0, DB_MODE_RO);
-  arts_add_dependence(write_done, fin, 1, DB_MODE_NULL);
-
-  arts_guid_t wtr = arts_edt_create(
-      discovery_writer_edt, 0, NULL, 2,
-      &(arts_edt_hint_t){
-          .rank = writer_rank, .group = group, .completion_event = write_done});
-  arts_add_dependence(label, wtr, 0, DB_MODE_RW);
-  arts_add_dependence(read_done, wtr, 1, DB_MODE_NULL);
-
-  uint64_t first_pv[1] = {0};
-  arts_guid_t rdr = arts_edt_create(
-      discovery_reader_edt, 1, first_pv, 1,
-      &(arts_edt_hint_t){
-          .rank = reader_rank, .group = group, .completion_event = read_done});
-  arts_add_dependence(label, rdr, 0, DB_MODE_RO);
-}
-
 /* --- spent credit -------------------------------------------------------- */
 
 #define CREDIT_SEED 0x1234u
@@ -511,6 +414,91 @@ static void case_spent_credit(unsigned int away, arts_guid_t group) {
   arts_add_dependence(db, wtr, 0, DB_MODE_RW);
 }
 
+/* --- odd size ------------------------------------------------------------ */
+
+#define ODD_BYTES 6000u
+#define ODD_SALT_SEED 3u
+#define ODD_SALT_WRITTEN 11u
+
+static uint8_t odd_byte(uint64_t i, uint64_t salt) {
+  return (uint8_t)(i * 31u + salt);
+}
+
+/* paramv = { salt the bytes must carry }. */
+static void odd_reader_edt(uint32_t paramc, const uint64_t *paramv,
+                           uint32_t depc, arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)depc;
+  const uint8_t *v = (const uint8_t *)depv[0].ptr;
+  if (v == NULL) {
+    arts_test_fail();
+    arts_printf("FAIL: cdag_flush odd size reader got NULL\n");
+    return;
+  }
+  for (uint64_t i = 0; i < ODD_BYTES; i++) {
+    if (v[i] != odd_byte(i, paramv[0])) {
+      arts_test_fail();
+      arts_printf("FAIL: cdag_flush odd size byte %llu got=%u expected=%u\n",
+                  (unsigned long long)i, (unsigned)v[i],
+                  (unsigned)odd_byte(i, paramv[0]));
+      return;
+    }
+  }
+}
+
+/* paramv = { salt to write }. */
+static void odd_writer_edt(uint32_t paramc, const uint64_t *paramv,
+                           uint32_t depc, arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)depc;
+  uint8_t *v = (uint8_t *)depv[0].ptr;
+  if (v == NULL) {
+    arts_test_fail();
+    arts_printf("FAIL: cdag_flush odd size writer got NULL\n");
+    return;
+  }
+  for (uint64_t i = 0; i < ODD_BYTES; i++) {
+    v[i] = odd_byte(i, paramv[0]);
+  }
+}
+
+static void case_odd_size(unsigned int ranks, arts_guid_t group) {
+  unsigned int reader = 1u;
+  unsigned int writer = (ranks > 2u) ? 2u : 1u;
+  uint8_t *addr = NULL;
+  arts_guid_t db =
+      arts_db_create((void **)&addr, ODD_BYTES, ARTS_DB, ARTS_DB_PROP_NONE,
+                     &(arts_db_hint_t){.rank = 0});
+  for (uint64_t i = 0; i < ODD_BYTES; i++) {
+    addr[i] = odd_byte(i, ODD_SALT_SEED);
+  }
+  arts_db_release(db);
+
+  arts_guid_t after_first = arts_event_create(&ARTS_EVENT_HINT_DEFAULTS);
+  arts_guid_t after_write = arts_event_create(&ARTS_EVENT_HINT_DEFAULTS);
+
+  uint64_t wpv[1] = {ODD_SALT_WRITTEN};
+  arts_guid_t last = arts_edt_create(
+      odd_reader_edt, 1, wpv, 2,
+      &(arts_edt_hint_t){.rank = reader, .group = group});
+  arts_add_dependence(db, last, 0, DB_MODE_RO);
+  arts_add_dependence(after_write, last, 1, DB_MODE_NULL);
+
+  arts_guid_t wtr = arts_edt_create(
+      odd_writer_edt, 1, wpv, 2,
+      &(arts_edt_hint_t){
+          .rank = writer, .group = group, .completion_event = after_write});
+  arts_add_dependence(db, wtr, 0, DB_MODE_RW);
+  arts_add_dependence(after_first, wtr, 1, DB_MODE_NULL);
+
+  uint64_t spv[1] = {ODD_SALT_SEED};
+  arts_guid_t first = arts_edt_create(
+      odd_reader_edt, 1, spv, 1,
+      &(arts_edt_hint_t){
+          .rank = reader, .group = group, .completion_event = after_first});
+  arts_add_dependence(db, first, 0, DB_MODE_RO);
+}
+
 static void done_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                      arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -545,9 +533,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   case_private_copy(away, group);
   if (ranks > 1) {
     case_zero_size(away, group);
-    case_size_discovery(group);
     case_spent_credit(away, group);
     case_racing_readers(ranks, group);
+    case_odd_size(ranks, group);
   }
   arts_event_satisfy_slot(group, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }

@@ -15,6 +15,7 @@
 
 #include "arts/coherence/buffer.h"
 
+#include <assert.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -97,17 +98,6 @@ static inline void buf_note_present(struct arts_db_cache_s *cache) {
 }
 
 #ifdef ARTS_CXL_DIRECT
-/* Does this cache already name a descriptor?  Read from the slot itself, with
- * no ref taken.  Where the descriptor's payload is the block's own storage the
- * slot is the only sound answer to "does this block still need materializing":
- * a presence HINT is written after the transition it reports, so a thread
- * whose install was undone in between can leave the hint saying "present" over
- * an empty slot, and every later materialization would then stand down
- * forever.  The slot cannot say that: it is the thing being decided. */
-static inline bool buf_slot_filled(struct arts_db_cache_s *cache) {
-  return !arts_shared_slot_empty(&cache->buffer);
-}
-
 bool arts_db_buf_adopt_external(struct arts_db_cache_s *cache, void *payload,
                                 uint64_t version, uint64_t db_size) {
   if (payload == NULL) {
@@ -137,13 +127,9 @@ bool arts_db_buf_adopt_external(struct arts_db_cache_s *cache, void *payload,
     arts_shared_ptr_t cur = arts_db_buf_acquire(cache);
     struct arts_db_buffer_s *inc =
         (struct arts_db_buffer_s *)arts_shared_get(cur);
-    if (inc == NULL) {
-      /* The winner's descriptor has since been withdrawn, so the block has no
-       * payload again: this call installed none either, and the slot still
-       * needs materializing. */
-      arts_db_buf_release(&cur);
-      return false;
-    }
+    /* Where the store is external only the cache's destructor empties its
+     * slot, and the caller holds the cache: the winner's descriptor stays. */
+    assert(inc != NULL);
     if ((void *)inc->data != payload) {
       ARTS_ERROR("coherence: a block already has a descriptor naming other "
                  "storage");
@@ -170,13 +156,6 @@ struct arts_db_buffer_s *arts_db_buf_for_payload(struct arts_db_cache_s *cache,
 #endif /* ARTS_CXL_DIRECT */
 
 bool arts_db_buf_ensure(struct arts_db_cache_s *cache, uint64_t db_size) {
-#ifdef ARTS_CXL_DIRECT
-  /* The slot, not the presence hint: see buf_slot_filled.  It costs a wide
-   * atomic load instead of a byte load and takes no ref. */
-  if (buf_slot_filled(cache)) {
-    return false;
-  }
-#else
   /* A byte load answers the common case: once anything has installed a
    * buffer, no later use has to materialize one, and asking the slot itself
    * would cost every acquire a refcount round-trip on a shared line.
@@ -188,7 +167,6 @@ bool arts_db_buf_ensure(struct arts_db_cache_s *cache, uint64_t db_size) {
       0u) {
     return false;
   }
-#endif
   if (db_size == 0) {
     /* A zero-sized block has no storage to hold: NULL is its defined
      * value. */
@@ -228,33 +206,6 @@ bool arts_db_buf_ensure(struct arts_db_cache_s *cache, uint64_t db_size) {
   return true;
 #endif
 }
-
-#ifdef ARTS_USE_CXL
-bool arts_db_buf_withdraw(struct arts_db_cache_s *cache, const void *payload) {
-  if (cache == NULL || payload == NULL) {
-    return false;
-  }
-  arts_shared_ptr_t h = arts_db_buf_acquire(cache);
-  struct arts_db_buffer_s *b = (struct arts_db_buffer_s *)arts_shared_get(h);
-  bool withdrawn = false;
-  if (b != NULL && (const void *)b->data == payload) {
-    /* The load ref pins the descriptor against reuse, so the slot's own
-     * identity cannot have drifted and returned under the compare. */
-    withdrawn = arts_shared_slot_compare_exchange(&cache->buffer, h, NULL);
-    if (withdrawn) {
-      /* The slot is empty again, so the block needs materializing again.  The
-       * flag is a hint with one safe direction: a 1 over a descriptor another
-       * thread installs in between costs that descriptor's next materialize
-       * one failed install and nothing else, whereas a 0 over an empty slot
-       * is a claim no later call corrects -- so the restore is unconditional. */
-      atomic_store_explicit(&cache->payload_pending, (uint8_t)1,
-                            memory_order_release);
-    }
-  }
-  arts_db_buf_release(&h);
-  return withdrawn;
-}
-#endif
 
 /* Version-conditional publish of a fully-initialized private buffer (fields +
  * payload bytes already set; no cb yet).  Shared by the copy install

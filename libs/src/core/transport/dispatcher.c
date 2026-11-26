@@ -335,11 +335,10 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
     struct arts_msg_db_create_coherent_packet_s *pack =
         (struct arts_msg_db_create_coherent_packet_s *)(packet);
 #ifndef NDEBUG
-    /* Only a create mints a DB GUID with a real size hint, and only its
-     * creator announces it, so the seq lies in the announcer's slice. */
-    if (ARTS_GUID_DB_GET_SZHINT(pack->db_guid) != ARTS_GUID_DB_SZHINT_NONE &&
-        ARTS_GUID_DB_GET_SEQ(pack->db_guid) / arts_db_seq_budget !=
-            pack->header.rank) {
+    /* A create mints a data-block GUID from its own slice of the home's
+     * seqs, and only its creator announces it. */
+    if (ARTS_GUID_DB_GET_SEQ(pack->db_guid) / arts_db_seq_budget !=
+        pack->header.rank) {
       ARTS_ERROR("DB GUID %lu minted by rank %lu arrived from rank %u",
                  (unsigned long)pack->db_guid,
                  (unsigned long)(ARTS_GUID_DB_GET_SEQ(pack->db_guid) /

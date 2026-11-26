@@ -45,18 +45,17 @@
 ///
 /// An event or EDT GUID is minted from a key block its minting thread owns:
 /// each rank owns one slice of the key space, divided into one block per
-/// thread of the rank, workers and progress threads alike.  A DB GUID's
-/// sequence number comes from a slice its minting rank owns.  If a rank's
-/// slice were divided into fewer blocks than it has threads that mint, two
-/// threads' blocks would overlap; if two ranks' slices overlapped, two ranks
-/// would mint the same GUID.  Either way identical GUIDs come out.
+/// thread of the rank, workers and progress threads alike.  If a rank's slice
+/// were divided into fewer blocks than it has threads that mint, two threads'
+/// blocks would overlap; if two ranks' slices overlapped, two ranks would mint
+/// the same GUID.  Either way identical GUIDs come out.
 ///
 /// The test spawns many reserver EDTs per rank (more than workers, so the
 /// scheduler spreads them across every worker thread) that each reserve a batch
-/// of GUIDs, alternating EVENT and DB, for every home in turn, writing them
+/// of GUIDs, alternating EVENT and EDT, for every home in turn, writing them
 /// into a per-rank collection block.  A checker on each rank asserts its own
 /// collection holds no duplicate; once every rank has finished, a checker on
-/// rank 0 acquires every rank's collection and asserts that all of them
+/// rank 0 receives every rank's collection and asserts that all of them
 /// together hold no duplicate and that each GUID carries the kind and home it
 /// was reserved with.
 ///
@@ -78,7 +77,7 @@
 /// a home that depends on its rank and its batch, so each kind is reserved for
 /// every home.
 static arts_guid_kind_t slot_kind(unsigned int slot) {
-  return ((slot % GUIDS_PER_RESERVER) & 1u) ? ARTS_GUID_EVENT : ARTS_GUID_DB;
+  return ((slot % GUIDS_PER_RESERVER) & 1u) ? ARTS_GUID_EVENT : ARTS_GUID_EDT;
 }
 
 static unsigned int slot_home(unsigned int rank, unsigned int slot,
@@ -111,17 +110,19 @@ static void reserver_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 /// Checker EDT: depv[0] is the per-rank collection DB (RO).  Asserts every
-/// reserved GUID is non-NULL and globally unique on this rank.
+/// reserved GUID is non-NULL and globally unique on this rank, then hands the
+/// collection's name to the final checker as that rank's slot.  paramv: the
+/// final checker.
 static void checker_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                         arts_edt_dep_t depv[]) {
   (void)paramc;
-  (void)paramv;
   (void)depc;
   const uint64_t *slots = (const uint64_t *)depv[0].ptr;
   unsigned int me = arts_get_current_rank();
   if (!slots) {
     arts_printf("  FAIL: rank %u checker got NULL collection\n", me);
     arts_test_fail();
+    arts_edt_satisfy_slot((arts_guid_t)paramv[0], me, NULL_GUID, DB_MODE_NULL);
     return;
   }
 
@@ -149,6 +150,7 @@ static void checker_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                 "aliasing)\n",
                 me, TOTAL_PER_RANK);
   }
+  arts_edt_satisfy_slot((arts_guid_t)paramv[0], me, depv[0].guid, DB_MODE_RO);
 }
 
 static int u64_cmp(const void *a, const void *b) {
@@ -215,25 +217,9 @@ static void final_checker_edt(uint32_t paramc, const uint64_t *paramv,
   arts_shutdown();
 }
 
-/// Runs once every driver, reserver and per-rank checker has finished.
-/// paramv: the collections' range and nrank.
-static void final_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
-                      arts_edt_dep_t depv[]) {
-  (void)paramc;
-  (void)depc;
-  (void)depv;
-  arts_guid_t colls = (arts_guid_t)paramv[0];
-  unsigned int nrank = (unsigned int)paramv[1];
-  arts_guid_t checker = arts_edt_create(final_checker_edt, 0, NULL, nrank,
-                                        &ARTS_EDT_HINT_DEFAULTS);
-  for (unsigned int r = 0; r < nrank; r++) {
-    arts_add_dependence(arts_guid_from_index(colls, r), checker, r, DB_MODE_RO);
-  }
-}
-
 /// Per-rank driver: builds this rank's collection DB, fans out reservers under
-/// an inner group, and chains a checker after they complete.
-/// paramv[0]: the collections' range, whose member r is rank r's collection.
+/// an inner group, and chains a checker after they complete.  paramv[0]: the
+/// final checker.
 static void rank_driver_edt(uint32_t paramc, const uint64_t *paramv,
                             uint32_t depc, arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -241,20 +227,18 @@ static void rank_driver_edt(uint32_t paramc, const uint64_t *paramv,
   (void)depv;
   unsigned int me = arts_get_current_rank();
 
-  arts_guid_t coll = arts_guid_from_index((arts_guid_t)paramv[0], me);
-  uint64_t *slots = (uint64_t *)arts_db_create_with_guid(
-      coll, TOTAL_PER_RANK * sizeof(uint64_t), ARTS_DB, ARTS_DB_PROP_NONE,
-      NULL);
+  uint64_t *slots = NULL;
+  arts_guid_t coll =
+      arts_db_create((void **)&slots, TOTAL_PER_RANK * sizeof(uint64_t),
+                     ARTS_DB, ARTS_DB_PROP_NONE, &(arts_db_hint_t){.rank = me});
   for (unsigned int i = 0; i < TOTAL_PER_RANK; i++) {
     slots[i] = (uint64_t)NULL_GUID;
   }
   arts_db_release(coll);
 
-  /* Checker runs after all reservers (slot 1 = the inner group); it inherits
-   * this driver's group (outer, joined through this rank's proxy), so the
-   * final check waits for it. */
-  arts_guid_t checker =
-      arts_edt_create(checker_edt, 0, NULL, 2, &(arts_edt_hint_t){.rank = me});
+  /* Checker runs after all reservers (slot 1 = the inner group). */
+  arts_guid_t checker = arts_edt_create(checker_edt, 1, paramv, 2,
+                                        &(arts_edt_hint_t){.rank = me});
   arts_add_dependence(coll, checker, 0, DB_MODE_RO);
 
   arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
@@ -283,22 +267,14 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   unsigned int nrank = arts_get_total_ranks();
   arts_printf("=== guid_keygen_table_coupling (%u ranks) ===\n", nrank);
 
-  arts_guid_t colls =
-      arts_guid_reserve_range(ARTS_GUID_DB, nrank, ARTS_HINT_ROUND_ROBIN);
-  uint64_t final_params[2] = {(uint64_t)colls, (uint64_t)nrank};
-  arts_guid_t final =
-      arts_edt_create(final_edt, 2, final_params, 1, &ARTS_EDT_HINT_DEFAULTS);
-  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
-  gh.auto_destroy = true;
-  arts_guid_t outer = arts_event_create(&gh);
-  arts_add_dependence(outer, final, 0, DB_MODE_NULL);
+  arts_guid_t final_checker = arts_edt_create(final_checker_edt, 0, NULL, nrank,
+                                              &(arts_edt_hint_t){.rank = 0});
 
-  uint64_t driver_param = (uint64_t)colls;
+  uint64_t driver_param = (uint64_t)final_checker;
   for (unsigned int r = 0; r < nrank; r++) {
     arts_edt_create(rank_driver_edt, 1, &driver_param, 0,
-                    &(arts_edt_hint_t){.rank = r, .group = outer});
+                    &(arts_edt_hint_t){.rank = r});
   }
-  arts_event_satisfy_slot(outer, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 int main(int argc, char **argv) {

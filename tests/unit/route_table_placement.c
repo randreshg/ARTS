@@ -82,6 +82,7 @@ static void after_install_cas(unsigned long key);
 #include "../../libs/src/core/utils/shared.c"
 
 #include "counter_stubs.h"
+#include "route_install_test.h"
 
 struct arts_runtime_shared_s arts_node_info;
 ARTS_THREAD_LOCAL_IE struct arts_runtime_private_s arts_thread_info;
@@ -444,7 +445,7 @@ static void ep_install(void *vp) {
   ep_t *e = (ep_t *)vp;
   arts_shared_ptr_t cb = arts_route_table_make_handle(&g_objs[1], e->key);
   e->cb = arts_shared_copy(cb);
-  e->ok = arts_route_table_install_handle_if_absent(cb, e->key);
+  e->ok = install_if_absent(cb, e->key);
 }
 
 static arts_shared_ptr_t typed_lookup(arts_guid_t g) {

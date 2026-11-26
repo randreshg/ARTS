@@ -193,26 +193,6 @@ bool arts_db_cxl_slot_create(struct arts_db_cache_s *cache) {
   return true;
 }
 
-/* A discarded slot leaves nothing naming it: the cache stops naming it first,
- * so nothing can adopt it, then the descriptor that named it is withdrawn.
- * The bytes stay in the arena.
- *
- * Reached only on a cache nothing else can name: a create whose route install
- * FAILED, whose object is private and about to be freed.  That is what makes
- * both steps safe — no other party can be holding the descriptor, fetching
- * into the slot, or about to adopt it — and it is a property of the call
- * sites, not of this function, so a new caller has to establish it.  A create
- * whose object IS published never discards its slot: the slot belongs to the
- * block from the moment the cache names it. */
-void arts_db_cxl_slot_discard(struct arts_db_cache_s *cache) {
-  uint64_t addr = atomic_exchange_explicit(&cache->cxl_addr, (uint64_t)0,
-                                           memory_order_acq_rel);
-  if (addr == 0) {
-    return;
-  }
-  (void)arts_db_buf_withdraw(cache, (const void *)(uintptr_t)addr);
-}
-
 #endif /* ARTS_USE_CXL */
 
 /* ================================================================== */

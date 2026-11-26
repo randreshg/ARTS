@@ -232,28 +232,24 @@ void arts_route_table_delete_unpublished(arts_guid_t key, void *obj);
  * object through it. */
 arts_shared_ptr_t arts_route_table_make_handle(void *obj, arts_guid_t key);
 
-/* Install a control block made by arts_route_table_make_handle into `key`'s
- * slot if that slot is empty.  On a win the slot takes over the ref the
- * caller passed and the slot's OoO list is drained.  The caller holds a ref
- * of its own across the call (the install writes the cb's home after handing
- * the passed ref to the slot, and the drain runs on the cb) and for as long
- * as it reads the object.  On a loss (the slot held an object under `key`
- * when the install looked; it may be empty again by the return) nothing
- * changes and the passed ref stays the caller's. */
-bool arts_route_table_install_handle_if_absent(arts_shared_ptr_t cb,
-                                               arts_guid_t key);
-
-/* install_handle_if_absent for a GUID that arts_route_table_reserve_fresh may
- * reserve.  False only when the GUID was not fresh after all. */
+/* Install a control block made by arts_route_table_make_handle into the slot
+ * of `key`, a GUID that arts_route_table_reserve_fresh may reserve.  On a win
+ * the slot takes over the ref the caller passed and the slot's OoO list is
+ * drained.  The caller holds a ref of its own across the call (the install
+ * writes the cb's home after handing the passed ref to the slot, and the
+ * drain runs on the cb) and for as long as it reads the object.  False only
+ * when the GUID was not fresh after all, and then nothing changes and the
+ * passed ref stays the caller's. */
 bool arts_route_table_install_handle_fresh(arts_shared_ptr_t cb,
                                            arts_guid_t key);
 
-/* install_handle_if_absent into `slot`, a slot the caller already resolved
- * for `key`, attempted once: false when the slot is occupied, names `key` no
- * longer, or its value word moved after the snapshot, and then `cb` stays the
- * caller's, unpublished and with no home, for the caller to resolve `key`
- * again.  As for install_handle_if_absent, the caller holds a ref of its own
- * across the call. */
+/* Install a control block made by arts_route_table_make_handle into `slot`, a
+ * slot the caller already resolved for `key`, attempted once.  On a win the
+ * slot takes over the passed ref and its OoO list is drained, and the caller
+ * holds a ref of its own across the call, as for install_handle_fresh.  False
+ * when the slot is occupied, names `key` no longer, or its value word moved
+ * after the snapshot, and then `cb` stays the caller's, unpublished and with
+ * no home, for the caller to resolve `key` again. */
 bool arts_route_table_install_handle_into(arts_route_item_t *slot,
                                           arts_shared_ptr_t cb,
                                           arts_guid_t key);

@@ -31,18 +31,9 @@
 ///          reader on rank 1 and a writer on rank 0 that destroys the block.
 ///          The write right stays with rank 0 throughout, whatever the write
 ///          has to take back from rank 1.
-///   claim  Two ranks.  An EDT on rank 1 gives a reader on rank 1 its
-///          dependence on a GUID reserved on rank 0, which acquires it at
-///          once, and then creates the block with the hold.  The last of the
-///          two destroys it.
 ///   ping   Two ranks.  Rank 0 creates a block of P bytes homed there with
 ///          the hold and, after its release, an EDT on rank 1 that reads the
 ///          block and shuts the run down.
-///   pub    Two ranks.  A reader on rank 0 is given its dependence on a GUID
-///          reserved on rank 0, which it acquires at once, before an EDT on
-///          rank 1 creates the block with the hold: the reader waits on the
-///          block's home for that create and for the creator's first
-///          publication.  The last of the two destroys the block.
 ///   join   Two ranks.  One block homed on rank 0 and created there with the
 ///          hold; after its release an EDT on rank 1 makes two readers of it
 ///          acquire there at once, the second while the first's request is
@@ -71,16 +62,7 @@
 #define Z_ZERO 2u
 #define N_READERS 3u
 
-enum {
-  SHAPE_ONE,
-  SHAPE_TWO,
-  SHAPE_HOME,
-  SHAPE_RECALL,
-  SHAPE_CLAIM,
-  SHAPE_PING,
-  SHAPE_PUB,
-  SHAPE_JOIN
-};
+enum { SHAPE_ONE, SHAPE_TWO, SHAPE_HOME, SHAPE_RECALL, SHAPE_PING, SHAPE_JOIN };
 static int g_shape = -1;
 
 static arts_guid_t edt_on(arts_edt_t fn, unsigned int rank, uint32_t paramc,
@@ -287,70 +269,16 @@ static void recall_main(void) {
   two_chain(b, NULL_GUID, NULL_GUID, 2, rank_of, mode_of);
 }
 
-/* ---- claim -------------------------------------------------------------- */
+/* ---- end ----------------------------------------------------------------- */
 
 /* paramv: the block */
-static void claim_end(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
-                      arts_edt_dep_t depv[]) {
+static void destroy_end(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                        arts_edt_dep_t depv[]) {
   (void)paramc;
   (void)depc;
   (void)depv;
   arts_db_destroy((arts_guid_t)paramv[0]);
   arts_shutdown();
-}
-
-/* paramv: the block, and the event both holders' ends join */
-static void claim_create(uint32_t paramc, const uint64_t *paramv,
-                         uint32_t depc, arts_edt_dep_t depv[]) {
-  (void)paramc;
-  (void)depc;
-  (void)depv;
-  arts_guid_t g = (arts_guid_t)paramv[0];
-  arts_guid_t r = edt_on(one_reader, 1u, 0, NULL, 1, (arts_guid_t)paramv[1]);
-  arts_add_dependence(g, r, 0, DB_MODE_RO);
-  void *p = arts_db_create_with_guid(g, S_BYTES, ARTS_DB, ARTS_DB_PROP_NONE,
-                                     NULL);
-  memset(p, 0, S_BYTES);
-  arts_db_release(g);
-}
-
-static void claim_main(void) {
-  if (!two_ranks("claim")) {
-    return;
-  }
-  arts_guid_t g = arts_guid_reserve(ARTS_GUID_DB, 0u);
-  arts_guid_t done = latch(2);
-  uint64_t pv[2] = {(uint64_t)g, (uint64_t)done};
-  arts_guid_t t = edt_on(claim_end, 0u, 1, pv, 1, NULL_GUID);
-  arts_add_dependence(done, t, 0, DB_MODE_NULL);
-  (void)edt_on(claim_create, 1u, 2, pv, 0, done);
-}
-
-/* ---- pub ----------------------------------------------------------------- */
-
-/* paramv: the block */
-static void pub_create(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
-                       arts_edt_dep_t depv[]) {
-  (void)paramc;
-  (void)depc;
-  (void)depv;
-  arts_guid_t g = (arts_guid_t)paramv[0];
-  (void)arts_db_create_with_guid(g, S_BYTES, ARTS_DB, ARTS_DB_PROP_NONE, NULL);
-  arts_db_release(g);
-}
-
-static void pub_main(void) {
-  if (!two_ranks("pub")) {
-    return;
-  }
-  arts_guid_t g = arts_guid_reserve(ARTS_GUID_DB, 0u);
-  arts_guid_t done = latch(2);
-  uint64_t pv[1] = {(uint64_t)g};
-  arts_guid_t t = edt_on(claim_end, 0u, 1, pv, 1, NULL_GUID);
-  arts_add_dependence(done, t, 0, DB_MODE_NULL);
-  arts_guid_t r = edt_on(one_reader, 0u, 0, NULL, 1, done);
-  arts_add_dependence(g, r, 0, DB_MODE_RO);
-  (void)edt_on(pub_create, 1u, 1, pv, 0, done);
 }
 
 /* ---- join ---------------------------------------------------------------- */
@@ -398,7 +326,7 @@ static void join_main(void) {
   arts_db_release(b);
   arts_guid_t done = latch(3);
   uint64_t pv[2] = {(uint64_t)b, (uint64_t)done};
-  arts_guid_t t = edt_on(claim_end, 0u, 1, pv, 1, NULL_GUID);
+  arts_guid_t t = edt_on(destroy_end, 0u, 1, pv, 1, NULL_GUID);
   arts_add_dependence(done, t, 0, DB_MODE_NULL);
   (void)edt_on(join_start, 1u, 2, pv, 0, NULL_GUID);
 }
@@ -450,10 +378,6 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     home_main();
   } else if (g_shape == SHAPE_RECALL) {
     recall_main();
-  } else if (g_shape == SHAPE_CLAIM) {
-    claim_main();
-  } else if (g_shape == SHAPE_PUB) {
-    pub_main();
   } else if (g_shape == SHAPE_JOIN) {
     join_main();
   } else {
@@ -474,12 +398,8 @@ int main(int argc, char **argv) {
     g_shape = SHAPE_HOME;
   } else if (strcmp(argv[1], "recall") == 0) {
     g_shape = SHAPE_RECALL;
-  } else if (strcmp(argv[1], "claim") == 0) {
-    g_shape = SHAPE_CLAIM;
   } else if (strcmp(argv[1], "ping") == 0) {
     g_shape = SHAPE_PING;
-  } else if (strcmp(argv[1], "pub") == 0) {
-    g_shape = SHAPE_PUB;
   } else if (strcmp(argv[1], "join") == 0) {
     g_shape = SHAPE_JOIN;
   } else {

@@ -220,8 +220,7 @@ bool arts_net_send_held(int rank, const char *message, unsigned int length,
     _exit(1);                                                                  \
   }
 UNREACHED(bool arts_db_create_install_local(arts_shared_ptr_t cb,
-                                            struct arts_route_item_s *s,
-                                            bool f))
+                                            struct arts_route_item_s *s))
 UNREACHED(void arts_db_free(void *ptr))
 UNREACHED(void arts_db_buf_ref_release_cb(void *arg))
 UNREACHED(bool arts_net_rdzv_local(const void *p, uint64_t len, uint64_t *a,

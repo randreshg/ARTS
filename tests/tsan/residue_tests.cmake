@@ -51,15 +51,6 @@ arts_tsan_residue(db_two_block_readers
     CELLS VAL/RETAIN/HOME VAL/PURGE/HOME INV/RETAIN/HOME INV/PURGE/HOME
     SHAPES R1 R2 R3)
 
-# An unordered reader on another rank against the creator, which writes the
-# block through its create hold on the home.
-arts_tsan_residue(db_create_claims_first_touch_stub
-    CELLS VAL/RETAIN/OWNER INV/RETAIN/OWNER VAL/RETAIN/HOME VAL/PURGE/HOME
-          INV/RETAIN/HOME INV/PURGE/HOME
-    SHAPES R1)
-arts_tsan_residue(db_create_claims_first_touch_stub
-    CELLS FLUSH SHAPES R4)
-
 # One writer and one reader per rank in each generation, unordered; the
 # readers read nothing, so only the serve of a written buffer races.
 arts_tsan_residue(cat_c_ref_balance
@@ -103,13 +94,6 @@ foreach(_t IN ITEMS
         SHAPES R2)
 endforeach()
 
-# The create hold, which writes nothing, against the ordered writer on the
-# same rank, which it does not order: the hold's release publishes while that
-# writer writes.
-arts_tsan_residue(db_create_after_dep_asked
-    CELLS VAL/RETAIN/HOME VAL/PURGE/HOME INV/RETAIN/HOME INV/PURGE/HOME
-    SHAPES R2)
-
 # The frontier's one writer per step, on its home, against the RO instances on
 # other ranks, which never read it.
 arts_tsan_residue(random_access_example_smoke
@@ -129,40 +113,21 @@ arts_tsan_residue(lulesh_example
 arts_tsan_residue(lulesh_example
     CELLS FLUSH SHAPES R4)
 
-# A create on a rank other than the home claims the first-touch cache its own
-# dependences made: the create's hold and those dependences' write turns share
-# the rank's turn, unordered, so under HOME a release publishes while
-# another writer of that rank writes.  Their readers run on the same rank,
-# and the reader on the block's home runs after every writer, so no read is
-# served from a written buffer.
-arts_tsan_residue(db_destroy_claimed_first_touch
+# The writers a rank's first touch makes ready share the rank's turn,
+# unordered, so under HOME a release publishes while another writer of that
+# rank writes.  Their readers run on the same rank, and the reader on the
+# block's home runs after every writer, so no read is served from a written
+# buffer.
+arts_tsan_residue(db_first_touch_settles_writers
     CELLS VAL/RETAIN/HOME VAL/PURGE/HOME INV/RETAIN/HOME INV/PURGE/HOME
     SHAPES R2)
-arts_tsan_residue(db_destroy_claimed_first_touch_delay
+arts_tsan_residue(db_first_touch_settles_writers_fuzz
     CELLS VAL/RETAIN/HOME VAL/PURGE/HOME INV/RETAIN/HOME INV/PURGE/HOME
     SHAPES R2)
-arts_tsan_residue(db_destroy_claimed_first_touch_wave2
+arts_tsan_residue(db_first_touch_settles_mixed
     CELLS VAL/RETAIN/HOME VAL/PURGE/HOME INV/RETAIN/HOME INV/PURGE/HOME
     SHAPES R2)
-arts_tsan_residue(db_destroy_claimed_first_touch_wave2_delay
-    CELLS VAL/RETAIN/HOME VAL/PURGE/HOME INV/RETAIN/HOME INV/PURGE/HOME
-    SHAPES R2)
-arts_tsan_residue(db_destroy_claimed_write_settles
-    CELLS VAL/RETAIN/HOME VAL/PURGE/HOME INV/RETAIN/HOME INV/PURGE/HOME
-    SHAPES R2)
-arts_tsan_residue(db_destroy_claimed_write_settles_delay
-    CELLS VAL/RETAIN/HOME VAL/PURGE/HOME INV/RETAIN/HOME INV/PURGE/HOME
-    SHAPES R2)
-arts_tsan_residue(db_create_races_acquire_writers
-    CELLS VAL/RETAIN/HOME VAL/PURGE/HOME INV/RETAIN/HOME INV/PURGE/HOME
-    SHAPES R2)
-arts_tsan_residue(db_create_races_acquire_writers_fuzz
-    CELLS VAL/RETAIN/HOME VAL/PURGE/HOME INV/RETAIN/HOME INV/PURGE/HOME
-    SHAPES R2)
-arts_tsan_residue(db_create_races_acquire_mixed
-    CELLS VAL/RETAIN/HOME VAL/PURGE/HOME INV/RETAIN/HOME INV/PURGE/HOME
-    SHAPES R2)
-arts_tsan_residue(db_create_races_acquire_mixed_fuzz
+arts_tsan_residue(db_first_touch_settles_mixed_fuzz
     CELLS VAL/RETAIN/HOME VAL/PURGE/HOME INV/RETAIN/HOME INV/PURGE/HOME
     SHAPES R2)
 # A downgrader on the home re-reads the range no writer writes while writers

@@ -144,8 +144,8 @@ typedef enum {
 /**
  * @brief DataBlock creation property bits (OCR-spec flags).
  *
- * Passed via the @c flags parameter of @c arts_db_create and
- * @c arts_db_create_with_guid.  Selects creator-side ownership semantics.
+ * Passed via the @c flags parameter of @c arts_db_create.  Selects
+ * creator-side ownership semantics.
  *
  *   ARTS_DB_PROP_NONE        — Standard: creator EDT auto-acquires RW
  *                              (writer_count starts at 2 = sentinel + creator).
@@ -223,12 +223,14 @@ typedef struct {
    *  ARTS_HINT_ANY_RANK = no preference (policy-selected, same as passing a
    *  NULL hint) | specific rank. */
   unsigned int rank;
-  /** Pre-reserved GUID.  NULL_GUID = auto-allocate (default).  When set, the
-   *  GUID's rank is the EDT's home and @c rank is ignored.  A create of a GUID
-   *  whose EDT is live (neither completed nor destroyed) waits, parked at the
-   *  home, until that EDT completes or is destroyed, and then installs as the
-   *  GUID's next EDT.  Two creates of one GUID with no end of life between
-   *  them are undefined: one of them stays parked. */
+  /** Pre-reserved GUID.  NULL_GUID = auto-allocate (default).  When set, it
+   *  is an EDT GUID (@c ARTS_GUID_EDT); a GUID of another kind ends the run
+   *  with an error.  The GUID's rank is the EDT's home and @c rank is
+   *  ignored.  A create of a GUID whose EDT is live (neither completed nor
+   *  destroyed) waits, parked at the home, until that EDT completes or is
+   *  destroyed, and then installs as the GUID's next EDT.  Two creates of one
+   *  GUID with no end of life between them are undefined: one of them stays
+   *  parked. */
   arts_guid_t guid;
   /** Group to join.  NULL_GUID = the creator's current group (default; an
    *  EDT created outside any EDT has none).  A group is counted by a simple
@@ -302,29 +304,12 @@ typedef struct {
   /** Reserved for future fine-grained slice access.  Default UINT64_MAX
    *  (= entire DB). */
   uint64_t access_size;
-  /** Pre-reserved GUID.  NULL_GUID = auto-allocate (default).  When
-   *  non-zero, it must come from @c arts_guid_reserve or
-   *  @c arts_guid_reserve_range: a GUID a create minted (the return of an
-   *  @c arts_db_create given no pre-reserved GUID) is refused, aborting the
-   *  run.  The GUID's rank field is authoritative for routing and
-   *  overrides @c rank above.  A create of a GUID whose block is live waits,
-   *  parked (at the home, or on a creating rank that still holds an earlier
-   *  create's descriptor of the GUID or a cache that kept a right to it: the
-   *  write right, and under EXCL·RETAIN also its resident bytes or a
-   *  retained read grant) until that block is destroyed, and then installs as
-   *  the GUID's next block (see @c arts_db_create for the pointer it
-   *  returns); a dependence's cache of the GUID on the creating rank that
-   *  kept no such right, of any generation, is claimed rather than waited on.
-   *  Two creates of one GUID with no destroy between them are undefined: one
-   *  of them stays parked. */
-  arts_guid_t guid;
 } arts_db_hint_t;
 
 #define ARTS_DB_HINT_DEFAULTS                                                  \
   ((arts_db_hint_t){.rank = ARTS_HINT_CURRENT_RANK,                            \
                     .access_offset = 0,                                        \
-                    .access_size = UINT64_MAX,                                 \
-                    .guid = NULL_GUID})
+                    .access_size = UINT64_MAX})
 
 /** @} */
 
@@ -432,11 +417,12 @@ typedef struct {
    *  are ignored.  Default false. */
   bool channel;
   /** Pre-reserved GUID.  NULL_GUID = auto-allocate (default).  When non-zero,
-   *  the GUID's rank field is authoritative and overrides @c rank above.  A
-   *  create of a GUID whose event is live waits, parked at the home, until
-   *  that event is destroyed, and then installs as the GUID's next event.
-   *  Two creates of one GUID with no destroy between them are undefined: one
-   *  of them stays parked. */
+   *  it is an event GUID (@c ARTS_GUID_EVENT); a GUID of another kind ends
+   *  the run with an error.  The GUID's rank field is authoritative and
+   *  overrides @c rank above.  A create of a GUID whose event is live waits,
+   *  parked at the home, until that event is destroyed, and then installs as
+   *  the GUID's next event.  Two creates of one GUID with no destroy between
+   *  them are undefined: one of them stays parked. */
   arts_guid_t guid;
   /** If true, the event is detached from its GUID the instant it fires
    *  instead of lingering for late binders, so every dependence added on it
@@ -589,7 +575,9 @@ void arts_abort(uint8_t error_code);
  * passing it on (see "Names shared across ranks" in
  * @c docs/programming_model/guids.rst).
  *
- * @param kind  Kind tag for the GUID (e.g. @c ARTS_GUID_EDT, @c ARTS_GUID_DB).
+ * @param kind  @c ARTS_GUID_EDT or @c ARTS_GUID_EVENT; any other value ends
+ *              the run with an error (a data block's GUID is issued by its
+ *              create).
  * @param rank  A live rank (below the rank count), or
  *              @c ARTS_HINT_CURRENT_RANK for the calling rank; any other
  *              value is refused.
@@ -629,7 +617,9 @@ arts_guid_kind_t arts_guid_get_kind(arts_guid_t guid);
  * the reserving EDT and is shared only by passing it on (see "Names shared
  * across ranks" in @c docs/programming_model/guids.rst).
  *
- * @param kind  Kind tag for every GUID in the range.
+ * @param kind  @c ARTS_GUID_EDT or @c ARTS_GUID_EVENT, the kind of every GUID
+ *              in the range; any other value ends the run with an error (a
+ *              data block's GUID is issued by its create).
  * @param size  Number of GUIDs to allocate.
  * @param rank  Target node rank.  Special values:
  *              - @c ARTS_HINT_CURRENT_RANK — pin all GUIDs to the calling rank
@@ -639,10 +629,9 @@ arts_guid_kind_t arts_guid_get_kind(arts_guid_t guid);
  *                @c arts_guid_from_index / @c arts_guid_index_from
  *                interpret it correctly.  Caller must broadcast this range
  *                GUID to every rank that will derive children.
- * @return The start GUID of the range, or @c NULL_GUID when @p size is 0 or
- *         @p kind is not a GUID kind.  A rank that is not live (and not one
- *         of the special values above) or an exhausted GUID slice aborts the
- *         run.
+ * @return The start GUID of the range, or @c NULL_GUID when @p size is 0.  A
+ *         rank that is not live (and not one of the special values above) or
+ *         an exhausted GUID slice aborts the run.
  * @see arts_guid_from_index, arts_guid_index_from
  */
 arts_guid_t arts_guid_reserve_range(arts_guid_kind_t kind, unsigned int size,
@@ -654,7 +643,9 @@ arts_guid_t arts_guid_reserve_range(arts_guid_kind_t kind, unsigned int size,
  * This is the OCR-style index-based accessor.  The caller is responsible
  * for ensuring @p idx is within the range.
  *
- * @param range_guid The start GUID of a range.
+ * @param range_guid The start GUID of a range of EDTs or events.  A GUID of
+ *                   any other kind (a data block's, NULL_GUID) names no range
+ *                   and ends the run with an error.
  * @param idx        Zero-based offset.
  * @return The GUID at the requested offset.
  */
@@ -666,7 +657,9 @@ arts_guid_t arts_guid_from_index(arts_guid_t range_guid, unsigned int idx);
  * Returns -1 if the two GUIDs differ in type or rank, or if
  * @p guid precedes @p range_guid.
  *
- * @param range_guid The start GUID of a range.
+ * @param range_guid The start GUID of a range of EDTs or events.  A GUID of
+ *                   any other kind (a data block's, NULL_GUID) names no range
+ *                   and ends the run with an error.
  * @param guid       The GUID to look up.
  * @return Zero-based index, or -1 on mismatch.
  */
@@ -982,36 +975,11 @@ void arts_add_dependence(arts_guid_t source, arts_guid_t destination,
  *                     no preference: the build's no-hint DB home policy
  *                     picks the rank (ARTS_NOHINT_DB_HOME: CREATOR default
  *                     — first-touch — or ROUNDROBIN).
- *
- * A create of a pre-reserved GUID whose previous block is still live waits,
- * parked, until that block is destroyed, and then installs as the GUID's next
- * block.  The call returns at once either way, and @p addr names this
- * create's own image of the block, which becomes the block's when the create
- * installs.
  * @return GUID of the created DB.
  * @see arts_db_destroy
  */
 arts_guid_t arts_db_create(void **addr, uint64_t len, arts_db_types_t db_type,
                            uint16_t flags, const arts_db_hint_t *hint);
-
-/**
- * @brief Convenience wrapper: create a DataBlock with a pre-reserved GUID.
- *
- * Equivalent to setting @c hint->guid and calling @c arts_db_create; the
- * GUID's rank is the block's home, which may be another rank for an
- * @c ARTS_DB block.  Returns the payload pointer directly (NULL when
- * @c ARTS_DB_PROP_NO_ACQUIRE is set).
- */
-static inline void *arts_db_create_with_guid(arts_guid_t guid, uint64_t len,
-                                             arts_db_types_t db_type,
-                                             uint16_t flags,
-                                             const arts_db_hint_t *hint) {
-  arts_db_hint_t h = hint ? *hint : ARTS_DB_HINT_DEFAULTS;
-  h.guid = guid;
-  void *ptr = NULL;
-  arts_db_create(&ptr, len, db_type, flags, &h);
-  return ptr;
-}
 
 /**
  * @brief Release the calling EDT's access to a DataBlock before it returns.

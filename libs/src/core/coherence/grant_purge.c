@@ -302,9 +302,9 @@ accept: {
   /* A release that hands the right back completes only once the home has
    * APPLIED it — possession is back — so every message of that grant is
    * retired before the releasing task can complete, and nothing the program
-   * orders after the task (the block's destroy, its next generation) can meet
-   * one of them.  Sent here, by the latch's single consumer, so exactly one
-   * reply leaves per hand-back whichever actor applied it. */
+   * orders after the task (the block's destroy) can meet one of them.  Sent
+   * here, by the latch's single consumer, so exactly one reply leaves per
+   * hand-back whichever actor applied it. */
   if (reply.ack) {
     arts_send_db_publish_ack(latched, db, reply.cv, reply.version, reply.credit,
                              reply.token);

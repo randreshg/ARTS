@@ -282,11 +282,16 @@ event_install(arts_guid_t *guid, const arts_event_hint_t *h_in, bool hold) {
  * handle. */
 static arts_shared_ptr_t event_create(const arts_event_hint_t *hint,
                                       arts_guid_t *guid, bool hold) {
+  arts_event_hint_t h = hint_or_defaults(hint);
+  arts_guid_t g = h.guid;
+  if (g != NULL_GUID && arts_guid_get_kind(g) != ARTS_GUID_EVENT) {
+    ARTS_ERROR("arts_event_create: GUID %lu cannot name an event: its kind is "
+               "%u, and an event is created under an event GUID or NULL_GUID",
+               (unsigned long)g, (unsigned int)arts_guid_get_kind(g));
+  }
   /* Counted before the event can be seen, so a record taken at an end it
    * causes includes the create. */
   INCREMENT_NUM_EVENT_CREATE_BY(1);
-  arts_event_hint_t h = hint_or_defaults(hint);
-  arts_guid_t g = h.guid;
   if (g != NULL_GUID) {
     h.rank = arts_guid_get_rank(g);
   }

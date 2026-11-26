@@ -72,6 +72,7 @@ void arts_ooo_free_all(struct arts_route_item_s *s) { (void)s; }
 #include "../../libs/src/core/utils/shared.c"
 
 #include "counter_stubs.h"
+#include "route_install_test.h"
 
 #include "arts/utils/random.h"
 #include "route_table_segment_probe.h"
@@ -141,7 +142,7 @@ static void *reserver(void *vp) {
         arts_shared_ptr_t cb =
             arts_route_table_make_handle(&g_obj[k], g_keys[k]);
         arts_shared_ptr_t mine = arts_shared_copy(cb);
-        if (arts_route_table_install_handle_if_absent(cb, g_keys[k])) {
+        if (install_if_absent(cb, g_keys[k])) {
           unsigned i = atomic_fetch_add_explicit(&g_ann_cursor, 1u,
                                                  memory_order_relaxed);
           g_ann[i].key = g_keys[k];
