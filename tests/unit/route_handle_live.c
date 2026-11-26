@@ -246,8 +246,8 @@ static arts_route_item_t *slot_of(arts_guid_t g) {
 
 /* ── A: liveness across install and retire ─────────────────────────────── */
 static int run_a(void) {
-  arts_guid_t g = arts_guid_reserve(ARTS_GUID_DB, 0);
-  arts_guid_t other = arts_guid_reserve(ARTS_GUID_DB, 0);
+  arts_guid_t g = arts_guid_reserve(ARTS_GUID_EVENT, 0);
+  arts_guid_t other = arts_guid_reserve(ARTS_GUID_EVENT, 0);
   atomic_store_explicit(&g_deletes, 0, memory_order_relaxed);
   g_drains = 0;
   int *obj = new_obj(1);
@@ -308,8 +308,8 @@ static int run_a(void) {
 
 /* ── B: install_handle_into is one-shot ────────────────────────────────── */
 static int run_b(void) {
-  arts_guid_t g = arts_guid_reserve(ARTS_GUID_DB, 0);
-  arts_guid_t g3 = arts_guid_reserve(ARTS_GUID_DB, 0);
+  arts_guid_t g = arts_guid_reserve(ARTS_GUID_EVENT, 0);
+  arts_guid_t g3 = arts_guid_reserve(ARTS_GUID_EVENT, 0);
   atomic_store_explicit(&g_deletes, 0, memory_order_relaxed);
   int *a = new_obj(2);
   arts_shared_ptr_t ha = install_obj(a, g);
@@ -370,7 +370,7 @@ static int run_c(void) {
   g_drains = 0;
 
   /* The occupant is pinned; the caller's control block is untouched. */
-  arts_guid_t g = arts_guid_reserve(ARTS_GUID_DB, 0);
+  arts_guid_t g = arts_guid_reserve(ARTS_GUID_EVENT, 0);
   int *a = new_obj(4);
   arts_shared_ptr_t ha = install_obj(a, g);
   if (ha == NULL) {
@@ -400,7 +400,7 @@ static int run_c(void) {
   arts_shared_release(&ha);
 
   /* An empty slot takes the caller's control block. */
-  arts_guid_t g2 = arts_guid_reserve(ARTS_GUID_DB, 0);
+  arts_guid_t g2 = arts_guid_reserve(ARTS_GUID_EVENT, 0);
   arts_route_item_t *s2 = slot_of(g2);
   int *c = new_obj(6);
   arts_shared_ptr_t cc = arts_route_table_make_handle(c, g2);
@@ -421,7 +421,7 @@ static int run_c(void) {
 
   /* A slot that changed hands after the caller resolved it: returned by a
    * retire, so it names the key no longer. */
-  arts_guid_t g3 = arts_guid_reserve(ARTS_GUID_DB, 0);
+  arts_guid_t g3 = arts_guid_reserve(ARTS_GUID_EVENT, 0);
   arts_route_item_t *s3 = slot_of(g3);
   arts_shared_ptr_t h0 = install_obj(new_obj(7), g3);
   if (h0 == NULL || !arts_route_table_set_destroyed_if(g3, h0)) {
@@ -460,7 +460,7 @@ static int run_c(void) {
 /* ── D: borrow_or_lookup ───────────────────────────────────────────────── */
 static int run_d(void) {
   atomic_store_explicit(&g_deletes, 0, memory_order_relaxed);
-  arts_guid_t g = arts_guid_reserve(ARTS_GUID_DB, 0);
+  arts_guid_t g = arts_guid_reserve(ARTS_GUID_EVENT, 0);
   int *a = new_obj(9);
   arts_shared_ptr_t ha = install_obj(a, g);
   if (ha == NULL) {
@@ -508,7 +508,7 @@ static int run_d(void) {
   arts_shared_abandon(&cu);
   free(u);
 
-  arts_guid_t gm = arts_guid_reserve(ARTS_GUID_DB, 0);
+  arts_guid_t gm = arts_guid_reserve(ARTS_GUID_EVENT, 0);
   s = spent_now();
   o = arts_route_table_borrow_or_lookup(NULL, gm, &looked);
   SPENT("D: a miss", s, 1, 0);
@@ -538,7 +538,7 @@ static int run_e(void) {
   atomic_store_explicit(&g_deletes, 0, memory_order_relaxed);
   g_drains = 0;
 
-  arts_guid_t g1 = arts_guid_reserve(ARTS_GUID_DB, 0);
+  arts_guid_t g1 = arts_guid_reserve(ARTS_GUID_EVENT, 0);
   arts_shared_ptr_t cb1 = arts_route_table_make_handle(new_obj(12), g1);
   arts_shared_ptr_t h1 = arts_shared_copy(cb1);
   if (!arts_route_table_install_handle_into(slot_of(g1), cb1, g1) ||
@@ -547,7 +547,7 @@ static int run_e(void) {
     FAIL("E: install_handle_into did not record its slot\n");
   }
 
-  arts_guid_t g2 = arts_guid_reserve(ARTS_GUID_DB, 0);
+  arts_guid_t g2 = arts_guid_reserve(ARTS_GUID_EVENT, 0);
   arts_shared_ptr_t cb2 = arts_route_table_make_handle(new_obj(13), g2);
   arts_shared_ptr_t h2 = arts_shared_copy(cb2);
   if (!arts_route_table_install_handle_if_absent(cb2, g2) ||
@@ -565,7 +565,7 @@ static int run_e(void) {
   arts_shared_abandon(&cl);
   free(lost);
 
-  arts_guid_t g3 = arts_guid_reserve(ARTS_GUID_DB, 0);
+  arts_guid_t g3 = arts_guid_reserve(ARTS_GUID_EVENT, 0);
   arts_shared_ptr_t cb3 = arts_route_table_make_handle(new_obj(15), g3);
   arts_shared_ptr_t h3 = arts_shared_copy(cb3);
   if (!arts_route_table_install_handle_fresh(cb3, g3) ||
@@ -575,7 +575,7 @@ static int run_e(void) {
   }
 
   arts_route_table_t *mirror = arts_route_table_new(64, 6);
-  arts_guid_t gm = arts_guid_reserve(ARTS_GUID_DB, 0);
+  arts_guid_t gm = arts_guid_reserve(ARTS_GUID_EVENT, 0);
   arts_route_item_t *item = arts_route_table_search_for_empty(mirror, gm);
   if (!arts_route_item_install_data(item, &sentinel_mirror, NULL)) {
     FAIL("E: install_data lost on an empty mirror slot\n");
@@ -608,7 +608,7 @@ static int run_e(void) {
 /* ── F: the identity retire through the home ───────────────────────────── */
 static int run_f(void) {
   atomic_store_explicit(&g_deletes, 0, memory_order_relaxed);
-  arts_guid_t g = arts_guid_reserve(ARTS_GUID_DB, 0);
+  arts_guid_t g = arts_guid_reserve(ARTS_GUID_EVENT, 0);
   arts_shared_ptr_t h1 = install_obj(new_obj(16), g);
   if (h1 == NULL) {
     FAIL("F: the install lost\n");
@@ -684,7 +684,7 @@ static int run_g(void) {
   g_drains = 0;
 
   /* A won install: no home before its CAS, the slot after it. */
-  arts_guid_t g1 = arts_guid_reserve(ARTS_GUID_DB, 0);
+  arts_guid_t g1 = arts_guid_reserve(ARTS_GUID_EVENT, 0);
   arts_route_item_t *s1 = slot_of(g1);
   arts_shared_ptr_t c1 = arts_route_table_make_handle(new_obj(19), g1);
   arts_shared_ptr_t h1 = arts_shared_copy(c1);
@@ -703,7 +703,7 @@ static int run_g(void) {
   }
 
   /* A lost install writes no home. */
-  arts_guid_t g = arts_guid_reserve(ARTS_GUID_DB, 0);
+  arts_guid_t g = arts_guid_reserve(ARTS_GUID_EVENT, 0);
   arts_route_item_t *slot = slot_of(g);
   arts_shared_ptr_t cb = arts_route_table_make_handle(new_obj(18), g);
   g_move_slot = slot;
@@ -775,7 +775,7 @@ static void retire_in_window(void) {
 
 static int run_h(void) {
   atomic_store_explicit(&g_deletes, 0, memory_order_relaxed);
-  h_key = arts_guid_reserve(ARTS_GUID_DB, 0);
+  h_key = arts_guid_reserve(ARTS_GUID_EVENT, 0);
   arts_route_item_t *slot = slot_of(h_key);
   arts_shared_ptr_t cb = arts_route_table_make_handle(new_obj(20), h_key);
   h_holder = arts_shared_copy(cb);
@@ -836,7 +836,7 @@ static int run_h(void) {
 static int run_j(void) {
   atomic_store_explicit(&g_deletes, 0, memory_order_relaxed);
   arts_route_table_t *table = arts_route_table_new(64, 6);
-  arts_guid_t g = arts_guid_reserve(ARTS_GUID_DB, 0);
+  arts_guid_t g = arts_guid_reserve(ARTS_GUID_EVENT, 0);
   arts_route_item_t *item = arts_route_table_search_for_empty(table, g);
   arts_shared_ptr_t cb = arts_route_table_make_handle(new_obj(22), g);
   arts_shared_ptr_t holder = arts_shared_copy(cb);
@@ -890,7 +890,7 @@ static int run_k(void) {
   arts_route_table_t *table = arts_route_table_new(64, 6);
   arts_shared_ptr_t holder = NULL;
   for (int v = K_HELD; v <= K_KEPT; v++) {
-    arts_guid_t g = arts_guid_reserve(ARTS_GUID_DB, 0);
+    arts_guid_t g = arts_guid_reserve(ARTS_GUID_EVENT, 0);
     arts_route_item_t *item = arts_route_table_search_for_empty(table, g);
     arts_shared_ptr_t cb = arts_route_table_make_handle(new_obj(v), g);
     arts_shared_ptr_t mine = arts_shared_copy(cb);
@@ -934,7 +934,7 @@ static int run_k(void) {
 #ifndef NDEBUG
 /* ── I: an install with no reference of the caller's own (child) ───────── */
 static void child_unheld_install(void) {
-  arts_guid_t g = arts_guid_reserve(ARTS_GUID_DB, 0);
+  arts_guid_t g = arts_guid_reserve(ARTS_GUID_EVENT, 0);
   arts_shared_ptr_t cb = arts_route_table_make_handle(new_obj(21), g);
   (void)arts_route_table_install_handle_into(slot_of(g), cb, g);
   (void)fprintf(stderr, "child: the unheld install returned\n");
@@ -997,7 +997,7 @@ static int run_i(void) {
 
 int main(void) {
   rt_init();
-  arts_route_table_register_deleter(ARTS_GUID_DB, test_deleter);
+  arts_route_table_register_deleter(ARTS_GUID_EVENT, test_deleter);
 
 #ifndef NDEBUG
   if (run_i() != 0) {

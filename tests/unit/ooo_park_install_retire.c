@@ -348,11 +348,13 @@ static unsigned int parked_anywhere(void) {
 }
 
 /* Node init of a one-thread rank as the runtime runs it (only the main
- * thread mints, DB GUIDs only, so no key counters), and its route tables. */
+ * thread mints), its key counters and its route tables. */
 static void rt_init(void) {
   arts_thread_info.thread_id = 0;
   arts_node_info.total_thread_count = 1;
+  arts_node_info.keys = (uint64_t **)calloc(1, sizeof(uint64_t *));
   arts_guid_node_geometry_init();
+  arts_guid_key_generator_init();
   arts_route_table_node_init(1024, 10);
 }
 
@@ -376,7 +378,7 @@ static int run(enum scenario sc, int rounds, const char *name, tally_t *t) {
   atomic_store_explicit(&g_on_handle, 0, memory_order_relaxed);
   atomic_store_explicit(&g_by_guid, 0, memory_order_relaxed);
   for (int r = 0; r < rounds; r++) {
-    g_guid = arts_guid_reserve(ARTS_GUID_DB, 0);
+    g_guid = arts_guid_reserve(ARTS_GUID_EVENT, 0);
     g_gen1 = NULL;
     g_gen2 = (int *)malloc(sizeof(int));
     *g_gen2 = 2;
@@ -467,7 +469,7 @@ static int run(enum scenario sc, int rounds, const char *name, tally_t *t) {
 
 int main(void) {
   rt_init();
-  arts_route_table_register_deleter(ARTS_GUID_DB, test_deleter);
+  arts_route_table_register_deleter(ARTS_GUID_EVENT, test_deleter);
   pthread_t tid[WORKERS];
   for (int i = 0; i < WORKERS; i++) {
     if (pthread_create(&tid[i], NULL, worker, (void *)(intptr_t)i) != 0) {
@@ -488,6 +490,9 @@ int main(void) {
   for (int i = 0; i < WORKERS; i++) {
     pthread_join(tid[i], NULL);
   }
+  free(arts_node_info.keys[0]);
+  free(arts_node_info.keys);
+  arts_node_info.keys = NULL;
   arts_guid_generator_cleanup();
   printf("PASS ooo_park_install_retire: A %" PRIu64 " parks (%" PRIu64
          " by the install's drain, %" PRIu64 " by a rescue), B %" PRIu64

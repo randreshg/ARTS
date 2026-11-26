@@ -99,12 +99,14 @@ ARTS_THREAD_LOCAL_IE struct arts_runtime_private_s arts_thread_info;
     return 1;                                                                  \
   } while (0)
 
-/* Node init of a one-thread rank as the runtime runs it (the test mints DB
- * GUIDs only, so no key counters), and its route tables. */
+/* Node init of a one-thread rank as the runtime runs it, its key counters
+ * and its route tables. */
 static void rt_init(void) {
   arts_thread_info.thread_id = 0;
   arts_node_info.total_thread_count = 1;
+  arts_node_info.keys = (uint64_t **)calloc(1, sizeof(uint64_t *));
   arts_guid_node_geometry_init();
+  arts_guid_key_generator_init();
   arts_route_table_node_init(1024, 10);
 }
 
@@ -166,7 +168,7 @@ static void test_after_claim(arts_guid_t key) {
 
 /* A fresh key whose first probe slot is held by a live stranger K. */
 static arts_route_table_t *fresh_key(void) {
-  g_key = arts_guid_reserve(ARTS_GUID_DB, 0);
+  g_key = arts_guid_reserve(ARTS_GUID_EVENT, 0);
   arts_route_table_t *rt = arts_get_route_table(g_key);
   uint64_t p0 = get_route_table_key((uint64_t)g_key, rt->shift);
   g_first_probe = &rt->data[p0];
@@ -313,6 +315,9 @@ int main(void) {
     arts_shared_release(&g_cb);
   }
 
+  free(arts_node_info.keys[0]);
+  free(arts_node_info.keys);
+  arts_node_info.keys = NULL;
   arts_guid_generator_cleanup();
   printf("PASS route_table_dup_reserve: the later claim gave up and nothing "
          "moved; the queued next create lost to the live generation and "

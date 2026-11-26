@@ -106,13 +106,16 @@ static void test_deleter(void *p) {
 #define DEAD_RING 64
 
 /* Node init of a rank whose minting threads are main (thread 0) and the
- * churners (threads 1..CHURN_THREADS), as the runtime runs it; DB GUIDs only,
- * so no key counters.  Every route table is the one small table, so every key
- * shares its slots. */
+ * churners (threads 1..CHURN_THREADS), as the runtime runs it, each minting
+ * thread owning its key counters.  Every route table is the one small table,
+ * so every key shares its slots. */
 static void rt_init(unsigned size, unsigned shift) {
   arts_thread_info.thread_id = 0;
   arts_node_info.total_thread_count = 1 + CHURN_THREADS;
+  arts_node_info.keys =
+      (uint64_t **)calloc(1 + CHURN_THREADS, sizeof(uint64_t *));
   arts_guid_node_geometry_init();
+  arts_guid_key_generator_init();
   arts_route_table_node_init(size, shift);
   /* The tables alias one table: node cleanup would free it once per entry. */
   arts_route_table_t *table = arts_node_info.route_table[0];
@@ -203,10 +206,11 @@ static void *destroyer(void *vp) {
  * the duplicate destroy can land on. */
 static void *churn(void *vp) {
   arts_thread_info.thread_id = (unsigned int)(uintptr_t)vp;
+  arts_guid_key_generator_init();
   for (int r = 0; r < ROUNDS; r++) {
     pthread_barrier_wait(&bar);
     for (int k = 0; k < 4; k++) {
-      arts_guid_t g = arts_guid_reserve(ARTS_GUID_DB, 0);
+      arts_guid_t g = arts_guid_reserve(ARTS_GUID_EVENT, 0);
       obj_t *o = (obj_t *)calloc(1, sizeof(obj_t));
       o->guid = g;
       atomic_store_explicit(&o->destroy_requested, 0, memory_order_release);
@@ -238,7 +242,7 @@ static void *churn(void *vp) {
 
 int main(void) {
   rt_init(4, 2); /* 4 buckets x 8 probes = 32 slots -> slots recycle fast */
-  arts_route_table_register_deleter(ARTS_GUID_DB, test_deleter);
+  arts_route_table_register_deleter(ARTS_GUID_EVENT, test_deleter);
 
   pthread_t d[2], c[CHURN_THREADS], lm, rd[2];
   pthread_barrier_init(&bar, NULL, 2 + CHURN_THREADS + 1);
@@ -250,7 +254,7 @@ int main(void) {
   for (int i = 0; i < 2; i++) { pthread_create(&rd[i], NULL, reader, NULL); }
 
   for (int r = 0; r < ROUNDS; r++) {
-    arts_guid_t g = arts_guid_reserve(ARTS_GUID_DB, 0);
+    arts_guid_t g = arts_guid_reserve(ARTS_GUID_EVENT, 0);
     obj_t *o = (obj_t *)calloc(1, sizeof(obj_t));
     o->guid = g;
     atomic_store_explicit(&o->destroy_requested, 1, memory_order_release);
@@ -273,6 +277,11 @@ int main(void) {
   long p = atomic_load_explicit(&v_premature_free, memory_order_relaxed);
   long o2 = atomic_load_explicit(&v_orphaned, memory_order_relaxed);
   long x = atomic_load_explicit(&v_crossguid, memory_order_relaxed);
+  for (unsigned t = 0; t <= CHURN_THREADS; t++) {
+    free(arts_node_info.keys[t]);
+  }
+  free(arts_node_info.keys);
+  arts_node_info.keys = NULL;
   arts_guid_generator_cleanup();
   printf("installs=%ld  O1 premature_free=%ld  O2 orphaned_install=%ld  "
          "O3 crossguid=%ld\n",

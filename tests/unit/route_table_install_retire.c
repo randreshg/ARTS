@@ -326,7 +326,7 @@ static unsigned i_census(arts_guid_t g) {
 
 static int run_i(void) {
   for (unsigned k = 0; k < I_KEYS; k++) {
-    g_i_keys[k] = arts_guid_reserve(ARTS_GUID_DB, 0);
+    g_i_keys[k] = arts_guid_reserve(ARTS_GUID_EVENT, 0);
   }
   _Atomic(int) gate;
   atomic_init(&gate, 0);
@@ -424,7 +424,7 @@ static void *fg_key_worker(void *vp) {
 
 static int run_fg(bool hand_back) {
   const char *name = hand_back ? "F" : "G";
-  g_fg_guid = arts_guid_reserve(ARTS_GUID_DB, 0);
+  g_fg_guid = arts_guid_reserve(ARTS_GUID_EVENT, 0);
   atomic_store_explicit(&g_fg_parked, 0, memory_order_relaxed);
   atomic_store_explicit(&g_fg_release, 0, memory_order_relaxed);
   atomic_store_explicit(&g_deletes, 0, memory_order_relaxed);
@@ -496,11 +496,11 @@ static int run_fg(bool hand_back) {
 
 int main(void) {
   rt_init();
-  arts_route_table_register_deleter(ARTS_GUID_DB, test_deleter);
+  arts_route_table_register_deleter(ARTS_GUID_EVENT, test_deleter);
 
   /* ---- Scenario A ---- */
   {
-    arts_guid_t g = arts_guid_reserve(ARTS_GUID_DB, 0);
+    arts_guid_t g = arts_guid_reserve(ARTS_GUID_EVENT, 0);
     pthread_t tids[A_THREADS];
     a_ctx_t ctx[A_THREADS];
     _Atomic(int) gate;
@@ -560,7 +560,7 @@ int main(void) {
 
   /* ---- Scenario B ---- */
   {
-    arts_guid_t g = arts_guid_reserve(ARTS_GUID_DB, 0);
+    arts_guid_t g = arts_guid_reserve(ARTS_GUID_EVENT, 0);
     int *obj = (int *)malloc(sizeof(int));
     *obj = 0x77;
     arts_shared_ptr_t h = install_obj(obj, g);
@@ -605,7 +605,7 @@ int main(void) {
 
   /* ---- Scenario C: create/destroy churn returns the slot every round ---- */
   {
-    arts_guid_t g = arts_guid_reserve(ARTS_GUID_DB, 0);
+    arts_guid_t g = arts_guid_reserve(ARTS_GUID_EVENT, 0);
     arts_route_item_t *c_item = NULL;
     arts_route_table_reserve_or_lookup(g, &c_item);
     atomic_store_explicit(&g_deletes, 0, memory_order_relaxed);
@@ -637,7 +637,7 @@ int main(void) {
 
   /* ---- Scenario D: a retire by identity takes only its own generation ---- */
   {
-    arts_guid_t g = arts_guid_reserve(ARTS_GUID_DB, 0);
+    arts_guid_t g = arts_guid_reserve(ARTS_GUID_EVENT, 0);
     atomic_store_explicit(&g_deletes, 0, memory_order_relaxed);
     int *o1 = (int *)malloc(sizeof(int));
     arts_shared_ptr_t h1 = install_obj(o1, g);
@@ -683,7 +683,7 @@ int main(void) {
 
   /* ---- Scenario E: a pinned retire never takes a later generation ---- */
   {
-    arts_guid_t g = arts_guid_reserve(ARTS_GUID_DB, 0);
+    arts_guid_t g = arts_guid_reserve(ARTS_GUID_EVENT, 0);
     atomic_store_explicit(&g_deletes, 0, memory_order_relaxed);
     int *o1 = (int *)malloc(sizeof(int));
     arts_shared_ptr_t h = install_obj(o1, g);
