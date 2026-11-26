@@ -45,7 +45,10 @@ The build tree bootstraps the same way: a first real run configures the
 experiment build (Release, benchmarks on, exactly the catalog sections the
 campaign selects — its first build also compiles the vendored dependencies
 those sections need, so it is long) and every later run reuses it.
-Dry runs configure nothing, and an existing tree is only verified — a
+Dry runs configure nothing, and an existing tree is only verified. The one
+file a dry run may write in a tree is the stamp of its glob check
+(`CMakeFiles/cmake.verify_globs`), when a globbed directory's listing changed
+since the tree was generated, as the next build would. A
 Debug or no-benchmark tree is somebody's deliberate configuration and is
 reported, not replaced. Selecting an application is asking for a tree that
 builds its section, as selecting a counter set is: a real run turns a
@@ -124,7 +127,7 @@ cmake command; a new tree is configured with them from the start. If cmake
 fails — the vendored library does not build, the device headers or library
 are missing — the campaign stops with cmake's own error: there is no fallback
 and no CXL cell is skipped for want of a library. A dry run prints the
-command a real run would use and changes nothing. The CXL entries are
+command a real run would use and reconfigures nothing. The CXL entries are
 benchmark variants carrying their own protocol and residency, so the tree's
 own protocol is left as it is; `ARTS_USE_CXL` and `ARTS_CXL_RESIDENCY` are
 validation-tree options artsrun never sets.

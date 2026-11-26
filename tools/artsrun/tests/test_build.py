@@ -20,7 +20,8 @@ from pathlib import Path
 
 import pytest
 
-from artsrun.build import BuildError, available_targets, ensure_build_dir, plan_targets
+from artsrun.build import (BuildError, available_targets, ensure_build_dir,
+                           generator_stale, plan_targets)
 from artsrun.model.experiment import Experiment, ExperimentApp
 from artsrun.model.catalog import Section, Version, load_catalog
 from artsrun.model.plane import load_plane
@@ -92,11 +93,18 @@ _PROJECT = (
 )
 
 
-def _configured(tmp_path: Path) -> Path:
+_GLOB_PROJECT = _PROJECT + (
+    'file(GLOB parts CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/parts/*.txt")\n'
+)
+
+
+def _configured(tmp_path: Path, project: str = _PROJECT) -> Path:
     """A tree generated from the project as first written."""
     src = tmp_path / "src"
     src.mkdir()
-    (src / "CMakeLists.txt").write_text(_PROJECT)
+    (src / "CMakeLists.txt").write_text(project)
+    (src / "parts").mkdir()
+    (src / "parts" / "a.txt").write_text("")
     build = tmp_path / "build"
     subprocess.run(
         ["cmake", "-GNinja", "-S", str(src), "-B", str(build),
@@ -106,17 +114,19 @@ def _configured(tmp_path: Path) -> Path:
     return build
 
 
-def _sources_move_on(tmp_path: Path, extra: str) -> None:
+def _sources_move_on(tmp_path: Path, extra: str, project: str = _PROJECT) -> None:
     """The project changes after the tree was generated.
 
     The generation is aged rather than the source pushed into the future: a
     future-dated input stays newer than every regeneration, which is a
     manifest ninja can never bring current, not a tree that moved on.
     """
-    (tmp_path / "src" / "CMakeLists.txt").write_text(_PROJECT + extra)
-    manifest = tmp_path / "build" / "build.ninja"
+    (tmp_path / "src" / "CMakeLists.txt").write_text(project + extra)
     earlier = time.time() - 60
-    os.utime(manifest, (earlier, earlier))
+    for aged in (tmp_path / "build" / "build.ninja",
+                 tmp_path / "build" / "CMakeFiles" / "cmake.verify_globs"):
+        if aged.exists():
+            os.utime(aged, (earlier, earlier))
 
 
 @needs_cmake
@@ -156,3 +166,73 @@ def test_a_dry_run_regenerates_nothing_and_says_the_sources_moved(tmp_path):
     assert any("changed since it was generated" in line for line in lines)
     # Dry means dry: the previous generation is what the tree still holds.
     assert "new_app" not in available_targets(build)
+
+
+def _a_real_run_regenerates(build: Path) -> bool:
+    out = subprocess.run(["ninja", "-C", str(build), "build.ninja"],
+                         capture_output=True, text=True, check=False).stdout
+    return "Re-running CMake" in out
+
+
+@needs_cmake
+def test_a_current_tree_with_glob_checks_is_not_stale(tmp_path):
+    build = _configured(tmp_path, _GLOB_PROJECT)
+    lines: list[str] = []
+    ensure_build_dir(build, sections=list(Section), bootstrap=False,
+                     on_line=lines.append)
+    assert lines == []
+    assert generator_stale(build) is False
+    assert _a_real_run_regenerates(build) is False
+
+
+@needs_cmake
+def test_a_new_file_under_a_glob_makes_the_tree_stale(tmp_path):
+    build = _configured(tmp_path, _GLOB_PROJECT)
+    (tmp_path / "src" / "parts" / "b.txt").write_text("b")
+    assert generator_stale(build) is True
+    assert _a_real_run_regenerates(build) is True
+
+
+@needs_cmake
+@pytest.mark.parametrize("project", [_PROJECT, _GLOB_PROJECT])
+def test_the_answer_is_a_real_runs_when_a_cmake_file_changed(tmp_path, project):
+    build = _configured(tmp_path, project)
+    _sources_move_on(tmp_path, "add_executable(new_app a.c)\n", project=project)
+    assert generator_stale(build) is True
+    assert _a_real_run_regenerates(build) is True
+
+
+@needs_cmake
+def test_a_current_tree_without_glob_checks_is_not_stale(tmp_path):
+    build = _configured(tmp_path)
+    assert generator_stale(build) is False
+    assert _a_real_run_regenerates(build) is False
+
+
+@needs_cmake
+def test_the_glob_stamp_alone_does_not_make_a_tree_stale(tmp_path):
+    build = _configured(tmp_path, _GLOB_PROJECT)
+    stamp = build / "CMakeFiles" / "cmake.verify_globs"
+    assert stamp.exists()
+    earlier = time.time() - 60
+    os.utime(stamp, (earlier, earlier))
+    assert generator_stale(build) is False
+
+
+@needs_cmake
+def test_a_missing_cmake_input_makes_the_tree_stale(tmp_path):
+    project = _PROJECT + "include(${CMAKE_SOURCE_DIR}/parts/a.txt)\n"
+    build = _configured(tmp_path, project)
+    (tmp_path / "src" / "parts" / "a.txt").unlink()
+    assert generator_stale(build) is True
+    assert _a_real_run_regenerates(build) is True
+
+
+@needs_cmake
+def test_a_glob_check_that_cannot_run_is_a_build_error(tmp_path):
+    build = _configured(tmp_path, _GLOB_PROJECT)
+    cache = build / "CMakeCache.txt"
+    cache.write_text(cache.read_text().replace(
+        "CMAKE_COMMAND:INTERNAL=", "CMAKE_COMMAND:INTERNAL=/no/such/dir/"))
+    with pytest.raises(BuildError, match="glob check"):
+        generator_stale(build)

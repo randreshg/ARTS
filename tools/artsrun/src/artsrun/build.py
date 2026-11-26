@@ -478,7 +478,11 @@ def ensure_build_dir(build_dir: Path, *, sections: list[Section],
     the section, counter and CXL-library reconfigures elsewhere change only
     the options they own for the same reason — each because the campaign
     selected what the option builds.  A dry run configures nothing — dry
-    means dry — and reports what a real run would do instead.
+    means dry — and reports what a real run would do instead.  The one file
+    it may write is the stamp of the tree's own glob check,
+    CMakeFiles/cmake.verify_globs, touched when the listing of a globbed
+    directory changed since the tree was generated, as the next build would
+    touch it.
 
     `sections` are the catalog sections the campaign selects; a new tree is
     configured with exactly those on.  `cxl_options` are the library values
@@ -544,14 +548,60 @@ def ensure_build_dir(build_dir: Path, *, sections: list[Section],
 
 
 def generator_stale(build_dir: Path) -> bool:
-    """Whether the tree's generation predates its CMake files."""
+    """Whether a build of this tree would begin by re-running CMake.
+
+    The answer is what a real build decides, in its order.  A tree with
+    globbed sources first runs its own glob check, which touches
+    CMakeFiles/cmake.verify_globs when, and only when, a glob's result
+    changed; a dry build cannot run it and would count the stamp as always
+    changed, so the check is run here.  Ninja then re-runs a generator edge
+    when its output is missing, when an input is missing (ninja treats a file
+    with no rule as dirty, and the re-run then reports what is gone) or when an
+    input is newer than the output; a changed command line does not count.  The inputs are
+    those of the edge that makes build.ninja, as ninja itself lists them.
+    """
     if shutil.which("ninja") is None:
         return False
-    out = subprocess.run(
-        ["ninja", "-C", str(build_dir), "-n", "build.ninja"],
-        capture_output=True, text=True, check=False,
-    ).stdout
-    return "Re-running CMake" in out
+    globs = build_dir / "CMakeFiles" / "VerifyGlobs.cmake"
+    if globs.is_file():
+        cmake = _cache_value(build_dir, "CMAKE_COMMAND") or "cmake"
+        try:
+            check = subprocess.run([cmake, "-P", str(globs.resolve())], cwd=build_dir,
+                                   capture_output=True, text=True, check=False)
+        except OSError as err:
+            raise BuildError(f"{build_dir}: cannot run its glob check "
+                             f"`{cmake} -P {globs}`: {err}") from err
+        if check.returncode != 0:
+            raise BuildError(f"{build_dir}: its glob check failed:\n"
+                             + _cmake_error(check.stdout + check.stderr))
+    try:
+        query = subprocess.run(
+            ["ninja", "-C", str(build_dir), "-n", "-t", "query", "build.ninja"],
+            capture_output=True, text=True, check=False)
+    except OSError as err:
+        raise BuildError(f"{build_dir}: cannot run `ninja -t query build.ninja`: "
+                         f"{err}") from err
+    if query.returncode != 0:
+        raise BuildError(f"{build_dir}: ninja cannot read its manifest:\n"
+                         + (query.stdout + query.stderr).strip())
+    built = (build_dir / "build.ninja").stat().st_mtime_ns
+    lines = iter(query.stdout.splitlines())
+    for line in lines:
+        if line.startswith("  input:"):
+            break
+    else:
+        raise BuildError(f"{build_dir}: ninja's query of build.ninja lists no "
+                         f"inputs:\n{query.stdout.strip()}")
+    for line in lines:
+        if not line.startswith("    "):
+            break
+        name = line.strip()
+        if name.startswith(("|| ", "|@ ")):
+            continue
+        path = build_dir / name.removeprefix("| ")
+        if not path.exists() or path.stat().st_mtime_ns > built:
+            return True
+    return False
 
 
 def regenerate(build_dir: Path, *, prefix: list[str] | None = None) -> None:
