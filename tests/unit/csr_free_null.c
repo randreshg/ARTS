@@ -3,10 +3,10 @@
  * Pure-unit test for arts_csr_free's NULL handling.
  *
  * Contract under test:
- *   arts_csr_free(csr) tolerates a NULL csr.  arts_csr_init returns NULL for
- *   a partition homed on another rank, and a "free everything" teardown loop
- *   over its results then calls arts_csr_free(NULL): it must neither
- *   dereference the NULL nor destroy anything.  A non-NULL csr's free reaches
+ *   arts_csr_free(csr) tolerates a NULL csr: a slot that acquired nothing
+ *   holds a NULL pointer, and arts_csr_free(NULL) must neither dereference
+ *   the NULL nor destroy anything (a partition such a slot names is destroyed
+ *   by the slot's guid).  A non-NULL csr's free reaches
  *   arts_db_destroy(partGuid) (verified via a destroy-recording stub), which
  *   proves the test exercises the real arts_csr_free body, not a fake.
  *
@@ -66,6 +66,15 @@ arts_guid_t arts_db_create(void **ptr, uint64_t len, arts_db_types_t db_type,
     *ptr = NULL;
   }
   return 0;
+}
+void arts_db_release(arts_guid_t guid) { (void)guid; }
+arts_guid_t arts_event_create(const arts_event_hint_t *hint) {
+  (void)hint;
+  return (arts_guid_t)1;
+}
+void arts_event_satisfy(arts_guid_t event_guid, arts_guid_t data_guid) {
+  (void)event_guid;
+  (void)data_guid;
 }
 bool arts_guid_is_local(arts_guid_t guid) {
   (void)guid;

@@ -67,16 +67,17 @@ void bfs_output() {
   }
 }
 
+/* Slot 0: the search's end; slot 1 + p: partition p's name, DB_MODE_NULL. */
 void exit_program(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                   arts_edt_dep_t depv[]) {
   (void)depc;
-  (void)depv;
   (void)paramc;
   (void)paramv;
   bfs_output();
   free((void *)level);
   for (arts_partition_t p = 0; p < distribution.num_blocks; ++p) {
-    arts_db_destroy(arts_block_dist_guid_for_partition(&distribution, p));
+    arts_db_destroy(depv[1 + p].guid);
+    arts_event_destroy(arts_block_dist_guid_for_partition(&distribution, p));
   }
   arts_shutdown();
 }
@@ -129,14 +130,14 @@ void relax(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 void bfs_send(arts_vertex_t u, uint64_t ulevel) {
-  arts_guid_t neighb_dbguid = arts_block_dist_guid_for_vertex(u, &distribution);
+  arts_guid_t neighb_part = arts_block_dist_guid_for_vertex(u, &distribution);
   uint64_t send[2];
   send[0] = u;
   send[1] = ulevel;
   arts_guid_t relax_guid = arts_edt_create(
       relax, 2, send, 1,
-      &(arts_edt_hint_t){.rank = arts_guid_get_rank(neighb_dbguid)});
-  arts_add_dependence(neighb_dbguid, relax_guid, 0, DB_MODE_RO);
+      &(arts_edt_hint_t){.rank = arts_guid_get_rank(neighb_part)});
+  arts_event_add_dependence_to_edt(neighb_part, relax_guid, 0, DB_MODE_RO);
 }
 
 void kickoff_termination(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
@@ -210,11 +211,17 @@ void main_continue(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
 
   arts_guid_t exit_guid =
-      arts_edt_create(exit_program, 0, NULL, 1, &(arts_edt_hint_t){.rank = 0});
+      arts_edt_create(exit_program, 0, NULL, 1 + distribution.num_blocks,
+                      &(arts_edt_hint_t){.rank = 0});
   arts_event_hint_t group_hint = ARTS_EVENT_HINT_LATCH(1);
   group_hint.auto_destroy = true;
   arts_guid_t search_done = arts_event_create(&group_hint);
   arts_add_dependence(search_done, exit_guid, 0, DB_MODE_NULL);
+  for (arts_partition_t p = 0; p < distribution.num_blocks; ++p) {
+    arts_event_add_dependence_to_edt(
+        arts_block_dist_guid_for_partition(&distribution, p), exit_guid, 1 + p,
+        DB_MODE_NULL);
+  }
   arts_edt_create(kickoff_termination, 1, (uint64_t *)&source, 0,
                   &(arts_edt_hint_t){.rank = 0, .group = search_done});
   arts_event_satisfy_slot(search_done, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);

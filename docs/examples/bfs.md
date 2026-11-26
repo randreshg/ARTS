@@ -57,23 +57,26 @@ On `N` ranks:
 | object | count |
 |---|---|
 | partition blocks | `N`: a header, `b + 1` row offsets and the block's edges |
+| partition events | `N`, one per partition, satisfied with its block's name |
 | level arrays | `N`, one per rank in its own memory, `b` words each |
 | `init_node` | `N`, the loaders |
-| `main_continue`, `kickoff_termination`, `exit_program` | 1 each |
+| `main_continue`, `kickoff_termination`, `exit_program` | 1 each; `exit_program` has `1 + N` slots |
 | `relax` | one per message, plus the start: a vertex messages all its neighbours each time its level is lowered, at least once per vertex the search reaches |
 | group latches | 2: the loaders' and the search's |
 
 ## Wiring
 
-Every `relax` takes the partition that holds its vertex on slot 0, RO, and
-is created on that partition's rank. The loaders are members of the first
-group, which `main_edt` opens on rank 0; `main_continue` waits on its latch
-through its one control slot. `main_continue` opens the second group,
-wires `exit_program`'s control slot on its latch, creates
-`kickoff_termination` as its member and releases the opener's count; every
-`relax` is created by `kickoff_termination` or by another `relax` with no
-group of its own named, so it joins its creator's, and the group fires only
-when the last `relax` has finished. The level
+Every `relax` takes the partition that holds its vertex on slot 0, RO,
+through a dependence on the partition's event, and is created on that
+partition's rank. The loaders are members of the first group, which
+`main_edt` opens on rank 0; `main_continue` waits on its latch through its
+one control slot. `main_continue` opens the second group, wires
+`exit_program`'s control slot on its latch and its slot `1 + p` on partition
+`p`'s event in `DB_MODE_NULL`, which delivers the partition's name without
+acquiring it, creates `kickoff_termination` as its member and releases the
+opener's count; every `relax` is created by `kickoff_termination` or by
+another `relax` with no group of its own named, so it joins its creator's,
+and the group fires only when the last `relax` has finished. The level
 arrays are no data blocks: each is an array of C11 atomic words in its
 rank's memory, lowered only by that rank's `relax` EDTs, each with a relaxed
 compare-and-swap loop (a level is a value and orders nothing), and read by
@@ -82,24 +85,26 @@ compare-and-swap loop (a level is a value and orders nothing), and read by
 ## Flow
 
 `main_edt` on rank 0 refuses missing counts; otherwise it builds the
-distribution from its arguments, reserving the partitions' GUIDs once, and
+distribution from its arguments, reserving the partitions' events once, and
 opens the first group, creates one `init_node` per rank, each given the
 distribution and `main_edt`'s arguments as parameters, and `main_continue`.
 Each `init_node` writes its rank's copy of the distribution, which every
-later EDT on the rank reads, and loads the partition homed on its rank, which
-it holds until it ends, so its completion publishes the partition before the
-group fires; it allocates its rank's level array and, if the load failed,
-prints its message and shuts down. `main_continue` reads `--source` from
-`main_edt`'s arguments, refuses an out-of-range source, and starts the
-search. `exit_program` prints rank 0's levels, frees rank 0's array, destroys
-every partition, whose readers have all finished, and shuts the runtime down.
+later EDT on the rank reads, and loads the partition homed on its rank: it
+creates the partition's event and its block, builds the block, releases it
+and then satisfies the event with the block's name. It allocates its rank's
+level array and, if the load failed, prints its message and shuts down.
+`main_continue` reads `--source` from `main_edt`'s arguments, refuses an
+out-of-range source, and starts the search. `exit_program` prints rank 0's
+levels, frees rank 0's array, destroys every partition by the name its slot
+delivered, every reader having finished, and then the partition's event,
+every dependence on it having been served, and shuts the runtime down.
 
 ## Placement
 
-Partition `r` is homed on rank `r` and loaded by `init_node` `r` there. A
-`relax` runs on its vertex's rank, so every partition read is local and a
-message to a vertex of another rank is a remote EDT create. `main_continue`,
-`kickoff_termination` and `exit_program` run on rank 0.
+Partition `r` and its event are homed on rank `r`, where `init_node` `r`
+creates them. A `relax` runs on its vertex's rank, so every partition read
+is local and a message to a vertex of another rank is a remote EDT create.
+`main_continue`, `kickoff_termination` and `exit_program` run on rank 0.
 
 ## Sizing
 

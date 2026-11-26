@@ -39,12 +39,12 @@
 /// @file csr_graph.c
 /// @brief The graph library under its contract: every distribution created
 ///        once by main_edt and passed in parameters, partitions loaded by an
-///        EDT on each rank, read through RO dependences once every loader has
-///        finished, destroyed once every reader has.
+///        EDT on each rank, read through RO dependences on their events once
+///        every loader has finished, destroyed once every reader has.
 ///
 /// Each partition is read by one EDT on every rank, so on n ranks n - 1 of
-/// every n reads are of a block homed elsewhere, created under a GUID that
-/// every rank derives from the distribution's range.  Each reader checks its
+/// every n reads are of a block homed elsewhere, named by an event that every
+/// rank derives from the distribution's range.  Each reader checks its
 /// own oracle and reports a failure through arts_test_fail(), so one run
 /// states every property below:
 ///   * a CSR built from edges is well formed: every local vertex's neighbour
@@ -53,7 +53,7 @@
 ///     count is their sum, and a vertex's local index maps back to it through
 ///     its partition's start; a partition with no edges sorts and builds an
 ///     empty CSR without touching the (absent) edge array; a build for a
-///     partition homed on another rank returns NULL;
+///     partition homed on another rank returns NULL_GUID;
 ///   * both loaders sort each row's targets in ascending order;
 ///   * the edge-list loader reads a file that opens with '%' lines as 1-based,
 ///     skips one size line after them only when the first line is the
@@ -346,8 +346,8 @@ static void build_direct(const csr_case_t *c, const arts_block_dist_t *dist) {
     arts_edge_vector_init(&vec, (c->build == DIRECT) ? 16 : 0);
     if (!arts_guid_is_local(g)) {
       if (arts_csr_init(p, arts_block_dist_block_size(p, dist), 0, dist, &vec,
-                        true, g) != NULL) {
-        fail(c, "a build for a remote partition returned a CSR");
+                        true, g) != NULL_GUID) {
+        fail(c, "a build for a remote partition returned a block");
       }
       arts_edge_vector_free(&vec);
       continue;
@@ -358,11 +358,11 @@ static void build_direct(const csr_case_t *c, const arts_block_dist_t *dist) {
       }
     }
     arts_edge_vector_sort_by_source_and_target(&vec);
-    arts_csr_graph_t *csr = arts_csr_init(
-        p, arts_block_dist_block_size(p, dist), vec.used, dist, &vec, true, g);
+    arts_guid_t block = arts_csr_init(p, arts_block_dist_block_size(p, dist),
+                                      vec.used, dist, &vec, true, g);
     arts_edge_vector_free(&vec);
-    if (csr == NULL) {
-      fail(c, "a build for a local partition returned NULL");
+    if (block == NULL_GUID) {
+      fail(c, "a build for a local partition returned NULL_GUID");
     }
   }
 }
@@ -384,19 +384,28 @@ static int load(const csr_case_t *c, const arts_block_dist_t *dist,
   }
 }
 
-/* A partition a refused load did not create holds a stand-in whose header
- * names the complement of its GUID, so its readers find a block either way
- * and can tell which one they found. */
+/* A partition a refused load did not create is a stand-in, delivered through
+ * the partition's event as a loader delivers a partition, whose header names
+ * the complement of its own name, so its readers find a block either way and
+ * can tell which one they found. */
 static void create_stand_ins(const arts_block_dist_t *dist) {
   for (arts_partition_t p = 0; p < dist->num_blocks; ++p) {
     arts_guid_t g = arts_block_dist_guid_for_partition(dist, p);
     if (!arts_guid_is_local(g)) {
       continue;
     }
-    arts_csr_graph_t *stand_in = (arts_csr_graph_t *)arts_db_create_with_guid(
-        g, sizeof(arts_csr_graph_t), ARTS_DB, ARTS_DB_PROP_NONE, NULL);
+    arts_event_hint_t eh = ARTS_EVENT_HINT_DEFAULTS;
+    eh.guid = g;
+    arts_event_create(&eh);
+    void *image = NULL;
+    arts_guid_t block =
+        arts_db_create(&image, sizeof(arts_csr_graph_t), ARTS_DB,
+                       ARTS_DB_PROP_NONE, &ARTS_DB_HINT_DEFAULTS);
+    arts_csr_graph_t *stand_in = (arts_csr_graph_t *)image;
     memset(stand_in, 0, sizeof(*stand_in));
-    stand_in->partGuid = ~g;
+    stand_in->partGuid = ~block;
+    arts_db_release(block);
+    arts_event_satisfy(g, block);
   }
 }
 
@@ -488,7 +497,7 @@ static void check_csr(const csr_case_t *c, const arts_block_dist_t *dist,
 }
 
 /* paramv: the case index, the partition and the case's distribution.  Slot
- * 0: the partition, RO. */
+ * 0: the partition, RO, through its event. */
 void read_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
               arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -496,15 +505,14 @@ void read_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   const csr_case_t *c = &cases[paramv[0]];
   arts_block_dist_t dist = arts_block_dist_from_params(&paramv[2]);
   arts_partition_t p = (arts_partition_t)paramv[1];
-  arts_guid_t g = arts_block_dist_guid_for_partition(&dist, p);
   arts_csr_graph_t *csr = (arts_csr_graph_t *)depv[0].ptr;
   if (csr == NULL) {
     fail(c, "the partition's slot has no payload");
-  } else if (csr->partGuid == ~g) {
+  } else if (csr->partGuid == ~depv[0].guid) {
     if (c->rc == 0) {
       fail(c, "the partition was not built");
     }
-  } else if (csr->partGuid != g) {
+  } else if (csr->partGuid != depv[0].guid) {
     fail(c, "the partition's header names another GUID");
   } else if (c->rc != 0) {
     fail(c, "a refused load built a partition");
@@ -513,15 +521,18 @@ void read_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
 }
 
+/* Slot 0: the readers' end; slot 1 + k: the name of the k-th partition, in
+ * case order and then partition order, DB_MODE_NULL. */
 void destroy_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                  arts_edt_dep_t depv[]) {
   (void)paramc;
   (void)paramv;
   (void)depc;
-  (void)depv;
+  unsigned int k = 0;
   for (unsigned int i = 0; i < NCASES; ++i) {
-    for (arts_partition_t p = 0; p < g_dist[i].num_blocks; ++p) {
-      arts_db_destroy(arts_block_dist_guid_for_partition(&g_dist[i], p));
+    for (arts_partition_t p = 0; p < g_dist[i].num_blocks; ++p, ++k) {
+      arts_db_destroy(depv[1 + k].guid);
+      arts_event_destroy(arts_block_dist_guid_for_partition(&g_dist[i], p));
     }
   }
   if (arts_test_status() == 0) {
@@ -542,7 +553,9 @@ void read_phase_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_guid_t readers = arts_event_create(&gh);
   arts_edt_hint_t h = ARTS_EDT_HINT_DEFAULTS;
   h.group = readers;
+  unsigned int parts = 0;
   for (unsigned int i = 0; i < NCASES; ++i) {
+    parts += g_dist[i].num_blocks;
     for (arts_partition_t p = 0; p < g_dist[i].num_blocks; ++p) {
       uint64_t pv[2 + ARTS_BLOCK_DIST_PARAMC] = {i, p};
       arts_block_dist_to_params(&g_dist[i], &pv[2]);
@@ -550,14 +563,23 @@ void read_phase_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
         h.rank = r;
         arts_guid_t reader =
             arts_edt_create(read_edt, 2 + ARTS_BLOCK_DIST_PARAMC, pv, 1, &h);
-        arts_add_dependence(arts_block_dist_guid_for_partition(&g_dist[i], p),
-                            reader, 0, DB_MODE_RO);
+        arts_event_add_dependence_to_edt(
+            arts_block_dist_guid_for_partition(&g_dist[i], p), reader, 0,
+            DB_MODE_RO);
       }
     }
   }
   arts_edt_hint_t here = ARTS_EDT_HINT_DEFAULTS;
-  arts_guid_t done = arts_edt_create(destroy_edt, 0, NULL, 1, &here);
+  arts_guid_t done = arts_edt_create(destroy_edt, 0, NULL, 1 + parts, &here);
   arts_add_dependence(readers, done, 0, DB_MODE_NULL);
+  unsigned int k = 0;
+  for (unsigned int i = 0; i < NCASES; ++i) {
+    for (arts_partition_t p = 0; p < g_dist[i].num_blocks; ++p, ++k) {
+      arts_event_add_dependence_to_edt(
+          arts_block_dist_guid_for_partition(&g_dist[i], p), done, 1 + k,
+          DB_MODE_NULL);
+    }
+  }
   arts_event_satisfy_slot(readers, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
@@ -584,7 +606,7 @@ static void check_dist_args(void) {
       built->range == NULL_GUID) {
     fail(&args_case, "the distribution from arguments has the wrong shape");
   }
-  arts_block_dist_t empty = arts_block_dist_create(8, 9, 0, ARTS_GUID_DB);
+  arts_block_dist_t empty = arts_block_dist_create(8, 9, 0);
   uint64_t words[ARTS_BLOCK_DIST_PARAMC];
   arts_block_dist_to_params(&empty, words);
   arts_block_dist_t back = arts_block_dist_from_params(words);
@@ -606,8 +628,8 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   unsigned int parts = 2 * arts_get_total_ranks();
   for (unsigned int i = 0; i < NCASES; ++i) {
     if (cases[i].build != DIRECT) {
-      g_dist[i] = arts_block_dist_create(cases[i].vertices, cases[i].nedges,
-                                         parts, ARTS_GUID_DB);
+      g_dist[i] =
+          arts_block_dist_create(cases[i].vertices, cases[i].nedges, parts);
       continue;
     }
     const char *counts[] = {"prog", "--num-vertices", "8", "--num-edges", "9"};

@@ -49,12 +49,7 @@
 #include "arts/system/print.h"
 
 arts_block_dist_t arts_block_dist_create(arts_graph_sz_t n, arts_graph_sz_t m,
-                                         unsigned int num_blocks,
-                                         arts_guid_kind_t kind) {
-  if (kind <= ARTS_GUID_RESERVED || kind >= ARTS_GUID_LAST) {
-    ARTS_ERROR("arts_block_dist_create: %u is not a GUID kind",
-               (unsigned int)kind);
-  }
+                                         unsigned int num_blocks) {
   unsigned int nrank = arts_get_total_ranks();
   /* Partition p is member k(p) * nrank + h(p) of one round-robin range, so
    * the range holds ceil(num_blocks / nrank) members per home. */
@@ -71,10 +66,10 @@ arts_block_dist_t arts_block_dist_create(arts_graph_sz_t n, arts_graph_sz_t m,
   dist.num_blocks = num_blocks;
   dist.block_sz =
       (num_blocks > 0) ? (n / num_blocks + (n % num_blocks != 0)) : 0;
-  dist.range = (num_blocks > 0)
-                   ? arts_guid_reserve_range(kind, (unsigned int)size,
-                                             ARTS_HINT_ROUND_ROBIN)
-                   : NULL_GUID;
+  dist.range = (num_blocks > 0) ? arts_guid_reserve_range(ARTS_GUID_EVENT,
+                                                          (unsigned int)size,
+                                                          ARTS_HINT_ROUND_ROBIN)
+                                : NULL_GUID;
   return dist;
 }
 
@@ -95,7 +90,7 @@ int arts_block_dist_init_from_args(arts_block_dist_t *out, int argc,
   }
 
   if (n && m) {
-    *out = arts_block_dist_create(n, m, arts_get_total_ranks(), ARTS_GUID_DB);
+    *out = arts_block_dist_create(n, m, arts_get_total_ranks());
     return 0;
   }
   ARTS_INFO("Must set --num-vertices and --num-edges");
@@ -121,7 +116,8 @@ arts_block_dist_t arts_block_dist_from_params(const uint64_t *paramv) {
   if (paramv[3] > UINT_MAX ||
       (dist.num_blocks == 0) != (dist.range == NULL_GUID) ||
       (dist.num_blocks > 0 &&
-       ARTS_GUID_GET_RANK(dist.range) != ARTS_DISTRIBUTED_RANK)) {
+       (ARTS_GUID_GET_RANK(dist.range) != ARTS_DISTRIBUTED_RANK ||
+        ARTS_GUID_GET_TYPE(dist.range) != ARTS_GUID_EVENT))) {
     ARTS_ERROR("arts_block_dist_from_params: the words are not a "
                "distribution (%lu blocks, range %lu)",
                (unsigned long)paramv[3], (unsigned long)dist.range);

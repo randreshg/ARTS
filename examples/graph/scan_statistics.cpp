@@ -84,14 +84,16 @@ typedef struct {
 //   arts_shutdown();
 // }
 
+// Slot v: vertex v's statistic; slot n + p: partition p's name, DB_MODE_NULL.
 void max_reducer(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                  arts_edt_dep_t depv[]) {
   (void)paramc;
   (void)paramv;
+  (void)depc;
   // std::cout << "In max reducer" << std::endl;
   uint64_t max_scan_stat = 0;
   arts_vertex_t max_vertex = 0;
-  for (uint32_t v = 0; v < depc; v++) {
+  for (uint64_t v = 0; v < distribution.num_vertices; v++) {
     per_vertex_scan_stat_t *vertex_scan_stat =
         (per_vertex_scan_stat_t *)depv[v].ptr;
     // std::cout << "Vertex: " << vertex_scan_stat->source << " scan_stat: " <<
@@ -108,7 +110,8 @@ void max_reducer(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_printf("Total execution time: %f s \n",
               (double)(end_time - start_time) / 1000000000.0);
   for (arts_partition_t p = 0; p < distribution.num_blocks; ++p) {
-    arts_db_destroy(arts_block_dist_guid_for_partition(&distribution, p));
+    arts_db_destroy(depv[distribution.num_vertices + p].guid);
+    arts_event_destroy(arts_block_dist_guid_for_partition(&distribution, p));
   }
   arts_shutdown();
 }
@@ -244,8 +247,9 @@ void visit_source(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       arts_guid_t visit_one_hop_neighbor_guid = arts_edt_create(
           visit_one_hop_neighbor_on_rank, 0, NULL, 2, &hop_hint);
       arts_add_dependence(db_guid, visit_one_hop_neighbor_guid, 0, DB_MODE_RO);
-      arts_add_dependence(arts_block_dist_guid_for_partition(&distribution, i),
-                          visit_one_hop_neighbor_guid, 1, DB_MODE_RO);
+      arts_event_add_dependence_to_edt(
+          arts_block_dist_guid_for_partition(&distribution, i),
+          visit_one_hop_neighbor_guid, 1, DB_MODE_RO);
     }
   } else {
     arts_db_release(partition_guid);
@@ -303,8 +307,15 @@ void main_continue(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   // Create max reducer EDT
   arts_edt_hint_t reducer_hint = {};
   reducer_hint.guid = max_reducer_guid;
-  arts_edt_create(max_reducer, 0, NULL, distribution.num_vertices,
-                  &reducer_hint);
+  arts_edt_create(
+      max_reducer, 0, NULL,
+      (uint32_t)(distribution.num_vertices + distribution.num_blocks),
+      &reducer_hint);
+  for (arts_partition_t p = 0; p < distribution.num_blocks; ++p) {
+    arts_event_add_dependence_to_edt(
+        arts_block_dist_guid_for_partition(&distribution, p), max_reducer_guid,
+        (uint32_t)(distribution.num_vertices + p), DB_MODE_NULL);
+  }
   start_time = arts_get_time_stamp();
   for (uint64_t i = 0; i < distribution.num_vertices; ++i) {
     uint64_t source = i;
@@ -315,8 +326,9 @@ void main_continue(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_guid_t visit_source_guid = arts_edt_create(
         visit_source, 1, (uint64_t *)&packed_values, 2, &rank_hint);
     arts_edt_satisfy_slot(visit_source_guid, 0, 0, DB_MODE_NULL);
-    arts_add_dependence(arts_block_dist_guid_for_partition(&distribution, rank),
-                        visit_source_guid, 1, DB_MODE_RO);
+    arts_event_add_dependence_to_edt(
+        arts_block_dist_guid_for_partition(&distribution, rank),
+        visit_source_guid, 1, DB_MODE_RO);
   }
 }
 

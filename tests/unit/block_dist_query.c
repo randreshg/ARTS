@@ -5,8 +5,8 @@
  *
  * guid.c is #include'd with libc-backed shims and node_init runs the
  * runtime's node init for rank 0 of N ranks, so arts_block_dist_create
- * reserves its range through the real arts_guid_reserve_range and the GUID
- * queries derive members through the real arts_guid_from_index;
+ * reserves its event range through the real arts_guid_reserve_range and the
+ * GUID queries derive members through the real arts_guid_from_index;
  * arts_get_total_ranks returns the same N.  Pinned:
  *
  *   - coverage: sum_{i in [0,num_blocks)} block_size(i) == num_vertices (no
@@ -17,14 +17,16 @@
  *   - get_owner boundary: vertex block_sz-1 -> block 0, block_sz -> block 1.
  *   - local-index round trip: get_local_index(v) == v - partition_start(owner).
  *   - placement, over N = 4 ranks, for block counts {6, 4, 9, 3, 12} and the
- *     degenerate shapes: partition p's GUID is homed on the rank that holds p
- *     (rank r holds num_blocks / N consecutive partitions, plus one for the
+ *     degenerate shapes: partition p's event is homed on the rank that holds
+ *     p (rank r holds num_blocks / N consecutive partitions, plus one for the
  *     first num_blocks % N ranks), its member index is below
  *     N * ceil(num_blocks / N), no two partitions share an index, and
- *     guid_for_vertex returns its block's GUID.
+ *     guid_for_vertex returns its block's event.
  *   - refusals, each in a forked child that must end through ARTS_ERROR: a
  *     distribution needing more than UINT_MAX names, a GUID query of a
- *     past-end partition, and a GUID query of a 0-block distribution.
+ *     past-end partition, a GUID query of a 0-block distribution, and a
+ *     distribution's words whose range is of another kind than events (the
+ *     same words with the event range are read back).
  *   - a 0-block distribution reserves nothing (range NULL_GUID, block size 0)
  *     and get_owner never divides by zero on it (in a child, so a fault is
  *     observed rather than suffered).
@@ -33,8 +35,8 @@
  *     does not end at UINT64_MAX.
  *   - the largest range: at N = 3, num_blocks = UINT_MAX - 1 (a range of
  *     UINT_MAX names) is accepted, its last partition's member index is below
- *     UINT_MAX, and a DB reserve made after it on every home lies above that
- *     home's last member.
+ *     UINT_MAX, and an event reserve made after it on every home lies above
+ *     that home's last member.
  *
  * The ARTS runtime is NOT started.
  */
@@ -124,7 +126,7 @@ static bool dies(void (*fn)(void)) {
 }
 
 static arts_block_dist_t make_dist(arts_graph_sz_t n, unsigned int num_blocks) {
-  return arts_block_dist_create(n, /*m=*/0, num_blocks, ARTS_GUID_DB);
+  return arts_block_dist_create(n, /*m=*/0, num_blocks);
 }
 
 /* ---- coverage invariant + contiguity for a (n, num_blocks) config ---------
@@ -199,7 +201,7 @@ static void test_owner_and_local_index(void) {
  */
 /* Rank r holds num_blocks / N partitions, plus one for the first
  * num_blocks % N ranks, in contiguous partition-index order (rank 0 the
- * lowest indices).  Each partition's GUID must be homed there and be a
+ * lowest indices).  Each partition's event must be homed there and be a
  * distinct member of the distribution's range. */
 static void check_roundrobin(arts_graph_sz_t n, unsigned int num_blocks) {
   arts_block_dist_t d = make_dist(n, num_blocks);
@@ -220,7 +222,8 @@ static void check_roundrobin(arts_graph_sz_t n, unsigned int num_blocks) {
       arts_guid_t g = arts_block_dist_guid_for_partition(&d, blk);
       CHECK(arts_guid_get_rank(g) == r,
             "guid_for_partition home == the rank holding the partition");
-      CHECK(arts_guid_get_kind(g) == ARTS_GUID_DB, "guid_for_partition kind");
+      CHECK(arts_guid_get_kind(g) == ARTS_GUID_EVENT,
+            "guid_for_partition kind");
       int64_t idx = arts_guid_index_from(d.range, g);
       CHECK(idx >= 0 && (uint64_t)idx < size,
             "member index below N * ceil(num_blocks / N)");
@@ -233,7 +236,7 @@ static void check_roundrobin(arts_graph_sz_t n, unsigned int num_blocks) {
   free(seen);
   CHECK(blk == num_blocks, "the ranks hold every block exactly once");
   /* guid_for_vertex: a vertex inside block num_blocks / 2 returns that
-   * block's GUID. */
+   * partition's event. */
   unsigned int mid = num_blocks / 2u;
   arts_vertex_t v = (arts_vertex_t)mid * d.block_sz + (d.block_sz - 1) / 2;
   if (v < n) {
@@ -274,12 +277,31 @@ static void query_no_blocks(void) {
   (void)arts_block_dist_guid_for_partition(&d, 0);
 }
 
+/* A distribution's words with its range's kind changed and nothing else. */
+static void params_range_not_events(void) {
+  arts_block_dist_t d = make_dist(60, 6);
+  uint64_t words[ARTS_BLOCK_DIST_PARAMC];
+  arts_block_dist_to_params(&d, words);
+  words[4] = ARTS_GUID_MAKE(ARTS_GUID_DB, ARTS_GUID_GET_RANK(d.range),
+                            ARTS_GUID_GET_KEY(d.range));
+  (void)arts_block_dist_from_params(words);
+}
+
 static void test_refusals(void) {
   CHECK(dies(create_oversize),
         "a distribution needing more than UINT_MAX names was not refused");
   CHECK(dies(query_past_end), "a past-end partition's GUID was not refused");
   CHECK(dies(query_no_blocks),
         "a GUID query of a 0-block distribution was not refused");
+  arts_block_dist_t d = make_dist(60, 6);
+  uint64_t words[ARTS_BLOCK_DIST_PARAMC];
+  arts_block_dist_to_params(&d, words);
+  arts_block_dist_t back = arts_block_dist_from_params(words);
+  CHECK(back.range == d.range && back.num_blocks == d.num_blocks &&
+            back.block_sz == d.block_sz,
+        "a distribution's own words were not read back");
+  CHECK(dies(params_range_not_events),
+        "a distribution's words whose range holds no events were not refused");
 }
 
 /* ======================= degenerate shapes ================================
@@ -309,19 +331,19 @@ static void test_empty_partition_end(void) {
         "partition_end on an empty graph must not underflow to UINT64_MAX");
 }
 
-/* A 0-block distribution claims no name on any home. */
+/* A 0-block distribution claims no event name on any home: the calling
+ * thread's counter row, which an event range raises, is unchanged. */
 static void test_no_blocks_reserves_nothing(void) {
   unsigned int nrank = arts_get_total_ranks();
   uint64_t before[4];
   for (unsigned int h = 0; h < nrank; h++) {
-    before[h] = atomic_load_explicit(&db_seq_next[h], memory_order_relaxed);
+    before[h] = *arts_guid_generator_get_key(h, ARTS_GUID_EVENT);
   }
   arts_block_dist_t d = make_dist(10, 0);
   CHECK(d.num_blocks == 0 && d.range == NULL_GUID && d.block_sz == 0,
         "a 0-block distribution: range NULL_GUID, block size 0");
   for (unsigned int h = 0; h < nrank; h++) {
-    CHECK(atomic_load_explicit(&db_seq_next[h], memory_order_relaxed) ==
-              before[h],
+    CHECK(*arts_guid_generator_get_key(h, ARTS_GUID_EVENT) == before[h],
           "a 0-block distribution claimed names");
   }
   CHECK(arts_block_dist_block_size(0, &d) == 0,
@@ -379,12 +401,13 @@ static void test_largest_range(void) {
   for (unsigned int h = 0; h < 3; h++) {
     end += nb / 3 + (h < nb % 3 ? 1u : 0u);
     arts_guid_t member = arts_block_dist_guid_for_partition(&d, end - 1);
-    arts_guid_t later = arts_guid_reserve(ARTS_GUID_DB, h);
+    /* An event range raises every home's counter of the reserving thread
+     * past its span, so a later reserve of that thread lies above it. */
+    arts_guid_t later = arts_guid_reserve(ARTS_GUID_EVENT, h);
     CHECK(arts_guid_get_rank(member) == h && arts_guid_get_rank(later) == h,
           "a home's last partition or later reserve is homed elsewhere");
-    CHECK(ARTS_GUID_DB_GET_SEQ(ARTS_GUID_GET_KEY(later)) >
-              ARTS_GUID_DB_GET_SEQ(ARTS_GUID_GET_KEY(member)),
-          "a DB reserve made after the largest range lies inside it");
+    CHECK(ARTS_GUID_GET_KEY(later) > ARTS_GUID_GET_KEY(member),
+          "an event reserve made after the largest range lies inside it");
   }
 }
 

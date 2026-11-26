@@ -56,8 +56,9 @@ On `N` ranks, with `W` workers in all:
 | object | count |
 |---|---|
 | partition blocks | `N`: a header, `b + 1` row offsets and the block's edges |
+| partition events | `N`, one per partition, satisfied with its block's name |
 | `init_node`, `start_work`, `local_reduce` | `N` each |
-| `main_continue`, `start_reduce`, `final_reduce` | 1 each; `final_reduce` has `N` slots |
+| `main_continue`, `start_reduce`, `final_reduce` | 1 each; `final_reduce` has `2N` slots |
 | local `visit_vertex` | per rank, one per chunk of `max(1, ⌊(bᵣ − 1) / 16W⌋)` vertices, `bᵣ` the rank's own block size |
 | remote `visit_vertex`, neighbour-list blocks | one each per vertex and other rank that holds a neighbour of it past its first at or above it |
 | group latches | 2: the loaders' and the counting's |
@@ -66,14 +67,17 @@ On `N` ranks, with `W` workers in all:
 
 A local `visit_vertex` takes its rank's partition on slot 0, RO. A remote
 one takes the neighbour-list copy on slot 0 and its rank's partition on
-slot 1, both RO; the two forms are told apart by their slot count. The
-sender creates the copy, fills it and releases it before it wires it, and
-the remote form destroys it after its merge. The loaders are members of the
-first group and the `start_work` EDTs of the second; every
+slot 1, both RO; the two forms are told apart by their slot count. A
+partition reaches its slot through a dependence on the partition's event.
+The sender creates the copy, fills it and releases it before it wires it,
+and the remote form destroys it after its merge. The loaders are members of
+the first group and the `start_work` EDTs of the second; every
 `visit_vertex` joins its creator's group, so the second fires once the last
 count has finished, and `start_reduce`'s control slot is wired on it.
 `start_reduce` creates one `local_reduce` per rank, each of which sends its
 rank's count to `final_reduce`'s slot of that rank as a slot value.
+`final_reduce`'s slot `N + p` is wired on partition `p`'s event in
+`DB_MODE_NULL`, which delivers the partition's name without acquiring it.
 `start_reduce` and `final_reduce` are created under GUIDs that `main_edt`
 reserves and every `init_node` copies into its rank's memory, so a
 `local_reduce` on any rank names `final_reduce`. The counters are C11 atomic
@@ -84,29 +88,34 @@ has fired.
 ## Flow
 
 `main_edt` on rank 0 refuses missing counts; otherwise it builds the
-distribution from its arguments, reserving the partitions' GUIDs once, and
+distribution from its arguments, reserving the partitions' events once, and
 reserves the two reducers' GUIDs. It opens the first group and creates one
 `init_node` per rank, each given the distribution, the reducers' GUIDs and
 `main_edt`'s arguments as parameters. It then creates `main_continue` and
 releases the opener's count. Each `init_node` writes its rank's copies of
 the distribution and the reducers' GUIDs, which every later EDT on the rank
-reads, loads the partition homed on its rank, which it holds until it ends,
-sets its rank's vertex range and chunk size and, if the load failed, prints
-its message and shuts down. `main_continue` on rank 0 starts the timer,
-creates the two reducers, the second group with one `start_work` per rank in
-it, releases the opener's count, and wires `start_reduce`. Each `start_work`
-creates its rank's local `visit_vertex` EDTs over the whole of its block.
-`final_reduce` sums the counts, prints the result, destroys every partition,
-whose readers have all finished, and shuts the runtime down.
+reads, loads the partition homed on its rank (it creates the partition's
+event and its block, builds the block, releases it and then satisfies the
+event with the block's name), sets its rank's vertex range and chunk size
+and, if the load failed, prints its message and shuts down. `main_continue`
+on rank 0 starts the timer, creates the two reducers, wires `final_reduce`'s
+name slots, creates the second group with one `start_work` per rank in it,
+wires `start_reduce` on its latch and releases the opener's count. Each
+`start_work` creates its rank's local `visit_vertex` EDTs over the whole of
+its block. `final_reduce` sums the counts, prints the result, destroys every
+partition by the name its slot delivered, every reader having finished, and
+then the partition's event, every dependence on it having been served, and
+shuts the runtime down.
 
 ## Placement
 
-Partition `r` is homed on rank `r` and loaded there. `start_work` `r`, its
-local `visit_vertex` EDTs and `local_reduce` `r` run on rank `r`; a remote
-`visit_vertex` runs on the rank that holds the neighbours it merges, so
-every partition read is local. A neighbour-list copy is created with no
-hint, so the build's no-hint data-block policy homes it, on the sender's
-rank by default, and the remote rank reads it. `main_continue`,
+Partition `r` and its event are homed on rank `r`, where `init_node` `r`
+creates them. `start_work` `r`, its local `visit_vertex` EDTs and
+`local_reduce` `r` run on rank `r`; a remote `visit_vertex` runs on the rank
+that holds the neighbours it merges, so every partition read is local. A
+neighbour-list copy is created with no hint, so the build's no-hint
+data-block policy homes it, on the sender's rank by default, and the remote
+rank reads it. `main_continue`,
 `start_reduce` and `final_reduce` run on rank 0.
 
 ## Sizing

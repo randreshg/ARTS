@@ -55,107 +55,123 @@ arts_vertex_t *arts_csr_col_ptr(arts_csr_graph_t *csr) {
   return arts_csr_row_ptr(csr) + csr->num_local_vertices + 1;
 }
 
-arts_csr_graph_t *arts_csr_init(arts_partition_t part_index,
-                                arts_graph_sz_t localv, arts_graph_sz_t locale,
-                                const arts_block_dist_t *dist,
-                                arts_edge_vector_t *edges, bool sorted_by_src,
-                                arts_guid_t block_guid) {
-  arts_csr_graph_t *csr = NULL;
-  if (arts_guid_is_local(block_guid)) {
-    // data is a single array that merges row_indices and columns
-    arts_graph_sz_t totsz = (localv + 1) + locale;
-    uint64_t db_size =
-        sizeof(arts_csr_graph_t) + (totsz * sizeof(arts_vertex_t));
+/* Fills the row offsets and targets of an all-zero CSR from at least one
+ * edge, the edges sorted by source. */
+static void csr_fill(arts_csr_graph_t *csr, arts_graph_sz_t localv,
+                     const arts_block_dist_t *dist, arts_edge_vector_t *edges) {
+  arts_vertex_t *row_indices = arts_csr_row_ptr(csr);
+  arts_vertex_t *columns = arts_csr_col_ptr(csr);
 
-    csr = (arts_csr_graph_t *)arts_db_create_with_guid(
-        block_guid, db_size, ARTS_DB, ARTS_DB_PROP_NONE, NULL);
-    csr->partGuid = block_guid;
-    csr->num_local_vertices = localv;
-    csr->num_local_edges = locale;
-    csr->block_sz = arts_block_dist_block_size(0, dist);
-    csr->index = part_index;
-    csr->num_blocks = dist->num_blocks;
+  arts_vertex_t last_src = edges->edge_array[0].source;
+  arts_vertex_t t = edges->edge_array[0].target;
+  arts_vertex_t src_ind = arts_block_dist_get_local_index(last_src, dist);
 
-    arts_vertex_t *row_indices = arts_csr_row_ptr(csr);
-    arts_vertex_t *columns = arts_csr_col_ptr(csr);
+  columns[0] = t;
+  row_indices[src_ind] = 0;
+  row_indices[src_ind + 1] = 1;
 
-    for (uint64_t i = 0; i <= localv; ++i) {
-      row_indices[i] = 0;
-    }
+  // populate edges
+  for (uint64_t i = 1; i < edges->used; ++i) {
+    arts_vertex_t s = edges->edge_array[i].source;
+    arts_vertex_t t = edges->edge_array[i].target;
+    src_ind = arts_block_dist_get_local_index(s, dist);
 
-    for (uint64_t i = 0; i < locale; ++i) {
-      columns[i] = 0;
-    }
-
-    if (!sorted_by_src) {
-      arts_edge_vector_sort_by_source(edges);
-    }
-
-    // A partition with no local edges is a well-formed empty CSR: the
-    // all-zero row pointers already encode every local vertex as having an
-    // empty neighbour range, so the edge array (which may be empty/NULL) must
-    // not be dereferenced.
-    if (edges->used == 0) {
-      return csr;
-    }
-
-    arts_vertex_t last_src = edges->edge_array[0].source;
-    arts_vertex_t t = edges->edge_array[0].target;
-    arts_vertex_t src_ind = arts_block_dist_get_local_index(last_src, dist);
-
-    columns[0] = t;
-    row_indices[src_ind] = 0;
-    row_indices[src_ind + 1] = 1;
-
-    // populate edges
-    for (uint64_t i = 1; i < edges->used; ++i) {
-      arts_vertex_t s = edges->edge_array[i].source;
-      arts_vertex_t t = edges->edge_array[i].target;
-      src_ind = arts_block_dist_get_local_index(s, dist);
-
-      if (s == last_src) {
-        // refers to previous source
-        columns[i] = t;
-        ++(row_indices[src_ind + 1]);
-      } else {
-        // if there are vertices without edges, those indexes need to be
-        // set
-        arts_vertex_t last_src_ind =
-            arts_block_dist_get_local_index(last_src, dist);
-        ++last_src_ind;
-        arts_vertex_t val = row_indices[last_src_ind];
-        assert(last_src_ind <= src_ind);
-        while (last_src_ind != src_ind) {
-          row_indices[++last_src_ind] = val;
-        }
-
-        // new source
-        // assert(csr->row_indices[src_ind] == i);
-        row_indices[src_ind + 1] = i + 1;
-        columns[i] = t;
-        last_src = s;
+    if (s == last_src) {
+      // refers to previous source
+      columns[i] = t;
+      ++(row_indices[src_ind + 1]);
+    } else {
+      // if there are vertices without edges, those indexes need to be
+      // set
+      arts_vertex_t last_src_ind =
+          arts_block_dist_get_local_index(last_src, dist);
+      ++last_src_ind;
+      arts_vertex_t val = row_indices[last_src_ind];
+      assert(last_src_ind <= src_ind);
+      while (last_src_ind != src_ind) {
+        row_indices[++last_src_ind] = val;
       }
-    }
 
-    // initialize until the end of the arts_vertex_t array
-    arts_vertex_t last_src_ind =
-        arts_block_dist_get_local_index(last_src, dist);
-    ++last_src_ind;
-    arts_vertex_t val = row_indices[last_src_ind];
-    if (last_src_ind > localv) {
-      ARTS_INFO("lasr_src index: %lu localv: %lu", last_src_ind, localv);
-    }
-    assert(last_src_ind <= localv);
-    while (last_src_ind < localv) {
-      row_indices[++last_src_ind] = val;
+      // new source
+      // assert(csr->row_indices[src_ind] == i);
+      row_indices[src_ind + 1] = i + 1;
+      columns[i] = t;
+      last_src = s;
     }
   }
-  return csr;
+
+  // initialize until the end of the arts_vertex_t array
+  arts_vertex_t last_src_ind = arts_block_dist_get_local_index(last_src, dist);
+  ++last_src_ind;
+  arts_vertex_t val = row_indices[last_src_ind];
+  if (last_src_ind > localv) {
+    ARTS_INFO("lasr_src index: %lu localv: %lu", last_src_ind, localv);
+  }
+  assert(last_src_ind <= localv);
+  while (last_src_ind < localv) {
+    row_indices[++last_src_ind] = val;
+  }
+}
+
+arts_guid_t arts_csr_init(arts_partition_t part_index, arts_graph_sz_t localv,
+                          arts_graph_sz_t locale, const arts_block_dist_t *dist,
+                          arts_edge_vector_t *edges, bool sorted_by_src,
+                          arts_guid_t part_event) {
+  if (!arts_guid_is_local(part_event)) {
+    return NULL_GUID;
+  }
+  arts_event_hint_t event_hint = ARTS_EVENT_HINT_DEFAULTS;
+  event_hint.guid = part_event;
+  arts_event_create(&event_hint);
+
+  // data is a single array that merges row_indices and columns
+  arts_graph_sz_t totsz = (localv + 1) + locale;
+  uint64_t db_size = sizeof(arts_csr_graph_t) + (totsz * sizeof(arts_vertex_t));
+  void *image = NULL;
+  arts_guid_t block = arts_db_create(&image, db_size, ARTS_DB,
+                                     ARTS_DB_PROP_NONE, &ARTS_DB_HINT_DEFAULTS);
+  arts_csr_graph_t *csr = (arts_csr_graph_t *)image;
+  csr->partGuid = block;
+  csr->num_local_vertices = localv;
+  csr->num_local_edges = locale;
+  csr->block_sz = arts_block_dist_block_size(0, dist);
+  csr->index = part_index;
+  csr->num_blocks = dist->num_blocks;
+
+  arts_vertex_t *row_indices = arts_csr_row_ptr(csr);
+  arts_vertex_t *columns = arts_csr_col_ptr(csr);
+
+  for (uint64_t i = 0; i <= localv; ++i) {
+    row_indices[i] = 0;
+  }
+
+  for (uint64_t i = 0; i < locale; ++i) {
+    columns[i] = 0;
+  }
+
+  if (!sorted_by_src) {
+    arts_edge_vector_sort_by_source(edges);
+  }
+
+  // A partition with no local edges is a well-formed empty CSR: the
+  // all-zero row pointers already encode every local vertex as having an
+  // empty neighbour range, so the edge array (which may be empty/NULL) must
+  // not be dereferenced.
+  if (edges->used != 0) {
+    csr_fill(csr, localv, dist, edges);
+  }
+
+  /* A dependent of the event acquires the block once the satisfy reaches
+   * it, so the build is released first. */
+  arts_db_release(block);
+  arts_event_satisfy(part_event, block);
+  return block;
 }
 
 void arts_csr_free(arts_csr_graph_t *csr) {
-  // A non-materialized (e.g. remote) partition is represented by a NULL graph;
-  // freeing it must be a no-op rather than dereferencing the NULL pointer.
+  // A slot that acquired nothing holds a NULL graph; freeing it must be a
+  // no-op rather than dereferencing the NULL.  A partition such a slot names
+  // (a DB_MODE_NULL slot on its event) is destroyed by the slot's guid.
   if (csr == NULL) {
     return;
   }

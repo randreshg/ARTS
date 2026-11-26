@@ -88,18 +88,22 @@ static inline unsigned int check_and_set(uint64_t *mask, unsigned int index) {
   return 0;
 }
 
+/* Slot r: rank r's count; slot N + p: partition p's name, DB_MODE_NULL. */
 void final_reduce(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                   arts_edt_dep_t depv[]) {
   (void)paramc;
   (void)paramv;
+  (void)depc;
+  unsigned int ranks = arts_get_total_ranks();
   uint64_t count = 0;
-  for (unsigned int i = 0; i < depc; i++) {
+  for (unsigned int i = 0; i < ranks; i++) {
     count += (uint64_t)depv[i].guid;
   }
   timer = arts_get_time_stamp() - timer;
   arts_printf("Triangle Count: %lu Time: %lu\n", count, timer);
   for (arts_partition_t p = 0; p < distribution.num_blocks; ++p) {
-    arts_db_destroy(arts_block_dist_guid_for_partition(&distribution, p));
+    arts_db_destroy(depv[ranks + p].guid);
+    arts_event_destroy(arts_block_dist_guid_for_partition(&distribution, p));
   }
   arts_shutdown();
 }
@@ -208,7 +212,7 @@ static inline uint64_t process_vertex(arts_csr_graph_t *graph, arts_vertex_t i,
       memcpy(copy, neighbors, sizeof(arts_vertex_t) * neighbor_count);
       arts_db_release(copy_guid);
       arts_add_dependence(copy_guid, guid, 0, DB_MODE_RO);
-      arts_add_dependence(
+      arts_event_add_dependence_to_edt(
           arts_block_dist_guid_for_partition(&distribution, owner), guid, 1,
           DB_MODE_RO);
       (*proc_remote)++;
@@ -319,7 +323,7 @@ void start_work(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     args[1] = (i + block_size < dist_end) ? i + block_size : dist_end;
     arts_guid_t guid = arts_edt_create(visit_vertex, 2, args, 1,
                                        &(arts_edt_hint_t){.rank = node_id});
-    arts_add_dependence(partition, guid, 0, DB_MODE_RO);
+    arts_event_add_dependence_to_edt(partition, guid, 0, DB_MODE_RO);
   }
 }
 
@@ -335,8 +339,14 @@ void main_continue(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   timer = arts_get_time_stamp();
   arts_edt_create(start_reduce, 0, NULL, 1,
                   &(arts_edt_hint_t){.guid = start_reduce_guid});
-  arts_edt_create(final_reduce, 0, NULL, arts_get_total_ranks(),
+  arts_edt_create(final_reduce, 0, NULL,
+                  arts_get_total_ranks() + distribution.num_blocks,
                   &(arts_edt_hint_t){.guid = final_reduce_guid});
+  for (arts_partition_t p = 0; p < distribution.num_blocks; ++p) {
+    arts_event_add_dependence_to_edt(
+        arts_block_dist_guid_for_partition(&distribution, p), final_reduce_guid,
+        arts_get_total_ranks() + p, DB_MODE_NULL);
+  }
 
   // Start work on every node
   arts_event_hint_t group_hint = ARTS_EVENT_HINT_LATCH(1);

@@ -51,8 +51,9 @@ On `N` ranks, with `n₀` vertices that have no neighbour:
 | object | count |
 |---|---|
 | partition blocks | `N`: a header, `b + 1` row offsets and the block's edges |
+| partition events | `N`, one per partition, satisfied with its block's name |
 | `init_node` | `N`, the loaders |
-| `main_continue`, `max_reducer` | 1 each; `max_reducer` has `n` slots |
+| `main_continue`, `max_reducer` | 1 each; `max_reducer` has `n + N` slots |
 | `visit_source` | `n` |
 | `find_intersection` | `n − n₀`, `N` slots each |
 | `visit_one_hop_neighbor_on_rank`, source-information blocks | `N · (n − n₀)` each; a block holds the vertex, its neighbour list and its `find_intersection`'s GUID |
@@ -63,48 +64,54 @@ On `N` ranks, with `n₀` vertices that have no neighbour:
 
 `visit_source` takes a start value on slot 0 and its vertex's partition on
 slot 1, RO. `visit_one_hop_neighbor_on_rank` takes a source-information
-block on slot 0 and its rank's partition on slot 1, both RO, and sends its
-count to slot `r` (its rank) of the vertex's `find_intersection`, which
-takes the vertex's degree as a parameter. Each `find_intersection`, and
-`visit_source` for a vertex with no neighbour, sends the statistic to
-`max_reducer`'s slot of that vertex. Every block is created, filled and
-released by one EDT before it is wired RO to its one reader, which destroys
-it: `visit_one_hop_neighbor_on_rank` its source information,
-`find_intersection` its `N` counts, `max_reducer` its `n` statistics. The
-partitions, which `max_reducer` destroys, are released by their readers
-before the satisfy that leads to it: `visit_source` once it has copied the
-source's row for every rank (at once for a vertex with no neighbour),
-`visit_one_hop_neighbor_on_rank` once its intersections are done. The
-loaders are members of the one group, on whose latch `main_continue` waits
-through its control slot. `max_reducer` is created under a GUID that
-`main_edt` reserves and every `init_node` copies into its rank's memory, so an
-EDT on any rank names it.
+block on slot 0 and its rank's partition on slot 1, both RO. A partition
+reaches its slot through a dependence on the partition's event.
+`visit_one_hop_neighbor_on_rank` sends its count to slot `r` (its rank) of
+the vertex's `find_intersection`, which takes the vertex's degree as a
+parameter. Each `find_intersection`, and `visit_source` for a vertex with no
+neighbour, sends the statistic to `max_reducer`'s slot of that vertex. Every
+block is created, filled and released by one EDT before it is wired RO to
+its one reader, which destroys it: `visit_one_hop_neighbor_on_rank` its
+source information, `find_intersection` its `N` counts, `max_reducer` its
+`n` statistics. The partitions, which `max_reducer` destroys, are released
+by their readers before the satisfy that leads to it: `visit_source` once it
+has copied the source's row for every rank (at once for a vertex with no
+neighbour), `visit_one_hop_neighbor_on_rank` once its intersections are
+done. `max_reducer`'s slot `n + p` is wired on partition `p`'s event in
+`DB_MODE_NULL`, which delivers the partition's name without acquiring it.
+The loaders are members of the one group, on whose latch `main_continue`
+waits through its control slot. `max_reducer` is created under a GUID that
+`main_edt` reserves and every `init_node` copies into its rank's memory, so
+an EDT on any rank names it.
 
 ## Flow
 
 `main_edt` on rank 0 refuses missing counts; otherwise it builds the
-distribution from its arguments, reserving the partitions' GUIDs once, and
+distribution from its arguments, reserving the partitions' events once, and
 reserves `max_reducer`'s GUID. It opens the group and creates one
 `init_node` per rank, each given the distribution, `max_reducer`'s GUID and
 `main_edt`'s arguments as parameters. It then creates `main_continue` and
 releases the opener's count. Each `init_node` writes its rank's copies of
 the distribution and `max_reducer`'s GUID, which every later EDT on the rank
-reads, loads the partition homed on its rank, which it holds until it ends,
-and, if the load failed, prints its message and shuts down.
-`main_continue` on rank 0 creates `max_reducer`, records the start time and
-creates every vertex's `visit_source`. `max_reducer` scans the statistics in
-vertex order, prints the maximum and the time, destroys every partition and
-shuts the runtime down.
+reads, loads the partition homed on its rank (it creates the partition's
+event and its block, builds the block, releases it and then satisfies the
+event with the block's name) and, if the load failed, prints its message and
+shuts down. `main_continue` on rank 0 creates `max_reducer` and wires its
+name slots, records the start time and creates every vertex's
+`visit_source`. `max_reducer` scans the statistics in vertex order, prints
+the maximum and the time, destroys every partition by the name its slot
+delivered and then the partition's event, every dependence on it having been
+served, and shuts the runtime down.
 
 ## Placement
 
-Partition `r` is homed on rank `r` and loaded there. A vertex's
-`visit_source` and `find_intersection` run on the vertex's rank and
-`visit_one_hop_neighbor_on_rank` `r` on rank `r`, so every partition read is
-local. A vertex's `N` source-information blocks are created on its rank,
-`N − 1` of them read elsewhere; each count is created on the intersecting
-rank and read on the vertex's; every statistic travels to rank 0, where
-`main_continue` and `max_reducer` run.
+Partition `r` and its event are homed on rank `r`, where `init_node` `r`
+creates them. A vertex's `visit_source` and `find_intersection` run on the
+vertex's rank and `visit_one_hop_neighbor_on_rank` `r` on rank `r`, so every
+partition read is local. A vertex's `N` source-information blocks are
+created on its rank, `N − 1` of them read elsewhere; each count is created
+on the intersecting rank and read on the vertex's; every statistic travels
+to rank 0, where `main_continue` and `max_reducer` run.
 
 ## Sizing
 

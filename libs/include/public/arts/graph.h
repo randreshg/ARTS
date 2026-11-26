@@ -79,21 +79,21 @@ void arts_edge_vector_sort_by_source_and_target(arts_edge_vector_t *v);
 /* === Block distribution ===
  *
  * A distribution splits the vertex range [0, num_vertices) into num_blocks
- * partitions of at most block_sz consecutive vertices and names them by one
- * round-robin range of GUIDs of the given kind (ARTS_GUID_DB for a CSR graph):
+ * partitions of at most block_sz consecutive vertices and names each by an
+ * event, the partition's event, from one round-robin range of event GUIDs:
  * rank i owns num_blocks / N consecutive partitions, plus one for the first
- * num_blocks % N ranks, and a partition's GUID is homed on its owner.
+ * num_blocks % N ranks, and a partition's event is homed on its owner.
  * A distribution is a value.  Create it once, in one EDT, and pass the value
  * on in parameters (arts_block_dist_to_params / arts_block_dist_from_params,
  * ARTS_BLOCK_DIST_PARAMC words): every rank then derives the same partition
- * GUIDs.  Two creates reserve two different ranges. */
+ * events.  Two creates reserve two different ranges. */
 
 typedef struct {
   arts_graph_sz_t num_vertices;
   arts_graph_sz_t num_edges;
   arts_graph_sz_t block_sz;
   unsigned int num_blocks;
-  /* The round-robin range naming the partitions; NULL_GUID iff
+  /* The round-robin range of the partitions' events; NULL_GUID iff
    * num_blocks == 0. */
   arts_guid_t range;
 } arts_block_dist_t;
@@ -101,20 +101,22 @@ typedef struct {
 /* The parameter words a distribution takes. */
 #define ARTS_BLOCK_DIST_PARAMC 5u
 
-/* Makes a distribution and reserves its partitions' names (one round-robin
- * range of N * ceil(num_blocks / N) GUIDs of `kind`).  Call once, in one EDT,
- * and pass the value on: a value is made only here or by
+/* Makes a distribution and reserves its partitions' events (one round-robin
+ * range of N * ceil(num_blocks / N) event GUIDs).  Call once, in one EDT, and
+ * pass the value on: a value is made only here or by
  * arts_block_dist_from_params. */
 arts_block_dist_t arts_block_dist_create(arts_graph_sz_t n, arts_graph_sz_t m,
-                                         unsigned int num_blocks,
-                                         arts_guid_kind_t kind);
-/* --num-vertices / --num-edges, one ARTS_GUID_DB partition per rank; calls
+                                         unsigned int num_blocks);
+/* --num-vertices / --num-edges, one partition per rank; calls
  * arts_block_dist_create.  Returns 0, or -1 (nothing reserved) when a count is
  * missing. */
 int arts_block_dist_init_from_args(arts_block_dist_t *out, int argc,
                                    const char *const *argv);
 void arts_block_dist_to_params(const arts_block_dist_t *dist, uint64_t *paramv);
-/* Reads exactly ARTS_BLOCK_DIST_PARAMC words at paramv. */
+/* Reads exactly ARTS_BLOCK_DIST_PARAMC words at paramv.  Words that are not a
+ * distribution's are fatal: a block count above UINT_MAX, blocks without a
+ * range or a range without blocks, or a range that is not a round-robin range
+ * of events. */
 arts_block_dist_t arts_block_dist_from_params(const uint64_t *paramv);
 
 arts_graph_sz_t arts_block_dist_block_size(arts_partition_t index,
@@ -129,7 +131,8 @@ arts_vertex_t arts_block_dist_partition_end(arts_partition_t index,
 arts_local_index_t
 arts_block_dist_get_local_index(arts_vertex_t v, const arts_block_dist_t *dist);
 
-/* A partition index at or past num_blocks is fatal. */
+/* The partition's event (of a vertex's partition, or of partition index).  A
+ * partition index at or past num_blocks is fatal. */
 arts_guid_t arts_block_dist_guid_for_vertex(arts_vertex_t v,
                                             const arts_block_dist_t *dist);
 arts_guid_t arts_block_dist_guid_for_partition(const arts_block_dist_t *dist,
@@ -137,24 +140,33 @@ arts_guid_t arts_block_dist_guid_for_partition(const arts_block_dist_t *dist,
 
 /* === CSR graph ===
  *
- * Each partition is a coherent ARTS_DB block created under its distribution
- * GUID on its home rank.  The block is self-contained: an arts_csr_graph_t
- * header followed by num_local_vertices + 1 row offsets and num_local_edges
- * target vertices; a loader sorts each row's targets in ascending order.
+ * Each partition is a coherent ARTS_DB block, created by its loader on the
+ * partition's owner rank and named, to every other EDT, by the partition's
+ * event, which the loader satisfies with the block's name.  The block is
+ * self-contained: an arts_csr_graph_t header followed by
+ * num_local_vertices + 1 row offsets and num_local_edges target vertices; a
+ * loader sorts each row's targets in ascending order.
  *
  * Contract:
- *   - Load from an EDT on each rank (arts_csr_load_*): the loader creates the
- *     partitions homed on its rank, and that EDT holds each RW until it ends.
- *   - Order every reader after every loader, e.g. loaders as members of one
- *     group and readers created by its continuation.
- *   - Read a partition only through an acquisition: a dependence slot on its
- *     GUID, normally RO, whose depv[i].ptr is the arts_csr_graph_t that
- *     arts_csr_get_neighbors and arts_csr_get_local_index take.
- *   - Destroy a partition (arts_db_destroy on its GUID, or arts_csr_free on
- *     an acquired pointer) only after its last reader.
- *   - Load a distribution once: a second load while its partitions live
- *     creates live GUIDs again, two creates of one GUID with no destroy
- *     between them, which is undefined.
+ *   - Load from an EDT on each rank (arts_csr_load_*): for each partition
+ *     homed on its rank the loader creates the partition's event and its
+ *     block, builds the block, releases it and satisfies the event with the
+ *     block's name.  A partition a refused load did not create has no event
+ *     and is never delivered.
+ *   - Read a partition only through an acquisition, normally an RO dependence
+ *     on its event (arts_block_dist_guid_for_partition): the slot's ptr is
+ *     the arts_csr_graph_t that arts_csr_get_neighbors and
+ *     arts_csr_get_local_index take, its guid the block's own name.  The
+ *     dependence is served once the loader released the partition, whether
+ *     it was registered before or after the load.
+ *   - Destroy a partition by its own name (arts_db_destroy of a slot's guid;
+ *     a DB_MODE_NULL slot on the event delivers the name without acquiring;
+ *     or arts_csr_free on an acquired pointer) only after its last reader,
+ *     and its event (arts_event_destroy of
+ *     arts_block_dist_guid_for_partition) only after the last dependence on
+ *     it was served.
+ *   - Load a distribution once: a second load creates the events again, two
+ *     creates of one name with no destroy between them, which is undefined.
  *
  * The loaders return 0, or -1 when the file cannot be read or does not parse
  * (a missing or inconsistent adjacency header, a line that is not an edge, an
@@ -176,6 +188,7 @@ arts_guid_t arts_block_dist_guid_for_partition(const arts_block_dist_t *dist,
 #define ARTS_GRAPH_MAXCHAR (1024 * 1024)
 
 typedef struct {
+  /* The partition block's own name. */
   arts_guid_t partGuid;
   arts_graph_sz_t num_local_vertices;
   arts_graph_sz_t num_local_edges;
@@ -184,14 +197,16 @@ typedef struct {
   unsigned int num_blocks;
 } arts_csr_graph_t;
 
-/* Creates partition part_index under block_guid from edges whose sources
- * all lie in it, sorting them by source unless sorted_by_src, and returns the
- * creator's writable image; NULL when block_guid is homed on another rank. */
-arts_csr_graph_t *arts_csr_init(arts_partition_t part_index,
-                                arts_graph_sz_t localv, arts_graph_sz_t locale,
-                                const arts_block_dist_t *dist,
-                                arts_edge_vector_t *edges, bool sorted_by_src,
-                                arts_guid_t block_guid);
+/* Builds partition part_index on the calling rank from edges whose sources
+ * all lie in it, sorting them by source unless sorted_by_src: creates the
+ * partition's event part_event and the partition's block, builds the block,
+ * releases it, satisfies part_event with the block's name and returns that
+ * name.  When part_event is homed on another rank it creates nothing and
+ * returns NULL_GUID. */
+arts_guid_t arts_csr_init(arts_partition_t part_index, arts_graph_sz_t localv,
+                          arts_graph_sz_t locale, const arts_block_dist_t *dist,
+                          arts_edge_vector_t *edges, bool sorted_by_src,
+                          arts_guid_t part_event);
 int arts_csr_load_edge_list(const char *file_path,
                             const arts_block_dist_t *dist, bool flip,
                             bool ignore_self_loops);

@@ -2008,9 +2008,10 @@ if(_c AND ARTS_TEST_REFERENCE_TREE)
 endif()
 
 # --- graph library ---
-# The partitions are coherent blocks under startup-reserved GUIDs: each rank
-# loads its own, and every rank reads every partition through an RO slot, so a
-# multinode run reads partitions homed on other ranks besides its own.
+# The partitions are coherent blocks named by events every rank derives: each
+# rank loads its own, and every rank reads every partition through an RO
+# dependence on its event, so a multinode run reads partitions homed on other
+# ranks besides its own.
 # Distribution, CSR build, both loaders and their argument dispatch.
 add_arts_test(csr_graph)
 register_single_node_test(csr_graph TIMEOUT 60)
