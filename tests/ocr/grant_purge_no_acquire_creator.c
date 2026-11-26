@@ -70,33 +70,13 @@ static void reader_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_shutdown();
 }
 
-/* Creator: runs on rank 1, naming a labelled block homed on rank 0, and
- * taking no hold on it. */
-static void creator_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
-                        arts_edt_dep_t depv[]) {
-  (void)paramc;
-  (void)depc;
-  (void)depv;
-  arts_guid_t child = arts_guid_from_index((arts_guid_t)paramv[0], 0);
-
-  /* NO_ACQUIRE hands back no pointer — the creator holds nothing to write,
-   * and on a remote home it does not even keep a cache for the block. */
-  void *p = arts_db_create_with_guid(child, sizeof(unsigned int), ARTS_DB,
-                                     ARTS_DB_PROP_NO_ACQUIRE, NULL);
-  if (p != NULL) {
-    (void)fprintf(stderr, "FAIL: grant_purge_no_acquire_creator got a "
-                          "writable pointer for a block it never acquired\n");
-    arts_test_fail();
-  }
-}
-
-/* Wiring runs only once the create has been made. */
+/* Wiring runs only once the block's name has reached it, as a value. */
 static void wirer_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                       arts_edt_dep_t depv[]) {
   (void)paramc;
   (void)depc;
   (void)depv;
-  arts_guid_t child = arts_guid_from_index((arts_guid_t)paramv[0], 0);
+  arts_guid_t child = (arts_guid_t)paramv[0];
 
   arts_guid_t done = arts_event_create(&ARTS_EVENT_HINT_LATCH(1));
 
@@ -111,6 +91,32 @@ static void wirer_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_add_dependence(child, r, 1, DB_MODE_RO);
 }
 
+/* Creator: runs on rank 1, creates a block homed on rank 0, taking no hold on
+ * it, and hands its name to the wirer on rank 0. */
+static void creator_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                        arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)paramv;
+  (void)depc;
+  (void)depv;
+  arts_db_hint_t h = ARTS_DB_HINT_DEFAULTS;
+  h.rank = 0u;
+
+  /* NO_ACQUIRE hands back no pointer — the creator holds nothing to write,
+   * and on a remote home it does not even keep a cache for the block. */
+  void *p = NULL;
+  arts_guid_t child = arts_db_create(&p, sizeof(unsigned int), ARTS_DB,
+                                     ARTS_DB_PROP_NO_ACQUIRE, &h);
+  if (p != NULL) {
+    (void)fprintf(stderr, "FAIL: grant_purge_no_acquire_creator got a "
+                          "writable pointer for a block it never acquired\n");
+    arts_test_fail();
+  }
+  uint64_t cparam = (uint64_t)child;
+  (void)arts_edt_create(wirer_edt, 1, &cparam, 0,
+                        &(arts_edt_hint_t){.rank = 0u});
+}
+
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
               arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -122,27 +128,16 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   unsigned int nranks = arts_get_total_ranks();
   if (nranks < 3u) {
-    arts_printf("SKIP grant_purge_no_acquire_creator: needs >= 3 ranks "
+    arts_printf("FAIL: grant_purge_no_acquire_creator: needs >= 3 ranks "
                 "(have %u) to keep home, creator and writer apart\n",
                 nranks);
+    arts_test_fail();
     arts_shutdown();
     return;
   }
 
-  /* A one-element labelled range homed on rank 0. */
-  arts_guid_t range = arts_guid_reserve_range(ARTS_GUID_DB, 1, 0);
-  uint64_t rparam = (uint64_t)range;
-
-  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
-  gh.auto_destroy = true;
-  arts_guid_t group = arts_event_create(&gh);
-  (void)arts_edt_create(creator_edt, 1, &rparam, 0,
-                        &(arts_edt_hint_t){.rank = 1u, .group = group});
-
-  arts_guid_t wire =
-      arts_edt_create(wirer_edt, 1, &rparam, 1, &(arts_edt_hint_t){.rank = 0u});
-  arts_add_dependence(group, wire, 0, DB_MODE_NULL);
-  arts_event_satisfy_slot(group, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
+  (void)arts_edt_create(creator_edt, 0, NULL, 0,
+                        &(arts_edt_hint_t){.rank = 1u});
 }
 
 int main(int argc, char **argv) {

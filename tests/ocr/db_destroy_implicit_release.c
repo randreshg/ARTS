@@ -46,16 +46,17 @@
 /// (Path 1) before depv (Path 2); on a match it releases the created hold and
 /// removes the entry, so the epilogue finds nothing left to release.
 ///
-/// Shape: an EDT creates a fresh labeled DB, writes it, and destroys it
-/// mid-body while it still holds the creator's hold.  It must not crash,
-/// double-release, or leak: a second EDT then creates the same label again
-/// (the first block is gone, so that create installs at once), writes a new
-/// value, and a reader checks it.  A hold the destroy failed to release keeps
-/// the first block's teardown from completing and the reader never sees the
-/// second value — the ctest TIMEOUT or the value check catches it.
+/// Shape: an EDT creates a fresh DB, writes it, and destroys it mid-body
+/// while it still holds the creator's hold.  It must not crash or
+/// double-release, and the run must end with its PASS line and status 0.
+/// Where a destroyed block stays installed until its holds end (EXCL with
+/// PURGE), a hold the destroy failed to release also keeps the block
+/// installed, and the teardown's quiescence walk names it (QUIESCENCE-DEBUG:,
+/// in the test's fail list).  Elsewhere the destroy retires the block at
+/// once, and the program judges only that the path runs and the run ends.
 ///
-/// All configs.  Home the DB on rank 0 so create + destroy are co-located
-/// on the running EDT's worker (the created_db_list is thread-local).
+/// Every cell, on one rank.  The create and the destroy run in one body, so
+/// on one worker (the created_db_list is thread-local).
 
 #include "arts.h"
 
@@ -66,16 +67,18 @@
 
 #define SENTINEL 0xDED0Du
 
-/// creator_destroyer: creates the label, writes it, destroys it while holding
+/// creator_destroyer: creates the block, writes it, destroys it while holding
 /// the creator's hold (Path 1 releases it).
 void creator_destroyer(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                        arts_edt_dep_t depv[]) {
   (void)paramc;
+  (void)paramv;
   (void)depc;
   (void)depv;
-  arts_guid_t db = (arts_guid_t)paramv[0];
-  unsigned int *p = (unsigned int *)arts_db_create_with_guid(
-      db, sizeof(unsigned int), ARTS_DB, ARTS_DB_PROP_NONE, NULL);
+  void *raw = NULL;
+  arts_guid_t db = arts_db_create(&raw, sizeof(unsigned int), ARTS_DB,
+                                  ARTS_DB_PROP_NONE, NULL);
+  unsigned int *p = (unsigned int *)raw;
   if (p == NULL) {
     arts_printf("FAIL: db_destroy_implicit_release NULL pointer\n");
     arts_test_fail();
@@ -85,85 +88,16 @@ void creator_destroyer(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_db_destroy(db);
 }
 
-/// recreator: the label's next block, created after the destroy.
-void recreator(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
-               arts_edt_dep_t depv[]) {
-  (void)paramc;
-  (void)depc;
-  (void)depv;
-  arts_guid_t db = (arts_guid_t)paramv[0];
-  unsigned int *p = (unsigned int *)arts_db_create_with_guid(
-      db, sizeof(unsigned int), ARTS_DB, ARTS_DB_PROP_NONE, NULL);
-  if (p == NULL) {
-    arts_printf("FAIL: db_destroy_implicit_release NULL pointer on the "
-                "re-create\n");
-    arts_test_fail();
-    return;
-  }
-  p[0] = SENTINEL + 1u;
-}
-
-/// reader: RO dependence on the second block.
-void reader(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
-            arts_edt_dep_t depv[]) {
-  (void)paramc;
-  (void)paramv;
-  (void)depc;
-  const unsigned int *v = (const unsigned int *)depv[0].ptr;
-  if (v == NULL || v[0] != SENTINEL + 1u) {
-    arts_printf("FAIL: db_destroy_implicit_release read 0x%x, expected "
-                "0x%x\n",
-                v ? v[0] : 0u, SENTINEL + 1u);
-    arts_test_fail();
-    return;
-  }
-  arts_printf("PASS: db_destroy_implicit_release\n");
-}
-
-/// Creates the next phase, gated on the previous phase's group.  Every
-/// phase's paramv[0] is the label.
-static void then(arts_edt_t next, const uint64_t *param, arts_guid_t group) {
-  arts_guid_t n =
-      arts_edt_create(next, 1, param, 1, &(arts_edt_hint_t){.rank = 0});
-  arts_add_dependence(group, n, 0, DB_MODE_NULL);
-}
-
 static void finale(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                    arts_edt_dep_t depv[]) {
   (void)paramc;
+  (void)paramv;
   (void)depc;
   (void)depv;
-  arts_db_destroy((arts_guid_t)paramv[0]);
+  if (arts_test_status() == 0) {
+    arts_printf("PASS: db_destroy_implicit_release\n");
+  }
   arts_shutdown();
-}
-
-static void after_recreate(uint32_t paramc, const uint64_t *paramv,
-                           uint32_t depc, arts_edt_dep_t depv[]) {
-  (void)paramc;
-  (void)depc;
-  (void)depv;
-  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
-  gh.auto_destroy = true;
-  arts_guid_t e_a = arts_event_create(&gh);
-  arts_guid_t r = arts_edt_create(reader, 0, NULL, 1,
-                                  &(arts_edt_hint_t){.rank = 0, .group = e_a});
-  arts_add_dependence((arts_guid_t)paramv[0], r, 0, DB_MODE_RO);
-  then(finale, paramv, e_a);
-  arts_event_satisfy_slot(e_a, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
-}
-
-static void after_destroy(uint32_t paramc, const uint64_t *paramv,
-                          uint32_t depc, arts_edt_dep_t depv[]) {
-  (void)paramc;
-  (void)depc;
-  (void)depv;
-  arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
-  gh.auto_destroy = true;
-  arts_guid_t e_r = arts_event_create(&gh);
-  arts_edt_create(recreator, 1, paramv, 0,
-                  &(arts_edt_hint_t){.rank = 0, .group = e_r});
-  then(after_recreate, paramv, e_r);
-  arts_event_satisfy_slot(e_r, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
@@ -175,15 +109,14 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   arts_printf("=== db_destroy_implicit_release ===\n");
 
-  arts_guid_t db = arts_guid_reserve(ARTS_GUID_DB, 0);
-  uint64_t param = (uint64_t)db;
-
   arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
   gh.auto_destroy = true;
   arts_guid_t e_c = arts_event_create(&gh);
-  arts_edt_create(creator_destroyer, 1, &param, 0,
+  arts_edt_create(creator_destroyer, 0, NULL, 0,
                   &(arts_edt_hint_t){.rank = 0, .group = e_c});
-  then(after_destroy, &param, e_c);
+  arts_guid_t f =
+      arts_edt_create(finale, 0, NULL, 1, &(arts_edt_hint_t){.rank = 0});
+  arts_add_dependence(e_c, f, 0, DB_MODE_NULL);
   arts_event_satisfy_slot(e_c, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 

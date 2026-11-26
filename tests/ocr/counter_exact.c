@@ -10,12 +10,11 @@
 /// Usage: counter_exact <shape>
 ///
 ///   one    One rank.  Blocks of S bytes: K created with the creator's hold,
-///          M with ARTS_DB_PROP_NO_ACQUIRE, Z of size zero with the hold, and
-///          one more, NO_ACQUIRE, on a reserved GUID whose read consumer is
-///          given its dependence before the create.  Each block is read by
-///          one EDT and then, ordered after that EDT's release, written and
-///          destroyed by another; one writer also names its block a second
-///          time, read-only, which is the same acquisition.
+///          M with ARTS_DB_PROP_NO_ACQUIRE and Z of size zero with the hold.
+///          Each block is read by one EDT and then, ordered after that EDT's
+///          release, written and destroyed by another; one writer also names
+///          its block a second time, read-only, which is the same
+///          acquisition.
 ///   two    Two ranks.  One block homed on rank 0 and created there with the
 ///          hold, then, each step ordered after the previous step's release:
 ///          N readers on rank 1, a writer on rank 1, a reader on rank 1, and
@@ -68,7 +67,7 @@
 
 #define S_BYTES 256u
 #define K_HELD 4u
-#define M_NOACQ 3u
+#define M_NOACQ 4u
 #define Z_ZERO 2u
 #define N_READERS 3u
 
@@ -145,7 +144,7 @@ static void one_chain(arts_guid_t g, arts_guid_t done, bool alias) {
 }
 
 static void one_main(void) {
-  const uint32_t blocks = K_HELD + M_NOACQ + Z_ZERO + 1u;
+  const uint32_t blocks = K_HELD + M_NOACQ + Z_ZERO;
   arts_guid_t done = latch((int32_t)blocks);
   arts_guid_t t = edt_on(terminal, 0u, 0, NULL, 1, NULL_GUID);
   arts_add_dependence(done, t, 0, DB_MODE_NULL);
@@ -170,10 +169,6 @@ static void one_main(void) {
   for (uint32_t i = 0; i < n; i++) {
     one_chain(g[i], done, i == 0u);
   }
-  arts_guid_t reserved = arts_guid_reserve(ARTS_GUID_DB, 0u);
-  one_chain(reserved, done, false);
-  (void)arts_db_create_with_guid(reserved, S_BYTES, ARTS_DB,
-                                 ARTS_DB_PROP_NO_ACQUIRE, NULL);
 }
 
 /* ---- two ---------------------------------------------------------------- */

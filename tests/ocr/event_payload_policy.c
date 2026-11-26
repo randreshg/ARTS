@@ -88,6 +88,7 @@ static void step(const uint64_t *pv) {
   if (c > policy_end && (c - policy_end) % VALUE_CASES == 0u) {
     /* The previous case was its rank's last value case. */
     arts_event_destroy((arts_guid_t)pv[P_OPAQUE]);
+    arts_db_destroy((arts_guid_t)pv[P_BLOCK]);
   }
   arts_guid_t group;
   arts_guid_t event;
@@ -99,7 +100,11 @@ static void step(const uint64_t *pv) {
     unsigned int rank = (unsigned int)((c - policy_end) / VALUE_CASES);
     unsigned int i = (unsigned int)((c - policy_end) % VALUE_CASES);
     if (i == 0u) {
-      next[P_BLOCK] = (uint64_t)arts_guid_reserve(ARTS_GUID_DB, rank);
+      arts_db_hint_t bh = ARTS_DB_HINT_DEFAULTS;
+      bh.rank = rank;
+      void *bp = NULL;
+      next[P_BLOCK] = (uint64_t)arts_db_create(&bp, 8, ARTS_DB,
+                                               ARTS_DB_PROP_NO_ACQUIRE, &bh);
       next[P_OPAQUE] = (uint64_t)arts_event_create(&ARTS_EVENT_HINT_DEFAULTS);
     }
     const uint64_t payloads[VALUE_CASES] = {0,

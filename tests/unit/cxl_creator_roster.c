@@ -131,15 +131,20 @@ static void creator_check_edt(uint32_t paramc, const uint64_t *paramv,
   arts_shutdown();
 }
 
-/* paramv = {the label}. */
+/* paramv = {the event that fires when this EDT ends}.  Creates the block
+ * homed on rank 0 with the hold, then the EDTs that judge it. */
 static void creator_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                         arts_edt_dep_t depv[]) {
   (void)paramc;
   (void)depc;
   (void)depv;
-  arts_guid_t g = (arts_guid_t)paramv[0];
-  void *p = arts_db_create_with_guid(g, N * sizeof(uint32_t), ARTS_DB,
-                                     ARTS_DB_PROP_NONE, NULL);
+  arts_guid_t made = (arts_guid_t)paramv[0];
+  const unsigned int creator = arts_get_current_rank();
+  arts_db_hint_t h = ARTS_DB_HINT_DEFAULTS;
+  h.rank = 0u;
+  void *p = NULL;
+  arts_guid_t g = arts_db_create(&p, N * sizeof(uint32_t), ARTS_DB,
+                                 ARTS_DB_PROP_NONE, &h);
   if (p == NULL) {
     fail("an acquiring create off-home returned nothing");
     arts_shutdown();
@@ -153,37 +158,8 @@ static void creator_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     fail("an acquiring create off-home left its own cache naming no store");
   }
   arts_db_release(g);
-}
 
-void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
-              arts_edt_dep_t depv[]) {
-  (void)paramc;
-  (void)paramv;
-  (void)depc;
-  (void)depv;
-
-  unsigned int nranks = arts_get_total_ranks();
-  if (nranks < 2u) {
-    arts_printf("SKIP cxl_creator_roster: needs >= 2 ranks (have %u)\n",
-                nranks);
-    arts_shutdown();
-    return;
-  }
-
-  const unsigned int creator = 1u;
-  arts_guid_t g = arts_guid_reserve(ARTS_GUID_DB, 0u);
-  if (g == NULL_GUID) {
-    fail("cxl_creator_roster could not reserve its label");
-    arts_shutdown();
-    return;
-  }
-
-  arts_guid_t made = arts_event_create(&ARTS_EVENT_HINT_LATCH(1));
   uint64_t cpv[1] = {(uint64_t)g};
-  (void)arts_edt_create(
-      creator_edt, 1, cpv, 0,
-      &(arts_edt_hint_t){.rank = creator, .completion_event = made});
-
   arts_guid_t checked = arts_event_create(&ARTS_EVENT_HINT_LATCH(1));
   uint64_t hpv[2] = {(uint64_t)g, (uint64_t)creator};
   arts_guid_t hc = arts_edt_create(
@@ -204,6 +180,29 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_guid_t cc = arts_edt_create(creator_check_edt, 1, cpv, 1,
                                    &(arts_edt_hint_t){.rank = creator});
   arts_add_dependence(gone, cc, 0, DB_MODE_NULL);
+}
+
+void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+              arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)paramv;
+  (void)depc;
+  (void)depv;
+
+  unsigned int nranks = arts_get_total_ranks();
+  if (nranks < 2u) {
+    arts_printf("FAIL: cxl_creator_roster: needs >= 2 ranks (have %u)\n",
+                nranks);
+    arts_test_fail();
+    arts_shutdown();
+    return;
+  }
+
+  arts_guid_t made = arts_event_create(&ARTS_EVENT_HINT_LATCH(1));
+  uint64_t cpv[1] = {(uint64_t)made};
+  (void)arts_edt_create(
+      creator_edt, 1, cpv, 0,
+      &(arts_edt_hint_t){.rank = 1u, .completion_event = made});
 }
 
 int main(int argc, char **argv) {

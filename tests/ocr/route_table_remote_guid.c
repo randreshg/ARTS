@@ -38,12 +38,11 @@
 ******************************************************************************/
 
 /// @file route_table_remote_guid.c
-/// @brief Tests route table operations with remote pre-reserved GUIDs: one DB
-///        per non-zero rank (each homed on its rank, created remotely with a
-///        guid rank 0 reserved up front) all wired into one rank-0 EDT.
-///        Scales to any rank count — each rank owns a distinct guid and a
-///        distinct dependence slot, so no guid is double-created and no slot
-///        is double-signaled.  Requires multi-node (node_count > 1).
+/// @brief Tests route table operations with blocks homed on every non-zero
+///        rank, each created there, all wired into one rank-0 EDT.  Scales
+///        to any rank count — each rank owns a distinct block and a distinct
+///        dependence slot, so no slot is double-signaled.  Requires multi-node
+///        (node_count > 1).
 
 #include "arts.h"
 
@@ -82,10 +81,9 @@ void acquire_test(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
 }
 
-/// node_setup paramv: [0]=node_id, [1]=edt_guid, [2]=db_guid.  Runs on rank
-/// node_id (>= 1): creates THAT rank's DB under the pre-reserved guid, writes
-/// it and releases it, and only then wires it to its own slot (node_id - 1) of
-/// the rank-0 EDT.
+/// node_setup paramv: [0]=node_id, [1]=edt_guid.  Runs on rank node_id
+/// (>= 1): creates THAT rank's DB, writes it and releases it, and only then
+/// wires it to its own slot (node_id - 1) of the rank-0 EDT.
 void node_setup(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                 arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -93,10 +91,11 @@ void node_setup(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depv;
   unsigned int node_id = (unsigned int)paramv[0];
   arts_guid_t local_edt_guid = (arts_guid_t)paramv[1];
-  arts_guid_t local_db_guid = (arts_guid_t)paramv[2];
-  unsigned int *ptr = (unsigned int *)arts_db_create_with_guid(
-      local_db_guid, sizeof(unsigned int), ARTS_DB, ARTS_DB_PROP_NONE,
-      NULL);
+  void *raw = NULL;
+  arts_db_hint_t dh = ARTS_DB_HINT_DEFAULTS;
+  arts_guid_t local_db_guid = arts_db_create(&raw, sizeof(unsigned int),
+                                             ARTS_DB, ARTS_DB_PROP_NONE, &dh);
+  unsigned int *ptr = (unsigned int *)raw;
   *ptr = BASE_VALUE + node_id;
   arts_db_release(local_db_guid);
   arts_add_dependence(local_db_guid, local_edt_guid, node_id - 1, DB_MODE_RW);
@@ -122,14 +121,13 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                   &(arts_edt_hint_t){.guid = local_edt_guid,
                                      .group = done});
 
-  /* One pre-reserved DB guid per non-zero rank, homed on that rank; each
-   * rank creates exactly its own guid and signals exactly its own slot. */
+  /* One block per non-zero rank, homed on and created by that rank; each
+   * rank signals exactly its own slot. */
   for (unsigned int n = 1; n < nranks; n++) {
-    uint64_t args[3];
+    uint64_t args[2];
     args[0] = (uint64_t)n;
     args[1] = (uint64_t)local_edt_guid;
-    args[2] = (uint64_t)arts_guid_reserve(ARTS_GUID_DB, n);
-    arts_edt_create(node_setup, 3, args, 0,
+    arts_edt_create(node_setup, 2, args, 0,
                     &(arts_edt_hint_t){.rank = n, .group = done});
   }
   arts_event_satisfy_slot(done, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);

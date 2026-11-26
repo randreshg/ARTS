@@ -255,7 +255,9 @@ endforeach()
 
 add_arts_test(db_destroy_implicit_release)
 register_single_node_test(db_destroy_implicit_release TIMEOUT 30)
-set_tests_properties(db_destroy_implicit_release PROPERTIES PASS_REGULAR_EXPRESSION "PASS: db_destroy_implicit_release")
+arts_test_properties(db_destroy_implicit_release PROPERTIES
+    PASS_REGULAR_EXPRESSION "PASS: db_destroy_implicit_release"
+    FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
 
 # dbcreate_matrix: probe of the DB-create capability matrix --
 # (creator-acquisition) x (home-determination) x (locality).  Exercises the
@@ -1718,14 +1720,12 @@ add_arts_test(counter_exact)
 arts_counters_captured(_c NUM_DB_ACQUIRE_READ NUM_DB_ACQUIRE_WRITE
                        NUM_DB_ACQUIRE_LOCAL_HIT NUM_DB_ACQUIRE_REMOTE)
 if(_c)
-    # 10 blocks: 4 with the creator's hold, 4 without (one on a reserved
-    # GUID), 2 of size zero with the hold; one read and one write each.  Of
-    # the 22 EDTs, the one that calls arts_shutdown (terminal) never returns
-    # from its body, so 21 finish.  main_edt's last act is the reserved
-    # block's create, whose install makes that block's readers runnable; a
-    # create counts before its install, so the record holds all 10, but
-    # main_edt's FINISH increment comes after its body and nothing orders it
-    # before the record's live read, so 20 or 21 EDTs finished.
+    # 10 blocks: 4 with the creator's hold, 4 without, 2 of size zero with
+    # the hold; one read and one write each.  Of the 22 EDTs, the one that
+    # calls arts_shutdown (terminal) never returns from its body, so 21
+    # finish.  main_edt's last act is its last chain's wiring; its FINISH
+    # increment comes after its body and nothing orders it before the
+    # record's live read, so 20 or 21 EDTs finished.
     set(_one 0:NUM_DB_ACQUIRE_READ=10 0:NUM_DB_ACQUIRE_WRITE=16
              0:NUM_DB_ACQUIRE_LOCAL_HIT=26 0:NUM_DB_ACQUIRE_REMOTE=0)
     if(ARTS_TEST_REFERENCE_TREE)

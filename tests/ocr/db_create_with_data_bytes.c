@@ -20,10 +20,10 @@
 /// The creator fills each block with a byte pattern through the hold its
 /// create took and releases it; a consumer EDT then acquires the block and
 /// compares every byte, and checks that the dependence names the block it
-/// delivered.  Labeled blocks of several sizes (sub-word, exact word, an
+/// delivered.  Blocks of several sizes (sub-word, exact word, an
 /// unaligned tail, one well past the buffer header, and no bytes at all) are
-/// read RO; a block with a runtime-minted GUID is acquired RW, so a write turn
-/// starts from the creator's bytes too.
+/// read RO; one more block is acquired RW, so a write turn starts from the
+/// creator's bytes too.
 ///
 /// A stranded waiter is caught by the ctest TIMEOUT.
 
@@ -34,8 +34,8 @@
 
 #include "../test_failure_status.h"
 
-#define NUM_LABELED 5u
-#define MINTED_BYTES 256u
+#define NUM_RO 5u
+#define RW_BYTES 256u
 
 /// paramv[0] = the block's GUID (also the pattern's key), paramv[1] = its size
 /// in bytes, paramv[2] = the case id.
@@ -97,7 +97,7 @@ static void finale(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depv;
   if (arts_test_status() == 0) {
     arts_printf("PASS: db_create_with_data_bytes %u cases byte-exact\n",
-                NUM_LABELED + 1u);
+                NUM_RO + 1u);
   }
   arts_shutdown();
 }
@@ -111,16 +111,17 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   arts_printf("=== db_create_with_data_bytes ===\n");
 
-  const uint64_t sizes[NUM_LABELED] = {1u, 7u, 64u, 1000u, 0u};
+  const uint64_t sizes[NUM_RO] = {1u, 7u, 64u, 1000u, 0u};
   arts_event_hint_t gh = ARTS_EVENT_HINT_LATCH(1);
   gh.auto_destroy = true;
   arts_guid_t group = arts_event_create(&gh);
 
-  for (unsigned int c = 0; c < NUM_LABELED; c++) {
+  for (unsigned int c = 0; c < NUM_RO; c++) {
     uint64_t size = sizes[c];
-    arts_guid_t g = arts_guid_reserve(ARTS_GUID_DB, 0);
-    unsigned char *p = (unsigned char *)arts_db_create_with_guid(
-        g, size, ARTS_DB, ARTS_DB_PROP_NONE, NULL);
+    void *raw = NULL;
+    arts_guid_t g =
+        arts_db_create(&raw, size, ARTS_DB, ARTS_DB_PROP_NONE, NULL);
+    unsigned char *p = (unsigned char *)raw;
     for (uint64_t i = 0; i < size; i++) {
       p[i] = pattern_byte((uint64_t)g, i);
     }
@@ -129,13 +130,13 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
 
   void *mp = NULL;
-  arts_guid_t minted = arts_db_create(&mp, MINTED_BYTES, ARTS_DB,
-                                      ARTS_DB_PROP_NONE, NULL);
-  for (uint64_t i = 0; i < MINTED_BYTES; i++) {
-    ((unsigned char *)mp)[i] = pattern_byte((uint64_t)minted, i);
+  arts_guid_t rw =
+      arts_db_create(&mp, RW_BYTES, ARTS_DB, ARTS_DB_PROP_NONE, NULL);
+  for (uint64_t i = 0; i < RW_BYTES; i++) {
+    ((unsigned char *)mp)[i] = pattern_byte((uint64_t)rw, i);
   }
-  arts_db_release(minted);
-  consume(minted, MINTED_BYTES, NUM_LABELED, DB_MODE_RW, group);
+  arts_db_release(rw);
+  consume(rw, RW_BYTES, NUM_RO, DB_MODE_RW, group);
 
   arts_guid_t f =
       arts_edt_create(finale, 0, NULL, 1, &(arts_edt_hint_t){.rank = 0});
