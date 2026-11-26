@@ -96,7 +96,6 @@ static int check_gpu_offsets(void) {
   }
   return ok;
 #else
-  printf("  SKIP gpu offsets: not a GPU build\n");
   return 1;
 #endif
 }

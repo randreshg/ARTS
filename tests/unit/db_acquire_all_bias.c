@@ -64,10 +64,11 @@
 /// ctest TIMEOUT.  Repeated for many iterations to widen the race window.
 ///
 /// ownership protocols (VAL); needs >= 2 ranks for the remote-park arm.
-/// SKIPs cleanly single-node.  EXCL also
-/// serializes RW and parks remotely, so it runs there too.
+/// The test fails (nonzero status) on a single node.  EXCL also serializes
+/// RW and parks remotely, so it runs there too.
 
 #include "arts.h"
+#include "../test_failure_status.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -210,8 +211,8 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   unsigned int nranks = arts_get_total_ranks();
   if (nranks < 2) {
-    arts_printf("SKIP db_acquire_all_bias: needs >= 2 ranks (have %u)\n",
-                nranks);
+    arts_printf("FAIL: db_acquire_all_bias needs 2+ ranks (has %u)\n", nranks);
+    arts_test_fail();
     arts_shutdown();
     return;
   }

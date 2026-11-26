@@ -68,10 +68,11 @@
 /// and acquire the still-unwritten DB — a coherence-ordering artifact unrelated
 /// to the transfer this test targets.  A transfer bug instead surfaces as wrong
 /// bytes (element mismatch -> FAIL) or a reader that never completes (ctest
-/// TIMEOUT); when every hop verifies the run prints PASS.  Auto-skips on < 2
+/// TIMEOUT); when every hop verifies the run prints PASS.  Fails on < 2
 /// ranks.
 
 #include "arts.h"
+#include "../test_failure_status.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -190,7 +191,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   unsigned int nnodes = arts_get_total_ranks();
   if (nnodes < 2) {
-    arts_printf("SKIP: requires 2+ ranks (got %u)\n", nnodes);
+    arts_printf("FAIL: coherence_payload_large needs 2+ ranks (has %u)\n",
+                nnodes);
+    arts_test_fail();
     arts_shutdown();
     return;
   }

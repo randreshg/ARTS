@@ -68,7 +68,7 @@
 /// or the exclusion arm's cache word), so this runs on every OCR-model arm.
 /// Under CDAG the create's hold is a write acquisition left unordered
 /// against the lane's RW acquisitions, so the final value is not defined
-/// there.  Needs >= 2 ranks; SKIPs cleanly otherwise.
+/// there.  Needs >= 2 ranks; fails otherwise.
 
 #include "arts.h"
 
@@ -206,8 +206,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   unsigned int nranks = arts_get_total_ranks();
   if (nranks < 2) {
-    arts_printf("SKIP db_create_after_dep_asked: needs >= 2 ranks (have %u)\n",
+    arts_printf("FAIL: db_create_after_dep_asked needs 2+ ranks (has %u)\n",
                 nranks);
+    arts_test_fail();
     arts_shutdown();
     return;
   }

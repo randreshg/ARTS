@@ -61,7 +61,7 @@
 /// holding the block on one rank run concurrently on that rank's workers, so
 /// the increment is atomic, as for any shared-memory counter.
 ///
-/// Needs 2+ ranks (SKIP on one).  Its writers are unordered, so it is outside
+/// Needs 2+ ranks (fails on one).  Its writers are unordered, so it is outside
 /// the CDAG model.
 
 #include "arts.h"
@@ -199,9 +199,10 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   unsigned int nranks = arts_get_total_ranks();
   if (nranks < 2) {
-    arts_printf("SKIP: coherence_owner_ownership_reorder requires 2+ ranks "
-                "(got %u)\n",
+    arts_printf("FAIL: coherence_owner_ownership_reorder needs 2+ ranks "
+                "(has %u)\n",
                 nranks);
+    arts_test_fail();
     arts_shutdown();
     return;
   }

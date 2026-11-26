@@ -58,6 +58,7 @@
 /// bytes.
 
 #include "arts.h"
+#include "../test_failure_status.h"
 
 #include <stdio.h>
 
@@ -133,7 +134,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   unsigned int rank_count = arts_get_total_ranks();
   if (rank_count < 3) {
-    arts_printf("SKIP: requires 3+ ranks (got %u)\n", rank_count);
+    arts_printf("FAIL: excl_req_before_create needs 3+ ranks (has %u)\n",
+                rank_count);
+    arts_test_fail();
     arts_shutdown();
     return;
   }

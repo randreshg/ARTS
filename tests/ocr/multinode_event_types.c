@@ -44,7 +44,7 @@
 ///
 /// Every dependent checks it runs on the rank it was placed on; the group the
 /// shutdown waits on counts them all, so a lost delivery never
-/// reaches the shutdown (the run times out).  Requires 2+ ranks (SKIP on one).
+/// reaches the shutdown (the run times out).  Requires 2+ ranks (fails on one).
 
 #include "arts.h"
 
@@ -189,7 +189,8 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   unsigned int total = arts_get_total_ranks();
   if (total < 2) {
-    arts_printf("SKIP: multinode_event_types requires 2+ ranks\n");
+    arts_printf("FAIL: multinode_event_types needs 2+ ranks (has %u)\n", total);
+    arts_test_fail();
     arts_shutdown();
     return;
   }

@@ -25,6 +25,7 @@
 #include "arts/utils/stdatomic_compat.h"
 
 #include "arts.h"
+#include "../test_failure_status.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -115,8 +116,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depc;
   (void)depv;
   if (arts_get_total_ranks() < 2) {
-    printf("SKIP ro_grant_retained: multinode only (on one rank a read is a "
+    printf("FAIL: ro_grant_retained needs 2+ ranks (on one rank a read is a "
            "local hit and there is no grant to retain)\n");
+    arts_test_fail();
     arts_shutdown();
     return;
   }

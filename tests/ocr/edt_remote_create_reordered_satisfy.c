@@ -29,10 +29,11 @@
  *
  * A second create of a live GUID parks until the occupant is destroyed, so
  * this test drives ONE create.  Requires >1 rank to exercise the remote path;
- * SKIPs cleanly to a trivial single-rank check on 1n_20w.
+ * Fails on a single rank.
  */
 
 #include "arts.h"
+#include "../test_failure_status.h"
 
 #include <stdatomic.h>
 #include <stdint.h>
@@ -84,9 +85,11 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   unsigned int nranks = arts_get_total_ranks();
   if (nranks < 2) {
     /* The reorder is a REMOTE-create property: with one rank the pre-reserved
-     * create is local and nothing travels ahead of it.  Skip cleanly. */
-    arts_printf("SKIP edt_remote_create_reordered_satisfy: requires 2+ ranks (got %u)\n",
+     * create is local and nothing travels ahead of it, so the run fails. */
+    arts_printf("FAIL: edt_remote_create_reordered_satisfy needs 2+ ranks "
+                "(has %u)\n",
                 nranks);
+    arts_test_fail();
     arts_shutdown();
     return;
   }

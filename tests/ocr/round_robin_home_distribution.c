@@ -64,7 +64,7 @@
 /// member more than a multiple of the rank count, so rank 0 homes one more
 /// member than the others.
 ///
-/// Requires multi-node (rank_count >= 2).  Prints SKIP single-node.
+/// Requires multi-node (rank_count >= 2).  Fails single-node.
 
 #include "arts.h"
 #include <stdint.h>
@@ -294,8 +294,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   unsigned int nrank = arts_get_total_ranks();
   if (nrank < 2) {
-    arts_printf(
-        "SKIP: round_robin_home_distribution requires rank_count >= 2\n");
+    arts_printf("FAIL: round_robin_home_distribution needs 2+ ranks (has %u)\n",
+                nrank);
+    arts_test_fail();
     arts_shutdown();
     return;
   }

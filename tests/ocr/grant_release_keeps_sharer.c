@@ -18,6 +18,7 @@
  * case where Z's CONFIRM travels the wire.
  */
 #include "arts.h"
+#include "../test_failure_status.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -98,8 +99,10 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depv;
   unsigned int nranks = arts_get_total_ranks();
   if (nranks < 2) {
-    printf("SKIP grant_release_keeps_sharer: needs 2+ ranks (the copy has to "
-           "live off the home)\n");
+    printf("FAIL: grant_release_keeps_sharer needs 2+ ranks (the copy has to "
+           "live off the home; has %u)\n",
+           nranks);
+    arts_test_fail();
     arts_shutdown();
     return;
   }

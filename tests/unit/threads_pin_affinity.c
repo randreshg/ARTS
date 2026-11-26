@@ -15,11 +15,9 @@
 /// entry it queries the thread through its handle in arts_thread_handles.
 ///
 /// The expectation follows the run's own config (its `pin`
-/// key, read before the runtime starts).  With pin on, a worker that is not
-/// bound to exactly its pu_id FAILS, whatever the host; with pin off there is
-/// nothing to bind and each worker reports a SKIP for its check (the test
-/// still passes).  On Apple (__APPLE__) there is no pthread_getaffinity_np and
-/// pinning is a no-op -> the walk self-skips.
+/// key, read before the runtime starts).  A worker that is not bound to
+/// exactly its pu_id FAILS, whatever the host, and so does a run with pin off
+/// (nothing to bind) or on a host without pthread_getaffinity_np (Apple).
 ///
 /// Single-node, every configuration (protocol-agnostic; affinity behavior is
 /// config).
@@ -74,9 +72,10 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     checked++;
     int ncpus = CPU_COUNT(&set);
     if (!g_pin_requested) {
-      arts_printf("  SKIP pin affinity: pin off in this config (worker "
-                  "pu_id=%u, %d CPUs in affinity)\n",
+      arts_printf("  FAIL threads_pin_affinity: pin is off in this "
+                  "configuration (worker pu_id=%u, %d CPUs in affinity)\n",
                   m->pu_id, ncpus);
+      arts_test_fail();
     } else if (ncpus == 1 && CPU_ISSET((int)m->pu_id, &set)) {
       bound++;
       arts_printf("  PASS pin affinity: worker bound to pu_id=%u\n", m->pu_id);
@@ -93,18 +92,18 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_printf("FAIL threads_pin_affinity: %u of %u workers checked\n",
                 checked, workers);
     arts_test_fail();
-  } else if (g_pin_requested && bound != workers) {
+  } else if (bound != workers) {
     arts_printf("FAIL threads_pin_affinity: %u of %u workers bound\n", bound,
                 workers);
     arts_test_fail();
   } else {
     arts_printf("PASS threads_pin_affinity: %u of %u workers checked, %u "
-                "bound (pin %s)\n",
-                checked, workers, bound, g_pin_requested ? "on" : "off");
+                "bound\n",
+                checked, workers, bound);
   }
 #else
-  arts_printf("  SKIP pin affinity: Apple (no pthread_getaffinity_np)\n");
-  arts_printf("PASS threads_pin_affinity: nothing to check on Apple\n");
+  arts_printf("FAIL threads_pin_affinity: no pthread_getaffinity_np\n");
+  arts_test_fail();
 #endif
   arts_shutdown();
 }

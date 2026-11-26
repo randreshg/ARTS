@@ -20,7 +20,7 @@
  *
  * The writes to each block are ordered, so every arm that moves payloads
  * through the fabric runs it.  The run ends with every block destroyed and
- * nothing pending, so its shutdown is quiescent.  Needs two ranks; SKIPs on
+ * nothing pending, so its shutdown is quiescent.  Needs two ranks; fails on
  * one.
  */
 
@@ -109,7 +109,8 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depv;
   unsigned int n = arts_get_total_ranks();
   if (n < 2) {
-    arts_printf("SKIP: coherence_late_write_completion needs 2+ ranks\n");
+    arts_printf("FAIL: coherence_late_write_completion needs 2+ ranks\n");
+    arts_test_fail();
     arts_shutdown();
     return;
   }

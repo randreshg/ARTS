@@ -104,8 +104,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
               arts_edt_dep_t depv[]) {
   (void)paramc; (void)paramv; (void)depc; (void)depv;
   if (arts_get_total_ranks() < 2) {
-    arts_printf("SKIP grant_one_request_per_grant: needs a rank that is not "
+    arts_printf("FAIL: grant_one_request_per_grant needs a rank that is not "
                 "the home\n");
+    arts_test_fail();
     arts_shutdown();
     return;
   }

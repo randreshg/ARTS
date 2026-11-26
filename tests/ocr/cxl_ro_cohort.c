@@ -85,7 +85,8 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   unsigned int nranks = arts_get_total_ranks();
   if (nranks < 2u) {
-    arts_printf("SKIP cxl_ro_cohort: needs >= 2 ranks (have %u)\n", nranks);
+    arts_printf("FAIL: cxl_ro_cohort needs 2+ ranks (has %u)\n", nranks);
+    arts_test_fail();
     arts_shutdown();
     return;
   }

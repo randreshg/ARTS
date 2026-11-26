@@ -65,9 +65,10 @@
 /// A deliberate producer-side delay between add_dependence and the release
 /// widens the window so a serve-early bug fails EVERY run, not occasionally.
 /// Failure modes: consumer NULL/zero read (FAIL print / abort), or a missing
-/// PASS (hang = a parked acquire never woken).  Auto-skips on < 2 ranks.
+/// PASS (hang = a parked acquire never woken).  Fails on < 2 ranks.
 
 #include "arts.h"
+#include "../test_failure_status.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -140,7 +141,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   unsigned int nnodes = arts_get_total_ranks();
   if (nnodes < 2) {
-    arts_printf("SKIP: requires 2+ ranks (got %u)\n", nnodes);
+    arts_printf("FAIL: coherence_satisfy_before_release needs 2+ ranks (has %u)\n",
+                nnodes);
+    arts_test_fail();
     arts_shutdown();
     return;
   }

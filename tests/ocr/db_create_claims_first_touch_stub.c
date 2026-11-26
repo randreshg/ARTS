@@ -56,7 +56,7 @@
 /// A stub taken for an occupant parks the create forever (the run times out);
 /// a lost or regressed write fails the ordered reader.
 ///
-/// Needs 2+ ranks (SKIP on one).  Config-agnostic.
+/// Needs 2+ ranks (fails on one).  Config-agnostic.
 
 #include "arts.h"
 
@@ -152,9 +152,10 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   unsigned int ranks = arts_get_total_ranks();
   if (ranks < 2) {
-    arts_printf(
-        "SKIP: db_create_claims_first_touch_stub requires node_count >= "
-        "2\n");
+    arts_printf("FAIL: db_create_claims_first_touch_stub needs 2+ ranks "
+                "(has %u)\n",
+                ranks);
+    arts_test_fail();
     arts_shutdown();
     return;
   }

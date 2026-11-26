@@ -195,7 +195,8 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depc;
   (void)depv;
   if (arts_get_total_ranks() < 2u) {
-    arts_printf("SKIP db_destroy_roster: needs >= 2 ranks\n");
+    arts_printf("FAIL: db_destroy_roster needs 2+ ranks\n");
+    arts_test_fail();
     arts_shutdown();
     return;
   }

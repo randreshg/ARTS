@@ -24,6 +24,7 @@
  */
 
 #include "arts.h"
+#include "../test_failure_status.h"
 #include <stdio.h>
 
 #define V1 0x11110000u
@@ -74,7 +75,8 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depc;
   (void)depv;
   if (arts_get_total_ranks() < 2) {
-    printf("SKIP owner_write_after_lend: needs a second rank to lend to\n");
+    printf("FAIL owner_write_after_lend: needs a second rank to lend to\n");
+    arts_test_fail();
     arts_shutdown();
     return;
   }
