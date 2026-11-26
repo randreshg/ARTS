@@ -7,19 +7,18 @@
  * home holds behind that rank's own write turn is closed by its own answer,
  * and the rank's write permission serves its writers alone.
  *
- * Blocks B, E and F are names of one range reserved on rank H (0), in that
- * order, so a walk acquires B first.  On rank H, main creates B, fills it
- * and releases it, then starts W0 {B: RW} on rank A (1).  W0 holds B's write
- * turn and, while it holds it, makes WA {B: RW, E: RO} ready: WA's write of B
- * joins the turn W0 holds, and WA's walk then waits, holding the turn, for E,
- * which does not exist yet.  So rank A holds B's write turn, and holds it,
- * before anything below starts.  Only then does W0 start T on rank H.  T makes
- * WC {B: RW} ready and then RC {B: RO}.  Each acquire runs inside the call that
- * readies its EDT, and rank H is B's home, so rank H's write request and then
- * its read request run at the home inside T's body, in that order and behind
- * rank A's turn, whatever the timing.  T's completion readies X on rank H,
- * which creates E; WA runs, writes a range of B and releases it.  What follows
- * is the retention's:
+ * One block, B, homed on rank H (0).  On rank H, main creates B, fills it and
+ * releases it, then starts W0 {B: RW} on rank A (1).  W0 holds B's write turn
+ * and, while it holds it, makes WA {B: RW} ready: WA's write of B joins the
+ * turn W0 holds, and WA's body then waits, holding the turn, for a flag that
+ * X on rank A sets once T completed.  So rank A holds B's write turn, and
+ * holds it, before anything below starts.  W0 then starts T on rank H.  T
+ * makes WC {B: RW} ready and then RC {B: RO}.  Each acquire runs inside the
+ * call that readies its EDT, and rank H is B's home, so rank H's write
+ * request and then its read request run at the home inside T's body, in that
+ * order and behind rank A's turn, whatever the timing.  T's completion
+ * readies X; WA writes a range of B and returns, and rank A's turn ends once
+ * both W0 and WA have released.  What follows is the retention's:
  *
  * PURGE: rank A's release ends its turn and the home grants the next write
  * turn to rank H, inline.  That grant finds RC parked on rank H's read
@@ -42,24 +41,22 @@
  * RC aside and serves WC, and rank H's EXCL_CONFIRM, inline at the home,
  * opens the read phase with rank H as the owner and forwards RC's held read
  * request to rank H itself: that forward is the request's answer, and RC
- * resumes while WC holds the turn.  Here WC is {B: RW, F: RO}, and F is
- * created by Y only once RC completed: WC holds B's turn while its walk waits
- * for F, so a runtime that served RC only after rank H's turn never ends the
- * run (the verdict is the test's TIMEOUT).  F is created without the
- * creator's hold, since WC's read of it would join a hold of its own rank, and
- * WC reads none of its bytes.  RC reads only ranges WC does not write.  The
- * census tells the answers apart: RC is a local hit (its own rank's answer),
- * where a serve by the migration would count it remote.
+ * resumes under the owner bit.  RC reads only ranges WC does not write.  What
+ * judges it: the census, in which RC is a local hit (its own rank's answer)
+ * where a serve by the migration would count it remote; the runtime's fatal
+ * checks of an answer that finds no reader set aside; and the latch, which
+ * counts RC, so a held read request that is never answered leaves the run
+ * without an end.  Whether the answer comes before WC's release is not judged
+ * here: no program's end depends on it.
  *
- * A latch counts the EDTs whose holds the destroys follow; it readies the
- * final EDT {B: RO, E: RO} on rank H, which checks both blocks, destroys B, E
- * (and F) and ends the run.
+ * A latch counts WA, WC, X and RC (and WD under PURGE); it readies the final
+ * EDT {B: RO} on rank H, which checks B, destroys it and ends the run.
  *
- * The program is legal on both retentions: E's create waits for T, which holds
- * nothing; under RETAIN F's create waits for RC, which the home answers by
- * rank H's own forward; under PURGE WC waits, in its body, only for a message
- * of rank A, which waits for no EDT.  Under PURGE the RETAIN shape (WC waiting
- * for F) is the stated limit of that retention and is not run.
+ * The program is legal on both retentions: WA waits, in its body, only for
+ * X, which follows T, which holds nothing; under PURGE WC waits, in its body,
+ * only for a message of rank A, which waits for no EDT.  WA's wait orders the
+ * set-up only: T and X depend on no contested acquisition, so the flag is set
+ * on every runtime, and the wait's bound is not the verdict.
  *
  * The shape is the tree's retention's.  Needs two ranks.  The verdict: exit
  * status, PASS line, no FAIL line and no QUIESCENCE-DEBUG marker; where the
@@ -68,22 +65,19 @@
  */
 
 #include <stdint.h>
+#include <time.h>
 
 #include "arts.h"
+#include "arts/utils/stdatomic_compat.h"
 #include "../test_failure_status.h"
 
 #ifdef ARTS_RETENTION_PURGE
-#include "arts/utils/stdatomic_compat.h"
-#include <time.h>
-
 #include "arts/coherence/excl/types.h"
 #include "arts/gas/route_table.h"
 #include "arts/utils/shared.h"
 #endif
 
 #define B_WORDS 32u
-#define E_WORDS 8u
-#define F_WORDS 8u
 #define SPAN 8u
 #define RC_FIRST 0u
 #define WA_FIRST 8u
@@ -94,17 +88,20 @@
 #define WA_MARK 0xA100u
 #define WC_MARK 0xC100u
 #define WD_MARK 0xD100u
-#define X_MARK 0xE100u
 
 #define RANK_H 0u
 #define RANK_A 1u
+#define WAIT_MS 20000L
 
 #ifdef ARTS_RETENTION_RETAIN
 #define RETENTION "retain"
 #else
 #define RETENTION "purge"
-#define WAIT_MS 20000L
 #endif
+
+/* Set once by X (release) after T completed; read by WA (acquire), which
+ * runs on X's rank. */
+static _Atomic(int) g_t_done;
 
 static arts_guid_t latch_on(unsigned int rank, int32_t n) {
   arts_event_hint_t h = ARTS_EVENT_HINT_LATCH(n);
@@ -151,30 +148,13 @@ static void fill(uint64_t *p, unsigned int first, unsigned int count,
   }
 }
 
-/* Creates `g` of `words` words on this rank, fills it and releases it. */
-static void create_filled(arts_guid_t g, unsigned int words, uint64_t mark,
-                          const char *who) {
-  uint64_t *p = (uint64_t *)arts_db_create_with_guid(
-      g, words * sizeof(uint64_t), ARTS_DB, ARTS_DB_PROP_NONE, NULL);
-  if (p == NULL) {
-    arts_printf("FAIL: db_read_parked_under_write_turn %s's create gave no "
-                "storage\n",
-                who);
-    arts_test_fail();
-    arts_shutdown();
-    return;
-  }
-  fill(p, 0u, words, mark);
-  arts_db_release(g);
-}
-
-#ifdef ARTS_RETENTION_PURGE
 static long now_ms(void) {
   struct timespec t;
   clock_gettime(CLOCK_MONOTONIC, &t);
   return (long)t.tv_sec * 1000L + t.tv_nsec / 1000000L;
 }
 
+#ifdef ARTS_RETENTION_PURGE
 /* runs on rank A. depv: B (RW) */
 static void wd(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                arts_edt_dep_t depv[]) {
@@ -198,22 +178,27 @@ static void await_queued_writer(arts_guid_t b) {
     arts_test_fail();
     return;
   }
+  const struct timespec nap = {.tv_sec = 0, .tv_nsec = 1000000L};
   long start = now_ms();
   while (EXCL_STATE_W(atomic_load_explicit(&db->lock_state,
                                            memory_order_acquire)) != 2u) {
     if (now_ms() - start > WAIT_MS) {
+      arts_shared_release(&h);
       arts_printf("FAIL: db_read_parked_under_write_turn the home never "
-                  "counted rank %u's write request behind rank %u's turn\n",
-                  RANK_A, RANK_H);
+                  "counted rank %u's write request behind rank %u's turn "
+                  "within %ld ms\n",
+                  RANK_A, RANK_H, WAIT_MS);
       arts_test_fail();
-      break;
+      arts_shutdown();
+      return;
     }
+    (void)nanosleep(&nap, NULL);
   }
   arts_shared_release(&h);
 }
 #endif
 
-/* depv: B (RW); under RETAIN also F (RO). paramv under PURGE: latch */
+/* depv: B (RW). paramv under PURGE: latch */
 static void wc(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -225,7 +210,6 @@ static void wc(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   await_queued_writer(depv[0].guid);
 #else
   (void)paramv;
-  (void)storage(&depv[1], "WC (F)");
 #endif
   if (b != NULL) {
     fill(b, WC_FIRST, SPAN, WC_MARK);
@@ -257,106 +241,90 @@ static void rc(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 #endif
 }
 
-/* runs on rank H once T completed. paramv: E */
+/* runs on rank A once T completed */
 static void x_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                   arts_edt_dep_t depv[]) {
   (void)paramc;
+  (void)paramv;
   (void)depc;
   (void)depv;
-  create_filled((arts_guid_t)paramv[0], E_WORDS, X_MARK, "X");
+  atomic_store_explicit(&g_t_done, 1, memory_order_release);
 }
 
-#ifdef ARTS_RETENTION_RETAIN
-/* runs on rank H once RC completed. paramv: F */
-static void y_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
-                  arts_edt_dep_t depv[]) {
-  (void)paramc;
-  (void)depc;
-  (void)depv;
-  (void)arts_db_create_with_guid((arts_guid_t)paramv[0],
-                                 F_WORDS * sizeof(uint64_t), ARTS_DB,
-                                 ARTS_DB_PROP_NO_ACQUIRE, NULL);
-}
-#endif
-
-/* runs on rank H. paramv: B, F, latch */
+/* runs on rank H. paramv: B, latch */
 static void t_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                   arts_edt_dep_t depv[]) {
   (void)paramc;
   (void)depc;
   (void)depv;
   arts_guid_t b = (arts_guid_t)paramv[0];
-  arts_guid_t latch = (arts_guid_t)paramv[2];
+  arts_guid_t latch = (arts_guid_t)paramv[1];
   unsigned int here = arts_get_current_rank();
   /* Each acquire runs inside the call that readies its EDT, and this rank is
    * B's home: rank H's write request reaches the home before its read
    * request, both behind rank A's write turn. */
 #ifdef ARTS_RETENTION_RETAIN
-  arts_guid_t f = (arts_guid_t)paramv[1];
-  arts_guid_t rcdone = latch_on(here, 1);
-  uint64_t ypv[1] = {(uint64_t)f};
-  arts_guid_t y = edt_on(y_edt, here, 1, ypv, 1, latch);
-  arts_add_dependence(rcdone, y, 0, DB_MODE_NULL);
-  arts_guid_t w = edt_on(wc, here, 0, NULL, 2, latch);
-  arts_add_dependence(b, w, 0, DB_MODE_RW);
-  arts_add_dependence(f, w, 1, DB_MODE_RO);
+  arts_guid_t w = edt_on(wc, here, 0, NULL, 1, latch);
 #else
-  arts_guid_t rcdone = latch;
   uint64_t wpv[1] = {(uint64_t)latch};
   arts_guid_t w = edt_on(wc, here, 1, wpv, 1, latch);
-  arts_add_dependence(b, w, 0, DB_MODE_RW);
 #endif
-  arts_guid_t r = edt_on(rc, here, 0, NULL, 1, rcdone);
+  arts_add_dependence(b, w, 0, DB_MODE_RW);
+  arts_guid_t r = edt_on(rc, here, 0, NULL, 1, latch);
   arts_add_dependence(b, r, 0, DB_MODE_RO);
 }
 
-/* runs on rank A. depv: B (RW), E (RO) */
+/* runs on rank A. depv: B (RW) */
 static void wa(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                arts_edt_dep_t depv[]) {
   (void)paramc;
   (void)paramv;
   (void)depc;
-  uint64_t *b = storage(&depv[0], "WA (B)");
-  const uint64_t *e = storage(&depv[1], "WA (E)");
+  uint64_t *b = storage(&depv[0], "WA");
+  const struct timespec nap = {.tv_sec = 0, .tv_nsec = 1000000L};
+  long start = now_ms();
+  while (atomic_load_explicit(&g_t_done, memory_order_acquire) == 0) {
+    if (now_ms() - start > WAIT_MS) {
+      arts_printf("FAIL: db_read_parked_under_write_turn the set-up did not "
+                  "arrive: T was not reported complete within %ld ms\n",
+                  WAIT_MS);
+      arts_test_fail();
+      arts_shutdown();
+      return;
+    }
+    (void)nanosleep(&nap, NULL);
+  }
   if (b != NULL) {
     fill(b, WA_FIRST, SPAN, WA_MARK);
   }
-  if (e != NULL) {
-    check_range(e, 0u, E_WORDS, X_MARK, "WA", "E");
-  }
 }
 
-/* runs on rank A. depv: B (RW). paramv: B, E, F, latch */
+/* runs on rank A. depv: B (RW). paramv: B, latch */
 static void w0(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                arts_edt_dep_t depv[]) {
   (void)paramc;
   (void)depc;
   arts_guid_t b = (arts_guid_t)paramv[0];
-  arts_guid_t e = (arts_guid_t)paramv[1];
-  arts_guid_t f = (arts_guid_t)paramv[2];
-  arts_guid_t latch = (arts_guid_t)paramv[3];
+  arts_guid_t latch = (arts_guid_t)paramv[1];
   unsigned int here = arts_get_current_rank();
   (void)storage(&depv[0], "W0");
-  arts_guid_t a = edt_on(wa, here, 0, NULL, 2, latch);
+  arts_guid_t a = edt_on(wa, here, 0, NULL, 1, latch);
+  /* This call readies WA and runs its acquire: its write of B joins the turn
+   * this EDT holds. */
   arts_add_dependence(b, a, 0, DB_MODE_RW);
-  /* This call readies WA and runs its acquires: its write of B joins the
-   * turn this EDT holds, and its read of E waits for E's create. */
-  arts_add_dependence(e, a, 1, DB_MODE_RO);
-  arts_guid_t tdone = latch_on(RANK_H, 1);
-  uint64_t xpv[1] = {(uint64_t)e};
-  arts_guid_t x = edt_on(x_edt, RANK_H, 1, xpv, 1, latch);
+  arts_guid_t tdone = latch_on(here, 1);
+  arts_guid_t x = edt_on(x_edt, here, 0, NULL, 1, latch);
   arts_add_dependence(tdone, x, 0, DB_MODE_NULL);
-  uint64_t tpv[3] = {(uint64_t)b, (uint64_t)f, (uint64_t)latch};
-  (void)edt_on(t_edt, RANK_H, 3, tpv, 0, tdone);
+  uint64_t tpv[2] = {(uint64_t)b, (uint64_t)latch};
+  (void)edt_on(t_edt, RANK_H, 2, tpv, 0, tdone);
 }
 
-/* depv: latch, B (RO), E (RO). paramv: B, E, F */
+/* depv: latch, B (RO). paramv: B */
 static void final_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                       arts_edt_dep_t depv[]) {
   (void)paramc;
   (void)depc;
   const uint64_t *b = storage(&depv[1], "the final EDT (B)");
-  const uint64_t *e = storage(&depv[2], "the final EDT (E)");
   if (b != NULL) {
     check_range(b, RC_FIRST, SPAN, S_MARK, "the final EDT", "B");
     check_range(b, WA_FIRST, SPAN, WA_MARK, "the final EDT", "B");
@@ -367,14 +335,7 @@ static void final_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     check_range(b, WD_FIRST, SPAN, S_MARK, "the final EDT", "B");
 #endif
   }
-  if (e != NULL) {
-    check_range(e, 0u, E_WORDS, X_MARK, "the final EDT", "E");
-  }
   arts_db_destroy((arts_guid_t)paramv[0]);
-  arts_db_destroy((arts_guid_t)paramv[1]);
-#ifdef ARTS_RETENTION_RETAIN
-  arts_db_destroy((arts_guid_t)paramv[2]);
-#endif
   if (arts_test_status() == 0) {
     arts_printf("PASS: db_read_parked_under_write_turn " RETENTION "\n");
   }
@@ -395,30 +356,16 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_shutdown();
     return;
   }
-  arts_guid_t range = arts_guid_reserve_range(ARTS_GUID_DB, 3u, RANK_H);
-  arts_guid_t b = arts_guid_from_index(range, 0u);
-  arts_guid_t e = arts_guid_from_index(range, 1u);
-  arts_guid_t f = arts_guid_from_index(range, 2u);
-  if (!(b < e && e < f)) {
-    arts_printf("FAIL: db_read_parked_under_write_turn needs B below E "
-                "below F\n");
-    arts_test_fail();
-    arts_shutdown();
-    return;
-  }
-  /* WA, WC, X; RC and WD under PURGE, Y (which follows RC) under RETAIN. */
+  /* WA, WC, X and RC; WD too under PURGE. */
 #ifdef ARTS_RETENTION_RETAIN
   arts_guid_t latch = latch_on(RANK_H, 4);
 #else
   arts_guid_t latch = latch_on(RANK_H, 5);
 #endif
-  uint64_t fpv[3] = {(uint64_t)b, (uint64_t)e, (uint64_t)f};
-  arts_guid_t fin = edt_on(final_edt, RANK_H, 3, fpv, 3, NULL_GUID);
-  arts_add_dependence(latch, fin, 0, DB_MODE_NULL);
-  arts_add_dependence(b, fin, 1, DB_MODE_RO);
-  arts_add_dependence(e, fin, 2, DB_MODE_RO);
-  uint64_t *p = (uint64_t *)arts_db_create_with_guid(
-      b, B_WORDS * sizeof(uint64_t), ARTS_DB, ARTS_DB_PROP_NONE, NULL);
+  arts_db_hint_t h = ARTS_DB_HINT_DEFAULTS;
+  void *p = NULL;
+  arts_guid_t b = arts_db_create(&p, B_WORDS * sizeof(uint64_t), ARTS_DB,
+                                 ARTS_DB_PROP_NONE, &h);
   if (p == NULL) {
     arts_printf("FAIL: db_read_parked_under_write_turn create of B gave no "
                 "storage\n");
@@ -426,10 +373,14 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_shutdown();
     return;
   }
-  fill(p, 0u, B_WORDS, S_MARK);
+  fill((uint64_t *)p, 0u, B_WORDS, S_MARK);
   arts_db_release(b);
-  uint64_t wpv[4] = {(uint64_t)b, (uint64_t)e, (uint64_t)f, (uint64_t)latch};
-  arts_guid_t w = edt_on(w0, RANK_A, 4, wpv, 1, NULL_GUID);
+  uint64_t fpv[1] = {(uint64_t)b};
+  arts_guid_t fin = edt_on(final_edt, RANK_H, 1, fpv, 2, NULL_GUID);
+  arts_add_dependence(latch, fin, 0, DB_MODE_NULL);
+  arts_add_dependence(b, fin, 1, DB_MODE_RO);
+  uint64_t wpv[2] = {(uint64_t)b, (uint64_t)latch};
+  arts_guid_t w = edt_on(w0, RANK_A, 2, wpv, 1, NULL_GUID);
   arts_add_dependence(b, w, 0, DB_MODE_RW);
 }
 

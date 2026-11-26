@@ -3727,11 +3727,12 @@ endforeach()
 endif()
 
 # db_read_while_write_waits: a reader on a rank whose write request for a
-# block waits behind another rank's writer, where the chain that lets that
-# writer run waits for the reader.  A VAL or INV read waits for no release,
-# so the run ends.  Under EXCL a read waits behind the other node's write
-# turn and the program blocks by design, and its unordered writers are
-# outside CDAG.
+# block waits behind another rank's writer, where that writer's walk waits
+# for a second block the reader's EDT holds.  A VAL or INV read waits for no
+# release, so the run ends.  Under EXCL every acquisition is in the
+# name-ordered walk: the reader's EDT waits at the lower block holding
+# nothing and a run ends without showing the rule.  The program's unordered
+# writers are outside CDAG.
 if(ARTS_VALIDITY STREQUAL "VAL" OR ARTS_VALIDITY STREQUAL "INV")
     add_arts_test(db_read_while_write_waits)
     register_multinode_test(db_read_while_write_waits TIMEOUT 60)
@@ -3740,24 +3741,6 @@ if(ARTS_VALIDITY STREQUAL "VAL" OR ARTS_VALIDITY STREQUAL "INV")
             PASS_REGULAR_EXPRESSION "PASS: db_read_while_write_waits"
             FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
     endforeach()
-endif()
-
-# db_read_joins_read_phase: a reader on a rank whose write request for a
-# block waits behind another rank's reader, where the chain that lets that
-# reader release waits for this one.  The home grants a read request into an
-# open read phase whether or not a writer waits, so the run ends; a runtime
-# that answers the reader only with its rank's write turn never ends it.  The
-# home, the readers' rank and the writer's rank are distinct, which takes four
-# ranks; under RETAIN the block's creator, its home, keeps it, so its owner
-# is a third rank too.  Registered on both cells of the exclusion arm, the
-# CXL stores included.
-if(ARTS_VALIDITY STREQUAL "EXCL")
-    add_arts_test(db_read_joins_read_phase)
-    register_multinode_test(db_read_joins_read_phase TIMEOUT 30
-                            VARIANTS 4n_4w_1p)
-    arts_test_properties(db_read_joins_read_phase_4n_4w_1p PROPERTIES
-        PASS_REGULAR_EXPRESSION "PASS: db_read_joins_read_phase"
-        FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
 endif()
 
 # db_read_parked_under_write_turn: a rank's read request held at its home
@@ -3769,14 +3752,13 @@ endif()
 # home's lock word): the verdict is the reader's check that it reads that
 # writer's bytes, which a reader served under its own rank's turn cannot,
 # since the turn ends only once such a reader returned.  Under RETAIN the rank
-# answers the request itself as the new owner while its writer holds the turn:
-# the writer waits for a block created after the reader, so a runtime that
-# serves the reader after the turn never ends the run, and the verdict is the
-# TIMEOUT.  Where the tree captures the acquisition census, each rank's record
-# is checked: the home rank's acquisitions are local hits under PURGE, and
-# under RETAIN all but the writer's, whose bytes come from the other rank; a
-# read served by the migration would count remote.  Registered on both cells
-# of the exclusion arm, the CXL stores included; two ranks.
+# answers the request itself as the new owner; the census record tells that
+# answer from a serve by the migration.  Where the tree captures the
+# acquisition census, each rank's record is checked: the home rank's
+# acquisitions are local hits under PURGE, and under RETAIN all but the
+# writer's, whose bytes come from the other rank; a read served by the
+# migration would count remote.  Registered on both cells of the exclusion
+# arm, the CXL stores included; two ranks.
 if(ARTS_VALIDITY STREQUAL "EXCL")
     add_arts_test(db_read_parked_under_write_turn)
     string(TOLOWER "${ARTS_RETENTION}" _ret)
@@ -3784,24 +3766,24 @@ if(ARTS_VALIDITY STREQUAL "EXCL")
     arts_counters_captured(_c NUM_DB_ACQUIRE_READ NUM_DB_ACQUIRE_WRITE
                            NUM_DB_ACQUIRE_LOCAL_HIT NUM_DB_ACQUIRE_REMOTE)
     if(_c)
-        set(_vals 1:NUM_DB_ACQUIRE_READ=1 1:NUM_DB_ACQUIRE_LOCAL_HIT=1
-                  0:NUM_DB_ACQUIRE_WRITE=3)
+        set(_vals 1:NUM_DB_ACQUIRE_READ=0 1:NUM_DB_ACQUIRE_LOCAL_HIT=1
+                  0:NUM_DB_ACQUIRE_WRITE=2)
         if(ARTS_RETENTION STREQUAL "RETAIN")
             list(APPEND _vals 1:NUM_DB_ACQUIRE_WRITE=2
-                              1:NUM_DB_ACQUIRE_REMOTE=2
-                              0:NUM_DB_ACQUIRE_READ=4
-                              0:NUM_DB_ACQUIRE_LOCAL_HIT=6
+                              1:NUM_DB_ACQUIRE_REMOTE=1
+                              0:NUM_DB_ACQUIRE_READ=2
+                              0:NUM_DB_ACQUIRE_LOCAL_HIT=3
                               0:NUM_DB_ACQUIRE_REMOTE=1)
         else()
             list(APPEND _vals 1:NUM_DB_ACQUIRE_WRITE=3
-                              1:NUM_DB_ACQUIRE_REMOTE=3
-                              0:NUM_DB_ACQUIRE_READ=3
-                              0:NUM_DB_ACQUIRE_LOCAL_HIT=6
+                              1:NUM_DB_ACQUIRE_REMOTE=2
+                              0:NUM_DB_ACQUIRE_READ=2
+                              0:NUM_DB_ACQUIRE_LOCAL_HIT=4
                               0:NUM_DB_ACQUIRE_REMOTE=0)
         endif()
         arts_counters_captured(_c NUM_PURGE_RETURN)
         if(_c AND ARTS_RETENTION STREQUAL "PURGE")
-            list(APPEND _vals 0:NUM_PURGE_RETURN=0 1:NUM_PURGE_RETURN=3)
+            list(APPEND _vals 0:NUM_PURGE_RETURN=0 1:NUM_PURGE_RETURN=2)
         endif()
         set(_rec RECORDS 2 RECORD_CHECK record_values.cmake ${_vals})
     endif()

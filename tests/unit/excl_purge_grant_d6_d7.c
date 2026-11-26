@@ -2,11 +2,12 @@
  *
  * excl_purge_grant_d6_d7 — EXCL-config-specific runtime exercise of the home
  * arbiter's D6 (rw→rw chain) and D7 (new RO grants while RW waiting) decision
- * paths on either retention: excl_compute_next (coherence/excl/arbiters.c)
- * under PURGE, lock_owner_compute_next (coherence/excl/retain.c) under RETAIN,
- * each applied by its arm's home grant path.  The pure truth table is pinned
- * for PURGE only, by the unit test excl_compute_next; this drives the same
- * transitions through the live runtime on both arms.
+ * paths on either retention: excl_compute_next under PURGE,
+ * lock_owner_compute_next under RETAIN (both in coherence/excl/arbiters.c),
+ * each applied by its arm's home grant path.  The pure arbiters of both are
+ * pinned by the unit test excl_compute_next (PURGE's whole truth table,
+ * RETAIN's home arbiter row by row, its D6 and D7 rows included); this
+ * drives the same transitions through the live runtime on both arms.
  *
  * D6 — rw→rw chain: a sequence of RW writers on one DB.  When a writer's turn
  *   ends with another writer still counted at the home, the home hands the
@@ -16,12 +17,14 @@
  *   chain's latch never fires → TIMEOUT.
  *
  * D7 — RO extends while RW waiting: an active RO phase with an RW parked
- *   (w>0); a NEW RO request must still be granted immediately (PURGE:
- *   LOCK_GRANT_ALL_RO; RETAIN: a serve forwarded at once), the RO phase
- *   extending, rather than queued behind the writer.
- *   The waiting RW is eventually served when the RO phase drains.  All readers
- *   must observe the producer's value and the writer must run — a starved
- *   reader or writer stalls the group → TIMEOUT.
+ *   (w>0); on that path a NEW RO request is granted into the open phase
+ *   (PURGE: LOCK_GRANT_ALL_RO; RETAIN: a serve forwarded at once), the RO
+ *   phase extending, and the waiting RW is served when the RO phase drains.
+ *   What the program judges is that every reader observes the producer's
+ *   value and that the writer runs — a starved reader or writer stalls the
+ *   group → TIMEOUT.  Its trailing writer leaves the value unchanged, so it
+ *   cannot tell a reader granted before the writer's phase from one queued
+ *   behind it.
  *
  * To put many participants in the same home phase simultaneously they are
  * launched depc=0 (ready immediately) and contend on the lock; the writers'
