@@ -52,10 +52,11 @@
  *
  * All synchronization via explicit LATCH(N)+DECR-only events
  * (distributed-safe).
- * g_init and g_iter are rank-0 state: main_edt fills g_init before it creates
- * any EDT, and launch_iteration and reduce_dt_edt share both, ordered by the
- * iteration chain.  Every other EDT body accesses data exclusively through
- * its parameters and depv[].
+ * g_init and g_iter are rank-0 state: main_edt fills g_init's topology before
+ * it creates any EDT, post_init_edt records the block names into g_init before
+ * the first iteration is launched, and launch_iteration and reduce_dt_edt
+ * share both, ordered by the iteration chain.  Every other EDT body accesses
+ * data exclusively through its parameters and depv[].
  */
 
 #include "arts.h"
@@ -1057,9 +1058,7 @@ static void launch_iteration(int iter, double dt, double elapsed);
 
 /* ========================================================================= */
 /*  init_tile_edt                                                            */
-/*  paramv: [tid, N, T, tpd, max_iter,                                      */
-/*           const_guid, posvel_guid, estate_guid, grad_guid,                */
-/*           force_guid, dt_result_guid, init_done_guid,                     */
+/*  paramv: [tid, N, T, tpd, max_iter, post_init_guid, init_done_guid,      */
 /*           num_face_nbrs, num_all_nbrs, face_nbr_dir[0..5]]                */
 /*  depv: none (depc=0)                                                      */
 /* ========================================================================= */
@@ -1071,36 +1070,39 @@ void init_tile_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depv;
   int tid = (int)paramv[0], N = (int)paramv[1], T = (int)paramv[2],
       tpd = (int)paramv[3], max_iter = (int)paramv[4];
-  arts_guid_t cg = (arts_guid_t)paramv[5];
-  arts_guid_t pg = (arts_guid_t)paramv[6];
-  arts_guid_t es_guid = (arts_guid_t)paramv[7];
-  arts_guid_t gg = (arts_guid_t)paramv[8];
-  arts_guid_t fg = (arts_guid_t)paramv[9];
-  arts_guid_t dt_guid = (arts_guid_t)paramv[10];
-  arts_guid_t init_done = (arts_guid_t)paramv[11];
+  arts_guid_t post_init = (arts_guid_t)paramv[5];
+  arts_guid_t init_done = (arts_guid_t)paramv[6];
 
-  /* Create 6 DBs with pre-reserved GUIDs on this node */
+  /* Create the tile's 6 DBs on this node */
   size_t csz = compute_const_db_size(T), pvsz = compute_pos_vel_db_size(T);
   size_t essz = compute_elem_state_db_size(T), gsz = compute_grad_db_size(T),
          fsz = compute_force_db_size(T);
 
-  const_db_header_t *ch =
-      arts_db_create_with_guid(cg, (uint64_t)csz, ARTS_DB, 0, NULL);
+  void *ptr = NULL;
+  arts_guid_t cg = arts_db_create(&ptr, (uint64_t)csz, ARTS_DB, 0,
+                                  &ARTS_DB_HINT_DEFAULTS);
+  const_db_header_t *ch = ptr;
   memset(ch, 0, csz);
-  pos_vel_db_header_t *pvh =
-      arts_db_create_with_guid(pg, (uint64_t)pvsz, ARTS_DB, 0, NULL);
+  arts_guid_t pg = arts_db_create(&ptr, (uint64_t)pvsz, ARTS_DB, 0,
+                                  &ARTS_DB_HINT_DEFAULTS);
+  pos_vel_db_header_t *pvh = ptr;
   memset(pvh, 0, pvsz);
-  elem_state_db_header_t *esh = arts_db_create_with_guid(
-      es_guid, (uint64_t)essz, ARTS_DB, 0, NULL);
+  arts_guid_t es_guid = arts_db_create(&ptr, (uint64_t)essz, ARTS_DB, 0,
+                                       &ARTS_DB_HINT_DEFAULTS);
+  elem_state_db_header_t *esh = ptr;
   memset(esh, 0, essz);
-  grad_db_header_t *gh =
-      arts_db_create_with_guid(gg, (uint64_t)gsz, ARTS_DB, 0, NULL);
+  arts_guid_t gg = arts_db_create(&ptr, (uint64_t)gsz, ARTS_DB, 0,
+                                  &ARTS_DB_HINT_DEFAULTS);
+  grad_db_header_t *gh = ptr;
   memset(gh, 0, gsz);
-  force_db_header_t *fh =
-      arts_db_create_with_guid(fg, (uint64_t)fsz, ARTS_DB, 0, NULL);
+  arts_guid_t fg = arts_db_create(&ptr, (uint64_t)fsz, ARTS_DB, 0,
+                                  &ARTS_DB_HINT_DEFAULTS);
+  force_db_header_t *fh = ptr;
   memset(fh, 0, fsz);
-  dt_result_db_t *dr = arts_db_create_with_guid(
-      dt_guid, (uint64_t)sizeof(dt_result_db_t), ARTS_DB, 0, NULL);
+  arts_guid_t dt_guid =
+      arts_db_create(&ptr, (uint64_t)sizeof(dt_result_db_t), ARTS_DB, 0,
+                     &ARTS_DB_HINT_DEFAULTS);
+  dt_result_db_t *dr = ptr;
   dr->dt_courant = 1.e20;
   dr->dt_hydro = 1.e20;
 
@@ -1121,10 +1123,10 @@ void init_tile_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   ch->global_edge_elems = N;
   ch->tiles_per_dim = tpd;
   ch->max_iterations = max_iter;
-  ch->num_face_nbrs = (int)paramv[12];
-  ch->num_all_nbrs = (int)paramv[13];
+  ch->num_face_nbrs = (int)paramv[7];
+  ch->num_all_nbrs = (int)paramv[8];
   for (int i = 0; i < 6; i++)
-    ch->face_nbr_dir[i] = (int)paramv[14 + i];
+    ch->face_nbr_dir[i] = (int)paramv[9 + i];
   ch->hgcoef = 3.0;
   ch->ss4o3 = 4.0 / 3.0;
   ch->qstop = 1.e12;
@@ -1296,8 +1298,8 @@ void init_tile_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
         if (tz * T + lz == 0)
           szf[ni] = 1;
       }
-  /* Pattern A: release all 6 created DBs before the LATCH decrement that
-   * dispatches downstream consumers. */
+  /* Release all 6 created DBs before their names leave this task: the slot
+   * satisfies of post_init_edt, then the init_done decrement. */
   arts_db_release(cg);
   arts_db_release(pg);
   arts_db_release(es_guid);
@@ -1305,21 +1307,49 @@ void init_tile_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_db_release(fg);
   arts_db_release(dt_guid);
 
+  arts_edt_satisfy_slot(post_init, 3 + 6 * (uint32_t)tid + 0, cg,
+                        DB_MODE_NULL);
+  arts_edt_satisfy_slot(post_init, 3 + 6 * (uint32_t)tid + 1, pg,
+                        DB_MODE_NULL);
+  arts_edt_satisfy_slot(post_init, 3 + 6 * (uint32_t)tid + 2, es_guid,
+                        DB_MODE_NULL);
+  arts_edt_satisfy_slot(post_init, 3 + 6 * (uint32_t)tid + 3, gg,
+                        DB_MODE_NULL);
+  arts_edt_satisfy_slot(post_init, 3 + 6 * (uint32_t)tid + 4, fg,
+                        DB_MODE_NULL);
+  arts_edt_satisfy_slot(post_init, 3 + 6 * (uint32_t)tid + 5, dt_guid,
+                        DB_MODE_NULL);
+  if (tid == 0) {
+    arts_edt_satisfy_slot(post_init, 1, cg, DB_MODE_RO);
+    arts_edt_satisfy_slot(post_init, 2, es_guid, DB_MODE_RO);
+  }
+
   /* Signal init_done latch */
   arts_event_satisfy_slot(init_done, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 /* ========================================================================= */
 /*  post_init_edt                                                            */
-/*  depv: [0]=init_done(NULL), [1]=const[0](RO), [2]=elem_state[0](RO)      */
-/*  Computes initial delta_time from tile 0 and launches first iteration.    */
+/*  depv: [0]=init_done(NULL), [1]=const[0](RO), [2]=elem_state[0](RO),     */
+/*        [3+6t+k]=name of tile t's block k (NULL mode), k in const, pos_vel,*/
+/*        elem_state, grad, force, dt_result                                 */
+/*  Records the block names, computes initial delta_time from tile 0 and     */
+/*  launches first iteration.                                                */
 /* ========================================================================= */
 
 void post_init_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                    arts_edt_dep_t depv[]) {
   (void)paramc;
-  (void)depc;
   (void)paramv;
+  const uint32_t nt = (depc - 3) / 6;
+  for (uint32_t t = 0; t < nt; t++) {
+    g_init.const_guids[t] = depv[3 + 6 * t + 0].guid;
+    g_init.pos_vel_guids[t] = depv[3 + 6 * t + 1].guid;
+    g_init.elem_state_guids[t] = depv[3 + 6 * t + 2].guid;
+    g_init.grad_guids[t] = depv[3 + 6 * t + 3].guid;
+    g_init.force_guids[t] = depv[3 + 6 * t + 4].guid;
+    g_init.dt_result_guids[t] = depv[3 + 6 * t + 5].guid;
+  }
   const_db_header_t *ch = depv[1].ptr;
   elem_state_db_header_t *esh = depv[2].ptr;
 
@@ -2099,46 +2129,30 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
               N, T, nt, nn);
   build_topo(N, T, (int)nn);
 
-  /* Pre-reserve 6*nt DB GUIDs on tile owner nodes */
-  for (int t = 0; t < nt; t++) {
-    unsigned o = g_init.tile_owner[t];
-    g_init.const_guids[t] = arts_guid_reserve(ARTS_GUID_DB, o);
-    g_init.pos_vel_guids[t] = arts_guid_reserve(ARTS_GUID_DB, o);
-    g_init.elem_state_guids[t] = arts_guid_reserve(ARTS_GUID_DB, o);
-    g_init.grad_guids[t] = arts_guid_reserve(ARTS_GUID_DB, o);
-    g_init.force_guids[t] = arts_guid_reserve(ARTS_GUID_DB, o);
-    g_init.dt_result_guids[t] = arts_guid_reserve(ARTS_GUID_DB, o);
-  }
-
-  /* Create init_done latch (count=nt) and post_init_edt */
+  /* init_done counts the init tasks; post_init_edt's slot 0 takes its fire,
+   * and every other slot of post_init_edt is satisfied by an init task. */
   arts_guid_t init_done = g_init.init_done =
       arts_event_create(&ARTS_EVENT_HINT_LATCH(nt));
   arts_guid_t post_init =
-      arts_edt_create(post_init_edt, 0, NULL, 3, &(arts_edt_hint_t){.rank = 0});
+      arts_edt_create(post_init_edt, 0, NULL, 3 + 6 * (uint32_t)nt,
+                      &(arts_edt_hint_t){.rank = 0});
   arts_add_dependence(init_done, post_init, 0, DB_MODE_NULL);
-  arts_add_dependence(g_init.const_guids[0], post_init, 1, DB_MODE_RO);
-  arts_add_dependence(g_init.elem_state_guids[0], post_init, 2, DB_MODE_RO);
 
-  /* Create init_tile_edts with their tile's GUIDs and neighbours in paramv */
+  /* Create init_tile_edts with the neighbours in paramv */
   for (int t = 0; t < nt; t++) {
     unsigned o = g_init.tile_owner[t];
-    uint64_t p[20] = {(uint64_t)t,
+    uint64_t p[15] = {(uint64_t)t,
                       (uint64_t)N,
                       (uint64_t)T,
                       (uint64_t)tpd,
                       (uint64_t)max_iter,
-                      (uint64_t)g_init.const_guids[t],
-                      (uint64_t)g_init.pos_vel_guids[t],
-                      (uint64_t)g_init.elem_state_guids[t],
-                      (uint64_t)g_init.grad_guids[t],
-                      (uint64_t)g_init.force_guids[t],
-                      (uint64_t)g_init.dt_result_guids[t],
+                      (uint64_t)post_init,
                       (uint64_t)init_done,
                       (uint64_t)g_init.num_face_nbrs[t],
                       (uint64_t)g_init.num_all_nbrs[t]};
     for (int i = 0; i < 6; i++)
-      p[14 + i] = (uint64_t)g_init.face_nbr_dir[t][i];
-    arts_edt_create(init_tile_edt, 20, p, 0, &(arts_edt_hint_t){.rank = o});
+      p[9 + i] = (uint64_t)g_init.face_nbr_dir[t][i];
+    arts_edt_create(init_tile_edt, 15, p, 0, &(arts_edt_hint_t){.rank = o});
   }
 }
 

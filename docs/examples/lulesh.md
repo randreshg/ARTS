@@ -51,7 +51,7 @@ With `nt = tpd³` tiles:
 | object | count |
 |---|---|
 | blocks per tile | 6: constants and connectivity (`const`), node positions and velocities (`pos_vel`), element state (`elem_state`), gradients and viscosity terms (`grad`), corner forces plus the state the next `forces_edt` reads (`force`), time-step limits (`dt_result`) |
-| set-up | `nt` `init_tile_edt`, one `init_done` latch of count `nt`, one `post_init_edt` |
+| set-up | `nt` `init_tile_edt`, one `init_done` latch of count `nt`, one `post_init_edt` with `3 + 6·nt` slots |
 | events per iteration | `7·nt + 2`: `fd`, `rd`, `ed`, `vd` per tile (single-fire), `rr` per tile (latch of 1 + its neighbours), `er` and `vr` per tile (latch of 1 + its face neighbours), `setup_done`, and `dr` (latch of `nt`) |
 | EDTs per iteration | `4·nt` phase EDTs, one `reduce_dt_edt`, one `next_iter_edt` |
 
@@ -76,11 +76,14 @@ hold's release.
 ## Flow
 
 `main_edt` checks the arguments, prints the decomposition, builds the tile
-topology on rank 0, reserves the six block GUIDs of every tile on the tile's
-owner, creates `init_done` and `post_init_edt` and an `init_tile_edt` per
-tile, which takes its tile's GUIDs, neighbour counts and face directions as
-parameters. An `init_tile_edt` creates and fills its tile's blocks under the
-reserved GUIDs, releases them and decrements `init_done`.
+topology on rank 0, creates `init_done` and `post_init_edt` and an
+`init_tile_edt` per tile on the tile's owner, which takes `post_init_edt`,
+`init_done`, its neighbour counts and its face directions as parameters. An
+`init_tile_edt` creates and fills its tile's six blocks on its own rank,
+releases them, sends their names to `post_init_edt` (one value slot per block,
+`3 + 6·t + k`; tile 0 also hands over `const` and `elem_state` read-only on
+slots 1 and 2) and decrements `init_done`. `post_init_edt` records the names
+for the iterations and the final destroys.
 The mass of each of its nodes is an eighth of the volume of every element
 around the node, its neighbouring tiles' elements included: every tile
 computes them from the initial mesh, as the reference does on its global
@@ -96,8 +99,8 @@ the runtime down.
 
 ## Placement
 
-Tile `t` belongs to rank `t` mod the rank count: its blocks are reserved for
-and created on that rank, and its four phase EDTs run there. Every event,
+Tile `t` belongs to rank `t` mod the rank count: its blocks are created by its
+`init_tile_edt` on that rank, and its four phase EDTs run there. Every event,
 `post_init`, `reduce_dt` and `next_iter` is on rank 0, so every phase's
 completion and every launch goes through rank 0. Across ranks, `reduce_kin`
 reads the `force` blocks of all its neighbouring tiles, `visc_eos` the `grad`

@@ -115,21 +115,27 @@ void init_block_mm(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   unsigned int i = paramv[0];
   unsigned int j = paramv[1];
   arts_guid_t init_latch = (arts_guid_t)paramv[2];
+  arts_guid_t done_guid = (arts_guid_t)paramv[3];
 
   //    arts_printf("%s %u %u\n", __func__, i, j);
 
   float *a_mat = (float *)depv[0].ptr;
   float *b_mat = (float *)depv[1].ptr;
 
-  arts_guid_t a_guid = arts_guid_from_index(a_tile_guids, (i * num_blocks) + j);
-  arts_guid_t b_guid = arts_guid_from_index(b_tile_guids, (i * num_blocks) + j);
+  unsigned int idx = (i * num_blocks) + j;
+  arts_guid_t a_event = arts_guid_from_index(a_tile_guids, idx);
+  arts_guid_t b_event = arts_guid_from_index(b_tile_guids, idx);
 
-  float *a_tile = (float *)arts_db_create_with_guid(
-      a_guid, sizeof(float) * TILE * TILE, ARTS_DB, ARTS_DB_PROP_NONE, NULL);
-  float *b_tile = (float *)arts_db_create_with_guid(
-      b_guid, sizeof(float) * TILE * TILE, ARTS_DB, ARTS_DB_PROP_NONE, NULL);
-  //    arts_db_create_with_guid_and_data(arts_guid_t guid, void * data,
-  //    uint64_t size)
+  void *a_ptr = NULL;
+  void *b_ptr = NULL;
+  arts_guid_t a_guid =
+      arts_db_create(&a_ptr, sizeof(float) * TILE * TILE, ARTS_DB,
+                     ARTS_DB_PROP_NONE, &ARTS_DB_HINT_DEFAULTS);
+  arts_guid_t b_guid =
+      arts_db_create(&b_ptr, sizeof(float) * TILE * TILE, ARTS_DB,
+                     ARTS_DB_PROP_NONE, &ARTS_DB_HINT_DEFAULTS);
+  float *a_tile = (float *)a_ptr;
+  float *b_tile = (float *)b_ptr;
 
   copy_block(i, j, TILE, a_tile, MATSIZE, a_mat, true);
   copy_block(i, j, TILE, b_tile, MATSIZE, b_mat, true);
@@ -137,6 +143,12 @@ void init_block_mm(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_db_release(depv[1].guid);
   arts_db_release(a_guid);
   arts_db_release(b_guid);
+  arts_event_satisfy(a_event, a_guid);
+  arts_event_satisfy(b_event, b_guid);
+  arts_edt_satisfy_slot(done_guid, 1 + (num_blocks * num_blocks) + idx, a_guid,
+                        DB_MODE_NULL);
+  arts_edt_satisfy_slot(done_guid, 1 + (2 * num_blocks * num_blocks) + idx,
+                        b_guid, DB_MODE_NULL);
   arts_event_satisfy(init_latch, NULL_GUID);
 }
 
@@ -191,10 +203,11 @@ void multiply_mm(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   float *b_tile = (float *)depv[1].ptr;
   float *c_tile = NULL;
 
-  arts_guid_t c_tile_guid = arts_guid_reserve(ARTS_GUID_DB, 0);
-  c_tile = (float *)arts_db_create_with_guid(c_tile_guid,
-                                             sizeof(float) * TILE * TILE,
-                                             ARTS_DB, ARTS_DB_PROP_NONE, NULL);
+  void *c_ptr = NULL;
+  arts_guid_t c_tile_guid =
+      arts_db_create(&c_ptr, sizeof(float) * TILE * TILE, ARTS_DB,
+                     ARTS_DB_PROP_NONE, &ARTS_DB_HINT_DEFAULTS);
+  c_tile = (float *)c_ptr;
   init_matrix(row_size, c_tile, false, true);
   arts_db_release(c_tile_guid);
 
@@ -224,11 +237,11 @@ void sum_mm(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   //    arts_printf("%s: i: %u j: %u %lu\n", __func__, idx_i, idx_j, done_guid);
 
-  float *c_tile;
-  arts_guid_t c_tile_guid = arts_guid_reserve(ARTS_GUID_DB, 0);
-  c_tile = (float *)arts_db_create_with_guid(c_tile_guid,
-                                             sizeof(float) * TILE * TILE,
-                                             ARTS_DB, ARTS_DB_PROP_NONE, NULL);
+  void *c_ptr = NULL;
+  arts_guid_t c_tile_guid =
+      arts_db_create(&c_ptr, sizeof(float) * TILE * TILE, ARTS_DB,
+                     ARTS_DB_PROP_NONE, &ARTS_DB_HINT_DEFAULTS);
+  float *c_tile = (float *)c_ptr;
   init_matrix(row_size, c_tile, false, true);
 
   for (unsigned int i = 0; i < depc; i++) {
@@ -266,8 +279,8 @@ void finish_block_mm(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_db_destroy(depv[i].guid);
   }
   for (unsigned int t = 0; t < num_blocks * num_blocks; t++) {
-    arts_db_destroy(arts_guid_from_index(a_tile_guids, t));
-    arts_db_destroy(arts_guid_from_index(b_tile_guids, t));
+    arts_event_destroy(arts_guid_from_index(a_tile_guids, t));
+    arts_event_destroy(arts_guid_from_index(b_tile_guids, t));
   }
   arts_db_destroy(a_mat_guid);
   arts_db_destroy(b_mat_guid);
@@ -284,24 +297,32 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depv;
   num_blocks = MATSIZE / TILE;
 
-  a_mat_guid = arts_guid_reserve(ARTS_GUID_DB, 0);
-  b_mat_guid = arts_guid_reserve(ARTS_GUID_DB, 0);
-  c_mat_guid = arts_guid_reserve(ARTS_GUID_DB, 0);
-
   a_tile_guids =
-      arts_guid_reserve_range(ARTS_GUID_DB, num_blocks * num_blocks, 0);
+      arts_guid_reserve_range(ARTS_GUID_EVENT, num_blocks * num_blocks, 0);
   b_tile_guids =
-      arts_guid_reserve_range(ARTS_GUID_DB, num_blocks * num_blocks, 0);
+      arts_guid_reserve_range(ARTS_GUID_EVENT, num_blocks * num_blocks, 0);
+  for (unsigned int t = 0; t < num_blocks * num_blocks; t++) {
+    arts_event_hint_t a_hint = ARTS_EVENT_HINT_DEFAULTS;
+    a_hint.guid = arts_guid_from_index(a_tile_guids, t);
+    arts_event_create(&a_hint);
+    arts_event_hint_t b_hint = ARTS_EVENT_HINT_DEFAULTS;
+    b_hint.guid = arts_guid_from_index(b_tile_guids, t);
+    arts_event_create(&b_hint);
+  }
 
-  float *a_mat = (float *)arts_db_create_with_guid(
-      a_mat_guid, (unsigned long)MATSIZE * MATSIZE * sizeof(float), ARTS_DB,
-      ARTS_DB_PROP_NONE, NULL);
-  float *b_mat = (float *)arts_db_create_with_guid(
-      b_mat_guid, (unsigned long)MATSIZE * MATSIZE * sizeof(float), ARTS_DB,
-      ARTS_DB_PROP_NONE, NULL);
-  float *c_mat = (float *)arts_db_create_with_guid(
-      c_mat_guid, (unsigned long)MATSIZE * MATSIZE * sizeof(float), ARTS_DB,
-      ARTS_DB_PROP_NONE, NULL);
+  void *a_ptr = NULL;
+  void *b_ptr = NULL;
+  void *c_ptr = NULL;
+  const uint64_t mat_bytes = (uint64_t)MATSIZE * MATSIZE * sizeof(float);
+  a_mat_guid = arts_db_create(&a_ptr, mat_bytes, ARTS_DB, ARTS_DB_PROP_NONE,
+                              &ARTS_DB_HINT_DEFAULTS);
+  b_mat_guid = arts_db_create(&b_ptr, mat_bytes, ARTS_DB, ARTS_DB_PROP_NONE,
+                              &ARTS_DB_HINT_DEFAULTS);
+  c_mat_guid = arts_db_create(&c_ptr, mat_bytes, ARTS_DB, ARTS_DB_PROP_NONE,
+                              &ARTS_DB_HINT_DEFAULTS);
+  float *a_mat = (float *)a_ptr;
+  float *b_mat = (float *)b_ptr;
+  float *c_mat = (float *)c_ptr;
 
   init_matrix(MATSIZE, a_mat, false, false);
   init_matrix(MATSIZE, b_mat, true, false);
@@ -323,14 +344,14 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       arts_event_create(&ARTS_EVENT_HINT_LATCH(num_blocks * num_blocks));
   uint64_t done_args[] = {(uint64_t)init_latch};
   arts_guid_t done_guid = arts_edt_create(finish_block_mm, 1, done_args,
-                                          1 + (num_blocks * num_blocks),
+                                          1 + (3 * num_blocks * num_blocks),
                                           &(arts_edt_hint_t){.rank = 0});
   arts_add_dependence(c_mat_guid, done_guid, 0, DB_MODE_RW);
 
   for (unsigned int i = 0; i < num_blocks; i++) {
     for (unsigned int j = 0; j < num_blocks; j++) {
-      uint64_t init_args[] = {i, j, (uint64_t)init_latch};
-      arts_guid_t init_guid = arts_edt_create(init_block_mm, 3, init_args, 2,
+      uint64_t init_args[] = {i, j, (uint64_t)init_latch, (uint64_t)done_guid};
+      arts_guid_t init_guid = arts_edt_create(init_block_mm, 4, init_args, 2,
                                               &(arts_edt_hint_t){.rank = 0});
       arts_add_dependence(a_mat_guid, init_guid, 0, DB_MODE_RO);
       arts_add_dependence(b_mat_guid, init_guid, 1, DB_MODE_RO);
@@ -349,10 +370,10 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                     arts_guid_from_index(a_tile_guids, (i * num_blocks) + k), k,
                     j,
                     arts_guid_from_index(b_tile_guids, (k * num_blocks) + j));
-        arts_add_dependence(
+        arts_event_add_dependence_to_edt(
             arts_guid_from_index(a_tile_guids, (i * num_blocks) + k), mul_guid,
             0, DB_MODE_RO);
-        arts_add_dependence(
+        arts_event_add_dependence_to_edt(
             arts_guid_from_index(b_tile_guids, (k * num_blocks) + j), mul_guid,
             1, DB_MODE_RO);
         arts_add_dependence(init_latch, mul_guid, 2, DB_MODE_NULL);
