@@ -1097,74 +1097,95 @@ apps:
     marker: 'LCS checksum:'
     scalar_re: 'LCS checksum:\s*(\d+)'
     scalar_kind: int
-    # Anchor at these arguments, one node of 108 workers, INV·RETAIN·OWNER: 17.5
-    # s base / 28.5 s hinted, 116 GB resident; target 20 s.  The hinted tier
-    # scales, inside the span cap the quadrant recursion sets ((4/3)^d = 7.5
-    # at L = 128), so its rule would ask for the 60 s window; that window
-    # needs twice this N and four times this table, past the node's memory,
-    # so the size stays where the memory bound puts it.
-    # The anchor is only meaningful when the kernel backs the table with huge
-    # pages: the creation phase materializes ~70 GB before the first leaf, and
-    # a run that gets 4 KiB pages instead (a fragmented host; the minor-fault
-    # count is the witness, ~1M against ~17M here) takes 45-55 s at the same
-    # arguments.  Between 640 and 1024 the tile edge moves the huge-page
-    # anchor only from ~8 to ~18 s, so the size is set by the memory bound and
-    # the target, not by the tile.
+    # Anchor at these arguments, one node of 108 workers, INV·RETAIN·OWNER,
+    # measured on the labeled program (every tile named in advance and
+    # created by InitEdt) and on ARTS before c7f182ad: 17.5 s base / 28.5 s
+    # hinted, 116 GB resident; target 20 s.  The hinted tier scaled, inside
+    # the span cap the quadrant recursion sets ((4/3)^d = 7.5 at L = 128), so
+    # its rule would have asked for the 60 s window; that window needed twice
+    # this N and four times the labeled program's table, past the node's
+    # memory, so the size stayed where that memory bound put it.
+    # That anchor was only meaningful when the kernel backed the table with
+    # huge pages: the labeled program's creation phase then materialized
+    # ~70 GB before the first leaf, and a run that got 4 KiB pages instead (a
+    # fragmented host; the minor-fault count was the witness, ~1M against
+    # ~17M there) took 45-55 s at the same arguments.  Between 640 and 1024
+    # the tile edge moved the huge-page anchor only from ~8 to ~18 s, so the
+    # size was set by the memory bound and the target, not by the tile.
     expect: '928649940'
     expect_args: ['131072', '1024']   # MUST equal args, or check.py never pins
-    args: ['131072', '1024']               # memory-bound, see below
+    args: ['131072', '1024']               # set by the labeled program's memory bound, see below
     # Arguments are now validated: exactly two, and N/base a positive power
     # of two (the leaf addresses its tile as (xi-1)/base while the recursion
     # halves n).  The old third element of expect_args is now a hard failure,
     # not a silently ignored argument.
     #
-    # Size is set by memory, not by width: the creation phase materializes
-    # the whole (N+1)^2-cell table before the first leaf runs, 4*(N+1)^2 =
-    # 68.7 GB at 131072 1024, on ONE node (labeled homes split it 1/nranks
-    # multinode, so the 1-node cell binds).
+    # Size was set by memory, not by width: the labeled program's creation
+    # phase materialized the whole (N+1)^2-cell table before the first leaf
+    # ran, 4*(N+1)^2 = 68.7 GB at 131072 1024, on ONE node -- on xsocr, where
+    # a labeled create allocates its block at the reserving rank, and on
+    # ARTS before c7f182ad, from which on a create that does not acquire
+    # installs no buffer and a payload is placed with its first user (on
+    # ARTS labeled homes split it 1/nranks multinode, so the 1-node cell was
+    # the binding one).  Each tile is now created by the task that produces
+    # it (a string or boundary tile by its fill task, an interior tile by its
+    # leaf) and handed to its readers through a labeled sticky event of its
+    # index, so no runtime materializes the table at creation: the resident
+    # payload is the strings, the boundary, the last row and column and the
+    # computed tiles not yet destroyed.  The arguments stay where that bound
+    # put them.
     #
     # WIDTH EXEMPTION (R6).  The recursion's FINISH gating is the only
-    # ordering (leaf DB dependences are pre-created and satisfy on arrival),
-    # so work/span gives a time-average frontier of (4/3)^d = 7.5 and a peak
-    # of 2^d = 128 at d = 7 -- 0.0022x / 0.037x of 3456.  No argument closes
-    # it ((4/3)^d >= 3456 needs d >= 29).  This row is the wiring-capped
+    # ordering (a leaf's dependences are on sticky events its neighbours'
+    # producers satisfied before the leaf was created), so work/span gives a
+    # time-average frontier of (4/3)^d = 7.5 and a peak of 2^d = 128 at
+    # d = 7 -- 0.0022x / 0.037x of 3456.  No argument closes it
+    # ((4/3)^d >= 3456 needs d >= 29).  This row is the wiring-capped
     # anti-scaling exhibit; every scaling claim for this application comes
     # from LCS_wavefront.
     #
     # The hint layer bands the block rows across the ranks -- band(row) =
     # (row * nranks) / L, a balanced contiguous partition of the L rows in
-    # play -- and re-encodes the labeled index as band + nranks*t so a
-    # block's home lands on its band's rank, steering the S tiles and the
-    # recursion spine the same way.  (Before 2026-09-03 the height was
-    # ceil((L+1)/nranks), which stranded 1 of 16 and 6 of 32 ranks with no
-    # leaves and no tile homes at L = 128.  The WHOLE measured table below
-    # predates the fix: at 16/32 ranks the old map left ranks idle, and at
-    # 2/4/8 both maps cover every rank but assign different rows to them, so
-    # those cells are indicative of shape only -- not a like-for-like
-    # locality reference for the new map; the node-count trend is what a fresh
-    # campaign sweep re-measures.)  Both tiers create the
+    # play -- and places the leaves and the S and score-tile fill tasks on
+    # their band's rank (T fill tasks round-robin by index), where they
+    # create their tiles, steering the S tiles and the recursion spine the
+    # same way; it re-encodes each tile's event index as band + nranks*t, so
+    # on ARTS and ocr-vx, which home a labeled range's members by index, the
+    # tile's event is homed on that rank too (xsocr homes a whole range on
+    # the rank that reserved it).  (Before
+    # 2026-09-03 the height was ceil((L+1)/nranks), which stranded 1 of 16
+    # and 6 of 32 ranks with no leaves and no tile homes at L = 128.  The
+    # WHOLE measured table below predates the fix, and predates the
+    # producer-created tiles as well: at 16/32 ranks the old map left ranks
+    # idle, and at 2/4/8 both maps cover every rank but assign different
+    # rows to them, so those cells are indicative of shape only -- not a
+    # like-for-like locality reference for the new map; the node-count trend
+    # is what a fresh campaign sweep re-measures.)  Both tiers create the
     # same EDT/DB/event counts; only where they run differs, and at one node
     # the layer is the exact identity.
     #
-    #   nodes   1      2      4      8      (pre-fix, 15w+1p, 131072 1024)
-    #   base    41.6   57.6   52.7   40.7   anti: never beats its own 1 node
+    #   nodes   1      2      4      8      (pre-fix, labeled program, 15w+1p, 131072 1024)
+    #   base    41.6   57.6   52.7   40.7   anti: never beat its own 1 node
     #   hinted  41.7   45.2   31.4   19.0   2.2x at 8n against a 7.5x span bound
     #
     # Base-tier disclosures (both unconditional, i.e. in BOTH binaries, so
-    # neither contributes to the hinted-vs-base delta): every creation-phase
-    # block is created DB_PROP_NO_ACQUIRE (so a block whose home is remote is
-    # born there; the three pointer arrays consequently hold NULLs and are
-    # read by nothing), and each leaf destroys its diagonal tile (trims the
-    # tail, never the peak).  Shutdown was split (wrapup prints, a separate
-    # gated EDT calls ocrShutdown) so this row and its restructured sibling
-    # share one [E2E] convention.
+    # neither contributes to the hinted-vs-base delta): every tile is created
+    # by the task that produces it and named through a labeled sticky event
+    # of its index, where the published InitEdt creates every tile and each
+    # leaf writes its own tile through an RW `current` slot, which is gone,
+    # so a tile's home follows its producer, not its index; and each leaf
+    # destroys its diagonal tile.  (The three pointer arrays the published
+    # InitEdt wrote are still created and passed as before, and are neither
+    # written nor read.)  Shutdown was split (wrapup prints, a separate gated
+    # EDT calls ocrShutdown) so this row and its restructured sibling share
+    # one [E2E] convention.
     #
     # CROSS-TIER ORACLE: this row and LCS_wavefront print the same LCS length
     # and the same digest, but only at a shared argument pair that satisfies
     # THIS row's power-of-two N/base constraint -- which the wavefront's own
     # campaign point does not.  It is a one-off validation run at 1024 256,
     # not a campaign cell (see LCS_wavefront).
-    hinted: true    # kept: contiguous row bands, 2.4-5.2x faster than the base at 2-8 ranks (scales within the (4/3)^d span cap)
+    hinted: true    # kept: contiguous row bands, 2.4-5.2x faster than the base at 2-8 ranks on the labeled program (scaled within the (4/3)^d span cap)
     restructured_as: LCS_wavefront
 
   LCS_wavefront:
@@ -1176,11 +1197,15 @@ apps:
     scalar_kind: int
     expect: '1860356362'
     expect_args: ['1769472', '256']   # digest is what the driver now reads
+    # The 2L string tiles are created by their init tasks and named by
+    # labeled sticky events of their index; an S tile's init task carries
+    # its readers' band hint, so the tile is born on that band.
     # L = N/base = 6912: the average anti-diagonal width (L/2 = 3456) matches
     # the largest campaign geometry's total worker count.  Anchor at these
     # arguments, one node of 108 workers, INV·RETAIN·OWNER, with each leaf
     # creating its south neighbour (O(1) creates per leaf, the parked-leaf pool
-    # bounded at one row): 100.7 s, 4.3 GB resident; target 120 s
+    # bounded at one row), measured before the string tiles were created by
+    # their init tasks: 100.7 s, 4.3 GB resident; target 120 s
     # (restructured).
     args: ['1769472', '256']
     # CROSS-TIER ORACLE (a validation step, not a campaign cell).  This row
@@ -1196,20 +1221,22 @@ apps:
 
   LCS_distributed_ST:
     binary: LCS_distributed_ST
-    hinted: true    # kept: subtree colocation removes the score block's migration tax -- 3.4x at 2 ranks, 8.1x at 8
+    hinted: true    # kept: subtree colocation removed the score block's migration tax -- 3.4x at 2 ranks, 8.1x at 8, measured before the string tiles were created by their fill tasks
     class: task
-    provenance: 'Longest common subsequence; labeled-GUID string storage'
+    provenance: 'Longest common subsequence; string tiles named by labeled sticky events'
     marker: 'LCS checksum:'
     scalar_re: 'LCS checksum:\s*(\d+)'
     scalar_kind: int
     expect: '1663678361'
     expect_args: ['409600', '1600']
     args: ['409600', '1600']
-    # Anchor at these arguments, one node of 108 workers, INV·RETAIN·OWNER: base
-    # 19.7 s / hinted 19.2 s, 4.2 GB resident; target 20 s (hinted kept,
-    # flat).  Derived with LCS_shared (same value for both rows): at a
-    # fixed tree depth (N/base = 256) the time is quadratic in N, so 8.2 s
-    # at 262144 puts 20 s at 409600; base widens to 1600 to keep the depth.
+    # Anchor at these arguments, one node of 108 workers, INV·RETAIN·OWNER,
+    # measured before the string tiles were created by their fill tasks:
+    # base 19.7 s / hinted 19.2 s, 4.2 GB resident; target 20 s (hinted
+    # kept, flat).  Derived with LCS_shared (same value for both rows), on
+    # that program: at a fixed tree depth (N/base = 256) the time was
+    # quadratic in N, so 8.2 s at 262144 put 20 s at 409600; base widened to
+    # 1600 to keep the depth.
     # The three tiled LCS rows share an argument surface, a DAG shape and --
     # since 2026-09-03 -- the same generated instance (one index-seeded
     # generator, identical tile seeds in all four programs).  They do NOT
@@ -1233,11 +1260,13 @@ apps:
     # on most of the 4^d leaf turns; RW is exclusive between nodes and shared
     # within one, so what nodes cost is migration, not concurrency.
     #
-    # HINTED TIER (measured 2026-09-08): the same subtree-colocation map as
-    # LCS_shared (see below), plus each fill task placed on its own tile's
-    # labeled home.  The labeled tiles themselves cannot move -- a range fixes
-    # each index's home at range-creation time -- and with a two-dimensional
-    # quadrant map no tile has a single consumer rank anyway.  Measured
+    # HINTED TIER: the same subtree-colocation map as LCS_shared (see
+    # below), plus each fill task hinted to rank index % nranks, where it
+    # creates its tile; on ARTS and ocr-vx the tile's event is homed on the
+    # same rank by its index (xsocr homes a whole range on the rank that
+    # reserved it).  With a two-dimensional quadrant map no tile has a single
+    # consumer rank, so nothing places a tile nearer its readers.  Measured
+    # 2026-09-08, before the tiles were created by their fill tasks:
     # 8.38/8.32, 28.87/8.62, 48.87/11.74, 97.62/12.01 s (base/hinted,
     # INV·RETAIN·OWNER, 15w+1p x 1/2/4/8, '262144 1024').
     unordered_writes: 'every leaf of the concurrent x12/x21 subtrees RW-acquires the one score block (lcs_ST_distributed.c:301)'

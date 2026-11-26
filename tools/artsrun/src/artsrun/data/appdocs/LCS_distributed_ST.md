@@ -1,8 +1,9 @@
 # LCS_distributed_ST
 
 *Same recursive quad-tree wavefront DP as `LCS_shared`, but with `S` and
-`T` chopped into per-block labeled datablocks — the score array stays
-one shared DB, only the read-only inputs are distributed.*
+`T` chopped into per-block datablocks named by labeled sticky events — the
+score array stays one shared DB, only the read-only inputs are
+distributed.*
 Source: `third_party/ocr-apps/apps/LCS/refactored/ocr/intel-jesmin-lcs_distributed_ST_datablocks/lcs_ST_distributed.c`
 (~600 lines; author Jesmin Jahan Tithi, Intel 2016).
 
@@ -15,8 +16,9 @@ compact `O(N)` antidiagonal-offset score representation, and the same
 `S[i] != T[j]` match term with `GAP_PENALTY = 0`. The one structural
 difference — what "ST" (S/T-distributed) names — is that `S` and `T` are
 no longer single datablocks: each is chopped into one tile per base case
-(`L = N/base` tiles), allocated through `ocrGuidRangeCreate` /
-`ocrGuidFromIndex` (labeled GUIDs) instead of one `ocrDbCreate` each. The
+(`L = N/base` tiles), each tile created by its own fill task and named
+through a labeled sticky event of its index (`ocrGuidRangeCreate` /
+`ocrGuidFromIndex`) instead of one `ocrDbCreate` each. The
 `score` array, by contrast, is **still one shared DB**, exactly as in
 `LCS_shared` — this variant distributes only the read-only inputs, not the
 read/write state, which is the deliberate midpoint between `LCS_shared`
@@ -55,14 +57,14 @@ the number of `S` (and of `T`) tiles.
 | `recLCSEdt` (incl. root) | `(4^(d+1)-1)/3` | — |
 | `seqLCSEdt` (leaf) | `4^d` | — |
 | `mainEdt` / `initEdt` / `fillStringEdt` / `wrapupEdt` / `shutDownEdt` | 1 / 1 / `2L` / 1 / 1 | — |
-| DBs | `1 + 2L` — 1 shared `score` (ordinary, RW) + `L` labeled `S` tiles + `L` labeled `T` tiles | `score` = `16·(N+1)` B; `S`/`T` tile 0 = `4·(base+1)` B, tiles `1..L-1` = `4·base` B each |
-| Events | `6·4^d + 3` — same closed form as `LCS_shared` (identical recursive wiring): 3 events per `recLCSEdt` create (app STICKY + shim group latch + shim output event), 2 per `seqLCSEdt` create, 3 for the FINISH `initEdt`, 1 for `wrapupEdt`'s output event, 0 for the fill tasks and `shutDownEdt` | — |
+| DBs | `1 + 2L` — 1 shared `score` (ordinary, RW) + `L` `S` tiles + `L` `T` tiles, each tile created by its fill task | `score` = `16·(N+1)` B; `S`/`T` tile 0 = `4·(base+1)` B, tiles `1..L-1` = `4·base` B each |
+| Events | `6·4^d + 3 + 2L` — `LCS_shared`'s closed form (identical recursive wiring): 3 events per `recLCSEdt` create (app STICKY + shim group latch + shim output event), 2 per `seqLCSEdt` create, 3 for the FINISH `initEdt`, 1 for `wrapupEdt`'s output event, 0 for the fill tasks and `shutDownEdt` — plus `2L` labeled STICKY tile events, one per string tile, created by `initEdt` and living to the run's end | — |
 | EDT templates | `2·4^d + 4`, none destroyed | — |
 
 Worked numbers at the calibrated `args = ['409600', '1600']`
 (`409600/1600 = 256 = 2⁸`, `d = 8`, `L = 256`): `recLCSEdt` = 87,381,
 `seqLCSEdt` = 65,536, `fillStringEdt` = 512, total EDTs = 153,433, Events =
-`6·4⁸+3` = 393,219, templates = 131,076; DBs = `1 + 512 = 513` (`score`
+`6·4⁸+3` + 512 = 393,731, templates = 131,076; DBs = `1 + 512 = 513` (`score`
 ≈ 6.55 MB; 256 `S` tiles + 256 `T` tiles, 6.4 KB each).
 
 As in `LCS_shared`, the upstream orphan STICKY event per leaf and per
@@ -71,14 +73,15 @@ As in `LCS_shared`, the upstream orphan STICKY event per leaf and per
 ## Wiring
 
 - Root `recLCSEdt`'s template is `depc=1`, wired to the init task's
-  completion event (`DB_MODE_NULL`): the recursion may not start before
-  every string tile has been written. `recLCSEdt`'s body never touches
-  `depv[]`; `S`/`T` travel down the recursion only as the
-  `s_labels`/`t_labels` *range* GUIDs inside `paramv`.
+  completion event (`DB_MODE_NULL`): the recursion starts only once
+  `initEdt` and every fill task ended, so every string tile's event exists,
+  and has been satisfied, before a leaf registers on it. `recLCSEdt`'s
+  body never touches `depv[]`; `S`/`T` travel down the recursion only as
+  the `s_labels`/`t_labels` event-*range* GUIDs inside `paramv`.
 - Internal (non-leaf) `recLCSEdt` calls carry no DB dependence, same
   event-chain wiring as `LCS_shared` (`x11` unblocked, `x12`/`x21` on
   `x11`'s event, `x22` on both).
-- Each leaf resolves its own `S`/`T` tile via `ocrGuidFromIndex(...,
+- Each leaf resolves its own `S`/`T` tile's event via `ocrGuidFromIndex(...,
   (p->xi-1)/n)` / `(..., (p->xj-1)/n)` — the base case's own extent `n`,
   which the argument validation makes exactly the tile width — then wires
   `seqLCSEdt`'s 3 slots: `S` (RO, slot 0), `T` (RO, slot 1), `score` (RW,
@@ -91,19 +94,21 @@ As in `LCS_shared`, the upstream orphan STICKY event per leaf and per
   `min(ready leaves, workers)` on the grant-holding node and one node at a
   time; the cost of adding nodes is grant migration on most of the `4^d`
   turns, not lost concurrency. `S`/`T` are split into `2L` separate RO
-  blocks, so read traffic spreads over `L` homes instead of concentrating
-  on one — 6.4 KB RO snapshots against a 6.55 MB RW block that moves nearly
-  every turn, which is why this rung's curve overlaps `LCS_shared`'s.
+  blocks, each homed where its fill task ran, so read traffic spreads over
+  those homes instead of concentrating on one — 6.4 KB RO snapshots against
+  a 6.55 MB RW block that moves nearly every turn, which is why this rung's
+  curve overlapped `LCS_shared`'s where it was measured (Placement, before
+  the string tiles were created by their fill tasks).
 
 ## Flow
 
 `mainEdt` (rank 0) validates the arguments, creates the `score` DB and
-writes its boundary values, reserves the two labeled ranges, and creates a
-FINISH `initEdt` on whose completion the root recursion is gated.
-`initEdt` creates the `2L` string tiles `NO_ACQUIRE` — the creating task
-never touches them, so each is born at its labeled home instead of
-materializing on the creating rank, and no post-init release loop is
-needed — and one `fillStringEdt` per tile, each holding its own tile RW.
+writes its boundary values, reserves the two labeled event ranges, and
+creates a FINISH `initEdt` on whose completion the root recursion is
+gated. For each of the `2L` string tiles `initEdt` creates the tile's
+labeled STICKY event and then one `fillStringEdt` (`depc=0`, the event in
+its parameters), which creates the tile where it runs, fills it, releases
+it and satisfies the event; `initEdt` itself creates no DB.
 The fill is index-seeded: a tile's characters are a pure function of its
 `(tile index, position)` through a self-contained `splitmix64`-style mixer
 — no library generator, so the instance does not depend on the build host's
@@ -124,29 +129,29 @@ with `LCS_shared`'s cell for cell.
 
 ## Placement (base)
 
-No `OCR_APP_OPTIMIZED_PLACEMENT` guard in this file — every
-`ocrEdtCreate` passes `NULL_HINT`. But **labeled GUIDs are placed
-differently from ordinary ones**: a range created via `ocrGuidRangeCreate`
-gets each index's home fixed round-robin (`home = index % nranks`) at
-range-creation time, baked into the GUID's own rank bits — independent of
-the hint passed to the later `ocrDbCreate` on that GUID, and independent
-of which rank calls it. Effective policy:
+In the base build the `#else` branches of the `OCR_APP_OPTIMIZED_PLACEMENT`
+guard return `NULL_HINT`, so every `ocrEdtCreate` passes `NULL_HINT`, and
+every `ocrDbCreate` does. **Labeled GUIDs place by index** on ARTS and
+ocr-vx: a range created via `ocrGuidRangeCreate` gets each index's home
+fixed round-robin (`home = index % nranks`) at range-creation time, baked
+into the GUID's own rank bits — here the string tiles' events (xsocr homes
+a whole range on the rank that reserved it). Effective policy:
 
 - **EDTs**: NULL hint → round-robin (`ARTS_HINT_ANY_RANK`) —
   `recLCSEdt`/`seqLCSEdt`/`fillStringEdt` scatter with no relation to
   their tile position.
 - **`score`**: ordinary `ocrDbCreate`, NULL hint → home = creator =
   rank 0.
-- **`S`/`T` labeled tiles**: home = `label_index % nranks`, genuinely
-  spread across every rank; with `NO_ACQUIRE` the create installs the home
-  stub without pulling any payload to the creating rank.
+- **`S`/`T` tiles**: created by their fill tasks, so each is homed where
+  its fill task ran, spread as the fill tasks are; their events: home =
+  `label_index % nranks` (ARTS, ocr-vx).
 
 Consequence: `score` behaves exactly as in `LCS_shared` — its grant
-migrates on most of the `4^d` turns. `S`/`T` reads are spread over
-`nranks` homes, but since the *EDT's* rank (a round-robin counter) and its
-tile's home (`index % nranks`) come from unrelated schemes, a local
-acquire is coincidence rather than design. This variant relieves pressure
-on rank 0 for `S`/`T` traffic without making any individual acquire more
+migrates on most of the `4^d` turns. `S`/`T` reads are spread over the
+ranks the fill tasks ran on, but since the *leaf's* rank (a round-robin
+counter) and its tile's home (its fill task's rank) come from unrelated
+placements, a local acquire is coincidence rather than design. This
+variant relieves pressure on rank 0 for `S`/`T` traffic without making any individual acquire more
 likely to be local, and leaves the `score` bottleneck exactly as severe as
 `LCS_shared`'s — which is its point on the ladder.
 
@@ -165,22 +170,21 @@ adjacently and the two an event orders (`x11`, `x22`) as the other pair, so a
 rank boundary never falls between two children that would want the score block
 at the same instant.
 
-One piece is specific to this rung: each `fillStringEdt` is hinted onto its own
-tile's labeled home (`index % nranks`), so the one-time fill of a `NO_ACQUIRE`
-tile happens where the tile was born.  The tiles themselves are **not** moved
--- a labeled range fixes each index's home at range-creation time and ignores
-the hint on the later `ocrDbCreate` -- and with a two-dimensional quadrant map
-there is no single consumer rank to move an `S` tile to anyway: tile `ti` is
-read by the leaves of a whole tile row, which the map spreads over `G` bands.
-The read-only tiles are small (6.4 KB) and cached per node after first touch, so
-that is not where the wall time is.
+One piece is specific to this rung: each `fillStringEdt` is hinted to rank
+`index % nranks`, where it creates its tile, the rank that also homes the
+tile's event where a range homes by index (above).  With a two-dimensional
+quadrant map there is no single consumer rank to place an `S` tile on: tile
+`ti` is read by the leaves of a whole tile row, which the map spreads over `G`
+bands.  The read-only tiles are small (6.4 KB) and cached per node after first
+touch, so in the measurements below that was not where the wall time was.
 
 Nothing else changes: no count, size, mode, wiring or decomposition moves, and
 the `#else` of the `OCR_APP_OPTIMIZED_PLACEMENT` guard is `NULL_HINT`, so the
 base build is the program described above.  Balance is exact at every campaign
 rank count (aggregate imbalance 1.000 at 1, 2, 4, 8, 16 and 32).
 
-**Measured** (15w+1p x 1/2/4/8 nodes, INV·RETAIN·OWNER, `[E2E]` seconds):
+**Measured** (15w+1p x 1/2/4/8 nodes, INV·RETAIN·OWNER, `[E2E]` seconds;
+before the string tiles were created by their fill tasks):
 
 | nodes | base `262144 1024` | hinted | gain | base `524288 2048` | hinted | gain |
 |---|---|---|---|---|---|---|
@@ -192,19 +196,19 @@ rank count (aggregate imbalance 1.000 at 1, 2, 4, 8, 16 and 32).
 The right-hand pair is four times the tile work at the same `L = 256`
 (`base` doubled, `N` doubled), one run per cell against an 1800 s budget so the
 base 8-node cell is not censored; the left-hand pair is the median of three at
-the trend arguments.  Both sizes give one checksum across all sixteen cells
+the trend arguments.  Both sizes gave one checksum across all sixteen cells
 (`673249177` and `1551169433`), so the map changes where the work runs and
 nothing else.
 
-The curve still overlaps `LCS_shared`'s in both tiers, which is this rung's
-point -- tiling the read-only inputs changes nothing while the score block is
-the object that moves.  The base tier degrades 11.7x (7.2x at the larger size) over the eight
-nodes and the hinted tier 1.44x (1.36x).
+In those measurements the curve still overlapped `LCS_shared`'s in both tiers,
+which is this rung's point -- tiling the read-only inputs changes nothing while
+the score block is the object that moves.  The base tier degraded 11.7x (7.2x
+at the larger size) over the eight nodes and the hinted tier 1.44x (1.36x).
 What the map changes is how often the block moves: from about
 `(P-1)/P` of the `4^d` leaf turns to the `O(P)` that cross a band boundary.
 It cannot turn the curve upward (one RW block admits one node at a time
-whatever the placement), but the improvement holds at every geometry the
-campaign runs, so the tier is kept, and the base tier -- the tier that exhibits
+whatever the placement), but the improvement held at every geometry the
+campaign ran, so the tier is kept, and the base tier -- the tier that exhibits
 the shape -- is untouched.
 
 ## Validity shape (measured, 15w+1p x 1/2/4/8 nodes, `65536 1024`)
@@ -220,7 +224,7 @@ numbers are stale; only the shape survives. Re-trend before quoting.
 | inv_retain_owner | 4.29 | 5.76 | 6.85 | 8.14 |
 | excl_retain_owner | 4.31 | 5.84 | 6.93 | 8.09 |
 
-The curve overlaps `LCS_shared`'s on every arm: tiling the read-only
+The curve overlapped `LCS_shared`'s on every arm: tiling the read-only
 inputs changes nothing while the single score block still migrates every
 turn.
 
@@ -237,15 +241,16 @@ row is a decomposition-ladder exhibit, not a width-conforming scaling
 row.**
 
 Memory is never the limit: `score` 6.55 MB + `2L` tiles ~3.28 MB + runtime
-metadata for 153 K EDTs / 393 K events / 513 DBs — well under 1 GB against
+metadata for 153 K EDTs / 394 K events / 513 DBs — well under 1 GB against
 the 190 GB one-node budget.
 
-Calibrated (with the hinted tier kept, the window is the hinted-flat
-case, 20 s at one node): `409600 1600`, derived rather than searched —
-at a fixed tree depth (`N/base = 256`, the trend roster's) the time is
-quadratic in `N`, so 8.2 s at `262144 1024` puts 20 s at `N = 409600`,
-and `base` widens to 1600 to keep the depth. Measured on one node of
-108 workers (INV·RETAIN·OWNER): base 19.7 s, hinted 19.2 s, 4.2 GB resident,
+Calibrated before the string tiles were created by their fill tasks (with
+the hinted tier kept, the window is the hinted-flat case, 20 s at one
+node): `409600 1600`, derived rather than searched — at a fixed tree depth
+(`N/base = 256`, the trend roster's) the time was quadratic in `N`, so
+8.2 s at `262144 1024` put 20 s at `N = 409600`, and `base` widened to 1600
+to keep the depth. Measured on that program, on one node of 108 workers
+(INV·RETAIN·OWNER): base 19.7 s, hinted 19.2 s, 4.2 GB resident,
 checksum 1663678361 — the same arguments and the same digest as
 `LCS_shared`, which is the ladder's cell-by-cell check. The voted scalar
 is the `LCS checksum:` line; `LCS length:` remains analytically `N` and

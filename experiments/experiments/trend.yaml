@@ -98,10 +98,10 @@ apps:
 
   LCS_all_db_distributed:
     versions: [base, hinted, restructured]
-    # L = 128 keeps the campaign DAG shape; 4(N+1)^2 = 38.7 GB.  The tile
-    # must carry enough work for the fixed cost of the up-front score table
-    # not to hide the placement's gain: at a quarter of this tile the hinted
-    # tier read as flat, at this tile it scales inside its (4/3)^d span cap.
+    # L = 128 keeps the campaign DAG shape; 4(N+1)^2 = 38.7 GB over the run.
+    # The tile was chosen on the labeled program, whose InitEdt created every
+    # tile up front: there a quarter of this tile read as flat for the hinted
+    # tier and this tile scaled inside its (4/3)^d span cap.  It is kept.
     args: ['98304', '768']
   LCS_wavefront:
     args: ['196608', '256']

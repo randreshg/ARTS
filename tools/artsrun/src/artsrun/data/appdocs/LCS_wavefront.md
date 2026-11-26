@@ -22,8 +22,8 @@ a deliberate one-off validation run (e.g. `1024 256` for both binaries),
 not something a campaign cell exercises.  What changes is
 everything the original's scaling died of: the quadrant recursion whose
 FINISH gating capped speedup at `(4/3)^d` is replaced by real tile-to-tile
-data dependences; the upfront creation of the whole `(N+1)²`-cell score
-matrix is replaced by transient per-leaf scratch; and the creation plane
+data dependences; the original's `(N+1)²`-cell score matrix of per-tile
+blocks is replaced by transient per-leaf scratch; and the creation plane
 itself is distributed — each leaf creates the leaf below it, so creating
 `L²` leaves costs `O(1)` per leaf on `L` ranks in parallel instead of one
 serial chain of `L²` creates.
@@ -41,9 +41,12 @@ rank count by construction (see Placement).
 
 ## Structure
 
-Per run: `2L` string-tile creates + `2L` init EDTs (each with an
-app-supplied COUNTED(1) completion event — the gate below), **one**
-row-seed EDT, `L²` leaf EDTs, one wrapup and one dedicated shutdown EDT.
+Per run: `2L` init EDTs, each creating and filling one string tile and
+then satisfying the tile's labeled STICKY event (`2L` events, created by
+`mainEdt` and living to the run's end, unlike the strips' below), each
+with an app-supplied COUNTED(1) completion event — the gate below;
+**one** row-seed EDT, `L²` leaf EDTs, one wrapup and one dedicated
+shutdown EDT.
 Row 1's `L` leaves are created by the row-seed EDT; every other leaf is
 created by its north neighbour once that neighbour has computed its tile,
 before it emits, so creation runs at most one row ahead of the wavefront
@@ -53,17 +56,18 @@ int) + 3 labeled STICKY events; edge tiles skip the outputs nobody
 consumes, and the final tile's corner strip carries two ints (the answer
 cell and the digest).  Every strip, and the event that carried it, is
 destroyed by its single consumer, so steady-state resident data is the
-frontier's strips plus the `2L` string tiles — the score matrix itself
-never exists.  The leaf's working set is 3 rolling rows of `base` ints in
+frontier's strips plus the `2L` string tiles (which, with their events,
+live to the run's end) — the score matrix itself never exists.  The leaf's working set is 3 rolling rows of `base` ints in
 transient scratch.  One EDT template is created in `mainEdt` and carried in
 the leaf parameters; it outlives every leaf and is never destroyed.
 
 ## Wiring
 
-Leaf `(bi,bj)` has exactly five dependences: its S tile (RO, band-steered
-home), its T tile (RO, round-robin home), and the west/north/northwest
-strips — each an ordinary DB riding a **labeled STICKY event with exactly
-one creator**: the task that creates the emitting leaf creates the leaf's
+Leaf `(bi,bj)` has exactly five dependences: its S tile (RO, through the
+tile's event; homed on the leaf's band, where the tile's band-hinted init
+task created it), its T tile (RO, through the tile's event; homed where
+its init task ran), and the west/north/northwest strips — each an
+ordinary DB riding a **labeled STICKY event with exactly one creator**: the task that creates the emitting leaf creates the leaf's
 output events (before it adds the leaf's dependences, since the last one
 can make the leaf runnable at once), and `mainEdt` creates the final corner
 event whose consumer it also registers.  That creator precedes every use of
@@ -77,9 +81,10 @@ no runtime needs `GUID_PROP_CHECK`: each label is created once and lives
 one generation.  The consumer, the only party that knows the strip was
 delivered, destroys the event and the strip.  Row-1/column-1 leaves take
 `NULL_GUID` in the missing slots and synthesize the boundary strips
-analytically.  The wavefront must not start before the strings exist (an RO
-read of a tile still being written is unordered), so the row-seed EDT is
-gated on all `2L` init-completion COUNTED events.
+analytically.  The row-seed EDT is gated on all `2L` init-completion
+COUNTED events, so it becomes runnable once every init task ended; the
+gate orders no read, since a leaf receives a string tile only through the
+tile's event, which the init task satisfies after its release.
 
 ## Flow
 
@@ -101,17 +106,22 @@ contiguous partition of the `L` rows in play — bands differ in height by at
 most one row and no rank is left without work at any node count (the
 earlier `ceil((L+1)/(nranks·k))` height was safe only because `L ≫ nranks`
 at the calibrated point; it stranded ranks whenever that stopped holding,
-and the tiled sibling shares the replacement formula).  Leaves are hinted
-to their band, and strip/S-tile homes follow through labeled-index
+and the tiled sibling shares the replacement formula).  Leaves and the S
+tiles' init tasks are hinted to their band, so an S tile is created on its
+readers' band; on ARTS and ocr-vx, which home a labeled range's members
+round-robin by index (xsocr homes a whole range on the rank that reserved
+it), the strip and S-tile events are homed there too through labeled-index
 re-encoding (`band + nranks·idx`).  West strips are always band-local;
-north/corner strips cross ranks only at band boundaries; T tiles stay
-round-robin (a column's readers span every band).
+north/corner strips cross ranks only at band boundaries; T tiles are left to
+the no-hint policy (their init tasks carry no hint, a column's readers span
+every band) and their events stay round-robin by index.
 
 ## Validity shape (measured, 15w+1p x 1/2/4/8 nodes, `131072 512`)
 
 **Measured before the 2026-09-03 restructure of the creation plane** (the
-serial spawner chain became leaf-creates-south) **and before the balanced
-band formula**.  At `L = 256` and ≤ 8 ranks both maps cover every rank but
+serial spawner chain became leaf-creates-south), **before the balanced
+band formula and before the string tiles were created by their init
+tasks**.  At `L = 256` and ≤ 8 ranks both maps cover every rank but
 assign different rows to them, and the spine was small, so the shape below
 is indicative only — not a like-for-like locality reference for the new map
 — and every number predates the change.
@@ -123,34 +133,41 @@ is indicative only — not a like-for-like locality reference for the new map
 | excl_retain_owner | 3.24 | 1.92 | 1.36 | 1.10 |
 
 At this small instance (`L = 256`, average width 128 ≈ the 8-node worker
-count) ramp-up/down is a visible fraction, so 2.9-4.4x at 8 nodes is a
-width-limited floor, not the asymptote.  On one 108-worker node the rewrite
-runs `131072 1024` in 0.82 s where the tiled original needs 15.5 s (19x) —
-the wiring, not the machine, was the original's limit.
+count) ramp-up/down was a visible fraction, so 2.9-4.4x at 8 nodes was a
+width-limited floor, not the asymptote.  On one 108-worker node, measured
+on the same earlier programs, the rewrite ran `131072 1024` in 0.82 s where
+the tiled original needed 15.5 s (19x) — the wiring, not the machine, was
+the original's limit.
 
 ## Sizing
 
 `N` sets total work (`N²` cells) and `base` dices it: `L = N/base` is the
 wavefront width, so `base` trades per-leaf grain against parallel width at
 fixed work.  Fixed-work granularity on the Dane-mirror geometry (1 node,
-108w+4p, Release, `val_retain_owner`): `2097152/512` = 122.6 s vs `2097152/256` =
-202.1 s — finer tiles cost runtime object churn, so pick the coarsest
-`base` whose `L` still spans the largest geometry.  Measured lattice:
-1048576/256 = 45.3 s, 1572864/256 = 104.6 s, 2097152/256 = 202.1 s,
-2097152/512 = 122.6 s, 3145728/512 = 275.8 s.  The calibrated point is
+108w+4p, Release, `val_retain_owner`), measured before the string tiles
+were created by their init tasks: `2097152/512` = 122.6 s vs
+`2097152/256` = 202.1 s — finer tiles cost runtime object churn there, so
+the coarsest `base` whose `L` still spans the largest geometry was picked.
+Measured lattice, on the same program: 1048576/256 = 45.3 s,
+1572864/256 = 104.6 s, 2097152/256 = 202.1 s, 2097152/512 = 122.6 s,
+3145728/512 = 275.8 s.  The calibrated point is
 **`1769472 256`**: `L = 6912`, whose average anti-diagonal width (3456)
 equals the 32-node x 108-worker campaign's total worker count, and the
 nearest feasible point to the window.  The anchor at that point, one node
-of 108 workers under INV·RETAIN·OWNER, is 100.7 s and 4.3 GB resident, inside the
-restructured tier's 120 s band; the earlier 141.0 s was measured with the
+of 108 workers under INV·RETAIN·OWNER, measured before the string tiles
+were created by their init tasks, was 100.7 s and 4.3 GB resident, inside
+the restructured tier's 120 s band; the earlier 141.0 s was measured with the
 serial creation chain, whose `L² = 47.8 M` sequential creates were a floor
 of the same order as the compute.
 
 Memory is frontier-bound by construction: strips are `≈ L · 3 · base` ints
 plus the `2L` string tiles (tens of MB at the calibrated point), the score
 matrix never exists, and the parked-leaf pool is now bounded by one row of
-leaves rather than by the creation-vs-completion race — against the tiled
-original's eager `4·(N+1)²` ≈ 69 GB table at its own calibrated size.
+leaves rather than by the creation-vs-completion race.  The tiled
+original creates its `4·(N+1)²` ≈ 69 GB table (at its own calibrated
+size) tile by tile in the tasks that produce it, on any runtime, and
+keeps each computed tile until its south-east successor destroys it (the
+last row and column to the end).
 
 The scalar to pin is `LCS checksum:` (the final tile's digest), which the
 tiled original prints identically at a shared power-of-two `N`/`base`
