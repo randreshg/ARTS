@@ -1641,8 +1641,10 @@ static void net_write_delay_init(void) {
   long ms = 0;
   if (env != NULL && env[0] != '\0') {
     char *end = NULL;
-    ms = strtol(env, &end, 10);
-    if (end == env || *end != '\0' || ms < 0 || ms > 60000) {
+    if (env[0] >= '0' && env[0] <= '9') {
+      ms = strtol(env, &end, 10);
+    }
+    if (end == NULL || *end != '\0' || ms > 60000) {
       ARTS_ERROR("arts_net: ARTS_WRITE_COMPLETION_DELAY_MS=\"%s\" is not a "
                  "delay of 0-60000 ms",
                  env);
@@ -1766,8 +1768,10 @@ static void net_req_delay_init(void) {
   long ms = 0;
   if (env != NULL && env[0] != '\0') {
     char *end = NULL;
-    ms = strtol(env, &end, 10);
-    if (end == env || strcmp(end, ":drain") != 0 || ms < 0 || ms > 60000) {
+    if (env[0] >= '0' && env[0] <= '9') {
+      ms = strtol(env, &end, 10);
+    }
+    if (end == NULL || strcmp(end, ":drain") != 0 || ms > 60000) {
       ARTS_ERROR("arts_net: ARTS_REQUEST_DELAY_MS=\"%s\" is not <n>:drain "
                  "with a delay of 0-60000 ms",
                  env);

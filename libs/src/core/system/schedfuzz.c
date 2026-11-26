@@ -21,8 +21,8 @@ void arts_sched_fuzz_init(void) {
   int pct = 0;
   if (env != NULL && env[0] != '\0') {
     char *end = NULL;
-    long v = strtol(env, &end, 10);
-    if (end == env || *end != '\0' || v < 0 || v > 100) {
+    long v = (env[0] >= '0' && env[0] <= '9') ? strtol(env, &end, 10) : 0;
+    if (end == NULL || *end != '\0' || v > 100) {
       ARTS_ERROR("ARTS_SCHED_FUZZ=\"%s\" is not a percentage (0-100)", env);
     }
     pct = (int)v;

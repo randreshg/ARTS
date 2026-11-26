@@ -1226,6 +1226,15 @@ if(ARTS_DEBUG_INJECTION)
         RESOURCE_LOCK "arts_runtime"
         ENVIRONMENT "ARTS_CONFIG=${_cfg};ARTS_SCHED_FUZZ=fast"
         PASS_REGULAR_EXPRESSION "is not a percentage")
+    arts_add_test(injection_value_refused_sched_fuzz_sign STATUS 1
+                  COMMAND term_shutdown)
+    set_tests_properties(injection_value_refused_sched_fuzz_sign PROPERTIES
+        LABELS "single_node"
+        TIMEOUT 30
+        RESOURCE_LOCK "arts_runtime"
+        ENVIRONMENT "ARTS_CONFIG=${_cfg};ARTS_SCHED_FUZZ=+25"
+        PASS_REGULAR_EXPRESSION
+        "ARTS_SCHED_FUZZ=\"[+]25\" is not a percentage")
     arts_add_multinode_test(injection_value_refused_net_max_msg STATUS 1
                             COMMAND multinode_edt)
     arts_test_properties(injection_value_refused_net_max_msg PROPERTIES
@@ -1242,6 +1251,15 @@ if(ARTS_DEBUG_INJECTION)
         RESOURCE_LOCK "arts_runtime"
         ENVIRONMENT "ARTS_CONFIG=${_mn_cfg};ARTS_WRITE_COMPLETION_DELAY_MS=soon"
         PASS_REGULAR_EXPRESSION "is not a delay")
+    arts_add_multinode_test(injection_value_refused_write_delay_sign STATUS 1
+                            COMMAND multinode_edt)
+    arts_test_properties(injection_value_refused_write_delay_sign PROPERTIES
+        LABELS "multinode"
+        TIMEOUT 30
+        RESOURCE_LOCK "arts_runtime"
+        ENVIRONMENT "ARTS_CONFIG=${_mn_cfg};ARTS_WRITE_COMPLETION_DELAY_MS=+5"
+        PASS_REGULAR_EXPRESSION
+        "ARTS_WRITE_COMPLETION_DELAY_MS=\"[+]5\" is not a delay")
     arts_add_multinode_test(injection_value_refused_request_delay STATUS 1
                             COMMAND multinode_edt)
     arts_test_properties(injection_value_refused_request_delay PROPERTIES
@@ -1260,6 +1278,15 @@ if(ARTS_DEBUG_INJECTION)
         ENVIRONMENT "ARTS_CONFIG=${_mn_cfg};ARTS_REQUEST_DELAY_MS=5"
         PASS_REGULAR_EXPRESSION
         "ARTS_REQUEST_DELAY_MS=\"5\" is not <n>:drain with a delay of 0-60000 ms")
+    arts_add_multinode_test(injection_value_refused_request_delay_sign
+                            STATUS 1 COMMAND multinode_edt)
+    arts_test_properties(injection_value_refused_request_delay_sign PROPERTIES
+        LABELS "multinode"
+        TIMEOUT 30
+        RESOURCE_LOCK "arts_runtime"
+        ENVIRONMENT "ARTS_CONFIG=${_mn_cfg};ARTS_REQUEST_DELAY_MS=+5:drain"
+        PASS_REGULAR_EXPRESSION
+        "ARTS_REQUEST_DELAY_MS=\"[+]5:drain\" is not <n>:drain with a delay of 0-60000 ms")
     arts_add_multinode_test(injection_value_refused_rdzv_cut STATUS 1
                             COMMAND multinode_edt)
     arts_test_properties(injection_value_refused_rdzv_cut PROPERTIES
