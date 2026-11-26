@@ -140,10 +140,6 @@ Creating a DataBlock
    arts_guid_t db_guid =
        arts_db_create(&addr, 1024, ARTS_DB, ARTS_DB_PROP_NONE, &h);
 
-   /* Create a DB under a pre-reserved GUID: its rank is the DB's home */
-   arts_guid_t guid = arts_guid_reserve(ARTS_GUID_DB, target_node);
-   arts_db_create_with_guid(guid, 1024, ARTS_DB, ARTS_DB_PROP_NONE, NULL);
-
    /* Create a DB with initial data: write through the returned pointer */
    int data[] = {1, 2, 3};
    void *ptr;

@@ -105,25 +105,39 @@ travels as parameters or data blocks.
    /* the opener's own count of the latch, released last */
    arts_event_satisfy_slot(done, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 
-**Names shared across ranks come from a range that one EDT reserves.**
-``main_edt`` (or any one EDT) reserves a range and passes the range GUID on;
-every EDT on every rank derives the same member GUIDs from it (see
-:ref:`names-shared-across-ranks`).
+**A block's name exists after its create, and reaches other tasks as a
+value.**  The EDT that produces a block creates it where it runs and hands
+the name on: as a parameter, as a slot it satisfies, or, when the consumers
+are created independently and know only an index, through an event of a
+range that one EDT reserves.  Any EDT depends on the event of index ``r``
+and finds the block's name in its slot (see :ref:`names-shared-across-ranks`).
 
 .. code-block:: c
 
-   /* in main_edt: one block per rank, member i homed on rank i % N */
-   arts_guid_t range = arts_guid_reserve_range(ARTS_GUID_DB,
+   /* in main_edt: one event per rank, member i homed on rank i % N */
+   arts_guid_t range = arts_guid_reserve_range(ARTS_GUID_EVENT,
                                                arts_get_total_ranks(),
                                                ARTS_HINT_ROUND_ROBIN);
    uint64_t p[1] = {range};
    /* ... pass p to the per-rank EDTs ... */
 
-   /* in the EDT on rank r: create its own member; any EDT derives the rest */
-   arts_guid_t mine = arts_guid_from_index((arts_guid_t)paramv[0],
-                                           arts_get_current_rank());
-   void *ptr = arts_db_create_with_guid(mine, size, ARTS_DB,
-                                        ARTS_DB_PROP_NONE, NULL);
+   /* in the EDT on rank r: create its event and its block, fill and release
+      the block, then satisfy the event with the block's name */
+   unsigned int r = arts_get_current_rank();
+   arts_event_hint_t eh = ARTS_EVENT_HINT_DEFAULTS;
+   eh.guid = arts_guid_from_index((arts_guid_t)paramv[0], r);
+   arts_guid_t evt = arts_event_create(&eh);
+   void *ptr;
+   arts_guid_t block =
+       arts_db_create(&ptr, size, ARTS_DB, ARTS_DB_PROP_NONE, NULL);
+   /* ... fill ptr ... */
+   arts_db_release(block);
+   arts_event_satisfy(evt, block);
+
+   /* any EDT: register a consumer on the event of some rank q; the
+      consumer's slot 0 then holds the name of that rank's block */
+   arts_event_add_dependence_to_edt(arts_guid_from_index(range, q), consumer,
+                                    0, DB_MODE_NULL);
 
 Configuration File
 ------------------

@@ -46,7 +46,7 @@ keys:
 .. code-block:: c
 
    arts_guid_t start =
-       arts_guid_reserve_range(ARTS_GUID_DB, 100, target_node);
+       arts_guid_reserve_range(ARTS_GUID_EVENT, 100, target_node);
 
    for (unsigned int i = 0; i < 100; i++) {
        arts_guid_t g = arts_guid_from_index(start, i);
@@ -64,7 +64,7 @@ rank that derives members needs the range GUID, which one EDT passes on
 .. code-block:: c
 
    arts_guid_t start =
-       arts_guid_reserve_range(ARTS_GUID_DB, total_count,
+       arts_guid_reserve_range(ARTS_GUID_EVENT, total_count,
                                ARTS_HINT_ROUND_ROBIN);
 
 .. _names-shared-across-ranks:
@@ -72,22 +72,44 @@ rank that derives members needs the range GUID, which one EDT passes on
 Names shared across ranks
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 
-A reserved GUID or range is private to the EDT that reserved it.  Ranks
-share a name only by passing it on:
+A program names a data block only after its create: the name is what
+:c:func:`arts_db_create` returns.  The task that produces a block creates
+it, on the rank where it runs, fills it and releases it, and then hands its
+name on along an edge the program already has:
+
+- as a **parameter** of a task it creates;
+- as a **slot** of a task that already exists, which it satisfies with
+  :c:func:`arts_edt_satisfy_slot`;
+- as the value of an **event** it satisfies, when the consumers are created
+  independently of the producer and know the block only by an index.
+
+The last form uses a range of events.  A reserved GUID or range is private
+to the EDT that reserved it; ranks share a name only by passing it on:
 
 - **Reserve once.** One EDT calls
-  ``arts_guid_reserve_range(kind, n, ARTS_HINT_ROUND_ROBIN)`` (member ``i``
-  is homed on rank ``i % N``) or the same call with one explicit home rank.
+  ``arts_guid_reserve_range(ARTS_GUID_EVENT, n, ARTS_HINT_ROUND_ROBIN)``
+  (member ``i`` is homed on rank ``i % N``) or the same call with one
+  explicit home rank.
 - **Pass the range GUID** in parameters or a data block.
 - **Derive anywhere.** Any EDT on any rank derives
   ``arts_guid_from_index(range, i)`` and gets the same GUID.
-- **Create once.** One EDT creates each member with ``hint.guid``; every
-  other EDT names the member through the same derivation.
+- **Create the event before its satisfy.** The producer of block ``i``
+  creates event ``i`` with ``hint.guid`` set to that member; every other EDT
+  names the event through the same derivation.
+- **Satisfy after the release.** The producer satisfies event ``i`` with the
+  block's name after its last write and its release.  Consumers depend on
+  event ``i`` and find the block's name in their slot.
 - **Do not reserve twice.** Separate reserves give separate ranges, so two
   EDTs that each reserve "the same" range name different objects.
 
-This is the model of the OCR shim's ``ocrGuidRangeCreate`` /
-``ocrGuidFromIndex``.
+A task that only destroys a block gets its name the same two ways without
+acquiring it: a ``DB_MODE_NULL`` dependence on event ``i``, or a direct
+:c:func:`arts_edt_satisfy_slot` from a producer that knows the name.  It
+destroys the block after the block's last reader, and the event after the
+last dependence on it was served.
+
+The OCR shim's ``ocrGuidRangeCreate`` / ``ocrGuidFromIndex`` follow the same
+model for a range of events.
 
 ``NULL_GUID``
 -------------
