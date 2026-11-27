@@ -124,13 +124,12 @@ extern "C" {
  * floating [exp:5 | man:5] form:
  *   exp == 0 : bound = man granules (exact for sizes < 32 granules)
  *   exp >  0 : bound = (32 + man) << (exp - 1)   (overshoot <= 1/32)
- *   all-ones : sentinel "no information" — outside the valid encode range,
- *              so no real size can alias it.
- * The bound lets any holder of the GUID allocate a transfer landing for its
- * first fetch without asking the home for the size; sentinel GUIDs, which
- * are the pre-reserved and labeled ones (a create's own length always
- * encodes), take the size-CTS round instead.  Encoding rounds UP, so
- * bound >= exact always.
+ * Every data-block GUID carries its block's bound: the create that makes the
+ * block mints the GUID from the block's length (arts_db_guid_mint), and the
+ * lengths a create accepts, [0, ARTS_DB_SIZE_MAX], all encode below the
+ * all-ones value, which no GUID carries.  The bound lets any holder of the
+ * GUID allocate a transfer landing for its first fetch without asking the
+ * home for the size.  Encoding rounds UP, so bound >= exact always.
  *
  * **seq** is unique per (home rank, creating rank) without communication:
  * the seq space of every home is statically partitioned by creating rank
@@ -157,9 +156,6 @@ extern "C" {
 #define ARTS_GUID_DB_GET_SZHINT(g)                                             \
   (((uint64_t)(g) >> ARTS_GUID_DB_SZHINT_SHIFT) & ARTS_GUID_DB_SZHINT_MASK)
 
-/** The all-ones szhint: "no size information", never a valid encoding. */
-#define ARTS_GUID_DB_SZHINT_NONE ARTS_GUID_DB_SZHINT_MASK
-
 /** Compose a DB key from its two fields. */
 #define ARTS_GUID_DB_KEY(szhint, seq)                                          \
   ((((uint64_t)(szhint) & ARTS_GUID_DB_SZHINT_MASK)                            \
@@ -171,31 +167,26 @@ extern "C" {
  *  are created). */
 extern uint64_t arts_db_seq_budget;
 
-/** Encode a byte size into the 10-bit szhint field (ceil — the decoded
- *  bound always covers the size).  Returns the sentinel for sizes beyond
- *  the encodable range (~4TB). */
+/** Encode a byte size in [0, ARTS_DB_SIZE_MAX] into the 10-bit szhint field
+ *  (ceil — the decoded bound always covers the size).  A Debug build asserts
+ *  the range; arts_db_create refuses a longer block before it mints. */
 uint64_t arts_db_szhint_encode(uint64_t size_bytes);
 
-/** Decode a DB GUID's size bound in BYTES.  0 means "allocate nothing":
- *  either the sentinel (no information — take the size-CTS round) or a
- *  genuinely empty DB; both correctly suppress the first-touch landing.
- *  Pure bit math (inline so leaf TUs need no generator linkage). */
+/** Decode a DB GUID's size bound in BYTES; 0 only for a zero-size block,
+ *  which needs no first-touch landing.  Pure bit math (inline so leaf TUs
+ *  need no generator linkage). */
 static inline uint64_t arts_db_szhint_bound(arts_guid_t guid) {
   uint64_t hint = ARTS_GUID_DB_GET_SZHINT(guid);
-  if (hint == ARTS_GUID_DB_SZHINT_NONE) {
-    return 0;
-  }
   uint64_t exp = hint >> 5;
   uint64_t man = hint & 31;
   uint64_t granules = exp ? ((32 + man) << (exp - 1)) : man;
   return granules << 6;
 }
 
-/** Replace a freshly-minted DB GUID's szhint field with the encoding of
- *  @p size_bytes.  Identity rests on seq alone, so the stamp cannot alias
- *  two objects; call ONLY at mint time, never on a GUID that has already
- *  been shared. */
-arts_guid_t arts_db_guid_stamp_szhint(arts_guid_t guid, uint64_t size_bytes);
+/** Mint a data block's GUID for @p home, keyed [szhint(@p len) | seq]: the
+ *  one source of a data-block GUID, called by the create that makes the block
+ *  (@p len in [0, ARTS_DB_SIZE_MAX]).  A home outside the run ends it. */
+arts_guid_t arts_db_guid_mint(unsigned int home, uint64_t len);
 
 /**
  * @brief Create a GUID for a given node rank and type.
@@ -205,6 +196,8 @@ arts_guid_t arts_db_guid_stamp_szhint(arts_guid_t guid, uint64_t size_bytes);
  * @param route Target node rank.
  * @param type  Object kind tag (@ref arts_guid_kind_t), passed as unsigned int
  *              for internal flexibility (callers may supply pre-cast values).
+ *              A flat kind only: ARTS_GUID_DB ends the run, since a data
+ *              block's GUID comes from arts_db_guid_mint.
  * @return A new GUID.
  */
 arts_guid_t arts_guid_create_for_rank(unsigned int rank, unsigned int type);

@@ -160,30 +160,25 @@ arts_db_acquire_remote_rw(struct arts_db_cache_s *cache, struct arts_edt_s *edt,
    * transient flag is then either seen here or wins the flag itself.  One
    * request per grant, so this counts grants that had to move rather than
    * waiters. */
-  uint32_t tok = 0u;
-  if (arts_db_rw_req_claim(cache, &tok)) {
+  if (arts_db_rw_req_claim(cache)) {
     for (;;) {
       arts_sched_fuzz_point(); /* widen the flag-win<->pending-check window */
       if (arts_pending_rw_queue_pending(&cache->pending_rw)) {
-        /* The commit is the request: it reads the request's cover word in
-         * the same atom, and fails if a create's claim reset this OPEN (the
-         * token), whose take then served this waiter. */
-        uint32_t cover = 0u;
-        if (arts_db_rw_req_commit(cache, tok, &cover)) {
-          INCREMENT_NUM_GRANT_MIGRATE_BY(1);
-          /* The write axis's count; the take rests on the install and the
-           * destroy's gate (coherence.h, "Orders"). */
-          arts_db_axis_take(arts_db_of_cache(cache));
-          arts_send_db_grant_request(cache, cover);
-        }
+        arts_db_rw_req_commit(cache);
+        INCREMENT_NUM_GRANT_MIGRATE_BY(1);
+        /* The write axis's count; the take rests on the install and the
+         * destroy contract (coherence.h, "Orders"). */
+        arts_db_axis_take(arts_db_of_cache(cache));
+        arts_send_db_grant_request(cache);
         break;
       }
-      arts_db_rw_req_giveback(cache, tok);
+      arts_sched_fuzz_point(); /* widen the pending-check<->give-back window */
+      arts_db_rw_req_giveback(cache);
       /* seq_cst fence: the give-back's side of the pair whose other side is
        * a pusher's fence above. */
       atomic_thread_fence(memory_order_seq_cst);
       if (!arts_pending_rw_queue_pending(&cache->pending_rw) ||
-          !arts_db_rw_req_claim(cache, &tok)) {
+          !arts_db_rw_req_claim(cache)) {
         break;
       }
     }
@@ -221,25 +216,22 @@ static void rw_wake_cb(const struct arts_db_rw_waiter_s *w, void *vctx) {
  * on this re-check to open its request.  The pusher passes a seq_cst fence
  * between its push and its CAS (arts_db_acquire_remote_rw), so of the two
  * fences in S the later one's side sees the other's store. */
-void arts_db_grant_rearm(struct arts_db_cache_s *cache) {
-  /* seq_cst fence: the write axis went IDLE (a grant's clear, a claim's
-   * CLAIM) before this look at the stack; a pusher's push precedes its own
-   * fence and claim.  Of the two fences in S the later one's side sees the
-   * other's store, so a waiter the take missed is either seen here or wins
-   * the axis itself. */
+static void arts_db_grant_rearm(struct arts_db_cache_s *cache) {
+  /* seq_cst fence: the grant's clear put the write axis back to IDLE before
+   * this look at the stack; a pusher's push precedes its own fence and claim
+   * (arts_db_acquire_remote_rw).  Of the two fences in S the later one's side
+   * sees the other's store, so a waiter the take missed is either seen here
+   * or wins the axis itself. */
   atomic_thread_fence(memory_order_seq_cst);
   arts_sched_fuzz_point(); /* widen the clear<->re-check window */
-  uint32_t tok = 0u;
   if (arts_pending_rw_queue_pending(&cache->pending_rw) &&
-      arts_db_rw_req_claim(cache, &tok)) {
-    uint32_t cover = 0u;
-    if (arts_db_rw_req_commit(cache, tok, &cover)) {
-      INCREMENT_NUM_GRANT_MIGRATE_BY(1);
-      /* A fresh count for the new request, under the caller's own (a grant
-       * whose closing count is still held, or a create's). */
-      arts_db_axis_take(arts_db_of_cache(cache));
-      arts_send_db_grant_request(cache, cover);
-    }
+      arts_db_rw_req_claim(cache)) {
+    arts_db_rw_req_commit(cache);
+    INCREMENT_NUM_GRANT_MIGRATE_BY(1);
+    /* A fresh count for the new request, under the caller's own: the grant's,
+     * whose closing count is still held. */
+    arts_db_axis_take(arts_db_of_cache(cache));
+    arts_send_db_grant_request(cache);
   }
 }
 
@@ -248,18 +240,6 @@ arts_lf_link_t *arts_db_grant_take_waiters(struct arts_db_cache_s *cache) {
   arts_db_rw_req_clear(cache);
   arts_db_grant_rearm(cache);
   return chain;
-}
-
-/* Each writer the create's hold serves takes a hold of its own under it, all
- * of them in one RMW before any is woken: no waiter is runnable before its
- * hold exists, and the creator's hold keeps the count off the zero edge. */
-void arts_db_grant_claim_writers(struct arts_db_cache_s *cache) {
-  arts_lf_link_t *chain = arts_pending_rw_queue_take(&cache->pending_rw);
-  unsigned int n = arts_pending_rw_chain_count(chain);
-  if (n != 0u) {
-    atomic_fetch_add_explicit(&cache->writer_count, n, memory_order_acq_rel);
-    arts_pending_rw_chain_wake(chain, rw_wake_cb, NULL);
-  }
 }
 
 /* Each waiter the grant serves takes one hold, all of them in one RMW before
@@ -510,20 +490,6 @@ void arts_handler_db_grant_request(void *item_v, void *args_v) {
   unsigned int requester = a->requester;
 
   struct arts_db_s *db = arts_db_of_cache(cache);
-  /* The claiming creator's pre-claim write request: the claim served its
-   * writers, so it is neither queued nor answered. */
-  {
-    bool td = false;
-    if (arts_db_preclaim_write_absorb(db, requester, a->cover, &td)) {
-      /* Committed with PRECLAIM, it left without a landing: nothing to give
-       * back. */
-      assert(a->rdzv.cookie == 0u);
-      if (td) {
-        arts_db_home_destroy_now(db);
-      }
-      return;
-    }
-  }
   /* A requester of the write right holds a cache of the block from here on,
    * so the destroy must reach it: its cache would otherwise outlive the
    * block, keeping its storage and its rank's route slot for the GUID. */
@@ -569,8 +535,7 @@ void arts_handler_db_grant_request(void *item_v, void *args_v) {
  * Self-sends dispatch the matching handler inline.
  */
 
-void arts_send_db_grant_request(struct arts_db_cache_s *cache,
-                                uint32_t cover) {
+void arts_send_db_grant_request(struct arts_db_cache_s *cache) {
   arts_guid_t db_guid = cache->db_guid;
   unsigned int home_rank = arts_guid_get_rank(db_guid);
   /* Advertise a fresh transfer landing sized by the exact size when known,
@@ -598,12 +563,6 @@ void arts_send_db_grant_request(struct arts_db_cache_s *cache,
   bool wants_payload = true;
 #endif
   uint64_t fetch_size = arts_db_first_fetch_size(cache);
-  /* A request opened before a create claimed this first-touch cache leaves
-   * without a landing, whatever size the cache has learned since: the home
-   * absorbs it when that claim was this rank's. */
-  if ((cover & ARTS_COVER_PRECLAIM) != 0u) {
-    fetch_size = 0;
-  }
   if (wants_payload && fetch_size > 0 && arts_global_rank_count > 1) {
     (void)arts_db_buf_landing_alloc(fetch_size, &rdzv);
   } else if (!wants_payload) {
@@ -625,18 +584,7 @@ void arts_send_db_grant_request(struct arts_db_cache_s *cache,
   arts_fill_packet_header(&p.header, sizeof(p), MSG_DB_GRANT_REQUEST);
   p.header.rank = arts_global_rank_id;
   p.db_guid = db_guid;
-  static_assert(
-      ((uint64_t)ARTS_COVER_PRECLAIM << ARTS_GRANT_REQ_VERSION_BITS) ==
-          ~ARTS_GRANT_REQ_VERSION_MASK,
-      "the cover word is the one bit above the request's version");
-  if (have_version > ARTS_GRANT_REQ_VERSION_MASK) {
-    ARTS_ERROR("grant: guid %lu reached version %llu, past the request's "
-               "63-bit version field",
-               (unsigned long)db_guid, (unsigned long long)have_version);
-  }
-  assert((cover & ~ARTS_COVER_PRECLAIM) == 0u);
-  p.have_version =
-      have_version | ((uint64_t)cover << ARTS_GRANT_REQ_VERSION_BITS);
+  p.have_version = have_version;
   p.rdzv.addr = rdzv.addr;
   p.rdzv.key = rdzv.key;
   p.rdzv.txid = rdzv.txid;
@@ -652,7 +600,6 @@ void arts_send_db_grant_request(struct arts_db_cache_s *cache,
         .db_guid = db_guid,
         .rdzv = rdzv,
         .have_version = have_version,
-        .cover = cover,
         .token = p.token,
     };
     arts_shared_ptr_t held =

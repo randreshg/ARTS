@@ -9,7 +9,7 @@
 static ARTS_ALWAYS_INLINE uint64_t val_req_compute_next(uint64_t cur, int op,
                                                         uint32_t idx,
                                                         uint32_t *out_act) {
-  uint32_t rw = VREQ_RW(cur), ro = VREQ_RO(cur), stub = VREQ_STUB(cur);
+  uint32_t rw = VREQ_RW(cur), ro = VREQ_RO(cur);
   uint32_t waiting = VREQ_NEXT(cur);
   uint64_t next = cur;
   uint32_t act = VREQ_ACT_NONE;
@@ -26,15 +26,9 @@ static ARTS_ALWAYS_INLINE uint64_t val_req_compute_next(uint64_t cur, int op,
     }
     break;
   case VREQ_OP_ANSWER:
-    /* Any answer proves the home installed, so a cache that sent it can no
-     * longer be claimed; the stub bit clears unless a writer holds an OPEN
-     * (whose token is the bit). */
     if (!ro) {
       act = VREQ_ACT_LATE;
       break;
-    }
-    if (rw != VREQ_RW_OPEN) {
-      next &= ~VREQ_STUB_BIT;
     }
     /* The caller serves the pre-image's group.  The readers parked since
      * its request left go out on a request sent now. */
@@ -52,13 +46,7 @@ static ARTS_ALWAYS_INLINE uint64_t val_req_compute_next(uint64_t cur, int op,
       act = VREQ_ACT_LATE;
       break;
     }
-    /* A grant, like the claim, proves the cache will never be claimed: the
-     * home answered, so it is installed, and had this rank been the creator
-     * its claim would have come first. */
-    next &= ~(VREQ_RW_FIELD | VREQ_STUB_BIT);
-    break;
-  case VREQ_OP_CLAIM:
-    next &= ~(VREQ_RW_FIELD | VREQ_STUB_BIT);
+    next &= ~VREQ_RW_FIELD;
     break;
   case VREQ_OP_RW_CLAIM:
     if (rw == VREQ_RW_IDLE) {
@@ -67,18 +55,16 @@ static ARTS_ALWAYS_INLINE uint64_t val_req_compute_next(uint64_t cur, int op,
     }
     break;
   case VREQ_OP_RW_COMMIT:
-    /* idx carries the OPEN's token: the stub bit its claim read. */
-    if (rw == VREQ_RW_OPEN && stub == idx) {
-      next = (cur & ~VREQ_RW_FIELD) | VREQ_RW_AT(VREQ_RW_SENT);
-      act = VREQ_ACT_WON;
-    } else {
-      act = VREQ_ACT_LOST;
-    }
-    break;
   case VREQ_OP_RW_GIVE:
-    if (rw == VREQ_RW_OPEN && stub == idx) {
-      next &= ~VREQ_RW_FIELD;
-    } /* else a create's claim reset this OPEN */
+    /* Only the claim's winner commits or gives back its OPEN, and nothing
+     * else moves an OPEN axis, so any other state is a caller that does not
+     * hold one. */
+    if (rw != VREQ_RW_OPEN) {
+      act = VREQ_ACT_LATE;
+      break;
+    }
+    next = (cur & ~VREQ_RW_FIELD) |
+           (op == VREQ_OP_RW_COMMIT ? VREQ_RW_AT(VREQ_RW_SENT) : 0u);
     break;
   default:
     break;

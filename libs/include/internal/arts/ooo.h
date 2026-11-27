@@ -268,7 +268,6 @@ struct arts_ooo_args_db_create_s {
 #endif
   uint16_t flags;
   uint16_t db_type;
-  uint8_t owed;
 };
 
 struct arts_ooo_args_create_local_s {
@@ -319,7 +318,6 @@ struct arts_ooo_args_db_grant_request_s {
   arts_guid_t db_guid;
   struct arts_rdzv_landing_s rdzv; /* requester's transfer landing */
   uint64_t have_version;           /* version the requester already holds */
-  uint32_t cover;                  /* ARTS_COVER_PRECLAIM or 0 */
 #if defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)
   uint64_t token; /* the requester's answer token */
 #endif
@@ -448,8 +446,7 @@ struct arts_ooo_args_edt_destroy_s {
 struct arts_ooo_args_db_excl_request_s {
   unsigned int requester; /* rank that sent MSG_DB_EXCL_REQUEST */
   arts_guid_t db_guid;
-  arts_db_access_mode_t mode; /* DB_MODE_RO or DB_MODE_RW */
-  uint32_t cover;                  /* ARTS_COVER_PRECLAIM or 0 */
+  arts_db_access_mode_t mode;      /* DB_MODE_RO or DB_MODE_RW */
   struct arts_rdzv_landing_s rdzv; /* requester's grant/deliver landing */
   uint64_t token;                  /* the requester's answer token */
 };

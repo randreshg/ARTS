@@ -178,8 +178,7 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
                  .key = pack->rdzv.key,
                  .txid = pack->rdzv.txid,
                  .cookie = pack->rdzv.cookie},
-        .have_version = pack->have_version & ARTS_GRANT_REQ_VERSION_MASK,
-        .cover = (uint32_t)(pack->have_version >> ARTS_GRANT_REQ_VERSION_BITS),
+        .have_version = pack->have_version,
         .token = pack->token,
     };
     arts_ooo_dispatch_or_defer_guid(pack->db_guid, OOO_DB_GRANT_REQUEST,
@@ -366,8 +365,9 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
     struct arts_msg_cache_destroy_packet_s *pack =
         (struct arts_msg_cache_destroy_packet_s *)(packet);
     /* Cat-C lookup-acquire-or-drop: HIT retires this rank's cache (parked
-     * acquirers are freed with it, never resumed); MISS (a reused GUID whose
-     * other lifetime's notice already retired it) silently drops. */
+     * acquirers are freed with it, never resumed); MISS, which no run inside
+     * the contract meets (the home tells a roster rank once, and only after
+     * that rank installed its cache), silently drops. */
     struct arts_db_cache_destroy_args_s args = {.db_guid = pack->db_guid};
     arts_shared_ptr_t h = arts_route_table_lookup_db(pack->db_guid);
     struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(h);
@@ -792,7 +792,6 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
         .requester = pack->header.rank,
         .db_guid = pack->db_guid,
         .mode = pack->mode,
-        .cover = pack->cover,
         .rdzv = {.addr = pack->rdzv.addr,
                  .key = pack->rdzv.key,
                  .txid = pack->rdzv.txid},

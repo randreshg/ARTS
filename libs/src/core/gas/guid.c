@@ -129,47 +129,55 @@ static inline uint64_t thread_block_base(void) {
          (arts_guid_keys_per_thread * (uint64_t)arts_thread_info.thread_id);
 }
 
-arts_guid_t arts_guid_create_for_rank_internal(unsigned int rank,
-                                               unsigned int type,
-                                               unsigned int guid_count) {
-  /* Sentinel rank values (ARTS_HINT_CURRENT_RANK, ARTS_HINT_ROUND_ROBIN)
-   * must be resolved to a real rank by the caller before reaching the
-   * encoder.  They are stored in 32-bit hint fields and would not fit in
-   * the 14-bit GUID rank field (silent truncation).  Guard explicitly so
-   * mis-routed sentinels fail loudly. */
+/* The home a GUID is minted for.  Sentinel rank values
+ * (ARTS_HINT_CURRENT_RANK, ARTS_HINT_ROUND_ROBIN) must be resolved to a real
+ * rank by the caller before reaching the encoder.  They are stored in 32-bit
+ * hint fields and would not fit in the 14-bit GUID rank field (silent
+ * truncation).  Guard explicitly so mis-routed sentinels fail loudly. */
+static void guid_home_check(unsigned int rank) {
   if (rank > ARTS_GUID_RANK_MASK) {
     ARTS_ERROR("GUID encode: rank %u exceeds 14-bit field "
                "(max %lu) — caller must resolve sentinel ranks first",
                rank, (unsigned long)ARTS_GUID_RANK_MASK);
   }
   if (rank >= arts_global_rank_count) {
-    /* Both arms index per-home arrays sized to the live rank count (the DB
+    /* Both mints index per-home arrays sized to the live rank count (the DB
      * counters this rank's minters share, each thread's flat counter row) —
      * an out-of-range home would be a heap write, not a bad key.  Reject
      * loudly at the boundary instead. */
     ARTS_ERROR("GUID encode: home rank %u out of range (ranks %u)", rank,
                arts_global_rank_count);
   }
-  uint64_t key = 0;
+}
+
+arts_guid_t arts_guid_create_for_rank_internal(unsigned int rank,
+                                               unsigned int type,
+                                               unsigned int guid_count) {
+  guid_home_check(rank);
   if (type == ARTS_GUID_DB) {
-    /* A data-block GUID is minted one at a time, by its create. */
-    assert(guid_count == 1);
-    key = ARTS_GUID_DB_KEY(ARTS_GUID_DB_SZHINT_NONE, db_seq_mint_one(rank));
+    ARTS_ERROR("GUID encode: a data block's GUID is minted by its create");
+  }
+  uint64_t key = 0;
+  uint64_t *key_ptr = arts_guid_generator_get_key(rank, type);
+  uint64_t value = *key_ptr;
+  if (value + guid_count < arts_guid_keys_per_thread) {
+    key = value + thread_block_base();
+    (*key_ptr) += guid_count;
   } else {
-    uint64_t *key_ptr = arts_guid_generator_get_key(rank, type);
-    uint64_t value = *key_ptr;
-    if (value + guid_count < arts_guid_keys_per_thread) {
-      key = value + thread_block_base();
-      (*key_ptr) += guid_count;
-    } else {
-      ARTS_ERROR("GUID generation failed: out of keys");
-    }
+    ARTS_ERROR("GUID generation failed: out of keys");
   }
   return ARTS_GUID_MAKE(type, rank, key);
 }
 
 arts_guid_t arts_guid_create_for_rank(unsigned int rank, unsigned int type) {
   return arts_guid_create_for_rank_internal(rank, type, 1);
+}
+
+arts_guid_t arts_db_guid_mint(unsigned int home, uint64_t len) {
+  guid_home_check(home);
+  return ARTS_GUID_MAKE(
+      ARTS_GUID_DB, home,
+      ARTS_GUID_DB_KEY(arts_db_szhint_encode(len), db_seq_mint_one(home)));
 }
 
 void arts_guid_generator_cleanup() {
@@ -355,12 +363,12 @@ uint64_t arts_guid_hash_key(arts_guid_t guid) {
 
 /* ── szhint encode/decode ───────────────────────────────────────────────────
  * [exp:5 | man:5] over 64-byte granules (see guid.h).  Encoding rounds UP so
- * the decoded bound always covers the size; the all-ones value stays
- * unreachable from any size (it is the "no information" sentinel), so a
- * sentinel can never alias a real bound. */
+ * the decoded bound always covers the size. */
 
-/* Defined for every uint64_t: a size past the range encodes the sentinel. */
+/* Defined on [0, ARTS_DB_SIZE_MAX], the lengths a create accepts. */
 uint64_t arts_db_szhint_encode(uint64_t size_bytes) {
+  assert(size_bytes <= ARTS_DB_SIZE_MAX &&
+         "a create refuses a block past ARTS_DB_SIZE_MAX");
   uint64_t g = (size_bytes >> 6) + ((size_bytes & 63) != 0); /* ceil, no wrap */
   if (g < 32) {
     return g; /* exp 0: exact */
@@ -374,17 +382,5 @@ uint64_t arts_db_szhint_encode(uint64_t size_bytes) {
     exp++;
     man = ((g + (((uint64_t)1 << (exp - 1)) - 1)) >> (exp - 1)) - 32;
   }
-  uint64_t hint = ((uint64_t)exp << 5) | man;
-  if (hint >= ARTS_GUID_DB_SZHINT_NONE) {
-    return ARTS_GUID_DB_SZHINT_NONE; /* beyond the range: no information */
-  }
-  return hint;
-}
-
-arts_guid_t arts_db_guid_stamp_szhint(arts_guid_t guid, uint64_t size_bytes) {
-  uint64_t hint = arts_db_szhint_encode(size_bytes);
-  uint64_t cleared =
-      (uint64_t)guid &
-      ~(ARTS_GUID_DB_SZHINT_MASK << ARTS_GUID_DB_SZHINT_SHIFT);
-  return (arts_guid_t)(cleared | (hint << ARTS_GUID_DB_SZHINT_SHIFT));
+  return ((uint64_t)exp << 5) | man;
 }

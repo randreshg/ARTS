@@ -91,7 +91,6 @@ void arts_db_cache_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
   c->db_guid = db_guid;
   atomic_init(&c->db_size, db_size);
   atomic_init(&c->payload_pending, (uint8_t)1);
-  arts_db_cache_kind_seed(c, kind);
   atomic_init(&c->home_line_addr, (uint64_t)0);
   atomic_init(&c->home_line_rkey, (uint64_t)0);
   atomic_init(&c->flush_txid, (uint64_t)0);
@@ -644,39 +643,26 @@ void arts_db_create_install_home_buffer(struct arts_db_cache_s *cache,
   }
 }
 
-/* This arm keeps no permission word for a create to step: the claim of the
- * cache is the whole of its state, and the bytes under the hold are the line
- * the create installed in this rank's slot. */
-bool arts_db_create_take_hold(struct arts_db_cache_s *cache, uint8_t *owed) {
-  (void)cache;
-  *owed = 0u;
-  return true;
-}
-
-/* A fetch is per acquiring EDT and answered before it runs: nothing a create
- * claims can still be coming. */
-void arts_db_home_seed_owed(struct arts_db_s *db, unsigned int creator,
-                            uint8_t owed) {
-  (void)db;
-  (void)creator;
-  (void)owed;
-}
-
 void arts_db_create_retract_creator_copy(struct arts_db_s *db) { (void)db; }
-void arts_db_create_claim_creator_copy(struct arts_db_s *db) { (void)db; }
 
 /* ===== destroy =========================================================== */
 
 /* The teardown is immediate: a read release sends nothing and a write-back
  * blocks until the home ACKs it, so under the destroy contract nothing a
- * release sends can arrive after the destroy. */
+ * release sends can arrive after the destroy.  The slot return comes first,
+ * and only the destroy whose return detached the block tells the sharers, so
+ * its CACHE_DESTROYs leave once however many destroys arrive; the roster is
+ * read after the detach, under the count the destroy runs under, which keeps
+ * the descriptor. */
 void arts_db_destroy_arrived(struct arts_db_s *db) {
   arts_guid_t db_guid = db->cache.db_guid;
+  if (!arts_ooo_retire(db_guid, db->self_cb)) {
+    return;
+  }
   unsigned int n = arts_global_rank_count;
   for (unsigned int r = 0; r < n; r++) {
     if (r != arts_global_rank_id && sharers_test(db, r)) {
       arts_send_db_cache_destroy(r, db_guid);
     }
   }
-  (void)arts_ooo_retire(db_guid, db->self_cb);
 }

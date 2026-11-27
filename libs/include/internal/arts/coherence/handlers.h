@@ -223,9 +223,9 @@ void arts_handler_db_publish(void *item_v, void *args_v);
  * those args and routes through arts_ooo_dispatch_or_defer_guid.  A GPU kind
  * is retired here; a coherent block goes to arts_db_destroy_arrived. */
 void arts_handler_db_destroy(void *item_v, void *args_v);
-/* A coherent block's destroy at its home (each arm's own): its roster
- * fan-out and the retire of `db`, at once or at the edge the arm waits
- * for.  The caller holds `db`. */
+/* A coherent block's destroy at its home (each arm's own): the retire of
+ * `db`, at once or at the edge the arm waits for, then, when that retire
+ * detached it, its roster fan-out.  The caller holds `db`. */
 void arts_db_destroy_arrived(struct arts_db_s *db);
 /* OOO_DB_CREATE body (g_ooo_table): item_v is the GUID's route slot, which
  * the engine found empty and the body installs into; args_v is an
@@ -346,11 +346,8 @@ void arts_send_db_grant_confirm(struct arts_db_s *db, uint64_t home_token);
  * rank-by-rank).  A fresh transfer landing sized from the block's name is
  * allocated and advertised in the request; none goes for a zero-size block,
  * in a one-rank run, or with the home's own request under HOME, which asks
- * for the permission alone.  cover is the
- * request's cover word, read by the commit that opened it: a PRECLAIM request
- * leaves without a landing whatever size the cache knows, and the home
- * absorbs it when a create on this rank claimed the cache meanwhile. */
-void arts_send_db_grant_request(struct arts_db_cache_s *cache, uint32_t cover);
+ * for the permission alone. */
+void arts_send_db_grant_request(struct arts_db_cache_s *cache);
 /* cv: nonzero only on an announce — the address of the releaser's
  * rendezvous (arts_db_pub_rendezvous_s; sem first) as uint64_t, forwarded
  * verbatim and echoed back in the PUBLISH_CTS for pointer-identity wakeup; a
@@ -415,12 +412,9 @@ void arts_send_db_snapshot_response(unsigned int requester_rank, uint64_t token,
                                     uint32_t kind, uint64_t db_size,
                                     const struct arts_rdzv_landing_s *landing,
                                     arts_shared_ptr_t src_h);
-/* owed: ARTS_CREATE_OWED_RW when the claim closed the write request the
- * claimed first-touch cache still had out, 0 for every other create. */
 void arts_send_db_create_coherent(unsigned int home_rank, arts_guid_t db_guid,
                                   uint64_t db_size, uint16_t flags,
-                                  uint16_t db_type, uint64_t cxl_addr,
-                                  uint8_t owed);
+                                  uint16_t db_type, uint64_t cxl_addr);
 /* The destroy of db_guid, to its home.  held is a handle the caller holds on
  * this rank's descriptor of the block, or NULL; a home on this rank runs the
  * destroy on it while it is live (arts_ooo_dispatch_on).  held is borrowed. */
@@ -605,11 +599,8 @@ void arts_handler_db_excl_grant(void *payload, size_t size);
  * advertises none: the home's own grant moves no payload, and a payload a
  * remote owner owes it lands in a landing the home draws when it forwards.
  * Where grants carry no payload (the CXL store), no request advertises one. */
-/* cover: ARTS_COVER_PRECLAIM on a write request opened while the cache was
- * a claimable first touch (read from the cache-word transition that opened
- * it), 0 on every other request. */
 void arts_send_db_excl_request(struct arts_db_cache_s *cache,
-                               arts_db_access_mode_t mode, uint32_t cover);
+                               arts_db_access_mode_t mode);
 /* arts_send_db_excl_grant: db is the home's descriptor, which the caller
  * holds.  The grant payload PUTs into req_rdzv (the requester's advertised
  * landing; src_h — a strong ref on the home buffer — is CONSUMED); `pub`,

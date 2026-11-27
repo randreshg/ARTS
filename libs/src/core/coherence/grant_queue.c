@@ -26,10 +26,9 @@
  *   Consumers — each take moves the whole chain out with one atomic
  *               exchange: a grant's drain (arts_db_grant_take_waiters, then
  *               arts_db_drain_pending_rw_after_grant, or under PURGE
- *               arts_db_grant_commit_drain) and a create's claim
- *               (arts_db_grant_claim_writers), each of which counts the chain
- *               and adds the waiters' holds before waking any; teardown
- *               destroys what is left.
+ *               arts_db_grant_commit_drain), which counts the chain and adds
+ *               the waiters' holds before waking any; teardown destroys what
+ *               is left.
  *
  * Memory: heap-allocated waiters (one malloc per producer).  chain_wake /
  * destroy free each waiter (chain_wake after its callback).  The consume order

@@ -57,13 +57,13 @@
 
 /* ===== the request axes (shared grant plane hooks) ======================= */
 /* Commit `op` on the reader word; returns the pre-image, *post the image. */
-static ARTS_ALWAYS_INLINE uint64_t
-inv_req_step_tok(struct arts_db_cache_s *cache, int op, uint32_t tok,
-                 uint64_t *post, uint32_t *act) {
+static ARTS_ALWAYS_INLINE uint64_t inv_req_step(struct arts_db_cache_s *cache,
+                                                int op, uint64_t *post,
+                                                uint32_t *act) {
   uint64_t cur = atomic_load_explicit(&cache->cache_state, memory_order_acquire);
   uint64_t next;
   for (;;) {
-    next = inv_cache_compute_next(cur, op, tok, act);
+    next = inv_cache_compute_next(cur, op, 0u, act);
     if (next == cur ||
         atomic_compare_exchange_weak_explicit(&cache->cache_state, &cur, next,
                                               memory_order_acq_rel,
@@ -75,38 +75,33 @@ inv_req_step_tok(struct arts_db_cache_s *cache, int op, uint32_t tok,
   return cur;
 }
 
-static ARTS_ALWAYS_INLINE uint64_t inv_req_step(struct arts_db_cache_s *cache,
-                                                int op, uint64_t *post,
-                                                uint32_t *act) {
-  return inv_req_step_tok(cache, op, 0u, post, act);
-}
-
-static uint32_t inv_rw_cover(uint64_t s) {
-  return INV_CACHE_STUB(s) ? ARTS_COVER_PRECLAIM : 0u;
-}
-
-bool arts_db_rw_req_claim(struct arts_db_cache_s *cache, uint32_t *tok) {
+bool arts_db_rw_req_claim(struct arts_db_cache_s *cache) {
   uint64_t post;
   uint32_t act;
   (void)inv_req_step(cache, INV_CACHE_OP_RW_CLAIM, &post, &act);
-  *tok = INV_CACHE_STUB(post);
   return act == INV_CACHE_ACT_WON;
 }
 
-bool arts_db_rw_req_commit(struct arts_db_cache_s *cache, uint32_t tok,
-                           uint32_t *cover) {
+void arts_db_rw_req_commit(struct arts_db_cache_s *cache) {
   uint64_t post;
   uint32_t act;
-  uint64_t pre =
-      inv_req_step_tok(cache, INV_CACHE_OP_RW_COMMIT, tok, &post, &act);
-  *cover = inv_rw_cover(pre);
-  return act == INV_CACHE_ACT_WON;
+  uint64_t pre = inv_req_step(cache, INV_CACHE_OP_RW_COMMIT, &post, &act);
+  if (act == INV_CACHE_ACT_LATE) {
+    ARTS_ERROR("inv: guid %lu commits a write request it has not claimed "
+               "(word=%llx)",
+               (unsigned long)cache->db_guid, (unsigned long long)pre);
+  }
 }
 
-void arts_db_rw_req_giveback(struct arts_db_cache_s *cache, uint32_t tok) {
+void arts_db_rw_req_giveback(struct arts_db_cache_s *cache) {
   uint64_t post;
   uint32_t act;
-  (void)inv_req_step_tok(cache, INV_CACHE_OP_RW_GIVE, tok, &post, &act);
+  uint64_t pre = inv_req_step(cache, INV_CACHE_OP_RW_GIVE, &post, &act);
+  if (act == INV_CACHE_ACT_LATE) {
+    ARTS_ERROR("inv: guid %lu gives back a write request it has not claimed "
+               "(word=%llx)",
+               (unsigned long)cache->db_guid, (unsigned long long)pre);
+  }
 }
 
 /* The grant lands (HOME: its install; OWNER: its confirmation) and closes the
@@ -134,8 +129,6 @@ void arts_db_cache_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
                   kind == ARTS_DB_INIT_CREATOR_REMOTE);
   if (creator) {
     seed = INV_CACHE_MAKE(INV_RO_VALID, 0u, 0u);
-  } else if (kind == ARTS_DB_INIT_STUB && ARTS_DB_STUB_CLAIMABLE(db_guid)) {
-    seed = INV_CACHE_WITH_REQ(0ULL, INV_RW_IDLE, 1u);
   }
   atomic_store_explicit(&c->cache_state, seed, memory_order_relaxed);
   /* Grant plane.  A creator boots holding the write right with the
@@ -171,47 +164,15 @@ void arts_db_cache_destructor(struct arts_db_cache_s *cache) {
   arts_db_cache_common_destroy_post(cache);
 }
 
-/* The hold is possession plus this create's own writer, from a word that
- * holds nothing.  It is a write permission landing on this rank, so every
- * writer parked on the first-touch cache is served under it, and the write
- * request that cache sent is the home's to absorb (the announce names it).
- * A fetch the cache has out stays out until its own reply, which serves its
- * cohort. */
-bool arts_db_create_take_hold(struct arts_db_cache_s *cache, uint8_t *owed) {
-  *owed = 0u;
-  unsigned int none = 0u;
-  if (!atomic_compare_exchange_strong_explicit(
-          &cache->writer_count, &none, ARTS_GRANT_SEED_HOLDING,
-          memory_order_acq_rel, memory_order_relaxed)) {
-    return false;
-  }
-  /* Writers first, then the axis: a writer that pushed before the take is
-   * served by it, and one whose request commits before CLAIM is absorbed
-   * (PRECLAIM); one that pushed after the take is re-armed below.  The
-   * creator's own hold keeps the right here throughout. */
-  arts_db_grant_claim_writers(cache);
-  uint64_t post;
-  uint32_t act;
-  uint64_t pre = inv_req_step(cache, INV_CACHE_OP_CLAIM, &post, &act);
-  if (INV_CACHE_RW(pre) == INV_RW_SENT) {
-    *owed = ARTS_CREATE_OWED_RW;
-  }
-  arts_db_grant_rearm(cache);
-  /* The claim closed the write request the cache had out: its count goes,
-   * under the create's own. */
-  arts_db_axis_drop(arts_db_of_cache(cache), *owed != 0u ? 1u : 0u);
-  return true;
-}
-
 /* The reader plane's VALID is a claim to durable bytes, and it dies exactly
  * one way — an INVALIDATE arrives.  A create that takes no hold is given no
  * bytes, so seeding VALID there would leave a claim nothing can retire until
  * some later round happens to name this rank: its own reads would be answered
  * from a copy it never held, and the ensure that materializes a first image
  * would do so on a rank with no right to one.  Retract the claim instead, and
- * only the claim: an in-flight fetch and a parked reader chain live in the
- * same word and must survive (this runs on a create that claims a cache
- * readers already reached). */
+ * only the claim.  It runs on a descriptor the create built, before that
+ * descriptor is published, so the word is the create's seed; the CAS keeps
+ * every other field as it finds it. */
 void arts_db_create_retract_creator_copy(struct arts_db_s *db) {
   struct arts_db_cache_s *cache = &db->cache;
   uint64_t cur, next;
@@ -223,37 +184,10 @@ void arts_db_create_retract_creator_copy(struct arts_db_s *db) {
     next =
         INV_CACHE_WITH_REQ(INV_CACHE_MAKE(INV_RO_IDLE, INV_CACHE_INFLIGHT(cur),
                                           INV_CACHE_HEAD_RO(cur)),
-                           INV_CACHE_RW(cur), INV_CACHE_STUB(cur));
+                           INV_CACHE_RW(cur));
   } while (!atomic_compare_exchange_weak_explicit(&cache->cache_state, &cur,
                                                   next, memory_order_acq_rel,
                                                   memory_order_acquire));
-}
-
-
-/* One transition, from the one state a create may claim a copy in: the reader
- * word exactly idle.  A fetch in flight is a reader that has already asked,
- * and its reply brings the copy with it — stamping VALID over it would leave
- * that reply with no fetch to answer and its readers parked; so a claimer
- * whose pre-claim fetch is out leaves the word alone, and its copy turns
- * VALID when that fetch is answered.  Until then a reader that finds the
- * write right on this rank is served through it, and any other joins that
- * fetch. */
-void arts_db_create_claim_creator_copy(struct arts_db_s *db) {
-  struct arts_db_cache_s *cache = &db->cache;
-  uint64_t cur = atomic_load_explicit(&cache->cache_state, memory_order_acquire);
-  for (;;) {
-    if (INV_CACHE_RO(cur) != INV_RO_IDLE || INV_CACHE_INFLIGHT(cur) != 0u ||
-        INV_CACHE_HEAD_RO(cur) != 0u) {
-      return;
-    }
-    uint64_t want = INV_CACHE_WITH_REQ(INV_CACHE_MAKE(INV_RO_VALID, 0u, 0u),
-                                       INV_CACHE_RW(cur), INV_CACHE_STUB(cur));
-    if (atomic_compare_exchange_weak_explicit(&cache->cache_state, &cur, want,
-                                              memory_order_acq_rel,
-                                              memory_order_acquire)) {
-      return;
-    }
-  }
 }
 
 void arts_db_create_install_home_buffer(struct arts_db_cache_s *cache,
@@ -281,24 +215,28 @@ void arts_db_create_install_home_buffer(struct arts_db_cache_s *cache,
 }
 
 void arts_db_destroy_arrived(struct arts_db_s *db) {
-  arts_db_cover_destroy(db);
+  arts_db_home_destroy_now(db);
 }
 
-/* The teardown, run by whichever of the destroy and the claiming creator's
- * pre-claim write request, where the home was told one is coming, reaches the
- * gate's edge.  The roster is complete: every rank holding a cache of the
- * block (its creator, every read requester and every write requester) has a
- * bit, so each is told.  No pending_rw drain: the grant request queue is
- * single-consumer (the transfer baton's holder), and a legitimately destroyed
- * DB has no outstanding acquires.  No release is waited for: every release
+/* The teardown, run by the destroy: the slot return, then the roster fan-out
+ * when that return detached the block, so its CACHE_DESTROYs leave once
+ * however many destroys arrive; the roster is read after the detach, under
+ * the count the destroy runs under, which keeps the descriptor.  The roster
+ * is complete: every rank holding a cache of the block (its creator, every
+ * read requester and every write requester) has a bit, so each is told.  No
+ * pending_rw drain: the grant request queue is single-consumer (the transfer
+ * baton's holder), and a legitimately destroyed DB has no outstanding
+ * acquires.  No release is waited for: every release
  * that sends the home anything (a round, a hand-back) blocks until the home
  * ACKs it, so under the destroy contract none arrives after the destroy; a
  * transfer's CONFIRM that does (where the home revokes and nothing gates on
  * it) reaches the retired descriptor through its home token, which the baton
  * tenure's count keeps, and only ends the tenure. */
 void arts_db_home_destroy_now(struct arts_db_s *db) {
-  struct arts_db_cache_s *cache = &db->cache;
-  arts_guid_t guid = cache->db_guid;
+  arts_guid_t guid = db->cache.db_guid;
+  if (!arts_ooo_retire(guid, db->self_cb)) {
+    return;
+  }
   struct arts_rank_bitset_cursor_s c =
       arts_rank_bitset_cursor(&db->cached_ranks);
   unsigned int rank;
@@ -307,7 +245,6 @@ void arts_db_home_destroy_now(struct arts_db_s *db) {
       arts_send_db_cache_destroy(rank, guid);
     }
   }
-  (void)arts_ooo_retire(guid, db->self_cb);
 }
 
 /* ===== the invalidation round ===========================================

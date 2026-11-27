@@ -1504,13 +1504,13 @@ if((ARTS_VALIDITY STREQUAL "VAL" OR ARTS_VALIDITY STREQUAL "INV")
 endif()
 # Each open request axis of a cache owns one count on the requester's
 # descriptor, taken where the axis opens and dropped once by whatever closes
-# it: the answer (acting on the token it echoes), a create's claim of the
-# write axis, the teardown sweep.  Every VAL and INV tree compiles that
-# accounting differently: the two arms keep the read axis in different words,
-# the read sources close the write axis at different sites (the grant, or
-# the CONFIRM_ACK), PURGE adds the home's self-served front, and only the
-# publishing cells have a flight.  The request a claim closes is the one the
-# home's gate holds the teardown for, so the gate's scenarios run here too.
+# it: the answer (acting on the token it echoes) or the teardown sweep.  Every
+# VAL and INV tree compiles that accounting differently: the two arms keep the
+# read axis in different words, the read sources close the write axis at
+# different sites (the grant, or the CONFIRM_ACK), PURGE adds the home's
+# self-served front, and only the publishing cells have a flight.  The home's
+# teardown, which tells the roster only once its retire detached the block,
+# runs here too.
 if(ARTS_VALIDITY STREQUAL "VAL" OR ARTS_VALIDITY STREQUAL "INV")
     arts_grant_home_unit(token_axis_pairing_valinv 30)
 endif()
@@ -1530,8 +1530,12 @@ endif()
 # the grant's commit (no one-sided answer; the fetch before the CAS), and only
 # RETAIN's home holds a count of its own, while a write request it took in
 # awaits its CONFIRM (w above zero).  The two residencies differ only in the
-# fetch and purge bodies, which the test's size-less blocks never enter, so
-# one CXL tree carries it: the EXCL trees but the DIRECT one.
+# fetch and purge bodies, which the test never enters (its requesters' blocks
+# are zero-size, and its block with bytes is driven at the home alone), so
+# one CXL tree carries it: the EXCL trees but the DIRECT one.  The home's
+# teardown runs here too, at each retention's own point (RETAIN's destroy;
+# PURGE's destroy or last counted release, whichever reaches the marked word
+# with nothing counted): the retire first, then the roster's notices, once.
 if(ARTS_VALIDITY STREQUAL "EXCL" AND
    NOT ARTS_CXL_TREE_RESIDENCY STREQUAL "DIRECT")
     arts_grant_home_unit(token_pairing_excl 30)
@@ -1548,6 +1552,14 @@ endif()
 if(ARTS_VALIDITY STREQUAL "INV" OR
    (ARTS_VALIDITY STREQUAL "VAL" AND ARTS_RETENTION STREQUAL "RETAIN"))
     arts_grant_home_unit(token_home_rounds_valinv 30)
+endif()
+# FLUSH's home teardown through the arm's own source, the route table's retire
+# and the notices' sender stubbed: the destroy returns the slot first, only
+# the destroy whose return detached the block tells the sharers, each once,
+# and a second destroy tells no rank again.  Only this arm compiles that
+# teardown, so the test is built and registered in the FLUSH tree alone.
+if(ARTS_VALIDITY STREQUAL "FLUSH")
+    arts_grant_home_unit(flush_home_teardown 30)
 endif()
 
 # --- OoO defer/replay engine (ooo.c) ---
@@ -1823,19 +1835,6 @@ target_link_libraries(regpool_entry_word PRIVATE Threads::Threads)
 register_pure_unit_test(regpool_entry_word TIMEOUT 30)
 set_tests_properties(regpool_entry_word PROPERTIES
     PASS_REGULAR_EXPRESSION "PASS regpool_entry_word")
-# The destroy's gate and its two steps, from every word where each is legal:
-# the word it leaves and the teardown edge, reached once per lifetime (a
-# duplicate MARK reports none).  One header serves VAL, INV and EXCL·RETAIN
-# alike.  Header-only.
-add_executable(cover_gate_step unit/cover_gate_step.c)
-target_include_directories(cover_gate_step PRIVATE
-    ${ARTS_PUBLIC_INCLUDE_DIR} ${ARTS_INTERNAL_INCLUDE_DIR}
-    ${ARTS_BUILD_INTERNAL_INCLUDE_DIR})
-arts_apply_protocol(cover_gate_step ${ARTS_VALIDITY} ${ARTS_RETENTION} ${ARTS_READ_SOURCE})
-target_link_libraries(cover_gate_step PRIVATE Threads::Threads)
-register_pure_unit_test(cover_gate_step TIMEOUT 30)
-set_tests_properties(cover_gate_step PROPERTIES
-    PASS_REGULAR_EXPRESSION "PASS cover_gate_step")
 
 # net_selfsend — whitebox self-send exercise for the libfabric transport core
 # (transport/net.c).  It #includes net.c directly (statics under test) with a

@@ -84,7 +84,7 @@ extern "C" {
 #include "arts.h"
 
 #include "arts/defs.h"
-#include "arts/gas/guid.h" /* ARTS_GUID_DB_GET_SZHINT (ARTS_DB_STUB_CLAIMABLE) */
+#include "arts/gas/guid.h" /* ARTS_GUID_RANK_MASK (INV's roster words) */
 #include "arts/utils/lockfree_lifo.h"  /* arts_lf_stack_t / arts_lf_link_t */
 #include "arts/utils/shared.h"         /* arts_shared_ptr_t (buffer cb) */
 #include "arts/utils/stdatomic_compat.h"
@@ -224,24 +224,6 @@ arts_grant_purge_release_next(unsigned int cur, bool purgeable,
 /* Home-side single-slot return latch: no returner parked. */
 #define ARTS_GRANT_NO_RETURNER ((unsigned int)-1)
 #endif /* grant plane */
-
-/* A create announce's owed byte: RW when the claim closed the write request
- * the claimed first-touch cache still had out, 0 otherwise.  The home tears
- * the block down only once that request has arrived. */
-#define ARTS_CREATE_OWED_RW 0x1u
-
-/* Whether a cache a dependence's first touch made can still be claimed by a
- * create: only a GUID the program named before its create can be touched
- * first, and such a GUID (reserved or labeled) carries no size hint, while a
- * create that mints its GUID stamps one.  A cache that can never be claimed
- * keeps the stub bit clear, so its requests are never PRECLAIM. */
-#define ARTS_DB_STUB_CLAIMABLE(guid)                                           \
-  (ARTS_GUID_DB_GET_SZHINT(guid) == ARTS_GUID_DB_SZHINT_NONE)
-
-/* A write request's cover word, on every combining arm: whether a first-touch
- * cache no create had claimed yet opened it.  A create that then claims the
- * cache closes the request, and the block's home absorbs it. */
-#define ARTS_COVER_PRECLAIM 0x1u
 
 /* In-memory rendezvous landing descriptor — the coherence-side mirror of the
  * packed wire struct arts_msg_rdzv_landing_s (protocol.h): where a payload
@@ -412,8 +394,8 @@ struct arts_db_reader_pool_s {
  * trigger.  The RW waiter chain is a Treiber stack (cache.pending_rw,
  * arts_lf_stack_t): the embedded link is owned by the stack (push prepends, a
  * take atomic-exchanges the whole chain out).  Producers are this rank's
- * acquiring threads; each consumer (a grant's drain, a create's claim) takes
- * the whole chain and wakes every waiter it took, so the consume is
+ * acquiring threads; the consumer (a grant's drain) takes the whole chain and
+ * wakes every waiter it took, so the consume is
  * order-free and a LIFO Treiber stack suffices; there is no FIFO or drain-one
  * requirement (that is the home grantreq queue, which stays Vyukov MPSC). */
 struct arts_db_rw_waiter_s {

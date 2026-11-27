@@ -57,8 +57,8 @@ extern "C" {
  * Identical under both read sources — what differs between HOME and OWNER is
  * where a fetch is SERVED FROM, never what the requester's word does.
  *
- *   [ ro:2 (63..62) | inflight:1 (61) | rw:2 (60..59) | spare:1 (58) |
- *     stub:1 (57) | spare:28 | head_ro:29 (28..0) ]
+ *   [ ro:2 (63..62) | inflight:1 (61) | rw:2 (60..59) | spare:30 (58..29) |
+ *     head_ro:29 (28..0) ]
  *
  *   ro       ∈ {IDLE, REQ, REQ_KILL, VALID}.  VALID survives reader release:
  *              a reader holding it is a pure load — no message, no CAS, no
@@ -70,16 +70,11 @@ extern "C" {
  *              flight per rank and a landing reply always belongs to the unique
  *              open fetch.
  *   rw       = the write request's axis: IDLE, OPEN (claimed, not yet
- *              committed) or SENT.  The two axes are independent: a reader
- *              opens or joins a fetch whatever rw holds, and a write
- *              permission arriving (a grant, a create's claim) serves the
- *              parked writers alone.  The one cross-axis rule is the stub
- *              bit's, which an OPEN holds as its token.
- *   stub     = a dependence's first touch made the cache and nothing has
- *              shown the home installed yet: the create's claim clears it,
- *              and so does every reply unless rw is OPEN (the OPEN's holder
- *              acts only while the bit it read stands).  A write request sent
- *              while it is set carries PRECLAIM.
+ *              committed) or SENT.  Only the thread whose claim moved it to
+ *              OPEN commits or gives back that OPEN; only the grant closes a
+ *              SENT.  The two axes are independent: a reader opens or joins a
+ *              fetch whatever rw holds, and a grant serves the parked writers
+ *              alone.
  *   head_ro  = head of the parked-reader chain, an index into the cache's
  *              reader pool (0 = empty), as wide as the pool's index space.
  *              The head lives IN the word so parking IS the acquire's own
@@ -130,16 +125,12 @@ extern "C" {
 #define INV_CACHE_HEAD_RO(s)                                                   \
   ((uint32_t)(((s) >> INV_CACHE_HEAD_RO_SHIFT) & INV_CACHE_HEAD_MASK))
 #define INV_CACHE_RW_SHIFT 59
-#define INV_CACHE_STUB_SHIFT 57
 #define INV_CACHE_RW(s) ((uint32_t)(((s) >> INV_CACHE_RW_SHIFT) & 0x3ULL))
-#define INV_CACHE_STUB(s) ((uint32_t)(((s) >> INV_CACHE_STUB_SHIFT) & 0x1ULL))
 #define INV_CACHE_RW_AT(rw) ((uint64_t)(rw) << INV_CACHE_RW_SHIFT)
 #define INV_CACHE_RW_FIELD INV_CACHE_RW_AT(0x3u)
-#define INV_CACHE_STUB_BIT ((uint64_t)1ULL << INV_CACHE_STUB_SHIFT)
-#define INV_CACHE_WITH_REQ(s, rw, stub)                                        \
-  (((s) & ~(INV_CACHE_RW_FIELD | INV_CACHE_STUB_BIT)) |                        \
-   (((uint64_t)(rw) & 0x3ULL) << INV_CACHE_RW_SHIFT) |                         \
-   (((uint64_t)(stub) & 0x1ULL) << INV_CACHE_STUB_SHIFT))
+#define INV_CACHE_WITH_REQ(s, rw)                                              \
+  (((s) & ~INV_CACHE_RW_FIELD) |                                               \
+   (((uint64_t)(rw) & 0x3ULL) << INV_CACHE_RW_SHIFT))
 #define INV_RW_IDLE 0u
 #define INV_RW_OPEN 1u
 #define INV_RW_SENT 2u
@@ -174,20 +165,27 @@ static_assert(INV_CACHE_RO_SHIFT + INV_CACHE_ST_BITS == 64,
               "cache word must pack to exactly 64 bits");
 static_assert(INV_RO_VALID <= INV_CACHE_ST_MASK,
               "reader state encodings must fit the 2-bit field");
+static_assert(INV_CACHE_RW_SHIFT + INV_CACHE_ST_BITS ==
+                  INV_CACHE_INFLIGHT_SHIFT,
+              "the write axis sits right below inflight");
 static_assert(INV_CACHE_HEAD_RO_SHIFT + INV_CACHE_HEAD_BITS <=
-                  INV_CACHE_STUB_SHIFT,
-              "the chain head must stay below the request bits");
+                  INV_CACHE_RW_SHIFT,
+              "the chain head stays below the write axis");
+/* The spare bits between the chain head and the write axis. */
+#define INV_CACHE_SPARE_                                                       \
+  (((1ULL << INV_CACHE_RW_SHIFT) - 1ULL) &                                     \
+   ~((1ULL << (INV_CACHE_HEAD_RO_SHIFT + INV_CACHE_HEAD_BITS)) - 1ULL))
 #define INV_CACHE_PIN_                                                         \
   INV_CACHE_WITH_REQ(INV_CACHE_MAKE(INV_RO_REQ_KILL, 1u, 0x15A5A5A5u),         \
-                     INV_RW_SENT, 1u)
+                     INV_RW_SENT)
 static_assert(INV_CACHE_RO(INV_CACHE_PIN_) == INV_RO_REQ_KILL &&
                   INV_CACHE_INFLIGHT(INV_CACHE_PIN_) == 1u &&
                   INV_CACHE_RW(INV_CACHE_PIN_) == INV_RW_SENT &&
-                  INV_CACHE_STUB(INV_CACHE_PIN_) == 1u &&
                   INV_CACHE_HEAD_RO(INV_CACHE_PIN_) == 0x15A5A5A5u &&
-                  (INV_CACHE_PIN_ & (1ULL << 58)) == 0u,
+                  (INV_CACHE_PIN_ & INV_CACHE_SPARE_) == 0u,
               "cache word field round-trip");
 #undef INV_CACHE_PIN_
+#undef INV_CACHE_SPARE_
 static_assert(INV_ROUND_OPEN == 1u, "the hold is bit 0 of round_queue");
 
 /* ── publish-queue entry ─────────────────────────────────────────────────── */
@@ -311,12 +309,6 @@ struct arts_db_cache_s {
    * after the slot's install and read with acquire at the fast exit (see the
    * VAL layout). */
   _Atomic(uint8_t) payload_pending;
-  /* What made this cache (arts_db_init_kind_t): a create's own descriptor,
-   * the home's directory, or a dependence's first touch.  A create that
-   * claims a first touch's cache turns it into its own
-   * (arts_db_create_claims_stub); nothing else writes it after init.  Only
-   * its own value: the claim is one CAS, so one create claims a cache. */
-  _Atomic(uint8_t) init_kind;
 
   /* Publish write-combining — the write-side twin of VAL's RO combining
    * window.  The flight word, its waiter stack, the parked uncovered
@@ -457,13 +449,6 @@ struct arts_db_s {
    * names a rank to tell only for a creator on another rank that holds the
    * block), every other by arts_rank_bitset_note */
   struct arts_rank_bitset_s cached_ranks;
-  /* The destroy's gate [td:1 | rwo:1] (cover_gate.h): the destroy's mark
-   * and the claiming creator's pre-claim write request, which the announce
-   * says is still coming.  Every write after init is an acq_rel RMW. */
-  _Atomic(uint32_t) cover_gate;
-  /* The rank whose create claimed a first-touch cache ((unsigned int)-1:
-   * none): written before the descriptor is published, plain. */
-  unsigned int claim_rank;
 
 #ifdef ARTS_GPU_LAYOUT
   /* GPU staging state.  The lock exists only for an ARTS_DB_GPU block (NULL
@@ -487,8 +472,7 @@ struct arts_db_s {
  * roster snapshot.  None knows anything about ownership — that is the grant
  * plane's, and it does not live in a word. */
 
-/* arg: ACQ_RO takes the parking node's pool index, RW_COMMIT and RW_GIVE the
- * OPEN's token; the rest ignore it. */
+/* arg: ACQ_RO takes the parking node's pool index; the rest ignore it. */
 #define INV_CACHE_OP_ACQ_RO 0
 #define INV_CACHE_OP_DELIVER 1    /* a read reply landed (publish attempt) */
 #define INV_CACHE_OP_INVALIDATE 2
@@ -497,9 +481,6 @@ struct arts_db_s {
 #define INV_CACHE_OP_RW_COMMIT 7
 #define INV_CACHE_OP_RW_GIVE 8
 #define INV_CACHE_OP_RW_CLEAR 9   /* the grant lands: SENT -> IDLE */
-#define INV_CACHE_OP_CLAIM 10     /* a create claims the cache: the write
-                                     axis is the claim's, and the cache is no
-                                     longer a stub */
 
 #define INV_CACHE_ACT_NONE 0
 #define INV_CACHE_ACT_SELF_SERVE 1   /* covering VALID copy: pure load, run */
@@ -511,9 +492,8 @@ struct arts_db_s {
 #define INV_CACHE_ACT_KILL_MARKED 8  /* INVALIDATE on REQ: ack owed */
 #define INV_CACHE_ACT_NOOP_ACK 9     /* INVALIDATE idempotent: ack */
 #define INV_CACHE_ACT_WON 13
-#define INV_CACHE_ACT_LOST 14
-/* A reply for no request, or a state no transition reaches: the caller
- * raises. */
+/* A reply for no request, a commit or give-back of an axis that is not OPEN,
+ * or a state no transition reaches: the caller raises. */
 #define INV_CACHE_ACT_LATE 15
 
 #ifdef __cplusplus

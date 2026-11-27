@@ -528,7 +528,7 @@ bool arts_db_create_install_local(arts_shared_ptr_t cb,
         home, guid,
         atomic_load_explicit(&db->cache.db_size, memory_order_relaxed),
         ARTS_DB_PROP_NONE, (uint16_t)ARTS_DB,
-        arts_db_cxl_slot_addr(&db->cache), /*owed=*/0u);
+        arts_db_cxl_slot_addr(&db->cache));
   }
   arts_shared_release(&pin);
   return true;
@@ -696,8 +696,7 @@ arts_guid_t arts_db_create(void **addr, uint64_t len, arts_db_types_t db_type,
       ARTS_ERROR("arts_db_create: descriptor allocation of %lu bytes failed",
                  (unsigned long)db_span);
     }
-    guid = arts_db_guid_stamp_szhint(
-        arts_guid_create_for_rank(arts_global_rank_id, ARTS_GUID_DB), len);
+    guid = arts_db_guid_mint(arts_global_rank_id, len);
     db_create_in_place(guid, ptr, len, db_type, /*acquires=*/!no_acquire);
     if (no_acquire && db_type == ARTS_DB) {
       db_create_no_acquire_local((struct arts_db_s *)ptr);
@@ -707,8 +706,7 @@ arts_guid_t arts_db_create(void **addr, uint64_t len, arts_db_types_t db_type,
                "created locally",
                guid, GET_DB_TYPE_NAME(db_type), len);
   } else {
-    guid = arts_db_guid_stamp_szhint(
-        arts_guid_create_for_rank(rank, ARTS_GUID_DB), len);
+    guid = arts_db_guid_mint(rank, len);
     if (no_acquire) {
       /* NO_ACQUIRE: no creator-side descriptor.  The home is the sole idle
        * owner; the first consumer's request acquires ownership.  The block's
@@ -716,7 +714,7 @@ arts_guid_t arts_db_create(void **addr, uint64_t len, arts_db_types_t db_type,
        * announce. */
       arts_send_db_create_coherent(rank, guid, len, ARTS_DB_PROP_NO_ACQUIRE,
                                    (uint16_t)db_type,
-                                   arts_db_cxl_slot_mint(len), /*owed=*/0u);
+                                   arts_db_cxl_slot_mint(len));
       *addr = NULL;
     } else {
       db_create_remote_creator(guid, len, addr);

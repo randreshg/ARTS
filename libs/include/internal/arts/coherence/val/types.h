@@ -54,19 +54,15 @@ extern "C" {
 /*--- The request word ---------------------------------------------------
  * One 64-bit word per cache holds both axes' request state and the chain of
  * readers parked on the read axis.  The axes are independent: no transition
- * of one reads the other, except that the stub bit is the write axis's token
- * while it is OPEN.
+ * of one reads the other.
  *
- *   [ rw:2 (63..62) | ro:1 (61) | spare:2 (60..59) | stub:1 (58) |
+ *   [ rw:2 (63..62) | ro:1 (61) | spare:3 (60..58) |
  *     group:29 (57..29) | next:29 (28..0) ]
  *
  *   rw    the write request: IDLE, OPEN (claimed, not yet committed) or SENT.
+ *         Only the thread whose claim moved it to OPEN commits or gives back
+ *         that OPEN; only the grant closes a SENT.
  *   ro    a read request (the window) is out; then group is non-empty.
- *   stub  a dependence's first touch made the cache and nothing has shown the
- *         home installed yet: the create's claim clears it, and so does every
- *         reply unless rw is OPEN (the OPEN's holder acts only while the bit
- *         it read stands).  A write request sent while it is set carries
- *         PRECLAIM.
  *   group the window's cohort, fixed when its request left (reader pool
  *         indices); only the window's answer serves it.
  *   next  readers waiting for the next window, which the window's answer
@@ -76,24 +72,28 @@ extern "C" {
 #define VREQ_HEAD_MASK ((uint64_t)((1ULL << VREQ_HEAD_BITS) - 1))
 #define VREQ_NEXT(s) ((uint32_t)((s) & VREQ_HEAD_MASK))
 #define VREQ_GROUP(s) ((uint32_t)(((s) >> VREQ_HEAD_BITS) & VREQ_HEAD_MASK))
-#define VREQ_STUB(s) ((uint32_t)(((s) >> 58) & 1ULL))
 #define VREQ_RO(s) ((uint32_t)(((s) >> 61) & 1ULL))
 #define VREQ_RW(s) ((uint32_t)(((s) >> 62) & 3ULL))
-#define VREQ_MAKE(rw, ro, stub, group, next)                                   \
+#define VREQ_MAKE(rw, ro, group, next)                                         \
   ((((uint64_t)(rw) & 3ULL) << 62) | (((uint64_t)(ro) & 1ULL) << 61) |        \
-   (((uint64_t)(stub) & 1ULL) << 58) |                                        \
    (((uint64_t)(group) & VREQ_HEAD_MASK) << VREQ_HEAD_BITS) |                 \
    ((uint64_t)(next) & VREQ_HEAD_MASK))
 static_assert(2 * VREQ_HEAD_BITS == 58,
-              "the two chain heads must fill the bits below stub");
+              "the two chain heads fill the bits below the spares (60..58)");
 #define VREQ_RW_IDLE 0u
 #define VREQ_RW_OPEN 1u
 #define VREQ_RW_SENT 2u
+#define VREQ_PIN_ VREQ_MAKE(VREQ_RW_SENT, 1u, 0x15A5A5A5u, 7u)
+static_assert(VREQ_RW(VREQ_PIN_) == VREQ_RW_SENT && VREQ_RO(VREQ_PIN_) == 1u &&
+                  VREQ_GROUP(VREQ_PIN_) == 0x15A5A5A5u &&
+                  VREQ_NEXT(VREQ_PIN_) == 7u &&
+                  (VREQ_PIN_ & ((uint64_t)7u << 58)) == 0u,
+              "request word field round-trip");
+#undef VREQ_PIN_
 /* The fields in place, for the arbiter's transitions of the word. */
 #define VREQ_RW_AT(rw) ((uint64_t)(rw) << 62)
 #define VREQ_RW_FIELD VREQ_RW_AT(3u)
 #define VREQ_RO_BIT ((uint64_t)1ULL << 61)
-#define VREQ_STUB_BIT ((uint64_t)1ULL << 58)
 #define VREQ_GROUP_FIELD (VREQ_HEAD_MASK << VREQ_HEAD_BITS)
 #define VREQ_NEXT_FIELD VREQ_HEAD_MASK
 
@@ -105,8 +105,6 @@ enum {
   VREQ_OP_RW_COMMIT, /* OPEN -> SENT */
   VREQ_OP_RW_GIVE,   /* OPEN -> IDLE */
   VREQ_OP_RW_CLEAR,  /* SENT -> IDLE where the grant lands */
-  VREQ_OP_CLAIM,     /* a create claims the cache: the write axis is the
-                        claim's, and the cache is no longer a stub */
 };
 enum {
   VREQ_ACT_NONE,
@@ -115,8 +113,10 @@ enum {
   VREQ_ACT_SERVE,      /* serve the window's cohort the answer took */
   VREQ_ACT_SERVE_SEND, /* + the next window opened: send its request */
   VREQ_ACT_WON,
-  VREQ_ACT_LOST,
-  VREQ_ACT_LATE, /* an answer for no request out: the caller raises it */
+  /* a transition from a state that does not allow it (an answer for no
+   * request out, a commit or give-back of an axis that is not OPEN): the
+   * caller raises it */
+  VREQ_ACT_LATE,
 };
 
 /*--- Per-rank DB cache ---------------------------------------------------
@@ -174,12 +174,6 @@ struct arts_db_cache_s {
    * live cache — only the destructor puts NULL back — so a 0 can never go
    * stale. */
   _Atomic(uint8_t) payload_pending;
-  /* What made this cache (arts_db_init_kind_t): a create's own descriptor,
-   * the home's directory, or a dependence's first touch.  A create that
-   * claims a first touch's cache turns it into its own
-   * (arts_db_create_claims_stub); nothing else writes it after init.  Only
-   * its own value: the claim is one CAS, so one create claims a cache. */
-  _Atomic(uint8_t) init_kind;
 #ifndef ARTS_RETENTION_PURGE
   /* New owner rank for the next ownership transfer, published by this round's
    * GRANT_INVALIDATE handler BEFORE it withdraws the sentinel.  Sentinel
@@ -348,13 +342,6 @@ struct arts_db_s {
    * on another rank that holds the block is set at home init, every other by
    * arts_rank_bitset_note */
   struct arts_rank_bitset_s cached_ranks;
-  /* The destroy's gate [td:1 | rwo:1] (cover_gate.h): the destroy's mark
-   * and the claiming creator's pre-claim write request, which the announce
-   * says is still coming.  Every write after init is an acq_rel RMW. */
-  _Atomic(uint32_t) cover_gate;
-  /* The rank whose create claimed a first-touch cache ((unsigned int)-1:
-   * none): written before the descriptor is published, plain. */
-  unsigned int claim_rank;
   /* The requester the round in flight transfers the grant to: relaxed,
    * ordered by the baton (directory.h). */
   _Atomic(unsigned int) pending_install_owner;
@@ -375,13 +362,6 @@ struct arts_db_s {
   /* destroy fan-out roster; the bit of a creator on another rank that holds
    * the block is set at home init, every other by arts_rank_bitset_note */
   struct arts_rank_bitset_s cached_ranks;
-  /* The destroy's gate [td:1 | rwo:1] (cover_gate.h): the destroy's mark
-   * and the claiming creator's pre-claim write request, which the announce
-   * says is still coming.  Every write after init is an acq_rel RMW. */
-  _Atomic(uint32_t) cover_gate;
-  /* The rank whose create claimed a first-touch cache ((unsigned int)-1:
-   * none): written before the descriptor is published, plain. */
-  unsigned int claim_rank;
 #ifndef ARTS_RETENTION_PURGE
   /* The requester the round in flight transfers the grant to: relaxed,
    * ordered by the baton (directory.h). */

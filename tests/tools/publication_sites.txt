@@ -251,8 +251,6 @@ EXCL.*.*                         arts_db_debug_quiescence_check       load  cach
 INV.*.*,EXCL.*.*                 arts_db_sweep_open_items             load  cache_state   -/1  -
 EXCL.PURGE.*                     arts_db_debug_quiescence_check       load  lock_state    -/1  -
 EXCL.PURGE.*                     arts_db_home_init                    store lock_state    -/1  -
-EXCL.PURGE.*                     arts_db_home_seed_owed               load  lock_state    -/1  -
-EXCL.PURGE.*                     arts_db_home_seed_owed               store lock_state    -/1  -
 VAL.*.*                          arts_db_debug_quiescence_check       load  req_state     -/2  -
 VAL.*.*                          arts_db_sweep_open_items             load  req_state     -/1  -
 INV.*.HOME                       arts_db_home_init                    store hver          -/1  -
@@ -292,23 +290,18 @@ reference                    arts_runtime_barrier                 rmw   remainin
 reference                    arts_runtime_stop_threads            store flag          -/1  -
 
 # A block's creation and its creator's own hold.
-INV.*.*                      arts_db_create_claim_creator_copy    load  cache_state   -/1  -
-INV.*.*                      arts_db_create_claim_creator_copy    rmw   cache_state   -/1  -
 INV.*.*                      arts_db_create_retract_creator_copy  load  cache_state   -/1  -
 INV.*.*                      arts_db_create_retract_creator_copy  rmw   cache_state   -/1  -
-EXCL.*.*                     arts_db_create_take_hold             load  cache_state   -/1  -
-EXCL.*.*                     arts_db_create_take_hold             rmw   cache_state   -/1  -
 EXCL.*.*                     db_create_no_acquire_idle            store cache_state   -/1  -
 EXCL.*.*                     db_create_no_acquire_local           store cache_state   -/1  -
 EXCL.PURGE.*                 db_create_no_acquire_idle            store lock_state    -/1  -
 EXCL.PURGE.*                 db_create_no_acquire_local           store lock_state    -/1  -
-INV.*.*,VAL.*.*              arts_db_create_take_hold             rmw   writer_count  -/1  -
 INV.*.*,VAL.*.*              db_create_no_acquire_local           store writer_count  -/1  -
 
 # A load that only steers the exchange after it, or reads back what its own
 # thread wrote.
 INV.*.*                          inv_deliver_commit                   load  cache_state   -/2  -
-INV.*.*                          inv_req_step_tok                     load  cache_state   -/1  -
+INV.*.*                          inv_req_step                         load  cache_state   -/1  -
 EXCL.*.*                         arts_handler_db_acquire              load  cache_state   -/1  -
 EXCL.PURGE.*                     lock_grant_commit                    load  cache_state   -/1  -
 EXCL.*.*                         arts_excl_set_readers_aside          load  cache_state   -/1  -
@@ -339,11 +332,9 @@ EXCL.*.*                       arts_db_release_rw                   rmw   cache_
 INV.*.*                        arts_handler_db_inv_invalidate       load  cache_state   -/1  -
 INV.*.*                        arts_handler_db_inv_invalidate       rmw   cache_state   -/1  -
 INV.*.*                        arts_handler_db_inv_invalidate       load  writer_count  -/1  -
-INV.*.*                        inv_req_step_tok                     rmw   cache_state   -/1  -
+INV.*.*                        inv_req_step                         rmw   cache_state   -/1  -
 EXCL.PURGE.*                   arts_db_destroy_arrived              load  lock_state    -/1  -
 EXCL.PURGE.*                   arts_db_destroy_arrived              rmw   lock_state    -/1  -
-EXCL.PURGE.*                   lock_preclaim_write_absorb           load  lock_state    -/1  -
-EXCL.PURGE.*                   lock_preclaim_write_absorb           rmw   lock_state    -/1  -
 INV.*.*,VAL.*.*                release_write_half                   rmw   version       -/1  -
 INV.*.*,VAL.*.HOME             pub_flight_drive                     load  version       -/1  -
 INV.*.*,VAL.*.*                arts_send_db_grant_request           load  version       -/1  -
@@ -355,7 +346,6 @@ INV.*.*,VAL.*.*                arts_send_db_grant_request           load  versio
 # owner_response_commit's, and arts_db_grant_install is compiled and not
 # called.
 INV.*.*,VAL.*.*                  arts_db_drain_pending_rw_after_grant rmw   writer_count  -/1  -
-INV.*.*,VAL.*.*                  arts_db_grant_claim_writers          rmw   writer_count  -/1  -
 INV.PURGE.HOME,VAL.PURGE.HOME    arts_db_grant_commit_drain           rmw   writer_count  -/1  -
 INV.RETAIN.*,VAL.RETAIN.*        arts_db_grant_commit_finish          rmw   writer_count  -/1  -
 INV.*.OWNER,VAL.*.OWNER          arts_db_grant_install                rmw   writer_count  -/1  -

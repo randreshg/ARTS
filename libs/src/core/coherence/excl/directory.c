@@ -2,9 +2,8 @@
  *
  * EXCL protocol shared infrastructure.
  *
- * Defines: arts_db_home_init, arts_db_home_teardown, arts_db_home_seed_owed,
- *          arts_excl_home_teardown, arts_excl_set_readers_aside,
- *          arts_excl_take_readers_aside.
+ * Defines: arts_db_home_init, arts_db_home_teardown, arts_excl_home_teardown,
+ *          arts_excl_set_readers_aside, arts_excl_take_readers_aside.
  *
  * This TU contains only the shared pieces that both the PURGE and RETAIN
  * retention variants need: the home-directory lifecycle, the DB-destroy
@@ -25,7 +24,6 @@
 #include <stdlib.h>
 
 #include "arts/coherence/coherence.h"
-#include "arts/coherence/cover_gate.h"
 #include "arts/coherence/handlers.h"
 #include "arts/coherence/directory.h"
 #include "arts/gas/route_table.h"
@@ -64,10 +62,6 @@ void arts_db_home_init(struct arts_db_s *db, unsigned int rw_holder,
   arts_home_grantreq_queue_init(&db->rw_waiters);
   arts_lf_stack_init(&db->ro_waiters);
   arts_rank_bitset_init(&db->cached_ranks, nranks);
-  db->claim_rank = (unsigned int)-1;
-#ifdef ARTS_RETENTION_RETAIN
-  atomic_store_explicit(&db->cover_gate, 0u, memory_order_relaxed);
-#endif
   /* A creator on another rank holds a cache of the block from the moment it
    * made it, so the destroy must reach that rank too: its cache would
    * otherwise outlive the block, keeping its storage and the rank's route
@@ -102,48 +96,16 @@ void arts_db_home_teardown(struct arts_db_s *db) {
 #endif
 }
 
-#ifdef ARTS_RETENTION_PURGE
-void arts_db_home_seed_owed(struct arts_db_s *db, unsigned int creator,
-                            uint8_t owed) {
-  if (owed == 0u) {
-    return;
-  }
-  /* The claim closes the write request alone. */
-  assert(owed == ARTS_CREATE_OWED_RW);
-  db->claim_rank = creator;
-  uint64_t s = atomic_load_explicit(&db->lock_state, memory_order_relaxed);
-  atomic_store_explicit(&db->lock_state,
-                        LOCK_MAKE_STATE_FULL(EXCL_STATE_TEARDOWN(s),
-                                             EXCL_STATE_BIT(s), 1u,
-                                             EXCL_STATE_W(s), EXCL_STATE_R(s)),
-                        memory_order_relaxed);
-}
-#else
-void arts_db_home_seed_owed(struct arts_db_s *db, unsigned int creator,
-                            uint8_t owed) {
-  if (owed == 0u) {
-    return;
-  }
-  /* The claim closes the write request alone. */
-  assert(owed == ARTS_CREATE_OWED_RW);
-  db->claim_rank = creator;
-  atomic_store_explicit(&db->cover_gate, ARTS_COVER_GATE_RWO,
-                        memory_order_relaxed);
-}
-#endif
-
-/* Tear the home down: notify every rank that ever cached this DB, then return
- * the route slot.  The fan-out sits INSIDE the retire's single flight rather
- * than before it: duplicate destroys are produced by the protocol on purpose,
- * and only the caller whose retire actually detaches the object may put
- * CACHE_DESTROY on the wire. */
+/* Tear the home down: return the route slot, then notify every rank that
+ * ever cached this DB.  The fan-out sits INSIDE the retire's single flight
+ * rather than before it: only the caller whose retire detaches the object
+ * puts CACHE_DESTROY on the wire, so each roster rank is told once whatever
+ * the number of destroys (a second one is a program error). */
 void arts_excl_home_teardown(struct arts_db_s *db, arts_guid_t db_guid) {
-  /* Claim first: only the caller that actually detaches the object may put
-   * CACHE_DESTROY on the wire.  Duplicate destroys are produced by the
-   * protocol on purpose, and a second fan-out would tell every cache to drop a
-   * DB twice.  Reading db below stays safe after the detach — the caller's
-   * count on the object (its dispatch pin, or the hold a release returns),
-   * which self_cb is borrowed under, keeps it across the call. */
+  /* Retire first: only the caller that detaches the object fans out.
+   * Reading db below stays safe after the detach — the caller's count on the
+   * object (its dispatch pin, or the hold a release returns), which self_cb
+   * is borrowed under, keeps it across the call. */
   if (!arts_ooo_retire(db_guid, db->self_cb)) {
     return;
   }

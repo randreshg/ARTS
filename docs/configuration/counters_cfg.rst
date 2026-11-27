@@ -207,8 +207,8 @@ classified by where what it waits for comes from, whichever serve takes it:
 remote when that serve installs a permission or a copy another rank sent (a
 grant, a migration, a read reply) or wakes the readers of a first publish
 another rank made, local when it serves from what the rank already holds (a
-phase change on the rank, a create's claim of its first-touch cache, a first
-publish of its own).  On a one-rank run every acquisition is a local hit.
+phase change on the rank, a first publish of its own).  On a one-rank run
+every acquisition is a local hit.
 ``NUM_DB_ACQUIRE_LOCAL_HIT + NUM_DB_ACQUIRE_REMOTE = NUM_DB_ACQUIRE_READ +
 NUM_DB_ACQUIRE_WRITE`` holds on every cell for a run whose shutdown is
 quiescent, as the teardown walk of an ``ARTS_DEBUG_TEARDOWN`` tree judges it:
@@ -228,8 +228,8 @@ neither of the two.
        write; for a read, a valid copy it may read, a read turn, the write
        right or (``VAL``) the block's home answering itself.  A create's hold,
        a zero-size block, and a serve from what the rank holds (a phase change
-       on the rank, a create's claim of its first-touch cache) included; under
-       ``PURGE`` every acquisition on the block's home rank.
+       on the rank) included; under ``PURGE`` every acquisition on the block's
+       home rank.
    * - ``NUM_DB_ACQUIRE_REMOTE``
      - Acquisitions whose permission or copy had to come from another rank:
        a grant or migration of the write right, a read turn, read reply or

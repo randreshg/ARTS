@@ -274,17 +274,12 @@ struct ARTS_PACKED arts_msg_grant_request_packet_s {
   /* The version of the copy this requester ALREADY holds, so a server can
    * tell "needs the bytes" from "needs only the permission" without asking
    * anyone.  ARTS_GRANT_VERSION_NONE = holds nothing worth keeping, which is
-   * also what an unpublished copy reports: both need the bytes.  The top bit
-   * is the request's cover word (ARTS_COVER_PRECLAIM): a version counts
-   * releases and never reaches 2^63. */
+   * also what an unpublished copy reports: both need the bytes. */
   uint64_t have_version;
 #if defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)
   uint64_t token; /* the requester's answer token */
 #endif
 };
-#define ARTS_GRANT_REQ_VERSION_BITS 63
-#define ARTS_GRANT_REQ_VERSION_MASK                                            \
-  (((uint64_t)1 << ARTS_GRANT_REQ_VERSION_BITS) - 1)
 
 /* No copy, or one whose contents were never published. */
 #define ARTS_GRANT_VERSION_NONE ((uint64_t)0)
@@ -501,7 +496,7 @@ struct ARTS_PACKED arts_msg_snapshot_response_packet_s {
 
 /* DB_CREATE_COHERENT — no trailing payload.  Body:
  *   db_guid(8) + db_size(8) [+ cxl_addr(8) under ARTS_USE_CXL]
- *   + flags(2) + db_type(2) + owed(1) + pad[3]  =  24 bytes, or 32 under
+ *   + flags(2) + db_type(2) + pad[4]  =  24 bytes, or 32 under
  *   ARTS_USE_CXL,
  * 8-aligned either way.  The block's slot is named by its address alone.  The
  * one conditional member makes the layout build-conditional: every rank in a
@@ -515,9 +510,7 @@ struct ARTS_PACKED arts_msg_db_create_coherent_packet_s {
 #endif
   uint16_t flags;
   uint16_t db_type;
-  uint8_t owed; /* ARTS_CREATE_OWED_RW: the claim closed the claimed first
-                   touch's write request, which the home must still expect */
-  uint8_t pad[3];
+  uint8_t pad[4]; /* keeps the packet 8-aligned; written 0 */
 };
 
 struct ARTS_PACKED arts_msg_destroy_packet_s {
@@ -598,8 +591,7 @@ struct ARTS_PACKED arts_msg_excl_request_packet_s {
   struct arts_msg_header_s header;
   arts_guid_t db_guid;
   uint32_t mode; /* arts_db_access_mode_t: DB_MODE_RO or DB_MODE_RW */
-  uint32_t cover; /* ARTS_COVER_PRECLAIM on a write request a first-touch
-                   * cache opened before a create claimed it, else 0 */
+  uint32_t pad;  /* keeps the landing below 8-aligned; written 0 */
   /* requester rank = header.rank; no edt_guid/slot (rank-granular). */
   /* Requester's landing for the grant/deliver payload, its stable buffer
    * sized from the block's name.  txid==0 = no payload moves here: a

@@ -298,41 +298,6 @@ void arts_send_db_excl_grant(struct arts_db_s *db, unsigned int requester_rank,
 
 /* ===== arts_handler_db_excl_request ==================================== */
 
-/* The claiming creator's pre-claim write request: the create's hold served
- * its writers and closed the axis, and the announce told the home it is
- * coming.  It is discarded here, neither counted nor answered, and its
- * arrival may be the edge a marked home's teardown waited for.  Returns
- * whether the request was that one. */
-static bool lock_preclaim_write_absorb(struct arts_db_s *db,
-                                       unsigned int requester,
-                                       arts_db_access_mode_t mode,
-                                       uint32_t cover) {
-  /* A read request's word is zero and a write request's carries nothing but
-   * PRECLAIM. */
-  assert((cover & ~ARTS_COVER_PRECLAIM) == 0u &&
-         (cover == 0u || mode == DB_MODE_RW));
-  if (mode != DB_MODE_RW || (cover & ARTS_COVER_PRECLAIM) == 0u ||
-      requester != db->claim_rank) {
-    return false;
-  }
-  uint32_t grant;
-  uint64_t cur, next;
-  do {
-    cur = atomic_load_explicit(&db->lock_state, memory_order_acquire);
-    if (EXCL_STATE_RWO(cur) == 0u) {
-      ARTS_ERROR("lock: guid %lu settles a request it was never owed "
-                 "(lock_state=%llx)",
-                 (unsigned long)db->cache.db_guid, (unsigned long long)cur);
-    }
-    next = excl_compute_next(cur, EXCL_OP_RWO_ARRIVE, &grant);
-  } while (!atomic_compare_exchange_weak_explicit(
-      &db->lock_state, &cur, next, memory_order_acq_rel, memory_order_acquire));
-  if (grant == LOCK_GRANT_DESTROY) {
-    arts_excl_home_teardown(db, db->cache.db_guid);
-  }
-  return true;
-}
-
 void arts_handler_db_excl_request(void *item_v, void *args_v) {
   struct arts_db_s *db = (struct arts_db_s *)item_v;
   struct arts_db_cache_s *cache = &db->cache;
@@ -340,10 +305,6 @@ void arts_handler_db_excl_request(void *item_v, void *args_v) {
       (struct arts_ooo_args_db_excl_request_s *)args_v;
   unsigned int requester = a->requester;
   arts_db_access_mode_t mode = (arts_db_access_mode_t)a->mode;
-
-  if (lock_preclaim_write_absorb(db, requester, mode, a->cover)) {
-    return;
-  }
 
 #ifndef ARTS_USE_CXL
   if (a->rdzv.txid == 0 && requester != arts_global_rank_id &&
@@ -629,8 +590,6 @@ void arts_db_cache_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
       kind == ARTS_DB_INIT_CREATOR_REMOTE) {
     /* Creator holds RW: GRANT + one writer. */
     seed = CACHE_MAKE(CACHE_ST_GRANT, CACHE_ST_IDLE, 1u, 0u);
-  } else if (kind == ARTS_DB_INIT_STUB && ARTS_DB_STUB_CLAIMABLE(db_guid)) {
-    seed = CACHE_MAKE_X(CACHE_ST_IDLE, CACHE_ST_IDLE, 1u, 0u, 0u);
   }
   atomic_store_explicit(&c->cache_state, seed, memory_order_relaxed);
   atomic_store_explicit(&c->ro_aside, 0u, memory_order_relaxed);
@@ -676,10 +635,6 @@ void arts_db_cache_destructor(struct arts_db_cache_s *cache) {
 
 /* Retract nothing: on this arm a create that takes no hold rewrites the whole
  * cache word to idle already, so no copy claim survives it. */
-/* Claim nothing: this arm keeps no reader copy past a write turn, so a
- * create's copy asserts nothing that has to be recorded. */
-void arts_db_create_claim_creator_copy(struct arts_db_s *db) { (void)db; }
-
 void arts_db_create_retract_creator_copy(struct arts_db_s *db) { (void)db; }
 
 /* ===== arts_db_create_install_home_buffer ================================
@@ -751,7 +706,7 @@ static bool lock_stable_landing(struct arts_db_cache_s *cache,
 #endif /* ARTS_USE_CXL */
 
 void arts_send_db_excl_request(struct arts_db_cache_s *cache,
-                               arts_db_access_mode_t mode, uint32_t cover) {
+                               arts_db_access_mode_t mode) {
   arts_guid_t db_guid = cache->db_guid;
   unsigned int home_rank = arts_guid_get_rank(db_guid);
   uint64_t token = arts_db_token(arts_db_of_cache(cache));
@@ -768,7 +723,6 @@ void arts_send_db_excl_request(struct arts_db_cache_s *cache,
         .requester = arts_global_rank_id,
         .db_guid = db_guid,
         .mode = (uint32_t)mode,
-        .cover = cover,
         .rdzv = ARTS_RDZV_NO_LANDING,
         .token = token,
     };
@@ -789,7 +743,7 @@ void arts_send_db_excl_request(struct arts_db_cache_s *cache,
   arts_fill_packet_header(&p.header, sizeof(p), MSG_DB_EXCL_REQUEST);
   p.db_guid = db_guid;
   p.mode = (uint32_t)mode;
-  p.cover = cover;
+  p.pad = 0u;
   p.rdzv.addr = rdzv.addr;
   p.rdzv.key = rdzv.key;
   p.rdzv.txid = rdzv.txid;
@@ -801,8 +755,8 @@ void arts_send_db_excl_request(struct arts_db_cache_s *cache,
 }
 
 /* Serve exactly `expected` waiters from `q` — the parked population the
- * caller's CAS, the one that starts serving the axis (a grant's commit or a
- * create's hold), counted, which is exact: arrivals under a held grant
+ * caller's CAS, the one that starts serving the axis (a grant's commit),
+ * counted, which is exact: arrivals under a held grant
  * self-serve (never push), and a waiter parks only on its own axis's
  * request, so everything that CAS counted on the axis (for a read grant,
  * with the readers it returned from ro_aside) is parked (or about to be).
@@ -842,54 +796,6 @@ static void lock_drain_pending(arts_lf_stack_t *q, uint32_t expected) {
                "%u",
                served, expected);
   }
-}
-
-/* The hold is this arm's own: one CAS of the cache word, through the arbiter
- * like every other transition of it, and then the actions that transition
- * owes.  It is a write acquire: it serves the writers parked on the write
- * request this rank had out, which the home absorbs, and no reader; a read
- * request this rank has out stays out, to be granted by the home once it is
- * installed.  The home's directory is not touched from here — it comes from
- * the announce, where arts_db_home_init names the creator. */
-bool arts_db_create_take_hold(struct arts_db_cache_s *cache, uint8_t *owed) {
-  uint32_t act;
-  uint64_t cur, next;
-  *owed = 0u;
-  do {
-    cur = atomic_load_explicit(&cache->cache_state, memory_order_acquire);
-    next = cache_compute_next(cur, CACHE_OP_CREATE_HOLD, 0u, &act);
-    if (act == CACHE_ACT_LATE) {
-      if (CACHE_RW_CNT(cur) != (uint32_t)CACHE_RW_CNT_MASK) {
-        ARTS_ERROR("lock: guid %lu has readers counted on no read request "
-                   "at its create's hold (word=%llx)",
-                   (unsigned long)cache->db_guid, (unsigned long long)cur);
-      }
-      ARTS_ERROR("lock: guid %lu has more write acquires counted on one rank "
-                 "than its cache word can hold (word=%llx)",
-                 (unsigned long)cache->db_guid, (unsigned long long)cur);
-    }
-    if (next == cur) {
-      return false; /* the word carries the block already */
-    }
-  } while (!atomic_compare_exchange_weak_explicit(&cache->cache_state, &cur,
-                                                  next, memory_order_acq_rel,
-                                                  memory_order_acquire));
-  /* The write request the claimed first touch had already sent, read from
-   * the word this claim replaced: it is the home's to absorb. */
-  if (CACHE_RW_ST(cur) == CACHE_ST_REQ) {
-    *owed = ARTS_CREATE_OWED_RW;
-  }
-  if (act == CACHE_ACT_DRAIN_RW) {
-    /* The writer count is the pre-image's: the population this transition
-     * owes, exactly as a GRANT_RW landing drains it (the creator's own +1 is
-     * not parked). */
-    arts_excl_set_readers_aside(cache, cache_set_aside(cur));
-    lock_drain_pending(&cache->rw_pending, CACHE_RW_CNT(cur));
-  }
-  /* The claim closed the write request the cache had out: its count goes,
-   * under the create's own. */
-  arts_db_axis_drop(arts_db_of_cache(cache), *owed != 0u ? 1u : 0u);
-  return true;
 }
 
 #ifdef ARTS_USE_CXL
@@ -1060,9 +966,9 @@ static void cxl_purge_body(struct arts_db_cache_s *cache,
  *               FIRST, then send — by the time any grant for the request can
  *               exist, the opener's node is already drainable.
  *   PARK        its axis's request is out: park on it.  The transition that
- *               serves it (the request's grant; for a writer also a create's
- *               hold) serves exactly the population it counted, so a node
- *               whose push trails that CAS is awaited, never lost. */
+ *               serves it (the request's grant) serves exactly the population
+ *               it counted, so a node whose push trails that CAS is awaited,
+ *               never lost. */
 void arts_handler_db_acquire(void *item, void *args) {
   struct arts_db_s *db = (struct arts_db_s *)item;
   struct arts_ooo_args_db_acquire_s *a =
@@ -1142,11 +1048,9 @@ void arts_handler_db_acquire(void *item, void *args) {
     arts_db_axis_take(db);
   }
   if (act == CACHE_ACT_SEND_RW) {
-    /* PRECLAIM while the cache is a first touch no create has claimed. */
-    arts_send_db_excl_request(cache, DB_MODE_RW,
-                              CACHE_STUB(cur) ? ARTS_COVER_PRECLAIM : 0u);
+    arts_send_db_excl_request(cache, DB_MODE_RW);
   } else if (act == CACHE_ACT_SEND_RO) {
-    arts_send_db_excl_request(cache, DB_MODE_RO, /*cover=*/0u);
+    arts_send_db_excl_request(cache, DB_MODE_RO);
   }
 }
 
@@ -1164,14 +1068,13 @@ void arts_handler_db_acquire(void *item, void *args) {
  *   (4) Run the action after the CAS commits (mirrors the home grant path:
  *       compute decides, the pop/drain/send runs after).
  *
- * A grant's committer is the SOLE drainer of its own axis's pend stack (a
- * create's hold drains only writers no grant serves): a write grant serves
- * the writers its CAS counted and no reader, a read grant the readers its
- * CAS counted, the ones set aside included.  Those are exactly the parked
- * population (arrivals under a held grant self-serve and never park), and
- * lock_drain_pending consumes exactly that many nodes — serving is
- * exactly-once with no other drain path that could run against a later
- * round. */
+ * A grant's committer is the SOLE drainer of its own axis's pend stack: a
+ * write grant serves the writers its CAS counted and no reader, a read grant
+ * the readers its CAS counted, the ones set aside included.  Those are
+ * exactly the parked population (arrivals under a held grant self-serve and
+ * never park), and lock_drain_pending consumes exactly that many nodes —
+ * serving is exactly-once with no other drain path that could run against a
+ * later round. */
 
 /* What a committed grant transition owes, in order, and the request's count
  * last: the CAS closed the granted axis.  `cur` and `next` are the CAS's
@@ -1226,12 +1129,9 @@ static void lock_grant_apply(struct arts_db_s *db, arts_guid_t db_guid,
  * CAS will admit under, decided on the word the CAS then compares.  A word
  * that moved meanwhile is re-decided, and a fetch already taken stands.  That
  * holds because the granted axis stays at REQ until this CAS, so nothing
- * admits a holder of the copy in between.  Only a reused label breaks it,
- * its generations not being told apart: a create hold of the label racing a
- * grant meant for its previous block may write the copy before a CAS that
- * then re-decides.  A read grant takes the readers set aside once, before
- * the loop, so every decision of the loop, a refusal included, counts
- * them. */
+ * admits a holder of the copy in between.  A read grant takes the readers set
+ * aside once, before the loop, so every decision of the loop, a refusal
+ * included, counts them. */
 static void lock_grant_commit(struct arts_db_s *db, arts_guid_t db_guid,
                               arts_db_access_mode_t mode) {
   struct arts_db_cache_s *cache = &db->cache;

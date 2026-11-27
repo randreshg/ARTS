@@ -345,8 +345,7 @@ void arts_send_db_snapshot_response(unsigned int requester_rank, uint64_t token,
 
 void arts_send_db_create_coherent(unsigned int home_rank, arts_guid_t db_guid,
                                   uint64_t db_size, uint16_t flags,
-                                  uint16_t db_type, uint64_t cxl_addr,
-                                  uint8_t owed) {
+                                  uint16_t db_type, uint64_t cxl_addr) {
   struct arts_msg_db_create_coherent_packet_s p;
   arts_fill_packet_header(&p.header, sizeof(p), MSG_DB_CREATE);
   p.header.rank = arts_global_rank_id;
@@ -359,7 +358,6 @@ void arts_send_db_create_coherent(unsigned int home_rank, arts_guid_t db_guid,
 #endif
   p.flags = flags;
   p.db_type = db_type;
-  p.owed = owed;
   memset(p.pad, 0, sizeof(p.pad));
   /* A create on the block's home rank installs its descriptor there itself;
    * only a creator on another rank announces. */
@@ -379,7 +377,6 @@ void arts_db_create_announce_enter(
 #endif
       .flags = p->flags,
       .db_type = p->db_type,
-      .owed = p->owed,
   };
   arts_ooo_dispatch_or_defer_guid(p->db_guid, OOO_DB_CREATE, &a, sizeof(a));
 }

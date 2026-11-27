@@ -47,12 +47,6 @@ struct arts_db_cache_s {
    * No other acquisition on that rank reads the slot: each lands a private
    * copy. */
   _Atomic(uint8_t) payload_pending;
-  /* What made this cache (arts_db_init_kind_t): a create's own descriptor,
-   * the home's directory, or a dependence's first touch.  A create that
-   * claims a first touch's cache turns it into its own
-   * (arts_db_create_claims_stub); nothing else writes it after init.  Only
-   * its own value: the claim is one CAS, so one create claims a cache. */
-  _Atomic(uint8_t) init_kind;
   /* The home line's wire address, learned from the first response that
    * names it (a fetch response or the create's return), constant for the
    * block's life.  flush_txid is the pairing id the home minted for this

@@ -49,7 +49,6 @@
 #include "arts/coherence/buffer.h"
 #include "arts/coherence/census.h"
 #include "arts/coherence/coherence.h"
-#include "arts/coherence/cover_gate.h"
 #include "arts/coherence/directory.h"
 #include "arts/coherence/handlers.h"
 #include "arts/counter/Preamble.h"
@@ -74,18 +73,6 @@
 /* ===== Cache lifecycle ============================================ */
 /* ================================================================== */
 
-void arts_db_cache_kind_seed(struct arts_db_cache_s *c,
-                             arts_db_init_kind_t kind) {
-  atomic_init(&c->init_kind, (uint8_t)kind);
-}
-
-bool arts_db_create_claims_stub(struct arts_db_cache_s *cache) {
-  uint8_t expected = (uint8_t)ARTS_DB_INIT_STUB;
-  return atomic_compare_exchange_strong_explicit(
-      &cache->init_kind, &expected, (uint8_t)ARTS_DB_INIT_CREATOR_REMOTE,
-      memory_order_acq_rel, memory_order_acquire);
-}
-
 /* Protocol-agnostic cache_s field init.  Each arm's arts_db_cache_init sets
  * its own fields first — the grant-bearing arms' pending_rw stack and
  * transfer target, VAL·OWNER's dedup ledger, INV's reader word, EXCL's cache
@@ -109,7 +96,6 @@ void arts_db_cache_common_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
 #ifdef ARTS_USE_CXL
   atomic_init(&c->cxl_addr, (uint64_t)0);
 #endif
-  arts_db_cache_kind_seed(c, kind);
 #if (defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)) &&              \
     defined(ARTS_READ_SOURCE_HOME)
   arts_lf_stack_init(&c->publication_waiters);
@@ -121,10 +107,7 @@ void arts_db_cache_common_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
 #endif
 #endif
 #ifdef ARTS_VALIDITY_VAL
-  atomic_init(&c->req_state,
-              (kind == ARTS_DB_INIT_STUB && ARTS_DB_STUB_CLAIMABLE(db_guid))
-                  ? VREQ_MAKE(0u, 0u, 1u, 0u, 0u)
-                  : (uint64_t)0);
+  atomic_init(&c->req_state, (uint64_t)0);
 #endif
 #if defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)
   arts_db_reader_pool_init(&c->reader_pool);
@@ -132,7 +115,7 @@ void arts_db_cache_common_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
   /* Initialize the inlined home-directory fields only on the rank that owns
    * this DB's GUID home; non-home ranks leave db_self->home_initialized false
    * (and allocate only the cache-only stub, so the home fields don't exist).
-   * init_kind selects the initial holder. */
+   * The kind selects the initial holder. */
   unsigned int self = arts_global_rank_id;
   unsigned int n = arts_global_rank_count;
   if (n == 0) {
@@ -442,31 +425,33 @@ bool arts_db_ro_combine_on_terminal(struct arts_db_cache_s *cache) {
 }
 
 /* ---- the write axis, for the shared grant plane ------------------------- */
-bool arts_db_rw_req_claim(struct arts_db_cache_s *cache, uint32_t *tok) {
+bool arts_db_rw_req_claim(struct arts_db_cache_s *cache) {
   uint64_t post;
   uint32_t act;
   (void)val_req_step(cache, VREQ_OP_RW_CLAIM, 0u, &post, &act);
-  *tok = VREQ_STUB(post);
   return act == VREQ_ACT_WON;
 }
 
-static uint32_t val_rw_cover(uint64_t s) {
-  return VREQ_STUB(s) ? ARTS_COVER_PRECLAIM : 0u;
-}
-
-bool arts_db_rw_req_commit(struct arts_db_cache_s *cache, uint32_t tok,
-                           uint32_t *cover) {
+void arts_db_rw_req_commit(struct arts_db_cache_s *cache) {
   uint64_t post;
   uint32_t act;
-  uint64_t pre = val_req_step(cache, VREQ_OP_RW_COMMIT, tok, &post, &act);
-  *cover = val_rw_cover(pre);
-  return act == VREQ_ACT_WON;
+  uint64_t pre = val_req_step(cache, VREQ_OP_RW_COMMIT, 0u, &post, &act);
+  if (act == VREQ_ACT_LATE) {
+    ARTS_ERROR("val: guid %lu commits a write request it has not claimed "
+               "(word=%llx)",
+               (unsigned long)cache->db_guid, (unsigned long long)pre);
+  }
 }
 
-void arts_db_rw_req_giveback(struct arts_db_cache_s *cache, uint32_t tok) {
+void arts_db_rw_req_giveback(struct arts_db_cache_s *cache) {
   uint64_t post;
   uint32_t act;
-  (void)val_req_step(cache, VREQ_OP_RW_GIVE, tok, &post, &act);
+  uint64_t pre = val_req_step(cache, VREQ_OP_RW_GIVE, 0u, &post, &act);
+  if (act == VREQ_ACT_LATE) {
+    ARTS_ERROR("val: guid %lu gives back a write request it has not claimed "
+               "(word=%llx)",
+               (unsigned long)cache->db_guid, (unsigned long long)pre);
+  }
 }
 
 void arts_db_rw_req_clear(struct arts_db_cache_s *cache) {
@@ -478,18 +463,6 @@ void arts_db_rw_req_clear(struct arts_db_cache_s *cache) {
                "(word=%llx)",
                (unsigned long)cache->db_guid, (unsigned long long)pre);
   }
-}
-
-/* The create's claim of the write axis, after its hold is taken on the grant
- * word: a write request out is the claimer's pre-claim request, which the
- * announce names for the home to absorb, and an OPEN is reset (its commit
- * then loses on the token).  A read request out stays out for its own
- * answer.  Returns the owed byte the announce carries. */
-uint8_t arts_db_val_claim_rw_axis(struct arts_db_cache_s *cache) {
-  uint64_t post;
-  uint32_t act;
-  uint64_t pre = val_req_step(cache, VREQ_OP_CLAIM, 0u, &post, &act);
-  return VREQ_RW(pre) == VREQ_RW_SENT ? ARTS_CREATE_OWED_RW : 0u;
 }
 #endif /* the versioned-snapshot read path */
 
@@ -904,52 +877,6 @@ void arts_db_release_ro(struct arts_db_cache_s *cache) {
 void arts_db_join_read(struct arts_db_cache_s *cache) { (void)cache; }
 #endif /* arms whose read hold is nothing but the EDT's own ref */
 
-#if defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)
-/* ===== The destroy's gate (home side) =================================
- *
- * One request can reach the home after the program legally destroyed the
- * block: the write request a first-touch cache sent before a create on its
- * rank claimed that cache.  The claim served the request's writers, so no
- * acquire waits for its answer, and the claim's announce tells the home that
- * it is still coming.  The gate (arts/coherence/cover_gate.h) holds it as
- * rwo; the destroy marks the gate, and the teardown runs at the step that
- * leaves the gate marked with rwo clear: the destroy, or that request's
- * arrival.  The home absorbs the request, queueing and answering nothing,
- * since the claim closed the requester's write axis.
- *
- * No read request passes the gate.  Its readers stay parked until its own
- * answer, and a destroy issued while an acquire is in progress is the
- * program's error, so no read request is out when a legal destroy is
- * issued. */
-void arts_db_home_seed_owed(struct arts_db_s *db, unsigned int creator,
-                            uint8_t owed) {
-  if (owed == 0u) {
-    return;
-  }
-  assert(owed == ARTS_CREATE_OWED_RW &&
-         "a claim closes its cache's write request and nothing else");
-  db->claim_rank = creator;
-  atomic_store_explicit(&db->cover_gate, ARTS_COVER_GATE_RWO,
-                        memory_order_relaxed);
-}
-
-bool arts_db_preclaim_write_absorb(struct arts_db_s *db, unsigned int requester,
-                                   uint32_t cover, bool *teardown) {
-  *teardown = false;
-  if ((cover & ARTS_COVER_PRECLAIM) == 0u || requester != db->claim_rank) {
-    return false;
-  }
-  *teardown = arts_cover_gate_step(db, ARTS_COVER_GATE_RWO_ARRIVE);
-  return true;
-}
-
-void arts_db_cover_destroy(struct arts_db_s *db) {
-  if (arts_cover_gate_step(db, ARTS_COVER_GATE_MARK)) {
-    arts_db_home_destroy_now(db);
-  }
-}
-#endif /* the destroy's gate */
-
 /* ================================================================== */
 /* ===== Destroy lifecycle ========================================== */
 /* ================================================================== */
@@ -1154,10 +1081,6 @@ void arts_db_debug_quiescence_check(const struct arts_teardown_exempt_s *ex,
   }
 #endif
   unsigned int viol = 0;
-  /* Homes a destroy marked that still wait for the claimer's pre-claim write
-   * request the create's announce said is coming: legal at any shutdown,
-   * printed so a campaign can watch it. */
-  unsigned int marked_owed = 0;
   const unsigned int nt = (unsigned int)arts_guid_table_count;
   /* Whether this shutdown was quiescent, named by contributor so a log's
    * reader knows why a residue went unreported.  Every one is pending work
@@ -1292,42 +1215,19 @@ void arts_db_debug_quiescence_check(const struct arts_teardown_exempt_s *ex,
           }
         }
 #endif
-#ifdef ARTS_VALIDITY_EXCL
+#if defined(ARTS_VALIDITY_EXCL) && defined(ARTS_RETENTION_PURGE)
         if (db->home_initialized) {
-#ifdef ARTS_RETENTION_PURGE
-          /* A marked home with nothing counted and no pre-claim write
-           * request awaited is a teardown that was skipped.  One still
-           * awaited is legal and only counted. */
+          /* A marked home with nothing counted is a teardown that was
+           * skipped. */
           uint64_t ls =
               atomic_load_explicit(&db->lock_state, memory_order_relaxed);
-          if (EXCL_STATE_TEARDOWN(ls) != 0u) {
-            if (EXCL_STATE_RWO(ls) != 0u) {
-              marked_owed++;
-            } else if (EXCL_STATE_W(ls) == 0u && EXCL_STATE_R(ls) == 0u) {
-              ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu home rests marked for "
-                         "teardown with nothing counted or awaited "
-                         "(lock_state=%llx)",
-                         (unsigned long)c->db_guid, (unsigned long long)ls);
-              viol++;
-            }
+          if (EXCL_STATE_TEARDOWN(ls) != 0u && EXCL_STATE_W(ls) == 0u &&
+              EXCL_STATE_R(ls) == 0u) {
+            ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu home rests marked for "
+                       "teardown with nothing counted (lock_state=%llx)",
+                       (unsigned long)c->db_guid, (unsigned long long)ls);
+            viol++;
           }
-#else
-          /* Marked with no pre-claim write request awaited means the
-           * teardown was skipped.  One still awaited is legal at any
-           * shutdown (it may be undelivered) and only counted. */
-          uint32_t gate =
-              atomic_load_explicit(&db->cover_gate, memory_order_relaxed);
-          if ((gate & ARTS_COVER_GATE_TD) != 0u) {
-            if ((gate & ARTS_COVER_GATE_RWO) != 0u) {
-              marked_owed++;
-            } else {
-              ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu home rests marked for "
-                         "teardown with nothing awaited (gate=%x)",
-                         (unsigned long)c->db_guid, gate);
-              viol++;
-            }
-          }
-#endif /* ARTS_RETENTION_PURGE */
         }
 #endif
 #ifdef ARTS_VALIDITY_INV
@@ -1363,8 +1263,8 @@ void arts_db_debug_quiescence_check(const struct arts_teardown_exempt_s *ex,
         }
         {
           /* A write request opens only for a parked writer, and only its
-           * grant's take (or a create's claim) empties the stack, which also
-           * closes the axis: a write request out with no writer is lost. */
+           * grant's take empties the stack, which also closes the axis: a
+           * write request out with no writer is lost. */
 #ifdef ARTS_VALIDITY_VAL
           bool rw_sent = VREQ_RW(atomic_load_explicit(
                              &c->req_state, memory_order_relaxed)) ==
@@ -1379,23 +1279,6 @@ void arts_db_debug_quiescence_check(const struct arts_teardown_exempt_s *ex,
                        "with no writer waiting on it",
                        (unsigned long)c->db_guid);
             viol++;
-          }
-        }
-        if (db->home_initialized) {
-          /* Marked with no pre-claim write request awaited means the
-           * teardown was skipped.  One still awaited is legal at any
-           * shutdown (it may be undelivered) and only counted. */
-          uint32_t gate =
-              atomic_load_explicit(&db->cover_gate, memory_order_relaxed);
-          if ((gate & ARTS_COVER_GATE_TD) != 0u) {
-            if ((gate & ARTS_COVER_GATE_RWO) != 0u) {
-              marked_owed++;
-            } else {
-              ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu home rests marked for "
-                         "teardown with nothing awaited (gate=%x)",
-                         (unsigned long)c->db_guid, gate);
-              viol++;
-            }
           }
         }
 #ifdef ARTS_VALIDITY_INV
@@ -1690,11 +1573,6 @@ void arts_db_debug_quiescence_check(const struct arts_teardown_exempt_s *ex,
   /* Every contributor is printed, so "nothing was left undone" and "work was
    * left undone, and it is why a residue went unreported" read apart -- the
    * two look identical from the violation count alone. */
-  if (marked_owed != 0) {
-    ARTS_DEBUG("COVER-INFO: %u home(s) marked for teardown still wait for a "
-               "claimer's pre-claim write request (quiescent=%d)",
-               marked_owed, (int)walk_quiescent);
-  }
   if (caller_held != 0) {
     ARTS_DEBUG("CALLER-INFO: %u block(s) held by the shutdown's caller(s), "
                "exempt",

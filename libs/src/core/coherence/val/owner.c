@@ -211,12 +211,10 @@ void arts_db_home_init(struct arts_db_s *db, unsigned int rw_holder,
   arts_home_grantreq_queue_init(&db->pending_rw);
   atomic_store_explicit(&db->grant_baton, 0u, memory_order_relaxed);
   arts_rank_bitset_init(&db->cached_ranks, nranks);
-  atomic_store_explicit(&db->cover_gate, 0u, memory_order_relaxed);
-  db->claim_rank = (unsigned int)-1;
   /* A creator on another rank holds a cache of the block from the moment it
    * made it, so the destroy must reach that rank too: its cache would
    * otherwise outlive the block, keeping its storage and the rank's route
-   * slot for the GUID (where a later create of the GUID would park). */
+   * slot for the GUID. */
   if (rw_holder != arts_global_rank_id && rw_holder < nranks) {
     arts_rank_bitset_set(&db->cached_ranks, rw_holder);
   }
@@ -270,69 +268,42 @@ void arts_handler_db_snapshot_request(void *item_v, void *args_v) {
 }
 
 void arts_db_destroy_arrived(struct arts_db_s *db) {
-  arts_db_cover_destroy(db);
+  arts_db_home_destroy_now(db);
 }
 
-/* The teardown, run by whichever of the destroy and the claiming creator's
- * pre-claim write request, where the home was told one is coming, reaches the
- * gate's edge: roster fan-out, then the slot return; a waiter left parked at
- * the destroy (outside the destroy contract) is never woken.  The roster is
- * the cached-ranks bit-set: a creator on another rank that holds the block
- * joins it at home init and every requester when its request arrives, so it
- * names every other rank rw_holder can be and, during a transfer,
- * pending_install_owner too.  The request FIFO is not read: its one consumer
+/* The teardown, run by the destroy: the slot return, then the roster
+ * fan-out when that return detached the block, so its CACHE_DESTROYs leave
+ * once however many destroys arrive; the roster is read after the detach,
+ * under the count the destroy runs under, which keeps the descriptor.  A
+ * waiter left parked at the destroy (outside the destroy contract) is never
+ * woken.  The roster is the cached-ranks bit-set: a creator on another rank
+ * that holds the block joins it at home init and every requester when its
+ * request arrives, so it names every other rank rw_holder can be and, during
+ * a transfer, pending_install_owner too.  The request FIFO is not read: its one consumer
  * is the baton holder, and every queued requester is already on the bit-set.
  * Nothing else is waited for: no release on this arm sends the home anything,
  * and a transfer's CONFIRM is answered before the new owner's writers run, so
  * under the destroy contract nothing owed to the home arrives after the
  * destroy. */
 void arts_db_home_destroy_now(struct arts_db_s *db) {
+  arts_guid_t guid = db->cache.db_guid;
+  if (!arts_ooo_retire(guid, db->self_cb)) {
+    return;
+  }
   struct arts_rank_bitset_cursor_s c =
       arts_rank_bitset_cursor(&db->cached_ranks);
   unsigned int rank;
   while (arts_rank_bitset_next(&c, &rank)) {
     if (rank != arts_global_rank_id) {
-      arts_send_db_cache_destroy(rank, db->cache.db_guid);
+      arts_send_db_cache_destroy(rank, guid);
     }
   }
-  (void)arts_ooo_retire(db->cache.db_guid, db->self_cb);
-}
-
-/* The hold is possession plus this create's own writer, from a word that
- * holds nothing.  It is a write permission landing on this rank, so every
- * writer parked on the first-touch cache is served under it, and the write
- * request that cache sent is the home's to absorb (the announce names it).
- * A read request the cache has out stays out until its own answer, which
- * serves its cohort. */
-bool arts_db_create_take_hold(struct arts_db_cache_s *cache, uint8_t *owed) {
-  *owed = 0u;
-  unsigned int none = 0u;
-  if (!atomic_compare_exchange_strong_explicit(
-          &cache->writer_count, &none, ARTS_GRANT_SEED_HOLDING,
-          memory_order_acq_rel, memory_order_relaxed)) {
-    return false;
-  }
-  /* Writers first, then the axis: a writer that pushed before the take is
-   * served by it, and one whose request commits before CLAIM is absorbed
-   * (PRECLAIM); one that pushed after the take is re-armed below.  The
-   * creator's own hold keeps the right here throughout. */
-  arts_db_grant_claim_writers(cache);
-  *owed = arts_db_val_claim_rw_axis(cache);
-  arts_db_grant_rearm(cache);
-  /* The claim closed the write request the cache had out: its count goes,
-   * under the create's own. */
-  arts_db_axis_drop(arts_db_of_cache(cache), *owed != 0u ? 1u : 0u);
-  return true;
 }
 
 /* Retract nothing: this arm's readers hold no durable copy claim — every
  * acquire re-validates against a version, so a creator that was given no
  * storage simply has nothing to assert. */
 void arts_db_create_retract_creator_copy(struct arts_db_s *db) { (void)db; }
-
-/* Claim nothing either: a reader here re-validates against a version at
- * every acquire, so a copy asserts nothing that has to be recorded. */
-void arts_db_create_claim_creator_copy(struct arts_db_s *db) { (void)db; }
 
 
 void arts_handler_db_snapshot_redirect(void *item_v, void *args_v) {

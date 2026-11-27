@@ -10,13 +10,14 @@
  * Pairing oracle.  Each scenario builds a descriptor whose control block
  * carries the test's one reference and a counting deleter, drives the
  * transitions through the real code (the arm's acquire, the grant plane, the
- * answers' entries, the rendezvous callbacks, a create's claim, the teardown
- * sweep), then drops its reference and requires the deleter to run exactly
- * then: a count left behind keeps it from running, a count dropped twice runs
- * it before.  The wire is stubbed: a request is captured, and its answer is
- * built from it, so every answer echoes the token its request carried.  Every
- * landing a request draws is ended exactly once, and every buffer hold a
- * woken EDT's slot takes is dropped by the release the scenario stands in for.
+ * answers' entries, the rendezvous callbacks, the home's teardown, the
+ * teardown sweep), then drops its reference and requires the deleter to run
+ * exactly then: a count left behind keeps it from running, a count dropped
+ * twice runs it before.  The wire is stubbed: a request is captured, and its
+ * answer is built from it, so every answer echoes the token its request
+ * carried.  Every landing a request draws is ended exactly once, and every
+ * buffer hold a woken EDT's slot takes is dropped by the release the scenario
+ * stands in for.
  *
  * Scenarios, in every VAL and INV cell:
  *   read axis   closed by its answer; an answer on a retired descriptor; a
@@ -26,8 +27,7 @@
  *               request is out, the grant serving the writer alone and an
  *               answer that moves no bytes at the write holder serving the
  *               reader against the holder's buffer; a one-sided answer at
- *               the write holder likewise, the holder's buffer staying; kept
- *               open by a create's claim and closed by its own answer; a
+ *               the write holder likewise, the holder's buffer staying; a
  *               reply of each kind (one that moves no bytes, one-sided)
  *               arriving with no request out is fatal;
  *     INV:      a fetch opened while the write request is out, kill-marked
@@ -35,21 +35,23 @@
  *               round; (OWNER) opened while the rank's install awaits its
  *               confirmation, the CONFIRM_ACK waking the writer alone;
  *   write axis  closed by its answer (HOME: the grant; OWNER: the
- *               CONFIRM_ACK its CONFIRM asks for); by a create's claim; a
- *               grant and (OWNER) a CONFIRM_ACK on a retired descriptor; a
+ *               CONFIRM_ACK its CONFIRM asks for); a grant and (OWNER) a
+ *               CONFIRM_ACK on a retired descriptor; a
  *               one-sided grant's pairing, live and retired; re-opened by
- *               the rearm inside a grant (where the fuzz points exist); the
+ *               the rearm inside a grant; claimed by a writer whose waiter a
+ *               grant took inside its push window, which gives the axis back
+ *               when the stack is empty and commits a second request when
+ *               another writer parked since, that request's grant serving
+ *               the writer (the three where the fuzz points exist); the
  *               home's own request, its grant run on the home (under PURGE
  *               served from the front of its queue) while the writer it
  *               wakes drops every other reference, and the same request
  *               served inside its own self-sent body once the right is idle
  *               at the home (RETAIN: the home revokes itself and ships the
  *               grant to itself; PURGE: it serves its own front);
- *   the destroy's gate at the home: the claiming creator's pre-claim write
- *               request absorbed before the destroy, which then tears down;
- *               the destroy waiting for that request, whose arrival tears
- *               down; the same request from a rank that claimed nothing,
- *               refused for want of a landing;
+ *   the home's teardown: a destroy retires the block and only then tells
+ *               each rank of its roster, once; a second destroy of the same
+ *               home tells no rank again;
  *   the home's refusal of a request from another rank that advertises no
  *               landing for a block with bytes, on either axis, ending the
  *               run with the plane's line; a zero-size block's request and
@@ -124,13 +126,9 @@
 /* A third rank, in the one scenario that runs three. */
 #define OTHER 2u
 #define SIZE 64u
-/* A block whose GUID bounds its size (a first touch sends a landing), and one
- * whose GUID does not (a first touch is a claimable stub). */
+/* A block whose GUID bounds its size: a first touch sends a landing. */
 #define GUID_SIZED                                                             \
   ARTS_GUID_MAKE(ARTS_GUID_DB, HOME, ARTS_GUID_DB_KEY(1u, 0x51u))
-#define GUID_CLAIM                                                             \
-  ARTS_GUID_MAKE(ARTS_GUID_DB, HOME,                                           \
-                 ARTS_GUID_DB_KEY(ARTS_GUID_DB_SZHINT_NONE, 0x52u))
 /* A zero-size block's: its name bounds its size at 0. */
 #define GUID_EMPTY                                                             \
   ARTS_GUID_MAKE(ARTS_GUID_DB, HOME, ARTS_GUID_DB_KEY(0u, 0x53u))
@@ -155,15 +153,11 @@ static void fail(const char *what) {
 /* Set in a scenario's child whose step must end the run. */
 static bool g_expect_abort;
 #define EXPECTED_ABORT 42
-/* A check of the child's own state where that end comes: one that fails
- * turns the end into a failing status. */
-static bool (*g_at_abort)(void);
 
 _Noreturn void arts_exit(int rc, enum arts_exit_origin origin) {
   (void)origin;
   if (g_expect_abort) {
-    bool (*check)(void) = g_at_abort;
-    _exit(rc == 1 && (check == NULL || check()) ? EXPECTED_ABORT : 1);
+    _exit(rc == 1 ? EXPECTED_ABORT : 1);
   }
   printf("FAIL token_axis_pairing_valinv: %s: the runtime aborted\n",
          g_scenario);
@@ -367,9 +361,19 @@ static int g_nsent;
 static void (*g_send_hook)(void);
 static unsigned int g_send_hook_type;
 
+/* A retire through the engine detached the scenario's block. */
+static bool g_retired;
+
 void arts_transport_send_async(int rank, char *message, unsigned int length) {
   if (g_nsent == MAXSENT || length > sizeof(g_sent[0].buf)) {
     fail("too many messages");
+  }
+  /* A roster rank is told of the destroy only by the frame whose retire
+   * detached the block, so no notice precedes that retire. */
+  if (((struct arts_msg_header_s *)message)->message_type ==
+          MSG_DB_CACHE_DESTROY &&
+      !g_retired) {
+    fail("a destroy notice left before the block's retire");
   }
   g_sent[g_nsent].rank = rank;
   g_sent[g_nsent].type = ((struct arts_msg_header_s *)message)->message_type;
@@ -537,6 +541,8 @@ void arts_dep_waiter_check(const struct arts_edt_s *edt, arts_guid_t edt_guid,
 /* ---- the descriptor and the oracle ---- */
 
 static int g_deleted;
+/* Retires that found the block retired already. */
+static int g_retire_misses;
 static size_t g_db_bytes;
 /* The deleter fills the descriptor and keeps it (poisoned under the address
  * sanitizer) instead of freeing it, so a frame that touches it afterwards is
@@ -585,18 +591,28 @@ static void begin(const char *name, arts_guid_t guid, bool home) {
   g_wakes = 0;
   g_nedts = 0;
   g_expect_arg = NULL;
+  g_retire_misses = 0;
+  g_retired = false;
 }
 
 /* The block's retire, as the route table's: its control block's tag goes. */
 static void retire(void) { arts_shared_set_tag(g_db->self_cb, 0u); }
 
-/* The home's teardown retires the descriptor: the tag goes, and so does the
- * install's reference, which the test's stands for. */
+/* The home's teardown retires the descriptor as the route table's single
+ * flight does: the first retire clears the tag and drops the install's
+ * reference, which the test's stands for; a retire that finds the object's
+ * tag cleared detaches nothing, releases nothing and answers false.  Those
+ * answers are counted (g_retire_misses). */
 bool arts_ooo_retire(arts_guid_t key, arts_shared_ptr_t cb) {
-  if (cb != g_db->self_cb || arts_shared_tag(cb) != (uint64_t)key) {
+  if (cb != g_db->self_cb) {
     fail("a retire of another object");
   }
+  if (arts_shared_tag(cb) != (uint64_t)key) {
+    g_retire_misses++;
+    return false;
+  }
   arts_shared_set_tag(cb, 0u);
+  g_retired = true;
   arts_shared_ptr_t h = cb;
   arts_shared_release(&h);
   return true;
@@ -621,6 +637,9 @@ static void end(int wakes) {
   }
   if (g_expect_arg != NULL) {
     fail("an expectation left unfired");
+  }
+  if (g_retire_misses != 0) {
+    fail("a retire found the block retired already");
   }
   if (g_deleted != 0) {
     fail("a count was dropped that was never taken");
@@ -648,6 +667,9 @@ static void end_dropped(int wakes) {
   }
   if (g_expect_arg != NULL) {
     fail("an expectation left unfired");
+  }
+  if (g_retire_misses != 0) {
+    fail("a retire found the block retired already");
   }
   if (g_deleted != 1 || g_poisoned == NULL) {
     fail("the deleter did not run once the frames let go");
@@ -776,14 +798,12 @@ static const struct arts_msg_grant_request_packet_s *write_request(int nth) {
       MSG_DB_GRANT_REQUEST, nth);
 }
 
-/* The nth write request's cover word, the bit above its version; the version
- * below it is the one the cache held, none in every scenario here. */
-static uint32_t write_cover(int nth) {
-  uint64_t v = write_request(nth)->have_version;
-  if ((v & ARTS_GRANT_REQ_VERSION_MASK) != ARTS_GRANT_VERSION_NONE) {
+/* The nth write request names the version its cache holds: none in every
+ * scenario here. */
+static void write_holds_none(int nth) {
+  if (write_request(nth)->have_version != ARTS_GRANT_VERSION_NONE) {
     fail("a write request names a version its cache does not hold");
   }
-  return (uint32_t)(v >> ARTS_GRANT_REQ_VERSION_BITS);
 }
 
 /* The grant, from another rank: no payload, or a one-sided one. */
@@ -806,12 +826,12 @@ static void write_answer(int nth, bool payload) {
 }
 
 /* Under OWNER the request closes at the CONFIRM_ACK, which answers the
- * CONFIRM the grant's commit sent. */
-static void confirm_ack(void) {
+ * CONFIRM the grant's commit sent: the nth grant's. */
+static void confirm_ack_at(int nth) {
 #ifdef ARTS_READ_SOURCE_OWNER
   const struct arts_msg_grant_confirm_packet_s *c =
       (const struct arts_msg_grant_confirm_packet_s *)sent(MSG_DB_GRANT_CONFIRM,
-                                                           0);
+                                                           nth);
   if (c->token != arts_db_token(g_db)) {
     fail("a CONFIRM names another descriptor");
   }
@@ -822,19 +842,12 @@ static void confirm_ack(void) {
   p.new_owner_rank = ARTS_NO_PENDING_OWNER;
   p.new_owner_have = ARTS_GRANT_VERSION_NONE;
   arts_handler_db_grant_confirm_ack(&p);
+#else
+  (void)nth;
 #endif
 }
 
-/* A create's claim of the cache, in the serve section the create opens. */
-static uint8_t claim(void) {
-  uint8_t owed = 0u;
-  uint8_t census = arts_db_census_serving(false);
-  if (!arts_db_create_take_hold(&g_db->cache, &owed)) {
-    fail("the claim's hold did not commit");
-  }
-  arts_db_census_served(census);
-  return owed;
-}
+static void confirm_ack(void) { confirm_ack_at(0); }
 
 static int read_requests(void) {
   return count_sent(MSG_DB_SNAPSHOT_REQUEST) + count_sent(MSG_DB_INV_REQUEST);
@@ -971,27 +984,12 @@ static void write_answered(bool payload) {
                 : "write axis closed by its answer",
         GUID_SIZED, false);
   acquire(DB_MODE_RW);
-  if (write_cover(0) != 0u) {
-    fail("a cache no create can claim sent a pre-claim request");
-  }
+  write_holds_none(0);
   write_answer(0, payload);
   if (payload) {
     pairing_fire(true);
   }
   confirm_ack();
-  end(1);
-}
-
-static void write_claimed(void) {
-  begin("write axis closed by a create's claim", GUID_CLAIM, false);
-  acquire(DB_MODE_RW);
-  if (write_cover(0) != ARTS_COVER_PRECLAIM ||
-      write_request(0)->rdzv.cookie != 0u) {
-    fail("the request the claim closes is not a landing-less pre-claim one");
-  }
-  if (claim() != ARTS_CREATE_OWED_RW) {
-    fail("the claim did not announce the write request alone");
-  }
   end(1);
 }
 
@@ -1024,14 +1022,38 @@ static void confirm_ack_retired(void) {
 #endif
 
 #ifdef ARTS_DEBUG_INJECTION
-static bool write_axis_idle(void) {
 #ifdef ARTS_VALIDITY_VAL
-  return VREQ_RW(atomic_load_explicit(&g_db->cache.req_state,
-                                      memory_order_acquire)) == VREQ_RW_IDLE;
+#define WRITE_AXIS_IDLE VREQ_RW_IDLE
+#define WRITE_AXIS_OPEN VREQ_RW_OPEN
+#define WRITE_AXIS_SENT VREQ_RW_SENT
 #else
-  return INV_CACHE_RW(atomic_load_explicit(
-             &g_db->cache.cache_state, memory_order_acquire)) == INV_RW_IDLE;
+#define WRITE_AXIS_IDLE INV_RW_IDLE
+#define WRITE_AXIS_OPEN INV_RW_OPEN
+#define WRITE_AXIS_SENT INV_RW_SENT
 #endif
+
+/* The write axis of the cache's request word. */
+static uint32_t write_axis(void) {
+#ifdef ARTS_VALIDITY_VAL
+  return VREQ_RW(
+      atomic_load_explicit(&g_db->cache.req_state, memory_order_acquire));
+#else
+  return INV_CACHE_RW(
+      atomic_load_explicit(&g_db->cache.cache_state, memory_order_acquire));
+#endif
+}
+
+static bool write_axis_idle(void) { return write_axis() == WRITE_AXIS_IDLE; }
+
+/* The writers parked on the cache's stack. */
+static unsigned int parked_writers(void) {
+  unsigned int n = 0u;
+  for (arts_lf_link_t *l = atomic_load_explicit(&g_db->cache.pending_rw.head,
+                                                memory_order_relaxed);
+       l != NULL; l = atomic_load_explicit(&l->next, memory_order_relaxed)) {
+    n++;
+  }
+  return n;
 }
 
 /* Inside a grant, between its clear of the write axis and its look at the
@@ -1116,6 +1138,203 @@ static void holder_ships_to_home(int nth) {
 }
 #endif
 
+#ifdef ARTS_DEBUG_INJECTION
+/* ---- a claim of the write axis won after a grant served its waiter ---- */
+
+/* The claimer's window, between its won claim and its look at the stack, was
+ * reached with the axis OPEN. */
+static bool g_claim_won;
+/* Where a third writer parks: nowhere, inside that window, or after the
+ * claimer's look found the stack empty and before its give-back. */
+enum { THIRD_NONE, THIRD_BEFORE_LOOK, THIRD_BEFORE_GIVE_BACK };
+static int g_third_parks;
+
+/* A writer that found no right on this rank before the grant installed it:
+ * it pushes its waiter, and its own claim meets the claimer's OPEN. */
+static void third_writer_parks(void) {
+  int requests = count_sent(MSG_DB_GRANT_REQUEST);
+  struct fake_edt *f = new_edt(DB_MODE_RW);
+  (void)arts_db_acquire_remote_rw(&g_db->cache, &f->edt, 0u);
+  if (write_axis() != WRITE_AXIS_OPEN || parked_writers() != 1u ||
+      count_sent(MSG_DB_GRANT_REQUEST) != requests) {
+    fail("the third writer's claim did not lose to the claimer's");
+  }
+}
+
+/* The claimer's next window, between its look at the empty stack and its
+ * give-back. */
+static bool before_give_back(void) {
+  if (write_axis() != WRITE_AXIS_OPEN || parked_writers() != 0u) {
+    return false;
+  }
+  third_writer_parks();
+  return true;
+}
+
+static bool inside_won_claim(void) {
+  if (write_axis() != WRITE_AXIS_OPEN) {
+    return false;
+  }
+  if (parked_writers() != 0u) {
+    fail("the claim was won over waiters the grant did not take");
+  }
+  g_claim_won = true;
+  if (g_third_parks == THIRD_BEFORE_LOOK) {
+    third_writer_parks();
+  } else if (g_third_parks == THIRD_BEFORE_GIVE_BACK) {
+    g_fuzz_hook = before_give_back;
+  }
+  return true;
+}
+
+/* Between the second writer's push and its claim: the first request's grant
+ * arrives (under OWNER with its CONFIRM_ACK), takes both waiters, clears the
+ * write axis and wakes them. */
+static bool grant_inside_push_window(void) {
+  if (write_axis() != WRITE_AXIS_SENT || parked_writers() != 2u) {
+    return false;
+  }
+  write_answer(0, false);
+  confirm_ack();
+  if (g_wakes != 2 || !write_axis_idle() || parked_writers() != 0u) {
+    fail("the grant did not take both waiters, clear the write axis and wake "
+         "them");
+  }
+  g_fuzz_hook = inside_won_claim;
+  return true;
+}
+
+/* The second writer's acquire, the first request's grant landing inside its
+ * push window. */
+static void second_writer_meets_grant(int third_parks) {
+  g_claim_won = false;
+  g_third_parks = third_parks;
+  g_fuzz_hook = grant_inside_push_window;
+  acquire(DB_MODE_RW);
+  if (g_fuzz_hook != NULL || !g_claim_won) {
+    g_fuzz_hook = NULL;
+    fail("the second writer did not win the claim the grant's clear freed");
+  }
+}
+
+/* A writer whose push a grant took wins the claim that grant's clear freed
+ * and finds the stack empty: it owes no request, so it gives the write axis
+ * back and looks once more.  One request in all, the axis idle, both writers
+ * woken by the one grant. */
+static void write_claim_given_back(void) {
+  begin("write axis given back by a claim won after the grant", GUID_SIZED,
+        false);
+  acquire(DB_MODE_RW);
+  write_holds_none(0);
+  second_writer_meets_grant(THIRD_NONE);
+  if (count_sent(MSG_DB_GRANT_REQUEST) != 1) {
+    fail("the claim's winner opened a request for waiters a grant had served");
+  }
+  if (!write_axis_idle()) {
+    fail("the claim's winner did not give the write axis back");
+  }
+  if (parked_writers() != 0u) {
+    fail("a waiter was left on the stack");
+  }
+  end(2);
+}
+
+#ifdef ARTS_RETENTION_PURGE
+/* The home's acceptance of the hand-back that just left: its ACK wakes the
+ * releaser. */
+static void ack_hand_back(void) {
+  const struct arts_msg_grant_return_packet_s *r =
+      (const struct arts_msg_grant_return_packet_s *)g_sent[g_nsent - 1].buf;
+  struct arts_db_publish_ack_args_s a = {.db_guid = r->db_guid, .cv = r->cv};
+  arts_handler_db_publish_ack(&a);
+}
+#else
+/* The home's token of a revocation round, opaque to this rank. */
+#define ROUND_HOME_TOKEN ((uint64_t)0x5e1f00u)
+/* The home's revocation for this rank's nth write request while this rank
+ * holds the right: it names this rank the next owner too. */
+static void revoked_for_own_request(int nth) {
+  const struct arts_msg_grant_request_packet_s *r = write_request(nth);
+  struct arts_ooo_args_db_grant_invalidate_s a = {
+      .db_guid = r->db_guid,
+      .new_owner_rank = REQ,
+      .new_owner_rdzv = {.addr = r->rdzv.addr,
+                         .key = r->rdzv.key,
+                         .txid = r->rdzv.txid,
+                         .cookie = r->rdzv.cookie},
+      .new_owner_have = r->have_version,
+      .new_owner_token = r->token,
+      .home_token = ROUND_HOME_TOKEN,
+  };
+  arts_handler_db_grant_invalidate(g_db, &a);
+}
+#endif
+
+/* The writers of this rank's first grant end their turns, and the grant of
+ * its second write request arrives.  Under PURGE the last release hands the
+ * right back and the home serves the request; under RETAIN the home revokes
+ * this rank, the holder, naming it the next owner as well, and the last
+ * release ships the grant to this rank's own descriptor (under OWNER the
+ * CONFIRM_ACK then opens it). */
+static void second_grant_after_turns(void) {
+  release_buffer_hold(&g_edts[0]->edt);
+  release_buffer_hold(&g_edts[1]->edt);
+#ifdef ARTS_RETENTION_PURGE
+  arts_db_grant_release_commit(&g_db->cache);
+  g_send_hook = ack_hand_back;
+  g_send_hook_type = MSG_DB_GRANT_RETURN;
+  arts_db_grant_release_commit(&g_db->cache);
+  if (g_send_hook != NULL || count_sent(MSG_DB_GRANT_RETURN) != 1) {
+    g_send_hook = NULL;
+    fail("the last writer's release did not hand the right back");
+  }
+  write_answer(1, false);
+#else
+  revoked_for_own_request(1);
+  arts_db_grant_release_commit(&g_db->cache);
+  if (g_wakes != 2) {
+    fail("the grant shipped while a writer of this rank held its turn");
+  }
+  arts_db_grant_release_commit(&g_db->cache);
+  confirm_ack_at(1);
+#endif
+}
+
+/* The same claim, and a third writer whose own claim loses to the claimer's
+ * OPEN.  Parked before the claimer's look at the stack, that look finds it
+ * and the claimer commits.  Parked after the look found the stack empty, the
+ * claimer gives the axis back, and its look after the give-back finds the
+ * waiter: it claims again and commits.  Either way a second request leaves
+ * under the descriptor's token with a count of its own, and its grant serves
+ * the third writer.  The slot holds the bytes the first grant certifies as
+ * current from the start. */
+static void write_claim_committed(int third_parks) {
+  begin(third_parks == THIRD_BEFORE_LOOK
+            ? "write axis committed by a claim won after the grant, a writer "
+              "parked since"
+            : "write axis claimed again after its give-back, a writer parked "
+              "before the give-back",
+        GUID_SIZED, false);
+  home_buffer(3u);
+  acquire(DB_MODE_RW);
+  second_writer_meets_grant(third_parks);
+  if (count_sent(MSG_DB_GRANT_REQUEST) != 2 ||
+      write_request(1)->token != write_request(0)->token) {
+    fail("the claim's winner opened no request for the writer it found");
+  }
+  if (write_axis() != WRITE_AXIS_SENT || parked_writers() != 1u ||
+      g_wakes != 2) {
+    fail("the second request is not out for the third writer alone");
+  }
+  second_grant_after_turns();
+  if (g_wakes != 3 || !write_axis_idle() || parked_writers() != 0u) {
+    fail("the second request's grant did not serve the third writer");
+  }
+  release_buffer_hold(&g_edts[2]->edt);
+  end(3);
+}
+#endif
+
 /* The home's own write request: the grant is installed on the home, and
  * where the home revokes, its CONFIRM -- and under OWNER the CONFIRM_ACK
  * answering it -- runs there inline (under PURGE the home serves it from the
@@ -1173,15 +1392,14 @@ static void home_request_served_in_body(void) {
   end_dropped(wakes);
 }
 
-/* A write request from rank `from` that a claimable first touch opened, as
- * the engine hands it to the home: under the dispatcher's pin. */
+/* A write request from rank `from` that advertises no landing, as the
+ * engine hands it to the home: under the dispatcher's pin. */
 #define FAR_TOKEN ((uint64_t)0x6b6b00u)
-static void write_request_with(unsigned int from, uint32_t cover) {
+static void write_request_in(unsigned int from) {
   struct arts_ooo_args_db_grant_request_s a = {
       .requester = from,
       .db_guid = g_db->cache.db_guid,
       .have_version = ARTS_GRANT_VERSION_NONE,
-      .cover = cover,
       .token = FAR_TOKEN,
   };
   arts_shared_ptr_t pin = arts_shared_copy(g_db->self_cb);
@@ -1189,106 +1407,51 @@ static void write_request_with(unsigned int from, uint32_t cover) {
   arts_shared_release(&pin);
 }
 
-static void preclaim_write_request(unsigned int from) {
-  write_request_with(from, ARTS_COVER_PRECLAIM);
-}
-
-static void preclaim_write_request_far(void) { preclaim_write_request(REQ); }
-static void write_request_after_claim(void) { write_request_with(REQ, 0u); }
-static void preclaim_write_request_other(void) {
-  preclaim_write_request(OTHER);
-}
-
+/* A destroy at the home, as the engine runs it: under the dispatcher's
+ * pin. */
 static void destroy_arrives(void) {
   arts_shared_ptr_t pin = arts_shared_copy(g_db->self_cb);
   arts_db_destroy_arrived(g_db);
   arts_shared_release(&pin);
 }
 
-/* The destroy's gate at the home of a block whose creator claimed a
- * first-touch cache with its write request out.  The home absorbs that
- * request, queueing and answering nothing, and tears down at whichever of the
- * destroy and the request's arrival comes second, once.  The same request
- * from a rank whose create claimed nothing is not absorbed, and the home
- * refuses it: it advertised no landing for a block with bytes. */
-static void home_gate(int how) {
-  static const char *names[] = {
-      "claimer's pre-claim write request absorbed, then the destroy",
-      "destroy waits for the claimer's pre-claim write request",
-      "pre-claim write request of a rank that claimed nothing"};
-  begin(names[how], GUID_CLAIM, true);
-  if (how == 2) {
-    expect_refused(preclaim_write_request_far, REQ, "grant",
-                   "a landing-less request no claim closed was not refused");
-    end(0);
-    return;
-  }
+/* A block created on REQ and read by OTHER: the home's roster names both.
+ * Two destroys reach the home while it is still held (each on its own
+ * dispatch pin), the second a program error.  The first retires the block
+ * and only then tells each roster rank, once (the wire refuses a notice that
+ * precedes the retire); the second's retire detaches nothing, so it tells no
+ * rank again. */
+static void home_teardown_once(void) {
+  arts_global_rank_count = 3u;
+  begin("the home's teardown tells each roster rank once", GUID_SIZED, true);
+  arts_rank_bitset_note(&g_db->cached_ranks, OTHER);
   g_poison = true;
-  arts_db_home_seed_owed(g_db, REQ, ARTS_CREATE_OWED_RW);
-  if (how == 1) {
-    destroy_arrives();
-    if (g_deleted != 0 || g_nsent != 0 ||
-        atomic_load_explicit(&g_db->cover_gate, memory_order_acquire) !=
-            (ARTS_COVER_GATE_TD | ARTS_COVER_GATE_RWO)) {
-      fail("the destroy did not wait for the request the home is owed");
-    }
+  arts_shared_ptr_t held = arts_shared_copy(g_db->self_cb);
+  destroy_arrives();
+  int first = count_sent(MSG_DB_CACHE_DESTROY);
+  int sent_first = g_nsent;
+  bool to_req = false, to_other = false;
+  for (int i = 0; i < g_nsent; i++) {
+    to_req |= g_sent[i].type == MSG_DB_CACHE_DESTROY && g_sent[i].rank == REQ;
+    to_other |=
+        g_sent[i].type == MSG_DB_CACHE_DESTROY && g_sent[i].rank == OTHER;
   }
-  preclaim_write_request(REQ);
-  if (count_sent(MSG_DB_GRANT_RESPONSE) != 0) {
-    fail("the home answered a request the claim had closed");
+  destroy_arrives();
+  int second = count_sent(MSG_DB_CACHE_DESTROY) - first;
+  printf("     notices %d then %d, retires that found the block retired %d\n",
+         first, second, g_retire_misses);
+  if (first != 2 || sent_first != first || !to_req || !to_other) {
+    fail("the first destroy did not tell each roster rank exactly once");
   }
-  if (how == 0) {
-    if (g_deleted != 0 || g_nsent != 0 ||
-        !arts_home_grantreq_queue_empty(&g_db->pending_rw) ||
-        atomic_load_explicit(&g_db->cover_gate, memory_order_acquire) != 0u) {
-      fail("the absorbed request left something behind at the home");
-    }
-    destroy_arrives();
+  if (second != 0 || g_nsent != sent_first) {
+    fail("a second destroy told the roster again");
   }
-  if (g_nsent != 1 || count_sent(MSG_DB_CACHE_DESTROY) != 1) {
-    fail("the teardown did not tell the creator's rank exactly once");
+  if (g_deleted != 0) {
+    fail("the descriptor went while a destroy still held it");
   }
+  g_retire_misses = 0;
+  arts_shared_release(&held);
   end_dropped(0);
-}
-
-/* The gate still owes the claimer's request, unmarked. */
-static bool gate_owed(void) {
-  return atomic_load_explicit(&g_db->cover_gate, memory_order_acquire) ==
-         ARTS_COVER_GATE_RWO;
-}
-
-/* A write request the gate does not absorb is an ordinary request, which
- * the home refuses when it advertises no landing for a block with bytes: the
- * claimer's own request sent after its claim carries no PRECLAIM, and a
- * pre-claim request of another rank is not the one the claim closed.  An
- * absorbed request would return instead of reaching the refusal.  Where the
- * refusal ends the child, the gate must still owe the claimer's request;
- * from that state the claimer's pre-claim request settles it. */
-static void home_gate_unabsorbed(int how) {
-  static const char *names[] = {
-      "claimer's write request after its claim is not absorbed",
-      "pre-claim write request of another rank leaves the claimer's owed"};
-  /* The other rank is a rank of the run. */
-  arts_global_rank_count = how == 1 ? 3u : 2u;
-  begin(names[how], GUID_CLAIM, true);
-  arts_db_home_seed_owed(g_db, REQ, ARTS_CREATE_OWED_RW);
-  g_at_abort = gate_owed;
-  if (how == 0) {
-    expect_refused(write_request_after_claim, REQ, "grant",
-                   "a request the claim had not closed was absorbed, or "
-                   "moved the gate before its refusal");
-  } else {
-    expect_refused(preclaim_write_request_other, OTHER, "grant",
-                   "a request the claim had not closed was absorbed, or "
-                   "moved the gate before its refusal");
-  }
-  g_at_abort = NULL;
-  preclaim_write_request(REQ);
-  if (g_nsent != 0 ||
-      atomic_load_explicit(&g_db->cover_gate, memory_order_acquire) != 0u) {
-    fail("the claimer's own request did not settle the gate");
-  }
-  end(0);
   arts_global_rank_count = 2u;
 }
 
@@ -1320,9 +1483,9 @@ static void read_request_bare(unsigned int from) {
   arts_shared_release(&pin);
 }
 
-static void far_write_request_bare(void) { write_request_with(REQ, 0u); }
+static void far_write_request_bare(void) { write_request_in(REQ); }
 static void far_read_request_bare(void) { read_request_bare(REQ); }
-static void own_write_request_bare(void) { write_request_with(HOME, 0u); }
+static void own_write_request_bare(void) { write_request_in(HOME); }
 
 #ifdef ARTS_VALIDITY_VAL
 #define READ_PLANE "val"
@@ -1519,31 +1682,6 @@ static void read_put_at_holder(void) {
   }
   served_by_holder_buffer(b, 0);
   end(2);
-}
-
-/* A create's claim takes the write axis alone: the reader whose request the
- * first-touch cache sent, with a landing as the cache knew the block's size,
- * stays parked, and is served by that request's own answer, one that moves
- * no bytes and names that landing. */
-static void read_kept_by_claim(void) {
-  begin("read axis kept by a create's claim, closed by its answer",
-        GUID_CLAIM, false);
-  atomic_store_explicit(&g_db->cache.db_size, SIZE, memory_order_relaxed);
-  acquire(DB_MODE_RO);
-  if (read_request(0)->rdzv.cookie == 0u) {
-    fail("a request whose cache knew the size carried no landing");
-  }
-  if (claim() != 0u) {
-    fail("the claim named a request with no write request out");
-  }
-  if (g_wakes != 0 || !reader_parked()) {
-    fail("the claim served the reader");
-  }
-  read_answer(0, 0u);
-  if (read_requests() != 1) {
-    fail("a read request left beside the one the reader opened");
-  }
-  end(1);
 }
 
 #ifdef ARTS_VALIDITY_INV
@@ -1818,7 +1956,6 @@ int main(void) {
   read_answered();
   read_opened_under_write();
   read_put_at_holder();
-  read_kept_by_claim();
 #ifdef ARTS_VALIDITY_INV
   read_killed_under_write();
 #endif
@@ -1833,7 +1970,6 @@ int main(void) {
   read_discarded();
   write_answered(false);
   write_answered(true);
-  write_claimed();
   write_retired(0);
   write_retired(1);
 #ifdef ARTS_READ_SOURCE_OWNER
@@ -1841,17 +1977,16 @@ int main(void) {
 #endif
 #ifdef ARTS_DEBUG_INJECTION
   write_rearmed();
+  write_claim_given_back();
+  write_claim_committed(THIRD_BEFORE_LOOK);
+  write_claim_committed(THIRD_BEFORE_GIVE_BACK);
 #endif
 #ifdef ARTS_RETENTION_PURGE
   write_self_front();
 #endif
   home_wake_drops_last();
   home_request_served_in_body();
-  home_gate(0);
-  home_gate(1);
-  home_gate(2);
-  home_gate_unabsorbed(0);
-  home_gate_unabsorbed(1);
+  home_teardown_once();
   refused_far(0);
   refused_far(1);
   taken_in_bare(0);

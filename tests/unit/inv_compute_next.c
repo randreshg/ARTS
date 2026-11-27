@@ -19,9 +19,10 @@
  *     whatever the write axis holds;
  *   - the kill mark (REQ -> REQ_KILL) still serves its cohort once, then owes
  *     the round an ack;
- *   - a write permission (a grant's clear, a create's claim) and a writer's
- *     give-back touch the write axis and the stub bit only;
- *   - a reply or a grant for no request out is LATE, leaving the word;
+ *   - a grant's clear and a writer's commit and give-back touch the write
+ *     axis only; the commit and the give-back act only from OPEN;
+ *   - a reply or a grant for no request out, and a commit or give-back from
+ *     a state other than OPEN, is LATE, leaving the word;
  *   - the chain head carries the reader pool's full index width beside set
  *     request bits;
  *   - an exhaustive walk from the seed words over every operation: no
@@ -71,11 +72,11 @@ _Static_assert(INV_CACHE_HEAD_BITS == 29 &&
 static int g_fail;
 
 /* The layout: [ro:2 (63..62) | inflight:1 (61) | rw:2 (60..59) |
- * spare:1 (58) | stub:1 (57) | spare:28 (56..29) | head_ro:29 (28..0)]. */
-#define W(ro, inf, hro, rw, stub)                                              \
+ * spare:30 (58..29) | head_ro:29 (28..0)]. */
+#define W(ro, inf, hro, rw)                                                    \
   ((((uint64_t)(ro)) << 62) | (((uint64_t)(inf)) << 61) |                      \
-   (((uint64_t)(rw)) << 59) | (((uint64_t)(stub)) << 57) | ((uint64_t)(hro)))
-#define SPARE_BITS (((uint64_t)1u << 58) | ((((uint64_t)1u << 28) - 1u) << 29))
+   (((uint64_t)(rw)) << 59) | ((uint64_t)(hro)))
+#define SPARE_BITS ((((uint64_t)1u << 30) - 1u) << 29)
 #define I INV_RW_IDLE
 #define O INV_RW_OPEN
 #define S INV_RW_SENT
@@ -114,11 +115,10 @@ static void expect_submit(const char *what, uintptr_t cur, uintptr_t e,
 
 /* The header's field accessors read the layout above. */
 static void check_layout(void) {
-  const uint64_t w = W(R_KILL, 1u, 300000000u, S, 1u);
+  const uint64_t w = W(R_KILL, 1u, 300000000u, S);
   if (INV_CACHE_RO(w) != R_KILL || INV_CACHE_INFLIGHT(w) != 1u ||
-      INV_CACHE_RW(w) != S || INV_CACHE_STUB(w) != 1u ||
-      INV_CACHE_HEAD_RO(w) != 300000000u ||
-      INV_CACHE_HEAD_RO(W(R_VALID, 0u, 0u, O, 1u)) != 0u) {
+      INV_CACHE_RW(w) != S || INV_CACHE_HEAD_RO(w) != 300000000u ||
+      INV_CACHE_HEAD_RO(W(R_VALID, 0u, 0u, O)) != 0u) {
     (void)fprintf(stderr, "FAIL inv_compute_next: the header's layout is not "
                           "the word's\n");
     g_fail = 1;
@@ -188,9 +188,9 @@ static void judge(uint64_t pre, int op, uint32_t idx, uint64_t post,
 }
 
 /* Every operation with every argument it is called with: a reader's pool
- * index (two distinct ones, so a chain head can be replaced), and the OPEN's
- * token for the commit and the give-back.  The reserved purge runs only on
- * the valid copy its kill-marked reply just made (its caller checks). */
+ * index (two distinct ones, so a chain head can be replaced).  The reserved
+ * purge runs only on the valid copy its kill-marked reply just made (its
+ * caller checks). */
 static void walk(void) {
   static const struct {
     int op;
@@ -199,14 +199,12 @@ static void walk(void) {
       {INV_CACHE_OP_ACQ_RO, 1u},     {INV_CACHE_OP_ACQ_RO, 2u},
       {INV_CACHE_OP_DELIVER, 0u},    {INV_CACHE_OP_INVALIDATE, 0u},
       {INV_CACHE_OP_KILL_PURGE, 0u}, {INV_CACHE_OP_RW_CLEAR, 0u},
-      {INV_CACHE_OP_CLAIM, 0u},      {INV_CACHE_OP_RW_CLAIM, 0u},
-      {INV_CACHE_OP_RW_COMMIT, 0u},  {INV_CACHE_OP_RW_COMMIT, 1u},
-      {INV_CACHE_OP_RW_GIVE, 0u},    {INV_CACHE_OP_RW_GIVE, 1u},
+      {INV_CACHE_OP_RW_CLAIM, 0u},   {INV_CACHE_OP_RW_COMMIT, 0u},
+      {INV_CACHE_OP_RW_GIVE, 0u},
   };
   g_nseen = 0;
-  g_seen[g_nseen++] = W(R_IDLE, 0u, 0u, I, 0u);
-  g_seen[g_nseen++] = W(R_IDLE, 0u, 0u, I, 1u);  /* a claimable first touch */
-  g_seen[g_nseen++] = W(R_VALID, 0u, 0u, I, 0u); /* a creator's copy */
+  g_seen[g_nseen++] = W(R_IDLE, 0u, 0u, I);
+  g_seen[g_nseen++] = W(R_VALID, 0u, 0u, I); /* a creator's copy */
   for (int at = 0; at < g_nseen; at++) {
     uint64_t pre = g_seen[at];
     for (size_t s = 0; s < sizeof(steps) / sizeof(steps[0]); s++) {
@@ -245,126 +243,115 @@ int main(void) {
     /* A covering copy is served with NO word change: the property that
      * makes a read on a valid copy wait-free. */
     expect("a valid copy's read is a no-op self-serve",
-           W(R_VALID, 0u, 0u, rw, 0u), INV_CACHE_OP_ACQ_RO, ME,
-           W(R_VALID, 0u, 0u, rw, 0u), INV_CACHE_ACT_SELF_SERVE);
-    expect("a reader opens a fetch", W(R_IDLE, 0u, 0u, rw, 0u),
-           INV_CACHE_OP_ACQ_RO, ME, W(R_REQ, 1u, ME, rw, 0u),
+           W(R_VALID, 0u, 0u, rw), INV_CACHE_OP_ACQ_RO, ME,
+           W(R_VALID, 0u, 0u, rw), INV_CACHE_ACT_SELF_SERVE);
+    expect("a reader opens a fetch", W(R_IDLE, 0u, 0u, rw),
+           INV_CACHE_OP_ACQ_RO, ME, W(R_REQ, 1u, ME, rw),
            INV_CACHE_ACT_SEND_RO);
-    expect("a first touch's reader opens a fetch", W(R_IDLE, 0u, 0u, rw, 1u),
-           INV_CACHE_OP_ACQ_RO, ME, W(R_REQ, 1u, ME, rw, 1u),
-           INV_CACHE_ACT_SEND_RO);
-    expect("a reader joins the open fetch", W(R_REQ, 1u, OTH, rw, 0u),
-           INV_CACHE_OP_ACQ_RO, ME, W(R_REQ, 1u, ME, rw, 0u),
+    expect("a reader joins the open fetch", W(R_REQ, 1u, OTH, rw),
+           INV_CACHE_OP_ACQ_RO, ME, W(R_REQ, 1u, ME, rw),
            INV_CACHE_ACT_PARK);
     /* Its reply serves the cohort once before the reserved purge, so nobody
      * is stranded. */
-    expect("a reader joins a kill-marked fetch", W(R_KILL, 1u, OTH, rw, 1u),
-           INV_CACHE_OP_ACQ_RO, ME, W(R_KILL, 1u, ME, rw, 1u),
+    expect("a reader joins a kill-marked fetch", W(R_KILL, 1u, OTH, rw),
+           INV_CACHE_OP_ACQ_RO, ME, W(R_KILL, 1u, ME, rw),
            INV_CACHE_ACT_PARK);
   }
-  expect("a full-width index opens the fetch", W(R_IDLE, 0u, 0u, I, 1u),
-         INV_CACHE_OP_ACQ_RO, WIDE, W(R_REQ, 1u, WIDE, I, 1u),
+  expect("a full-width index opens the fetch", W(R_IDLE, 0u, 0u, I),
+         INV_CACHE_OP_ACQ_RO, WIDE, W(R_REQ, 1u, WIDE, I),
          INV_CACHE_ACT_SEND_RO);
   expect("a full-width index joins under a write request",
-         W(R_REQ, 1u, OTH, S, 1u), INV_CACHE_OP_ACQ_RO, WIDE,
-         W(R_REQ, 1u, WIDE, S, 1u), INV_CACHE_ACT_PARK);
+         W(R_REQ, 1u, OTH, S), INV_CACHE_OP_ACQ_RO, WIDE,
+         W(R_REQ, 1u, WIDE, S), INV_CACHE_ACT_PARK);
 
-  /* ---- replies: the cohort, whatever the write axis holds; the stub bit
-   * clears unless a writer holds an OPEN (its token) ---------------------- */
+  /* ---- replies: the cohort, whatever the write axis holds -------------- */
   for (int k = 0; k < 3; k++) {
     uint32_t rw = rws[k];
-    uint32_t stub_after = rw == O ? 1u : 0u;
-    expect("a reply publishes and grabs the chain", W(R_REQ, 1u, ME, rw, 1u),
-           INV_CACHE_OP_DELIVER, 0u, W(R_VALID, 0u, 0u, rw, stub_after),
+    expect("a reply publishes and grabs the chain", W(R_REQ, 1u, ME, rw),
+           INV_CACHE_OP_DELIVER, 0u, W(R_VALID, 0u, 0u, rw),
            INV_CACHE_ACT_PUBLISH);
     expect("a kill-marked reply serves once, then purges",
-           W(R_KILL, 1u, ME, rw, 1u), INV_CACHE_OP_DELIVER, 0u,
-           W(R_VALID, 0u, 0u, rw, stub_after), INV_CACHE_ACT_PUBLISH_KILL);
-    expect("a reply with no fetch out is late", W(R_IDLE, 0u, 0u, rw, 0u),
-           INV_CACHE_OP_DELIVER, 0u, W(R_IDLE, 0u, 0u, rw, 0u),
+           W(R_KILL, 1u, ME, rw), INV_CACHE_OP_DELIVER, 0u,
+           W(R_VALID, 0u, 0u, rw), INV_CACHE_ACT_PUBLISH_KILL);
+    expect("a reply with no fetch out is late", W(R_IDLE, 0u, 0u, rw),
+           INV_CACHE_OP_DELIVER, 0u, W(R_IDLE, 0u, 0u, rw),
            INV_CACHE_ACT_LATE);
-    expect("a reply on a valid copy is late", W(R_VALID, 0u, 0u, rw, 0u),
-           INV_CACHE_OP_DELIVER, 0u, W(R_VALID, 0u, 0u, rw, 0u),
+    expect("a reply on a valid copy is late", W(R_VALID, 0u, 0u, rw),
+           INV_CACHE_OP_DELIVER, 0u, W(R_VALID, 0u, 0u, rw),
            INV_CACHE_ACT_LATE);
   }
-  expect("a reply takes a full-width chain; the OPEN keeps the stub",
-         W(R_KILL, 1u, WIDE, O, 1u), INV_CACHE_OP_DELIVER, 0u,
-         W(R_VALID, 0u, 0u, O, 1u), INV_CACHE_ACT_PUBLISH_KILL);
+  expect("a reply takes a full-width chain", W(R_KILL, 1u, WIDE, O),
+         INV_CACHE_OP_DELIVER, 0u, W(R_VALID, 0u, 0u, O),
+         INV_CACHE_ACT_PUBLISH_KILL);
 
   /* ---- invalidations: retire a copy, mark a fetch, or be idempotent ---- */
-  expect("an invalidate retires a valid copy", W(R_VALID, 0u, 0u, I, 0u),
-         INV_CACHE_OP_INVALIDATE, 0u, W(R_IDLE, 0u, 0u, I, 0u),
+  expect("an invalidate retires a valid copy", W(R_VALID, 0u, 0u, I),
+         INV_CACHE_OP_INVALIDATE, 0u, W(R_IDLE, 0u, 0u, I),
          INV_CACHE_ACT_PURGE_ACK);
   for (int k = 0; k < 3; k++) {
     uint32_t rw = rws[k];
-    expect("an invalidate marks an open fetch", W(R_REQ, 1u, ME, rw, 0u),
-           INV_CACHE_OP_INVALIDATE, 0u, W(R_KILL, 1u, ME, rw, 0u),
+    expect("an invalidate marks an open fetch", W(R_REQ, 1u, ME, rw),
+           INV_CACHE_OP_INVALIDATE, 0u, W(R_KILL, 1u, ME, rw),
            INV_CACHE_ACT_KILL_MARKED);
   }
-  expect("an invalidate on nothing is idempotent", W(R_IDLE, 0u, 0u, I, 0u),
-         INV_CACHE_OP_INVALIDATE, 0u, W(R_IDLE, 0u, 0u, I, 0u),
+  expect("an invalidate on nothing is idempotent", W(R_IDLE, 0u, 0u, I),
+         INV_CACHE_OP_INVALIDATE, 0u, W(R_IDLE, 0u, 0u, I),
          INV_CACHE_ACT_NOOP_ACK);
   expect("the reserved purge retires the served copy",
-         W(R_VALID, 0u, 0u, S, 0u), INV_CACHE_OP_KILL_PURGE, 0u,
-         W(R_IDLE, 0u, 0u, S, 0u), INV_CACHE_ACT_NONE);
+         W(R_VALID, 0u, 0u, S), INV_CACHE_OP_KILL_PURGE, 0u,
+         W(R_IDLE, 0u, 0u, S), INV_CACHE_ACT_NONE);
 
-  /* ---- write permissions: the write axis and the stub bit, never the
-   * readers --------------------------------------------------------------- */
+  /* ---- a grant's take: the write axis, never the readers ---------------- */
   expect("a grant's take closes the write axis; the fetch keeps its cohort",
-         W(R_REQ, 1u, ME, S, 1u), INV_CACHE_OP_RW_CLEAR, 0u,
-         W(R_REQ, 1u, ME, I, 0u), INV_CACHE_ACT_NONE);
-  expect("a grant's take leaves a kill-marked fetch", W(R_KILL, 1u, ME, S, 0u),
-         INV_CACHE_OP_RW_CLEAR, 0u, W(R_KILL, 1u, ME, I, 0u),
+         W(R_REQ, 1u, ME, S), INV_CACHE_OP_RW_CLEAR, 0u,
+         W(R_REQ, 1u, ME, I), INV_CACHE_ACT_NONE);
+  expect("a grant's take beside a full-width chain", W(R_REQ, 1u, WIDE, S),
+         INV_CACHE_OP_RW_CLEAR, 0u, W(R_REQ, 1u, WIDE, I),
          INV_CACHE_ACT_NONE);
-  expect("a grant's take leaves a valid copy", W(R_VALID, 0u, 0u, S, 0u),
-         INV_CACHE_OP_RW_CLEAR, 0u, W(R_VALID, 0u, 0u, I, 0u),
+  expect("a grant's take leaves a kill-marked fetch", W(R_KILL, 1u, ME, S),
+         INV_CACHE_OP_RW_CLEAR, 0u, W(R_KILL, 1u, ME, I),
          INV_CACHE_ACT_NONE);
-  expect("a grant's take with no reader", W(R_IDLE, 0u, 0u, S, 0u),
-         INV_CACHE_OP_RW_CLEAR, 0u, W(R_IDLE, 0u, 0u, I, 0u),
+  expect("a grant's take leaves a valid copy", W(R_VALID, 0u, 0u, S),
+         INV_CACHE_OP_RW_CLEAR, 0u, W(R_VALID, 0u, 0u, I),
          INV_CACHE_ACT_NONE);
-  expect("a grant with no write request out is late", W(R_REQ, 1u, ME, I, 0u),
-         INV_CACHE_OP_RW_CLEAR, 0u, W(R_REQ, 1u, ME, I, 0u),
+  expect("a grant's take with no reader", W(R_IDLE, 0u, 0u, S),
+         INV_CACHE_OP_RW_CLEAR, 0u, W(R_IDLE, 0u, 0u, I),
+         INV_CACHE_ACT_NONE);
+  expect("a grant with no write request out is late", W(R_REQ, 1u, ME, I),
+         INV_CACHE_OP_RW_CLEAR, 0u, W(R_REQ, 1u, ME, I),
          INV_CACHE_ACT_LATE);
-  expect("a grant under an OPEN is late", W(R_IDLE, 0u, 0u, O, 1u),
-         INV_CACHE_OP_RW_CLEAR, 0u, W(R_IDLE, 0u, 0u, O, 1u),
+  expect("a grant under an OPEN is late", W(R_IDLE, 0u, 0u, O),
+         INV_CACHE_OP_RW_CLEAR, 0u, W(R_IDLE, 0u, 0u, O),
          INV_CACHE_ACT_LATE);
-  expect("the claim closes the write axis; the fetch keeps its cohort",
-         W(R_REQ, 1u, ME, S, 1u), INV_CACHE_OP_CLAIM, 0u,
-         W(R_REQ, 1u, ME, I, 0u), INV_CACHE_ACT_NONE);
-  expect("the claim takes a write axis beside a full-width chain",
-         W(R_REQ, 1u, WIDE, S, 1u), INV_CACHE_OP_CLAIM, 0u,
-         W(R_REQ, 1u, WIDE, I, 0u), INV_CACHE_ACT_NONE);
-  expect("the claim resets an OPEN", W(R_REQ, 1u, ME, O, 1u),
-         INV_CACHE_OP_CLAIM, 0u, W(R_REQ, 1u, ME, I, 0u), INV_CACHE_ACT_NONE);
-  expect("the claim with no request out", W(R_IDLE, 0u, 0u, I, 1u),
-         INV_CACHE_OP_CLAIM, 0u, W(R_IDLE, 0u, 0u, I, 0u), INV_CACHE_ACT_NONE);
 
-  /* ---- the write axis and its token ------------------------------------ */
-  expect("axis claim", W(R_REQ, 1u, OTH, I, 1u), INV_CACHE_OP_RW_CLAIM, 0u,
-         W(R_REQ, 1u, OTH, O, 1u), INV_CACHE_ACT_WON);
-  expect("axis claim while out", W(R_IDLE, 0u, 0u, S, 0u),
-         INV_CACHE_OP_RW_CLAIM, 0u, W(R_IDLE, 0u, 0u, S, 0u),
+  /* ---- the write axis: only the claim's winner moves an OPEN ------------ */
+  expect("axis claim", W(R_REQ, 1u, OTH, I), INV_CACHE_OP_RW_CLAIM, 0u,
+         W(R_REQ, 1u, OTH, O), INV_CACHE_ACT_WON);
+  expect("axis claim while out", W(R_IDLE, 0u, 0u, S),
+         INV_CACHE_OP_RW_CLAIM, 0u, W(R_IDLE, 0u, 0u, S),
          INV_CACHE_ACT_NONE);
-  expect("commit under its token", W(R_REQ, 1u, OTH, O, 1u),
-         INV_CACHE_OP_RW_COMMIT, 1u, W(R_REQ, 1u, OTH, S, 1u),
-         INV_CACHE_ACT_WON);
-  expect("a stale OPEN's commit loses", W(R_IDLE, 0u, 0u, O, 0u),
-         INV_CACHE_OP_RW_COMMIT, 1u, W(R_IDLE, 0u, 0u, O, 0u),
-         INV_CACHE_ACT_LOST);
-  expect("a commit with no OPEN loses", W(R_IDLE, 0u, 0u, I, 0u),
-         INV_CACHE_OP_RW_COMMIT, 0u, W(R_IDLE, 0u, 0u, I, 0u),
-         INV_CACHE_ACT_LOST);
-  expect("give-back", W(R_IDLE, 0u, 0u, O, 0u), INV_CACHE_OP_RW_GIVE, 0u,
-         W(R_IDLE, 0u, 0u, I, 0u), INV_CACHE_ACT_NONE);
-  expect("give-back leaves the readers to their fetch", W(R_REQ, 1u, ME, O, 1u),
-         INV_CACHE_OP_RW_GIVE, 1u, W(R_REQ, 1u, ME, I, 1u), INV_CACHE_ACT_NONE);
-  expect("give-back leaves a valid copy", W(R_VALID, 0u, 0u, O, 0u),
-         INV_CACHE_OP_RW_GIVE, 0u, W(R_VALID, 0u, 0u, I, 0u),
+  expect("axis claim while OPEN", W(R_VALID, 0u, 0u, O),
+         INV_CACHE_OP_RW_CLAIM, 0u, W(R_VALID, 0u, 0u, O),
          INV_CACHE_ACT_NONE);
-  expect("a stale OPEN's give-back leaves it", W(R_REQ, 1u, ME, O, 0u),
-         INV_CACHE_OP_RW_GIVE, 1u, W(R_REQ, 1u, ME, O, 0u), INV_CACHE_ACT_NONE);
-  expect("a give-back with no OPEN leaves the word", W(R_REQ, 1u, ME, S, 0u),
-         INV_CACHE_OP_RW_GIVE, 0u, W(R_REQ, 1u, ME, S, 0u), INV_CACHE_ACT_NONE);
+  expect("commit", W(R_REQ, 1u, OTH, O), INV_CACHE_OP_RW_COMMIT, 0u,
+         W(R_REQ, 1u, OTH, S), INV_CACHE_ACT_NONE);
+  expect("a commit with no OPEN is late", W(R_IDLE, 0u, 0u, I),
+         INV_CACHE_OP_RW_COMMIT, 0u, W(R_IDLE, 0u, 0u, I),
+         INV_CACHE_ACT_LATE);
+  expect("a commit of a sent request is late", W(R_REQ, 1u, ME, S),
+         INV_CACHE_OP_RW_COMMIT, 0u, W(R_REQ, 1u, ME, S),
+         INV_CACHE_ACT_LATE);
+  expect("give-back", W(R_IDLE, 0u, 0u, O), INV_CACHE_OP_RW_GIVE, 0u,
+         W(R_IDLE, 0u, 0u, I), INV_CACHE_ACT_NONE);
+  expect("give-back leaves the readers to their fetch", W(R_REQ, 1u, ME, O),
+         INV_CACHE_OP_RW_GIVE, 0u, W(R_REQ, 1u, ME, I), INV_CACHE_ACT_NONE);
+  expect("give-back leaves a valid copy", W(R_VALID, 0u, 0u, O),
+         INV_CACHE_OP_RW_GIVE, 0u, W(R_VALID, 0u, 0u, I),
+         INV_CACHE_ACT_NONE);
+  expect("a give-back with no OPEN is late", W(R_REQ, 1u, ME, I),
+         INV_CACHE_OP_RW_GIVE, 0u, W(R_REQ, 1u, ME, I), INV_CACHE_ACT_LATE);
+  expect("a give-back of a sent request is late", W(R_REQ, 1u, ME, S),
+         INV_CACHE_OP_RW_GIVE, 0u, W(R_REQ, 1u, ME, S), INV_CACHE_ACT_LATE);
 
   /* ---- invalidation round ---------------------------------------------- */
   {

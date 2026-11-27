@@ -107,12 +107,13 @@
  * the engine or a holder dispatched it on.  The storage kind decides.  A GPU
  * kind lives on its creating rank alone and keeps no home protocol: it is
  * retired here, its storage going once the last reference drops.  A coherent
- * block goes to its arm (arts_db_destroy_arrived), which keeps its own exact
- * destroy roster (the creator, the readers, every write requester), runs the
- * fan-out, then retires the descriptor through its self_cb; any waiter left
- * parked at destroy time (UB per OCR) is never woken, and its slot's
- * descriptor pin keeps the descriptor, and so the waiter, until the process
- * ends. */
+ * block goes to its arm (arts_db_destroy_arrived), which retires the
+ * descriptor through its self_cb once nothing it counts is owed (at once, or
+ * under EXCL·PURGE at the last counted release) and, when that retire
+ * detached it, fans the destroy out to its own exact roster (the creator, the
+ * readers, every write requester); any waiter left parked at destroy time (UB
+ * per OCR) is never woken, and its slot's descriptor pin keeps the
+ * descriptor, and so the waiter, until the process ends. */
 void arts_handler_db_destroy(void *item_v, void *args_v) {
   struct arts_db_s *db = (struct arts_db_s *)item_v;
   const struct arts_ooo_args_db_destroy_s *a =
@@ -271,9 +272,6 @@ void arts_handler_db_create(void *item_v, void *args_v) {
   } else {
     arts_db_cache_init(&stub->cache, db_guid, db_size, ARTS_DB_INIT_HOME_RECV,
                        creator_rank);
-    /* Still unpublished: the write request the creator's claim closed while
-     * it was out is owed before anything can reach the descriptor. */
-    arts_db_home_seed_owed(stub, creator_rank, p->owed);
   }
 #ifdef ARTS_USE_CXL
   /* The creator minted the block's store before sending this create; the home
@@ -519,11 +517,11 @@ void arts_handler_db_snapshot_response(
 /* Cat-C pure body (CACHE_DESTROY).  The wire dispatcher has already looked
  * the cache up with a held ref and passes the db_s as item_v (cache is its
  * FIRST member, offset 0); a home never sends this to its own rank.  No
- * lookup/NULL-check here.  A block is destroyed once and its home tells each
- * rank on its roster once; every such rank installed its cache before the
- * request that put it there, and nothing else retires it, so the lookup misses
- * only when a GUID is reused: another lifetime's notice already retired this
- * rank's cache.  The dispatcher drops that notice.
+ * lookup/NULL-check here.  Its home tells each rank on its roster once, from
+ * the destroy whose retire detached the block; every such rank installed its
+ * cache before the request that put it there, and nothing else retires it, so
+ * the lookup does not miss in a run inside the contract.  The dispatcher
+ * drops a notice that finds no cache.
  *
  * Destroy is just the route-slot detach of the object the message was
  * dispatched on (CAS value→NULL + drop the install ref), through its self_cb

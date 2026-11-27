@@ -183,9 +183,13 @@ _Static_assert(sizeof(struct arts_msg_time_sync_resp_packet_s) == 32,
                "time_sync_resp sizeof drifted");
 #if defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)
 /* The answer token follows the fields every cell has, and a home round's
- * home token follows it; GRANT_RESPONSE's map trails both. */
+ * home token follows it; GRANT_RESPONSE's map trails both.  A request's
+ * version follows its landing, 8-aligned, in every cell. */
 _Static_assert(sizeof(struct arts_msg_grant_request_packet_s) == 72,
                "ownership_request sizeof drifted");
+_Static_assert(offsetof(struct arts_msg_grant_request_packet_s, have_version) ==
+                   56,
+               "ownership_request have_version drifted");
 _Static_assert(offsetof(struct arts_msg_grant_request_packet_s, token) == 64,
                "ownership_request token drifted");
 _Static_assert(sizeof(struct arts_msg_grant_response_packet_s) == 80,
@@ -233,6 +237,9 @@ _Static_assert(offsetof(struct arts_msg_grant_confirm_packet_s, home_token) ==
 #ifdef ARTS_VALIDITY_EXCL
 _Static_assert(sizeof(struct arts_msg_grant_request_packet_s) == 56,
                "ownership_request sizeof drifted");
+_Static_assert(offsetof(struct arts_msg_grant_request_packet_s, have_version) ==
+                   48,
+               "ownership_request have_version drifted");
 _Static_assert(sizeof(struct arts_msg_grant_invalidate_packet_s) == 64,
                "ownership_invalidate sizeof drifted");
 _Static_assert(sizeof(struct arts_msg_grant_confirm_ack_packet_s) == 64,
@@ -240,6 +247,9 @@ _Static_assert(sizeof(struct arts_msg_grant_confirm_ack_packet_s) == 64,
 #else
 _Static_assert(sizeof(struct arts_msg_grant_request_packet_s) == 64,
                "ownership_request sizeof drifted");
+_Static_assert(offsetof(struct arts_msg_grant_request_packet_s, have_version) ==
+                   56,
+               "ownership_request have_version drifted");
 _Static_assert(sizeof(struct arts_msg_grant_invalidate_packet_s) == 72,
                "ownership_invalidate sizeof drifted");
 _Static_assert(sizeof(struct arts_msg_grant_confirm_ack_packet_s) == 72,
@@ -254,8 +264,8 @@ _Static_assert(sizeof(struct arts_msg_publish_ack_packet_s) == 64,
 _Static_assert(sizeof(struct arts_msg_grant_confirm_packet_s) == 24,
                "ownership_confirm sizeof drifted");
 #endif
-/* A read request, its redirect and its answer carry no cover word; the
- * pads keep the answer's and the redirect's 64-bit fields 8-aligned. */
+/* A read request, its redirect and its answer: the pads keep the answer's
+ * and the redirect's 64-bit fields 8-aligned. */
 _Static_assert(offsetof(struct arts_msg_snapshot_request_packet_s, rdzv) == 24,
                "snapshot_request rdzv drifted");
 _Static_assert(offsetof(struct arts_msg_snapshot_response_packet_s,
@@ -305,9 +315,8 @@ _Static_assert(sizeof(struct arts_msg_snapshot_response_packet_s) == 64,
                "snapshot_response sizeof drifted");
 #endif
 #ifdef ARTS_VALIDITY_INV
-/* A read request and its redirect carry no cover word: the request's flags
- * take the cover byte's slot, and the redirect's pad keeps its 64-bit fields
- * 8-aligned. */
+/* A read request and its redirect: the request's flags follow its mode,
+ * and the redirect's pad keeps its 64-bit fields 8-aligned. */
 _Static_assert(offsetof(struct arts_msg_inv_request_packet_s, mode) == 24,
                "inv_request mode drifted");
 _Static_assert(offsetof(struct arts_msg_inv_request_packet_s, flags) == 26,
@@ -355,9 +364,15 @@ _Static_assert(sizeof(struct arts_msg_db_create_coherent_packet_s) == 48,
 _Static_assert(offsetof(struct arts_msg_db_create_coherent_packet_s,
                         cxl_addr) == 32,
                "db_create_coherent's CXL slot must follow db_size");
+_Static_assert(offsetof(struct arts_msg_db_create_coherent_packet_s, pad) ==
+                   44,
+               "db_create_coherent pad drifted (CXL build)");
 #else
 _Static_assert(sizeof(struct arts_msg_db_create_coherent_packet_s) == 40,
                "db_create_coherent sizeof drifted");
+_Static_assert(offsetof(struct arts_msg_db_create_coherent_packet_s, pad) ==
+                   36,
+               "db_create_coherent pad drifted");
 #endif
 _Static_assert(sizeof(struct arts_msg_destroy_packet_s) == 24,
                "destroy sizeof drifted");
@@ -408,8 +423,8 @@ _Static_assert(offsetof(struct arts_msg_excl_release_packet_s, cv) == 32,
                "lock_release cv drifted");
 _Static_assert(offsetof(struct arts_msg_excl_release_packet_s, rdzv_txid) == 48,
                "lock_release rdzv_txid drifted");
-_Static_assert(offsetof(struct arts_msg_excl_request_packet_s, cover) == 28,
-               "lock_request cover drifted");
+_Static_assert(offsetof(struct arts_msg_excl_request_packet_s, pad) == 28,
+               "lock_request pad drifted");
 #ifdef ARTS_RETENTION_RETAIN
 _Static_assert(sizeof(struct arts_msg_excl_forward_packet_s) == 80,
                "lock_forward sizeof drifted");

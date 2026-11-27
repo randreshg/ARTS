@@ -61,8 +61,6 @@ void arts_db_home_init(struct arts_db_s *db, unsigned int rw_holder,
   assert(db->roster.nwords <= INV_ROUND_MAX_WORDS &&
          "a round keeps one target mask per roster word on its stack");
   arts_rank_bitset_init(&db->cached_ranks, nranks);
-  atomic_store_explicit(&db->cover_gate, 0u, memory_order_relaxed);
-  db->claim_rank = (unsigned int)-1;
   /* A creator on another rank holds a cache of the block from the moment it
    * made it, so the destroy must reach that rank too: its cache would
    * otherwise outlive the block, keeping its storage and the rank's route

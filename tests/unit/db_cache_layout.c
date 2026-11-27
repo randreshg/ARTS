@@ -264,7 +264,6 @@ static void print_fingerprint(void) {
   MEMBER(cache_t, ro_aside);
 #endif
   MEMBER(cache_t, payload_pending);
-  MEMBER(cache_t, init_kind);
 
   TYPE(db_t);
   MEMBER(db_t, cache);
@@ -286,8 +285,6 @@ static void print_fingerprint(void) {
   MEMBER(db_t, pending_rw);
   MEMBER(db_t, grant_baton);
   MEMBER(db_t, cached_ranks);
-  MEMBER(db_t, cover_gate);
-  MEMBER(db_t, claim_rank);
 #endif
 #if defined(ARTS_VALIDITY_VAL) && defined(ARTS_READ_SOURCE_HOME)
   MEMBER(db_t, cached_version);
@@ -306,9 +303,7 @@ static void print_fingerprint(void) {
   MEMBER(db_t, rw_waiters);
   MEMBER(db_t, ro_waiters);
   MEMBER(db_t, cached_ranks);
-  MEMBER(db_t, claim_rank);
 #ifdef ARTS_RETENTION_RETAIN
-  MEMBER(db_t, cover_gate);
   MEMBER(db_t, ro_retainers);
 #endif
 #endif
@@ -420,29 +415,29 @@ int main(void) {
 
 #if defined(ARTS_VALIDITY_EXCL) && defined(ARTS_RETENTION_PURGE)
   /* The exclusion arm's two words under PURGE.  Cache word:
-   * [rw_state:2 (63..62) | ro_state:2 (61..60) | spare:1 (59) | stub:1 (58) |
+   * [rw_state:2 (63..62) | ro_state:2 (61..60) | spare:2 (59..58) |
    *  rw_count:28 (57..30) | ro_count:30 (29..0)].  Home lock_state:
-   * [teardown:1 (63) | state_bit:1 (62) | rwo:1 (61) | spare:17 (60..44) |
+   * [teardown:1 (63) | state_bit:1 (62) | spare:18 (61..44) |
    *  w:22 (43..22) | r:22 (21..0)], whose counts hold one request per rank
    * of the 14-bit rank space. */
-  if (CACHE_MAKE_X(3u, 3u, 1u, CACHE_RW_CNT_MASK, CACHE_CNT_MASK) !=
-          ~((uint64_t)1 << 59) ||
-      CACHE_MAKE_X(0u, 0u, 1u, 0u, 0u) != (uint64_t)1 << 58 ||
+  if (CACHE_MAKE(3u, 3u, CACHE_RW_CNT_MASK, CACHE_CNT_MASK) !=
+          ~((uint64_t)3 << 58) ||
       CACHE_MAKE(0u, 0u, CACHE_RW_CNT_MASK, 0u) != (uint64_t)0x0fffffffULL
                                                        << 30) {
     (void)fprintf(stderr, "FAIL db_cache_layout: the cache word's fields do "
-                          "not fill bits 63..60 and 58..0\n");
+                          "not fill bits 63..60 and 57..0\n");
     rc = 1;
   }
-  if (LOCK_MAKE_STATE_FULL(1u, 1u, 1u, EXCL_STATE_W_MASK, EXCL_STATE_R_MASK) !=
-          (uint64_t)0xe0000fffffffffffULL ||
-      LOCK_MAKE_STATE_FULL(0u, 0u, 1u, 0u, 0u) != (uint64_t)1 << 61 ||
+  if (LOCK_MAKE_STATE_TD(1u, 1u, EXCL_STATE_W_MASK, EXCL_STATE_R_MASK) !=
+          (uint64_t)0xc0000fffffffffffULL ||
+      LOCK_MAKE_STATE_TD(1u, 0u, 0u, 0u) != (uint64_t)1 << 63 ||
+      LOCK_MAKE_STATE(1u, 0u, 0u) != (uint64_t)1 << 62 ||
       LOCK_MAKE_STATE(0u, EXCL_STATE_W_MASK, 0u) != (uint64_t)0x3fffffULL
                                                         << 22 ||
       EXCL_STATE_W_MASK < ((uint64_t)1 << ARTS_GUID_RANK_BITS) ||
       EXCL_STATE_R_MASK < ((uint64_t)1 << ARTS_GUID_RANK_BITS)) {
     (void)fprintf(stderr, "FAIL db_cache_layout: lock_state's fields do not "
-                          "fill bits 63..61 and 43..0, or a count cannot "
+                          "fill bits 63..62 and 43..0, or a count cannot "
                           "hold every rank\n");
     rc = 1;
   }
@@ -450,16 +445,14 @@ int main(void) {
 #if defined(ARTS_VALIDITY_EXCL) && defined(ARTS_RETENTION_RETAIN)
   /* The exclusion arm's cache word under RETAIN: [ro_granted:1 (63) |
    * owner:1 (62) | rw_st:2 (61..60) | ro_st:2 (59..58) | migrate_target:14
-   * (57..44) | spare:1 (43) | stub:1 (42) | wc:20 (41..22) | rc:22 (21..0)]. */
+   * (57..44) | spare:2 (43..42) | wc:20 (41..22) | rc:22 (21..0)]. */
   if ((CACHE_MAKE_FULL(1u, 3u, 3u, CACHE_OWNER_MT_MASK, CACHE_OWNER_WC_MASK,
                        CACHE_OWNER_RC_MASK) |
-       CACHE_OWNER_LEASED_MASK | CACHE_OWNER_STUB_BIT) !=
-          ~((uint64_t)1 << 43) ||
-      CACHE_OWNER_STUB_BIT != (uint64_t)1 << 42 ||
+       CACHE_OWNER_LEASED_MASK) != ~((uint64_t)3 << 42) ||
       CACHE_MAKE_FULL(0u, 0u, 0u, 0u, CACHE_OWNER_WC_MASK, 0u) !=
           (uint64_t)0xfffffULL << 22) {
     (void)fprintf(stderr, "FAIL db_cache_layout: the RETAIN cache word's "
-                          "fields do not fill bits 63..44 and 42..0\n");
+                          "fields do not fill bits 63..44 and 41..0\n");
     rc = 1;
   }
 #endif

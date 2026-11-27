@@ -61,7 +61,7 @@ static void *minter(void *arg) {
   }
   for (unsigned i = 0; i < MINTS_PER_THREAD; i++) {
     unsigned r = i % NRANK;
-    arts_guid_t g = arts_guid_create_for_rank(r, ARTS_GUID_DB);
+    arts_guid_t g = arts_db_guid_mint(r, (uint64_t)i);
     out->seqs[r][out->count[r]++] = ARTS_GUID_DB_GET_SEQ(ARTS_GUID_GET_KEY(g));
   }
   return NULL;

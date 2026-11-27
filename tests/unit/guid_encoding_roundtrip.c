@@ -29,7 +29,10 @@
  *   5. Exhaustion of a thread's block or of a rank's DB seq slice is a HARD
  *      ERROR (no wraparound) — verified in a forked child so the abort doesn't
  *      take the test process down.
- *   6. szhint encode/decode.
+ *   6. szhint: the data-block mint keys the length's encoding beside a seq
+ *      of its creator slice; the decoded bound covers every length up to
+ *      ARTS_DB_SIZE_MAX, which decodes exactly, and stays below the all-ones
+ *      value.
  *   7. Node init alone fixes the geometry, from the rank, the rank count and
  *      the rank's thread count.  Over simulated ranks of 2-5 threads each,
  *      every thread block lies in its rank's slice [r*S, (r+1)*S),
@@ -40,7 +43,7 @@
  *      mints for data blocks) get pairwise distinct GUIDs, each in its
  *      minter's slice.  The encoder's rank guards fail loudly (forked
  *      children): ARTS_HINT_ANY_RANK reaching it, a home >= N of every kind,
- *      and a reservation of a data-block kind.
+ *      a reservation of a data-block kind, and a flat mint of one.
  */
 
 #include "arts/system/shutdown.h"
@@ -164,7 +167,7 @@ static void exhaust_db_slice(void) {
   atomic_store_explicit(&db_seq_next[0],
                         db_seq_creator_base + arts_db_seq_budget - 4,
                         memory_order_relaxed);
-  (void)arts_guid_create_for_rank(0, ARTS_GUID_DB);
+  (void)arts_db_guid_mint(0, 64);
 }
 
 static void exhaust_thread_block(void) {
@@ -181,11 +184,15 @@ static void encode_any_rank_flat(void) {
 }
 
 static void encode_any_rank_db(void) {
-  (void)arts_guid_create_for_rank(ARTS_HINT_ANY_RANK, ARTS_GUID_DB);
+  (void)arts_db_guid_mint(ARTS_HINT_ANY_RANK, 64);
 }
 
 static void encode_db_home_past_n(void) {
-  (void)arts_guid_create_for_rank(arts_global_rank_count, ARTS_GUID_DB);
+  (void)arts_db_guid_mint(arts_global_rank_count, 64);
+}
+
+static void encode_db_kind_flat(void) {
+  (void)arts_guid_create_for_rank(0, ARTS_GUID_DB);
 }
 
 static void reserve_db_kind(void) {
@@ -327,8 +334,8 @@ int main(void) {
 
   /* ---- Test 4: counter disjointness across type. ---- */
   node_init(0, 1, 1);
-  arts_guid_t a = arts_guid_create_for_rank(0, ARTS_GUID_DB);
-  arts_guid_t b = arts_guid_create_for_rank(0, ARTS_GUID_DB);
+  arts_guid_t a = arts_db_guid_mint(0, 64);
+  arts_guid_t b = arts_db_guid_mint(0, 64);
   if (a == b) {
     FAIL("two same-(rank,type) reserves aliased\n");
   }
@@ -347,19 +354,23 @@ int main(void) {
     FAIL("flat-kind block exhaustion did not hard-error\n");
   }
 
-  /* ---- Test 6: szhint encode/decode — bound covers, sentinel unreachable. */
+  /* ---- Test 6: szhint — the mint keys the length's bound, which covers it,
+   * and every length a create accepts encodes below the all-ones value. */
   {
+    node_init(0, 2, 1);
     uint64_t probes[] = {0,    1,    63,   64,   65,   2047, 2048,
                          2049, 4095, 4096, 4097, 65536};
     for (unsigned i = 0; i < sizeof(probes) / sizeof(probes[0]); i++) {
       uint64_t sz = probes[i];
-      uint64_t hint = arts_db_szhint_encode(sz);
-      if (hint == ARTS_GUID_DB_SZHINT_NONE) {
-        FAIL("szhint encode hit the sentinel for size %lu\n",
+      arts_guid_t g = arts_db_guid_mint(1, sz);
+      if (arts_guid_get_kind(g) != ARTS_GUID_DB ||
+          arts_guid_get_rank(g) != 1u ||
+          ARTS_GUID_DB_GET_SZHINT(g) != arts_db_szhint_encode(sz) ||
+          ARTS_GUID_DB_GET_SEQ(ARTS_GUID_GET_KEY(g)) / arts_db_seq_budget !=
+              0u) {
+        FAIL("the mint of a %lu-byte block did not key [szhint | own seq]\n",
              (unsigned long)sz);
       }
-      arts_guid_t g = arts_db_guid_stamp_szhint(
-          ARTS_GUID_MAKE(ARTS_GUID_DB, 1, 12345), sz);
       uint64_t bound = arts_db_szhint_bound(g);
       if (bound < sz) {
         FAIL("szhint bound %lu < size %lu\n", (unsigned long)bound,
@@ -369,56 +380,40 @@ int main(void) {
         FAIL("szhint overshoot too large: size %lu bound %lu\n",
              (unsigned long)sz, (unsigned long)bound);
       }
-      if (ARTS_GUID_DB_GET_SEQ(ARTS_GUID_GET_KEY(g)) != 12345) {
-        FAIL("stamp disturbed the seq field\n");
+      if (sz != 0 && bound == 0) {
+        FAIL("a %lu-byte block decoded no bound\n", (unsigned long)sz);
       }
     }
-    /* power sweep to the 4TB edge: bound covers up to the encodable max,
-     * beyond it the sentinel (bound 0) takes over. */
-    for (uint64_t sz = 64; sz <= ((uint64_t)4 << 40); sz <<= 1) {
-      uint64_t hint = arts_db_szhint_encode(sz);
-      arts_guid_t g = arts_db_guid_stamp_szhint(
-          ARTS_GUID_MAKE(ARTS_GUID_DB, 1, 7), sz);
-      uint64_t bound = arts_db_szhint_bound(g);
-      if (hint != ARTS_GUID_DB_SZHINT_NONE && bound < sz) {
-        FAIL("power sweep: bound %lu < size %lu\n", (unsigned long)bound,
-             (unsigned long)sz);
-      }
-      if (hint == ARTS_GUID_DB_SZHINT_NONE && bound != 0) {
-        FAIL("sentinel decoded a nonzero bound\n");
-      }
-      arts_guid_t gm1 = arts_db_guid_stamp_szhint(
-          ARTS_GUID_MAKE(ARTS_GUID_DB, 1, 7), sz - 1);
-      if (arts_db_szhint_bound(gm1) != 0 && arts_db_szhint_bound(gm1) < sz - 1) {
-        FAIL("power-1 sweep: bound < size at %lu\n", (unsigned long)(sz - 1));
-      }
-    }
-    /* ARTS_DB_SIZE_MAX is the largest size that encodes: its bound is exact,
-     * one byte more, and every size up to the largest uint64_t, is the
-     * sentinel (no wrap). */
-    {
-      arts_guid_t gm = arts_db_guid_stamp_szhint(
-          ARTS_GUID_MAKE(ARTS_GUID_DB, 1, 9), ARTS_DB_SIZE_MAX);
-      if (arts_db_szhint_encode(ARTS_DB_SIZE_MAX) ==
-              ARTS_GUID_DB_SZHINT_NONE ||
-          arts_db_szhint_bound(gm) != ARTS_DB_SIZE_MAX) {
-        FAIL("ARTS_DB_SIZE_MAX does not encode exactly\n");
-      }
-      uint64_t over[] = {ARTS_DB_SIZE_MAX + 1, ARTS_DB_SIZE_MAX + 64,
-                         (uint64_t)1 << 50,    UINT64_MAX - 63,
-                         UINT64_MAX - 1,       UINT64_MAX};
-      for (unsigned i = 0; i < sizeof(over) / sizeof(over[0]); i++) {
-        if (arts_db_szhint_encode(over[i]) != ARTS_GUID_DB_SZHINT_NONE) {
-          FAIL("size %lu encodes below the sentinel\n",
-               (unsigned long)over[i]);
+    /* power sweep up to ARTS_DB_SIZE_MAX: the bound covers each length and the
+     * one below it, and no length reaches the all-ones value. */
+    for (uint64_t sz = 64; sz <= ARTS_DB_SIZE_MAX; sz <<= 1) {
+      uint64_t hints[2] = {arts_db_szhint_encode(sz),
+                           arts_db_szhint_encode(sz - 1)};
+      uint64_t lens[2] = {sz, sz - 1};
+      for (unsigned k = 0; k < 2; k++) {
+        if (hints[k] >= ARTS_GUID_DB_SZHINT_MASK) {
+          FAIL("size %lu encodes the all-ones value\n",
+               (unsigned long)lens[k]);
+        }
+        arts_guid_t g =
+            ARTS_GUID_MAKE(ARTS_GUID_DB, 1, ARTS_GUID_DB_KEY(hints[k], 7));
+        if (arts_db_szhint_bound(g) < lens[k]) {
+          FAIL("power sweep: bound %lu < size %lu\n",
+               (unsigned long)arts_db_szhint_bound(g),
+               (unsigned long)lens[k]);
         }
       }
     }
-    /* the all-ones sentinel value itself decodes to 0 */
-    arts_guid_t s_g = ARTS_GUID_MAKE(
-        ARTS_GUID_DB, 1, ARTS_GUID_DB_KEY(ARTS_GUID_DB_SZHINT_NONE, 7));
-    if (arts_db_szhint_bound(s_g) != 0) {
-      FAIL("explicit sentinel decoded nonzero\n");
+    /* ARTS_DB_SIZE_MAX, the largest length a create accepts, decodes
+     * exactly. */
+    {
+      uint64_t hint = arts_db_szhint_encode(ARTS_DB_SIZE_MAX);
+      arts_guid_t gm =
+          ARTS_GUID_MAKE(ARTS_GUID_DB, 1, ARTS_GUID_DB_KEY(hint, 9));
+      if (hint >= ARTS_GUID_DB_SZHINT_MASK ||
+          arts_db_szhint_bound(gm) != ARTS_DB_SIZE_MAX) {
+        FAIL("ARTS_DB_SIZE_MAX does not encode exactly\n");
+      }
     }
   }
 
@@ -473,7 +468,7 @@ int main(void) {
                  r, n, t, lo, hi);
           }
           uint64_t seq = ARTS_GUID_DB_GET_SEQ(
-              ARTS_GUID_GET_KEY(arts_guid_create_for_rank(home, ARTS_GUID_DB)));
+              ARTS_GUID_GET_KEY(arts_db_guid_mint(home, 64)));
           if (seq / arts_db_seq_budget != r) {
             FAIL("rank %u of %u: a DB seq left the creator slice\n", r, n);
           }
@@ -518,7 +513,7 @@ int main(void) {
           arts_guid_t seq[PER_HOME];
           if (kinds[ki] == ARTS_GUID_DB) {
             for (unsigned int i = 0; i < PER_HOME; i++) {
-              seq[i] = arts_guid_create_for_rank(h, ARTS_GUID_DB);
+              seq[i] = arts_db_guid_mint(h, (uint64_t)i * 64u);
             }
           } else {
             seq[0] = arts_guid_reserve(kinds[ki], h);
@@ -562,6 +557,9 @@ int main(void) {
     if (!dies(reserve_db_kind) || !dies(reserve_range_db_kind)) {
       FAIL("a reservation of a data-block kind did not hard-error\n");
     }
+    if (!dies(encode_db_kind_flat)) {
+      FAIL("a flat mint of a data-block kind did not hard-error\n");
+    }
     if (!dies(encode_event_home_past_n) || !dies(reserve_edt_home_past_n)) {
       FAIL("an EVENT or EDT home >= N did not hard-error\n");
     }
@@ -571,6 +569,6 @@ int main(void) {
   printf("PASS guid_encoding_roundtrip: field round-trip, range inverse, "
          "counter disjoint, exhaustion hard-errors, szhint bound-covers, "
          "rank-sliced thread blocks, same sequence distinct per rank, rank "
-         "guards, data-block reservation refused\n");
+         "guards, data-block reservation and flat mint refused\n");
   return 0;
 }

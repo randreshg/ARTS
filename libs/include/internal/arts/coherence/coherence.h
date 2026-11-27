@@ -52,12 +52,11 @@ extern "C" {
  * axis takes it, after it commits and before the request leaves; whichever
  * frame commits a transition that closes the axis drops it at its own end,
  * after its last access: the answer (on EXCL·RETAIN the owner's answer to its
- * own forwarded read request included), a create's claim, or, for an axis a
- * cut shutdown left open on a
- * descriptor still installed at teardown, the teardown sweep
+ * own forwarded read request included) or, for an axis a cut shutdown left
+ * open on a descriptor still installed at teardown, the teardown sweep
  * (arts_db_sweep_open_items, in a sanitizer build, once the other runtime
- * threads have stopped); a
- * descriptor retired with an axis open keeps that count to the process exit.
+ * threads have stopped); a descriptor retired with an axis open keeps that
+ * count to the process exit.
  * The count belongs to the axis, never to a message: a hop (a redirect,
  * INV·OWNER's bounce of a holder that has no bytes, which carries the
  * request's own landing and token, EXCL·RETAIN's forward) or a flight's
@@ -145,16 +144,13 @@ extern "C" {
  * decrement.  The window between the CAS that opens the axis and the take is
  * covered by the count the opener runs under (the slot's pin under a walk's or
  * a drain's account, the dispatcher's pin for a replay off the walk, a grant
- * frame's or a create's count for a rearm, the releasing EDT's pin for a
- * flight) and, beneath that count, by the install's hold (the control block's
- * in_slot bit) and the destroy's gate.  The install's only retire is the
- * home's teardown (on another rank, the CACHE_DESTROY that teardown sends).
- * The request leaves only after the take; the destroy's gate holds the
- * teardown for the claimer's pre-claim write request until it arrives, and
- * the destroy contract keeps it behind every other request, whose waiters
- * cannot complete before its answer, so no legal destroy precedes the take.  A
- * decrement that precedes the take (a claim's, which holds a count of its own)
- * therefore never reaches zero.  The EXCL·RETAIN home's count is the exception:
+ * frame's count for a rearm, the releasing EDT's pin for a flight) and,
+ * beneath that count, by the install's hold (the control block's in_slot
+ * bit).  The install's only retire is the home's teardown (on another rank,
+ * the CACHE_DESTROY that teardown sends).  The request leaves only after the
+ * take, and the destroy contract keeps the teardown behind every request,
+ * whose waiters cannot complete before its answer, so no legal destroy
+ * precedes the take.  The EXCL·RETAIN home's count is the exception:
  * another frame can start the migration a write request's CAS counted, and its
  * EXCL_CONFIRM can legally reach the home retired meanwhile and drop the count,
  * so the take precedes the CAS that lifts w; every write of that word is an
@@ -572,9 +568,8 @@ uint64_t arts_db_cxl_slot_mint(uint64_t db_size);
 /* Allocate out of the arena, for the size the cache DECLARES, and
  * record it.  False when the block is zero-size (db_size == 0) or
  * already carries a slot — in which case nothing was allocated.  The caller
- * must have recorded cache->db_size first: a first-touch stub carries none,
- * and a create that finds such a cache is the block's declaration of its
- * size.  Only a create that MADE the block may call it, and only for
+ * must have recorded cache->db_size first, as the create's cache init does.
+ * Only a create that MADE the block may call it, and only for
  * db_type == ARTS_DB — a kind that keeps no coherence state has no funnel to
  * read the slot.
  *
@@ -606,72 +601,24 @@ static inline uint64_t arts_db_cxl_slot_mint(uint64_t db_size) {
 void arts_db_create_install_home_buffer(struct arts_db_cache_s *cache,
                                         uint64_t db_size);
 
-/* Record what made a cache while it is still private to its builder: a
- * create's own descriptor, the home's directory, or a dependence's first touch
- * (ARTS_DB_INIT_STUB).  Called from each arm's arts_db_cache_init. */
-void arts_db_cache_kind_seed(struct arts_db_cache_s *c,
-                             arts_db_init_kind_t kind);
-
-/* A create on a rank other than the block's home that finds this rank's slot
- * holding a cache a dependence made claims it rather than parking: that cache
- * is the rank's view of the block the create is making, and the create makes
- * it its own (a cache of an earlier lifetime that kept a right to the block
- * then refuses the create's hold, and the create parks behind it).  Turns the
- * kind from ARTS_DB_INIT_STUB into the creator's (ARTS_DB_INIT_CREATOR_REMOTE)
- * in one step, so exactly one create claims a given cache and every later
- * create of the label on this rank finds a creator's cache and parks.  False
- * when the cache was not a dependence's. */
-bool arts_db_create_claims_stub(struct arts_db_cache_s *cache);
-
-/* Record the create's own hold in this rank's cache, each arm naming it in
- * its own state: the migrating-grant arms take possession plus one writer on
- * the grant word, the exclusion arm takes its cache word's RW grant, and an
- * arm that keeps no permission word takes nothing.  Runs only for a create
- * that claimed the cache; it reports whether it committed, because possession
- * is never seeded over a word that already carries a hold (a cache of an
- * earlier lifetime that kept a right to the block refuses it).  Defined once
- * per protocol TU. */
-bool arts_db_create_take_hold(struct arts_db_cache_s *cache, uint8_t *owed);
-
 #if defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)
 /* The write-request axis of the arm's request word, for the shared grant
- * plane.  claim: IDLE -> OPEN (true = won), handing back the stub bit it read
- * as the OPEN's token.  commit: OPEN -> SENT only while the stub bit still
- * equals the token, returning the request's cover word (ARTS_COVER_PRECLAIM
- * while the stub bit is set, else 0) read in that same atom; false = a
- * create's claim reset this OPEN (the claim clears the stub bit exactly once,
- * so an OPEN claimed after it carries another token and a stale holder can
- * never commit it), and the claim serves the waiter.
- * giveback: OPEN -> IDLE with nothing to ask for, under the same token.
- * clear: SENT -> IDLE where a grant lands, clearing the stub bit; it serves
- * no reader.  The axis counts: a won commit's caller takes the write axis's
- * before it sends the request; clear closes it, and its count passes to the
- * frame that runs the grant. */
-bool arts_db_rw_req_claim(struct arts_db_cache_s *cache, uint32_t *tok);
-bool arts_db_rw_req_commit(struct arts_db_cache_s *cache, uint32_t tok,
-                           uint32_t *cover);
-void arts_db_rw_req_giveback(struct arts_db_cache_s *cache, uint32_t tok);
+ * plane.  claim: IDLE -> OPEN (true = won); the winner owns the OPEN, and
+ * nothing else moves the axis until it commits or gives it back.
+ * commit: OPEN -> SENT.  giveback: OPEN -> IDLE with nothing to ask for.
+ * Either from any other state is fatal: the caller does not hold the OPEN.
+ * clear: SENT -> IDLE where a grant lands; it serves no reader.  The axis
+ * counts: a commit's caller takes the write axis's before it sends the
+ * request; clear closes it, and its count passes to the frame that runs the
+ * grant. */
+bool arts_db_rw_req_claim(struct arts_db_cache_s *cache);
+void arts_db_rw_req_commit(struct arts_db_cache_s *cache);
+void arts_db_rw_req_giveback(struct arts_db_cache_s *cache);
 void arts_db_rw_req_clear(struct arts_db_cache_s *cache);
-/* The grant plane's half of a create's claim (grant.c): claim_writers serves
- * every parked writer under the create's hold, each with a hold of its own,
- * BEFORE the arm's CLAIM transition reopens the write axis; rearm, after it,
- * opens a request for any writer that pushed past the take. */
-void arts_db_grant_claim_writers(struct arts_db_cache_s *cache);
-void arts_db_grant_rearm(struct arts_db_cache_s *cache);
 
-/* The destroy's gate at the home (coherence.c; the word is cover_gate.h's).
- * preclaim_write_absorb: true when an arriving write request is the claiming
- * creator's pre-claim request (PRECLAIM in its cover word, from the rank the
- * create's announce named).  The claim served that request's writers and
- * closed its axis, so the caller queues nothing and answers nothing;
- * *teardown says the arrival was the one a marked gate waited for, and the
- * caller then runs arts_db_home_destroy_now.  cover_destroy marks the gate
- * and tears down at once unless that request is still owed; the arm's
- * destroy_now is the teardown itself (fan-out and slot return), run by
- * whichever of the destroy and the owed arrival reaches the edge. */
-bool arts_db_preclaim_write_absorb(struct arts_db_s *db, unsigned int requester,
-                                   uint32_t cover, bool *teardown);
-void arts_db_cover_destroy(struct arts_db_s *db);
+/* The home's teardown (fan-out and slot return), run by the destroy: it
+ * retires the block first and tells the roster only when that retire detached
+ * it, so the block's CACHE_DESTROYs leave once. */
 void arts_db_home_destroy_now(struct arts_db_s *db);
 
 /* The parked-reader pool (struct arts_db_reader_pool_s, reader_pool.c).
@@ -691,20 +638,6 @@ void arts_db_reader_serve_chain(struct arts_db_reader_pool_s *p,
                                 uint32_t head);
 void arts_db_reader_pool_destroy(struct arts_db_reader_pool_s *p);
 #endif
-#ifdef ARTS_VALIDITY_VAL
-/* claim_rw_axis: the create's claim of the write axis (see the definition),
- * returning the announce's owed byte. */
-uint8_t arts_db_val_claim_rw_axis(struct arts_db_cache_s *cache);
-#endif
-
-/* The counterpart, for a create that gives the block its first image in a
- * cache this rank had already made: on an arm that tracks a durable reader
- * copy, that image is this rank's.  Committed ONLY from a reader word that
- * is exactly idle — no fetch open, no chain parked — since a fetch already
- * in flight brings the copy with it when it lands, and stamping a claim over
- * it would hand that reader an invented image.  A no-op on the arms whose
- * readers re-validate at every acquire.  Defined once per protocol TU. */
-void arts_db_create_claim_creator_copy(struct arts_db_s *db);
 
 /* Retract whatever the create-time seed claimed about this rank holding a
  * READER copy of the block.  Called only where the create takes no hold

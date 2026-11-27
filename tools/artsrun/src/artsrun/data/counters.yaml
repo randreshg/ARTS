@@ -78,7 +78,7 @@ counters:
   NUM_DB_ACQUIRE_LOCAL_HIT:
     group: 'Coherence: acquires'
     unit: count
-    help: 'Acquisitions (READ + WRITE) whose rank held what they need at their decision, whatever they then waited behind (a write right installed but not yet confirmed included): the write right for a write; for a read a valid copy it may read, a read turn, the write right or, under validation, the block''s home answering itself (a create''s hold, a zero-size block and a serve from what the rank holds included: a phase change on the rank, a create''s claim of its first-touch cache); under the PURGE retention every acquisition on the block''s home rank; every acquisition of a one-rank run'
+    help: 'Acquisitions (READ + WRITE) whose rank held what they need at their decision, whatever they then waited behind (a write right installed but not yet confirmed included): the write right for a write; for a read a valid copy it may read, a read turn, the write right or, under validation, the block''s home answering itself (a create''s hold, a zero-size block and a serve from what the rank holds included: a phase change on the rank); under the PURGE retention every acquisition on the block''s home rank; every acquisition of a one-rank run'
 
   NUM_DB_ACQUIRE_REMOTE:
     group: 'Coherence: acquires'

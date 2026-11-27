@@ -178,12 +178,6 @@ bool arts_rank_u64_map_advance(struct arts_rank_to_u64_map_s *m,
  * revoking home names it in its rw_holder field. */
 void arts_db_home_init(struct arts_db_s *db, unsigned int rw_holder,
                        unsigned int nranks);
-/* Record the write request a create's announce said the claim on `creator`
- * closed while it was out (ARTS_CREATE_OWED_RW): it is still coming, and the
- * block is not torn down before it arrives.  Runs on the descriptor before it
- * is published. */
-void arts_db_home_seed_owed(struct arts_db_s *db, unsigned int creator,
-                            uint8_t owed);
 /* Release the home-directory owned sub-resources (queues / maps) in place.
  * Does NOT free the descriptor (the fields live inside the arts_db_s). */
 void arts_db_home_teardown(struct arts_db_s *db);

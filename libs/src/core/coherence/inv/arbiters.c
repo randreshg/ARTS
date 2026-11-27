@@ -53,14 +53,13 @@
  * leave the read plane as they find it.
  *
  * self_idx is the caller's pre-written pool node, consumed only by the actions
- * that park it (SEND_RO / PARK), or the OPEN's token (RW_COMMIT / RW_GIVE).
+ * that park it (SEND_RO / PARK).
  */
 static ARTS_ALWAYS_INLINE uint64_t inv_cache_compute_next(
     uint64_t cur, int op, uint32_t self_idx, uint32_t *out_action) {
   uint32_t ro = INV_CACHE_RO(cur);
   uint32_t inflight = INV_CACHE_INFLIGHT(cur);
   uint32_t rw = INV_CACHE_RW(cur);
-  uint32_t stub = INV_CACHE_STUB(cur);
   uint64_t next = cur;
   uint32_t act = INV_CACHE_ACT_NONE;
 
@@ -99,12 +98,6 @@ static ARTS_ALWAYS_INLINE uint64_t inv_cache_compute_next(
     /* The committer takes the whole chain, and the copy turns VALID. */
     next = (cur & ~(INV_CACHE_INFLIGHT_BIT | INV_CACHE_HEAD_FIELD)) |
            INV_CACHE_RO_AT(INV_RO_VALID);
-    /* An answer proves the home installed, so this cache can no longer be
-     * claimed; the stub bit clears unless a writer holds an OPEN (whose
-     * token is the bit). */
-    if (rw != INV_RW_OPEN) {
-      next &= ~INV_CACHE_STUB_BIT;
-    }
     if (ro == INV_RO_REQ_KILL) {
       /* An INVALIDATE marked this fetch mid-flight.  Serve the cohort that
        * joined it — they are entitled to these bytes — and only then run the
@@ -143,16 +136,13 @@ static ARTS_ALWAYS_INLINE uint64_t inv_cache_compute_next(
     break;
 
   case INV_CACHE_OP_RW_CLEAR:
-  case INV_CACHE_OP_CLAIM:
-    if (op == INV_CACHE_OP_RW_CLEAR && rw != INV_RW_SENT) {
+    if (rw != INV_RW_SENT) {
       act = INV_CACHE_ACT_LATE;
       break;
     }
     /* The write axis only: a fetch still out keeps its chain for its own
-     * reply.  A grant, like the claim, proves the cache will never be
-     * claimed: the home answered, so it is installed, and had this rank been
-     * the creator its claim would have come first. */
-    next &= ~(INV_CACHE_RW_FIELD | INV_CACHE_STUB_BIT);
+     * reply. */
+    next &= ~INV_CACHE_RW_FIELD;
     break;
 
   case INV_CACHE_OP_RW_CLAIM:
@@ -163,20 +153,16 @@ static ARTS_ALWAYS_INLINE uint64_t inv_cache_compute_next(
     break;
 
   case INV_CACHE_OP_RW_COMMIT:
-    /* self_idx carries the OPEN's token: the stub bit its claim read. */
-    if (rw == INV_RW_OPEN && stub == self_idx) {
-      next = (cur & ~INV_CACHE_RW_FIELD) | INV_CACHE_RW_AT(INV_RW_SENT);
-      act = INV_CACHE_ACT_WON;
-    } else {
-      act = INV_CACHE_ACT_LOST;
-    }
-    break;
-
   case INV_CACHE_OP_RW_GIVE:
-    if (rw != INV_RW_OPEN || stub != self_idx) {
-      break; /* a create's claim reset this OPEN */
+    /* Only the claim's winner commits or gives back its OPEN, and nothing
+     * else moves an OPEN axis, so any other state is a caller that does not
+     * hold one. */
+    if (rw != INV_RW_OPEN) {
+      act = INV_CACHE_ACT_LATE;
+      break;
     }
-    next &= ~INV_CACHE_RW_FIELD;
+    next = (cur & ~INV_CACHE_RW_FIELD) |
+           (op == INV_CACHE_OP_RW_COMMIT ? INV_CACHE_RW_AT(INV_RW_SENT) : 0u);
     break;
 
   default:
