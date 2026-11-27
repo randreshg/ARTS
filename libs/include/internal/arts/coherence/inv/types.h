@@ -268,9 +268,9 @@ struct arts_db_cache_s {
   /* The home token of the round whose ack a kill-marked fetch owes.  Written
    * by the INVALIDATE that marks the fetch, before its cache_state CAS
    * commits the mark; read, to send the ack, by the doomed DELIVER, whose
-   * cache_state CAS finds the mark (a size round re-sends the fetch with the
-   * mark kept).  Plain, ordered by cache_state: a block runs one round at a
-   * time, and the next round's INVALIDATE follows this ack. */
+   * cache_state CAS finds the mark.  Plain, ordered by cache_state: a block
+   * runs one round at a time, and the next round's INVALIDATE follows this
+   * ack. */
   uint64_t owed_ack_token;
 #ifndef ARTS_RETENTION_PURGE
   /* Next transfer target, published by the INVALIDATE handler BEFORE it
@@ -493,10 +493,6 @@ struct arts_db_s {
 #define INV_CACHE_OP_DELIVER 1    /* a read reply landed (publish attempt) */
 #define INV_CACHE_OP_INVALIDATE 2
 #define INV_CACHE_OP_KILL_PURGE 3 /* reserved invalidate after the kill serve */
-#define INV_CACHE_OP_CTS 4        /* a size round answered the read request:
-                                     ask again with a landing */
-#define INV_CACHE_OP_DECLAIM 5    /* a size round answered the write request:
-                                     the cache can never be claimed */
 #define INV_CACHE_OP_RW_CLAIM 6
 #define INV_CACHE_OP_RW_COMMIT 7
 #define INV_CACHE_OP_RW_GIVE 8
@@ -514,8 +510,6 @@ struct arts_db_s {
 #define INV_CACHE_ACT_PURGE_ACK 7    /* INVALIDATE on VALID: purged, ack */
 #define INV_CACHE_ACT_KILL_MARKED 8  /* INVALIDATE on REQ: ack owed */
 #define INV_CACHE_ACT_NOOP_ACK 9     /* INVALIDATE idempotent: ack */
-#define INV_CACHE_ACT_RESEND 10      /* a size round re-sends the fetch (a
-                                        kill mark stays on it) */
 #define INV_CACHE_ACT_WON 13
 #define INV_CACHE_ACT_LOST 14
 /* A reply for no request, or a state no transition reaches: the caller

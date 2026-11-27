@@ -2,11 +2,9 @@
  *
  * EXCL protocol pure state-transition arbiters, one pair per retention:
  * PURGE's excl_compute_next (home lock_state) and cache_compute_next (cache
- * word), RETAIN's lock_owner_compute_next and cache_owner_compute_next, and
- * beside each cache arbiter the size round's transition of its word
- * (cache_size_round_next, cache_owner_size_round_next).  The two retentions'
- * words have different layouts, so each set is compiled only under its own
- * retention.
+ * word), RETAIN's lock_owner_compute_next and cache_owner_compute_next.  The
+ * two retentions' words have different layouts, so each set is compiled only
+ * under its own retention.
  *
  * purge.c and retain.c #include this file to get their private copy of their
  * retention's arbiters.  The whitebox unit test
@@ -340,18 +338,6 @@ static ARTS_ALWAYS_INLINE uint64_t cache_compute_next(uint64_t cur, int op,
 static ARTS_ALWAYS_INLINE uint32_t cache_set_aside(uint64_t pre) {
   return CACHE_RO_ST(pre) == CACHE_ST_REQ ? CACHE_RO_CNT(pre) : 0u;
 }
-
-/* A size round's transition of the cache word.  It answers the request the
- * `write` axis has out: *at_req says whether that axis is at REQ, and the
- * caller raises when it is not.  The next word is the word with the stub bit
- * clear, as after any reply; the request stays out, so neither its axis nor
- * a count moves. */
-static ARTS_ALWAYS_INLINE uint64_t cache_size_round_next(uint64_t cur,
-                                                         bool write,
-                                                         bool *at_req) {
-  *at_req = (write ? CACHE_RW_ST(cur) : CACHE_RO_ST(cur)) == CACHE_ST_REQ;
-  return cur & ~CACHE_STUB_BIT;
-}
 #endif /* ARTS_RETENTION_PURGE */
 
 #ifdef ARTS_RETENTION_RETAIN
@@ -646,18 +632,6 @@ static ARTS_ALWAYS_INLINE uint64_t cache_owner_compute_next(
  * adds them to the cache's ro_aside. */
 static ARTS_ALWAYS_INLINE uint32_t cache_set_aside(uint64_t pre) {
   return CACHE_RO_ST(pre) == CACHE_ST_REQ ? CACHE_RO_CNT(pre) : 0u;
-}
-
-/* A size round's transition of the cache word.  It answers the request the
- * `write` axis has out, whatever else the rank holds: *at_req says whether
- * that axis is at REQ, and the caller raises when it is not.  The next word
- * is the word with the stub bit clear, as after any reply; the request stays
- * out, so neither its axis nor a count moves. */
-static ARTS_ALWAYS_INLINE uint64_t cache_owner_size_round_next(uint64_t cur,
-                                                               bool write,
-                                                               bool *at_req) {
-  *at_req = (write ? CACHE_RW_ST(cur) : CACHE_RO_ST(cur)) == CACHE_ST_REQ;
-  return cur & ~CACHE_OWNER_STUB_BIT;
 }
 
 /* ===== lock_owner_compute_next ==========================================

@@ -145,10 +145,9 @@ struct fetch_waiter_s {
   uint32_t slot;
 };
 
-/* One request per parked EDT: the private copy is allocated here and
- * advertised as the landing, so the home's PUT lands straight in it.  A
- * block whose size this rank cannot bound sends no landing and is answered
- * size-only; the re-request then carries one. */
+/* One request per parked EDT: the private copy is allocated here, sized from
+ * the block's name, and advertised as the landing, so the home's PUT lands
+ * straight in it.  A zero-size block sends no landing. */
 static void fetch_send(struct arts_db_cache_s *cache, struct fetch_waiter_s w) {
   struct arts_msg_fetch_request_packet_s p;
   arts_fill_packet_header(&p.header, sizeof(p), MSG_DB_FETCH_REQUEST);
@@ -239,9 +238,12 @@ void arts_handler_db_fetch_request(void *item_v, void *args_v) {
     p.kind = 0; /* a zero-size block: NULL is its value */
     arts_db_buf_release(&line_h);
   } else if (a->rdzv.txid == 0) {
-    p.kind = 2; /* the requester could not size a landing */
-    INCREMENT_NUM_FLUSH_SIZE_CTS_BY(1);
-    arts_db_buf_release(&line_h);
+    /* The requester sizes its landing from the block's name: only a
+     * zero-size block's request comes without one. */
+    ARTS_ERROR("flush: guid %lu: a request from rank %u advertised no landing "
+               "for a block of %llu bytes",
+               (unsigned long)cache->db_guid, a->requester,
+               (unsigned long long)p.db_size);
   } else {
     p.kind = 1;
     uint64_t addr = 0, rkey = 0;
@@ -330,6 +332,10 @@ static void learn_line(struct arts_db_cache_s *cache, uint64_t addr,
  * every read through the cookie. */
 void arts_handler_db_fetch_response(
     const struct arts_db_fetch_response_args_s *a) {
+  if (a->kind > 1u) {
+    ARTS_ERROR("flush: a fetch response of unknown kind %u (slot %u)", a->kind,
+               a->slot);
+  }
   struct arts_edt_s *edt = (struct arts_edt_s *)(uintptr_t)a->edt_cookie;
   ARTS_DEP_WAITER_CHECK(edt, a->edt_guid, a->slot);
   struct arts_db_cache_s *cache =
@@ -337,14 +343,6 @@ void arts_handler_db_fetch_response(
   arts_db_cache_learn_size(cache, a->db_size);
   learn_line(cache, a->line_addr, a->line_rkey, a->flush_txid);
   struct arts_db_buffer_s *copy = (struct arts_db_buffer_s *)(uintptr_t)a->rdzv_cookie;
-  if (a->kind == 2) {
-    copy_drop(copy);
-    /* The re-request carries the same waiter, copied from the echo. */
-    struct fetch_waiter_s w = {.edt = edt, .slot = a->slot};
-    ARTS_DEP_WAITER_COPY(&w, a);
-    fetch_send(cache, w);
-    return;
-  }
   if (a->kind == 0) {
     copy_drop(copy);
     /* Only a rank other than the home fetches. */

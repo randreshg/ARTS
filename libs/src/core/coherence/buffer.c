@@ -438,9 +438,8 @@ void arts_db_buf_ref_release_cb(void *arg) {
 uint64_t arts_db_first_fetch_size(const struct arts_db_cache_s *cache) {
   /* The exact size once this rank has learned it (from any wire-carried
    * declaration), else the GUID's encoded upper bound — good enough to size
-   * a first-fetch landing, so the size-discovery round becomes the sentinel
-   * fallback rather than every cold acquire's first leg.  0 = advertise no
-   * landing (sentinel GUID or genuinely empty DB). */
+   * a first-fetch landing.  0 = advertise no landing, only for a zero-size
+   * block. */
   uint64_t size = atomic_load_explicit(&cache->db_size, memory_order_relaxed);
   return size ? size : arts_db_szhint_bound(cache->db_guid);
 }

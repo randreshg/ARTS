@@ -85,7 +85,7 @@ void arts_handler_db_acquire(void *item, void *args) {
          * RELEASE is the publication point, so PARK among the publication
          * waiters — the first publish install drains us and the resume
          * re-derives the slot's pointer from the installed buffer.
-         * (db_size == 0 is the sentinel DB: NULL is its defined value.) */
+         * (A zero-size block's defined value is NULL.) */
         struct arts_db_read_waiter_s *w =
             (struct arts_db_read_waiter_s *)arts_malloc(sizeof(*w));
         w->edt = edt;
@@ -333,9 +333,9 @@ void arts_db_home_teardown(struct arts_db_s *db) {
 
 /* ===== SNAPSHOT_REQUEST reply (home.cached_version atomic-monotonic) ===== */
 
-/* SNAPSHOT_REQUEST reply path: decide CTS / no-data / one-sided-data from the home
- * watermark and the requester's landing, then advance the watermark only when
- * payload actually moves.  Consumes master_h (the pinned canonical buffer). */
+/* SNAPSHOT_REQUEST reply path: decide no-data / one-sided-data from the home
+ * watermark, then advance the watermark only when payload actually moves.
+ * Consumes master_h (the pinned canonical buffer). */
 static void update_cached_version_max(struct arts_db_cache_s *cache,
                                       unsigned int requester, uint64_t master_v,
                                       arts_shared_ptr_t master_h,
@@ -355,16 +355,6 @@ static void update_cached_version_max(struct arts_db_cache_s *cache,
     arts_db_buf_release(&master_h);
     arts_send_db_snapshot_response(requester, token, cache->db_guid, master_v,
                                    /*kind=*/0, db_size, rdzv, NULL);
-    return;
-  }
-  if (rdzv->txid == 0) {
-    /* Data must move but the requester advertised no landing (first touch —
-     * db_size unknown there).  Size-only CTS; the re-request carries a
-     * landing.  The watermark does NOT advance on this leg. */
-    arts_db_buf_release(&master_h);
-    INCREMENT_NUM_SNAPSHOT_SIZE_CTS_BY(1);
-    arts_send_db_snapshot_response(requester, token, cache->db_guid, master_v,
-                                   /*kind=*/2, db_size, rdzv, NULL);
     return;
   }
   arts_rank_u64_map_advance(db->cached_version, requester, master_v);
@@ -418,6 +408,15 @@ void arts_handler_db_snapshot_request(void *item_v, void *args_v) {
    * whatever node that thread sits on rather than the requester's. */
   uint64_t db_size =
       atomic_load_explicit(&cache->db_size, memory_order_relaxed);
+  /* The home's own reads are served locally, and another rank sizes its
+   * landing from the block's name: only a zero-size block's request comes
+   * without one. */
+  if (db_size > 0 && a->rdzv.txid == 0) {
+    ARTS_ERROR("val: guid %lu: a request from rank %u advertised no landing "
+               "for a block of %llu bytes",
+               (unsigned long)cache->db_guid, requester,
+               (unsigned long long)db_size);
+  }
   (void)arts_db_buf_ensure(cache, db_size);
 
   arts_shared_ptr_t master_h = arts_db_buf_acquire(cache);
@@ -434,8 +433,8 @@ void arts_handler_db_snapshot_request(void *item_v, void *args_v) {
   }
   if (master == NULL) {
     /* Two cases produce master==NULL post-precheck:
-     *   (a) Sentinel DB (db_size==0): no buffer is ever installed — respond
-     *       with version=0, NULL data (NULL is the sentinel's defined value).
+     *   (a) A zero-size block (db_size==0): no buffer is ever installed —
+     *       respond with version=0, NULL data (NULL is its defined value).
      *   (b) HOME_RECV pre-PUBLISH (db_size>0): cross-rank create has
      *       happened but the creator's first PUBLISH has not landed.  The
      *       creator's RELEASE is the publication point a satisfied consumer
@@ -557,7 +556,7 @@ void arts_handler_db_publish(void *item_v, void *args_v) {
       (struct arts_ooo_args_db_publish_s *)args_v;
 
   if (a->data_size == 0) {
-    /* Data-less ordering round (sentinel DB): install nothing, ACK.  A
+    /* Data-less ordering round (a zero-size block): install nothing, ACK.  A
      * hand-back travels with payload legs only. */
     assert(a->returns_grant == 0u &&
            "a data-less publish never carries a hand-back");

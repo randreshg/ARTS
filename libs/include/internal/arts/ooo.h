@@ -146,7 +146,7 @@ enum arts_ooo_kind {
 /* GRANT_INVALIDATE, INVALIDATE and REDIRECT are Cat-C: their targets are
  * provably installed (a revoking home names a holder only after that rank
  * installed) or the MISS has an action of its own (an INVALIDATE's still
- * acks; a REDIRECT's is dropped).  GRANT_RESPONSE, DELIVER, CTS and
+ * acks; a REDIRECT's is dropped).  GRANT_RESPONSE, DELIVER and
  * CONFIRM_ACK answer this rank's own request through its token, and CONFIRM
  * and INV_ACK answer the home's round through the home token; none is looked
  * up or deferred.  A home whose grants come back unasked sends no
@@ -414,8 +414,9 @@ struct arts_ooo_args_db_inv_request_s {
   arts_guid_t db_guid;
   arts_db_access_mode_t mode;      /* DB_MODE_RO or DB_MODE_RW */
   bool bounce;                     /* re-sent by a holder that had no bytes */
-  struct arts_rdzv_landing_s rdzv; /* deliver/grant landing; txid==0 = first
-                                      touch (home replies INV_CTS) */
+  struct arts_rdzv_landing_s rdzv; /* deliver/grant landing; txid==0 = no
+                                      payload moves here (a zero-size block,
+                                      a one-rank run) */
 #if defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)
   uint64_t token; /* the subject's answer token */
 #endif

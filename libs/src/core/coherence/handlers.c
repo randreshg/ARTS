@@ -25,8 +25,8 @@
  * packet (the EXCL·RETAIN FORWARD, RO_RETURN and RECALL) has a wire entry
  * that looks its block up once and a body on the object (a FORWARD that
  * serves this rank its own read request is an answer, below).
- *   - Answers to this rank's own requests (VAL, INV; EXCL: EXCL_CTS,
- *     EXCL_GRANT, EXCL_DELIVER, and under RETAIN the EXCL_FORWARD that
+ *   - Answers to this rank's own requests (VAL, INV; EXCL: EXCL_GRANT,
+ *     EXCL_DELIVER, and under RETAIN the EXCL_FORWARD that
  *     serves the owner its own read request): the entry takes the
  *     requester's descriptor from the token the answer echoes, under the
  *     count the open request holds, and either runs the body on it or, when
@@ -429,6 +429,10 @@ static void snapshot_landed_discard(void *arg) {
  * its count last.  Shared verbatim by HOME/OWNER. */
 void arts_handler_db_snapshot_response(
     struct arts_db_snapshot_response_args_s *a) {
+  if (a->data_present > 1u) {
+    ARTS_ERROR("val: guid %lu: a snapshot response of unknown kind %u",
+               (unsigned long)a->db_guid, a->data_present);
+  }
   struct arts_db_s *db = arts_db_from_token(a->token, a->db_guid);
   if (arts_db_token_retired(db, a->db_guid)) {
     arts_db_rdzv_discard_landing(a->rdzv_txid, a->db_size, a->rdzv_cookie);
@@ -437,18 +441,10 @@ void arts_handler_db_snapshot_response(
   }
   struct arts_db_cache_s *cache = &db->cache;
 
-  /* Every response kind carries the server's descriptor size; a hinted
-   * first touch may reach any of them with the size still unlearned. */
+  /* Every response kind carries the server's descriptor size; a first
+   * touch, whose landing the name's bound sized, may reach either with the
+   * exact size still unlearned. */
   arts_db_cache_learn_size(cache, a->db_size);
-
-  if (a->data_present == 2) {
-    /* A size round: our request carried no landing.  The window's request
-     * goes out again with one, under the same count. */
-    assert(a->rdzv_cookie == 0 &&
-           "a size round answers a read request that carried no landing");
-    arts_db_ro_combine_on_cts(cache);
-    return;
-  }
 
   if (a->data_present == 1 && a->rdzv_txid != 0) {
     /* The payload travels one-sided: pair this packet with the write

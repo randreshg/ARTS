@@ -30,18 +30,21 @@
  * descriptor after its send, which is stricter than its pin requires.
  *
  * Scenarios, in every EXCL cell:
- *   read axis   closed by its grant; an answer on a retired descriptor, and
- *               a size round on one (where requests carry a landing);
+ *   read axis   closed by its grant;
  *   write axis  closed by its grant (under RETAIN the migration's DELIVER,
- *               whose CONFIRM echoes the home's token), a size round leaving
- *               it open and re-sending a first touch's request unmarked, a
- *               size round for an axis with no request out fatal (where
- *               requests carry a landing), by a create's hold;
+ *               whose CONFIRM echoes the home's token), by a create's hold;
+ *   both axes open on a retired descriptor: each answer that moves no bytes
+ *   drops its own count alone, waking and confirming nothing;
  *   a one-sided answer's pairing callback, live and retired, and a pairing
  *   the teardown discards (the count is then the sweep's), where answers
  *   carry bytes; bytes in flight to a requester already retired: the count
  *   goes after they land, or with the discard, which owns it;
- *   the teardown sweep: one count per open axis.
+ *   the teardown sweep: one count per open axis;
+ *   where grants carry a payload, the home's refusal of a request from
+ *   another rank that advertises no landing for a block with bytes, on either
+ *   axis, ending the run with the plane's line, and its own write request
+ *   taken in without one; where they carry none (the CXL store), such
+ *   requests granted.
  * RETAIN:
  *   the two requests of a rank are independent: a migration's DELIVER wakes
  *   the writers alone and sets the readers parked on the read request aside,
@@ -54,8 +57,8 @@
  *   aside before the CONFIRM; the readers set aside before the migration's
  *   writer wakes, so a release, a migration away and a read DELIVER inside
  *   that wake find them; a create's hold closes the write axis alone,
- *   and the read request it found out takes its size round and comes back
- *   forwarded to the creator, the owner, which answers it in place; readers
+ *   and the read request it found out comes back forwarded to the creator,
+ *   the owner, which answers it in place; readers
  *   set aside leave with the bytes and the next owner's read DELIVER returns
  *   them with the ones that parked since; the serve judges its gate again
  *   after its drain and pushes the batch back when a writer went live while
@@ -83,10 +86,9 @@
  *   so a turn that ends inside that wake is followed by a read grant that
  *   finds them; a holder of the write turn that becomes a reader
  *   while the read request is out; a create's hold closes the write axis
- *   alone, and the read request it found out is answered by its own grant
- *   (after a size round, where one exists); a read grant under the rank's
- *   write grant and a second read grant are fatal; where grants carry no
- *   payload a size round is refused.
+ *   alone, and the read request it found out is answered by its own grant; a
+ *   read grant under the rank's write grant and a second read grant are
+ *   fatal.
  *   The home: its own write request served by its self-grant when the
  *   creator's write turn comes back, and, that turn back first, granted inside
  *   its self-sent body with every reference held outside that body removed at
@@ -145,6 +147,10 @@
 #define GUID_CLAIM                                                             \
   ARTS_GUID_MAKE(ARTS_GUID_DB, HOME,                                           \
                  ARTS_GUID_DB_KEY(ARTS_GUID_DB_SZHINT_NONE, 0x62u))
+/* A block of BYTES bytes, whose GUID bounds that size. */
+#define BYTES 64u
+#define GUID_BYTES                                                             \
+  ARTS_GUID_MAKE(ARTS_GUID_DB, HOME, ARTS_GUID_DB_KEY(1u, 0x63u))
 /* A requester's token on another rank, opaque to the home. */
 #define FAR_TOKEN ((uint64_t)0xfa400u)
 
@@ -172,7 +178,7 @@ static bool g_expect_abort;
 _Noreturn void arts_exit(int rc, enum arts_exit_origin origin) {
   (void)origin;
   if (g_expect_abort) {
-    _exit(EXPECTED_ABORT);
+    _exit(rc == 1 ? EXPECTED_ABORT : 1);
   }
   printf("FAIL token_pairing_excl: %s: the runtime aborted\n", g_scenario);
   fflush(stdout);
@@ -260,7 +266,9 @@ UNREACHED(void *arts_cxl_store_alloc(size_t bytes))
 UNREACHED(bool arts_cxl_store_contains(const void *p))
 #endif
 
-/* ---- the buffer plane: no block in these scenarios has bytes ---- */
+/* ---- the buffer plane: no block in these scenarios has bytes, but for the
+ * home's own request of one that has, whose forward places the home's
+ * landing (g_place_landing) ---- */
 
 arts_shared_ptr_t arts_db_buf_acquire(struct arts_db_cache_s *cache) {
   return arts_shared_slot_load(&cache->buffer);
@@ -279,10 +287,16 @@ bool arts_db_buf_ensure(struct arts_db_cache_s *cache, uint64_t db_size) {
   }
   return false;
 }
+static bool g_place_landing;
+static void landing_free(void *p) { free(p); }
 void arts_db_buf_prepare_inplace(struct arts_db_cache_s *cache, uint64_t n) {
-  (void)cache;
-  (void)n;
-  fail("a request placed a landing for a block with no bytes");
+  if (!g_place_landing) {
+    fail("a request placed a landing for a block with no bytes");
+  }
+  struct arts_db_buffer_s *b =
+      (struct arts_db_buffer_s *)calloc(1, sizeof(*b) + n);
+  b->cb = arts_shared_make(b, landing_free);
+  arts_shared_slot_store(&cache->buffer, b->cb);
 }
 uint64_t arts_db_first_fetch_size(const struct arts_db_cache_s *cache) {
   uint64_t s = atomic_load_explicit(&cache->db_size, memory_order_relaxed);
@@ -693,23 +707,6 @@ request_of(arts_db_access_mode_t mode) {
   }
 }
 
-/* A size round in `mode`, naming the descriptor request `r` named. */
-static void cts_naming(arts_db_access_mode_t mode,
-                       const struct arts_msg_excl_request_packet_s *r) {
-  struct arts_msg_excl_cts_packet_s p;
-  memset(&p, 0, sizeof(p));
-  p.header.rank = HOME;
-  p.db_guid = r->db_guid;
-  p.mode = (uint32_t)mode;
-  p.token = r->token;
-  arts_handler_db_excl_cts(&p);
-}
-
-/* The size round of a request. */
-static void cts(arts_db_access_mode_t mode) {
-  cts_naming(mode, request_of(mode));
-}
-
 #ifdef ARTS_RETENTION_RETAIN
 #define HOME_TOKEN ((uint64_t)0x40e00u)
 /* The answer, from the owner the home forwarded the request to: no payload,
@@ -783,62 +780,30 @@ static void write_granted(void) {
   end(1);
 }
 
-#if defined(ARTS_RETENTION_RETAIN) || !defined(ARTS_USE_CXL)
-static void expect_abort(void (*body)(void), const char *what);
-static void read_size_round_now(void) { cts_naming(DB_MODE_RO, request(0)); }
-static void write_size_round_now(void) { cts(DB_MODE_RW); }
-
-/* A size round answers the request its axis has out and re-sends it, the
- * axis and its count open; it clears the stub bit, so a first touch's write
- * request goes out again without PRECLAIM.  One for an axis with no request
- * out is fatal. */
-static void write_size_round(void) {
-  begin("write size round keeps the axis open", GUID_CLAIM, false, HOME);
+/* With both axes open, the block is retired and the install's reference
+ * goes: each answer, moving no bytes, finds the descriptor retired and drops
+ * its own request's count and nothing else, so the descriptor ends at the
+ * second, and nothing wakes or confirms. */
+static void answer_retired(void) {
+  begin("answers on a retired descriptor, both axes open", GUID_SIZED, false,
+        HOME);
+  acquire(DB_MODE_RO);
   acquire(DB_MODE_RW);
-  if (request(0)->cover != ARTS_COVER_PRECLAIM) {
-    fail("the first touch's write request is not marked pre-claim");
-  }
-  expect_abort(read_size_round_now,
-               "a size round with no read request out did not abort");
-  cts(DB_MODE_RW);
-  if (count_sent(MSG_DB_EXCL_REQUEST) != 2 ||
-      request(1)->token != request(0)->token || request(1)->cover != 0u) {
-    fail("the size round did not re-send the same request, unmarked");
-  }
-  if (CACHE_STUB(atomic_load_explicit(&g_db->cache.cache_state,
-                                      memory_order_relaxed)) != 0u) {
-    fail("the size round left the stub bit set");
+  retire();
+  drop_ref_expect_held();
+  g_poison = true;
+  grant(DB_MODE_RO, false);
+  if (g_deleted != 0) {
+    fail("the read answer dropped more than its own request's count");
   }
   grant(DB_MODE_RW, false);
-  check_confirm();
-  expect_abort(write_size_round_now,
-               "a size round under the write grant did not abort");
-  end(1);
-}
-#endif
-
-/* `size_round`: an answer without a grant also reaches the retired
- * descriptor, a size round of the read request while the write request is
- * out. */
-static void answer_retired(bool size_round) {
-  begin(size_round ? "size round on a retired descriptor"
-                   : "grant on a retired descriptor",
-        GUID_SIZED, false, HOME);
-  acquire(DB_MODE_RO);
-  if (size_round) {
-    acquire(DB_MODE_RW);
+  if (count_sent(MSG_DB_EXCL_CONFIRM) != 0) {
+    fail("a retired descriptor confirmed a migration");
   }
-  retire();
-  if (size_round) {
-    cts(DB_MODE_RO);
-    grant(DB_MODE_RW, false);
-    if (count_sent(MSG_DB_EXCL_CONFIRM) != 0) {
-      fail("a retired descriptor confirmed a migration");
-    }
-  } else {
-    grant(DB_MODE_RO, false);
+  if (g_deleted != 1) {
+    fail("the write answer did not drop its own request's count");
   }
-  end(0);
+  end_destroyed(0);
 }
 
 #if PAIRS
@@ -921,6 +886,148 @@ static void expect_abort(void (*body)(void), const char *what) {
     fail(what);
   }
 }
+
+/* The home descriptor of a block of BYTES bytes a creator on OTHER made. */
+static void begin_bytes(const char *name) {
+  begin(name, GUID_BYTES, true, OTHER);
+  atomic_store_explicit(&g_db->cache.db_size, BYTES, memory_order_relaxed);
+}
+
+/* A request from another rank that advertises no landing, as the engine
+ * hands it to the home: under the dispatcher's pin. */
+static void bare_request(unsigned int rank, arts_db_access_mode_t mode) {
+  struct arts_ooo_args_db_excl_request_s a;
+  memset(&a, 0, sizeof(a));
+  a.requester = rank;
+  a.db_guid = g_db->cache.db_guid;
+  a.mode = (uint32_t)mode;
+  a.token = FAR_TOKEN + rank;
+  arts_shared_ptr_t pin = arts_shared_copy(g_db->self_cb);
+  arts_handler_db_excl_request(g_db, &a);
+  arts_shared_release(&pin);
+}
+
+#ifndef ARTS_USE_CXL
+static void bare_write_far(void) { bare_request(REQ, DB_MODE_RW); }
+static void bare_read_far(void) { bare_request(REQ, DB_MODE_RO); }
+/* An acquire on the home rank: its request runs inline and advertises no
+ * landing (where another rank owns the block the home draws one as it
+ * forwards). */
+static void own_write_acquire(void) {
+  g_place_landing = true;
+  acquire(DB_MODE_RW);
+}
+
+/* Runs `body` in a child and requires the home's refusal of a request that
+ * advertised no landing for a block of BYTES bytes, from REQ. */
+static void expect_refused(void (*body)(void), const char *what) {
+  int fds[2];
+  if (pipe(fds) != 0) {
+    fail("no pipe for the child's report");
+  }
+  fflush(stdout);
+  pid_t pid = fork();
+  if (pid == 0) {
+    int devnull = open("/dev/null", O_WRONLY);
+    (void)dup2(devnull, STDOUT_FILENO);
+    (void)dup2(fds[1], STDERR_FILENO);
+    (void)close(fds[0]);
+    g_expect_abort = true;
+    body();
+    _exit(0);
+  }
+  (void)close(fds[1]);
+  char out[1024];
+  size_t n = 0;
+  ssize_t r;
+  while (n < sizeof(out) - 1u &&
+         (r = read(fds[0], out + n, sizeof(out) - 1u - n)) > 0) {
+    n += (size_t)r;
+  }
+  out[n] = '\0';
+  (void)close(fds[0]);
+  char line[128];
+  (void)snprintf(line, sizeof(line),
+                 "excl: guid %lu: a request from rank %u advertised no "
+                 "landing for a block of %u bytes",
+                 (unsigned long)g_db->cache.db_guid, REQ, BYTES);
+  int status = 0;
+  if (pid < 0 || waitpid(pid, &status, 0) != pid || !WIFEXITED(status) ||
+      WEXITSTATUS(status) != EXPECTED_ABORT || strstr(out, line) == NULL) {
+    fail(what);
+  }
+}
+
+/* Runs `body` in a child and requires it to return, the run going on, and
+ * to leave what `served` requires of it. */
+static void expect_served(void (*body)(void), bool (*served)(void),
+                          const char *what) {
+  fflush(stdout);
+  pid_t pid = fork();
+  if (pid == 0) {
+    int devnull = open("/dev/null", O_WRONLY);
+    (void)dup2(devnull, STDOUT_FILENO);
+    (void)dup2(devnull, STDERR_FILENO);
+    g_expect_abort = true;
+    body();
+    _exit(served() ? 0 : 1);
+  }
+  int status = 0;
+  if (pid < 0 || waitpid(pid, &status, 0) != pid || !WIFEXITED(status) ||
+      WEXITSTATUS(status) != 0) {
+    fail(what);
+  }
+}
+
+/* Every requester on another rank sizes its landing from the block's name,
+ * so one that advertises none for a block with bytes is refused where the
+ * home takes it in, on either axis, ending the run with the plane's line. */
+static void landing_less_refused(int axis) {
+  begin_bytes(axis == 0
+                  ? "landing-less write request from another rank refused"
+                  : "landing-less read request from another rank refused");
+  expect_refused(axis == 0 ? bare_write_far : bare_read_far,
+                 "the home took in a landing-less request");
+  end(0);
+}
+
+/* The home took its own write request in.  The creator, OTHER, holds the
+ * block: under RETAIN, as its owner, the home's FORWARD asks it to migrate
+ * the block to the home, into the landing the home drew as it forwarded;
+ * under PURGE the request waits behind the creator's write turn, counted and
+ * at the front of the queue, and nothing leaves or wakes. */
+static bool own_request_taken(void) {
+#ifdef ARTS_RETENTION_RETAIN
+  if (g_nsent != 1 || g_sent[0].type != MSG_DB_EXCL_FORWARD ||
+      g_sent[0].rank != (int)OTHER) {
+    return false;
+  }
+  const struct arts_msg_excl_forward_packet_s *f =
+      (const struct arts_msg_excl_forward_packet_s *)g_sent[0].buf;
+  return f->mode == DB_MODE_RW && f->target == HOME &&
+         f->token == arts_db_token(g_db) &&
+         f->home_token == arts_db_token(g_db) && f->rdzv.txid != 0u;
+#else
+  unsigned int rank = ~0u;
+  uint64_t token = 0u;
+  return g_nsent == 0 && g_wakes == 0 &&
+         EXCL_STATE_W(atomic_load_explicit(&g_db->lock_state,
+                                           memory_order_relaxed)) == 2u &&
+         arts_home_grantreq_queue_peek_linked(&g_db->rw_waiters, &rank, NULL,
+                                              NULL, &token) &&
+         rank == HOME && token == arts_db_token(g_db);
+#endif
+}
+
+/* The home's own request advertises no landing for a block with bytes, and
+ * the home takes it in. */
+static void own_request_taken_in(void) {
+  begin_bytes("home's own landing-less write request taken in");
+  expect_served(own_write_acquire, own_request_taken,
+                "the home refused its own request, or did not take it in");
+  end(0);
+}
+#endif
 
 static void set_one_reader_aside(void) {
   arts_excl_set_readers_aside(&g_db->cache, 1u);
@@ -1266,8 +1373,7 @@ static void retired_confirm_serves_nothing(void) {
   retire();
   drop_ref_expect_held();
   confirm_from(REQ);
-  if (count_sent(MSG_DB_EXCL_CTS) != 0 ||
-      count_sent(MSG_DB_EXCL_FORWARD) != forwards) {
+  if (count_sent(MSG_DB_EXCL_FORWARD) != forwards) {
     fail("the retired home answered a held read");
   }
   if (g_deleted != 1) {
@@ -1440,9 +1546,9 @@ static void own_read_inline_at_home(void) {
 
 /* A create claims a first touch whose two requests are out.  The hold wakes
  * the writer and closes the write request, which the announce names; the
- * read request stays out with its reader set aside, takes its size round,
- * and comes back forwarded to this rank, the creator the home names as
- * owner, which answers it in place. */
+ * read request stays out with its reader set aside, and comes back
+ * forwarded to this rank, the creator the home names as owner, which answers
+ * it in place. */
 static void own_read_after_claim(void) {
   begin("the creator answers its own pre-claim read request", GUID_CLAIM, false,
         HOME);
@@ -1459,12 +1565,6 @@ static void own_read_after_claim(void) {
   check_wakes(1);
   check_cache(OWNED(1, ST_G, ST_Q, 2u, 0u), 1u,
               "the hold did not set the parked reader aside");
-  cts(DB_MODE_RO);
-  if (count_sent(MSG_DB_EXCL_REQUEST) != 3 ||
-      request(2)->mode != (uint32_t)DB_MODE_RO || request(2)->cover != 0u ||
-      request(2)->token != request_of(DB_MODE_RO)->token) {
-    fail("the size round did not re-send the read request");
-  }
   recall();
   arts_db_release_created(&g_db->cache);
   arts_db_release_rw(&g_db->cache, NULL);
@@ -2022,8 +2122,8 @@ static void downgrade_with_read_request_out(void) {
 
 /* A create claims a first touch whose two requests are out.  The hold wakes
  * the writer and closes the write request, which the announce names; the
- * read request stays out, takes its size round where one exists, and is
- * closed by its own grant after the hold's release. */
+ * read request stays out and is closed by its own grant after the hold's
+ * release. */
 static void claim_closes_write_axis(void) {
   begin("create's hold closes the write axis alone", GUID_CLAIM, false, HOME);
   acquire(DB_MODE_RO);
@@ -2039,16 +2139,6 @@ static void claim_closes_write_axis(void) {
   check_wakes(1);
   check_cache(CACHE_MAKE(ST_G, ST_Q, 2u, 0u), 1u,
               "the hold did not set the parked reader aside");
-#ifndef ARTS_USE_CXL
-  cts(DB_MODE_RO);
-  if (count_sent(MSG_DB_EXCL_REQUEST) != 3 ||
-      request(2)->mode != (uint32_t)DB_MODE_RO || request(2)->cover != 0u ||
-      request(2)->token != request_of(DB_MODE_RO)->token) {
-    fail("the size round did not re-send the read request");
-  }
-  check_cache(CACHE_MAKE(ST_G, ST_Q, 2u, 0u), 1u,
-              "the size round moved the word");
-#endif
   arts_db_release_created(&g_db->cache);
   arts_db_release_rw(&g_db->cache, NULL);
   check_released(1, DB_MODE_RW);
@@ -2081,15 +2171,22 @@ static void stray_read_grants(void) {
 }
 
 #ifdef ARTS_USE_CXL
-static void size_round_now(void) { cts(DB_MODE_RW); }
-
-static void size_round_refused(void) {
-  begin("size round refused where grants carry no payload", GUID_SIZED, false,
-        HOME);
-  acquire(DB_MODE_RW);
-  expect_abort(size_round_now, "a size round did not abort");
-  grant(DB_MODE_RW, false);
-  end(1);
+/* Where grants carry no payload a request advertises no landing whatever the
+ * block's size, and the home grants it, on either axis. */
+static void landing_less_granted(void) {
+  begin_bytes("landing-less requests granted where grants carry no payload");
+  far_release(OTHER, DB_MODE_RW); /* the creator's hold */
+  bare_request(REQ, DB_MODE_RW);
+  check_far_grant(0, REQ, DB_MODE_RW);
+  far_release(REQ, DB_MODE_RW);
+  bare_request(REQ, DB_MODE_RO);
+  check_far_grant(1, REQ, DB_MODE_RO);
+  far_release(REQ, DB_MODE_RO);
+  check_lock(0u, 0u, 0u, "the turns did not all come back");
+  if (g_nsent != 2) {
+    fail("the home sent something other than the two grants");
+  }
+  end(0);
 }
 #endif
 
@@ -2114,10 +2211,11 @@ static void self_read_grant(void) {
 int main(void) {
   read_granted();
   write_granted();
-  answer_retired(false);
-#if defined(ARTS_RETENTION_RETAIN) || !defined(ARTS_USE_CXL)
-  write_size_round();
-  answer_retired(true);
+  answer_retired();
+#ifndef ARTS_USE_CXL
+  landing_less_refused(0);
+  landing_less_refused(1);
+  own_request_taken_in();
 #endif
 #if PAIRS
   paired(0);
@@ -2159,7 +2257,7 @@ int main(void) {
   claim_closes_write_axis();
   stray_read_grants();
 #ifdef ARTS_USE_CXL
-  size_round_refused();
+  landing_less_granted();
 #endif
   self_grant();
   self_grant_in_body();

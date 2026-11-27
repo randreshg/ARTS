@@ -4,16 +4,14 @@
  * axes, the first-touch stub bit and the two reader chains in one word.  The
  * axes are independent: a reader opens a window or joins the next one
  * whatever the write axis holds, an answer serves only its window's cohort
- * and opens the next window for the readers parked since, a size round
- * re-sends the window's request for its cohort, and a write permission (a
- * grant's clear, a create's claim) touches the write axis and the stub bit
- * only.  The write axis's commit and give-back act only under their OPEN's
- * token; a size round of the write request clears the stub bit; an answer,
- * size round or grant for no request out is LATE and leaves the word
- * unchanged.  An exhaustive walk from the seed words over every operation
- * checks that no reachable word has a reader parked with no window out
- * (next != 0, ro clear) or a window out with nobody in it (ro set,
- * group == 0), and that the two spare bits stay clear.
+ * and opens the next window for the readers parked since, and a write
+ * permission (a grant's clear, a create's claim) touches the write axis and
+ * the stub bit only.  The write axis's commit and give-back act only under
+ * their OPEN's token; an answer or grant for no request out is LATE and
+ * leaves the word unchanged.  An exhaustive walk from the seed words over
+ * every operation checks that no reachable word has a reader parked with no
+ * window out (next != 0, ro clear) or a window out with nobody in it (ro
+ * set, group == 0), and that the two spare bits stay clear.
  */
 
 #include <stdio.h>
@@ -127,10 +125,10 @@ static void walk(void) {
     int op;
     uint32_t idx;
   } steps[] = {
-      {VREQ_OP_ACQ_RO, 1u},    {VREQ_OP_ACQ_RO, 2u},   {VREQ_OP_ANSWER, 0u},
-      {VREQ_OP_CTS, 0u},       {VREQ_OP_RW_CLEAR, 0u}, {VREQ_OP_CLAIM, 0u},
-      {VREQ_OP_DECLAIM, 0u},   {VREQ_OP_RW_CLAIM, 0u}, {VREQ_OP_RW_COMMIT, 0u},
-      {VREQ_OP_RW_COMMIT, 1u}, {VREQ_OP_RW_GIVE, 0u},  {VREQ_OP_RW_GIVE, 1u},
+      {VREQ_OP_ACQ_RO, 1u},    {VREQ_OP_ACQ_RO, 2u},    {VREQ_OP_ANSWER, 0u},
+      {VREQ_OP_RW_CLEAR, 0u},  {VREQ_OP_CLAIM, 0u},     {VREQ_OP_RW_CLAIM, 0u},
+      {VREQ_OP_RW_COMMIT, 0u}, {VREQ_OP_RW_COMMIT, 1u}, {VREQ_OP_RW_GIVE, 0u},
+      {VREQ_OP_RW_GIVE, 1u},
   };
   g_nseen = 0;
   g_seen[g_nseen++] = W(I, 0, 0, 0, 0);
@@ -205,24 +203,6 @@ int main(void) {
          W(S, 0, 1, 0, 0), VREQ_OP_ANSWER, 0, W(S, 0, 1, 0, 0),
          VREQ_ACT_LATE);
 
-  /* read size rounds: the window's request again, for its cohort */
-  for (int k = 0; k < 3; k++) {
-    uint32_t rw = rws[k];
-    expect("a size round re-sends for the cohort", W(rw, 1, 0, G, 0),
-           VREQ_OP_CTS, 0, W(rw, 1, 0, G, 0), VREQ_ACT_RESEND);
-    expect("a size round leaves the next window's readers parked",
-           W(rw, 1, 0, G, N), VREQ_OP_CTS, 0, W(rw, 1, 0, G, N),
-           VREQ_ACT_RESEND);
-  }
-  expect("a size round declaims a non-creator's cache", W(I, 1, 1, G, 0),
-         VREQ_OP_CTS, 0, W(I, 1, 0, G, 0), VREQ_ACT_RESEND);
-  expect("a size round under an OPEN keeps the stub", W(O, 1, 1, G, 0),
-         VREQ_OP_CTS, 0, W(O, 1, 1, G, 0), VREQ_ACT_RESEND);
-  expect("a size round with no window is late", W(I, 0, 0, 0, 0), VREQ_OP_CTS,
-         0, W(I, 0, 0, 0, 0), VREQ_ACT_LATE);
-  expect("a size round with no window under a write request is late",
-         W(S, 0, 0, 0, 0), VREQ_OP_CTS, 0, W(S, 0, 0, 0, 0), VREQ_ACT_LATE);
-
   /* write permissions: the write axis and the stub bit, never the readers */
   expect("a grant's take closes the write axis and clears the stub",
          W(S, 1, 1, G, N), VREQ_OP_RW_CLEAR, 0, W(I, 1, 0, G, N),
@@ -261,12 +241,6 @@ int main(void) {
          VREQ_OP_RW_GIVE, 1, W(O, 1, 0, G, ME), VREQ_ACT_NONE);
   expect("a give-back with no OPEN leaves the word", W(S, 1, 0, G, 0),
          VREQ_OP_RW_GIVE, 0, W(S, 1, 0, G, 0), VREQ_ACT_NONE);
-
-  /* the write size round */
-  expect("a write size round clears the stub", W(S, 1, 1, G, 0),
-         VREQ_OP_DECLAIM, 0, W(S, 1, 0, G, 0), VREQ_ACT_NONE);
-  expect("a write size round with no request out is late", W(O, 0, 1, 0, 0),
-         VREQ_OP_DECLAIM, 0, W(O, 0, 1, 0, 0), VREQ_ACT_LATE);
 
   walk();
 

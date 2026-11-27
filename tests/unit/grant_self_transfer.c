@@ -131,7 +131,6 @@ UNREACHED(bool arts_db_rw_req_claim(struct arts_db_cache_s *c, uint32_t *t))
 UNREACHED(bool arts_db_rw_req_commit(struct arts_db_cache_s *c, uint32_t t,
                                      uint32_t *cover))
 UNREACHED(void arts_db_rw_req_giveback(struct arts_db_cache_s *c, uint32_t t))
-UNREACHED(void arts_db_rw_req_declaim(struct arts_db_cache_s *c))
 UNREACHED(void arts_ooo_dispatch_on(arts_shared_ptr_t h, ooo_kind_t k,
                                     arts_guid_t g, const void *a, uint32_t s))
 UNREACHED(void arts_db_grant_note_ex_holder(struct arts_db_s *db,

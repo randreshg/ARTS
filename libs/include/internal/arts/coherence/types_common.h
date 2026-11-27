@@ -246,7 +246,7 @@ arts_grant_purge_release_next(unsigned int cur, bool purgeable,
 /* In-memory rendezvous landing descriptor — the coherence-side mirror of the
  * packed wire struct arts_msg_rdzv_landing_s (protocol.h): where a payload
  * sender may fi_writedata, keyed for pairing.  txid == 0 means "no landing"
- * everywhere (data-less round / size not yet known).  cookie exists in the
+ * everywhere (a data-less round).  cookie exists in the
  * cells whose requests advertise a fresh buffer, installed once the payload
  * has landed in it (VAL, INV, FLUSH): the advertiser-local pointer of that
  * buffer, only ever dereferenced back on the advertiser rank.  An EXCL

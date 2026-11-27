@@ -47,16 +47,6 @@ static ARTS_ALWAYS_INLINE uint64_t val_req_compute_next(uint64_t cur, int op,
       act = VREQ_ACT_SERVE;
     }
     break;
-  case VREQ_OP_CTS:
-    if (!ro) {
-      act = VREQ_ACT_LATE;
-      break;
-    }
-    if (rw != VREQ_RW_OPEN) {
-      next &= ~VREQ_STUB_BIT;
-    }
-    act = VREQ_ACT_RESEND;
-    break;
   case VREQ_OP_RW_CLEAR:
     if (rw != VREQ_RW_SENT) {
       act = VREQ_ACT_LATE;
@@ -69,15 +59,6 @@ static ARTS_ALWAYS_INLINE uint64_t val_req_compute_next(uint64_t cur, int op,
     break;
   case VREQ_OP_CLAIM:
     next &= ~(VREQ_RW_FIELD | VREQ_STUB_BIT);
-    break;
-  case VREQ_OP_DECLAIM:
-    /* While the write request is out no writer holds an OPEN, so no token
-     * is outstanding when the stub bit clears. */
-    if (rw != VREQ_RW_SENT) {
-      act = VREQ_ACT_LATE;
-      break;
-    }
-    next &= ~VREQ_STUB_BIT;
     break;
   case VREQ_OP_RW_CLAIM:
     if (rw == VREQ_RW_IDLE) {

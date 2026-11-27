@@ -105,38 +105,34 @@ _Static_assert(MSG_DB_EXCL_DELIVER == 27,
 _Static_assert(MSG_DB_EXCL_CONFIRM == 28,
                "ordinal MSG_DB_EXCL_CONFIRM drifted");
 _Static_assert(MSG_DB_EXCL_RORET == 29, "ordinal MSG_DB_EXCL_RORET drifted");
-_Static_assert(MSG_DB_GRANT_CTS == 30,
-               "ordinal MSG_DB_GRANT_CTS drifted");
-_Static_assert(MSG_DB_PUBLISH_CTS == 31,
+_Static_assert(MSG_DB_PUBLISH_CTS == 30,
                "ordinal MSG_DB_PUBLISH_CTS drifted");
-_Static_assert(MSG_DB_EXCL_CTS == 32, "ordinal MSG_DB_EXCL_CTS drifted");
-_Static_assert(MSG_DB_INV_REQUEST == 33, "ordinal MSG_DB_INV_REQUEST drifted");
-_Static_assert(MSG_DB_INV_CTS == 34, "ordinal MSG_DB_INV_CTS drifted");
-_Static_assert(MSG_DB_INV_DELIVER == 35, "ordinal MSG_DB_INV_DELIVER drifted");
-_Static_assert(MSG_DB_INV_INVALIDATE == 36,
+_Static_assert(MSG_DB_INV_REQUEST == 31, "ordinal MSG_DB_INV_REQUEST drifted");
+_Static_assert(MSG_DB_INV_DELIVER == 32, "ordinal MSG_DB_INV_DELIVER drifted");
+_Static_assert(MSG_DB_INV_INVALIDATE == 33,
                "ordinal MSG_DB_INV_INVALIDATE drifted");
-_Static_assert(MSG_DB_INV_INVALIDATE_ACK == 37,
+_Static_assert(MSG_DB_INV_INVALIDATE_ACK == 34,
                "ordinal MSG_DB_INV_INVALIDATE_ACK drifted");
-_Static_assert(MSG_DB_INV_REDIRECT == 38,
+_Static_assert(MSG_DB_INV_REDIRECT == 35,
                "ordinal MSG_DB_INV_REDIRECT drifted");
-_Static_assert(MSG_DB_CREATE_RETURN == 39,
+_Static_assert(MSG_DB_CREATE_RETURN == 36,
                "MSG_DB_CREATE_RETURN ordinal moved");
-_Static_assert(MSG_DB_EXCL_RECALL == 40,
+_Static_assert(MSG_DB_EXCL_RECALL == 37,
                "ordinal MSG_DB_EXCL_RECALL drifted");
-_Static_assert(MSG_DB_GRANT_RETURN == 41,
+_Static_assert(MSG_DB_GRANT_RETURN == 38,
                "ordinal MSG_DB_GRANT_RETURN drifted");
-_Static_assert(MSG_DB_FETCH_REQUEST == 42,
+_Static_assert(MSG_DB_FETCH_REQUEST == 39,
                "ordinal MSG_DB_FETCH_REQUEST drifted");
-_Static_assert(MSG_DB_FETCH_RESPONSE == 43,
+_Static_assert(MSG_DB_FETCH_RESPONSE == 40,
                "ordinal MSG_DB_FETCH_RESPONSE drifted");
-_Static_assert(MSG_DB_FLUSH_COMMIT == 44,
+_Static_assert(MSG_DB_FLUSH_COMMIT == 41,
                "ordinal MSG_DB_FLUSH_COMMIT drifted");
-_Static_assert(MSG_DB_FLUSH_ACK == 45, "ordinal MSG_DB_FLUSH_ACK drifted");
-_Static_assert(MSG_DB_FLUSH_ANNOUNCE == 46,
+_Static_assert(MSG_DB_FLUSH_ACK == 42, "ordinal MSG_DB_FLUSH_ACK drifted");
+_Static_assert(MSG_DB_FLUSH_ANNOUNCE == 43,
                "ordinal MSG_DB_FLUSH_ANNOUNCE drifted");
-_Static_assert(MSG_DB_FLUSH_CTS == 47, "ordinal MSG_DB_FLUSH_CTS drifted");
-_Static_assert(MSG_COUNT == 48,
-               "MSG_COUNT drifted (wire-compat: must be 48 in all configs)");
+_Static_assert(MSG_DB_FLUSH_CTS == 44, "ordinal MSG_DB_FLUSH_CTS drifted");
+_Static_assert(MSG_COUNT == 45,
+               "MSG_COUNT drifted (wire-compat: must be 45 in all configs)");
 
 /* ===== (1b) the bootstrap address frame is wire too, and its header
  * transfer's size is computed from offsetof(addr) on BOTH sides of the
@@ -226,10 +222,6 @@ _Static_assert(offsetof(struct arts_msg_grant_confirm_ack_packet_s,
 _Static_assert(offsetof(struct arts_msg_grant_confirm_ack_packet_s,
                         home_token) == 88,
                "ownership_confirm_ack home_token drifted");
-_Static_assert(sizeof(struct arts_msg_grant_cts_packet_s) == 40,
-               "ownership_cts sizeof drifted");
-_Static_assert(offsetof(struct arts_msg_grant_cts_packet_s, token) == 32,
-               "ownership_cts token drifted");
 _Static_assert(sizeof(struct arts_msg_grant_confirm_packet_s) == 40,
                "ownership_confirm sizeof drifted");
 _Static_assert(offsetof(struct arts_msg_grant_confirm_packet_s, token) == 24,
@@ -259,8 +251,6 @@ _Static_assert(sizeof(struct arts_msg_publish_packet_s) == 72,
                "publish sizeof drifted");
 _Static_assert(sizeof(struct arts_msg_publish_ack_packet_s) == 64,
                "publish_ack sizeof drifted");
-_Static_assert(sizeof(struct arts_msg_grant_cts_packet_s) == 32,
-               "ownership_cts sizeof drifted");
 _Static_assert(sizeof(struct arts_msg_grant_confirm_packet_s) == 24,
                "ownership_confirm sizeof drifted");
 #endif
@@ -315,9 +305,9 @@ _Static_assert(sizeof(struct arts_msg_snapshot_response_packet_s) == 64,
                "snapshot_response sizeof drifted");
 #endif
 #ifdef ARTS_VALIDITY_INV
-/* A read request, its redirect and its size round carry no cover word: the
- * request's flags take the cover byte's slot, the redirect's pad keeps its
- * 64-bit fields 8-aligned, and the size round's db_size is the size alone. */
+/* A read request and its redirect carry no cover word: the request's flags
+ * take the cover byte's slot, and the redirect's pad keeps its 64-bit fields
+ * 8-aligned. */
 _Static_assert(offsetof(struct arts_msg_inv_request_packet_s, mode) == 24,
                "inv_request mode drifted");
 _Static_assert(offsetof(struct arts_msg_inv_request_packet_s, flags) == 26,
@@ -332,12 +322,6 @@ _Static_assert(sizeof(struct arts_msg_inv_request_packet_s) == 72,
                "inv_request sizeof drifted");
 _Static_assert(offsetof(struct arts_msg_inv_request_packet_s, token) == 64,
                "inv_request token drifted");
-_Static_assert(offsetof(struct arts_msg_inv_cts_packet_s, db_size) == 24,
-               "inv_cts db_size drifted");
-_Static_assert(sizeof(struct arts_msg_inv_cts_packet_s) == 40,
-               "inv_cts sizeof drifted");
-_Static_assert(offsetof(struct arts_msg_inv_cts_packet_s, token) == 32,
-               "inv_cts token drifted");
 _Static_assert(sizeof(struct arts_msg_inv_deliver_packet_s) == 64,
                "inv_deliver sizeof drifted");
 _Static_assert(offsetof(struct arts_msg_inv_deliver_packet_s, token) == 56,
@@ -426,14 +410,6 @@ _Static_assert(offsetof(struct arts_msg_excl_release_packet_s, rdzv_txid) == 48,
                "lock_release rdzv_txid drifted");
 _Static_assert(offsetof(struct arts_msg_excl_request_packet_s, cover) == 28,
                "lock_request cover drifted");
-_Static_assert(sizeof(struct arts_msg_excl_cts_packet_s) == 48,
-               "lock_cts sizeof drifted");
-_Static_assert(offsetof(struct arts_msg_excl_cts_packet_s, mode) == 32,
-               "lock_cts mode drifted");
-_Static_assert(offsetof(struct arts_msg_excl_cts_packet_s, pad) == 36,
-               "lock_cts pad drifted");
-_Static_assert(offsetof(struct arts_msg_excl_cts_packet_s, token) == 40,
-               "lock_cts token drifted");
 #ifdef ARTS_RETENTION_RETAIN
 _Static_assert(sizeof(struct arts_msg_excl_forward_packet_s) == 80,
                "lock_forward sizeof drifted");

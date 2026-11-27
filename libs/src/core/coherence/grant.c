@@ -102,8 +102,8 @@ bool arts_db_acquire_rw_local_fast(struct arts_db_cache_s *cache,
                                                 wc + 1u, memory_order_acq_rel,
                                                 memory_order_relaxed)) {
       /* writer_count bumped; release_rw decrements the matching bump.
-       * acquire_local may only come back NULL for a zero-sized (sentinel)
-       * block: holding the grant on a SIZED block means holding its buffer,
+       * acquire_local may only come back NULL for a zero-size block:
+       * holding the grant on a SIZED block means holding its buffer,
        * and a buffer installed but never published is present at version 0,
        * not absent.  The one exception is a block whose create took no hold:
        * its storage waits for a first user, and the CAS just proved this
@@ -202,8 +202,8 @@ arts_db_acquire_remote_rw(struct arts_db_cache_s *cache, struct arts_edt_s *edt,
 /* ===== GRANT drain (called where a write grant commits on this rank) ===== */
 
 /* A waiter woken here is being handed the write turn, so it must find
- * storage of the DB's declared size; the one buffer-less case is a zero-sized
- * (sentinel) block, whose defined value is the NULL pointer this wake stamps
+ * storage of the DB's declared size; the one buffer-less case is a zero-size
+ * block, whose defined value is the NULL pointer this wake stamps
  * (still accounting the dep, still advancing the walk). */
 static void rw_wake_cb(const struct arts_db_rw_waiter_s *w, void *vctx) {
   (void)vctx;
@@ -387,8 +387,8 @@ void arts_db_send_grant_response(struct arts_db_cache_s *cache,
   }
 
   /* data_size carries the DB's size ALWAYS (descriptor state — known even
-   * when no buffer exists yet): a hinted first-touch requester may have
-   * skipped the size CTS, and a data-less grant is its only chance to learn
+   * when no buffer exists yet): a first-touch requester sized its landing
+   * from the name's bound, and a data-less grant is its only chance to learn
    * the exact size before its release publishes one.  Payload presence is
    * signaled by rdzv_txid alone, never by data_size. */
   uint64_t payload_size = (buf != NULL) ? db_size : 0;
@@ -543,14 +543,13 @@ void arts_handler_db_grant_request(void *item_v, void *args_v) {
 #endif
   if (a->rdzv.txid == 0 && requester != arts_global_rank_id && db_size > 0 &&
       arts_global_rank_count > 1) {
-    /* First-touch request without a landing: the requester did not know
-     * db_size.  Answer with the size (CTS) and do NOT enqueue — home only
-     * queues requests that carry a landing (or target a sentinel DB, whose
-     * transfers are data-less).  The requester re-issues with a landing.
-     * The home's OWN landing-less request is not a size probe: it wants the
-     * permission without payload and queues like any other. */
-    arts_send_db_grant_cts(requester, cache->db_guid, db_size, a->token);
-    return;
+    /* Another rank sizes its landing from the block's name: only a zero-size
+     * block's request comes without one.  The home's own landing-less
+     * request wants the permission alone and queues like any other. */
+    ARTS_ERROR("grant: guid %lu: a request from rank %u advertised no landing "
+               "for a block of %llu bytes",
+               (unsigned long)cache->db_guid, requester,
+               (unsigned long long)db_size);
   }
   arts_home_grantreq_queue_push(&db->pending_rw, requester, &a->rdzv,
                                 a->have_version, a->token);
@@ -575,13 +574,10 @@ void arts_send_db_grant_request(struct arts_db_cache_s *cache,
   arts_guid_t db_guid = cache->db_guid;
   unsigned int home_rank = arts_guid_get_rank(db_guid);
   /* Advertise a fresh transfer landing sized by the exact size when known,
-   * else by the GUID's szhint bound — a first touch usually carries a
-   * landing already, and home's GRANT_CTS round survives only as the
-   * sentinel fallback (its handler re-enters this sender with
-   * cache->db_size learned).  The rendezvous plane exists only when a peer
-   * could PUT (multi-rank run): a single-rank run has no fabric, every
-   * transfer is a same-rank inline dispatch, and the registered pool
-   * carries no MRs to advertise. */
+   * else by the GUID's szhint bound.  The rendezvous plane exists only when a
+   * peer could PUT (multi-rank run): a single-rank run has no fabric, every
+   * transfer is a same-rank inline dispatch, and the registered pool carries
+   * no MRs to advertise. */
   struct arts_rdzv_landing_s rdzv = ARTS_RDZV_NO_LANDING;
   /* Under OWNER the landing is advertised unconditionally, even though a
    * transfer of a DB nobody has published yet carries no bytes: whether the
@@ -604,8 +600,7 @@ void arts_send_db_grant_request(struct arts_db_cache_s *cache,
   uint64_t fetch_size = arts_db_first_fetch_size(cache);
   /* A request opened before a create claimed this first-touch cache leaves
    * without a landing, whatever size the cache has learned since: the home
-   * absorbs it if that claim was this rank's, and answers a size round
-   * otherwise, whose re-send carries the landing. */
+   * absorbs it when that claim was this rank's. */
   if ((cover & ARTS_COVER_PRECLAIM) != 0u) {
     fetch_size = 0;
   }
@@ -668,39 +663,6 @@ void arts_send_db_grant_request(struct arts_db_cache_s *cache,
     return;
   }
   arts_transport_send_async((int)home_rank, (char *)&p, sizeof(p));
-}
-
-/* GRANT_CTS sender (home → remote first-touch requester) + requester-side
- * body.  The requester learns db_size and re-issues the in-flight request with
- * a landing; the write axis stays open (same round continuing). */
-void arts_send_db_grant_cts(unsigned int requester_rank, arts_guid_t db_guid,
-                            uint64_t db_size, uint64_t token) {
-  INCREMENT_NUM_GRANT_SIZE_CTS_BY(1);
-  struct arts_msg_grant_cts_packet_s p;
-  arts_fill_packet_header(&p.header, sizeof(p), MSG_DB_GRANT_CTS);
-  p.header.rank = arts_global_rank_id;
-  p.db_guid = db_guid;
-  p.db_size = db_size;
-  p.token = token;
-  arts_transport_send_async((int)requester_rank, (char *)&p, sizeof(p));
-}
-
-void arts_handler_db_grant_cts(struct arts_msg_grant_cts_packet_s *p) {
-  struct arts_db_s *db = arts_db_from_token(p->token, p->db_guid);
-  if (arts_db_token_retired(db, p->db_guid)) {
-    /* No re-send to a torn-down cache: the request ends here, with its
-     * count. */
-    arts_db_axis_drop(db, 1u);
-    return;
-  }
-  struct arts_db_cache_s *cache = &db->cache;
-  arts_db_cache_learn_size(cache, p->db_size);
-  /* Only a request the home did not absorb gets a size round, so this cache
-   * is no claim's and never will be: the size round clears its stub bit, and
-   * the re-send and every later request of this cache carry a landing and no
-   * PRECLAIM. */
-  arts_db_rw_req_declaim(cache);
-  arts_send_db_grant_request(cache, 0u);
 }
 
 #ifndef ARTS_RETENTION_PURGE

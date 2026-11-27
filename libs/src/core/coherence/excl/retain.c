@@ -670,9 +670,9 @@ void arts_send_db_excl_request(struct arts_db_cache_s *cache,
                                arts_db_access_mode_t mode, uint32_t cover) {
   arts_guid_t db_guid = cache->db_guid;
   unsigned int home_rank = arts_guid_get_rank(db_guid);
-  /* One reading for both steps: a concurrent size answer may record the
-   * block's size between them, and the advertisement must name the buffer
-   * this reading placed. */
+  /* One reading for both steps: a concurrent answer may record the block's
+   * size between them, and the advertisement must name the buffer this
+   * reading placed. */
   uint64_t n = lock_stable_size(cache);
   lock_stable_place(cache, n);
   uint64_t token = arts_db_token(arts_db_of_cache(cache));
@@ -719,55 +719,6 @@ void arts_send_db_excl_request(struct arts_db_cache_s *cache,
       !arts_net_send_held_read((int)home_rank, (char *)&p, sizeof(p))) {
     arts_transport_send_async((int)home_rank, (char *)&p, sizeof(p));
   }
-}
-
-/* EXCL_CTS sender (a size round) + requester-side body. */
-void arts_send_db_excl_cts(arts_guid_t db_guid, unsigned int requester_rank,
-                           uint64_t db_size, uint32_t mode, uint64_t token) {
-  /* A size round answers a landing-less request, which the home's own never
-   * is. */
-  assert(requester_rank != arts_global_rank_id);
-  struct arts_msg_excl_cts_packet_s p;
-  arts_fill_packet_header(&p.header, sizeof(p), MSG_DB_EXCL_CTS);
-  p.header.rank = arts_global_rank_id;
-  p.db_guid = db_guid;
-  p.db_size = db_size;
-  p.mode = mode;
-  p.pad = 0u;
-  p.token = token;
-  arts_transport_send_async((int)requester_rank, (char *)&p, sizeof(p));
-}
-
-void arts_handler_db_excl_cts(const struct arts_msg_excl_cts_packet_s *p) {
-  struct arts_db_s *db = arts_db_from_token(p->token, p->db_guid);
-  if (arts_db_token_retired(db, p->db_guid)) {
-    arts_db_axis_drop(db, 1u);
-    return;
-  }
-  struct arts_db_cache_s *cache = &db->cache;
-  arts_db_cache_learn_size(cache, p->db_size);
-  bool write = (arts_db_access_mode_t)p->mode == DB_MODE_RW;
-  /* A request is answered by its own answer alone (a write request whose
-   * writers a create served is absorbed at the home), so its axis is at REQ,
-   * whatever else this rank holds.  The re-sent request is the same one: the
-   * axis and its count stay open.  Any reply clears the stub bit, so a
-   * re-sent write request carries no PRECLAIM. */
-  uint64_t s, n;
-  bool at_req;
-  do {
-    s = atomic_load_explicit(&cache->cache_state, memory_order_acquire);
-    n = cache_owner_size_round_next(s, write, &at_req);
-    if (!at_req) {
-      ARTS_ERROR("lock: guid %lu got a size round for a %s request it does "
-                 "not have out (word=%llx)",
-                 (unsigned long)cache->db_guid, write ? "write" : "read",
-                 (unsigned long long)s);
-    }
-  } while (n != s && !atomic_compare_exchange_weak_explicit(
-                         &cache->cache_state, &s, n, memory_order_acq_rel,
-                         memory_order_acquire));
-  arts_send_db_excl_request(cache, write ? DB_MODE_RW : DB_MODE_RO,
-                            /*cover=*/0u);
 }
 
 /* ===== arts_send_db_excl_forward ========================================
@@ -861,7 +812,7 @@ void arts_send_db_excl_deliver(unsigned int target_rank, arts_guid_t db_guid,
                (unsigned long)db_guid);
   }
   if (src == NULL || data_size == 0 || rdzv == NULL || rdzv->txid == 0) {
-    /* Data-less deliver (sentinel DB / nothing published). */
+    /* Data-less deliver (a zero-size block / nothing published). */
     if (src != NULL) {
       arts_db_buf_release(&src_h);
     }
@@ -1869,15 +1820,13 @@ void arts_handler_db_excl_request(void *item_v, void *args_v) {
   if (a->rdzv.txid == 0 && requester != arts_global_rank_id &&
       atomic_load_explicit(&db->cache.db_size, memory_order_relaxed) > 0 &&
       arts_global_rank_count > 1) {
-    /* First-touch request without a landing: the requester did not know
-     * db_size.  Answer with the size (CTS) and do NOT enqueue — the deliver
-     * plane requires a landing.  The requester re-issues with one. */
-    INCREMENT_NUM_EXCL_SIZE_CTS_BY(1);
-    arts_send_db_excl_cts(
-        db->cache.db_guid, requester,
-        atomic_load_explicit(&db->cache.db_size, memory_order_relaxed),
-        (uint32_t)mode, a->token);
-    return;
+    /* Another rank sizes its landing from the block's name: only a zero-size
+     * block's request comes without one. */
+    ARTS_ERROR("excl: guid %lu: a request from rank %u advertised no landing "
+               "for a block of %llu bytes",
+               (unsigned long)db->cache.db_guid, requester,
+               (unsigned long long)atomic_load_explicit(&db->cache.db_size,
+                                                        memory_order_relaxed));
   }
 
   arts_rank_bitset_note(&db->cached_ranks,

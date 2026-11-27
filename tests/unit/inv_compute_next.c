@@ -19,7 +19,6 @@
  *     whatever the write axis holds;
  *   - the kill mark (REQ -> REQ_KILL) still serves its cohort once, then owes
  *     the round an ack;
- *   - a size round re-sends the fetch for its cohort, a kill mark kept;
  *   - a write permission (a grant's clear, a create's claim) and a writer's
  *     give-back touch the write axis and the stub bit only;
  *   - a reply or a grant for no request out is LATE, leaving the word;
@@ -199,9 +198,8 @@ static void walk(void) {
   } steps[] = {
       {INV_CACHE_OP_ACQ_RO, 1u},     {INV_CACHE_OP_ACQ_RO, 2u},
       {INV_CACHE_OP_DELIVER, 0u},    {INV_CACHE_OP_INVALIDATE, 0u},
-      {INV_CACHE_OP_KILL_PURGE, 0u}, {INV_CACHE_OP_CTS, 0u},
-      {INV_CACHE_OP_RW_CLEAR, 0u},   {INV_CACHE_OP_CLAIM, 0u},
-      {INV_CACHE_OP_DECLAIM, 0u},    {INV_CACHE_OP_RW_CLAIM, 0u},
+      {INV_CACHE_OP_KILL_PURGE, 0u}, {INV_CACHE_OP_RW_CLEAR, 0u},
+      {INV_CACHE_OP_CLAIM, 0u},      {INV_CACHE_OP_RW_CLAIM, 0u},
       {INV_CACHE_OP_RW_COMMIT, 0u},  {INV_CACHE_OP_RW_COMMIT, 1u},
       {INV_CACHE_OP_RW_GIVE, 0u},    {INV_CACHE_OP_RW_GIVE, 1u},
   };
@@ -310,24 +308,6 @@ int main(void) {
          W(R_VALID, 0u, 0u, S, 0u), INV_CACHE_OP_KILL_PURGE, 0u,
          W(R_IDLE, 0u, 0u, S, 0u), INV_CACHE_ACT_NONE);
 
-  /* ---- read size rounds: the fetch again, for its cohort --------------- */
-  for (int k = 0; k < 3; k++) {
-    uint32_t rw = rws[k];
-    uint32_t stub_after = rw == O ? 1u : 0u;
-    expect("a size round re-sends for the cohort", W(R_REQ, 1u, ME, rw, 1u),
-           INV_CACHE_OP_CTS, 0u, W(R_REQ, 1u, ME, rw, stub_after),
-           INV_CACHE_ACT_RESEND);
-    expect("a size round re-sends a kill-marked fetch with its mark",
-           W(R_KILL, 1u, ME, rw, 0u), INV_CACHE_OP_CTS, 0u,
-           W(R_KILL, 1u, ME, rw, 0u), INV_CACHE_ACT_RESEND);
-    expect("a size round with no fetch out is late", W(R_IDLE, 0u, 0u, rw, 0u),
-           INV_CACHE_OP_CTS, 0u, W(R_IDLE, 0u, 0u, rw, 0u), INV_CACHE_ACT_LATE);
-    /* No transition makes this word: a fetch's chain is never empty. */
-    expect("a size round on a fetch with no cohort is late",
-           W(R_REQ, 1u, 0u, rw, 0u), INV_CACHE_OP_CTS, 0u,
-           W(R_REQ, 1u, 0u, rw, 0u), INV_CACHE_ACT_LATE);
-  }
-
   /* ---- write permissions: the write axis and the stub bit, never the
    * readers --------------------------------------------------------------- */
   expect("a grant's take closes the write axis; the fetch keeps its cohort",
@@ -385,13 +365,6 @@ int main(void) {
          INV_CACHE_OP_RW_GIVE, 1u, W(R_REQ, 1u, ME, O, 0u), INV_CACHE_ACT_NONE);
   expect("a give-back with no OPEN leaves the word", W(R_REQ, 1u, ME, S, 0u),
          INV_CACHE_OP_RW_GIVE, 0u, W(R_REQ, 1u, ME, S, 0u), INV_CACHE_ACT_NONE);
-
-  /* ---- the write size round -------------------------------------------- */
-  expect("a write size round clears the stub", W(R_REQ, 1u, ME, S, 1u),
-         INV_CACHE_OP_DECLAIM, 0u, W(R_REQ, 1u, ME, S, 0u), INV_CACHE_ACT_NONE);
-  expect("a write size round with no request out is late",
-         W(R_IDLE, 0u, 0u, O, 1u), INV_CACHE_OP_DECLAIM, 0u,
-         W(R_IDLE, 0u, 0u, O, 1u), INV_CACHE_ACT_LATE);
 
   /* ---- invalidation round ---------------------------------------------- */
   {

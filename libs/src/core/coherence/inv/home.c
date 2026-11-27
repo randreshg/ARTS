@@ -30,6 +30,7 @@
 #include "arts/ooo.h"
 #include "arts/runtime_state.h"
 #include "arts/system/identity.h"
+#include "arts/system/print.h"
 #include "arts/utils/malloc.h"
 #include "arts/counter/Preamble.h"
 
@@ -323,14 +324,13 @@ void arts_handler_db_inv_request(void *item_v, void *args_v) {
   if (a->rdzv.txid == 0 &&
       atomic_load_explicit(&cache->db_size, memory_order_relaxed) != 0 &&
       a->requester != arts_global_rank_id) {
-    /* First touch: the request carried no landing (db_size unknown at the
-     * requester).  It was NOT queued/served — answer the size and let the
-     * requester re-issue with a landing. */
-    INCREMENT_NUM_INV_SIZE_CTS_BY(1);
-    arts_send_db_inv_cts(
-        a->requester, a->token, cache->db_guid,
-        atomic_load_explicit(&cache->db_size, memory_order_relaxed));
-    return;
+    /* Another rank sizes its landing from the block's name, so only a
+     * zero-size block's request comes without one. */
+    ARTS_ERROR("inv: guid %lu: a request from rank %u advertised no landing "
+               "for a block of %llu bytes",
+               (unsigned long)cache->db_guid, a->requester,
+               (unsigned long long)atomic_load_explicit(&cache->db_size,
+                                                        memory_order_relaxed));
   }
   if (a->mode == DB_MODE_RO) {
     /* A remote first use of a block whose create took no hold: the home is

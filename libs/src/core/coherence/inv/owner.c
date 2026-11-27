@@ -36,6 +36,7 @@
 #include "arts/ooo.h"
 #include "arts/runtime_state.h"
 #include "arts/system/identity.h"
+#include "arts/system/print.h"
 #include "arts/transport/net.h"
 #include "arts/transport/protocol.h"
 #include "arts/utils/malloc.h"
@@ -252,13 +253,13 @@ void arts_handler_db_inv_request(void *item_v, void *args_v) {
   if (a->rdzv.txid == 0 &&
       atomic_load_explicit(&cache->db_size, memory_order_relaxed) != 0 &&
       a->requester != arts_global_rank_id) {
-    /* First touch: the request carried no landing (db_size unknown at the
-     * requester).  Answer the size and let it re-issue with one. */
-    INCREMENT_NUM_INV_SIZE_CTS_BY(1);
-    arts_send_db_inv_cts(
-        a->requester, a->token, cache->db_guid,
-        atomic_load_explicit(&cache->db_size, memory_order_relaxed));
-    return;
+    /* Another rank sizes its landing from the block's name, so only a
+     * zero-size block's request comes without one. */
+    ARTS_ERROR("inv: guid %lu: a request from rank %u advertised no landing "
+               "for a block of %llu bytes",
+               (unsigned long)cache->db_guid, a->requester,
+               (unsigned long long)atomic_load_explicit(&cache->db_size,
+                                                        memory_order_relaxed));
   }
   if (a->mode != DB_MODE_RO) {
     /* There is no write branch: RW acquires go through the shared grant's
@@ -294,7 +295,7 @@ void arts_handler_db_inv_redirect(void *item_v, void *args_v) {
       (struct arts_ooo_args_db_inv_redirect_s *)args_v;
   struct arts_db_cache_s *cache = &db->cache;
   /* "Do I still hold the bytes?" is a question only a DB that HAS bytes can be
-   * asked.  A sentinel DB (db_size == 0) never installs a buffer — NULL is its
+   * asked.  A zero-size block never installs a buffer — NULL is its
    * defined value — so testing for one would bounce every read back to the
    * home forever.  Serve it unconditionally; the reply is header-only. */
   if (atomic_load_explicit(&cache->db_size, memory_order_relaxed) != 0) {

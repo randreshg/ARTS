@@ -43,7 +43,7 @@
 
 /* ===== Sender helpers ============================================== */
 
-/* arts_send_db_grant_request / _cts / _invalidate / _confirm and the
+/* arts_send_db_grant_request / _invalidate / _confirm and the
  * GRANT_RESPONSE sender (arts_db_send_grant_response) all live in
  * coherence/grant.c, shared by HOME and OWNER. */
 
@@ -238,9 +238,7 @@ void arts_send_db_snapshot_request(struct arts_db_cache_s *cache) {
   arts_guid_t db_guid = cache->db_guid;
   unsigned int home_rank = arts_guid_get_rank(db_guid);
   /* Advertise a fresh snapshot landing sized by the exact size when known,
-   * else by the GUID's szhint bound — so even a first touch usually carries
-   * a landing and the size-only CTS round survives only as the sentinel
-   * fallback (whose handler re-enters this sender). */
+   * else by the GUID's szhint bound; a zero-size block advertises none. */
   struct arts_rdzv_landing_s rdzv = ARTS_RDZV_NO_LANDING;
   uint64_t fetch_size = arts_db_first_fetch_size(cache);
   if (fetch_size > 0) {
@@ -259,9 +257,9 @@ void arts_send_db_snapshot_request(struct arts_db_cache_s *cache) {
     /* Self-send: the requester's cache is the home's descriptor, on which the
      * request body runs; one not yet installed takes the engine by GUID,
      * deferred until the home installs and drains.  The body can answer the
-     * request inline, dropping the read request's count, which a re-sending
-     * answer runs under, and still run on: it runs under a count of its
-     * own. */
+     * request inline, dropping the read request's count, which the answer
+     * that opened this request for the next cohort runs under, and still run
+     * on: it runs under a count of its own. */
     struct arts_ooo_args_db_snapshot_request_s args = {
         .requester = p.header.rank,
         .db_guid = db_guid,
@@ -322,8 +320,8 @@ void arts_send_db_snapshot_response(unsigned int requester_rank, uint64_t token,
     }
     return;
   }
-  /* A kind-0 reply is a ledger hit or a holder with nothing to serve, and a
-   * kind-2 one a size round: their sites count what each is. */
+  /* A kind-0 reply is a ledger hit or a holder with nothing to serve: its
+   * sites count what each is. */
   if (kind == 1) {
     /* One-sided serve: PUT straight from the live buffer into the
      * requester's landing — zero copy at the source.  The strong buffer ref

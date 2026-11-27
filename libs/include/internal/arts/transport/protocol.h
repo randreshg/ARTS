@@ -105,30 +105,22 @@ enum arts_msg_type {
   MSG_DB_EXCL_CONFIRM, /* new owner → home: migration complete */
   MSG_DB_EXCL_RORET,   /* reader → home: RO release (data-less) */
 
-  /* Rendezvous data-plane control messages.  Bulk payloads move one-sided
-   * (fi_writedata PUT into a receiver-advertised landing buffer); these small
-   * messages carry the size/landing legs of that handshake when a side cannot
-   * know them up front.  Sequential append, no gaps. */
-  MSG_DB_GRANT_CTS, /* home → RW requester: db_size for a first-touch
-                           request that carried no landing; the requester
-                           allocates a landing and re-issues the request. */
+  /* Rendezvous data-plane control message.  Bulk payloads move one-sided
+   * (fi_writedata PUT into a receiver-advertised landing buffer); this small
+   * message carries the landing leg of a release whose releaser holds none
+   * to PUT into.  Sequential append, no gaps. */
   MSG_DB_PUBLISH_CTS, /* home → releaser: the home's stable buffer, in place,
                            as the landing for the dirty publish the releaser
                            announced (PUBLISH with data_size>0, txid==0) or for
                            a landing-less EXCL·PURGE release; the releaser PUTs
                            then sends the final PUBLISH (EXCL_RELEASE)
                            carrying the txid. */
-  MSG_DB_EXCL_CTS,    /* EXCL home → requester: a size round (db_size for a
-                         first-touch EXCL_REQUEST that carried no
-                         landing). */
 
   /* INV-protocol coherence messages.  Only sent/received in
    * ARTS_VALIDITY=INV builds; the dispatcher's INV cases are
    * #ifdef-guarded.  Sequential append, no gaps. */
   MSG_DB_INV_REQUEST, /* requester → home: RO fetch (write acquires use the
                          shared GRANT_REQUEST) */
-  MSG_DB_INV_CTS,     /* home → requester: db_size for a first-touch REQUEST
-                         that carried no landing */
   MSG_DB_INV_DELIVER, /* server → requester: RO copy (payload by PUT).  The
                          version it carries arbitrates the two asynchronous
                          install lanes and nothing else — the sharer plane is
@@ -145,23 +137,20 @@ enum arts_msg_type {
                          * publish credit.  Pure hint (Cat-C lookup-or-drop
                          * at the creator). */
   /* EXCL·RETAIN-only: home -> retainer, "give the RO grant back".  Data-less;
-   * shares arts_msg_excl_notice_packet_s with RORET.  Appended at the
-   * end so no existing ordinal moves.  There is no ack: the completion signal
-   * is the ordinary RO_RETURN this provokes, and the home's r==0 edge is the
-   * continuation that fires the RO->RW flip. */
+   * shares arts_msg_excl_notice_packet_s with RORET.  There is no ack: the
+   * completion signal is the ordinary RO_RETURN this provokes, and the home's
+   * r==0 edge is the continuation that fires the RO->RW flip. */
   MSG_DB_EXCL_RECALL,
 
   /* Grant-arm PURGE-only: holder -> home, "the write right is yours again".
    * Sent unasked at the holder's own idle edge, which is why the reverse
    * direction (the home's GRANT_INVALIDATE) carries no traffic under that
    * retention.  Data-less: the write-through publish that preceded the
-   * release already put the bytes at the home.  Appended at the end so no
-   * existing ordinal moves. */
+   * release already put the bytes at the home. */
   MSG_DB_GRANT_RETURN,
 
   /* FLUSH-arm coherence messages: the fetch that serves an acquire and the
-   * write-back round that serves an RW release.  Appended at the end so no
-   * existing ordinal moves. */
+   * write-back round that serves an RW release. */
   MSG_DB_FETCH_REQUEST,  /* FLUSH: requester → home, "PUT your line into my landing" */
   MSG_DB_FETCH_RESPONSE, /* FLUSH: home → requester, pairs with the PUT; carries the line's address */
   MSG_DB_FLUSH_COMMIT,   /* FLUSH: releaser → home, after its PUT into the line */
@@ -169,7 +158,7 @@ enum arts_msg_type {
   MSG_DB_FLUSH_ANNOUNCE, /* FLUSH: releaser → home, a release with no credit asks for one */
   MSG_DB_FLUSH_CTS,      /* FLUSH: home → releaser, the credit for an announced release */
 
-  MSG_COUNT, /* sentinel — keep last; used for array sizing */
+  MSG_COUNT, /* sentinel — keep last: the number of message types */
 };
 
 // Header
@@ -277,10 +266,10 @@ struct ARTS_PACKED arts_msg_rdzv_landing_s {
 struct ARTS_PACKED arts_msg_grant_request_packet_s {
   struct arts_msg_header_s header;
   arts_guid_t db_guid;
-  /* Requester's landing for the incoming owner→owner transfer payload.
-   * txid==0 = the requester does not yet know db_size (first touch): home
-   * answers GRANT_CTS instead of enqueueing, unless the DB itself is a
-   * sentinel (db_size==0 at home), which transfers data-less. */
+  /* Requester's landing for the incoming owner→owner transfer payload, sized
+   * from the block's name.  txid==0 = no payload moves here: a zero-size
+   * block, a one-rank run, or (HOME read source) the home's own request,
+   * which asks for the permission alone. */
   struct arts_msg_rdzv_landing_s rdzv;
   /* The version of the copy this requester ALREADY holds, so a server can
    * tell "needs the bytes" from "needs only the permission" without asking
@@ -300,20 +289,6 @@ struct ARTS_PACKED arts_msg_grant_request_packet_s {
 /* No copy, or one whose contents were never published. */
 #define ARTS_GRANT_VERSION_NONE ((uint64_t)0)
 
-/* GRANT_CTS — home → requester: the db_size a first-touch RW requester
- * needs to allocate its landing; the requester re-issues GRANT_REQUEST
- * with the landing attached.  The original landing-less request was NOT
- * enqueued (home only ever queues requests that carry a landing or target a
- * sentinel DB). */
-struct ARTS_PACKED arts_msg_grant_cts_packet_s {
-  struct arts_msg_header_s header;
-  arts_guid_t db_guid;
-  uint64_t db_size;
-#if defined(ARTS_VALIDITY_VAL) || defined(ARTS_VALIDITY_INV)
-  uint64_t token; /* the request's, echoed */
-#endif
-};
-
 /* GRANT_RESPONSE — the single ownership-transfer wire message, ONE layout
  * for both read sources: a serialized cached_version map (map_entry_count
  * pairs) rides INLINE after the header; the buffer payload does NOT ride the
@@ -326,7 +301,7 @@ struct ARTS_PACKED arts_msg_grant_cts_packet_s {
  *   rdzv_txid != 0 : `data_size` payload bytes were PUT into the requester's
  *                    landing (named by rdzv_cookie, the requester's own
  *                    echoed handle); install on {packet, txid} pairing.
- *   rdzv_txid == 0 : no payload moved (sentinel DB, an ex-owner with no
+ *   rdzv_txid == 0 : no payload moved (a zero-size block, an ex-owner with no
  *                    bytes yet, or a requester that already holds this
  *                    version or asked for the permission alone).  A nonzero
  *                    rdzv_cookie still echoes the requester's unused landing
@@ -363,7 +338,7 @@ struct ARTS_PACKED arts_msg_grant_response_packet_s {
  *       that landing, or into the one a credit named (an earlier ACK's or
  *       the block's CREATE_RETURN); home pairs {packet, write completion},
  *       stamps the version, and ACKs.
- *   data_size == 0                : data-less publish (a sentinel DB, or an
+ *   data_size == 0                : data-less publish (a zero-size block, or an
  *       INV release that only asks for its invalidation round) — nothing
  *       lands; home ACKs once it has processed it.
  * cv: on an announce, the address of the releaser's rendezvous (sem +
@@ -433,7 +408,9 @@ struct ARTS_PACKED arts_msg_grant_invalidate_packet_s {
   uint8_t pad[4];
   /* The NEW owner's landing (from its queued GRANT_REQUEST), forwarded so
    * the current holder can PUT the transfer payload without a home
-   * round-trip.  txid==0 = sentinel DB round (data-less transfer). */
+   * round-trip.  txid==0 = no payload moves to the new owner (a data-less
+   * transfer): a zero-size block, a one-rank run, or (HOME read source) the
+   * home's own request, which asks for the permission alone. */
   struct arts_msg_rdzv_landing_s new_owner_rdzv;
   /* The version the new owner reported holding in its GRANT_REQUEST
    * (ARTS_GRANT_VERSION_NONE when it holds none): the holder ships the
@@ -489,9 +466,8 @@ struct ARTS_PACKED arts_msg_grant_confirm_ack_packet_s {
 struct ARTS_PACKED arts_msg_snapshot_request_packet_s {
   struct arts_msg_header_s header;
   arts_guid_t db_guid;
-  /* Requester's landing for the snapshot payload.  txid==0 = requester does
-   * not yet know db_size (first touch): the server answers a size-only CTS
-   * response (data_present == 2) and the requester re-issues with a landing. */
+  /* Requester's landing for the snapshot payload, sized from the block's
+   * name.  txid==0 = no payload moves here: a zero-size block. */
   struct arts_msg_rdzv_landing_s rdzv;
 #ifdef ARTS_VALIDITY_VAL
   uint64_t token; /* the requester's answer token */
@@ -508,9 +484,7 @@ struct ARTS_PACKED arts_msg_snapshot_request_packet_s {
  *       the requester returns it.
  *   1 = `db_size` payload bytes were PUT into the requester's landing
  *       (rdzv_cookie); install on {packet, txid} pairing.
- *   2 = size-only CTS: the request carried no landing and data exists —
- *       db_size tells the requester what to allocate; it re-issues the
- *       request with a landing.  No watermark advances on this leg. */
+ * Any other value is refused. */
 struct ARTS_PACKED arts_msg_snapshot_response_packet_s {
   struct arts_msg_header_s header;
   arts_guid_t db_guid;
@@ -615,7 +589,7 @@ struct ARTS_PACKED arts_msg_db_create_return_packet_s {
 /* Answer tokens (EXCL), as on VAL and INV: a request names the requester's
  * descriptor in `token`, which the home stores with the request (and under
  * RETAIN a FORWARD carries to the owner that serves it) and every answer
- * echoes: EXCL_CTS, EXCL_GRANT, EXCL_DELIVER.  Under RETAIN a migration also
+ * echoes: EXCL_GRANT, EXCL_DELIVER.  Under RETAIN a migration also
  * carries the home's own descriptor as `home_token`, on FORWARD, DELIVER and
  * EXCL_CONFIRM: the home holds a count on it while a write request it took in
  * is unconfirmed (w above zero), which the CONFIRM that returns w to zero
@@ -627,23 +601,13 @@ struct ARTS_PACKED arts_msg_excl_request_packet_s {
   uint32_t cover; /* ARTS_COVER_PRECLAIM on a write request a first-touch
                    * cache opened before a create claimed it, else 0 */
   /* requester rank = header.rank; no edt_guid/slot (rank-granular). */
-  /* Requester's landing for the grant/deliver payload.  txid==0 = requester
-   * does not yet know db_size (first touch): home answers EXCL_CTS and the
-   * requester re-issues with a landing (sentinel DBs grant data-less). */
+  /* Requester's landing for the grant/deliver payload, its stable buffer
+   * sized from the block's name.  txid==0 = no payload moves here: a
+   * zero-size block, a one-rank run, or any request of the CXL store, whose
+   * payload moves through the store (the home's own request runs inline and
+   * advertises none either). */
   struct arts_msg_rdzv_landing_s rdzv;
   uint64_t token; /* the requester's answer token */
-};
-
-/* EXCL_CTS — to the requester: a size round, from the home.  The request
- * carried no landing, so it was not queued; the answer echoes the mode, and
- * the requester re-issues the same request with a landing. */
-struct ARTS_PACKED arts_msg_excl_cts_packet_s {
-  struct arts_msg_header_s header;
-  arts_guid_t db_guid;
-  uint64_t db_size;
-  uint32_t mode;
-  uint32_t pad;   /* keeps the token 8-aligned; written 0 */
-  uint64_t token; /* the request's, echoed */
 };
 
 struct ARTS_PACKED arts_msg_excl_grant_packet_s {
@@ -653,16 +617,20 @@ struct ARTS_PACKED arts_msg_excl_grant_packet_s {
   uint32_t pad; /* keeps the fields below 8-aligned; written 0 */
   /* Grant payload travels by PUT into the requester's landing, its stable
    * buffer: rdzv_txid != 0 pairs this packet with the write completion.
-   * data_size is the DB's size (descriptor state, ALWAYS set — a hinted
-   * first touch skips the size CTS and learns the exact size from whichever
-   * reply completes it); payload presence is signaled by rdzv_txid, never by
-   * data_size, and no bytes trail the packet.  txid == 0 = data-less grant
-   * (sentinel / nothing published). */
+   * data_size is the DB's size (descriptor state, ALWAYS set — a first
+   * touch sized its landing from the name's bound and learns the exact size
+   * from whichever reply completes it); payload presence is signaled by
+   * rdzv_txid, never by data_size, and no bytes trail the packet.  txid == 0
+   * = data-less grant: a zero-size block's, the home's grant to its own
+   * request, which runs inline on the bytes in place, and every grant of the
+   * CXL store, whose bytes the grantee reads from the store. */
   uint64_t data_size;
   uint64_t rdzv_txid;
   /* Home's landing for THIS grant's eventual RW release publish (grants and
    * releases pair 1:1): the releaser PUTs its dirty bytes here and echoes
-   * its txid in EXCL_RELEASE.  txid==0 for RO grants / sentinel DBs. */
+   * its txid in EXCL_RELEASE.  txid==0 for RO grants, a zero-size block's,
+   * the home's grant to its own request, and every grant of the CXL store,
+   * where the address field names the block's slot. */
   struct arts_msg_rdzv_landing_s pub;
   uint64_t token; /* the request's, echoed */
 };
@@ -676,7 +644,7 @@ struct ARTS_PACKED arts_msg_excl_release_packet_s {
                 * the PUBLISH_CTS; nothing acknowledges a release */
   /* RW dirty payload travels by PUT into the grant's `pub` landing, the
    * home's stable buffer; these echo that landing's txid and count the landed
-   * bytes.  txid==0 = data-less release (RO, or sentinel DB). */
+   * bytes.  txid==0 = data-less release (RO, or a zero-size block). */
   uint64_t data_size;
   uint64_t rdzv_txid;
 };
@@ -758,8 +726,8 @@ struct ARTS_PACKED arts_msg_fetch_request_packet_s {
 #endif
   uint32_t slot;
   uint8_t pad[4];
-  /* txid == 0: the requester could not size a landing (sentinel GUID, size
-   * unknown) and expects a size-only reply. */
+  /* The private copy's landing, sized from the block's name.  txid == 0 =
+   * no payload moves here: a zero-size block. */
   struct arts_msg_rdzv_landing_s rdzv;
 };
 struct ARTS_PACKED arts_msg_fetch_response_packet_s {
@@ -770,7 +738,7 @@ struct ARTS_PACKED arts_msg_fetch_response_packet_s {
   arts_guid_t edt_guid;
 #endif
   uint32_t slot;
-  uint32_t kind; /* 0 = zero-size block (NULL payload), 1 = payload PUT, 2 = size only */
+  uint32_t kind; /* 0 = zero-size block (NULL payload), 1 = payload PUT */
   uint64_t db_size;
   uint64_t rdzv_txid;   /* kind 1: pairs with the write completion */
   uint64_t rdzv_cookie; /* the requester's landing handle, echoed */
@@ -832,21 +800,11 @@ struct ARTS_PACKED arts_msg_inv_request_packet_s {
   uint16_t mode;  /* arts_db_access_mode_t — RO; writes use GRANT_REQUEST */
   uint16_t flags; /* ARTS_INV_REQ_BOUNCE: a holder's re-send for the reader */
   uint32_t requester;
-  /* Requester's landing for the deliver payload.  txid==0 = the requester does
-   * not yet know db_size (first touch): the home answers INV_CTS and the
-   * requester re-issues with a landing. */
+  /* Requester's landing for the deliver payload, sized from the block's
+   * name.  txid==0 = no payload moves here: a zero-size block or a one-rank
+   * run. */
   struct arts_msg_rdzv_landing_s rdzv;
   uint64_t token; /* the subject's answer token, a bounce's included */
-};
-
-/* A size round: the read request carried no landing, so the home answers
- * the block's size and the requester asks again with one.  Reads are the
- * only INV requests, so no mode travels. */
-struct ARTS_PACKED arts_msg_inv_cts_packet_s {
-  struct arts_msg_header_s header;
-  arts_guid_t db_guid;
-  uint64_t db_size;
-  uint64_t token; /* the request's, echoed */
 };
 
 /* The version is the install-lane arbitration stamp ONLY (two asynchronous

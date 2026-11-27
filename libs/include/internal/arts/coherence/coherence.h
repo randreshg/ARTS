@@ -58,8 +58,11 @@ extern "C" {
  * (arts_db_sweep_open_items, in a sanitizer build, once the other runtime
  * threads have stopped); a
  * descriptor retired with an axis open keeps that count to the process exit.
- * A re-send, a size round that re-sends, a hop or a relaunch leaves the count
- * where it is: it belongs to the axis, never to a message.
+ * The count belongs to the axis, never to a message: a hop (a redirect,
+ * INV·OWNER's bounce of a holder that has no bytes, which carries the
+ * request's own landing and token, EXCL·RETAIN's forward) or a flight's
+ * relaunch leaves it where it is, and on VAL the answer that closes a window
+ * and opens the next cohort's request keeps it for that request.
  *
  * The request names the descriptor as its token (protocol.h) and the answer
  * acts on it.  The count keeps the descriptor's memory, so the one question
@@ -98,11 +101,12 @@ extern "C" {
  * from the wire, runs under the pin the dispatcher's lookup takes; here the
  * descriptor is the caller's own.  The body can answer this rank's own request
  * inline too, dropping that request's count and running on after it, and the
- * caller may be running under that very count (an answer that re-sends, a
- * flight's relaunch).  So every self-sent request runs its body under a count
- * of its own, released once the body returns, which stands in for that pin and
- * leaves the body depending on nothing its caller holds: a copy of the
- * descriptor's control block while it is live (arts_route_table_copy_live).  A
+ * caller may be running under that very count (VAL's answer that opens the
+ * next cohort's request, a flight's relaunch).  So every self-sent request
+ * runs its body under a count of its own, released once the body returns,
+ * which stands in for that pin and leaves the body depending on nothing its
+ * caller holds: a copy of the descriptor's control block while it is live
+ * (arts_route_table_copy_live).  A
  * dispatch onto a descriptor that is not live takes the engine's GUID path,
  * which may defer the body to the install's drain, whose handle holds it.
  * EXCL's request to its own home is one (its body can answer the request
@@ -563,10 +567,10 @@ void arts_db_cache_common_destroy_post(struct arts_db_cache_s *cache);
  * when the cache already named a slot or addr is 0. */
 bool arts_db_cxl_slot_record(struct arts_db_cache_s *cache, uint64_t addr);
 /* Allocate a slot of db_size bytes out of the arena for a create that
- * builds no descriptor here; 0 for a sentinel-sized block, which has none. */
+ * builds no descriptor here; 0 for a zero-size block, which has none. */
 uint64_t arts_db_cxl_slot_mint(uint64_t db_size);
 /* Allocate out of the arena, for the size the cache DECLARES, and
- * record it.  False when the block is sentinel-sized (db_size == 0) or
+ * record it.  False when the block is zero-size (db_size == 0) or
  * already carries a slot — in which case nothing was allocated.  The caller
  * must have recorded cache->db_size first: a first-touch stub carries none,
  * and a create that finds such a cache is the block's declaration of its
@@ -640,10 +644,7 @@ bool arts_db_create_take_hold(struct arts_db_cache_s *cache, uint8_t *owed);
  * never commit it), and the claim serves the waiter.
  * giveback: OPEN -> IDLE with nothing to ask for, under the same token.
  * clear: SENT -> IDLE where a grant lands, clearing the stub bit; it serves
- * no reader.  declaim: a size round answered the write request (rw must be
- * SENT): clear the stub bit -- the home is installed and was created
- * elsewhere, so this cache can never be claimed, and the re-send carries no
- * PRECLAIM.  The axis counts: a won commit's caller takes the write axis's
+ * no reader.  The axis counts: a won commit's caller takes the write axis's
  * before it sends the request; clear closes it, and its count passes to the
  * frame that runs the grant. */
 bool arts_db_rw_req_claim(struct arts_db_cache_s *cache, uint32_t *tok);
@@ -651,7 +652,6 @@ bool arts_db_rw_req_commit(struct arts_db_cache_s *cache, uint32_t tok,
                            uint32_t *cover);
 void arts_db_rw_req_giveback(struct arts_db_cache_s *cache, uint32_t tok);
 void arts_db_rw_req_clear(struct arts_db_cache_s *cache);
-void arts_db_rw_req_declaim(struct arts_db_cache_s *cache);
 /* The grant plane's half of a create's claim (grant.c): claim_writers serves
  * every parked writer under the create's hold, each with a hold of its own,
  * BEFORE the arm's CLAIM transition reopens the write axis; rearm, after it,
@@ -692,11 +692,8 @@ void arts_db_reader_serve_chain(struct arts_db_reader_pool_s *p,
 void arts_db_reader_pool_destroy(struct arts_db_reader_pool_s *p);
 #endif
 #ifdef ARTS_VALIDITY_VAL
-/* A size round answered the read window: its request goes out again, now
- * with a landing, and the axis stays open under the same count; a call with
- * no window out is fatal.  claim_rw_axis: the create's claim of the write
- * axis (see the definition), returning the announce's owed byte. */
-void arts_db_ro_combine_on_cts(struct arts_db_cache_s *cache);
+/* claim_rw_axis: the create's claim of the write axis (see the definition),
+ * returning the announce's owed byte. */
 uint8_t arts_db_val_claim_rw_axis(struct arts_db_cache_s *cache);
 #endif
 

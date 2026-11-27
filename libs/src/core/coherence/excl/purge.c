@@ -187,7 +187,8 @@ static void lock_home_grant(struct arts_db_s *db, struct arts_db_cache_s *cache,
   struct arts_db_buffer_s *buf =
       (struct arts_db_buffer_s *)arts_shared_get(buf_h);
   /* The size is descriptor state — known even before any payload exists;
-   * the grant carries it so a hinted (CTS-skipping) first touch learns it. */
+   * the grant carries it so a first touch, whose landing the name's bound
+   * sized, learns it. */
   uint64_t data_size =
       atomic_load_explicit(&cache->db_size, memory_order_relaxed);
   if (grant == LOCK_GRANT_ONE_RW) {
@@ -273,7 +274,8 @@ void arts_send_db_excl_grant(struct arts_db_s *db, unsigned int requester_rank,
   arts_transport_send_async((int)requester_rank, (char *)&p, sizeof(p));
 #else
   if (src == NULL || req_rdzv == NULL || req_rdzv->txid == 0) {
-    /* Data-less grant (sentinel DB / nothing published). */
+    /* Data-less grant: another rank's request for a zero-size block, which
+     * advertised no landing and whose home holds no buffer. */
     if (src != NULL) {
       arts_db_buf_release(&src_h);
     }
@@ -347,20 +349,18 @@ void arts_handler_db_excl_request(void *item_v, void *args_v) {
   if (a->rdzv.txid == 0 && requester != arts_global_rank_id &&
       atomic_load_explicit(&cache->db_size, memory_order_relaxed) > 0 &&
       arts_global_rank_count > 1) {
-    /* First-touch request without a landing: the requester did not know
-     * db_size.  Answer with the size (CTS) and do NOT enqueue — the grant
-     * plane requires a landing.  The requester re-issues with one. */
-    INCREMENT_NUM_EXCL_SIZE_CTS_BY(1);
-    arts_send_db_excl_cts(
-        db->cache.db_guid, requester,
-        atomic_load_explicit(&cache->db_size, memory_order_relaxed),
-        (uint32_t)mode, a->token);
-    return;
+    /* Another rank sizes its landing from the block's name: only a zero-size
+     * block's request comes without one. */
+    ARTS_ERROR("excl: guid %lu: a request from rank %u advertised no landing "
+               "for a block of %llu bytes",
+               (unsigned long)db->cache.db_guid, requester,
+               (unsigned long long)atomic_load_explicit(&cache->db_size,
+                                                        memory_order_relaxed));
   }
 #else
-  /* On the arm whose grants carry no payload a request advertises no landing,
-   * so its absence says nothing about what the requester knows: the size
-   * travels in the grant, which the grantee records before it reads. */
+  /* On the arm whose grants carry no payload a request advertises no landing
+   * and is granted all the same: the size travels in the grant, which the
+   * grantee records before it reads. */
 #endif
 
   arts_rank_bitset_note(&db->cached_ranks,
@@ -718,8 +718,8 @@ void arts_db_create_install_home_buffer(struct arts_db_cache_s *cache,
  * own included, and a grant comes back only after its last holder released.
  * A fresh txid is drawn per request (each request is served by at most one
  * grant).  False only when no payload can move here; a sized block whose
- * buffer cannot be advertised is fatal, since a landing-less request is
- * answered with a size round that would only repeat. */
+ * buffer cannot be advertised is fatal, since the home refuses a landing-less
+ * request for a block with bytes. */
 static bool lock_stable_landing(struct arts_db_cache_s *cache,
                                 struct arts_rdzv_landing_s *out) {
   *out = ARTS_RDZV_NO_LANDING;
@@ -799,65 +799,6 @@ void arts_send_db_excl_request(struct arts_db_cache_s *cache,
     arts_transport_send_async((int)home_rank, (char *)&p, sizeof(p));
   }
 }
-
-#ifdef ARTS_USE_CXL
-/* A request advertises no landing on this arm, so the home answers it with
- * its grant alone: no size round exists. */
-void arts_handler_db_excl_cts(const struct arts_msg_excl_cts_packet_s *p) {
-  ARTS_ERROR("cxl: a size round from rank %u for guid %lu; on this arm a "
-             "request is answered by its grant and nothing else",
-             p->header.rank, (unsigned long)p->db_guid);
-}
-#else
-/* EXCL_CTS sender (a size round) + requester-side body. */
-void arts_send_db_excl_cts(arts_guid_t db_guid, unsigned int requester_rank,
-                           uint64_t db_size, uint32_t mode, uint64_t token) {
-  /* A size round answers a landing-less request, which the home's own never
-   * is. */
-  assert(requester_rank != arts_global_rank_id);
-  struct arts_msg_excl_cts_packet_s p;
-  arts_fill_packet_header(&p.header, sizeof(p), MSG_DB_EXCL_CTS);
-  p.header.rank = arts_global_rank_id;
-  p.db_guid = db_guid;
-  p.db_size = db_size;
-  p.mode = mode;
-  p.pad = 0u;
-  p.token = token;
-  arts_transport_send_async((int)requester_rank, (char *)&p, sizeof(p));
-}
-
-void arts_handler_db_excl_cts(const struct arts_msg_excl_cts_packet_s *p) {
-  struct arts_db_s *db = arts_db_from_token(p->token, p->db_guid);
-  if (arts_db_token_retired(db, p->db_guid)) {
-    arts_db_axis_drop(db, 1u);
-    return;
-  }
-  struct arts_db_cache_s *cache = &db->cache;
-  arts_db_cache_learn_size(cache, p->db_size);
-  bool write = (arts_db_access_mode_t)p->mode == DB_MODE_RW;
-  /* A request is answered by its grant alone (a write request whose writers
-   * a create served is absorbed at the home), so its axis is at REQ.  The
-   * re-sent request is the same one: the axis and its count stay open.  Any
-   * reply clears the stub bit, so a re-sent write request carries no
-   * PRECLAIM. */
-  uint64_t s, n;
-  bool at_req;
-  do {
-    s = atomic_load_explicit(&cache->cache_state, memory_order_acquire);
-    n = cache_size_round_next(s, write, &at_req);
-    if (!at_req) {
-      ARTS_ERROR("lock: guid %lu got a size round for a %s request it does "
-                 "not have out (word=%llx)",
-                 (unsigned long)cache->db_guid, write ? "write" : "read",
-                 (unsigned long long)s);
-    }
-  } while (n != s && !atomic_compare_exchange_weak_explicit(
-                         &cache->cache_state, &s, n, memory_order_acq_rel,
-                         memory_order_acquire));
-  arts_send_db_excl_request(cache, write ? DB_MODE_RW : DB_MODE_RO,
-                            /*cover=*/0u);
-}
-#endif /* ARTS_USE_CXL */
 
 /* Serve exactly `expected` waiters from `q` — the parked population the
  * caller's CAS, the one that starts serving the axis (a grant's commit or a
@@ -986,8 +927,8 @@ static void cxl_purge_body(struct arts_db_cache_s *cache,
  * here is a create that skipped its allocation or a grant that carried none —
  * the same defect, with the same answer, on either residency.  It lives in the
  * shared part for that reason: the slot rule is what it checks, not a funnel.
- * A block whose declared size is 0 is exempt: a sentinel has no bytes, so it
- * has no store and a grant for it carries address 0 legitimately. */
+ * A block whose declared size is 0 is exempt: it has no bytes, so it has no
+ * store and a grant for it carries address 0 legitimately. */
 static void cxl_slot_required(const struct arts_db_cache_s *cache,
                               const char *edge) {
   if (arts_db_cxl_slot_addr(cache) == 0 &&
@@ -1009,7 +950,7 @@ static void cxl_fetch_working_copy(struct arts_db_cache_s *cache) {
   uint64_t n = atomic_load_explicit(&cache->db_size, memory_order_relaxed);
   cxl_slot_required(cache, "grant");
   if (n == 0) {
-    return; /* a sentinel-sized block has no bytes and no store */
+    return; /* a zero-size block has no bytes and no store */
   }
   (void)arts_db_buf_ensure(cache, n);
   arts_shared_ptr_t h = arts_db_buf_acquire(cache);
@@ -1428,7 +1369,7 @@ static void excl_grant_on(struct arts_db_s *db,
    * nothing else: the landing's key and txid are unread here.
    * A rank that created the block, or learned it from an earlier grant,
    * already knows the slot and records nothing.  A zero address is legal for
-   * a sentinel-sized block, which has none. */
+   * a zero-size block, which has none. */
   (void)arts_db_cxl_slot_record(cache, p->pub.addr);
   uint8_t census = arts_db_census_serving_from(p->header.rank);
   lock_grant_commit(db, p->db_guid, mode);

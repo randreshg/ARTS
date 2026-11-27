@@ -7,8 +7,8 @@
  *
  * Observed through this rank's txid draw counter (every advertised landing
  * draws one) and through values.  A self-home request that drew a landing
- * moves the counter; one the home answered with a size reply instead of
- * queueing it would never be granted (ctest TIMEOUT).
+ * moves the counter; one the home refused for want of a landing would end
+ * the run with an error.
  *
  *   A  block homed here, written here K times   -> counter unchanged
  *   B  block homed on the last rank, written here -> counter advances

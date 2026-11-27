@@ -215,8 +215,8 @@ void arts_db_buf_landing_return(struct arts_db_buffer_s *b);
  * requester already allocated is exactly that storage.  The install is
  * unconditional-if-absent rather than version-conditional precisely because
  * these bytes are not data: they may fill a hole but must never displace a
- * buffer that holds a real payload, at any version.  db_size == 0 (a sentinel
- * block) adopts nothing — NULL is its defined value. */
+ * buffer that holds a real payload, at any version.  db_size == 0 (a
+ * zero-size block) adopts nothing — NULL is its defined value. */
 bool arts_db_buf_adopt_landing(struct arts_db_cache_s *cache, uint64_t version,
                                struct arts_db_buffer_s *landing,
                                uint64_t db_size);
@@ -270,8 +270,8 @@ void arts_db_buf_prepare_inplace(struct arts_db_cache_s *cache,
                                  uint64_t capacity);
 
 /* Size to allocate/advertise for this rank's FIRST fetch of a DB: the known
- * exact size, else the GUID's szhint bound, else 0 (= no landing; the
- * size-CTS round remains as the sentinel fallback). */
+ * exact size, else the GUID's szhint bound.  0 (= no landing) only for a
+ * zero-size block. */
 uint64_t arts_db_first_fetch_size(const struct arts_db_cache_s *cache);
 
 #ifdef __cplusplus

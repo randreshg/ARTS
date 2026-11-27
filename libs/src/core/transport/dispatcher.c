@@ -469,8 +469,7 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
 #if defined(ARTS_VALIDITY_FLUSH)
 /* Refused in one place below: this arm has none of these rounds. */
 #elif defined(ARTS_VALIDITY_EXCL)
-  case MSG_DB_GRANT_RESPONSE:
-  case MSG_DB_GRANT_CTS: {
+  case MSG_DB_GRANT_RESPONSE: {
     ARTS_ERROR("EXCL build received ownership-transfer message type %d "
                "from rank %u — this protocol has no migrating grant; binary "
                "mode mismatch?",
@@ -484,15 +483,6 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
      * trails it; the buffer payload travels one-sided and pairs by rdzv_txid
      * inside the handler. */
     arts_handler_db_grant_response((void *)packet, (size_t)packet->size);
-    break;
-  }
-  case MSG_DB_GRANT_CTS: {
-    ARTS_DEBUG("Coh GRANT_CTS Received");
-    struct arts_msg_grant_cts_packet_s *pack =
-        (struct arts_msg_grant_cts_packet_s *)(packet);
-    /* An answer: the handler learns db_size and re-issues the in-flight
-     * request on the descriptor the token names. */
-    arts_handler_db_grant_cts(pack);
     break;
   }
 #endif /* model dispatch for MSG_DB_GRANT_RESPONSE */
@@ -812,12 +802,6 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
                                     sizeof(args));
     break;
   }
-  case MSG_DB_EXCL_CTS: {
-    ARTS_DEBUG("Coh EXCL_CTS Received");
-    /* An answer: it acts on the descriptor its token names. */
-    arts_handler_db_excl_cts((struct arts_msg_excl_cts_packet_s *)(packet));
-    break;
-  }
 #ifdef ARTS_RETENTION_PURGE
   /* PURGE-only: the grant and the release that returns it; nothing
    * acknowledges a release. */
@@ -910,10 +894,10 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
 #ifdef ARTS_VALIDITY_INV
   /* INV wire arm.  REQUEST is Cat-B (a message can reach home before the home
    * db_s installs on a remote-create stub-install path); the rest are
-   * answers on the descriptor their token names (CTS, DELIVER,
-   * INVALIDATE_ACK) or are looked up (INVALIDATE, whose miss still acks, so
-   * a round is never stranded; REDIRECT and a holder's bounce, whose miss is
-   * dropped): none is parked. */
+   * answers on the descriptor their token names (DELIVER, INVALIDATE_ACK)
+   * or are looked up (INVALIDATE, whose miss still acks, so a round is never
+   * stranded; REDIRECT and a holder's bounce, whose miss is dropped): none
+   * is parked. */
   case MSG_DB_INV_REQUEST: {
     ARTS_DEBUG("Coh INV_REQUEST Received");
     struct arts_msg_inv_request_packet_s *pack =
@@ -950,15 +934,6 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
     }
     arts_ooo_dispatch_or_defer_guid(pack->db_guid, OOO_DB_INV_REQUEST, &args,
                                     sizeof(args));
-    break;
-  }
-  case MSG_DB_INV_CTS: {
-    ARTS_DEBUG("Coh INV_CTS Received");
-    struct arts_msg_inv_cts_packet_s *pack =
-        (struct arts_msg_inv_cts_packet_s *)(packet);
-    /* An answer: on the descriptor the token names it learns db_size and
-     * re-sends the fetch with a landing. */
-    arts_handler_db_inv_cts(pack);
     break;
   }
   case MSG_DB_INV_DELIVER: {
@@ -1045,7 +1020,6 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
 #ifdef ARTS_VALIDITY_FLUSH
   case MSG_DB_GRANT_REQUEST:
   case MSG_DB_GRANT_RESPONSE:
-  case MSG_DB_GRANT_CTS:
   case MSG_DB_GRANT_INVALIDATE:
   case MSG_DB_GRANT_CONFIRM:
   case MSG_DB_GRANT_CONFIRM_ACK:
@@ -1057,13 +1031,11 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
   case MSG_DB_SNAPSHOT_RESPONSE:
   case MSG_DB_SNAPSHOT_REDIRECT:
   case MSG_DB_INV_REQUEST:
-  case MSG_DB_INV_CTS:
   case MSG_DB_INV_DELIVER:
   case MSG_DB_INV_INVALIDATE:
   case MSG_DB_INV_INVALIDATE_ACK:
   case MSG_DB_INV_REDIRECT:
   case MSG_DB_EXCL_REQUEST:
-  case MSG_DB_EXCL_CTS:
   case MSG_DB_EXCL_GRANT:
   case MSG_DB_EXCL_RELEASE:
   case MSG_DB_EXCL_FORWARD:

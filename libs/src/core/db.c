@@ -855,7 +855,7 @@ static arts_shared_ptr_t acquire_resolve(struct arts_edt_s *edt,
 /* acquire_one_dep — attempt the single DB dependency depv[i].
  *
  * On a synchronous resolve it writes the slot's acquire record (NULL is a
- * valid payload: a sentinel / version-0 / no-payload DB) and self-accounts
+ * valid payload: a zero-size / version-0 / no-payload DB) and self-accounts
  * via arts_db_acquire_resolved;
  * when the EDT must park (remote ownership/data round, or OoO defer of a
  * not-yet-installed local DB) it leaves the slot to its one resolver (the

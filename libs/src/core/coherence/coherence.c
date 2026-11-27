@@ -441,18 +441,6 @@ bool arts_db_ro_combine_on_terminal(struct arts_db_cache_s *cache) {
   return true;
 }
 
-void arts_db_ro_combine_on_cts(struct arts_db_cache_s *cache) {
-  uint64_t post;
-  uint32_t act;
-  uint64_t pre = val_req_step(cache, VREQ_OP_CTS, 0u, &post, &act);
-  if (act == VREQ_ACT_LATE) {
-    ARTS_ERROR("val: guid %lu got a read size round it has no request out "
-               "for (word=%llx)",
-               (unsigned long)cache->db_guid, (unsigned long long)pre);
-  }
-  arts_send_db_snapshot_request(cache);
-}
-
 /* ---- the write axis, for the shared grant plane ------------------------- */
 bool arts_db_rw_req_claim(struct arts_db_cache_s *cache, uint32_t *tok) {
   uint64_t post;
@@ -488,17 +476,6 @@ void arts_db_rw_req_clear(struct arts_db_cache_s *cache) {
   if (act == VREQ_ACT_LATE) {
     ARTS_ERROR("val: guid %lu got a write grant it has no request out for "
                "(word=%llx)",
-               (unsigned long)cache->db_guid, (unsigned long long)pre);
-  }
-}
-
-void arts_db_rw_req_declaim(struct arts_db_cache_s *cache) {
-  uint64_t post;
-  uint32_t act;
-  uint64_t pre = val_req_step(cache, VREQ_OP_DECLAIM, 0u, &post, &act);
-  if (act == VREQ_ACT_LATE) {
-    ARTS_ERROR("val: guid %lu got a write size round it has no request out "
-               "for (word=%llx)",
                (unsigned long)cache->db_guid, (unsigned long long)pre);
   }
 }
@@ -1611,9 +1588,9 @@ void arts_db_debug_quiescence_check(const struct arts_teardown_exempt_s *ex,
           uint64_t addr = arts_db_cxl_slot_addr(c);
           uint64_t size =
               atomic_load_explicit(&c->db_size, memory_order_relaxed);
-          /* 1. No slot missing where a working copy exists.  A sentinel-
-           * sized block has no slot on either residency and legitimately
-           * rests at address 0. */
+          /* 1. No slot missing where a working copy exists.  A zero-size
+           * block has no slot on either residency and legitimately rests at
+           * address 0. */
           if (size != 0 && pending == 0u && addr == 0) {
             ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu has a working copy but no "
                        "slot for it (size=%llu)",

@@ -7,6 +7,7 @@
  * ARTS_READ_SOURCE=OWNER (selected in libs/src/core/CMakeLists.txt).
  * Contains NO protocol/read-source preprocessor logic.
  */
+#include <assert.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
@@ -256,15 +257,12 @@ void arts_handler_db_snapshot_request(void *item_v, void *args_v) {
   uint64_t db_size =
       atomic_load_explicit(&cache->db_size, memory_order_relaxed);
   if (a->rdzv.txid == 0 && db_size > 0) {
-    /* First-touch request without a landing: the requester did not know
-     * db_size.  Home is the size authority even though the data lives with
-     * the owner — answer a size-only CTS directly; the re-request carries a
-     * landing and is then redirected for real. */
-    INCREMENT_NUM_SNAPSHOT_SIZE_CTS_BY(1);
-    arts_send_db_snapshot_response(requester, a->token, cache->db_guid,
-                                   /*version=*/0, /*kind=*/2, db_size,
-                                   &a->rdzv, NULL);
-    return;
+    /* Every requester, this rank included, sizes its landing from the
+     * block's name: only a zero-size block's request comes without one. */
+    ARTS_ERROR("val: guid %lu: a request from rank %u advertised no landing "
+               "for a block of %llu bytes",
+               (unsigned long)cache->db_guid, requester,
+               (unsigned long long)db_size);
   }
   unsigned int owner =
       atomic_load_explicit(&db->rw_holder, memory_order_acquire);
@@ -396,16 +394,10 @@ void arts_handler_db_snapshot_redirect(void *item_v, void *args_v) {
     arts_db_buf_release(&buf_h);
     arts_send_db_snapshot_response(requester, a->token, a->db_guid, cur_v,
                                    /*kind=*/0, db_size, &a->rdzv, NULL);
-  } else if (a->rdzv.txid == 0) {
-    /* Data must move but no landing was forwarded (a first-touch request that
-     * slipped past home's CTS gate can only mean home learned the size after
-     * forwarding — defensive).  Size-only CTS; the re-request (via home)
-     * carries a landing.  The watermark does NOT advance. */
-    arts_db_buf_release(&buf_h);
-    INCREMENT_NUM_SNAPSHOT_SIZE_CTS_BY(1);
-    arts_send_db_snapshot_response(requester, a->token, a->db_guid, cur_v,
-                                   /*kind=*/2, db_size, &a->rdzv, NULL);
   } else {
+    /* A redirect forwards its request's own landing, and the home refused a
+     * landing-less request for a block with bytes. */
+    assert(a->rdzv.txid != 0);
     /* Advance dedup watermark (monotonic max), then PUT the payload into the
      * forwarded landing (buf_h transfers into the sender). */
     arts_rank_u64_map_advance(cache->cached_version, requester, cur_v);

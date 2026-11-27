@@ -430,10 +430,6 @@ extern "C" {
 /* A create recording its own hold in a cache this rank already made for the
  * block (see the arbiter for the word it admits). */
 #define CACHE_OP_CREATE_HOLD 6
-/* A size round does not transit the arbiter: its transition is
- * cache_size_round_next (arbiters.c), which clears the stub bit of a word
- * whose axis is at REQ and which its handler commits with a CAS only when the
- * bit is set. */
 
 #define CACHE_ACT_NONE 0
 #define CACHE_ACT_SELF_SERVE 1 /* a grant is held: serve the dep directly */
@@ -477,10 +473,7 @@ extern "C" {
 #define CACHE_OP_OWN_RO 8
 /* The forwards that serve another rank or migrate the block do not transit
  * the arbiter: arts_handler_db_excl_forward installs migrate_target or pushes
- * ro_serve itself (the target is not a pure-function output).  Nor does a
- * size round: its transition is cache_owner_size_round_next (arbiters.c),
- * which clears the stub bit of a word whose axis is at REQ and which its
- * handler commits with a CAS only when the bit is set. */
+ * ro_serve itself (the target is not a pure-function output). */
 
 /* Values are aligned with the PURGE block above so that a name shared by both
  * retentions also shares its number, and the acquire actions carry PURGE's

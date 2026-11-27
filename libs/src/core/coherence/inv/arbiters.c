@@ -59,7 +59,6 @@ static ARTS_ALWAYS_INLINE uint64_t inv_cache_compute_next(
     uint64_t cur, int op, uint32_t self_idx, uint32_t *out_action) {
   uint32_t ro = INV_CACHE_RO(cur);
   uint32_t inflight = INV_CACHE_INFLIGHT(cur);
-  uint32_t hro = INV_CACHE_HEAD_RO(cur);
   uint32_t rw = INV_CACHE_RW(cur);
   uint32_t stub = INV_CACHE_STUB(cur);
   uint64_t next = cur;
@@ -90,9 +89,9 @@ static ARTS_ALWAYS_INLINE uint64_t inv_cache_compute_next(
     break;
 
   case INV_CACHE_OP_DELIVER:
-    /* A reply landed.  Every fetch has exactly one answer (this reply, or a
-     * size round and then the re-sent fetch's reply), so a word with no
-     * fetch open is a reply for no request: the caller raises it. */
+    /* A reply landed.  Every fetch has exactly one answer, this reply, so a
+     * word with no fetch open is a reply for no request: the caller raises
+     * it. */
     if (inflight == 0u) {
       act = INV_CACHE_ACT_LATE;
       break;
@@ -143,21 +142,6 @@ static ARTS_ALWAYS_INLINE uint64_t inv_cache_compute_next(
     act = INV_CACHE_ACT_NONE; /* the caller sends the owed ack LAST */
     break;
 
-  case INV_CACHE_OP_CTS:
-    /* A size round answers the fetch, which goes out again with a landing
-     * for the same cohort; a fetch's chain is never empty, so one with no
-     * cohort is a reply for no request.  A kill mark stays on the re-sent
-     * fetch, whose reply serves once, purges, and only then acks. */
-    if (inflight == 0u || hro == 0u) {
-      act = INV_CACHE_ACT_LATE;
-      break;
-    }
-    if (rw != INV_RW_OPEN) {
-      next &= ~INV_CACHE_STUB_BIT;
-    }
-    act = INV_CACHE_ACT_RESEND;
-    break;
-
   case INV_CACHE_OP_RW_CLEAR:
   case INV_CACHE_OP_CLAIM:
     if (op == INV_CACHE_OP_RW_CLEAR && rw != INV_RW_SENT) {
@@ -169,16 +153,6 @@ static ARTS_ALWAYS_INLINE uint64_t inv_cache_compute_next(
      * claimed: the home answered, so it is installed, and had this rank been
      * the creator its claim would have come first. */
     next &= ~(INV_CACHE_RW_FIELD | INV_CACHE_STUB_BIT);
-    break;
-
-  case INV_CACHE_OP_DECLAIM:
-    /* While the write request is out no writer holds an OPEN, so no token
-     * is outstanding when the stub bit clears. */
-    if (rw != INV_RW_SENT) {
-      act = INV_CACHE_ACT_LATE;
-      break;
-    }
-    next &= ~INV_CACHE_STUB_BIT;
     break;
 
   case INV_CACHE_OP_RW_CLAIM:

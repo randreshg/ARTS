@@ -101,16 +101,12 @@ static_assert(2 * VREQ_HEAD_BITS == 58,
 enum {
   VREQ_OP_ACQ_RO,    /* park a reader (idx), or open a request for it */
   VREQ_OP_ANSWER,    /* the window's request was answered */
-  VREQ_OP_CTS,       /* ... by a size round: ask again with a landing */
   VREQ_OP_RW_CLAIM,  /* IDLE -> OPEN */
   VREQ_OP_RW_COMMIT, /* OPEN -> SENT */
   VREQ_OP_RW_GIVE,   /* OPEN -> IDLE */
   VREQ_OP_RW_CLEAR,  /* SENT -> IDLE where the grant lands */
   VREQ_OP_CLAIM,     /* a create claims the cache: the write axis is the
                         claim's, and the cache is no longer a stub */
-  VREQ_OP_DECLAIM,   /* a size round answered the write request: the home is
-                        installed and was created elsewhere, so the cache can
-                        never be claimed (precondition rw == SENT) */
 };
 enum {
   VREQ_ACT_NONE,
@@ -118,7 +114,6 @@ enum {
   VREQ_ACT_SEND_RO,    /* opened a window with this reader as its cohort */
   VREQ_ACT_SERVE,      /* serve the window's cohort the answer took */
   VREQ_ACT_SERVE_SEND, /* + the next window opened: send its request */
-  VREQ_ACT_RESEND,     /* a size round re-sends the window's request */
   VREQ_ACT_WON,
   VREQ_ACT_LOST,
   VREQ_ACT_LATE, /* an answer for no request out: the caller raises it */

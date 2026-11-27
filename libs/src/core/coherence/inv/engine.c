@@ -122,17 +122,6 @@ void arts_db_rw_req_clear(struct arts_db_cache_s *cache) {
   }
 }
 
-void arts_db_rw_req_declaim(struct arts_db_cache_s *cache) {
-  uint64_t post;
-  uint32_t act;
-  uint64_t pre = inv_req_step(cache, INV_CACHE_OP_DECLAIM, &post, &act);
-  if (act == INV_CACHE_ACT_LATE) {
-    ARTS_ERROR("inv: guid %lu got a write size round it has no request out "
-               "for (word=%llx)",
-               (unsigned long)cache->db_guid, (unsigned long long)pre);
-  }
-}
-
 /* ===== cache lifecycle ================================================== */
 
 void arts_db_cache_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
@@ -693,28 +682,7 @@ void arts_handler_db_publish(void *item_v, void *args_v) {
   inv_round_submit(db, e);
 }
 
-/* ===== Answers on tokens: INV_CTS, DELIVER, INVALIDATE_ACK ============== */
-
-/* A size round: the fetch carried no landing.  It goes out again with one,
- * under the same count. */
-void arts_handler_db_inv_cts(struct arts_msg_inv_cts_packet_s *p) {
-  struct arts_db_s *db = arts_db_from_token(p->token, p->db_guid);
-  if (arts_db_token_retired(db, p->db_guid)) {
-    arts_db_axis_drop(db, 1u);
-    return;
-  }
-  struct arts_db_cache_s *cache = &db->cache;
-  arts_db_cache_learn_size(cache, p->db_size);
-  uint64_t post;
-  uint32_t act;
-  uint64_t pre = inv_req_step(cache, INV_CACHE_OP_CTS, &post, &act);
-  if (act == INV_CACHE_ACT_LATE) {
-    ARTS_ERROR("inv: guid %lu got a size round it has no fetch out for "
-               "(word=%llx)",
-               (unsigned long)cache->db_guid, (unsigned long long)pre);
-  }
-  arts_send_db_inv_request(cache, DB_MODE_RO);
-}
+/* ===== Answers on tokens: DELIVER, INVALIDATE_ACK ======================= */
 
 /* Publish + whole-chain grab: install the landed payload (home-issued
  * install-lane version; a stale install retreats and ends its landing), then
@@ -939,22 +907,6 @@ void arts_handler_db_inv_invalidate_ack(
 /* Control-only senders are plain packet fills; the payload-carrying trio
  * (deliver/publish) lands with the data-plane implementation. */
 
-void arts_send_db_inv_cts(unsigned int requester_rank, uint64_t token,
-                          arts_guid_t db_guid, uint64_t db_size) {
-  struct arts_msg_inv_cts_packet_s p;
-  arts_fill_packet_header(&p.header, sizeof(p), MSG_DB_INV_CTS);
-  p.header.rank = arts_global_rank_id;
-  p.db_guid = db_guid;
-  p.db_size = db_size;
-  p.token = token;
-  if (requester_rank == arts_global_rank_id) {
-    /* The answer, as on the wire, on the descriptor the token names. */
-    arts_handler_db_inv_cts(&p);
-    return;
-  }
-  arts_transport_send_async((int)requester_rank, (char *)&p, sizeof(p));
-}
-
 /* One message per sharer in the roster snapshot: the multicast whose width is
  * what the round costs.  db is the home's descriptor, which the caller
  * holds; it is the round's home token. */
@@ -1018,8 +970,8 @@ void arts_send_db_inv_request(struct arts_db_cache_s *cache,
   /* A FRESH landing per fetch: reception isolation when a read reply and an
    * ownership transfer are in flight together (each PUT lands in its own
    * buffer, installed or returned at commit).  Sized by the exact size when
-   * known, else the GUID's szhint bound; txid==0 survives only as the
-   * sentinel fallback (the home answers INV_CTS and the fetch re-issues).
+   * known, else the GUID's szhint bound; txid==0 only where no payload moves
+   * (a zero-size block, a one-rank run).
    *
    * Being the home rank does NOT excuse a requester from advertising one.
    * Only a home under OWNER asks (under HOME the home serves its own readers
@@ -1037,9 +989,8 @@ void arts_send_db_inv_request(struct arts_db_cache_s *cache,
     /* Self-send: the requester's cache is the home's descriptor, on which the
      * request body runs; one not yet installed takes the engine by GUID,
      * deferred until the home installs and drains, as the wire's does.  The
-     * body can answer the fetch inline, dropping its count, which a
-     * re-sending answer runs under, and still run on: it runs under a count
-     * of its own. */
+     * body can answer the fetch inline, dropping its count, and still run
+     * on: it runs under a count of its own. */
     struct arts_ooo_args_db_inv_request_s args = {
         .requester = arts_global_rank_id,
         .db_guid = db_guid,
@@ -1083,9 +1034,9 @@ void arts_send_db_inv_deliver(unsigned int requester_rank,
   p.header.rank = arts_global_rank_id;
   p.db_guid = cache->db_guid;
   p.token = token;
-  /* Always the DB's size (descriptor state): a hinted first touch skipped
-   * the size CTS, so even a data-less reply must teach the exact size.
-   * Payload presence is signaled by rdzv_txid alone. */
+  /* Always the DB's size (descriptor state): a first touch sized its landing
+   * from the name's bound, so even a data-less reply must teach the exact
+   * size.  Payload presence is signaled by rdzv_txid alone. */
   p.data_size = atomic_load_explicit(&cache->db_size, memory_order_relaxed);
   p.rdzv_txid = 0;
   p.rdzv_cookie = (rdzv != NULL) ? rdzv->cookie : 0;

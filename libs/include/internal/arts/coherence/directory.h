@@ -65,11 +65,11 @@ extern "C" {
  * Init and teardown run with no other user and are relaxed. */
 void arts_home_grantreq_queue_init(struct arts_home_grantreq_queue_s *q);
 void arts_home_grantreq_queue_destroy(struct arts_home_grantreq_queue_s *q);
-/* Push a requester with its transfer landing (NULL rdzv = zero landing —
- * a data-less / sentinel round), the version of the copy it already holds
- * (ARTS_GRANT_VERSION_NONE when it holds none), which travels with it so a
- * server can decide at serve time whether any bytes need to move, and its
- * answer token, which the answer to the request echoes. */
+/* Push a requester with its transfer landing (NULL rdzv = no landing, as a
+ * request no bytes move to advertises), the version of the copy it already
+ * holds (ARTS_GRANT_VERSION_NONE when it holds none), which travels with it
+ * so a server can decide at serve time whether any bytes need to move, and
+ * its answer token, which the answer to the request echoes. */
 void arts_home_grantreq_queue_push(struct arts_home_grantreq_queue_s *q,
                                    unsigned int rank,
                                    const struct arts_rdzv_landing_s *rdzv,

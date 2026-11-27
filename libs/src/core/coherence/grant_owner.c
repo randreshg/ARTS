@@ -116,9 +116,9 @@ void arts_db_grant_response_on(struct arts_db_s *db,
                                const struct arts_db_grant_response_args_s *a) {
   struct arts_db_cache_s *cache = &db->cache;
 
-  /* A hinted first touch may reach its first grant with the size still
-   * unlearned (no CTS leg ran); the response's data_size is the sender's
-   * descriptor size, valid payload or not. */
+  /* A first touch may reach its first grant with the size still unlearned,
+   * having sized its landing from the name's bound; the response's data_size
+   * is the sender's descriptor size, valid payload or not. */
   arts_db_cache_learn_size(cache, a->data_size);
 
   if (a->rdzv_txid != 0) {

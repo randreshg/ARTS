@@ -34,9 +34,9 @@
  *   arts_route_table_borrow_or_lookup, or under a copy of its own,
  *   arts_route_table_copy_live, where the body can drop the count its caller
  *   runs under), resolving the GUID only when that descriptor is not live.
- *   Answers (VAL, INV: SNAPSHOT_RESPONSE, GRANT_CTS, GRANT_RESPONSE,
- *     GRANT_CONFIRM_ACK, PUBLISH_ACK, INV_CTS, INV_DELIVER; EXCL: EXCL_CTS,
- *     EXCL_GRANT, EXCL_DELIVER): no lookup.  The entry takes the requester's
+ *   Answers (VAL, INV: SNAPSHOT_RESPONSE, GRANT_RESPONSE,
+ *     GRANT_CONFIRM_ACK, PUBLISH_ACK, INV_DELIVER; EXCL: EXCL_GRANT,
+ *     EXCL_DELIVER): no lookup.  The entry takes the requester's
  *     descriptor from the token the answer echoes, under the count its open
  *     request holds, and runs the body on it unless its tag shows it
  *     retired, when it commits nothing, ends the landing and drops that count
@@ -50,7 +50,7 @@
  *     entry, except that a self-transfer runs the GRANT_RESPONSE body
  *     (arts_db_grant_response_on) directly on the descriptor it holds, an INV
  *     self-serve checks the token's descriptor for a retire itself and runs the
- *     INV_DELIVER body (inv_deliver_on), and a GRANT_CTS is never self-sent; an
+ *     INV_DELIVER body (inv_deliver_on); an
  *     EXCL_CONFIRM self-send calls excl_confirm_answer, the body its wire entry
  *     unpacks the packet into.  Under EXCL·RETAIN the FORWARD that serves the
  *     owner its own read request is such an answer, on the requester's token:
@@ -85,7 +85,7 @@ struct arts_db_cache_s;
  * are never copied into a heap payload. */
 
 /* arts_handler_db_snapshot_response body args.  data_present mirrors the wire
- * packet's tri-state (0 = no data moved, 1 = data, 2 = size-only CTS).  A
+ * packet's (0 = no data moved, 1 = data; any other value is refused).  A
  * data_present == 1 reply that moved bytes landed them one-sided
  * (rdzv_txid != 0; the landing is named by rdzv_cookie and install pairs by
  * txid); a same-rank serve moves none. */
@@ -94,7 +94,7 @@ struct arts_db_snapshot_response_args_s {
   uint64_t token; /* the request's, echoed */
   uint32_t data_present;
   uint64_t version;
-  uint64_t db_size;     /* CTS: allocation size; data: landed byte count */
+  uint64_t db_size;     /* the block's size; data: landed byte count */
   uint64_t rdzv_txid;   /* != 0: payload PUT into our landing; pair by txid */
   uint64_t rdzv_cookie; /* our landing handle, echoed back */
 };
@@ -343,23 +343,14 @@ void arts_send_db_grant_confirm(struct arts_db_s *db, uint64_t home_token);
 /* ===== Sender helpers ================================================ */
 
 /* Send GRANT_REQUEST to the DB's home (the home FIFO orders
- * rank-by-rank).  When the requester knows db_size a fresh transfer landing
- * is allocated and advertised in the request; a size-unknown first touch
- * sends landing-less (txid 0) and home answers GRANT_CTS, whose handler
- * re-issues through this sender with the landing attached.  cover is the
+ * rank-by-rank).  A fresh transfer landing sized from the block's name is
+ * allocated and advertised in the request; none goes for a zero-size block,
+ * in a one-rank run, or with the home's own request under HOME, which asks
+ * for the permission alone.  cover is the
  * request's cover word, read by the commit that opened it: a PRECLAIM request
  * leaves without a landing whatever size the cache knows, and the home
  * absorbs it when a create on this rank claimed the cache meanwhile. */
 void arts_send_db_grant_request(struct arts_db_cache_s *cache, uint32_t cover);
-/* GRANT_CTS at the requester (an answer): on the descriptor the packet's
- * token names, learns db_size and re-issues the in-flight GRANT_REQUEST with
- * a landing (the write axis stays open — this is the same round
- * continuing).  A retired descriptor only drops the write request's count. */
-void arts_handler_db_grant_cts(struct arts_msg_grant_cts_packet_s *p);
-/* GRANT_CTS sender: home → remote first-touch requester (db_size reply),
- * echoing the request's token. */
-void arts_send_db_grant_cts(unsigned int requester_rank, arts_guid_t db_guid,
-                            uint64_t db_size, uint64_t token);
 /* cv: nonzero only on an announce — the address of the releaser's
  * rendezvous (arts_db_pub_rendezvous_s; sem first) as uint64_t, forwarded
  * verbatim and echoed back in the PUBLISH_CTS for pointer-identity wakeup; a
@@ -403,23 +394,20 @@ void arts_send_db_create_return(unsigned int creator_rank,
  * home token; new_owner_rank: rank home selected as next owner;
  * new_owner_rdzv: that rank's transfer landing (from its queued request),
  * forwarded so the current holder can PUT the transfer payload directly
- * (NULL = zero landing — sentinel/data-less round); new_owner_token: that
+ * (NULL = zero landing — a zero-size or data-less round); new_owner_token: that
  * request's token, which the grant echoes. */
 void arts_send_db_grant_invalidate(
     struct arts_db_s *db, unsigned int owner_rank, unsigned int new_owner_rank,
     const struct arts_rdzv_landing_s *new_owner_rdzv, uint64_t new_owner_have,
     uint64_t new_owner_token);
-/* Send SNAPSHOT_REQUEST to the DB's home, advertising a fresh
- * snapshot landing when the size is known (multi-rank runs); a size-unknown
- * first touch sends landing-less and the server answers a size-only CTS
- * response (data_present == 2), whose handler re-enters this sender. */
+/* Send SNAPSHOT_REQUEST to the DB's home, advertising a fresh snapshot
+ * landing sized from the block's name (none for a zero-size block). */
 void arts_send_db_snapshot_request(struct arts_db_cache_s *cache);
 /* Send SNAPSHOT_RESPONSE.  kind (-> wire data_present): 0 = no data moved (a
  * non-NULL landing's cookie is echoed so the requester returns it), 1 =
  * payload (PUT from src_h's buffer into `landing`; src_h — a strong buffer
  * ref — is CONSUMED: transferred to the PUT's local completion, or released
- * after an inline self-serve), 2 = a size round (db_size) for a request that
- * carried no landing.  src_h must be NULL for kinds 0/2.  token is the
+ * after an inline self-serve).  src_h must be NULL for kind 0.  token is the
  * request's, echoed: to a requester that is this rank the reply runs on the
  * descriptor it names. */
 void arts_send_db_snapshot_response(unsigned int requester_rank, uint64_t token,
@@ -514,7 +502,6 @@ uint64_t arts_db_grant_serve_version(struct arts_db_s *db);
 #ifdef ARTS_VALIDITY_INV
 /* ===== INV protocol handlers / senders ================================= */
 
-struct arts_msg_inv_cts_packet_s;
 struct arts_msg_inv_invalidate_ack_packet_s;
 
 /* Cat-B bodies @home.  Both read sources run the same set; what differs is
@@ -522,10 +509,6 @@ struct arts_msg_inv_invalidate_ack_packet_s;
  * the current grant holder) and whether a publish carries payload. */
 void arts_handler_db_inv_request(void *item_v, void *args_v);
 void arts_handler_db_publish(void *item_v, void *args_v);
-/* INV_CTS (an answer) on the descriptor the packet's token names: the fetch
- * goes out again with a landing, under the same count; a retired one only
- * drops the read request's count.  With no fetch open it is fatal. */
-void arts_handler_db_inv_cts(struct arts_msg_inv_cts_packet_s *p);
 void arts_handler_db_inv_deliver(void *payload, size_t size);
 /* INVALIDATE at a sharer (resolved by GUID, or the home's descriptor on a
  * self-send); home_token is the round's, which the ack echoes or, when the
@@ -559,11 +542,6 @@ void arts_send_db_inv_request_for(arts_guid_t db_guid, unsigned int requester,
 /* Senders. */
 void arts_send_db_inv_request(struct arts_db_cache_s *cache,
                               arts_db_access_mode_t mode);
-/* A size round to a read request that carried no landing: see the packet.
- * token is the request's, echoed: to a requester that is this rank the reply
- * runs on the descriptor it names. */
-void arts_send_db_inv_cts(unsigned int requester_rank, uint64_t token,
-                          arts_guid_t db_guid, uint64_t db_size);
 /* Serve a reader from this rank's installed buffer.  The stamp the reply
  * carries is the install-lane arbitration version ONLY: it decides which of
  * two asynchronous installs wins the receiver's buffer slot, and no branch on
@@ -620,10 +598,10 @@ void arts_handler_db_excl_grant(void *payload, size_t size);
 
 /* ===== EXCL senders =================================================== */
 /* Send EXCL_REQUEST to the home.  A request to another rank's home advertises
- * this rank's stable buffer as the landing of the grant/deliver that answers
- * it, for either mode (in-place install is EXCL's fixed-address contract); a
- * size-unknown first touch sends landing-less, the home answers EXCL_CTS and
- * the handler re-enters this sender.  A request to this rank's own home
+ * this rank's stable buffer, sized from the block's name, as the landing of
+ * the grant/deliver that answers it, for either mode (in-place install is
+ * EXCL's fixed-address contract); none goes for a zero-size block or in a
+ * one-rank run.  A request to this rank's own home
  * advertises none: the home's own grant moves no payload, and a payload a
  * remote owner owes it lands in a landing the home draws when it forwards.
  * Where grants carry no payload (the CXL store), no request advertises one. */
@@ -632,17 +610,6 @@ void arts_handler_db_excl_grant(void *payload, size_t size);
  * it), 0 on every other request. */
 void arts_send_db_excl_request(struct arts_db_cache_s *cache,
                                arts_db_access_mode_t mode, uint32_t cover);
-/* EXCL_CTS at the requester, an answer: acts on the descriptor the token
- * names, and on a retired one only drops the request's count.  A size round
- * learns db_size and re-issues the request (echoed mode) with a landing, the
- * axis open.  Where grants carry no payload (the CXL store) no size round
- * exists and the message is refused. */
-void arts_handler_db_excl_cts(const struct arts_msg_excl_cts_packet_s *p);
-/* EXCL_CTS sender: a size round (db_size, the echoed mode and token) from
- * the home, never to this rank itself.  Not defined where grants carry no
- * payload. */
-void arts_send_db_excl_cts(arts_guid_t db_guid, unsigned int requester_rank,
-                           uint64_t db_size, uint32_t mode, uint64_t token);
 /* arts_send_db_excl_grant: db is the home's descriptor, which the caller
  * holds.  The grant payload PUTs into req_rdzv (the requester's advertised
  * landing; src_h — a strong ref on the home buffer — is CONSUMED); `pub`,
