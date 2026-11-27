@@ -315,16 +315,13 @@ stand in for each other, and each is closed only by its own answer.**
   request (a VAL reader joins the node's next one, see below).
 - A request is opened by the first acquire of its axis that nothing on the
   node serves, whatever the other axis holds.  A read request is closed by
-  its answer, which may bring no payload, or by a *size round* (the size
-  alone, for a request that could not name a landing) followed by the
-  re-sent request's answer; a write request is closed by its grant, or by a
-  create's claim (below).
+  its answer, which may bring no payload; a write request is closed by its
+  grant.
 - A reader that arrives while its node can serve it, by its arm's test
   below, is served there and sends nothing.
-- Write permission that reaches the node — a grant, or a create's own hold
-  on a cache the node made by a first touch before the create — serves the
-  writers parked there and no reader: the readers parked on the node's read
-  request stay parked until that request's answer.
+- Write permission that reaches the node, a grant, serves the writers parked
+  there and no reader: the readers parked on the node's read request stay
+  parked until that request's answer.
 - The home answers a read request as a read request, with no step that
   depends on the requesting node's write request.
 
@@ -387,22 +384,9 @@ this rule means for each retention:
   write turn moving the DB to another node waits for that reader's release is
   held behind that turn.
 
-On every arm an acquire that waits for a DB's create leaves the program one
-duty, which these rules shape (:ref:`acquire-waits-for-create`).
-
-A create's claim is the one thing besides its answer that closes a request.
-A create issued on a node other than the DB's home claims the cache a
-dependence made on that node by a first touch, and the claim is a write
-acquire: it serves the writers parked on that cache and closes the cache's
-write request, which may still be travelling.  A read request the cache has
-out stays out and is answered like any other once the home is installed.
-That *pre-claim write request* is the only request that can reach the home
-after the program destroyed the DB, a destroy that is legal because every
-hold was released.  The create's announce tells the home that the request is
-coming; the home tears the DB down only once it has arrived, and absorbs it
-without an answer.  No other request can trail a legal destroy: a read
-request's readers and a write request's writers are still parked until its
-answer, and a destroy issued while an acquire is pending is a program error.
+No request can trail a legal destroy: a read request's readers and a write
+request's writers are still parked until its answer, and a destroy issued
+while an acquire is pending is a program error.
 A hop of a request the home took in — under ``OWNER`` a redirect or a
 holder's bounce, under EXCL·RETAIN a forward to the owner — that finds the
 DB torn down, which only such a program produces, is dropped; under

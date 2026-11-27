@@ -211,9 +211,9 @@ All options are set with ``-D<NAME>=<VALUE>`` on the cmake line.
      - CREATOR
      - Where a DB created with no placement preference (NULL hint) is
        homed — ``CREATOR`` (default; first-touch, home stays on the
-       creating rank) or ``ROUNDROBIN``.  An explicit hint rank or
-       pre-reserved GUID always wins.  The OCR shim's ``ocrDbCreate`` with
-       no affinity hint follows it.  The placement of an EDT
+       creating rank) or ``ROUNDROBIN``.  An explicit hint rank
+       always wins.  The OCR shim's ``ocrDbCreate`` with no affinity hint
+       follows it.  The placement of an EDT
        with no preference is the configuration key
        ``nohint_edt_spread_depth``.
    * - ``ARTS_LOG_LEVEL``

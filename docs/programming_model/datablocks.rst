@@ -280,21 +280,6 @@ every rank that caches it, and a rank's copy is retired when that notice
 lands.  A release message sent before the destroy may still reach the home
 after it, since nothing orders the delivery of the two messages; the runtime
 absorbs it, and storage is freed once the last outstanding reference drains.
-So does the one request whose waiters something other than its own answer
-served: the write request a node sent before its own create of the block
-claimed the cache that sent it, whose writers the create's hold served (see
-:ref:`coherence_protocols`).  The home is told of it before the destroy can
-be issued and tears the block down only once it has arrived; it serves that
-request nothing, so the program never orders anything after it.  No other
-request can follow a legal destroy, under any coherence protocol: a read
+No request can follow a legal destroy, under any coherence protocol: a read
 request's readers wait for its own answer and a write request's writers for
 its grant, so either is out only while an acquisition is pending.
-A program that creates a block with a pre-reserved GUID names one from
-:c:func:`arts_guid_reserve` or :c:func:`arts_guid_reserve_range`; a GUID an
-earlier create minted is refused, and the run aborts.
-A labeled GUID may be created again, before or after the destroy (see
-:ref:`labeled-guid-reuse`):
-
-.. code-block:: c
-
-   arts_db_destroy(db_guid);

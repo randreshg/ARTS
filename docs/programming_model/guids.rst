@@ -109,7 +109,7 @@ destroys the block after the block's last reader, and the event after the
 last dependence on it was served.
 
 The OCR shim's ``ocrGuidRangeCreate`` / ``ocrGuidFromIndex`` follow the same
-model for a range of events.
+model for a range of events or of EDTs.
 
 ``NULL_GUID``
 -------------
@@ -125,45 +125,35 @@ GUID.  Always check against it before dereferencing:
 
 .. _labeled-guid-reuse:
 
-Labeled GUIDs: one rule for every create
-----------------------------------------
+Labeled GUIDs: one rule for EDT and event creates
+-------------------------------------------------
 
-A GUID can be named before its object exists: an index into a reserved
-range (:c:func:`arts_guid_reserve_range` + :c:func:`arts_guid_from_index`,
-or ``ocrGuidFromIndex`` through the OCR shim) passed as ``hint.guid`` to
-:c:func:`arts_edt_create`, :c:func:`arts_event_create` or
-:c:func:`arts_db_create`.  Every create of such a GUID — EDT, event or data
-block, whatever property it carries — follows one rule at the rank whose
-route slot the object occupies:
+An EDT's or an event's GUID can be named before its object exists: an index
+into a reserved range (:c:func:`arts_guid_reserve_range` +
+:c:func:`arts_guid_from_index`, or ``ocrGuidFromIndex`` through the OCR shim)
+passed as ``hint.guid`` to :c:func:`arts_edt_create` or
+:c:func:`arts_event_create`.  A data block takes no such name: its GUID is
+issued by :c:func:`arts_db_create` itself.  Every create of a labeled GUID —
+EDT or event, whatever property it carries — follows one rule at the rank
+whose route slot the object occupies:
 
 - **The slot is empty:** the create installs its object, then replays the
-  messages that reached the GUID before it (a satisfy, a dependence, an
-  acquire, a destroy).
+  messages that reached the GUID before it (a satisfy, a dependence, a
+  destroy).
 - **The slot holds a live object:** the create waits, parked on the slot.
   Nothing is replaced, dropped or reported.  When the occupant's life ends —
   its destroy, or, for an EDT, its completion — the parked create installs
   as the GUID's **next generation**.
 
 Every other message keeps its own rule: it runs against the object the slot
-holds, and while the slot is empty it waits for the next install (for a data
-block's acquire, see `An acquire that waits for a create`_).  A create
+holds, and while the slot is empty it waits for the next install.  A create
 parked behind an occupant that never ends stays parked until the run ends,
 where the teardown walk of a tree built with ``ARTS_DEBUG_TEARDOWN`` counts it
 among the work left undone (the ``ooo`` contributor), so the shutdown is
 reported non-quiescent.
 
 What a create returns does not depend on whether it waited:
-
-- :c:func:`arts_event_create` and :c:func:`arts_edt_create` return the GUID.
-- :c:func:`arts_db_create` returns at once, and ``*addr`` names this
-  create's own image of the block (``NULL`` under
-  ``ARTS_DB_PROP_NO_ACQUIRE``), which becomes the block's content when the
-  create installs.  The creator's hold is on that image, and the creator's
-  own operations name it.  A release that reaches the block's home as a
-  message is looked up by GUID there, and so is one the home rank sends
-  itself while its image is not yet installed or no longer live; either
-  meets whatever the slot holds meanwhile (see `Reuse and
-  generations`_).
+:c:func:`arts_event_create` and :c:func:`arts_edt_create` return the GUID.
 
 The OCR standard's two checked properties have no native counterpart, and
 the OCR shim accepts and ignores both:
@@ -183,22 +173,20 @@ the OCR shim accepts and ignores both:
 Reusing a label
 ~~~~~~~~~~~~~~~
 
-A label can be destroyed and created again:
+An event's label can be destroyed and created again:
 
 .. code-block:: c
 
-   arts_db_destroy(g);                  /* generation k   */
-   arts_db_create_with_guid(g, ...);    /* generation k+1 */
+   arts_event_destroy(g);               /* generation k   */
+   hint.guid = g;
+   arts_event_create(&hint);            /* generation k+1 */
 
 The destroy and the create need no ordering between them: a create that
-reaches the slot before the destroy waits for it (on a creating rank other
-than the home, a dependence's cache of the GUID that kept no right to the
-block is claimed instead, see `Data blocks: the block and a rank's cache`_).  An
-EDT's completion ends its life the same way — the runtime retires the EDT's
-GUID before its completion event or its group is signalled, so a task
-gated on either can create the GUID's next generation.  The create is the
-only message the runtime holds back for a destroy (see `Reuse and
-generations`_).
+reaches the slot before the destroy waits for it.  An EDT's completion ends
+its life the same way — the runtime retires the EDT's GUID before its
+completion event or its group is signalled, so a task gated on either can
+create the GUID's next generation.  The create is the only message the
+runtime holds back for a destroy (see `Reuse and generations`_).
 
 Concurrent creates are undefined
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -207,7 +195,7 @@ Two creates of one GUID with no end of life between them are **undefined**:
 exactly one installs, and every other one parks for a destroy the program
 may never issue.  The runtime does not arbitrate them, report them, or carry
 logic to survive them.  A parked EDT create holds open the group its
-creator joined it to; a parked event or data-block create keeps its payload
+creator joined it to; a parked event create keeps its payload
 until a destroy of the occupant admits it, or to the end of the run if none
 comes.  A defined program has at most one create of a GUID pending at any
 time.
@@ -216,69 +204,25 @@ Data blocks: the block and a rank's cache
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 A create makes the **block**: the object at its home, which every operation
-on the label is ordered against.  A rank's **cache** of a block is a
-different thing — the landing and coherence state that rank keeps for it,
-made the first time the rank touches the block, with or without a create.
+on the block is ordered against.  Its GUID is issued by that create, carries
+an upper bound on the block's size, and names the block for the whole run.  A
+rank's **cache** of a block is a different thing — the landing and coherence
+state that rank keeps for it, made the first time the rank touches the block
+and never by a create.
 
-A create issued on a rank other than the block's home installs its
-descriptor on its own rank first and announces the block to the home when it
-installs there; the home then installs the block by the same rule (empty:
-install; occupied: the announce waits for the occupant's destroy).  A
-dependence dispatched on that rank before the create leaves a cache there,
-and the create claims that cache as its own: it is the block's first image,
-not an occupant.  A dependence's cache an earlier generation of the label
-left on the rank, whose teardown notice has not reached it yet, is claimed
-the same way when it kept no right to the block: the two are not told apart
-(see `Reuse and generations`_).  A create parks on that rank behind the
-descriptor of an earlier create made there, or behind a cache that kept a
-right to the block (the write right; under ``EXCL`` × ``RETAIN`` also the
-block's resident bytes, which outlast a read phase that took the write
-right, or a retained read grant), which refuses the create's hold, and
-installs when that block's teardown notice retires it.  While a create on a
-rank is deciding or parked, an acquire there that finds the slot empty waits
-for the create's install instead of making a cache.  At the home, an acquire
-of a block that is not installed waits for the create.  On the arms where a
-creator's first publish goes back to the home ({VAL,INV}·HOME, and FLUSH),
-the home answers the announce with a credit for that publish.
-
-A labeled data-block GUID is reserved before its block exists, so it
-carries no size hint, and a rank's first fetch of the block from its home
-asks for the size first.
-
-.. _acquire-waits-for-create:
-
-An acquire that waits for a create
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-A dependence can name a reserved or labeled data block before the block is
-created.  Its acquire then waits for the create: at the home, where a
-request from another rank waits too, or on a rank where the create is
-deciding or parked.  The EDT the dependence belongs to is in the middle
-of acquiring its blocks, and it keeps what it already acquired while it
-waits.  Under ``VAL``, ``INV`` and ``EXCL`` an EDT's write accesses, and
-under ``EXCL`` its read accesses too, are acquired one after another in
-GUID order, and each is kept until the EDT releases it.  A write access
-keeps the writers of every other node waiting for that block and, under
-``EXCL``, the readers of every other node.  Under ``EXCL`` with ``PURGE`` it
-also keeps waiting the readers of its own node whose read request was
-already out when the node took the write turn; under ``EXCL`` with
-``RETAIN`` it keeps those waiting only when another node's write request
-reached the home before the confirmation of the migration that brought the
-turn.  A read access under ``EXCL`` keeps the block's writers waiting and,
-under ``RETAIN`` on the owner's node, also the readers of other nodes that
-arrive once a writer is queued behind it.
-
-The program therefore has one duty towards a create that EDTs wait for:
-**nothing the creating EDT waits for may be held by an EDT that waits for
-the block.**  Suppose the EDT that creates block ``D`` runs only after an
-EDT ``X`` completed, and ``X`` needs an access to a block ``B`` that an EDT
-waiting for ``D`` already holds.  Then ``X`` waits for that EDT, that EDT
-waits for ``D``, and ``D`` is never created.  The runtime neither detects
-nor breaks such a wait.  Under ``VAL`` and ``INV`` only a write access of
-``X`` can wait this way: a read access is served there without waiting for
-another node's writers to release (:ref:`coherence_protocols`, Requests per
-node).  Under ``FLUSH`` no acquire waits for an access another EDT holds, so
-the duty asks nothing there.
+The create installs the creator's descriptor on its own rank before it
+returns (a create under ``ARTS_DB_PROP_NO_ACQUIRE`` on another rank makes
+none), and a creator on a rank other than the block's home announces the
+block to the home once that descriptor is installed; the home installs the
+block from the announce.  Nothing can name the GUID before the create
+returns it, so the creator's slot is empty when the create installs, and a
+rank's first touch of the block comes after it.  A request, a release leg, a
+destroy or an acquire on the home's own rank that reaches the home before the
+announce — the name travelled to another rank by an edge faster than the
+announce — waits on the slot's out-of-order list until the block is installed.
+On the arms where a creator's first publish goes back to the home
+({VAL,INV}·HOME, and FLUSH), the home answers the announce with a credit for
+that publish.
 
 Reuse and generations
 ~~~~~~~~~~~~~~~~~~~~~
@@ -291,7 +235,8 @@ coherence protocol may wait, so no task's time includes a round trip it does
 not need; a message that arrives before its object exists waits on the home's
 out-of-order queue until the object is installed.  Labeled GUIDs, and
 destroying and creating one GUID again, are there to run OCR programs that use
-them.
+them; they exist for events and EDTs only, since a data block's GUID comes
+from its create and names one block.
 
 A GUID carries no generation.  Telling one generation of a label from the
 next would need every message that names the GUID — satisfies, dependences,
@@ -299,14 +244,9 @@ EDT parameters, coherence messages — to carry the generation as well, the
 piggybacked state the coherence protocols are designed without, or a create
 or destroy that waits for a reply.  Neither is provided, so in a program
 that reuses a label a message meant for one generation can be applied to
-another: a satisfy, dependence, acquire or release that reaches the home
-before the previous generation's destroy, a teardown notice that reaches a
-rank caching the block after that rank's use of the next generation, the
-home's answer to a create, on {VAL,INV}·HOME and FLUSH, that reaches the next
-generation's creator, whose first publish then writes into the previous
-block's released buffer, or, on EXCL·RETAIN, a read return or a recall sent
-for the previous generation, which lowers the next generation's count of read
-grants or takes back one of its grants.  A program written to ARTS's model,
+another: a satisfy or dependence registration that reaches the slot while the
+previous generation is still installed (before the event's destroy or the
+EDT's completion) is applied to it.  A program written to ARTS's model,
 with a fresh GUID for every object, never meets this.  Where an OCR program
 reuses a label, or creates one label from two tasks (undefined, above), the
 fix belongs in the program: one creator per label, and a fresh label for
